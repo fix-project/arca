@@ -89,6 +89,13 @@ class NameGenerator : public ExprVisitor::DelegateNop {
                            Index index,
                            std::string* out_str);
 
+  void AddPrefixToName(Index index,
+                       std::string* out_str);
+
+  void AddPrefixToNameAndBind(BindingHash* bindings,
+                              Index index,
+                              std::string* out_str);
+
   template <typename T>
   Result VisitAll(const std::vector<T*>& items,
                   Result (NameGenerator::*func)(Index, T*));
@@ -158,6 +165,8 @@ void NameGenerator::MaybeGenerateName(const char* prefix,
     // There's no bindings hash, so the name can't be a duplicate. Therefore it
     // doesn't need a disambiguating number.
     GenerateName(prefix, index, 0, str);
+  } else {
+    AddPrefixToName(index, str);
   }
 }
 
@@ -177,12 +186,41 @@ void NameGenerator::GenerateAndBindName(BindingHash* bindings,
   }
 }
 
+void NameGenerator::AddPrefixToName(Index index,
+                                    std::string* str) {
+  std::string prefix_name = "$";
+  prefix_name += module_->name;
+  prefix_name += "_";
+  if (str->compare(0, prefix_name.length(), prefix_name) != 0) {
+    if (str->at(0) == '$') {
+      prefix_name += str->substr(1);
+    } else {
+      prefix_name += *str;
+    }
+    *str = prefix_name;
+  }
+  return;
+}
+
+void NameGenerator::AddPrefixToNameAndBind(BindingHash* bindings,
+                                           Index index,
+                                           std::string* str) {
+  AddPrefixToName(index, str);
+  if (bindings->find(*str) == bindings->end()) {
+    bindings->emplace(*str, Binding(index));
+  }
+
+  return;
+}
+
 void NameGenerator::MaybeGenerateAndBindName(BindingHash* bindings,
                                              const char* prefix,
                                              Index index,
                                              std::string* str) {
   if (!HasName(*str)) {
     GenerateAndBindName(bindings, prefix, index, str);
+  } else {
+    AddPrefixToNameAndBind(bindings, index, str);
   }
 }
 
@@ -201,6 +239,8 @@ void NameGenerator::MaybeUseAndBindName(BindingHash* bindings,
 
       disambiguator++;
     }
+  } else {
+    AddPrefixToNameAndBind(bindings, index, str);
   }
 }
 
