@@ -24,7 +24,6 @@
 #include "src/cast.h"
 #include "src/expr-visitor.h"
 #include "src/ir.h"
-#include "src/string-view.h"
 
 using namespace std;
 
@@ -112,8 +111,8 @@ void ImportResolver::ResolveImportForVar(string_view name, Var* var) {
   }
 
   if (!name.empty()) { 
-    if (import_map_->find(name.to_string()) != import_map_->end()) {
-      var->set_name(import_map_->at(name.to_string()));
+    if (import_map_->find({name.begin(), name.end()}) != import_map_->end()) {
+      var->set_name(import_map_->at({name.begin(), name.end()}));
     } else {
       var->set_name(name);
     }
