@@ -32,7 +32,7 @@
 #include "src/stream.h"
 #include "src/validator.h"
 #include "src/wast-lexer.h"
-#include "src/wat-writer.h"
+#include "src/binary-writer.h"
 
 #include "combine-modules.h"
 #include "generate-prefix-names.h"
@@ -46,12 +46,12 @@ static std::string s_infile;
 static std::string s_lib_infile;
 static std::string s_outfile;
 static Features s_features;
-static WriteWatOptions s_write_wat_options;
 static bool s_resolve_names = true;
 static bool s_read_debug_names = true;
 static bool s_fail_on_custom_section_error = true;
 static std::unique_ptr<FileStream> s_log_stream;
 static bool s_validate = true;
+static WriteBinaryOptions s_write_binary_options;
 
 static const char s_description[] =
 R"(  Read two files in the WebAssembly binary format, and convert it to
@@ -76,13 +76,7 @@ static void ParseOptions(int argc, char** argv) {
         s_outfile = argument;
         ConvertBackslashToSlash(&s_outfile);
       });
-  parser.AddOption('f', "fold-exprs", "Write folded expressions where possible",
-                   []() { s_write_wat_options.fold_exprs = true; });
   s_features.AddOptions(&parser);
-  parser.AddOption("inline-exports", "Write all exports inline",
-                   []() { s_write_wat_options.inline_export = true; });
-  parser.AddOption("inline-imports", "Write all imports inline",
-                   []() { s_write_wat_options.inline_import = true; });
   parser.AddOption("no-debug-names", "Ignore debug names in the binary file",
                    []() { s_read_debug_names = false; });
   parser.AddOption("no-resolve-names", "Do not resolve names to index",
@@ -164,11 +158,16 @@ int ProgramMain(int argc, char** argv) {
       if (Succeeded(result) && s_resolve_names) {
         result = ResolveNamesModule(&output, &errors);
       }
-  
+
+      if (Succeeded(result) && s_validate) {
+	ValidateOptions options(s_features);
+	result = ValidateModule(&output, &errors, options);
+      }
+
       if (Succeeded(result)) {
         FileStream stream(!s_outfile.empty() ? FileStream(s_outfile)
             : FileStream(stdout));
-        result = WriteWat(&stream, &output, s_write_wat_options);
+        result = WriteBinaryModule(&stream, &output, s_write_binary_options);
       }
     }
     FormatErrorsToFile(errors, Location::Type::Binary);
