@@ -36,7 +36,6 @@
 
 #include "combine-modules.h"
 #include "generate-prefix-names.h"
-#include "rebase-index.h"
 #include "resolve-imports.h"
 
 using namespace wabt;
@@ -44,7 +43,9 @@ using namespace wabt;
 static int s_verbose;
 static std::string s_infile;
 static std::string s_lib_infile;
-static std::string s_outfile;
+static std::string s_outfile = "";
+static std::string s_infile_modname = "";
+static std::string s_lib_infile_modname = "";
 static Features s_features;
 static bool s_resolve_names = true;
 static bool s_read_debug_names = true;
@@ -55,11 +56,16 @@ static WriteBinaryOptions s_write_binary_options;
 
 static const char s_description[] =
 R"(  Read two files in the WebAssembly binary format, and convert it to
-  the WebAssembly binary format.
+  the WebAssembly binary format, such that the output modules contain
+  all fields of the two input wasm module, and imports in one input wasm
+  file from the other wasm file are resolved as locals. File name must be
+  the same as module name.
 
 examples:
-  # parse binary file test.wasm and lib file lib.wasm write binary file output.wasm
-  $ wasmlink test.wasm lib.wasm -o output.wasm
+  # parse binary file moduleone.wasm and moduletwo.wasm write binary file output.wasm
+  $ wasmlink moduleone.wasm moduletwo.wasm -o output.wasm
+  # parse binary file moduleone.wasm with name env and moduletwo.wasm with name helper write binary file output.wasm
+  $ wasmlink moduleone.wasm moduletwo.wasm -m env -n helper -o output.wasm
 )";
 
 static void ParseOptions(int argc, char** argv) {
@@ -76,6 +82,18 @@ static void ParseOptions(int argc, char** argv) {
         s_outfile = argument;
         ConvertBackslashToSlash(&s_outfile);
       });
+  parser.AddOption(
+      'm', "first_mod_name", "FIRSTMODNAME",
+      "Name of the first module",
+      [](const char* argument) {
+        s_infile_modname = argument;
+      });
+  parser.AddOption(
+      'n', "second_mod_name", "SECONDMODNAME",
+      "Name of the second module",
+      [](const char* argument) {
+        s_lib_infile_modname = argument;
+      });
   s_features.AddOptions(&parser);
   parser.AddOption("no-debug-names", "Ignore debug names in the binary file",
                    []() { s_read_debug_names = false; });
@@ -86,12 +104,12 @@ static void ParseOptions(int argc, char** argv) {
                    []() { s_fail_on_custom_section_error = false; });
   parser.AddOption("no-check", "Don't check for invalid modules",
                    []() { s_validate = false; });
-  parser.AddArgument("filename", OptionParser::ArgumentCount::One,
+  parser.AddArgument("first_filename", OptionParser::ArgumentCount::One,
                      [](const char* argument) {
                        s_infile = argument;
                        ConvertBackslashToSlash(&s_infile);
                      });
-  parser.AddArgument("lib_filename", OptionParser::ArgumentCount::One,
+  parser.AddArgument("second_filename", OptionParser::ArgumentCount::One,
                      [](const char* argument) {
                        s_lib_infile = argument;
                        ConvertBackslashToSlash(&s_lib_infile);
@@ -127,8 +145,8 @@ int ProgramMain(int argc, char** argv) {
                           options, &errors, &module);
     result_lib = ReadBinaryIr(s_lib_infile.c_str(), lib_file_data.data(), lib_file_data.size(),
                               options, &errors, &libmodule);
-    module.name = StripWasm(s_infile);
-    libmodule.name = StripWasm(s_lib_infile);
+    module.name = !s_infile_modname.empty() ? s_infile_modname : StripWasm(s_infile);
+    libmodule.name = !s_lib_infile_modname.empty() ? s_lib_infile_modname : StripWasm(s_lib_infile);
     if (Succeeded(result) && Succeeded(result_lib)) {
       if (s_validate) {
         ValidateOptions options(s_features);
@@ -160,8 +178,8 @@ int ProgramMain(int argc, char** argv) {
       }
 
       if (Succeeded(result) && s_validate) {
-	ValidateOptions options(s_features);
-	result = ValidateModule(&output, &errors, options);
+        ValidateOptions options(s_features);
+        result = ValidateModule(&output, &errors, options);
       }
 
       if (Succeeded(result)) {

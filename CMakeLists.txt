@@ -3,8 +3,6 @@ set(MODULE_COMBINER_SRC
   combine-modules.h
   generate-prefix-names.cc
   generate-prefix-names.h
-  rebase-index.cc
-  rebase-index.h
   resolve-imports.cc
   resolve-imports.h
 )

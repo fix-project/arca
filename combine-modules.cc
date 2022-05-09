@@ -16,7 +16,7 @@ Result CombineModules(Module* module, Module* libmodule, Module* result) {
   ModuleFieldList temp_module;
   ModuleFieldList temp_libmodule;
 
-  // Append imports of module excluding imported functions from libmodule
+  // Append imports of module excluding imports from libmodule 
   while (!module->fields.empty()) {
     const ModuleField* field = &module->fields.front();
     if (field->type() == ModuleFieldType::Import) {
@@ -29,12 +29,12 @@ Result CombineModules(Module* module, Module* libmodule, Module* result) {
     }
   }
 
-  // Append imports of libmodule excluding imported memories from module
+  // Append imports of libmodule excluding imports from module 
   while (!libmodule->fields.empty()) {
     const ModuleField* field = &libmodule->fields.front();
     if (field->type() == ModuleFieldType::Import) {
       auto field_uniq_ptr = cast<ImportModuleField>(std::move(libmodule->fields.extract_front()));
-      if (field_uniq_ptr->import->kind() != ExternalKind::Memory) {
+      if (field_uniq_ptr->import->module_name != module->name) {
         result->AppendField(std::move(field_uniq_ptr));
       }
     } else {

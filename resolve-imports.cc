@@ -497,8 +497,11 @@ void ImportMapConstructor(Module* module_, Module* libmodule, unordered_map<stri
 
 Result ResolveImports(Module* module, Module* libmodule, unordered_map<string, string>* import_map) {
   ImportMapConstructor(module, libmodule, import_map);
+  ImportMapConstructor(libmodule, module, import_map);
   ImportResolver resolver(import_map);
-  return resolver.VisitModule(module);
+  Result result = resolver.VisitModule(module);
+  result |= resolver.VisitModule(libmodule);
+  return result;
 }
 
 }  // namespace wabt
