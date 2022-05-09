@@ -183,9 +183,9 @@ int ProgramMain(int argc, char** argv) {
       }
 
       if (Succeeded(result)) {
-        FileStream stream(!s_outfile.empty() ? FileStream(s_outfile)
-            : FileStream(stdout));
+        MemoryStream stream;
         result = WriteBinaryModule(&stream, &output, s_write_binary_options);
+        stream.WriteToFile(s_outfile);
       }
     }
     FormatErrorsToFile(errors, Location::Type::Binary);
