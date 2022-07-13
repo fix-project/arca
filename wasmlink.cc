@@ -184,6 +184,7 @@ int ProgramMain(int argc, char** argv) {
 
       if (Succeeded(result)) {
         MemoryStream stream;
+        s_write_binary_options.features = s_features;
         result = WriteBinaryModule(&stream, &output, s_write_binary_options);
         stream.WriteToFile(s_outfile);
       }
