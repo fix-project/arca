@@ -21,9 +21,9 @@
 #include <iostream>
 #include <vector>
 
-#include "src/cast.h"
-#include "src/expr-visitor.h"
-#include "src/ir.h"
+#include "wabt/cast.h"
+#include "wabt/expr-visitor.h"
+#include "wabt/ir.h"
 
 using namespace std;
 

@@ -19,7 +19,7 @@
 
 #include <unordered_map>
 
-#include "src/common.h"
+#include "wabt/common.h"
 
 namespace wabt {
 

@@ -5,10 +5,10 @@
 #include <string>
 #include <iostream> 
 
-#include "src/cast.h"
-#include "src/expr-visitor.h"
-#include "src/make-unique.h"
-#include "src/ir.h"
+#include "wabt/cast.h"
+#include "wabt/expr-visitor.h"
+#include "wabt/make-unique.h"
+#include "wabt/ir.h"
 
 namespace wabt {
 
