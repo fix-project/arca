@@ -104,6 +104,9 @@ static void ParseOptions(int argc, char** argv) {
                    []() { s_fail_on_custom_section_error = false; });
   parser.AddOption("no-check", "Don't check for invalid modules",
                    []() { s_validate = false; });
+  parser.AddOption("debug-names",
+                   "Write debug names to the generated binary file",
+                   []() { s_write_binary_options.write_debug_names = true; });
   parser.AddArgument("first_filename", OptionParser::ArgumentCount::One,
                      [](const char* argument) {
                        s_infile = argument;
