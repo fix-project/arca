@@ -7,7 +7,6 @@
 
 #include "wabt/cast.h"
 #include "wabt/expr-visitor.h"
-#include "wabt/make-unique.h"
 #include "wabt/ir.h"
 
 namespace wabt {
