@@ -453,6 +453,10 @@ void ImportMapConstructor(Module* module_, Module* libmodule, unordered_map<stri
 
       // Grab the name of the item being exported
       Index export_index = libmodule->export_bindings.FindIndex(field_name); 
+      if (export_index == -1) {
+        std::cout << "Module imports a function that does not exist as an export. Desired import: " << field_name << " from module: " << import_->module_name << std::endl;
+        exit(1);
+      }
       Export* export_ = libmodule->exports[export_index];
       string export_name;
       
