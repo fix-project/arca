@@ -7,6 +7,7 @@
 .equ FLAGS, 0x00000000
 
 .section ".multiboot"
+.align 32
 .long MAGIC
 .long FLAGS
 .long -(MAGIC)

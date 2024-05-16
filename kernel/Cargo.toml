@@ -1,0 +1,17 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+forced-target = "x86_64-unknown-none"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.0.97"
+
+[dev-dependencies]
+runner = { path = "../runner", artifact = "bin", target="x86_64-unknown-linux-gnu" }

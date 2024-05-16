@@ -10,10 +10,6 @@ MEMORY {
 SECTIONS {
   . = ORIGIN(bootloader);
   _estack = .;
-  .multiboot :
-  {
-    *(.multiboot*)
-  } > bootloader
   .trampoline :
   {
     _strampoline = .;
@@ -23,6 +19,7 @@ SECTIONS {
   } > trampoline AT> bootloader
   .text :
   {
+    *(.multiboot*)
     _stext = .;
     *(.text.start)
     *(.text*)

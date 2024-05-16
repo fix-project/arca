@@ -70,8 +70,15 @@ main:
 protected_mode:
   // both the BSP and the APs run this code to switch to long mode
 
+  // enable SSE
+  mov eax, cr0
+  and ax, (~0b100) // disable x87 emulation
+  or ax, 0x1 // enable monitor coprocessor
+  mov cr0, eax
+
   // enable physical address extension and paging
-  mov eax, 0xa0
+  // also enable SSE OS support at the same time
+  mov eax, 0x6a0
   mov cr4, eax
 
   // set up page table
@@ -86,8 +93,10 @@ protected_mode:
 
   // enable paging
   mov eax, cr0
-  or eax, 0x80000000
+  or eax, 0x80000001
   mov cr0, eax
+
+  out dx, al
 
   // load 64-bit GDT
   lgdt [gdtr]
@@ -100,18 +109,16 @@ protected_mode:
   mov gs, ax
   mov ss, ax
 
-  // enable SSE
-  mov eax, cr0
-  and ax, (~0b100) // disable x87 emulation
-  or ax, 0x1 // enable monitor coprocessor
-  mov cr0, eax
-  mov eax, cr4
-  or ax, 0b11 << 9 // set OSFXSR and OSMMEXCPT
-  mov cr4, eax
-
 .att_syntax
   // jump to 32-bit code
-  ljmp $0x8, $long_mode
+  ljmp $0x8, $long_mode_entry
 .intel_syntax noprefix
+
+.code64
+long_mode_entry:
+  lea rax, long_mode[rip]
+  mov rbx, 0xFFFF800000000000
+  or rax, rbx
+  jmp rax
 
 .extern long_mode

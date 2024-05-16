@@ -24,44 +24,33 @@ void check_for_long_mode(void) {
   }
 }
 
-void disable_paging(void) {
-  unsigned cr0 = cr0_get();
-  cr0 &= ~(1 << 31);
-  cr0_set(cr0);
-}
-
-void set_page_table(struct pml4e *pml4) {
-  cr3_set((uint64_t)pml4);
-}
-
 struct pml4e pml4[512] __attribute__((aligned(4096)));
 struct pdpe pdpt[512] __attribute__((aligned(4096)));
 
 union gdte gdt[3];
 struct gdtr gdtr __attribute__((aligned(4)));
 
-void kmain(void) {
-  check_for_long_mode();
-  disable_paging();
-
+void init_pdpt(void) {
   for (size_t i = 0; i < 512; i++) {
-    pdpt[i] = (struct pdpe){
-        .P_present = true,
-        .RW_read_write = true,
-        .PS_page_size = true, // 1GB pages
-        .addr = i,            // identity map
-    };
+    pdpt[i].P_present = true;
+    pdpt[i].RW_read_write = true;
+    pdpt[i].PS_page_size = true; // 1GB pages
+    pdpt[i].addr = i; // identity map
   }
-  unsigned long addr = (unsigned long)pdpt;
-  pml4[0] = (struct pml4e){
-      // first 512GB of lower half
-      .P_present = true,
-      .RW_read_write = true,
-      .addr = addr >> 12,
-  };
-  pml4[256] = pml4[0]; // first 512GB of higher half
+}
 
-  /* // null descriptor */
+void init_pml4(void) {
+  unsigned long addr = (unsigned long)pdpt;
+  // first 512GB
+  pml4[0].P_present = true;
+  pml4[0].RW_read_write = true;
+  pml4[0].addr = addr >> 12;
+  // first 512GB of higher half
+  pml4[256] = pml4[0];
+}
+
+void init_gdt(void) {
+  // null descriptor
   gdt[0].descriptor = (struct segment_descriptor){0};
   // code descriptor
   gdt[1].descriptor = (struct segment_descriptor) {
@@ -96,7 +85,14 @@ void kmain(void) {
     .L_long_mode = false,
   };
   gdtr.limit = sizeof(gdt) - 1;
-  gdtr.offset = (uint64_t)gdt;
+  gdtr.offset = (uint32_t)gdt;
+}
+
+void kmain(void) {
+  check_for_long_mode();
+  init_pdpt();
+  init_pml4();
+  init_gdt();
 
   unsigned nproc = acpi_nproc();
   extern uint8_t ncores;

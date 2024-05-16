@@ -94,7 +94,7 @@ struct xsdt *acpi_xsdt_get(void) {
     return xsdt;
   }
   struct xsdp *xsdp = acpi_xsdp_get();
-  xsdt = (void*)xsdp->xsdt_address;
+  xsdt = (void*)(uint32_t)xsdp->xsdt_address;
   return xsdt;
 }
 
@@ -106,7 +106,7 @@ struct sdt *acpi_sdt_get(char *name) {
   }
   size_t length = (xsdt->header.length - sizeof(xsdt->header))/sizeof(xsdt->entries[0]);
   for (size_t i = 0; i < length; i++) {
-    struct sdt *p = (void *)xsdt->entries[i];
+    struct sdt *p = (void *)(uint32_t)xsdt->entries[i];
     uint32_t x;
     __builtin_memcpy(&x, name, 4);
     if (p->signature == x) {
