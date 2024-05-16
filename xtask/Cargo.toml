@@ -1,10 +1,10 @@
 [package]
-name = "runner"
+name = "xtask"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0.83"
 clap = { version = "4.5.4", features = ["derive"] }
-loader = { path = "../loader", artifact = "bin", target="i686-unknown-none" }
-tempfile = "3.10.1"
+json = "0.12.4"
+xshell = "0.2.6"

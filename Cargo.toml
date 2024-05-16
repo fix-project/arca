@@ -1,5 +1,5 @@
 [workspace]
-members = [ "kernel" , "loader", "runner"]
+members = ["kernel", "loader", "xtask"]
 resolver = "2"
 
 [profile.dev]

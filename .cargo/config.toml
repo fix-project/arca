@@ -3,3 +3,6 @@ bindeps = true
 
 [env]
 RUST_TARGET_PATH = { value = "loader", relative = true }
+
+[alias]
+xtask = "run --package xtask --"

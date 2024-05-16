@@ -5,7 +5,7 @@
 #include "table.h"
 
 void check_for_long_mode(void) {
-  unsigned int eax, ebx, ecx, edx;
+  unsigned int eax = 0, ebx, ecx, edx = 0;
   if (!__get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx)) {
     puts("ERROR (loader): CPUID failed\n");
     halt();

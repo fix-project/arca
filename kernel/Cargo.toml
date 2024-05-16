@@ -12,6 +12,3 @@ forced-target = "x86_64-unknown-none"
 
 [build-dependencies]
 cc = "1.0.97"
-
-[dev-dependencies]
-runner = { path = "../runner", artifact = "bin", target="x86_64-unknown-linux-gnu" }
