@@ -4,7 +4,7 @@ use core::{
 };
 
 extern "C" {
-    fn kmain(id: u8, bsp: bool, ncores: u8, multiboot: *const ()) -> !;
+    fn kmain(id: u32, bsp: bool, ncores: u32, multiboot: *const ()) -> !;
     static mut _sbss: u8;
     static mut _ebss: u8;
 }
@@ -12,7 +12,7 @@ extern "C" {
 static WAIT_FOR_INIT: AtomicBool = AtomicBool::new(true);
 
 #[no_mangle]
-unsafe extern "C" fn rsstart(id: u8, bsp: bool, ncores: u8, multiboot: *const ()) {
+unsafe extern "C" fn rsstart(id: u32, bsp: bool, ncores: u32, multiboot: *const ()) {
     if bsp {
         let start = addr_of_mut!(_sbss);
         let end = addr_of_mut!(_ebss);

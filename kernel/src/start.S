@@ -1,9 +1,9 @@
 .intel_syntax noprefix
 .code64
 
-# arg0 (dil): processor ID    (u8)
-# arg1 (sil): boot processor? (bool)
-# arg2 (dl): number of cores (u8)
+# arg0 (edi): processor ID    (u32)
+# arg1 (esi): BSP ID          (bool)
+# arg2 (edx): number of cores (u32)
 # arg3 (rcx): multiboot info  (void *)
 
 .globl _start

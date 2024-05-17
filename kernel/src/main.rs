@@ -37,7 +37,7 @@ static PRINT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
 #[inline(never)]
-extern "C" fn kmain(id: u8, boot: bool, ncores: u8, _multiboot: *const ()) -> ! {
+extern "C" fn kmain(id: u32, boot: bool, ncores: u32, _multiboot: *const ()) -> ! {
     let mut s = DebugConsole();
     let cpu_type = if boot { "BP" } else { "AP" };
     while CONSOLE_LOCK
@@ -50,7 +50,7 @@ extern "C" fn kmain(id: u8, boot: bool, ncores: u8, _multiboot: *const ()) -> ! 
     }
     let _ = writeln!(s, "Hello from {cpu_type} {id} of {ncores}!");
     CONSOLE_LOCK.store(false, Ordering::SeqCst);
-    let old = PRINT_COUNT.fetch_add(1, Ordering::SeqCst) as u8;
+    let old = PRINT_COUNT.fetch_add(1, Ordering::SeqCst) as u32;
     if old == ncores - 1 {
         unsafe {
             shutdown();

@@ -36,11 +36,25 @@ struct processor_local_apic {
   uint32_t flags;
 } __attribute__((packed));
 
+struct processor_x2apic {
+  uint16_t : 16;
+  uint32_t x2apic_id;
+  uint32_t flags;
+  uint32_t acpi_id;
+} __attribute__((packed));
+
+struct local_apic_address_override {
+  uint16_t : 16;
+  uint64_t local_apic_address;
+} __attribute__((packed));
+
 struct madt_header {
   uint8_t type;
   uint8_t length;
   union {
-    struct processor_local_apic processor_local_apic; // type == 0
+    struct processor_local_apic processor_local_apic;               // type == 0
+    struct local_apic_address_override local_apic_address_override; // type == 5
+    struct processor_x2apic processor_x2apic;                       // type == 9
   };
 } __attribute__((packed));
 
@@ -118,8 +132,7 @@ struct sdt *acpi_sdt_get(char *name) {
 
 static void *local_apic = NULL;
 
-static unsigned nproc = 0;
-static struct processor_local_apic *processor_info = NULL;
+static uint32_t nproc = 0;
 
 static void apic_init(void) {
   struct madt *madt = (struct madt *)acpi_sdt_get("APIC");
@@ -134,17 +147,8 @@ static void apic_init(void) {
     if (entry->type == 0) {
       nproc++;
     }
-    entry = (void *)(entry) + entry->length;
-  }
-
-  processor_info = kmalloc(sizeof(struct processor_local_apic) * nproc);
-
-  entry = &madt->first_entry;
-  int i = 0;
-  while ((void *)entry < (void *)madt + madt->header.length) {
-    if (entry->type == 0) {
-      processor_info[i] = entry->processor_local_apic;
-      i++;
+    if (entry->type == 9) {
+      nproc++;
     }
     entry = (void *)(entry) + entry->length;
   }
@@ -158,22 +162,8 @@ void *acpi_get_local_apic(void) {
 }
 
 unsigned acpi_nproc(void) {
-  if (processor_info == NULL) {
+  if (!local_apic) {
     apic_init();
   }
   return nproc;
-}
-
-uint8_t acpi_processor_apic_id(unsigned processor) {
-  if (processor_info == NULL) {
-    apic_init();
-  }
-  return processor_info[processor].apic_id;
-}
-
-uint8_t acpi_processor_id(unsigned processor) {
-  if (processor_info == NULL) {
-    apic_init();
-  }
-  return processor_info[processor].acpi_processor_id;
 }

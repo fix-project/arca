@@ -5,32 +5,36 @@
 
 .globl long_mode
 long_mode:
-  // this code executes on all CPUs
+  # this code executes on all CPUs
 
-  mov eax, 0x01
+  # physical to virtual mask
+  mov r8, 0xFFFF800000000000
+
+  # get the CPU's local APIC ID and BSP status
+  mov ecx, 0x1B # IA32_APIC_BASE
+  rdmsr
+  # switch the APIC to x2APIC mode
+  or eax, 0b11 << 10
+  wrmsr
+
+  # store BSP status in rsi
+  mov rsi, rax
+  shr rsi, 8
+  and rsi, 1
+
+  # get local APIC address
+  mov eax, 0x0B
   cpuid
-  shr ebx, 24
+  mov edi, edx
 
-  # clear argument registers
-  xor rdi, rdi
-  xor rsi, rsi
-  xor rdx, rdx
-  xor rcx, rcx
-  xor r8, r8
-  xor r9, r9
-
-  # arg0 (dil): processor ID    (u8)
-  # arg1 (sil): boot processor? (bool)
-  # arg2 (dl): number of cores (u8)
-  # arg3 (rcx): multiboot info  (void *)
+  # arg0 (rdi): processor ID     (u32)
+  # arg1 (rsi): BSP?             (bool)
+  # arg2 (rdx): number of cores  (u32)
+  # arg3 (rcx): multiboot info   (void *)
   # arg4  (r8): ???
   # arg5  (r9): ???
-  mov dil, bl
-  cmp dil, bsp_id[rip]
-  setz sil
-  mov dl, ncores[rip]
+  mov edx, ncores[rip]
   mov ecx, multiboot_information[rip]
-  mov r8, 0xFFFF800000000000
   or rcx, r8
 
   # clear unused registers
@@ -52,9 +56,6 @@ long_mode:
 
 .section ".data"
 .extern multiboot_information
-.globl bsp_id
 .globl ncores
 
-mutex: .byte 0
-bsp_id: .byte 0
-ncores: .byte 0
+ncores: .long 0

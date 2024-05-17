@@ -19,5 +19,3 @@ void halt(void);
 
 void *acpi_get_local_apic(void);
 unsigned acpi_nproc(void);
-uint8_t acpi_processor_apic_id(unsigned processor);
-uint8_t acpi_processor_id(unsigned processor);

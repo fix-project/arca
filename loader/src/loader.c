@@ -96,17 +96,11 @@ void kmain(void) {
   init_pml4();
   init_gdt();
 
-  unsigned nproc = acpi_nproc();
-  extern uint8_t ncores;
-  ncores = nproc;
+  extern uint32_t ncores;
+  ncores = acpi_nproc();
 
   void *lapic = acpi_get_local_apic();
   volatile uint32_t *icr = lapic + 0x300;
-
-  uint32_t eax, ebx, ecx, edx;
-  cpuid(0x1, &eax, &ebx, &ecx, &edx);
-  extern uint8_t bsp_id;
-  bsp_id = (ebx >> 24);
 
   extern void trampoline(void);
 
