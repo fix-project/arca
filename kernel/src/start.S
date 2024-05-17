@@ -1,9 +1,9 @@
 .intel_syntax noprefix
 .code64
 
-# arg0 (rdi): processor ID    (u8)
-# arg1 (rsi): boot processor? (bool)
-# arg2 (rdx): number of cores (u8)
+# arg0 (dil): processor ID    (u8)
+# arg1 (sil): boot processor? (bool)
+# arg2 (dl): number of cores (u8)
 # arg3 (rcx): multiboot info  (void *)
 
 .globl _start
@@ -15,6 +15,7 @@ _start:
   inc rax
   shl rax, 12
   add rsp, rax
+  sub rsp, 0x8
 
   # let the BSP run the init code
   cmp sil, 1
@@ -24,7 +25,7 @@ _start:
 wait_for_init:
   mov al, rsstart_gate[rip]
   cmp al, 0
-  je wait_for_init
+  jne wait_for_init
 
 boot:
   call rsstart
@@ -33,4 +34,4 @@ halt:
 
 .section ".data"
 .global rsstart_gate
-rsstart_gate: .byte 0
+rsstart_gate: .byte 1

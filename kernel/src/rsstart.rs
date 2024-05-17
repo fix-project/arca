@@ -8,14 +8,14 @@ extern "C" {
 }
 
 #[no_mangle]
-unsafe extern "C" fn rsstart(id: u8, bsp: bool, ncores: u8, multiboot: *const ()) -> ! {
+unsafe extern "C" fn rsstart(id: u8, bsp: bool, ncores: u8, multiboot: *const ()) {
     if bsp {
         let start = addr_of_mut!(_sbss);
         let end = addr_of_mut!(_ebss);
         let length = end.offset_from(start) as usize;
         let bss: &mut [u8] = core::slice::from_raw_parts_mut(start, length);
         bss.fill(0);
-        rsstart_gate = true;
+        rsstart_gate = false;
     }
     kmain(id, bsp, ncores, multiboot);
 }

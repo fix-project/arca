@@ -4,46 +4,51 @@ ENTRY(_start)                /* the name of the entry label */
 /* QEMU should copy this to `lower`, but the loader will map it to `upper` */
 MEMORY {
   lower (rwx) : ORIGIN = 0x0000000000200000, LENGTH = 14M
+  stack (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 1M
   upper (rwx) : ORIGIN = 0xFFFF800000200000, LENGTH = 14M
 }
 
 SECTIONS {
-  . = ORIGIN(upper);
-  _sstack = ORIGIN(upper)-0x100000;
-  _estack = .;
+  .stack (NOLOAD) :
+  {
+    . = ORIGIN(stack);
+    _sstack = .;
+    . = . + 0x100000;
+    _estack = .;
+  } > stack
   .text :
   {
-    _stext = .;
-    KEEP(*(.text.start))
+    _stext = ALIGN(16);
+    *(.text.start)
     *(.text*)
-    _etext = .;
+    _etext = ALIGN(16);
   } > upper AT> lower
   .rodata :
   {
-    _srodata = .;
+    _srodata = ALIGN(16);
     *(.rodata*)
     *(.note*)
-    _erodata = .;
+    _erodata = ALIGN(16);
   } > upper AT> lower
   .rodata :
   {
-    _sgot = .;
+    _sgot = ALIGN(16);
     *(.got*)
-    _egot = .;
+    _egot = ALIGN(16);
   } > upper AT> lower
   .data :
   {
-    _sdata = .;
+    _sdata = ALIGN(16);
     *(.data*)
-    _edata = .;
+    _edata = ALIGN(16);
   } > upper AT> lower
   .bss :
   {
-    _sbss = .;
+    _sbss = ALIGN(16);
     *(.bss*)
-    _ebss = .;
+    _ebss = ALIGN(16);
+    _sheap = ALIGN(16);
   } > upper AT> lower
   . = ALIGN(4);
-  _sheap = .;
   _eheap = ORIGIN(upper) + LENGTH(upper);
 }

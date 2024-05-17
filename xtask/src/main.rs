@@ -23,16 +23,20 @@ struct Args {
 #[derive(Subcommand)]
 enum SubCommand {
     Build {
-        /// Whether to build and run in release mode
+        /// Build and run in release mode
         #[clap(long, default_value_t = false)]
         release: bool,
     },
     Run {
-        /// Whether to build and run in release mode
+        /// Build and run in release mode
         #[clap(long, default_value_t = false)]
         release: bool,
         /// The number of vCPUs to use (defaults to the number of hardware CPUs).
+        #[clap(long)]
         smp: Option<usize>,
+        /// Wait for a GDB connection
+        #[clap(long, default_value_t = false)]
+        debug: bool,
     },
 }
 
@@ -80,7 +84,11 @@ fn main() -> Result<()> {
             build(&sh, "loader", release, "i686-unknown-none")?;
             Ok(())
         }
-        SubCommand::Run { release, smp } => {
+        SubCommand::Run {
+            release,
+            smp,
+            debug,
+        } => {
             let kernel = build(&sh, "kernel", release, "x86_64-unknown-none")?
                 .display()
                 .to_string();
@@ -92,7 +100,16 @@ fn main() -> Result<()> {
                 .unwrap_or(1)
                 .to_string();
 
-            Ok(cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}").run()?)
+            let qemu = 
+            cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel} -d guest_errors");
+
+            let qemu = if debug {
+                println!("starting gdb server on port 1234");
+                qemu.args(["-s", "-S"])
+            } else {
+                qemu
+            };
+            Ok(qemu.run()?)
         }
     }
 }

@@ -18,7 +18,7 @@ unsafe fn shutdown() {
     asm!("mov cr3, {bad:r}", bad = in(reg) 0xffffffffffffffffu64);
 }
 
-struct Serial();
+pub struct Serial();
 
 static SERIAL_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -36,6 +36,7 @@ impl core::fmt::Write for Serial {
 static PRINT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
+#[inline(never)]
 extern "C" fn kmain(id: u8, boot: bool, ncores: u8, _multiboot: *const ()) -> ! {
     let mut s = Serial();
     let cpu_type = if boot { "BP" } else { "AP" };
