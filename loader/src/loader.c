@@ -35,7 +35,7 @@ void init_pdpt(void) {
     pdpt[i].P_present = true;
     pdpt[i].RW_read_write = true;
     pdpt[i].PS_page_size = true; // 1GB pages
-    pdpt[i].addr = i; // identity map
+    pdpt[i].addr = i;            // identity map
   }
 }
 
@@ -53,36 +53,38 @@ void init_gdt(void) {
   // null descriptor
   gdt[0].descriptor = (struct segment_descriptor){0};
   // code descriptor
-  gdt[1].descriptor = (struct segment_descriptor) {
-    .limit_0_15 = 0xFFFF,
-    .limit_16_19 = 0xF,
-    .base_0_23 = 0,
-    .base_24_31 = 0,
-    .access = (struct access_byte) {
-      .P_present = true,
-      .S_not_system = true,
-      .E_executable = true,
-      .RW_read_write = true,
-    },
-    .G_granularity = true,
-    .DB_size_32 = false,
-    .L_long_mode = true,
+  gdt[1].descriptor = (struct segment_descriptor){
+      .limit_0_15 = 0xFFFF,
+      .limit_16_19 = 0xF,
+      .base_0_23 = 0,
+      .base_24_31 = 0,
+      .access =
+          (struct access_byte){
+              .P_present = true,
+              .S_not_system = true,
+              .E_executable = true,
+              .RW_read_write = true,
+          },
+      .G_granularity = true,
+      .DB_size_32 = false,
+      .L_long_mode = true,
   };
   // data descriptor
-  gdt[2].descriptor = (struct segment_descriptor) {
-    .limit_0_15 = 0xFFFF,
-    .limit_16_19 = 0xF,
-    .base_0_23 = 0,
-    .base_24_31 = 0,
-    .access = (struct access_byte) {
-      .P_present = true,
-      .S_not_system = true,
-      .E_executable = false,
-      .RW_read_write = true,
-    },
-    .G_granularity = true,
-    .DB_size_32 = true,
-    .L_long_mode = false,
+  gdt[2].descriptor = (struct segment_descriptor){
+      .limit_0_15 = 0xFFFF,
+      .limit_16_19 = 0xF,
+      .base_0_23 = 0,
+      .base_24_31 = 0,
+      .access =
+          (struct access_byte){
+              .P_present = true,
+              .S_not_system = true,
+              .E_executable = false,
+              .RW_read_write = true,
+          },
+      .G_granularity = true,
+      .DB_size_32 = true,
+      .L_long_mode = false,
   };
   gdtr.limit = sizeof(gdt) - 1;
   gdtr.offset = (uint32_t)gdt;
@@ -109,27 +111,18 @@ void kmain(void) {
   extern void trampoline(void);
 
   // send an INIT broadcast
-  *icr = (
-    5 << 8
-    | 1 << 14
-    | 3 << 18
-  );
+  *icr = (5 << 8 | 1 << 14 | 3 << 18);
   // de-assert INIT
-  while (*icr & (1 << 12)) {}
-  *icr = (
-    5 << 8
-    | 1 << 15
-    | 3 << 18
-  );
+  while (*icr & (1 << 12)) {
+  }
+  *icr = (5 << 8 | 1 << 15 | 3 << 18);
   // send a SIPI with the trampoline page
-  while (*icr & (1 << 12)) {}
-  *icr = (
-    (uint8_t)((uint32_t)trampoline/0x1000)
-    | 6 << 8
-    | 1 << 14
-    | 3 << 18
-  );
-  while (*icr & (1 << 12)) {}
+  while (*icr & (1 << 12)) {
+  }
+  *icr =
+      ((uint8_t)((uint32_t)trampoline / 0x1000) | 6 << 8 | 1 << 14 | 3 << 18);
+  while (*icr & (1 << 12)) {
+  }
 
   void protected_mode(void);
   protected_mode();

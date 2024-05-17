@@ -1,8 +1,6 @@
 #include "loader.h"
 
-void putc(char c) {
-  outb(0xe9, c);
-}
+void putc(char c) { outb(0xe9, c); }
 
 void puts(char *s) {
   while (*s) {

@@ -4,7 +4,7 @@ void kmain(void *);
 
 void halt(void) {
   while (1) {
-    asm volatile ("hlt");
+    asm volatile("hlt");
   }
 }
 
@@ -30,4 +30,3 @@ void _cstart(void *multiboot_info) {
 
   halt();
 }
-

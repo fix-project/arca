@@ -17,7 +17,6 @@ struct xsdt {
   uint64_t entries[];
 } __attribute__((packed));
 
-
 struct xsdp {
   uint64_t signature;
   uint8_t checksum;
@@ -29,7 +28,7 @@ struct xsdp {
   uint64_t xsdt_address;
   uint8_t extended_checksum;
   uint32_t : 24;
-} __attribute__ ((packed));
+} __attribute__((packed));
 
 struct processor_local_apic {
   uint8_t acpi_processor_id;
@@ -60,8 +59,8 @@ static struct xsdt *xsdt;
 static struct xsdp *search(unsigned long start, unsigned long end) {
   const char *expected_signature_string = "RSD PTR ";
   const uint64_t expected_signature = *(uint64_t *)expected_signature_string;
-  volatile struct xsdp *candidate = (void*)start;
-  while ((void*)candidate < (void*)end) {
+  volatile struct xsdp *candidate = (void *)start;
+  while ((void *)candidate < (void *)end) {
     uint64_t signature = candidate->signature;
     if (signature != 0) {
       if (signature == expected_signature) {
@@ -94,7 +93,7 @@ struct xsdt *acpi_xsdt_get(void) {
     return xsdt;
   }
   struct xsdp *xsdp = acpi_xsdp_get();
-  xsdt = (void*)(uint32_t)xsdp->xsdt_address;
+  xsdt = (void *)(uint32_t)xsdp->xsdt_address;
   return xsdt;
 }
 
@@ -104,7 +103,8 @@ struct sdt *acpi_sdt_get(char *name) {
     puts("ERROR (loader): invalid XSDT signature\n");
     halt();
   }
-  size_t length = (xsdt->header.length - sizeof(xsdt->header))/sizeof(xsdt->entries[0]);
+  size_t length =
+      (xsdt->header.length - sizeof(xsdt->header)) / sizeof(xsdt->entries[0]);
   for (size_t i = 0; i < length; i++) {
     struct sdt *p = (void *)(uint32_t)xsdt->entries[i];
     uint32_t x;
@@ -130,7 +130,7 @@ static void apic_init(void) {
   local_apic = madt->local_apic_address;
 
   struct madt_header *entry = &madt->first_entry;
-  while ((void *)entry < (void*)madt + madt->header.length) {
+  while ((void *)entry < (void *)madt + madt->header.length) {
     if (entry->type == 0) {
       nproc++;
     }
@@ -141,7 +141,7 @@ static void apic_init(void) {
 
   entry = &madt->first_entry;
   int i = 0;
-  while ((void *)entry < (void*)madt + madt->header.length) {
+  while ((void *)entry < (void *)madt + madt->header.length) {
     if (entry->type == 0) {
       processor_info[i] = entry->processor_local_apic;
       i++;
