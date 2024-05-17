@@ -1,7 +1,7 @@
 #include "loader.h"
 
 void putc(char c) {
-  outb(0x3f8, c);
+  outb(0xe9, c);
 }
 
 void puts(char *s) {

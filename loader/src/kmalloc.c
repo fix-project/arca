@@ -7,7 +7,7 @@ void *kmalloc(size_t bytes) {
   void *old = heap_current;
   heap_current += bytes;
   if (heap_current >= &_eheap) {
-    puts("ERROR: heap overflow\n");
+    puts("ERROR (loader): heap overflow\n");
     halt();
   }
   return old;

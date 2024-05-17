@@ -83,7 +83,7 @@ struct xsdp *acpi_xsdp_get(void) {
     xsdp = search(0x000E0000, 0x00100000);
   }
   if (!xsdp) {
-    puts("ERROR: could not find root system description pointer\n");
+    puts("ERROR (loader): could not find root system description pointer\n");
     halt();
   }
   return xsdp;
@@ -101,7 +101,7 @@ struct xsdt *acpi_xsdt_get(void) {
 struct sdt *acpi_sdt_get(char *name) {
   struct xsdt *xsdt = acpi_xsdt_get();
   if (xsdt->header.signature != 0x54445358) {
-    puts("ERROR: invalid XSDT signature\n");
+    puts("ERROR (loader): invalid XSDT signature\n");
     halt();
   }
   size_t length = (xsdt->header.length - sizeof(xsdt->header))/sizeof(xsdt->entries[0]);
@@ -124,7 +124,7 @@ static struct processor_local_apic *processor_info = NULL;
 static void apic_init(void) {
   struct madt *madt = (struct madt *)acpi_sdt_get("APIC");
   if (!madt) {
-    puts("ERROR: unable to find Multiple APIC Description Table\n");
+    puts("ERROR (loader): unable to find Multiple APIC Description Table\n");
     halt();
   }
   local_apic = madt->local_apic_address;

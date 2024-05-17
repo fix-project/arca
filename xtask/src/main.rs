@@ -105,7 +105,7 @@ fn main() -> Result<()> {
                 .to_string();
 
             let qemu = 
-            cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
+            cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
 
             let qemu = if debug {
                 qemu.args(["-d", "guest_errors"])

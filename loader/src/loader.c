@@ -134,6 +134,6 @@ void kmain(void) {
   void protected_mode(void);
   protected_mode();
 
-  puts("ERROR: still in loader???");
+  puts("ERROR (loader): still in loader???");
   halt();
 }

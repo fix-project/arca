@@ -25,32 +25,10 @@ _start:
   mov [multiboot_information], ebx
   lea esp, _estack
   call _cstart
-  lea esi, [error_unreachable]
-  call puts
-  call halt
-
-puts: ; esi = string
-  cmp byte ptr [esi], 0
-  jz .exit_puts
-  mov dx, 0x3f8
-  mov al, [esi]
-  out dx, al
-  inc esi
-  jmp puts
-.exit_puts:
-  ret
-
-halt:
-  lea esi, [error_halting]
-  call puts
-.loop:
+0:
   hlt
-  jmp .loop
+  jmp 0b
 
 .section ".data"
 .globl multiboot_information
 multiboot_information: .long 0
-
-.section ".rodata"
-error_unreachable: .asciz "ERROR (loader): unreachable\n"
-error_halting: .asciz "ERROR (loader): loader is halting\n"

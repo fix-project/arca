@@ -26,7 +26,7 @@ void _cstart(void *multiboot_info) {
   }
 
   kmain(multiboot_info);
-  puts("\r\nERROR: loader kmain exited!\n");
+  puts("ERROR (loader): loader kmain exited!\n");
 
   halt();
 }

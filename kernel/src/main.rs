@@ -18,15 +18,15 @@ unsafe fn shutdown() {
     asm!("mov cr3, {bad:r}", bad = in(reg) 0xffffffffffffffffu64);
 }
 
-pub struct Serial();
+pub struct DebugConsole();
 
-static SERIAL_LOCK: AtomicBool = AtomicBool::new(false);
+static CONSOLE_LOCK: AtomicBool = AtomicBool::new(false);
 
-impl core::fmt::Write for Serial {
+impl core::fmt::Write for DebugConsole {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for c in s.bytes() {
             unsafe {
-                outb(0x3f8, c);
+                outb(0xe9, c);
             }
         }
         Ok(())
@@ -38,9 +38,9 @@ static PRINT_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 #[inline(never)]
 extern "C" fn kmain(id: u8, boot: bool, ncores: u8, _multiboot: *const ()) -> ! {
-    let mut s = Serial();
+    let mut s = DebugConsole();
     let cpu_type = if boot { "BP" } else { "AP" };
-    while SERIAL_LOCK
+    while CONSOLE_LOCK
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
@@ -49,7 +49,7 @@ extern "C" fn kmain(id: u8, boot: bool, ncores: u8, _multiboot: *const ()) -> ! 
         }
     }
     let _ = writeln!(s, "Hello from {cpu_type} {id} of {ncores}!");
-    SERIAL_LOCK.store(false, Ordering::SeqCst);
+    CONSOLE_LOCK.store(false, Ordering::SeqCst);
     let old = PRINT_COUNT.fetch_add(1, Ordering::SeqCst) as u8;
     if old == ncores - 1 {
         unsafe {
