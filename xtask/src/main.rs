@@ -36,6 +36,9 @@ enum SubCommand {
         smp: Option<usize>,
         /// Wait for a GDB connection
         #[clap(long, default_value_t = false)]
+        gdb: bool,
+        /// Print extra debugging info from QEMU
+        #[clap(long, default_value_t = false)]
         debug: bool,
     },
 }
@@ -88,6 +91,7 @@ fn main() -> Result<()> {
             release,
             smp,
             debug,
+            gdb,
         } => {
             let kernel = build(&sh, "kernel", release, "x86_64-unknown-none")?
                 .display()
@@ -101,10 +105,16 @@ fn main() -> Result<()> {
                 .to_string();
 
             let qemu = 
-            cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel} -d guest_errors");
+            cmd!(sh, "qemu-kvm -machine microvm -monitor none -serial stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
 
             let qemu = if debug {
-                println!("starting gdb server on port 1234");
+                qemu.args(["-d", "guest_errors"])
+            } else {
+                qemu
+            };
+
+            let qemu = if gdb {
+                println!("starting gdb server on port 1234 and awaiting connection");
                 qemu.args(["-s", "-S"])
             } else {
                 qemu

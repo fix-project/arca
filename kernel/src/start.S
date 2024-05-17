@@ -16,22 +16,6 @@ _start:
   shl rax, 12
   add rsp, rax
   sub rsp, 0x8
-
-  # let the BSP run the init code
-  cmp sil, 1
-  je boot
-
-  # APs: wait for the BSP to finish initializing the runtime
-wait_for_init:
-  mov al, rsstart_gate[rip]
-  cmp al, 0
-  jne wait_for_init
-
-boot:
   call rsstart
 halt:
   jmp halt
-
-.section ".data"
-.global rsstart_gate
-rsstart_gate: .byte 1
