@@ -1,5 +1,6 @@
 [workspace]
 members = ["kernel", "loader", "xtask"]
+default-members = ["kernel", "xtask"]
 resolver = "2"
 
 [profile.dev]

@@ -33,5 +33,6 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot: *const
             core::arch::x86_64::_mm_pause();
         }
     }
+
     kmain(id, bsp, ncores, multiboot);
 }
