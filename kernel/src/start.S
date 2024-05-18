@@ -16,6 +16,6 @@ _start:
   shl rax, 12
   add rsp, rax
   sub rsp, 0x8
-  call rsstart
+  call _rsstart
 halt:
   jmp halt

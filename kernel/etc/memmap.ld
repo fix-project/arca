@@ -19,7 +19,7 @@ SECTIONS {
   .text :
   {
     _stext = ALIGN(16);
-    *(.text.start)
+    KEEP(*(.text.start))
     *(.text*)
     _etext = ALIGN(16);
   } > upper AT> lower
