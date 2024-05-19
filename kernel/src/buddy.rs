@@ -259,6 +259,14 @@ impl<const N: usize> Block<N> {
     pub fn new() -> Option<Block<N>> {
         allocate::<N>()
     }
+
+    pub fn kernel(&self) -> *mut u8 {
+        vm::pa2ka_mut(self.physical())
+    }
+
+    pub fn physical(&self) -> *mut u8 {
+        self.base
+    }
 }
 
 impl<const N: usize> Drop for Block<N> {

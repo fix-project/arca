@@ -1,23 +1,32 @@
 use core::{
     ptr::addr_of_mut,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use log::LevelFilter;
 
-use crate::{buddy, debugcon::DebugLogger, multiboot::MultibootInfo};
+use crate::{
+    buddy::{self, Page2MB},
+    debugcon::DebugLogger,
+    multiboot::MultibootInfo,
+};
 
 extern "C" {
-    fn kmain(id: u32, bsp: bool, ncores: u32) -> !;
+    fn kmain() -> !;
     static mut _sbss: u8;
     static mut _ebss: u8;
 }
 
-static WAIT_FOR_INIT: AtomicBool = AtomicBool::new(true);
 static LOGGER: DebugLogger = DebugLogger;
+static WAIT_FOR_INIT: AtomicU32 = AtomicU32::new(1);
 
 #[no_mangle]
-unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot: *const MultibootInfo) {
+unsafe extern "C" fn _rsstart(
+    id: u32,
+    bsp: bool,
+    ncores: u32,
+    multiboot: *const MultibootInfo,
+) -> *mut u8 {
     if bsp {
         let start = addr_of_mut!(_sbss);
         let end = addr_of_mut!(_ebss);
@@ -36,12 +45,26 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot: *const
 
         buddy::init(mmap);
 
-        WAIT_FOR_INIT.store(false, Ordering::Relaxed);
+        // WAIT_FOR_INIT.store(false, Ordering::Relaxed);
     } else {
-        while WAIT_FOR_INIT.load(Ordering::Relaxed) {
+        while WAIT_FOR_INIT.load(Ordering::SeqCst) <= id {
             core::arch::x86_64::_mm_pause();
         }
     }
 
-    kmain(id, bsp, ncores);
+    log::set_max_level(LevelFilter::Debug);
+    let stack = Page2MB::new().expect("could not allocate stack");
+    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.physical());
+
+    let stack_bottom = stack.kernel();
+    let stack_top = stack_bottom.add(0x200000);
+    core::mem::forget(stack);
+    WAIT_FOR_INIT.fetch_add(1, Ordering::SeqCst);
+
+    stack_top
+}
+
+#[no_mangle]
+unsafe extern "C" fn _rscontinue() -> ! {
+    kmain();
 }

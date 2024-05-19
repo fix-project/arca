@@ -17,5 +17,9 @@ _start:
   add rsp, rax
   sub rsp, 0x8
   call _rsstart
+  # _rsstart will allocate a "real" stack and return the top address
+  mov rsp, rax
+  sub rsp, 0x8
+  call _rscontinue
 halt:
   jmp halt
