@@ -1,12 +1,17 @@
 #![no_main]
 #![no_std]
+#![feature(thread_local)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
 pub mod debugcon;
 pub mod io;
+pub mod spinlock;
+pub mod vm;
 
+mod buddy;
+mod multiboot;
 mod rsstart;
 
 pub fn halt() -> ! {
