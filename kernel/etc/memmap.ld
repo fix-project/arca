@@ -3,9 +3,9 @@ ENTRY(_start)                /* the name of the entry label */
 /* based on https://wiki.osdev.org/Memory_Map_(x86) */
 /* QEMU should copy this to `lower`, but the loader will map it to `upper` */
 MEMORY {
-  lower (rwx) : ORIGIN = 0x0000000000200000, LENGTH = 2M
-  stack (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 1M
-  upper (rwx) : ORIGIN = 0xFFFF800000200000, LENGTH = 2M
+  lower (rwx) : ORIGIN = 0x0000000000800000, LENGTH = 2M
+  stack (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 4M
+  upper (rwx) : ORIGIN = 0xFFFF800000800000, LENGTH = 2M
   tls   (rw)  : ORIGIN = 0x0000000000000000, LENGTH = 1M
 }
 
@@ -14,7 +14,7 @@ SECTIONS {
   {
     . = ORIGIN(stack);
     _sstack = .;
-    . = . + 0x100000;
+    . = . + 0x400000;
     _estack = .;
   } > stack
   .text :
@@ -47,7 +47,6 @@ SECTIONS {
   {
     _stdata = ALIGN(16);
     _ltdata = LOADADDR(.tdata);
-    QUAD(0xcafeb0ba);
     *(.tdata*)
     _etdata = ALIGN(16);
   } > tls AT> lower

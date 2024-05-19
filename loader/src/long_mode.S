@@ -50,8 +50,8 @@ long_mode:
   xor r14, r14
   xor r15, r15
 
-  # jump to 2MB mark
-  mov rax, 0xFFFF800000200000
+  # jump to 8MB mark
+  mov rax, 0xFFFF800000800000
   jmp rax
 
 .section ".data"

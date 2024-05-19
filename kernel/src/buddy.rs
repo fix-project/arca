@@ -204,6 +204,7 @@ impl BuddyAllocator {
         }
         log::trace!("no blocks on free list, recursing to ({})", log2_size + 1);
         let bigger = self.alloc_block(log2_size + 1);
+        log::trace!("bigger: {:p}", bigger);
         if bigger.is_null() {
             log::error!("recursive allocation of ({}) failed", log2_size + 1);
             return bigger;

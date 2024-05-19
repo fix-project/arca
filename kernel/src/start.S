@@ -9,11 +9,11 @@
 .globl _start
 .section ".text.start"
 _start:
-  # set up a 4KB stack for each processor (1MB total for 256 cores)
+  # set up a 16KB stack for each processor (4MB total for 256 cores)
   mov rsp, 0xFFFF800000100000
   mov rax, rdi
   inc rax
-  shl rax, 12
+  shl rax, 14
   add rsp, rax
   sub rsp, 0x8
   call _rsstart

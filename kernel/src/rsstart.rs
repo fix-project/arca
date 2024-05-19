@@ -1,7 +1,7 @@
 use core::{
     arch::asm,
     ptr::addr_of_mut,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use log::LevelFilter;
@@ -38,8 +38,7 @@ unsafe extern "C" fn _rsstart(
         let start = addr_of_mut!(_sbss);
         let end = addr_of_mut!(_ebss);
         let length = end.offset_from(start) as usize;
-        let bss: &mut [u8] = core::slice::from_raw_parts_mut(start, length);
-        bss.fill(0);
+        start.write_bytes(0, length);
 
         let _ = log::set_logger(&LOGGER);
         log::set_max_level(LevelFilter::Info);
@@ -75,11 +74,9 @@ unsafe extern "C" fn _rsstart(
         let alloc_size = total.next_power_of_two();
         assert!(alloc_size < 4096);
         let mut tls = Page4KB::new().expect("could not allocate TLS");
-        tls.fill(0);
-        let tdata = core::slice::from_raw_parts(vm::pa2ka(ltdata), ntdata);
-        for (i, x) in tdata.iter().enumerate() {
-            tls.kernel().add(i).write_volatile(*x);
-        }
+        tls.kernel().write_bytes(0, 4096);
+        tls.kernel()
+            .copy_from_nonoverlapping(vm::pa2ka(ltdata), ntdata);
 
         let starttls = addr_of_mut!(tls[0]);
         let starttls: *mut u64 = core::mem::transmute(starttls);
