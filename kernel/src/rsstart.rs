@@ -65,7 +65,6 @@ unsafe extern "C" fn _rsstart(
 
     {
         let stdata = addr_of_mut!(_stdata);
-        let ltdata = addr_of_mut!(_ltdata);
         let etdata = addr_of_mut!(_etdata);
         let stbss = addr_of_mut!(_stbss);
         let etbss = addr_of_mut!(_etbss);
@@ -75,13 +74,15 @@ unsafe extern "C" fn _rsstart(
 
         let total = ntdata + ntbss;
 
+        let tdata_template = core::slice::from_raw_parts(vm::pa2ka(stdata), ntdata);
+
         assert!(total < 4096 - 8);
         let page = Page4KB::new().expect("could not allocate TLS");
         let tls = core::slice::from_raw_parts_mut(page.kernel(), 4096);
         tls.fill(0);
-        tls[..ntdata].copy_from_slice(core::slice::from_raw_parts(vm::pa2ka(ltdata), ntdata));
+        tls[..ntdata].copy_from_slice(tdata_template);
 
-        let tp = addr_of_mut!(tls[0]).add(etbss as usize);
+        let tp = addr_of_mut!(tls[0]).add(total);
         let tp: *mut u64 = core::mem::transmute(tp);
         *tp = tp as u64;
 

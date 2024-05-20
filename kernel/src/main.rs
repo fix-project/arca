@@ -3,26 +3,27 @@
 
 extern crate kernel;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use kernel::{halt, shutdown, spinlock::SpinLock};
 
-use kernel::{halt, shutdown};
-
-static DONE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
 
 #[no_mangle]
 #[inline(never)]
 extern "C" fn kmain() -> ! {
-    let count = DONE_COUNT.fetch_add(1, Ordering::Relaxed);
+    let mut count = DONE_COUNT.lock();
     log::info!(
         "Hello from CPU {}/{} (n={})!",
         kernel::cpu_acpi_id(),
         kernel::cpu_ncores(),
-        count,
+        *count,
     );
-    if (count + 1) == kernel::cpu_ncores() as usize {
+    *count += 1;
+    if *count == kernel::cpu_ncores() as usize {
+        log::info!("All {} cores done!", kernel::cpu_ncores());
         unsafe {
             shutdown();
         }
     }
+    count.unlock();
     halt();
 }

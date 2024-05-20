@@ -6,7 +6,6 @@ MEMORY {
   lower (rwx) : ORIGIN = 0x0000000000800000, LENGTH = 2M
   stack (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 4M
   upper (rwx) : ORIGIN = 0xFFFF800000800000, LENGTH = 2M
-  tls   (rw)  : ORIGIN = 0x0000000000000000, LENGTH = 1M
 }
 
 SECTIONS {
@@ -19,47 +18,61 @@ SECTIONS {
   } > stack
   .text :
   {
-    _stext = ALIGN(16);
+    . = ALIGN(16);
+    _stext = .;
     KEEP(*(.text.start))
     *(.text*)
-    _etext = ALIGN(16);
+    . = ALIGN(16);
+    _etext = .;
   } > upper AT> lower
   .rodata :
   {
-    _srodata = ALIGN(16);
+    . = ALIGN(16);
+    _srodata = .;
     *(.rodata*)
     *(.note*)
-    _erodata = ALIGN(16);
+    . = ALIGN(16);
+    _erodata = .;
   } > upper AT> lower
   .data :
   {
-    _sdata = ALIGN(16);
+    . = ALIGN(16);
+    _sdata = .;
     *(.data*)
-    _edata = ALIGN(16);
+    . = ALIGN(16);
+    _edata = .;
   } > upper AT> lower
   .got :
   {
-    _sgot = ALIGN(16);
+    . = ALIGN(16);
+    _sgot = .;
     *(.got*)
-    _egot = ALIGN(16);
+    . = ALIGN(16);
+    _egot = .;
   } > upper AT> lower
   .tdata :
   {
-    _stdata = ALIGN(16);
-    _ltdata = LOADADDR(.tdata);
+    . = ALIGN(16);
+    _stdata = .;
     *(.tdata*)
+    . = ALIGN(16);
     _etdata = .;
-  } > tls AT> lower
+  } > upper AT> lower
   .tbss (NOLOAD) :
   {
+    . = ALIGN(16);
     _stbss = .;
     *(.tbss*)
-    _etbss = ALIGN(16);
-  } > tls
-  .bss :
+    . = ALIGN(16);
+    _etbss = .;
+  } > upper
+  .bss (NOLOAD) :
   {
-    _sbss = ALIGN(16);
+    . = ALIGN(16);
+    _sbss = .;
+    *(.sbss*)
     *(.bss*)
-    _ebss = ALIGN(16);
+    . = ALIGN(16);
+    _ebss = .;
   } > upper
 }

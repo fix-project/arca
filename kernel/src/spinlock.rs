@@ -39,6 +39,10 @@ impl<T> SpinLock<T> {
     }
 }
 
+impl<T> SpinLockGuard<'_, T> {
+    pub fn unlock(self) {}
+}
+
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.lock.store(false, Ordering::SeqCst);
