@@ -8,6 +8,9 @@ use kernel::{halt, shutdown, spinlock::SpinLock};
 
 static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
 
+#[repr(align(128))]
+struct Aligned(usize);
+
 #[no_mangle]
 #[inline(never)]
 extern "C" fn kmain() -> ! {

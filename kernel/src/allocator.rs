@@ -3,7 +3,7 @@ use core::alloc::GlobalAlloc;
 /**
  * TODO:
  * - coalesce blocks
- * - split blocks for alignment instead of ignoring
+ * - allocate more precise amounts from the buddy allocator
  */
 use crate::{
     buddy::{Page1GB, Page2MB, Page4KB},
@@ -14,7 +14,7 @@ struct HeapAllocator {
     head: SpinLock<Block>,
 }
 
-#[repr(C)]
+#[repr(C, align(32))]
 struct Block {
     prev: *mut Block,
     next: *mut Block,
@@ -60,17 +60,19 @@ static ALLOCATOR: HeapAllocator = HeapAllocator::new();
 
 unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut u8 {
     assert!(!head.is_null());
-    assert!(layout.align() < 8);
     let Block {
         ref mut prev,
         ref mut next,
         ref mut size,
     } = *head;
     let current: *mut u8 = core::mem::transmute(head);
-    let needed_size = layout.size() + layout.padding_needed_for(8);
-    if needed_size > *size || current.align_offset(layout.align()) != 0 {
-        // this block is too small or misaligned, continue to next block
-        // TODO: split block for alignment
+    let initial_padding = current.align_offset(core::cmp::max(
+        layout.align(),
+        core::mem::align_of::<Block>(),
+    ));
+    let needed_size = initial_padding + layout.size();
+    if needed_size > *size {
+        // this block is too small, continue to next block
         if next.is_null() {
             let (ptr, size) = if needed_size <= Page4KB::LENGTH {
                 let page = match Page4KB::new() {
@@ -103,6 +105,14 @@ unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut
         }
         find_allocation(*next, layout)
     } else {
+        if initial_padding >= core::mem::size_of::<Block>() {
+            // the padding is big enough to be its own block, so we split it and recurse on the
+            // second half
+            split_allocation(head, initial_padding);
+            return find_allocation(*next, layout);
+        }
+        // since Block is aligned larger than its size, the padding now should always be zero
+        assert!(initial_padding == 0);
         // this block is big enough
         let needed_size_split =
             layout.size() + layout.padding_needed_for(core::mem::align_of::<Block>());
@@ -128,6 +138,8 @@ unsafe fn split_allocation(head: *mut Block, bytes: usize) {
         ref mut next,
         ref mut size,
     } = *head;
+    log::trace!("splitting {head:p} into {bytes} + {}", *size - bytes);
+    assert!(*size > bytes);
     let created = head.byte_add(bytes);
     (*created).size = *size - bytes;
     (*created).next = *next;
