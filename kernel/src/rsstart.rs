@@ -7,7 +7,7 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
-    buddy::{self, Page2MB, Page4KB},
+    buddy::{self, Page2MB},
     debugcon::DebugLogger,
     multiboot::MultibootInfo,
     vm,
@@ -73,12 +73,11 @@ unsafe extern "C" fn _rsstart(
         let ntbss = etbss.offset_from(stbss) as usize;
 
         let total = ntdata + ntbss;
+        let extra = core::mem::size_of::<u64>();
 
         let tdata_template = core::slice::from_raw_parts(vm::pa2ka(stdata), ntdata);
 
-        assert!(total < 4096 - 8);
-        let page = Page4KB::new().expect("could not allocate TLS");
-        let tls = core::slice::from_raw_parts_mut(page.kernel(), 4096);
+        let mut tls = alloc::vec![0x0; total + extra].into_boxed_slice();
         tls.fill(0);
         tls[..ntdata].copy_from_slice(tdata_template);
 
@@ -86,12 +85,17 @@ unsafe extern "C" fn _rsstart(
         let tp: *mut u64 = core::mem::transmute(tp);
         *tp = tp as u64;
 
-        log::debug!("CPU {} is using {:p}+4KB as TLS", id, page.physical());
+        log::debug!(
+            "CPU {} is using {:p}+{:#x} as TLS",
+            id,
+            tls.as_ptr(),
+            tls.len()
+        );
 
         asm! {
             "wrfsbase {base}", base=in(reg) tp
         }
-        core::mem::forget(page);
+        core::mem::forget(tls);
     }
 
     crate::CPU_ACPI_ID = id;
