@@ -39,7 +39,7 @@ impl BuddyAllocator {
         }));
         let address_space_size = (max_address as usize).next_power_of_two();
         let log2_address_space_size = address_space_size.trailing_zeros() as usize;
-        // TODO: something is being miscalculated here...
+        // TODO: use the xor trick to half the space consumption
         let metadata_space = address_space_size / Self::MIN_ALLOCATION / 4;
         let metadata_align = metadata_space.trailing_zeros() as usize;
 
@@ -62,7 +62,7 @@ impl BuddyAllocator {
             ) as *mut u8);
         let free_bitmap =
             unsafe { core::slice::from_raw_parts_mut(free_bitmap_ptr, metadata_space) };
-        log::info!(
+        log::debug!(
             "using {:p}-{:p} for page allocator metadata",
             free_bitmap,
             unsafe { free_bitmap_ptr.add(metadata_space) }
@@ -257,6 +257,9 @@ pub enum Page {
 }
 
 impl<const N: usize> Block<N> {
+    pub const ORDER: usize = N;
+    pub const LENGTH: usize = (1 << N);
+
     pub fn new() -> Option<Block<N>> {
         allocate::<N>()
     }
@@ -267,6 +270,16 @@ impl<const N: usize> Block<N> {
 
     pub fn physical(&self) -> *mut u8 {
         self.base
+    }
+
+    pub fn into_raw(self) -> *mut u8 {
+        let p = self.kernel();
+        core::mem::forget(self);
+        p
+    }
+
+    pub unsafe fn from_raw(raw: *mut u8) -> Block<N> {
+        Block { base: raw }
     }
 }
 

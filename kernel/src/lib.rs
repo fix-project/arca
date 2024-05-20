@@ -2,14 +2,18 @@
 #![no_std]
 #![feature(thread_local)]
 #![feature(custom_test_frameworks)]
+#![feature(alloc_layout_extra)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
+
+extern crate alloc;
 
 pub mod debugcon;
 pub mod io;
 pub mod spinlock;
 pub mod vm;
 
+mod allocator;
 mod buddy;
 mod multiboot;
 mod rsstart;

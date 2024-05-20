@@ -75,4 +75,8 @@ SECTIONS {
     . = ALIGN(16);
     _ebss = .;
   } > upper
+  /DISCARD/ :
+  {
+    *(.eh_frame*)
+  }
 }
