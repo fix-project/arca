@@ -48,11 +48,11 @@ SECTIONS {
     _stdata = ALIGN(16);
     _ltdata = LOADADDR(.tdata);
     *(.tdata*)
-    _etdata = ALIGN(16);
+    _etdata = .;
   } > tls AT> lower
   .tbss (NOLOAD) :
   {
-    _stbss = ALIGN(16);
+    _stbss = .;
     *(.tbss*)
     _etbss = ALIGN(16);
   } > tls

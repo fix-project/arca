@@ -16,7 +16,7 @@ struct FreeBlock {
 #[derive(Debug)]
 pub struct BuddyAllocator {
     log2_address_space_size: usize,
-    free_bitmap: *mut u8,
+    free_bitmap: &'static mut [u8],
     free_lists: [FreeBlock; 64],
 }
 
@@ -45,7 +45,7 @@ impl BuddyAllocator {
 
         let low_memory_cutoff = 16 * 1024 * 1024;
         let alignment_mask = metadata_align - 1;
-        let free_bitmap = vm::pa2ka_mut(mmap
+        let free_bitmap_ptr = vm::pa2ka_mut(mmap
             .filter(|x| x.available())
             .map(|x| {
                 let base = x.base() as usize;
@@ -60,14 +60,14 @@ impl BuddyAllocator {
             .expect(
                 "could not find satisfactory memory region for physical memory allocator metadata",
             ) as *mut u8);
+        let free_bitmap =
+            unsafe { core::slice::from_raw_parts_mut(free_bitmap_ptr, metadata_space) };
         log::info!(
             "using {:p}-{:p} for page allocator metadata",
             free_bitmap,
-            unsafe { free_bitmap.add(metadata_space) }
+            unsafe { free_bitmap_ptr.add(metadata_space) }
         );
-        for i in 0..metadata_space {
-            unsafe { *free_bitmap.add(i) = 0 };
-        }
+        free_bitmap.fill(0);
 
         let mut alloc = BuddyAllocator {
             log2_address_space_size,
@@ -92,8 +92,8 @@ impl BuddyAllocator {
                 let length = (length / Self::MIN_ALLOCATION) * Self::MIN_ALLOCATION;
                 for i in 0..length / Self::MIN_ALLOCATION {
                     let addr = (start + i * Self::MIN_ALLOCATION) as *mut u8;
-                    if (addr as usize) >= vm::ka2pa(free_bitmap) as usize
-                        && (addr as usize) < vm::ka2pa(free_bitmap) as usize + metadata_space
+                    if (addr as usize) >= vm::ka2pa(free_bitmap_ptr) as usize
+                        && (addr as usize) < vm::ka2pa(free_bitmap_ptr) as usize + metadata_space
                     {
                         continue;
                     }
@@ -124,19 +124,16 @@ impl BuddyAllocator {
     fn is_block_free_bitmap(&self, index: usize) -> bool {
         let byte = index / 8;
         let bit = index % 8;
-        (unsafe { self.free_bitmap.add(byte).read_volatile() } >> bit) & 1 == 1
+        (self.free_bitmap[byte] >> bit) & 1 == 1
     }
 
     fn set_block_free_bitmap(&mut self, index: usize, free: bool) {
         let byte = index / 8;
         let bit = index % 8;
-        unsafe {
-            let old = self.free_bitmap.add(byte).read_volatile();
-            if free {
-                self.free_bitmap.add(byte).write_volatile(old | 1 << bit);
-            } else {
-                self.free_bitmap.add(byte).write_volatile(old & !(1 << bit));
-            }
+        if free {
+            self.free_bitmap[byte] |= 1 << bit;
+        } else {
+            self.free_bitmap[byte] &= !(1 << bit);
         }
     }
 

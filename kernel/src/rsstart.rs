@@ -38,13 +38,17 @@ unsafe extern "C" fn _rsstart(
         let start = addr_of_mut!(_sbss);
         let end = addr_of_mut!(_ebss);
         let length = end.offset_from(start) as usize;
-        start.write_bytes(0, length);
+        let bss = core::slice::from_raw_parts_mut(start, length);
+        bss.fill(0);
 
         let _ = log::set_logger(&LOGGER);
         log::set_max_level(LevelFilter::Info);
 
         let multiboot: &MultibootInfo = &*multiboot;
-        log::info!("{:#x?}", multiboot.cmdline());
+        log::info!(
+            "kernel command line: {:?}",
+            multiboot.cmdline().expect("could not find command line")
+        );
         let mmap = multiboot
             .memory_map()
             .expect("could not get memory map from bootloader");
@@ -71,23 +75,22 @@ unsafe extern "C" fn _rsstart(
 
         let total = ntdata + ntbss;
 
-        let alloc_size = total.next_power_of_two();
-        assert!(alloc_size < 4096);
-        let mut tls = Page4KB::new().expect("could not allocate TLS");
-        tls.kernel().write_bytes(0, 4096);
-        tls.kernel()
-            .copy_from_nonoverlapping(vm::pa2ka(ltdata), ntdata);
+        assert!(total < 4096 - 8);
+        let page = Page4KB::new().expect("could not allocate TLS");
+        let tls = core::slice::from_raw_parts_mut(page.kernel(), 4096);
+        tls.fill(0);
+        tls[..ntdata].copy_from_slice(core::slice::from_raw_parts(vm::pa2ka(ltdata), ntdata));
 
-        let starttls = addr_of_mut!(tls[0]);
-        let starttls: *mut u64 = core::mem::transmute(starttls);
-        starttls.write_volatile(tls.kernel() as u64);
+        let tp = addr_of_mut!(tls[0]).add(etbss as usize);
+        let tp: *mut u64 = core::mem::transmute(tp);
+        *tp = tp as u64;
 
-        log::debug!("CPU {} is using {:p}+4KB as TLS", id, tls.physical());
+        log::debug!("CPU {} is using {:p}+4KB as TLS", id, page.physical());
 
         asm! {
-            "wrfsbase {base}", base=in(reg) tls.kernel()
+            "wrfsbase {base}", base=in(reg) tp
         }
-        core::mem::forget(tls);
+        core::mem::forget(page);
     }
 
     crate::CPU_ACPI_ID = id;
