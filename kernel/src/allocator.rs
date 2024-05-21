@@ -47,11 +47,11 @@ unsafe impl GlobalAlloc for HeapAllocator {
         let mut head = self.head.lock();
         let current: *mut Block = core::mem::transmute(ptr);
         *current = Block {
-            next: head.next,
-            prev: &mut *head,
-            size: layout.size(),
+            next: core::ptr::null_mut(),
+            prev: core::ptr::null_mut(),
+            size: core::cmp::max(core::mem::size_of::<Block>(), layout.size()),
         };
-        head.next = current;
+        insert_into_free_list(&mut *head, current);
     }
 }
 
@@ -133,6 +133,7 @@ unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut
 }
 
 unsafe fn split_allocation(head: *mut Block, bytes: usize) {
+    assert!(!head.is_null());
     let Block {
         prev: _,
         ref mut next,
@@ -149,6 +150,64 @@ unsafe fn split_allocation(head: *mut Block, bytes: usize) {
         (**next).prev = created;
     }
     *size = bytes;
+}
+
+unsafe fn insert_into_free_list(head: *mut Block, new: *mut Block) {
+    assert!(!head.is_null());
+    let Block {
+        prev: _,
+        ref mut next,
+        size: _,
+    } = *head;
+    if next.is_null() {
+        // at the end of the list, we have to insert here
+        log::trace!("inserting {:p} after {:p}", new, head);
+        *next = new;
+        (*new).prev = head;
+    } else if *next < new {
+        // this goes later in the list
+        insert_into_free_list(*next, new);
+        return;
+    } else {
+        // this is the right place in the list, insert here
+        log::trace!("inserting {:p} between {:p} and {:p}", new, head, *next);
+        (*new).next = *next;
+        if !next.is_null() {
+            (**next).prev = new;
+        }
+        *next = new;
+        (*new).prev = head;
+    }
+    coalesce_blocks(new);
+}
+
+unsafe fn coalesce_blocks(head: *mut Block) {
+    assert!(!head.is_null());
+    let Block {
+        ref mut prev,
+        ref mut next,
+        ref mut size,
+    } = *head;
+    log::trace!("{:p} {:p} {:p}", *prev, prev.byte_add((**prev).size), head);
+    if !prev.is_null() && prev.byte_add((**prev).size) == head {
+        log::trace!("coalescing {:p} <- {:p}", *prev, head);
+        (**prev).size += *size;
+        (**prev).next = *next;
+        if !next.is_null() {
+            (**next).prev = *prev;
+        }
+        coalesce_blocks(*prev);
+    }
+    log::trace!("{:p} {:p} {:p}", head, head.byte_add(*size), *next);
+    if !next.is_null() && head.byte_add(*size) == *next {
+        log::trace!("coalescing {:p} -> {:p}", head, *next);
+        *size += (**next).size;
+        if !(**next).next.is_null() {
+            (*(**next).next).prev = head;
+        }
+        *next = (**next).next;
+        coalesce_blocks(head);
+    }
 }
 
 #[cfg(test)]
