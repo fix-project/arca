@@ -19,15 +19,15 @@ mod multiboot;
 mod rsstart;
 
 #[thread_local]
-static mut CPU_ACPI_ID: u32 = 0;
+static mut CPU_ACPI_ID: usize = 0;
 
 #[thread_local]
 static mut CPU_IS_BOOTSTRAP: bool = false;
 
 #[thread_local]
-static mut CPU_NCORES: u32 = 0;
+static mut CPU_NCORES: usize = 0;
 
-pub fn cpu_acpi_id() -> u32 {
+pub fn cpu_acpi_id() -> usize {
     unsafe { CPU_ACPI_ID }
 }
 
@@ -35,7 +35,7 @@ pub fn cpu_is_bootstrap() -> bool {
     unsafe { CPU_IS_BOOTSTRAP }
 }
 
-pub fn cpu_ncores() -> u32 {
+pub fn cpu_ncores() -> usize {
     unsafe { CPU_NCORES }
 }
 

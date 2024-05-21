@@ -25,7 +25,7 @@ extern "C" fn kmain() -> ! {
         *count,
     );
     *count += 1;
-    if *count == kernel::cpu_ncores() as usize {
+    if *count == kernel::cpu_ncores() {
         log::info!("All {} cores done!", kernel::cpu_ncores());
         unsafe {
             shutdown();
