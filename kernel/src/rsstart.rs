@@ -15,6 +15,7 @@ use crate::{
 
 extern "C" {
     fn kmain() -> !;
+    static mut _sstack: u8;
     static mut _sbss: u8;
     static mut _ebss: u8;
     static mut _stdata: u8;
@@ -56,6 +57,12 @@ unsafe extern "C" fn _rsstart(
 
 #[no_mangle]
 unsafe extern "C" fn _rscontinue() -> ! {
+    // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
+    // data for interrupt handling
+    init_cpu_data();
+    // TODO: set up TSS
+    // TODO: set up GDT
+    // TODO: set up IDT
     kmain();
 }
 
@@ -132,4 +139,17 @@ unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
     let stack_top = stack_bottom.add(0x200000);
     core::mem::forget(stack);
     stack_top
+}
+
+unsafe fn init_cpu_data() {
+    let cpu_data_region = addr_of_mut!(_sstack).add(0x4000 * crate::CPU_ACPI_ID);
+    log::debug!(
+        "CPU {} is using {:p} for task switch data",
+        crate::CPU_ACPI_ID,
+        cpu_data_region
+    );
+    *(cpu_data_region as *mut *mut u8) = cpu_data_region;
+    asm! {
+        "wrgsbase {base}", base=in(reg) cpu_data_region
+    }
 }

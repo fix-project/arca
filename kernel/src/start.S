@@ -10,7 +10,7 @@
 .section ".text.start"
 _start:
   # set up a 16KB stack for each processor (4MB total for 256 cores)
-  mov rsp, 0xFFFF800000100000
+  lea rsp, _sstack[rip]
   mov rax, rdi
   inc rax
   shl rax, 14
