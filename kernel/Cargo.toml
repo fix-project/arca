@@ -14,6 +14,7 @@ harness = false
 
 [dependencies]
 log = "0.4.21"
+time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 cc = "1.0.97"

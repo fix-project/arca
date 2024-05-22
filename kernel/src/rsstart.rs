@@ -59,6 +59,7 @@ unsafe extern "C" fn _rsstart(
 unsafe extern "C" fn _rscontinue() -> ! {
     // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
     // data for interrupt handling
+    crate::kvmclock::init();
     init_cpu_data();
     // TODO: set up TSS
     // TODO: set up GDT

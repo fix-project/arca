@@ -10,6 +10,7 @@ extern crate alloc;
 
 pub mod debugcon;
 pub mod io;
+pub mod kvmclock;
 pub mod spinlock;
 pub mod vm;
 
