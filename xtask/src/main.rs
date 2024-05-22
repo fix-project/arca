@@ -89,7 +89,7 @@ fn run(
     let kernel = kernel.display().to_string();
     let smp = smp.to_string();
 
-    let qemu = cmd!(sh, "qemu-kvm -cpu host -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
+    let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
 
     let qemu = if debug {
         qemu.args(["-d", "guest_errors"])

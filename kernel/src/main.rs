@@ -4,8 +4,6 @@
 extern crate alloc;
 extern crate kernel;
 
-use core::arch::asm;
-
 use kernel::{halt, shutdown, spinlock::SpinLock};
 
 static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
@@ -34,17 +32,16 @@ extern "C" fn kmain() -> ! {
             kernel::kvmclock::wall_clock_time(),
             kernel::kvmclock::time_since_boot()
         );
-        let iters = 100000;
-        let mut total = 0;
-        total += kernel::kvmclock::time(|| {
+        let iters = 100_000;
+        let f = || {
             for _ in 0..iters {
-                let mut z: u64 = 0;
-                unsafe { asm!("add {z}, 10", z=inout(reg)z) };
-                let _ = z;
+                kernel::tsc::read_cycles();
             }
-        });
-        total /= iters;
-        log::info!("Test: calling add function took {total} cycles.",);
+        };
+        let total = kernel::kvmclock::time(f) / iters;
+        log::info!("KVMClock: calling function took {total:?}.",);
+        let total = kernel::tsc::time(f) / iters;
+        log::info!("TSC: calling function took {total:?}.",);
         unsafe {
             shutdown();
         }

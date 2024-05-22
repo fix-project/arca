@@ -1,4 +1,5 @@
 // https://www.kernel.org/doc/html/v5.9/virt/kvm/msr.html
+#![optimize(speed)]
 
 use core::{
     arch::asm,
@@ -75,18 +76,19 @@ fn read_boot_time() -> WallClock {
 }
 
 #[inline]
-fn read_current() -> CpuTimeInfo {
+fn read_current() -> (CpuTimeInfo, u64) {
     unsafe {
         assert!(!CPU_TIME.is_null());
         loop {
             let v0 = addr_of!((*CPU_TIME).version).read_volatile();
             let data = *CPU_TIME;
+            let tsc = core::arch::x86_64::_rdtsc();
             let v1 = addr_of!((*CPU_TIME).version).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
                 core::arch::x86_64::_mm_pause();
                 continue;
             }
-            return data;
+            return (data, tsc);
         }
     }
 }
@@ -106,8 +108,7 @@ fn info_and_tsc_to_duration(info: CpuTimeInfo, tsc: u64) -> Duration {
 
 #[inline]
 pub fn time_since_boot() -> Duration {
-    let info = read_current();
-    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let (info, tsc) = read_current();
     info_and_tsc_to_duration(info, tsc)
 }
 
@@ -124,19 +125,17 @@ pub fn wall_clock_time() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp_nanos(timestamp).unwrap()
 }
 
-#[inline(never)]
-pub fn time(f: impl Fn()) -> u64 {
-    let start = unsafe {
+#[inline]
+pub fn time(f: impl Fn()) -> Duration {
+    unsafe {
         core::arch::x86_64::_mm_lfence();
-        let start = core::arch::x86_64::_rdtsc();
-        core::arch::x86_64::_mm_lfence();
-        start
     };
+    let (start_info, start_tsc) = read_current();
     f();
-    let end = unsafe {
+    unsafe {
         core::arch::x86_64::_mm_mfence();
         core::arch::x86_64::_mm_lfence();
-        core::arch::x86_64::_rdtsc()
     };
-    end - start
+    let (end_info, end_tsc) = read_current();
+    info_and_tsc_to_duration(end_info, end_tsc) - info_and_tsc_to_duration(start_info, start_tsc)
 }

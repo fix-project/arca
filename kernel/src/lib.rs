@@ -3,6 +3,7 @@
 #![feature(thread_local)]
 #![feature(custom_test_frameworks)]
 #![feature(alloc_layout_extra)]
+#![feature(optimize_attribute)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -12,6 +13,7 @@ pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
 pub mod spinlock;
+pub mod tsc;
 pub mod vm;
 
 mod allocator;
@@ -49,9 +51,6 @@ pub fn halt() -> ! {
 /// # Safety
 /// This function triggers a complete shutdown of the processor.
 pub unsafe fn shutdown() -> ! {
-    for _ in 0..0x100000 {
-        core::arch::asm!("pause");
-    }
     core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0xffffffffffffffffu64);
     halt();
 }
