@@ -79,7 +79,8 @@ protected_mode:
   // enable physical address extension and paging
   // also enable SSE OS support at the same time
   // also enable FSGSBASE
-  mov eax, 0x106a0
+  // also enable XSAVE
+  mov eax, 0x506a0
   mov cr4, eax
 
   // set up page table

@@ -22,6 +22,8 @@ pub struct BuddyAllocator {
 
 pub static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<BuddyAllocator>> = SpinLock::new(OnceCell::new());
 
+/// # Safety
+/// The specified MemoryMap must be valid.
 pub unsafe fn init(mmap: multiboot::MemoryMap) {
     let cell = PHYSICAL_ALLOCATOR.lock();
     let buddy = BuddyAllocator::new(mmap);
@@ -278,6 +280,9 @@ impl<const N: usize> Block<N> {
         p
     }
 
+    /// # Safety
+    /// This pointer must correspond to the beginning of a valid, non-aliased block with the
+    /// specified size (e.g., one created using `into_raw`).
     pub unsafe fn from_raw(raw: *mut u8) -> Block<N> {
         Block { base: raw }
     }

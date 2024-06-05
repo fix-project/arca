@@ -1,6 +1,6 @@
 use core::{
     arch::asm,
-    ptr::addr_of_mut,
+    ptr::{addr_of, addr_of_mut},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -23,10 +23,45 @@ extern "C" {
     static mut _etdata: u8;
     static mut _stbss: u8;
     static mut _etbss: u8;
+    static isr_table: [usize; 256];
 }
 
 static LOGGER: DebugLogger = DebugLogger;
 static SEMAPHORE: AtomicBool = AtomicBool::new(true);
+static mut IDT: Idt = Idt([IdtEntry {
+    offset_low: 0,
+    segment_selector: 0,
+    attributes: 0,
+    offset_mid: 0,
+    offset_high: 0,
+    reserved: 0,
+}; 256]);
+
+#[repr(C, align(4096))]
+#[derive(Copy, Clone, Debug)]
+struct Idt([IdtEntry; 256]);
+
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, Default)]
+struct IdtEntry {
+    offset_low: u16,
+    segment_selector: u16,
+    attributes: u16,
+    offset_mid: u16,
+    offset_high: u32,
+    reserved: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, Default)]
+struct IdtDescriptor {
+    size: u16,
+    offset: u64,
+}
+
+const _: () = const {
+    assert!(core::mem::size_of::<IdtEntry>() == 16);
+};
 
 #[no_mangle]
 unsafe extern "C" fn _rsstart(
@@ -39,6 +74,17 @@ unsafe extern "C" fn _rsstart(
         init_bss();
         init_logging();
         init_buddy_allocator(multiboot);
+
+        for (i, &address) in isr_table.iter().enumerate() {
+            IDT.0[i] = IdtEntry {
+                offset_low: address as u16,
+                segment_selector: 8,
+                attributes: 0x8E00,
+                offset_mid: (address >> 16) as u16,
+                offset_high: (address >> 32) as u32,
+                reserved: 0,
+            };
+        }
     } else {
         while SEMAPHORE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -59,6 +105,13 @@ unsafe extern "C" fn _rsstart(
 unsafe extern "C" fn _rscontinue() -> ! {
     // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
     // data for interrupt handling
+    asm!("cli");
+    let idtr = IdtDescriptor {
+        size: core::mem::size_of::<Idt>() as u16,
+        offset: addr_of!(IDT) as u64,
+    };
+    asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
+    asm!("sti");
     crate::tsc::init();
     crate::kvmclock::init();
     init_cpu_data();

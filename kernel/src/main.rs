@@ -32,20 +32,17 @@ extern "C" fn kmain() -> ! {
             kernel::kvmclock::wall_clock_time(),
             kernel::kvmclock::time_since_boot()
         );
-        let iters = 100_000;
-        let f = || {
-            for _ in 0..iters {
-                kernel::tsc::read_cycles();
-            }
-        };
-        let total = kernel::kvmclock::time(f) / iters;
-        log::info!("KVMClock: calling function took {total:?}.",);
-        let total = kernel::tsc::time(f) / iters;
-        log::info!("TSC: calling function took {total:?}.",);
+
+        log::info!("Shutting down.",);
         unsafe {
             shutdown();
         }
     }
     count.unlock();
     halt();
+}
+
+#[no_mangle]
+unsafe extern "C" fn syscall() {
+    log::info!("hello");
 }

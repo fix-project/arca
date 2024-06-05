@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+pub mod allocator;
+pub mod buddy;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
@@ -16,8 +18,6 @@ pub mod spinlock;
 pub mod tsc;
 pub mod vm;
 
-mod allocator;
-mod buddy;
 mod multiboot;
 mod rsstart;
 
