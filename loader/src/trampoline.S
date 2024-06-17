@@ -2,8 +2,6 @@
 .code16
 
 .section ".text.trampoline"
-.globl ap_lock
-.globl ap_gdtr
 
 .align 4096
 .globl trampoline
@@ -87,10 +85,10 @@ protected_mode:
   lea eax, [pml4]
   mov cr3, eax
 
-  // enable long mode in EFER
+  // enable long mode and system calls in EFER
   mov ecx, 0xC0000080
   rdmsr
-  or eax, 0x00000100
+  or eax, 0x00000101
   wrmsr
 
   // enable paging

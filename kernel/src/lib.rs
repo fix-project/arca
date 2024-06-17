@@ -4,6 +4,11 @@
 #![feature(custom_test_frameworks)]
 #![feature(alloc_layout_extra)]
 #![feature(optimize_attribute)]
+#![feature(const_size_of_val)]
+#![feature(lazy_cell)]
+#![feature(const_for)]
+#![feature(const_mut_refs)]
+#![feature(const_trait_impl)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -18,8 +23,12 @@ pub mod spinlock;
 pub mod tsc;
 pub mod vm;
 
+mod gdt;
+#[allow(dead_code)]
+mod msr;
 mod multiboot;
 mod rsstart;
+mod tss;
 
 #[thread_local]
 static mut CPU_ACPI_ID: usize = 0;

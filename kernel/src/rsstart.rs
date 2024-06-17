@@ -1,5 +1,6 @@
 use core::{
     arch::asm,
+    cell::LazyCell,
     ptr::{addr_of, addr_of_mut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -9,12 +10,15 @@ use log::LevelFilter;
 use crate::{
     buddy::{self, Page2MB},
     debugcon::DebugLogger,
+    gdt::{GdtDescriptor, GdtEntry, PrivilegeLevel, Readability, Writeability},
     multiboot::MultibootInfo,
+    tss::TaskStateSegment,
     vm,
 };
 
 extern "C" {
     fn kmain() -> !;
+    fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
     static mut _ebss: u8;
@@ -28,14 +32,40 @@ extern "C" {
 
 static LOGGER: DebugLogger = DebugLogger;
 static SEMAPHORE: AtomicBool = AtomicBool::new(true);
-static mut IDT: Idt = Idt([IdtEntry {
-    offset_low: 0,
-    segment_selector: 0,
-    attributes: 0,
-    offset_mid: 0,
-    offset_high: 0,
-    reserved: 0,
-}; 256]);
+
+#[thread_local]
+static INTERRUPT_STACK: LazyCell<Page2MB> =
+    LazyCell::new(|| Page2MB::new().expect("could not allocate thread stack"));
+
+#[thread_local]
+static TSS: LazyCell<TaskStateSegment> = LazyCell::new(|| TaskStateSegment::new(&INTERRUPT_STACK));
+
+#[thread_local]
+static mut GDT: LazyCell<[GdtEntry; 8]> = LazyCell::new(|| {
+    [
+        GdtEntry::null(),                                                // 00: null
+        GdtEntry::code64(Readability::Readable, PrivilegeLevel::System), // 08: kernel code
+        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::System), // 10: kernel data
+        GdtEntry::null(),                                                // 18: user code (32-bit)
+        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::User),   // 20: user data
+        GdtEntry::code64(Readability::Readable, PrivilegeLevel::User),   // 28: user code (64-bit)
+        GdtEntry::tss0(&*TSS),                                           // 30: TSS (low)
+        GdtEntry::tss1(&*TSS),                                           // 38: TSS (high)
+    ]
+});
+
+static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
+    Idt(unsafe {
+        isr_table.map(|address| IdtEntry {
+            offset_low: address as u16,
+            segment_selector: 0x08,
+            attributes: 0xEE00,
+            offset_mid: (address >> 16) as u16,
+            offset_high: (address >> 32) as u32,
+            reserved: 0,
+        })
+    })
+});
 
 #[repr(C, align(4096))]
 #[derive(Copy, Clone, Debug)]
@@ -53,10 +83,10 @@ struct IdtEntry {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug)]
 struct IdtDescriptor {
     size: u16,
-    offset: u64,
+    offset: *const Idt,
 }
 
 const _: () = const {
@@ -74,17 +104,6 @@ unsafe extern "C" fn _rsstart(
         init_bss();
         init_logging();
         init_buddy_allocator(multiboot);
-
-        for (i, &address) in isr_table.iter().enumerate() {
-            IDT.0[i] = IdtEntry {
-                offset_low: address as u16,
-                segment_selector: 8,
-                attributes: 0x8E00,
-                offset_mid: (address >> 16) as u16,
-                offset_high: (address >> 32) as u32,
-                reserved: 0,
-            };
-        }
     } else {
         while SEMAPHORE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -94,6 +113,11 @@ unsafe extern "C" fn _rsstart(
         }
     }
     init_cpu_tls(id, bsp, ncores);
+    init_syscalls();
+
+    let gdtr = GdtDescriptor::new(&*GDT);
+    set_gdt(addr_of!(gdtr));
+    asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
     let stack_top = init_cpu_stack(id);
 
@@ -108,7 +132,7 @@ unsafe extern "C" fn _rscontinue() -> ! {
     asm!("cli");
     let idtr = IdtDescriptor {
         size: core::mem::size_of::<Idt>() as u16,
-        offset: addr_of!(IDT) as u64,
+        offset: &*IDT,
     };
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
     asm!("sti");
@@ -207,4 +231,25 @@ unsafe fn init_cpu_data() {
     asm! {
         "wrgsbase {base}", base=in(reg) cpu_data_region
     }
+}
+
+extern "C" {
+    fn syscall_handler_asm();
+}
+
+unsafe fn init_syscalls() {
+    // p 175: https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24593.pdf
+    crate::msr::wrmsr(0xC0000081, ((0x18 | 0b11) << 48) | (0x08 << 32)); // STAR
+    crate::msr::wrmsr(0xC0000082, syscall_handler_asm as usize as u64); // LSTAR
+    crate::msr::wrmsr(0xC0000083, syscall_handler_asm as usize as u64); // CSTAR
+    crate::msr::wrmsr(0xC0000084, 0); // SFMASK
+}
+
+#[no_mangle]
+unsafe extern "C" fn isr_handler(code: u64) {
+    if code < 32 {
+        log::error!("got ISR {code:#x}");
+        crate::halt();
+    }
+    log::info!("got ISR {code:#x}");
 }

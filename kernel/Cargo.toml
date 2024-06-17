@@ -13,6 +13,7 @@ name = "kernel"
 harness = false
 
 [dependencies]
+bitfield-struct = "0.7.0"
 log = "0.4.21"
 time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 

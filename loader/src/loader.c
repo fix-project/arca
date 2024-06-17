@@ -32,21 +32,28 @@ struct gdtr gdtr __attribute__((aligned(4)));
 
 void init_pdpt(void) {
   for (size_t i = 0; i < 512; i++) {
+    pdpt[i].US_user_supervisor = true; // user-mode access OK
     pdpt[i].P_present = true;
     pdpt[i].RW_read_write = true;
     pdpt[i].PS_page_size = true; // 1GB pages
     pdpt[i].addr = i;            // identity map
+
+    /* pdpt[i].PAT_page_attribute_table = true; */
+    /* pdpt[i].PWT_write_through = false; */
+    /* pdpt[i].PCD_cache_disable = false; */
   }
 }
 
 void init_pml4(void) {
   unsigned long addr = (unsigned long)pdpt;
   // first 512GB
+  pml4[0].US_user_supervisor = true; // user-mode access OK
   pml4[0].P_present = true;
   pml4[0].RW_read_write = true;
   pml4[0].addr = addr >> 12;
   // first 512GB of higher half
   pml4[256] = pml4[0];
+
 }
 
 void init_gdt(void) {
