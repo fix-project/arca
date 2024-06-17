@@ -24,6 +24,7 @@ pub mod tsc;
 pub mod vm;
 
 mod gdt;
+mod idt;
 #[allow(dead_code)]
 mod msr;
 mod multiboot;

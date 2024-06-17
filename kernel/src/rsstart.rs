@@ -11,6 +11,7 @@ use crate::{
     buddy::{self, Page2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, GdtEntry, PrivilegeLevel, Readability, Writeability},
+    idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     multiboot::MultibootInfo,
     tss::TaskStateSegment,
     vm,
@@ -56,42 +57,17 @@ static mut GDT: LazyCell<[GdtEntry; 8]> = LazyCell::new(|| {
 
 static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     Idt(unsafe {
-        isr_table.map(|address| IdtEntry {
-            offset_low: address as u16,
-            segment_selector: 0x08,
-            attributes: 0xEE00,
-            offset_mid: (address >> 16) as u16,
-            offset_high: (address >> 32) as u32,
-            reserved: 0,
+        isr_table.map(|address| {
+            IdtEntry::new(
+                address,
+                0x08,
+                None,
+                GateType::Interrupt,
+                PrivilegeLevel::User,
+            )
         })
     })
 });
-
-#[repr(C, align(4096))]
-#[derive(Copy, Clone, Debug)]
-struct Idt([IdtEntry; 256]);
-
-#[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Default)]
-struct IdtEntry {
-    offset_low: u16,
-    segment_selector: u16,
-    attributes: u16,
-    offset_mid: u16,
-    offset_high: u32,
-    reserved: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Copy, Clone, Debug)]
-struct IdtDescriptor {
-    size: u16,
-    offset: *const Idt,
-}
-
-const _: () = const {
-    assert!(core::mem::size_of::<IdtEntry>() == 16);
-};
 
 #[no_mangle]
 unsafe extern "C" fn _rsstart(
@@ -104,6 +80,7 @@ unsafe extern "C" fn _rsstart(
         init_bss();
         init_logging();
         init_buddy_allocator(multiboot);
+        LazyCell::force(&*addr_of!(IDT));
     } else {
         while SEMAPHORE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -130,12 +107,8 @@ unsafe extern "C" fn _rscontinue() -> ! {
     // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
     // data for interrupt handling
     asm!("cli");
-    let idtr = IdtDescriptor {
-        size: core::mem::size_of::<Idt>() as u16,
-        offset: &*IDT,
-    };
+    let idtr: IdtDescriptor = (&*IDT).into();
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
-    asm!("sti");
     crate::tsc::init();
     crate::kvmclock::init();
     init_cpu_data();
