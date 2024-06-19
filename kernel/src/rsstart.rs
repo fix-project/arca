@@ -12,6 +12,7 @@ use crate::{
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, GdtEntry, PrivilegeLevel, Readability, Writeability},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
+    msr,
     multiboot::MultibootInfo,
     tss::TaskStateSegment,
     vm,
@@ -35,8 +36,13 @@ static LOGGER: DebugLogger = DebugLogger;
 static SEMAPHORE: AtomicBool = AtomicBool::new(true);
 
 #[thread_local]
-static INTERRUPT_STACK: LazyCell<Page2MB> =
-    LazyCell::new(|| Page2MB::new().expect("could not allocate thread stack"));
+pub static INTERRUPT_STACK: LazyCell<Page2MB> = LazyCell::new(|| {
+    let page = Page2MB::new().expect("could not allocate thread stack");
+    unsafe {
+        crate::interrupts::INTERRUPT_STACK = page.kernel().add(page.len()) as u64;
+    }
+    page
+});
 
 #[thread_local]
 static TSS: LazyCell<TaskStateSegment> = LazyCell::new(|| TaskStateSegment::new(&INTERRUPT_STACK));
@@ -111,10 +117,6 @@ unsafe extern "C" fn _rscontinue() -> ! {
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
     crate::tsc::init();
     crate::kvmclock::init();
-    init_cpu_data();
-    // TODO: set up TSS
-    // TODO: set up GDT
-    // TODO: set up IDT
     kmain();
 }
 
@@ -173,9 +175,14 @@ unsafe fn init_cpu_tls(id: u32, bsp: bool, ncores: u32) {
         tls.len()
     );
 
+    // FS and GS point to the same region in the kernel
     asm! {
         "wrfsbase {base}", base=in(reg) tp
     }
+    asm! {
+        "wrgsbase {base}", base=in(reg) tp
+    }
+    msr::wrmsr(0xC0000102, tp as u64);
     core::mem::forget(tls);
 
     crate::CPU_ACPI_ID = id as usize;
@@ -193,19 +200,6 @@ unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
     stack_top
 }
 
-unsafe fn init_cpu_data() {
-    let cpu_data_region = addr_of_mut!(_sstack).add(0x4000 * crate::CPU_ACPI_ID);
-    log::debug!(
-        "CPU {} is using {:p} for task switch data",
-        crate::CPU_ACPI_ID,
-        cpu_data_region
-    );
-    *(cpu_data_region as *mut *mut u8) = cpu_data_region;
-    asm! {
-        "wrgsbase {base}", base=in(reg) cpu_data_region
-    }
-}
-
 extern "C" {
     fn syscall_handler_asm();
 }
@@ -216,13 +210,4 @@ unsafe fn init_syscalls() {
     crate::msr::wrmsr(0xC0000082, syscall_handler_asm as usize as u64); // LSTAR
     crate::msr::wrmsr(0xC0000083, syscall_handler_asm as usize as u64); // CSTAR
     crate::msr::wrmsr(0xC0000084, 0); // SFMASK
-}
-
-#[no_mangle]
-unsafe extern "C" fn isr_handler(code: u64) {
-    if code < 32 {
-        log::error!("got ISR {code:#x}");
-        crate::halt();
-    }
-    log::info!("got ISR {code:#x}");
 }

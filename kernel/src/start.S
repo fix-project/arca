@@ -53,13 +53,12 @@ new_gdt:
 
 .globl switch_to_user_mode
 switch_to_user_mode:
+  mov ax, 0x23
+  mov ds, ax
+  mov es, ax
   lea rcx, user_mode[rip]
   mov r11, 0x202
   sysretq
 
 user_mode:
   ret
-
-.globl syscall_handler_asm
-syscall_handler_asm:
-  sysretq

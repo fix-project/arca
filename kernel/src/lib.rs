@@ -25,6 +25,7 @@ pub mod vm;
 
 mod gdt;
 mod idt;
+mod interrupts;
 #[allow(dead_code)]
 mod msr;
 mod multiboot;
@@ -61,7 +62,7 @@ pub fn halt() -> ! {
 /// # Safety
 /// This function triggers a complete shutdown of the processor.
 pub unsafe fn shutdown() -> ! {
-    core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0xffffffffffffffffu64);
+    core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0);
     halt();
 }
 
