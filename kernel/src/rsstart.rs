@@ -9,13 +9,12 @@ use log::LevelFilter;
 
 use crate::{
     buddy::{self, Page2MB},
+    cls::CoreLocalData,
     debugcon::DebugLogger,
-    gdt::{GdtDescriptor, GdtEntry, PrivilegeLevel, Readability, Writeability},
+    gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
-    tss::TaskStateSegment,
-    vm,
 };
 
 extern "C" {
@@ -34,32 +33,6 @@ extern "C" {
 
 static LOGGER: DebugLogger = DebugLogger;
 static SEMAPHORE: AtomicBool = AtomicBool::new(true);
-
-#[thread_local]
-pub static INTERRUPT_STACK: LazyCell<Page2MB> = LazyCell::new(|| {
-    let page = Page2MB::new().expect("could not allocate thread stack");
-    unsafe {
-        crate::interrupts::INTERRUPT_STACK = page.kernel().add(page.len()) as u64;
-    }
-    page
-});
-
-#[thread_local]
-static TSS: LazyCell<TaskStateSegment> = LazyCell::new(|| TaskStateSegment::new(&INTERRUPT_STACK));
-
-#[thread_local]
-static mut GDT: LazyCell<[GdtEntry; 8]> = LazyCell::new(|| {
-    [
-        GdtEntry::null(),                                                // 00: null
-        GdtEntry::code64(Readability::Readable, PrivilegeLevel::System), // 08: kernel code
-        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::System), // 10: kernel data
-        GdtEntry::null(),                                                // 18: user code (32-bit)
-        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::User),   // 20: user data
-        GdtEntry::code64(Readability::Readable, PrivilegeLevel::User),   // 28: user code (64-bit)
-        GdtEntry::tss0(&*TSS),                                           // 30: TSS (low)
-        GdtEntry::tss1(&*TSS),                                           // 38: TSS (high)
-    ]
-});
 
 static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     Idt(unsafe {
@@ -84,9 +57,13 @@ unsafe extern "C" fn _rsstart(
 ) -> *mut u8 {
     if bsp {
         init_bss();
-        init_logging();
+
+        let _ = log::set_logger(&LOGGER);
         init_buddy_allocator(multiboot);
+        log::set_max_level(LevelFilter::Info);
+
         LazyCell::force(&*addr_of!(IDT));
+        crate::cpuinfo::NCORES.store(ncores as usize, Ordering::Release);
     } else {
         while SEMAPHORE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -95,10 +72,10 @@ unsafe extern "C" fn _rsstart(
             core::arch::x86_64::_mm_pause();
         }
     }
-    init_cpu_tls(id, bsp, ncores);
+    init_cpu_tls(id, bsp);
     init_syscalls();
 
-    let gdtr = GdtDescriptor::new(&*GDT);
+    let gdtr = GdtDescriptor::new(&crate::CLS.gdt);
     set_gdt(addr_of!(gdtr));
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
@@ -128,11 +105,6 @@ unsafe fn init_bss() {
     bss.fill(0);
 }
 
-fn init_logging() {
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(LevelFilter::Info);
-}
-
 unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
     let multiboot: &MultibootInfo = &*multiboot;
     log::info!(
@@ -146,48 +118,14 @@ unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
     buddy::init(mmap);
 }
 
-unsafe fn init_cpu_tls(id: u32, bsp: bool, ncores: u32) {
-    let stdata = addr_of_mut!(_stdata);
-    let etdata = addr_of_mut!(_etdata);
-    let stbss = addr_of_mut!(_stbss);
-    let etbss = addr_of_mut!(_etbss);
+unsafe fn init_cpu_tls(id: u32, bsp: bool) {
+    let data = CoreLocalData::new(bsp, id as usize);
 
-    let ntdata = etdata.offset_from(stdata) as usize;
-    let ntbss = etbss.offset_from(stbss) as usize;
-
-    let total = ntdata + ntbss;
-    let extra = core::mem::size_of::<u64>();
-
-    let tdata_template = core::slice::from_raw_parts(vm::pa2ka(stdata), ntdata);
-
-    let mut tls = alloc::vec![0x0; total + extra].into_boxed_slice();
-    tls.fill(0);
-    tls[..ntdata].copy_from_slice(tdata_template);
-
-    let tp = addr_of_mut!(tls[0]).add(total);
-    let tp: *mut u64 = core::mem::transmute(tp);
-    *tp = tp as u64;
-
-    log::debug!(
-        "CPU {} is using {:p}+{:#x} as TLS",
-        id,
-        tls.as_ptr(),
-        tls.len()
-    );
-
-    // FS and GS point to the same region in the kernel
     asm! {
-        "wrfsbase {base}", base=in(reg) tp
+        "wrgsbase {base}", base=in(reg) data.gs_base
     }
-    asm! {
-        "wrgsbase {base}", base=in(reg) tp
-    }
-    msr::wrmsr(0xC0000102, tp as u64);
-    core::mem::forget(tls);
-
-    crate::CPU_ACPI_ID = id as usize;
-    crate::CPU_IS_BOOTSTRAP = bsp;
-    crate::CPU_NCORES = ncores as usize;
+    msr::wrmsr(0xC0000102, data.gs_base as u64);
+    core::mem::forget(data);
 }
 
 unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
@@ -201,13 +139,13 @@ unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
 }
 
 extern "C" {
-    fn syscall_handler_asm();
+    fn syscall_handler();
 }
 
 unsafe fn init_syscalls() {
     // p 175: https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24593.pdf
     crate::msr::wrmsr(0xC0000081, ((0x18 | 0b11) << 48) | (0x08 << 32)); // STAR
-    crate::msr::wrmsr(0xC0000082, syscall_handler_asm as usize as u64); // LSTAR
-    crate::msr::wrmsr(0xC0000083, syscall_handler_asm as usize as u64); // CSTAR
+    crate::msr::wrmsr(0xC0000082, syscall_handler as usize as u64); // LSTAR
+    crate::msr::wrmsr(0xC0000083, syscall_handler as usize as u64); // CSTAR
     crate::msr::wrmsr(0xC0000084, 0); // SFMASK
 }

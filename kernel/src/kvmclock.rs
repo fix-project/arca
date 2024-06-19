@@ -13,9 +13,6 @@ use time::OffsetDateTime;
 
 use crate::vm;
 
-#[thread_local]
-static mut CPU_TIME: *mut CpuTimeInfo = core::ptr::null_mut();
-
 static mut BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
 #[repr(C, packed)]
@@ -28,7 +25,7 @@ struct WallClock {
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
-struct CpuTimeInfo {
+pub(crate) struct CpuTimeInfo {
     version: u32,
     pad0: u32,
     tsc_timestamp: u64,
@@ -44,17 +41,14 @@ pub(crate) unsafe fn init() {
     let x = core::arch::x86_64::__cpuid(0x40000001);
     assert!((x.eax >> 3) & 1 == 1, "KVM Clock is not supported!");
 
-    if crate::CPU_IS_BOOTSTRAP {
+    if crate::cpuinfo::is_bootstrap() {
         let boot_time = Box::into_raw(Default::default());
         BOOT_TIME.store(boot_time, Ordering::SeqCst);
         let value = vm::ka2pa(boot_time) as u64;
         asm!("wrmsr", in("edx") value>> 32, in("eax") value, in("ecx") 0x4b564d00);
     }
 
-    assert!(CPU_TIME.is_null());
-    CPU_TIME = Box::into_raw(Default::default());
-
-    let value = vm::ka2pa(CPU_TIME) as u64 | 1;
+    let value = vm::ka2pa(crate::CLS.cpu_time_info) as u64 | 1;
     asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d01);
 }
 
@@ -77,13 +71,14 @@ fn read_boot_time() -> WallClock {
 
 #[inline]
 fn read_current() -> (CpuTimeInfo, u64) {
+    let cpu_time = crate::CLS.cpu_time_info;
     unsafe {
-        assert!(!CPU_TIME.is_null());
+        assert!(!cpu_time.is_null());
         loop {
-            let v0 = addr_of!((*CPU_TIME).version).read_volatile();
-            let data = *CPU_TIME;
+            let v0 = addr_of!((*cpu_time).version).read_volatile();
+            let data = *cpu_time;
             let tsc = core::arch::x86_64::_rdtsc();
-            let v1 = addr_of!((*CPU_TIME).version).read_volatile();
+            let v1 = addr_of!((*cpu_time).version).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
                 core::arch::x86_64::_mm_pause();
                 continue;

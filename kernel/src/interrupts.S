@@ -2,83 +2,108 @@
 .altmacro
 .section ".text"
 
-.extern isr_handler
+.extern isr_entry
+.extern syscall_entry
 
-.globl syscall_handler_asm
-syscall_handler_asm:
+.globl syscall_handler
+syscall_handler:
   // rflags -> r11
   // rip -> rcx
   // we are coming from user mode, so switch to kernel GS
   swapgs
-  mov gs:[SAVED_RSP@tpoff], rsp
-  mov rsp, gs:[INTERRUPT_STACK@tpoff]
-  push 0x23                  # ss
-  push gs:[SAVED_RSP@tpoff]  # rsp
-  push r11                   # rflags
-  push 0x2B                  # cs
-  push rcx                   # rip
-  push 0                     # error code
-  push 0x100                 # isr number
-  # fall through to ISR body
+  mov gs:[0x10], rsp
+  mov rsp, gs:[0x08]
+  push gs:[0x10]  # rsp
+  push r11        # rflags
+  push rcx        # rip
 
-isr_body:
-  # ss         0
-  # rsp        8
-  # rflags    10
-  # cs        18
-  # rip       20
-  # err code  28 -> gs base
-  # isr num   30 -> fs base
-  push r15  # 38
-  push r14  # 40
-  push r13  # 48
-  push r12  # 50
-  push r11  # 58
-  push r10  # 60
-  push  r9  # 68
-  push  r8  # 70
-  push rbp  # 78
-  push rdi  # 80
-  push rsi  # 88
-  push rdx  # 90
-  push rcx  # 98
-  push rbx  # a0
-  push rax  # a8
+  push r15
+  push r14
+  push r13
+  push r12
+  push r10
+  push  r9
+  push  r8
+  push rbp
+  push rdi
+  push rsi
+  push rdx
+  push rbx
+  push rax
+  lea  rdi, [rsp]
+  call syscall_entry
+  jmp 1f
 
-  // just use the user segments, saves 20ns
-  // mov ax, ss
-  // mov ds, ax
-  // mov es, ax
+.globl syscall_exit
+syscall_exit:
+  lea  rsp, [rdi]
+1:
+  pop  rax
+  pop  rbx
+  pop  rdx
+  pop  rsi
+  pop  rdi
+  pop  rbp
+  pop  r8 
+  pop  r9 
+  pop  r10
+  pop  r12
+  pop  r13
+  pop  r14
+  pop  r15
 
-  // TODO: this costs 20ns
-  rdgsbase rsi
-  xchg rsi, (0xA8 - 0x28)[rsp]
-  rdfsbase rdi
-  xchg rdi, (0xA8 - 0x30)[rsp]
+  pop  rcx
+  pop  r11
+  pop  rsp
 
-  // set FS to GS for the kernel (costs 5ns)
-  mov rax, gs:[0x00]
-  wrfsbase rax
+  // we are returning to user code, so switch GS back
+  swapgs
+  sysretq
 
-  lea  rdx, [rsp]
-  call isr_handler
-
-  // if we are returning to user mode, switch back to the user GS
-  mov rax, (0xA8-0x18)[rsp]
-  test rax, 0b11
+isr_stub:
+  // ss                   0
+  // rsp                  8
+  // rflags              10
+  // cs                  18
+  // rip                 20
+  // error code          28
+  // isr number          30
+  testq 0x18[rsp], 0b11
   jz 1f
+  // if we are coming from user mode, switch to kernel GS
   swapgs
 1:
-  
-  mov rax, (0xA8 - 0x30)[rsp]
-  wrfsbase rax
-  mov rax, (0xA8 - 0x28)[rsp]
-  wrgsbase rax
+  // ss                   0
+  // rsp                  8
+  // rflags              10
+  // cs                  18
+  // rip                 20
+  xchg r15, 0x8[rsp]  // 28 (replaces error code)
+  xchg r14, 0x0[rsp]  // 30 (replaces isr number)
+  push r13            // 38
+  push r12            // 40
+  push r11            // 48
+  push r10            // 50
+  push  r9            // 58
+  push  r8            // 60
+  push rbp            // 68
+  push rdi            // 70
+  push rsi            // 78
+  push rdx            // 80
+  push rcx            // 88
+  push rbx            // 90
+  push rax            // 98
 
-  mov ax, (0xA8 - 0x00)[rsp]
-  mov ds, ax
-  mov es, ax
+  lea  rdx, [rsp]
+  mov  rdi, r14
+  mov  rsi, r15
+  call isr_entry
+  jmp 1f
 
+.globl isr_exit
+isr_exit:
+  lea  rsp, [rdi]
+1:
   pop  rax
   pop  rbx
   pop  rcx
@@ -94,19 +119,13 @@ isr_body:
   pop  r13
   pop  r14
   pop  r15
-  add  rsp, 16
-  iretq
 
-isr_stub:
-  push rax
-  mov rax, 0x08[rsp]
-  test rax, 0b11
+  // if we are returning to user mode, switch back to the user GS
+  testq 0x8[rsp], 0b11
   jz 1f
-  // if we are coming from user mode, switch to kernel GS
   swapgs
 1:
-  pop rax
-  jmp isr_body
+  iretq
 
 .macro def_stub_error num
 isr_stub_\num:

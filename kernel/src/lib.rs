@@ -1,6 +1,5 @@
 #![no_main]
 #![no_std]
-#![feature(thread_local)]
 #![feature(custom_test_frameworks)]
 #![feature(alloc_layout_extra)]
 #![feature(optimize_attribute)]
@@ -16,6 +15,7 @@ extern crate alloc;
 
 pub mod allocator;
 pub mod buddy;
+pub mod cpuinfo;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
@@ -23,6 +23,8 @@ pub mod spinlock;
 pub mod tsc;
 pub mod vm;
 
+mod cls;
+pub(crate) use cls::CLS;
 mod gdt;
 mod idt;
 mod interrupts;
@@ -31,27 +33,6 @@ mod msr;
 mod multiboot;
 mod rsstart;
 mod tss;
-
-#[thread_local]
-static mut CPU_ACPI_ID: usize = 0;
-
-#[thread_local]
-static mut CPU_IS_BOOTSTRAP: bool = false;
-
-#[thread_local]
-static mut CPU_NCORES: usize = 0;
-
-pub fn cpu_acpi_id() -> usize {
-    unsafe { CPU_ACPI_ID }
-}
-
-pub fn cpu_is_bootstrap() -> bool {
-    unsafe { CPU_IS_BOOTSTRAP }
-}
-
-pub fn cpu_ncores() -> usize {
-    unsafe { CPU_NCORES }
-}
 
 pub fn halt() -> ! {
     loop {
