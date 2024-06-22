@@ -49,7 +49,8 @@ impl<T> Drop for SpinLockGuard<'_, T> {
     }
 }
 
-unsafe impl<T> Sync for SpinLock<T> {}
+unsafe impl<T: Send> Send for SpinLock<T> {}
+unsafe impl<T: Send> Sync for SpinLock<T> {}
 
 impl<T> Deref for SpinLockGuard<'_, T> {
     type Target = T;

@@ -20,6 +20,8 @@ pub struct BuddyAllocator {
     free_lists: [FreeBlock; 64],
 }
 
+unsafe impl Send for BuddyAllocator {}
+
 pub static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<BuddyAllocator>> = SpinLock::new(OnceCell::new());
 
 /// # Safety

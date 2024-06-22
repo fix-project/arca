@@ -22,6 +22,8 @@ struct Block {
     size: usize,
 }
 
+unsafe impl Send for Block {}
+
 impl HeapAllocator {
     const fn new() -> HeapAllocator {
         HeapAllocator {
