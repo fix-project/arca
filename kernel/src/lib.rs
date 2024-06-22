@@ -65,9 +65,10 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
 
 #[cfg(test)]
 #[no_mangle]
-extern "C" fn kmain(_: u32, bsp: bool, _: u32, _: *const ()) -> ! {
-    if bsp {
+extern "C" fn kmain() -> ! {
+    if crate::cpuinfo::is_bootstrap() {
         test_main();
+        unsafe { shutdown() }
     }
-    unsafe { shutdown() }
+    halt();
 }

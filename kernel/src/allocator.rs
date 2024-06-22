@@ -61,7 +61,7 @@ static ALLOCATOR: HeapAllocator = HeapAllocator::new();
 
 unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut u8 {
     assert!(!head.is_null());
-    log::debug!("considering block {head:p}, {:?}", *head);
+    log::trace!("considering block {head:p}, {:?}", *head);
     let Block {
         ref mut prev,
         ref mut next,
@@ -74,7 +74,7 @@ unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut
         core::mem::align_of::<Block>(),
     ));
     let needed_size = initial_padding + layout.size();
-    log::debug!(
+    log::trace!(
         "layout: {layout:?}; initial_padding: {initial_padding}; needed_size: {needed_size}"
     );
     if needed_size > *size {
@@ -202,30 +202,43 @@ unsafe fn coalesce_blocks(head: *mut Block) {
         ref mut next,
         ref mut size,
     } = *head;
-    log::trace!("{:p} {:p} {:p}", *prev, prev.byte_add((**prev).size), head);
     if !prev.is_null() && prev.byte_add((**prev).size) == head {
-        log::trace!("coalescing {:p} <- {:p}", *prev, head);
+        log::trace!(
+            "coalescing {:p}({:?}) <- {:p}({:?})",
+            *prev,
+            **prev,
+            head,
+            *head
+        );
         (**prev).size += *size;
         (**prev).next = *next;
         if !next.is_null() {
             (**next).prev = *prev;
         }
+        log::trace!("coalesced: {:p}({:?})", *prev, **prev);
         coalesce_blocks(*prev);
-    }
-    log::trace!("{:p} {:p} {:p}", head, head.byte_add(*size), *next);
-    if !next.is_null() && head.byte_add(*size) == *next {
-        log::trace!("coalescing {:p} -> {:p}", head, *next);
+    } else if !next.is_null() && head.byte_add(*size) == *next {
+        log::trace!(
+            "coalescing {:p}({:?}) -> {:p}({:?})",
+            head,
+            *head,
+            *next,
+            **next
+        );
         *size += (**next).size;
         if !(**next).next.is_null() {
             (*(**next).next).prev = head;
         }
         *next = (**next).next;
+        log::trace!("coalesced: {:p}({:?})", head, *head);
         coalesce_blocks(head);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use log::LevelFilter;
+
     #[test_case]
     pub fn test_alloc() {
         let mut x = alloc::vec![];
@@ -235,8 +248,8 @@ mod tests {
     #[test_case]
     pub fn test_realloc() {
         let mut x = alloc::vec![];
-        for _ in 1..1024 {
-            x.push(1);
+        for i in 1..1024 {
+            x.push(i);
         }
     }
 }
