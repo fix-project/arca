@@ -1,3 +1,27 @@
+use core::cell::LazyCell;
+
+use crate::buddy::Page2MB;
+
+#[core_local]
+#[no_mangle]
+#[used]
+pub(crate) static mut INTERRUPT_STACK_TOP: *mut u8 = core::ptr::null_mut();
+
+#[core_local]
+#[no_mangle]
+#[used]
+static mut SAVED_RSP: *mut u8 = core::ptr::null_mut();
+
+#[core_local]
+pub(crate) static INTERRUPT_STACK: LazyCell<Page2MB> = LazyCell::new(|| {
+    let p = Page2MB::new().expect("could not allocate interrupt stack");
+    let base = p.as_ptr() as usize;
+    unsafe {
+        *INTERRUPT_STACK_TOP = (base + p.len()) as *mut u8;
+    }
+    p
+});
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct InterruptRegisterFile {

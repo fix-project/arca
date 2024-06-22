@@ -1,4 +1,10 @@
-use core::ptr::addr_of;
+use core::{cell::LazyCell, ptr::addr_of};
+
+use crate::interrupts::INTERRUPT_STACK;
+
+#[core_local]
+pub(crate) static mut TSS: LazyCell<TaskStateSegment> =
+    LazyCell::new(|| TaskStateSegment::new(&*INTERRUPT_STACK));
 
 #[repr(C, packed)]
 #[derive(Default)]

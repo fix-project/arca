@@ -1,6 +1,22 @@
+use core::cell::LazyCell;
+
 use bitfield_struct::bitfield;
 
-use crate::tss::TaskStateSegment;
+use crate::tss::{TaskStateSegment, TSS};
+
+#[core_local]
+pub(crate) static GDT: LazyCell<[GdtEntry; 8]> = LazyCell::new(|| {
+    [
+        GdtEntry::null(),                                                // 00: null
+        GdtEntry::code64(Readability::Readable, PrivilegeLevel::System), // 08: kernel code
+        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::System), // 10: kernel data
+        GdtEntry::null(),                                                // 18: user code (32-bit)
+        GdtEntry::data(Writeability::Writeable, PrivilegeLevel::User),   // 20: user data
+        GdtEntry::code64(Readability::Readable, PrivilegeLevel::User),   // 28: user code (64-bit)
+        GdtEntry::tss0(unsafe { &**TSS }),                               // 30: TSS (low)
+        GdtEntry::tss1(unsafe { &**TSS }),                               // 38: TSS (high)
+    ]
+});
 
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug)]

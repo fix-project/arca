@@ -3,6 +3,7 @@ ENTRY(_start)                /* the name of the entry label */
 /* based on https://wiki.osdev.org/Memory_Map_(x86) */
 /* QEMU should copy this to `lower`, but the loader will map it to `upper` */
 MEMORY {
+  cls   (rwx) : ORIGIN = 0x0000000000000000, LENGTH = 2M
   lower (rwx) : ORIGIN = 0x0000000000800000, LENGTH = 2M
   stack (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 4M
   upper (rwx) : ORIGIN = 0xFFFF800000800000, LENGTH = 2M
@@ -50,24 +51,19 @@ SECTIONS {
     . = ALIGN(16);
     _egot = .;
   } > upper AT> lower
-  .tdata :
+  .cdata :
   {
     . = ALIGN(16);
-    _stdata = .;
-    *(.tdata*)
+    _scdata = .;
+    _lcdata = LOADADDR(.cdata);
+    QUAD(0xffffffffffffffff); // gs base
+    *(.cdata*)
     . = ALIGN(16);
-    _etdata = .;
-  } > upper AT> lower
-  .tbss (NOLOAD) :
-  {
-    . = ALIGN(16);
-    _stbss = .;
-    *(.tbss*)
-    . = ALIGN(16);
-    _etbss = .;
-  } > upper
+    _ecdata = .;
+  } > cls AT> lower
   .bss (NOLOAD) :
   {
+    . += SIZEOF(.cdata); // cdata is in "cls", so no space is reserved automatically
     . = ALIGN(16);
     _sbss = .;
     *(.sbss*)

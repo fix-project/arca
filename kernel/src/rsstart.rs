@@ -9,12 +9,12 @@ use log::LevelFilter;
 
 use crate::{
     buddy::{self, Page2MB},
-    cls::CoreLocalData,
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
+    vm,
 };
 
 extern "C" {
@@ -23,11 +23,9 @@ extern "C" {
     static mut _sstack: u8;
     static mut _sbss: u8;
     static mut _ebss: u8;
-    static mut _stdata: u8;
-    static mut _ltdata: u8;
-    static mut _etdata: u8;
-    static mut _stbss: u8;
-    static mut _etbss: u8;
+    static mut _scdata: u8;
+    static mut _lcdata: u8;
+    static mut _ecdata: u8;
     static isr_table: [usize; 256];
 }
 
@@ -72,10 +70,12 @@ unsafe extern "C" fn _rsstart(
             core::arch::x86_64::_mm_pause();
         }
     }
-    init_cpu_tls(id, bsp);
+    init_cpu_tls();
+    *crate::cpuinfo::ACPI_ID = id as usize;
+    *crate::cpuinfo::IS_BOOTSTRAP = bsp;
     init_syscalls();
 
-    let gdtr = GdtDescriptor::new(&crate::CLS.gdt);
+    let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
@@ -118,14 +118,20 @@ unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
     buddy::init(mmap);
 }
 
-unsafe fn init_cpu_tls(id: u32, bsp: bool) {
-    let data = CoreLocalData::new(bsp, id as usize);
+unsafe fn init_cpu_tls() {
+    let start = addr_of!(_scdata) as usize;
+    let end = addr_of!(_ecdata) as usize;
+    let load = vm::pa2ka(addr_of!(_lcdata));
+    let length = end - start;
+
+    let src = core::slice::from_raw_parts(load, length);
+    let dst = src.to_vec();
 
     asm! {
-        "wrgsbase {base}", base=in(reg) data.gs_base
+        "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_ptr()
     }
-    msr::wrmsr(0xC0000102, data.gs_base as u64);
-    core::mem::forget(data);
+    msr::wrmsr(0xC0000102, dst.as_ptr() as u64); // kernel GS base; actually really user GS base
+    core::mem::forget(dst);
 }
 
 unsafe fn init_cpu_stack(id: u32) -> *mut u8 {

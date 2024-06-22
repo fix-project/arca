@@ -3,6 +3,7 @@
 
 use core::{
     arch::asm,
+    cell::LazyCell,
     ptr::addr_of,
     sync::atomic::{AtomicPtr, Ordering},
     time::Duration,
@@ -15,6 +16,9 @@ use crate::vm;
 
 static mut BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
+#[core_local]
+static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(|| Default::default());
+
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
 struct WallClock {
@@ -25,7 +29,7 @@ struct WallClock {
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
-pub(crate) struct CpuTimeInfo {
+struct CpuTimeInfo {
     version: u32,
     pad0: u32,
     tsc_timestamp: u64,
@@ -48,7 +52,7 @@ pub(crate) unsafe fn init() {
         asm!("wrmsr", in("edx") value>> 32, in("eax") value, in("ecx") 0x4b564d00);
     }
 
-    let value = vm::ka2pa(crate::CLS.cpu_time_info) as u64 | 1;
+    let value = vm::ka2pa(CPU_TIME_INFO.as_ref()) as u64 | 1;
     asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d01);
 }
 
@@ -71,9 +75,8 @@ fn read_boot_time() -> WallClock {
 
 #[inline]
 fn read_current() -> (CpuTimeInfo, u64) {
-    let cpu_time = crate::CLS.cpu_time_info;
+    let cpu_time = (**CPU_TIME_INFO).as_ref();
     unsafe {
-        assert!(!cpu_time.is_null());
         loop {
             let v0 = addr_of!((*cpu_time).version).read_volatile();
             let data = *cpu_time;

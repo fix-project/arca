@@ -11,11 +11,11 @@ syscall_handler:
   // rip -> rcx
   // we are coming from user mode, so switch to kernel GS
   swapgs
-  mov gs:[0x10], rsp
-  mov rsp, gs:[0x08]
-  push gs:[0x10]  # rsp
-  push r11        # rflags
-  push rcx        # rip
+  mov gs:[SAVED_RSP], rsp
+  mov rsp, gs:[INTERRUPT_STACK_TOP]
+  push gs:[SAVED_RSP]  # rsp
+  push r11             # rflags
+  push rcx             # rip
 
   push r15
   push r14

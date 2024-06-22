@@ -13,6 +13,11 @@
 
 extern crate alloc;
 
+#[macro_use]
+pub extern crate macros;
+
+pub use macros::core_local;
+
 pub mod allocator;
 pub mod buddy;
 pub mod cpuinfo;
@@ -23,8 +28,6 @@ pub mod spinlock;
 pub mod tsc;
 pub mod vm;
 
-mod cls;
-pub(crate) use cls::CLS;
 mod gdt;
 mod idt;
 mod interrupts;

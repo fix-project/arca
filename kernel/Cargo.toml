@@ -16,6 +16,7 @@ harness = false
 bitfield-struct = "0.7.0"
 log = "0.4.21"
 time = { version = "0.3.36", default-features = false, features = ["alloc"] }
+macros = { path = "../macros" }
 
 [build-dependencies]
 cc = "1.0.97"
