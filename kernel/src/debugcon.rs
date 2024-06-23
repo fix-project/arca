@@ -6,7 +6,7 @@ use core::{
 
 use crate::io::outb;
 
-struct DebugConsole;
+pub struct DebugConsole;
 
 impl Write for DebugConsole {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {

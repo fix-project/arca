@@ -239,19 +239,31 @@ unsafe fn coalesce_blocks(head: *mut Block) {
 
 #[cfg(test)]
 mod tests {
-    use log::LevelFilter;
-
-    #[test_case]
+    #[test]
     pub fn test_alloc() {
         let mut x = alloc::vec![];
         x.push(1);
     }
 
-    #[test_case]
+    #[test]
     pub fn test_realloc() {
         let mut x = alloc::vec![];
         for i in 1..1024 {
             x.push(i);
         }
+    }
+
+    #[bench]
+    pub fn bench_alloc(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            core::mem::forget(alloc::vec![1, 2, 3, 4]);
+        });
+    }
+
+    #[bench]
+    pub fn bench_alloc_free(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            core::mem::drop(alloc::vec![1, 2, 3, 4]);
+        });
     }
 }

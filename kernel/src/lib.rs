@@ -8,7 +8,7 @@
 #![feature(const_for)]
 #![feature(const_mut_refs)]
 #![feature(const_trait_impl)]
-#![test_runner(crate::test_runner)]
+#![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
@@ -37,6 +37,9 @@ mod multiboot;
 mod rsstart;
 mod tss;
 
+#[cfg(test)]
+mod testing;
+
 pub fn halt() -> ! {
     loop {
         unsafe { core::arch::asm!("hlt") }
@@ -54,21 +57,4 @@ pub unsafe fn shutdown() -> ! {
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log::error!("{}", info);
     unsafe { shutdown() }
-}
-
-pub fn test_runner(tests: &[&dyn Fn()]) {
-    log::info!("Running {} tests", tests.len());
-    for test in tests {
-        test();
-    }
-}
-
-#[cfg(test)]
-#[no_mangle]
-extern "C" fn kmain() -> ! {
-    if crate::cpuinfo::is_bootstrap() {
-        test_main();
-        unsafe { shutdown() }
-    }
-    halt();
 }
