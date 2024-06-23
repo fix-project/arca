@@ -17,7 +17,7 @@ use crate::vm;
 static mut BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
 #[core_local]
-static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(|| Default::default());
+static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(Default::default);
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -78,10 +78,10 @@ fn read_current() -> (CpuTimeInfo, u64) {
     let cpu_time = (**CPU_TIME_INFO).as_ref();
     unsafe {
         loop {
-            let v0 = addr_of!((*cpu_time).version).read_volatile();
+            let v0 = addr_of!(cpu_time.version).read_volatile();
             let data = *cpu_time;
             let tsc = core::arch::x86_64::_rdtsc();
-            let v1 = addr_of!((*cpu_time).version).read_volatile();
+            let v1 = addr_of!(cpu_time.version).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
                 core::arch::x86_64::_mm_pause();
                 continue;
