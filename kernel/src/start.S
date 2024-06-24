@@ -37,9 +37,10 @@ set_gdt:
   lgdt [rdi]
 
   // reload selectors
-  mov ax, 0x10
+  mov ax, 0x23
   mov ds, ax
   mov es, ax
+  mov ax, 0x10
   mov ss, ax
 
   // reload code selector
@@ -49,22 +50,4 @@ set_gdt:
   push rax
   rex.w lret
 new_gdt:
-  ret
-
-.globl switch_to_user_mode
-switch_to_user_mode:
-  mov ax, 0x23
-  mov ds, ax
-  mov es, ax
-
-  xor rax, rax
-  wrfsbase rax
-  // TODO: user programs shouldn't be able to see the kernel GS
-  // wrgsbase rax
-
-  lea rcx, user_mode[rip]
-  mov r11, 0x202
-  sysretq
-
-user_mode:
   ret

@@ -46,15 +46,15 @@ pub fn halt() -> ! {
     }
 }
 
-/// # Safety
-/// This function triggers a complete shutdown of the processor.
-pub unsafe fn shutdown() -> ! {
-    core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0);
+pub fn shutdown() -> ! {
+    unsafe {
+        core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0);
+    }
     halt();
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log::error!("{}", info);
-    unsafe { shutdown() }
+    shutdown()
 }
