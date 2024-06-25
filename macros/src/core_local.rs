@@ -27,37 +27,12 @@ pub fn body(_: TokenStream, item: TokenStream) -> TokenStream {
         #vis struct #struct_ident;
 
         impl #struct_ident {
-            pub fn with<T>(&self, f: impl FnOnce(&mut #ty) -> T) -> T {
-                unsafe {
-                    let x = &mut *self.as_ptr();
-                    f(x)
-                }
-            }
-
             pub fn get(&self) -> &#ty {
                 unsafe {&*self.as_ptr()}
             }
 
             pub fn get_mut(&mut self) -> &mut #ty {
                 unsafe {&mut *self.as_ptr()}
-            }
-
-            pub fn set(&self, value: #ty) {
-                self.with(|x| {
-                    *x = value;
-                });
-            }
-
-            pub fn swap(&self, value: &mut #ty) {
-                self.with(|x| {
-                    core::mem::swap(x, value);
-                });
-            }
-
-            pub fn replace(&self, value: #ty) -> #ty {
-                self.with(|x| {
-                    core::mem::replace(x, value)
-                })
             }
 
             pub fn as_ptr(&self) -> *mut #ty {
