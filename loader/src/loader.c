@@ -38,9 +38,10 @@ void init_pdpt(void) {
     pdpt[i].PS_page_size = true; // 1GB pages
     pdpt[i].addr = i;            // identity map
 
-    /* pdpt[i].PAT_page_attribute_table = true; */
-    /* pdpt[i].PWT_write_through = false; */
-    /* pdpt[i].PCD_cache_disable = false; */
+    // disable caching
+    pdpt[i].PAT_page_attribute_table = false;
+    pdpt[i].PWT_write_through = false;
+    pdpt[i].PCD_cache_disable = false;
   }
 }
 
@@ -51,6 +52,7 @@ void init_pml4(void) {
   pml4[0].P_present = true;
   pml4[0].RW_read_write = true;
   pml4[0].addr = addr >> 12;
+
   // first 512GB of higher half
   pml4[256] = pml4[0];
 

@@ -65,8 +65,10 @@ pub fn read_cycles_raw() -> u64 {
 pub fn read_cycles() -> u64 {
     unsafe {
         let mut core: u32 = 0;
-        let result = core::arch::x86_64::__rdtscp(&mut core);
-        result - TSC_OFFSETS[core as usize]
+        let mut result = core::arch::x86_64::__rdtscp(&mut core);
+        result -= TSC_OFFSETS[core as usize];
+        core::arch::x86_64::_mm_lfence();
+        result
     }
 }
 
@@ -98,4 +100,9 @@ pub fn time(f: impl Fn()) -> Duration {
     }
     let end = read_cycles();
     cycles_to_duration(end - start)
+}
+
+#[inline]
+pub fn frequency() -> f64 {
+    unsafe { *TSC_FREQUENCY_MHZ as f64 * 1e6 }
 }

@@ -31,11 +31,14 @@ pub mod vm;
 mod gdt;
 mod idt;
 mod interrupts;
+mod lapic;
 #[allow(dead_code)]
 mod msr;
 mod multiboot;
 mod rsstart;
 mod tss;
+
+pub use lapic::LAPIC;
 
 #[cfg(test)]
 mod testing;

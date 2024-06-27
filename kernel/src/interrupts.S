@@ -23,6 +23,7 @@ REGISTER_SAVE_AREA: .quad 0
 // syscall_call_user(registers: RegisterFile) -> (u64, u64)
 // return value: (event number, error code)
 syscall_call_user:
+  cli
   push rbx
   push rbp
   push r12
@@ -100,12 +101,14 @@ syscall_return_to_system:
   pop rbx
   mov rax, 256  // exit due to syscall
   mov rdx, 0    // error code 0
+  sti
   ret
 
 .globl isr_call_user
 // isr_call_user(registers: RegisterFile) -> (u64, u64)
 // return value: (event number, error code)
 isr_call_user:
+  cli
   push rbx
   push rbp
   push r12
@@ -157,65 +160,68 @@ isr_stub:
   // isr number          30
   testq 0x18[rsp], 0b11
   jz 1f
-  // if we are coming from user mode, switch to kernel GS
   swapgs
-  mov gs:[SAVED_RSP], rsp
-  mov rsp, gs:[REGISTER_SAVE_AREA]
-  push 1 // user mode
-  jmp 2f
 1:
-  mov gs:[SAVED_RSP], rsp
-  mov rsp, gs:[REGISTER_SAVE_AREA]
-  push 0 // super mode
-2:
-  push 0 // flags (to be filled in later)
-  push 0 // rip (to be filled in later)
-
   push r15
   push r14
   push r13
   push r12
   push r11
   push r10
-  push  r9
-  push  r8
+  push r9
+  push r8
   push rdi
   push rsi
   push rbp
-  push 0 // rsp (to be filled in later)
+  push 0x80[rsp]
   push rbx
   push rdx
   push rcx
   push rax
 
-  mov rsi, rsp
-  mov rsp, gs:[SAVED_RSP]
-
-  pop r15 // isr number
-  pop r14 // error code
-  pop r12 // rip
-  pop r13 // cs
-  test r13, 0b11
-  mov r13, 0
-  jz 1f
-  inc r13 // is user mode
-1:
-  pop r11 // flags
-  pop r10 // rsp
-
-  mov 0x20[rsi], r10
-  mov 0x80[rsi], r12
-  mov 0x88[rsi], r11
-
-  mov rsp, gs:[RESUME_RSP]
-
-  push r14
-  push r15
   lea rdi, [rsp]
   call isr_entry
-isr_return_to_system:
-  pop rax // use exit code provided by system
-  pop rdx // use error code provided by system
+  // we only get here if we're restoring back to the interrupted point
+
+  pop rax
+  pop rcx
+  pop rdx
+  pop rbx
+  pop 0x80[rsp]
+  pop rbp
+  pop rsi
+  pop rdi
+  pop r8
+  pop r9
+  pop r10
+  pop r11
+  pop r12
+  pop r13
+  pop r14
+  pop r15
+
+  testq 0x18[rsp], 0b11
+  jz 1f
+  swapgs
+1:
+  add rsp, 0x10
+  iretq
+
+.globl isr_save_state_and_exit
+isr_save_state_and_exit:
+  mov r8, rdi
+  mov r9, rsi
+
+  # copy the continuation to the register save area since this stack is going to be destroyed
+  mov rsi, rdx
+  mov rdi, gs:[REGISTER_SAVE_AREA]
+  sub rdi, 152
+  mov rcx, 152
+  rep movsb
+
+  mov rsp, gs:[RESUME_RSP]
+  mov rax, r8
+  mov rdx, r9
 
   pop r15
   pop r14
@@ -223,34 +229,8 @@ isr_return_to_system:
   pop r12
   pop rbp
   pop rbx
+  sti
   ret
-
-.globl isr_exit
-isr_exit:
-  lea  rsp, [rdi]
-1:
-  pop  rax
-  pop  rbx
-  pop  rcx
-  pop  rdx
-  pop  rsi
-  pop  rdi
-  pop  rbp
-  pop  r8 
-  pop  r9 
-  pop  r10
-  pop  r11
-  pop  r12
-  pop  r13
-  pop  r14
-  pop  r15
-
-  // if we are returning to user mode, switch back to the user GS
-  testq 0x8[rsp], 0b11
-  jz 1f
-  swapgs
-1:
-  iretq
 
 .macro def_stub_error num
 isr_stub_\num:

@@ -53,6 +53,7 @@ unsafe extern "C" fn _rsstart(
     ncores: u32,
     multiboot: *const MultibootInfo,
 ) -> *mut u8 {
+    asm!("cli");
     if bsp {
         init_bss();
 
@@ -89,11 +90,12 @@ unsafe extern "C" fn _rsstart(
 unsafe extern "C" fn _rscontinue() -> ! {
     // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
     // data for interrupt handling
-    asm!("cli");
     let idtr: IdtDescriptor = (&*IDT).into();
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
     crate::tsc::init();
     crate::kvmclock::init();
+    crate::lapic::init();
+    asm!("sti");
     kmain();
 }
 
