@@ -58,8 +58,8 @@ unsafe extern "C" fn _rsstart(
         init_bss();
 
         let _ = log::set_logger(&LOGGER);
-        init_buddy_allocator(multiboot);
         log::set_max_level(LevelFilter::Info);
+        init_buddy_allocator(multiboot);
 
         LazyCell::force(&*addr_of!(IDT));
         crate::cpuinfo::NCORES.store(ncores as usize, Ordering::Release);

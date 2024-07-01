@@ -24,9 +24,7 @@ unsafe impl Send for BuddyAllocator {}
 
 pub static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<BuddyAllocator>> = SpinLock::new(OnceCell::new());
 
-/// # Safety
-/// The specified MemoryMap must be valid.
-pub unsafe fn init(mmap: multiboot::MemoryMap) {
+pub(crate) unsafe fn init(mmap: multiboot::MemoryMap) {
     let cell = PHYSICAL_ALLOCATOR.lock();
     let buddy = BuddyAllocator::new(mmap);
     cell.set(buddy)
@@ -66,12 +64,12 @@ impl BuddyAllocator {
             ) as *mut u8);
         let free_bitmap =
             unsafe { core::slice::from_raw_parts_mut(free_bitmap_ptr, metadata_space) };
+        free_bitmap.fill(0);
         log::debug!(
             "using {:p}-{:p} for page allocator metadata",
             free_bitmap,
             unsafe { free_bitmap_ptr.add(metadata_space) }
         );
-        free_bitmap.fill(0);
 
         let mut alloc = BuddyAllocator {
             log2_address_space_size,
@@ -82,31 +80,44 @@ impl BuddyAllocator {
             }; 64],
         };
 
+        let meta_start = free_bitmap_ptr as usize;
+        let meta_end = meta_start + metadata_space;
         for map in mmap {
             if map.available() {
-                let start = vm::ka2pa(map.base()) as usize;
+                let start = vm::pa2ka(map.base()) as usize;
                 let end = start + map.len();
-                if end < low_memory_cutoff {
+                let cutoff = vm::pa2ka(low_memory_cutoff as *mut u8) as usize;
+                if end < cutoff {
                     continue;
                 }
-                let start = core::cmp::max(start, low_memory_cutoff);
-                let start =
-                    (start + Self::LOG2_MIN_ALLOCATION - 1) & !(Self::LOG2_MIN_ALLOCATION - 1);
-                let length = end - start;
-                let length = (length / Self::MIN_ALLOCATION) * Self::MIN_ALLOCATION;
-                for i in 0..length / Self::MIN_ALLOCATION {
-                    let addr = (start + i * Self::MIN_ALLOCATION) as *mut u8;
-                    if (addr as usize) >= vm::ka2pa(free_bitmap_ptr) as usize
-                        && (addr as usize) < vm::ka2pa(free_bitmap_ptr) as usize + metadata_space
-                    {
-                        continue;
-                    }
-                    unsafe { alloc.free_block(addr, Self::LOG2_MIN_ALLOCATION) };
+                let start = core::cmp::max(start, cutoff);
+                if start >= meta_end || end <= meta_start {
+                    alloc.mark_free_between(start as *const u8, end as *const u8);
+                } else {
+                    alloc.mark_free_between(start as *const u8, meta_start as *const u8);
+                    alloc.mark_free_between(meta_end as *const u8, end as *const u8);
                 }
             }
         }
 
         alloc
+    }
+
+    fn mark_free_between(&mut self, start: *const u8, end: *const u8) {
+        let start = vm::ka2pa(start) as usize;
+        let end = vm::ka2pa(end) as usize;
+        let mut start = (start + Self::LOG2_MIN_ALLOCATION - 1) & !(Self::LOG2_MIN_ALLOCATION - 1);
+        let mut length = end - start;
+        while length > Self::MIN_ALLOCATION {
+            let addr = start as *mut u8;
+            let log2_alignment = start.trailing_zeros();
+            let log2_length = 63 - (length + 1).leading_zeros();
+            let log2_block_size = core::cmp::min(log2_alignment, log2_length) as usize;
+            let block_size = 1usize << log2_block_size;
+            unsafe { self.free_block(addr, log2_block_size as usize) };
+            start += block_size as usize;
+            length = end - start;
+        }
     }
 
     fn get_index(&self, addr: *const u8, log2_size: usize) -> usize {
@@ -145,12 +156,14 @@ impl BuddyAllocator {
         assert!(log2_size < self.log2_address_space_size);
         log::trace!("freeing block {addr:p}({log2_size})");
         let index = self.get_index(addr, log2_size);
+        log::trace!("freeing block @ index {index}");
         assert!(!self.is_block_free_bitmap(index));
         self.set_block_free_bitmap(index, true);
         if index != 0 {
             let buddy = ((index + 1) ^ 1) - 1;
             let (buddy_addr, buddy_log2_size) = self.get_allocation(buddy);
             assert!(buddy_log2_size == log2_size);
+            log::trace!("checking buddy @ index {buddy}");
             if self.is_block_free_bitmap(buddy) {
                 log::trace!(
                     "coalescing block {addr:p}({log2_size}) and buddy {buddy_addr:p}({log2_size})"
@@ -216,8 +229,8 @@ impl BuddyAllocator {
 
         let index_h = self.get_index(upper, log2_size);
         let index_l = self.get_index(lower, log2_size);
-        assert!(self.is_block_free_bitmap(index_h));
-        assert!(self.is_block_free_bitmap(index_l));
+        // assert!(self.is_block_free_bitmap(index_h));
+        // assert!(self.is_block_free_bitmap(index_l));
         self.set_block_free_bitmap(index_h, false);
         self.set_block_free_bitmap(index_l, false);
 

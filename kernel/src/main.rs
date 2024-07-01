@@ -68,15 +68,17 @@ extern "C" fn kmain() -> ! {
 
     let mut count = DONE_COUNT.lock();
     log::info!(
-        "Hello from CPU {}/{} (n={})!",
+        "Hello from CPU {}/{} (n={}) (t={:?})!",
         kernel::cpuinfo::id(),
         kernel::cpuinfo::ncores(),
         *count,
+        kernel::kvmclock::time_since_boot(),
     );
     *count += 1;
     if *count == kernel::cpuinfo::ncores() {
         log::info!("On core {}", kernel::cpuinfo::id());
         log::info!("All {} cores done!", kernel::cpuinfo::ncores());
+        log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
 
         log::info!("About to switch to user mode.");
         let mut stack = Page2MB::new().unwrap();
