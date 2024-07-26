@@ -324,3 +324,35 @@ impl<const N: usize> DerefMut for Block<N> {
         unsafe { core::slice::from_raw_parts_mut(vm::pa2ka_mut(self.base), 1 << N) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_alloc() {
+        Page4KB::new().unwrap();
+    }
+
+    #[bench]
+    pub fn bench_alloc_4kb(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            let x = Page4KB::new().unwrap();
+            core::mem::forget(x);
+        });
+    }
+
+    #[bench]
+    pub fn bench_alloc_free_4kb(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            let _ = Page4KB::new().unwrap();
+        });
+    }
+
+    #[bench]
+    pub fn bench_alloc_free_2mb(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            let _ = Page2MB::new().unwrap();
+        });
+    }
+}

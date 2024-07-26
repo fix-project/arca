@@ -9,7 +9,7 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
 extern "C" fn kmain() -> ! {
     if crate::cpuinfo::is_bootstrap() {
         crate::test_main();
-        unsafe { crate::shutdown() }
+        crate::shutdown()
     }
     crate::halt();
 }
