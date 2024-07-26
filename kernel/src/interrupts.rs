@@ -38,17 +38,6 @@ extern "C" {
 
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
-    if registers.isr == 0xd {
-        log::error!("GP! faulting segment: {:x}", registers.code);
-        crate::shutdown();
-    }
-    if registers.isr < 32 {
-        crate::shutdown();
-    }
-    if registers.isr == 0x30 {
-        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-    }
-
     if registers.cs & 0b11 == 0b11 {
         // return to user mode
         let regs = RegisterFile {
@@ -59,6 +48,18 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         };
         isr_save_state_and_exit(registers.isr, registers.code, &regs);
     }
+    // supervisor mode
+    if registers.isr == 0xd {
+        log::error!("GP! faulting segment: {:x}", registers.code);
+        crate::shutdown();
+    }
+    if registers.isr < 32 {
+        log::error!("unhandled exception: {:?}", registers);
+    }
+    if registers.isr == 0x30 {
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+    }
+
     if registers.isr != 0x30 {
         log::error!("unhandled system ISR: {:?}", registers);
     }
