@@ -83,7 +83,6 @@ extern "C" fn kmain() -> ! {
         log::info!("About to switch to user mode.");
         let mut stack = Page2MB::new().unwrap();
         let mut regs = RegisterFile::function(umain, &mut stack);
-        regs.registers[4] = unsafe { stack.kernel().add(stack.len()) as u64 };
         loop {
             let result = regs.step();
             if result.code == 0x100 && regs.registers[7] == 0 {
@@ -107,7 +106,6 @@ extern "C" fn umain() -> ! {
         }
     });
     log::info!("Software Interrupt took {:?}", time / iters);
-    let iters = 0x1000;
     let time = kernel::tsc::time(|| unsafe {
         for _ in 0..iters {
             asm!("syscall", out("rcx")_, out("r11")_, in("rdi")1);
