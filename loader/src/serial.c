@@ -20,3 +20,10 @@ void putx(unsigned x) {
     putc("0123456789ABCDEF"[y]);
   }
 }
+
+void putlx(unsigned long long x) {
+  for (int i = 60; i >= 0; i -= 4) {
+    unsigned y = (x >> i) & 0xf;
+    putc("0123456789ABCDEF"[y]);
+  }
+}

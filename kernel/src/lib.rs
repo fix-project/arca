@@ -8,6 +8,9 @@
 #![feature(const_for)]
 #![feature(const_mut_refs)]
 #![feature(const_trait_impl)]
+#![feature(never_type)]
+#![feature(min_specialization)]
+#![feature(associated_type_defaults)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -24,6 +27,7 @@ pub mod cpuinfo;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
+pub mod paging;
 pub mod spinlock;
 pub mod tsc;
 pub mod vm;

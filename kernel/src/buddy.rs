@@ -299,7 +299,9 @@ impl<const N: usize> Block<N> {
     /// This pointer must correspond to the beginning of a valid, non-aliased block with the
     /// specified size (e.g., one created using `into_raw`).
     pub unsafe fn from_raw(raw: *mut u8) -> Block<N> {
-        Block { base: raw }
+        Block {
+            base: vm::ka2pa_mut(raw),
+        }
     }
 }
 

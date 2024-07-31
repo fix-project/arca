@@ -55,7 +55,6 @@ void init_pml4(void) {
 
   // first 512GB of higher half
   pml4[256] = pml4[0];
-
 }
 
 void init_gdt(void) {

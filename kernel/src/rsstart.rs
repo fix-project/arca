@@ -8,12 +8,13 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
-    buddy::{self, Page2MB},
+    buddy::{self, Block, Page2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
+    paging::{self, PageDirectoryPointerTable, PageMapLevel4, Permissions},
     vm,
 };
 
@@ -88,13 +89,28 @@ unsafe extern "C" fn _rsstart(
 
 #[no_mangle]
 unsafe extern "C" fn _rscontinue() -> ! {
-    // since we're now running on the main stack, we can repurpose the initial 16KB stacks to store
-    // data for interrupt handling
     let idtr: IdtDescriptor = (&*IDT).into();
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
+
     crate::tsc::init();
     crate::kvmclock::init();
     crate::lapic::init();
+
+    // enable new page table
+    let mut pdpt = PageDirectoryPointerTable::default();
+    for (i, entry) in pdpt.iter_mut().enumerate() {
+        entry.map(
+            Block::<30>::from_raw((i << 30) as *mut u8),
+            Permissions::All,
+        );
+    }
+
+    let mut map = PageMapLevel4::default();
+    map[256].chain(pdpt, Permissions::All);
+    map[0] = core::mem::transmute_copy(&map[256]);
+
+    paging::set_page_map(map);
+
     asm!("sti");
     kmain();
 }

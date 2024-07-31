@@ -14,6 +14,7 @@ void putc(char c);
 void puts(char *s);
 void putsn(char *s, size_t n);
 void putx(unsigned x);
+void putlx(unsigned long long x);
 void *kmalloc(size_t bytes);
 void halt(void);
 

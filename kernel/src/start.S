@@ -51,3 +51,8 @@ set_gdt:
   rex.w lret
 new_gdt:
   ret
+
+.globl set_pt
+set_pt:
+  mov cr3, rdi
+  ret
