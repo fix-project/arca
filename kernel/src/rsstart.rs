@@ -48,14 +48,10 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
 });
 
 #[no_mangle]
-unsafe extern "C" fn _rsstart(
-    id: u32,
-    bsp: bool,
-    ncores: u32,
-    multiboot: *const MultibootInfo,
-) -> *mut u8 {
+unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usize) -> *mut u8 {
     asm!("cli");
     if bsp {
+        let multiboot = vm::pa2ka(multiboot_pa);
         init_bss();
 
         let _ = log::set_logger(&LOGGER);
@@ -81,6 +77,20 @@ unsafe extern "C" fn _rsstart(
     set_gdt(addr_of!(gdtr));
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
+    // enable new page table
+    let mut pdpt = PageDirectoryPointerTable::default();
+    for (i, entry) in pdpt.iter_mut().enumerate() {
+        entry.map(
+            Block::<30>::from_raw((i << 30) as *mut u8),
+            Permissions::All,
+        );
+    }
+
+    let mut map = PageMapLevel4::default();
+    map[256].chain(pdpt, Permissions::All);
+
+    paging::set_page_map(map);
+
     let stack_top = init_cpu_stack(id);
 
     SEMAPHORE.store(false, Ordering::SeqCst);
@@ -95,21 +105,6 @@ unsafe extern "C" fn _rscontinue() -> ! {
     crate::tsc::init();
     crate::kvmclock::init();
     crate::lapic::init();
-
-    // enable new page table
-    let mut pdpt = PageDirectoryPointerTable::default();
-    for (i, entry) in pdpt.iter_mut().enumerate() {
-        entry.map(
-            Block::<30>::from_raw((i << 30) as *mut u8),
-            Permissions::All,
-        );
-    }
-
-    let mut map = PageMapLevel4::default();
-    map[256].chain(pdpt, Permissions::All);
-    map[0] = core::mem::transmute_copy(&map[256]);
-
-    paging::set_page_map(map);
 
     asm!("sti");
     kmain();
@@ -139,7 +134,7 @@ unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
 unsafe fn init_cpu_tls() {
     let start = addr_of!(_scdata) as usize;
     let end = addr_of!(_ecdata) as usize;
-    let load = vm::pa2ka(addr_of!(_lcdata));
+    let load = vm::pa2ka::<u8>(addr_of!(_lcdata) as usize);
     let length = end - start;
 
     let src = core::slice::from_raw_parts(load, length);
@@ -154,7 +149,7 @@ unsafe fn init_cpu_tls() {
 
 unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
     let stack = Page2MB::new().expect("could not allocate stack");
-    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.physical());
+    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.kernel());
 
     let stack_bottom = stack.kernel();
     let stack_top = stack_bottom.add(0x200000);

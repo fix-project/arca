@@ -37,7 +37,7 @@ impl BuddyAllocator {
 
     fn new(mmap: multiboot::MemoryMap) -> Self {
         let max_address = vm::ka2pa(mmap.fold(core::ptr::null(), |a, x| {
-            core::cmp::max(a, unsafe { x.base().add(x.len()) })
+            core::cmp::max(a, unsafe { x.base().byte_add(x.len()) })
         }));
         let address_space_size = (max_address as usize).next_power_of_two();
         let log2_address_space_size = address_space_size.trailing_zeros() as usize;
@@ -45,31 +45,33 @@ impl BuddyAllocator {
         let metadata_space = address_space_size / Self::MIN_ALLOCATION / 4;
         let metadata_align = metadata_space.trailing_zeros() as usize;
 
-        let low_memory_cutoff = 16 * 1024 * 1024;
+        let low_memory_cutoff = vm::pa2ka(16 * 1024 * 1024);
         let alignment_mask = metadata_align - 1;
-        let free_bitmap_ptr = vm::pa2ka_mut(mmap
+        let free_bitmap_ptr = mmap
             .filter(|x| x.available())
-            .map(|x| {
-                let base = x.base() as usize;
-                (base, base + x.len())
-            })
+            .map(|x| (x.base(), unsafe { x.base().byte_add(x.len()) }))
             .filter(|x| x.1 >= low_memory_cutoff)
             .map(|x| (core::cmp::max(x.0, low_memory_cutoff), x.1))
-            .map(|x| ((x.0 + alignment_mask) & !alignment_mask, x.1))
+            .map(|x| {
+                (
+                    ((x.0 as usize + alignment_mask) & !alignment_mask) as *mut (),
+                    x.1,
+                )
+            })
             .filter(|x| x.0 < x.1)
-            .find(|x| x.1 - x.0 >= metadata_space)
+            .find(|x| unsafe { x.1.byte_offset_from(x.0) } as usize >= metadata_space)
             .map(|x| x.0)
             .expect(
                 "could not find satisfactory memory region for physical memory allocator metadata",
-            ) as *mut u8);
+            ) as *mut u8;
+        log::debug!(
+            "using {:p}+{:#x} for page allocator metadata",
+            free_bitmap_ptr,
+            metadata_space
+        );
         let free_bitmap =
             unsafe { core::slice::from_raw_parts_mut(free_bitmap_ptr, metadata_space) };
         free_bitmap.fill(0);
-        log::debug!(
-            "using {:p}-{:p} for page allocator metadata",
-            free_bitmap,
-            unsafe { free_bitmap_ptr.add(metadata_space) }
-        );
 
         let mut alloc = BuddyAllocator {
             log2_address_space_size,
@@ -80,22 +82,26 @@ impl BuddyAllocator {
             }; 64],
         };
 
-        let meta_start = free_bitmap_ptr as usize;
-        let meta_end = meta_start + metadata_space;
+        let meta_start = free_bitmap_ptr;
+        log::trace!("{meta_start:p}");
+        let meta_end = unsafe { meta_start.add(metadata_space) };
         for map in mmap {
+            log::trace!("{:?}", map);
             if map.available() {
-                let start = vm::pa2ka(map.base()) as usize;
-                let end = start + map.len();
-                let cutoff = vm::pa2ka(low_memory_cutoff as *mut u8) as usize;
+                let start = map.base() as *const u8;
+                let end = unsafe { start.add(map.len()) };
+                log::trace!("{start:p} {end:p}");
+                let cutoff = low_memory_cutoff as *const u8;
                 if end < cutoff {
                     continue;
                 }
                 let start = core::cmp::max(start, cutoff);
+                log::trace!("{start:p} {end:p} {meta_start:p} {meta_end:p}");
                 if start >= meta_end || end <= meta_start {
-                    alloc.mark_free_between(start as *const u8, end as *const u8);
+                    alloc.mark_free_between(start, end);
                 } else {
-                    alloc.mark_free_between(start as *const u8, meta_start as *const u8);
-                    alloc.mark_free_between(meta_end as *const u8, end as *const u8);
+                    alloc.mark_free_between(start, meta_start);
+                    alloc.mark_free_between(meta_end, end);
                 }
             }
         }
@@ -104,17 +110,17 @@ impl BuddyAllocator {
     }
 
     fn mark_free_between(&mut self, start: *const u8, end: *const u8) {
-        let start = vm::ka2pa(start) as usize;
-        let end = vm::ka2pa(end) as usize;
+        log::trace!("marking free between {start:p} and {end:p}");
+        let start = vm::ka2pa(start);
+        let end = vm::ka2pa(end);
         let mut start = (start + Self::LOG2_MIN_ALLOCATION - 1) & !(Self::LOG2_MIN_ALLOCATION - 1);
         let mut length = end - start;
         while length > Self::MIN_ALLOCATION {
-            let addr = start as *mut u8;
             let log2_alignment = start.trailing_zeros();
             let log2_length = 63 - (length + 1).leading_zeros();
             let log2_block_size = core::cmp::min(log2_alignment, log2_length) as usize;
             let block_size = 1usize << log2_block_size;
-            unsafe { self.free_block(addr, log2_block_size as usize) };
+            unsafe { self.free_block(vm::pa2ka(start), log2_block_size as usize) };
             start += block_size as usize;
             length = end - start;
         }
@@ -133,7 +139,7 @@ impl BuddyAllocator {
         let log2_size = self.log2_address_space_size - leading;
         let level_offset = ((1 << leading) - 1) as usize;
         let addr = (index - level_offset) << log2_size;
-        (addr as *mut u8, log2_size)
+        (vm::pa2ka(addr), log2_size)
     }
 
     fn is_block_free_bitmap(&self, index: usize) -> bool {
@@ -169,8 +175,7 @@ impl BuddyAllocator {
                     "coalescing block {addr:p}({log2_size}) and buddy {buddy_addr:p}({log2_size})"
                 );
                 // coalesce
-                let buddy: &mut FreeBlock =
-                    unsafe { core::mem::transmute(&mut *vm::pa2ka_mut(buddy_addr)) };
+                let buddy: &mut FreeBlock = unsafe { core::mem::transmute(&mut *buddy_addr) };
                 if !buddy.next.is_null() {
                     unsafe { (*buddy.next).prev = buddy.prev }
                 }
@@ -207,7 +212,9 @@ impl BuddyAllocator {
             log::trace!("found free list");
             let ptr: *mut u8 = unsafe {
                 list.next = (*head).next;
-                (*list.next).prev = list;
+                if !list.next.is_null() {
+                    (*list.next).prev = list;
+                }
                 core::mem::transmute::<*mut FreeBlock, *mut u8>(head)
             };
             let index = self.get_index(ptr, log2_size);
@@ -282,15 +289,11 @@ impl<const N: usize> Block<N> {
     }
 
     pub fn kernel(&self) -> *mut u8 {
-        vm::pa2ka_mut(self.physical())
-    }
-
-    pub fn physical(&self) -> *mut u8 {
         self.base
     }
 
     pub fn into_raw(self) -> *mut u8 {
-        let p = self.kernel();
+        let p = self.base;
         core::mem::forget(self);
         p
     }
@@ -299,9 +302,7 @@ impl<const N: usize> Block<N> {
     /// This pointer must correspond to the beginning of a valid, non-aliased block with the
     /// specified size (e.g., one created using `into_raw`).
     pub unsafe fn from_raw(raw: *mut u8) -> Block<N> {
-        Block {
-            base: vm::ka2pa_mut(raw),
-        }
+        Block { base: raw }
     }
 }
 
@@ -317,13 +318,13 @@ impl<const N: usize> Deref for Block<N> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(vm::pa2ka(self.base), 1 << N) }
+        unsafe { core::slice::from_raw_parts(self.base, 1 << N) }
     }
 }
 
 impl<const N: usize> DerefMut for Block<N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(vm::pa2ka_mut(self.base), 1 << N) }
+        unsafe { core::slice::from_raw_parts_mut(self.base, 1 << N) }
     }
 }
 

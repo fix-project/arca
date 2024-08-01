@@ -11,7 +11,7 @@ use crate::{
 };
 
 extern "C" {
-    fn set_pt(page_map: *const ());
+    fn set_pt(page_map: usize);
 }
 
 pub(crate) unsafe fn set_page_map(page_map: PageMapLevel4) {
@@ -283,14 +283,14 @@ impl<L: Leaf, T: Table> Entry<L, T> {
             unsafe {
                 let descriptor = self.leaf;
                 let addr = descriptor.address() << L::ORDER;
-                let leaf = L::from_raw(vm::pa2ka_mut(addr as *mut ()));
+                let leaf = L::from_raw(vm::pa2ka(addr));
                 ResolvedEntry::Leaf(leaf)
             }
         } else {
             unsafe {
                 let descriptor = self.table;
                 let addr = descriptor.address() << 12;
-                let table = T::from_raw(vm::pa2ka_mut(addr as *mut ()));
+                let table = T::from_raw(vm::pa2ka(addr));
                 ResolvedEntry::Table(table)
             }
         };

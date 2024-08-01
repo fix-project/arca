@@ -57,8 +57,12 @@ pub struct MemoryMapping {
 }
 
 impl MemoryMapping {
-    pub fn base(&self) -> *const u8 {
-        self.base as *const u8
+    pub fn base(&self) -> *mut () {
+        if self.base == 0 {
+            core::ptr::null_mut()
+        } else {
+            vm::pa2ka(self.base as usize)
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -103,7 +107,7 @@ impl<'a> Iterator for MemoryMap<'a> {
 impl MultibootInfo {
     pub fn cmdline(&self) -> Option<&CStr> {
         if ((self.flags >> 2) & 1) == 1 {
-            Some(unsafe { CStr::from_ptr(vm::pa2ka(self.cmdline as *const i8)) })
+            Some(unsafe { CStr::from_ptr(vm::pa2ka(self.cmdline as usize)) })
         } else {
             None
         }
@@ -111,7 +115,7 @@ impl MultibootInfo {
 
     pub fn memory_map(&self) -> Option<MemoryMap> {
         if ((self.flags >> 6) & 1) == 1 {
-            let base = unsafe { &*vm::pa2ka(self.mmap_addr as *const MemoryMapping) };
+            let base = unsafe { &*vm::pa2ka(self.mmap_addr as usize) };
             Some(MemoryMap {
                 base,
                 length: self.mmap_length as usize,
