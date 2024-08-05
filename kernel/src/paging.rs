@@ -6,7 +6,7 @@ use core::{
 use bitfield_struct::bitfield;
 
 use crate::{
-    buddy::{Block, Page1GB, Page4KB},
+    buddy::{Block, Page1GB, Page2MB, Page4KB},
     vm,
 };
 
@@ -52,9 +52,7 @@ pub struct LeafDescriptor {
     #[bits(3)]
     available_0: u8,
     page_attribute_table: bool,
-    #[bits(17)]
-    _sbz: u32,
-    #[bits(22)]
+    #[bits(39)]
     address: usize,
     #[bits(7)]
     available_2: u8,
@@ -79,7 +77,7 @@ pub struct CommonDescriptor {
 }
 
 #[bitfield(u64)]
-pub struct LeafPageTableEntry {
+pub struct TerminalDescriptor {
     present: bool,
     writeable: bool,
     user: bool,
@@ -110,12 +108,12 @@ pub enum Permissions {
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct PageTable<T> {
+pub struct MemoryMap<T> {
     block: Page4KB,
     ptr: *mut [T; 512],
 }
 
-impl<T> Default for PageTable<T> {
+impl<T> Default for MemoryMap<T> {
     fn default() -> Self {
         let mut block = Page4KB::new().expect("could not allocate page table");
         block.fill(0);
@@ -125,7 +123,7 @@ impl<T> Default for PageTable<T> {
     }
 }
 
-impl<T> Deref for PageTable<T> {
+impl<T> Deref for MemoryMap<T> {
     type Target = [T; 512];
 
     fn deref(&self) -> &Self::Target {
@@ -133,14 +131,16 @@ impl<T> Deref for PageTable<T> {
     }
 }
 
-impl<T> DerefMut for PageTable<T> {
+impl<T> DerefMut for MemoryMap<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.ptr }
     }
 }
 
-pub(crate) type PageMapLevel4 = PageTable<Entry<!, PageDirectoryPointerTable>>;
-pub(crate) type PageDirectoryPointerTable = PageTable<Entry<Page1GB, !>>;
+pub(crate) type PageMapLevel4 = MemoryMap<Entry<!, PageDirectoryPointerTable>>;
+pub(crate) type PageDirectoryPointerTable = MemoryMap<Entry<Page1GB, PageDirectory>>;
+pub(crate) type PageDirectory = MemoryMap<Entry<Page2MB, PageTable>>;
+pub(crate) type PageTable = MemoryMap<Entry<Page4KB, !>>;
 
 pub(crate) trait Leaf {
     const ORDER: usize;
@@ -162,11 +162,14 @@ impl<const N: usize> Leaf for Block<N> {
 }
 
 pub(crate) trait Table {
+    const REAL: bool;
     fn into_raw(self) -> *mut ();
     unsafe fn from_raw(addr: *mut ()) -> Self;
 }
 
-impl<T> Table for PageTable<T> {
+impl<T> Table for MemoryMap<T> {
+    const REAL: bool = true;
+
     fn into_raw(self) -> *mut () {
         let p = self.ptr as *mut ();
         core::mem::forget(self);
@@ -195,6 +198,8 @@ impl Leaf for ! {
 }
 
 impl Table for ! {
+    const REAL: bool = false;
+
     fn into_raw(self) -> *mut () {
         unreachable!();
     }
@@ -208,6 +213,7 @@ pub(crate) union Entry<L: Leaf, T: Table> {
     raw: u64,
     common: CommonDescriptor,
     leaf: LeafDescriptor,
+    terminal: TerminalDescriptor,
     table: TableDescriptor,
     phantom_leaf: PhantomData<L>,
     phantom_table: PhantomData<T>,
@@ -238,7 +244,7 @@ impl<L: Leaf, T: Table> Entry<L, T> {
         self.leaf = LeafDescriptor::new()
             .with_present(true)
             .with_leaf(true)
-            .with_address(vm::ka2pa(leaf) as usize >> L::ORDER);
+            .with_address(vm::ka2pa(leaf) >> 13);
         self.protect(permissions);
         old
     }
@@ -248,7 +254,7 @@ impl<L: Leaf, T: Table> Entry<L, T> {
         self.table = TableDescriptor::new()
             .with_present(true)
             .with_leaf(false)
-            .with_address(vm::ka2pa(table.into_raw()) as usize >> 12);
+            .with_address(vm::ka2pa(table.into_raw()) >> 12);
         self.protect(permissions);
         old
     }
