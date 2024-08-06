@@ -480,9 +480,9 @@ pub struct PageTable<T> {
 
 impl<T> PageTable<T> {
     pub fn new() -> Self {
-        let mut block = Page4KB::new().expect("could not allocate page table");
-        block.fill(0);
-        let ptr = block.kernel();
+        let block = Page4KB::new().expect("could not allocate page table");
+        let ptr = block.as_ptr();
+        unsafe { core::slice::from_raw_parts_mut(ptr, 4096).fill(0) };
         let ptr = ptr as *mut [T; 512];
         Self { block, ptr }
     }

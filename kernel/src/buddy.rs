@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use core::cell::OnceCell;
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 
 use crate::spinlock::SpinLock;
 use crate::{multiboot, vm};
@@ -288,7 +288,7 @@ impl<const N: usize> Block<N> {
         allocate::<N>()
     }
 
-    pub fn kernel(&self) -> *mut u8 {
+    pub fn as_ptr(&self) -> *mut u8 {
         self.base
     }
 
@@ -319,12 +319,6 @@ impl<const N: usize> Deref for Block<N> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { core::slice::from_raw_parts(self.base, 1 << N) }
-    }
-}
-
-impl<const N: usize> DerefMut for Block<N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.base, 1 << N) }
     }
 }
 

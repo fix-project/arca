@@ -149,9 +149,9 @@ unsafe fn init_cpu_tls() {
 
 unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
     let stack = Page2MB::new().expect("could not allocate stack");
-    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.kernel());
+    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.as_ptr());
 
-    let stack_bottom = stack.kernel();
+    let stack_bottom = stack.as_ptr();
     let stack_top = stack_bottom.add(0x200000);
     core::mem::forget(stack);
     stack_top

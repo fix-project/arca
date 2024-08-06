@@ -32,7 +32,7 @@ impl RegisterFile {
             flags: 0x202,
             mode: 1,
         };
-        regs.registers[4] = unsafe { stack.kernel().add(stack.len()) as u64 };
+        regs.registers[4] = unsafe { stack.as_ptr().add(stack.len()) as u64 };
         regs
     }
 
