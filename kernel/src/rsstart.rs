@@ -14,7 +14,7 @@ use crate::{
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
-    paging::{self, PageDirectoryPointerTable, PageMapLevel4, Permissions},
+    paging::{self, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
     vm,
 };
 
@@ -78,7 +78,7 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usi
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
     // enable new page table
-    let mut pdpt = PageDirectoryPointerTable::default();
+    let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
         entry.map(
             Block::<30>::from_raw((i << 30) as *mut u8),
@@ -86,10 +86,10 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usi
         );
     }
 
-    let mut map = PageMapLevel4::default();
+    let mut map = PageTable256TB::new();
     map[256].chain(pdpt, Permissions::All);
 
-    paging::set_page_map(map);
+    paging::set_page_table(map);
 
     let stack_top = init_cpu_stack(id);
 

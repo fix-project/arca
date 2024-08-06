@@ -6,7 +6,7 @@ use core::{
 use bitfield_struct::bitfield;
 
 use crate::{
-    buddy::{Block, Page1GB, Page2MB, Page4KB},
+    buddy::{Page1GB, Page2MB, Page4KB},
     vm,
 };
 
@@ -14,12 +14,86 @@ extern "C" {
     fn set_pt(page_map: usize);
 }
 
-pub(crate) unsafe fn set_page_map(page_map: PageMapLevel4) {
-    set_pt(vm::ka2pa(page_map.into_raw()));
+pub(crate) unsafe fn set_page_table(page_table: PageTable256TB) {
+    set_pt(page_table.to_addr());
+}
+
+pub enum Permissions {
+    None,
+    ReadOnly,
+    ReadWrite,
+    Executable,
+    All,
+}
+
+pub trait Descriptor: Default {
+    fn new(addr: usize, perm: Permissions) -> Self {
+        let mut x: Self = Default::default();
+        x.set_address(addr);
+        x.set_permissions(perm);
+        x
+    }
+
+    /// # Safety
+    /// This must be a valid bit pattern for this type of descriptor.
+    unsafe fn from_bits(x: u64) -> Self;
+    fn into_bits(self) -> u64;
+
+    fn set_address(&mut self, addr: usize) -> &mut Self;
+    fn address(&self) -> usize;
+
+    fn set_user(&mut self, user: bool) -> &mut Self;
+    fn user(&self) -> bool;
+
+    fn set_writeable(&mut self, writeable: bool) -> &mut Self;
+    fn writeable(&self) -> bool;
+
+    fn set_execute_disable(&mut self, execute_disable: bool) -> &mut Self;
+    fn execute_disable(&self) -> bool;
+
+    fn set_permissions(&mut self, perm: Permissions) -> &mut Self {
+        match perm {
+            Permissions::None => {
+                self.set_user(false);
+            }
+            Permissions::ReadOnly => {
+                self.set_user(true);
+                self.set_writeable(false);
+                self.set_execute_disable(true);
+            }
+            Permissions::ReadWrite => {
+                self.set_user(true);
+                self.set_writeable(true);
+                self.set_execute_disable(true);
+            }
+            Permissions::Executable => {
+                self.set_user(true);
+                self.set_writeable(false);
+                self.set_execute_disable(false);
+            }
+            Permissions::All => {
+                self.set_user(true);
+                self.set_writeable(true);
+                self.set_execute_disable(false);
+            }
+        };
+        self
+    }
+
+    fn permissions(&self) -> Permissions {
+        match (self.user(), self.writeable(), self.execute_disable()) {
+            (false, _, _) => Permissions::None,
+            (true, false, true) => Permissions::ReadOnly,
+            (true, true, true) => Permissions::ReadWrite,
+            (true, false, false) => Permissions::Executable,
+            (true, true, false) => Permissions::All,
+        }
+    }
 }
 
 #[bitfield(u64)]
 pub struct TableDescriptor {
+    #[bits(default = true)]
     present: bool,
     writeable: bool,
     user: bool,
@@ -38,7 +112,8 @@ pub struct TableDescriptor {
 }
 
 #[bitfield(u64)]
-pub struct LeafDescriptor {
+pub struct HugePageDescriptor {
+    #[bits(default = true)]
     present: bool,
     writeable: bool,
     user: bool,
@@ -62,22 +137,8 @@ pub struct LeafDescriptor {
 }
 
 #[bitfield(u64)]
-pub struct CommonDescriptor {
-    present: bool,
-    writeable: bool,
-    user: bool,
-    write_through: bool,
-    cache_disable: bool,
-    accessed: bool,
-    _skip0: bool,
-    leaf: bool,
-    #[bits(55)]
-    _skip1: u64,
-    execute_disable: bool,
-}
-
-#[bitfield(u64)]
-pub struct TerminalDescriptor {
+pub struct PageDescriptor {
+    #[bits(default = true)]
     present: bool,
     writeable: bool,
     user: bool,
@@ -90,7 +151,7 @@ pub struct TerminalDescriptor {
     #[bits(3)]
     available_0: u8,
     #[bits(40)]
-    address: u64,
+    address: usize,
     #[bits(7)]
     available_2: u8,
     #[bits(4)]
@@ -98,23 +159,327 @@ pub struct TerminalDescriptor {
     execute_disable: bool,
 }
 
-pub enum Permissions {
-    None,
-    ReadOnly,
-    ReadWrite,
-    Executable,
-    All,
+impl Descriptor for TableDescriptor {
+    unsafe fn from_bits(x: u64) -> Self {
+        Self::from_bits(x)
+    }
+
+    fn into_bits(self) -> u64 {
+        self.into_bits()
+    }
+
+    fn set_address(&mut self, addr: usize) -> &mut Self {
+        self.set_address(addr >> 12);
+        self
+    }
+
+    fn address(&self) -> usize {
+        self.address() << 12
+    }
+
+    fn set_user(&mut self, user: bool) -> &mut Self {
+        self.set_user(user);
+        self
+    }
+
+    fn user(&self) -> bool {
+        self.user()
+    }
+
+    fn set_writeable(&mut self, writeable: bool) -> &mut Self {
+        self.set_writeable(writeable);
+        self
+    }
+
+    fn writeable(&self) -> bool {
+        self.writeable()
+    }
+
+    fn set_execute_disable(&mut self, execute_disable: bool) -> &mut Self {
+        self.set_execute_disable(execute_disable);
+        self
+    }
+
+    fn execute_disable(&self) -> bool {
+        self.execute_disable()
+    }
 }
+
+impl Descriptor for HugePageDescriptor {
+    unsafe fn from_bits(x: u64) -> Self {
+        Self::from_bits(x)
+    }
+
+    fn into_bits(self) -> u64 {
+        self.into_bits()
+    }
+
+    fn set_address(&mut self, addr: usize) -> &mut Self {
+        self.set_address(addr >> 13);
+        self
+    }
+
+    fn address(&self) -> usize {
+        self.address() << 13
+    }
+
+    fn set_user(&mut self, user: bool) -> &mut Self {
+        self.set_user(user);
+        self
+    }
+
+    fn user(&self) -> bool {
+        self.user()
+    }
+
+    fn set_writeable(&mut self, writeable: bool) -> &mut Self {
+        self.set_writeable(writeable);
+        self
+    }
+
+    fn writeable(&self) -> bool {
+        self.writeable()
+    }
+
+    fn set_execute_disable(&mut self, execute_disable: bool) -> &mut Self {
+        self.set_execute_disable(execute_disable);
+        self
+    }
+
+    fn execute_disable(&self) -> bool {
+        self.execute_disable()
+    }
+}
+
+impl Descriptor for PageDescriptor {
+    unsafe fn from_bits(x: u64) -> Self {
+        Self::from_bits(x)
+    }
+
+    fn into_bits(self) -> u64 {
+        self.into_bits()
+    }
+
+    fn set_address(&mut self, addr: usize) -> &mut Self {
+        self.set_address(addr >> 12);
+        self
+    }
+
+    fn address(&self) -> usize {
+        self.address() << 12
+    }
+
+    fn set_user(&mut self, user: bool) -> &mut Self {
+        self.set_user(user);
+        self
+    }
+
+    fn user(&self) -> bool {
+        self.user()
+    }
+
+    fn set_writeable(&mut self, writeable: bool) -> &mut Self {
+        self.set_writeable(writeable);
+        self
+    }
+
+    fn writeable(&self) -> bool {
+        self.writeable()
+    }
+
+    fn set_execute_disable(&mut self, execute_disable: bool) -> &mut Self {
+        self.set_execute_disable(execute_disable);
+        self
+    }
+
+    fn execute_disable(&self) -> bool {
+        self.execute_disable()
+    }
+}
+
+pub trait HardwarePage: Sized {
+    /// # Safety
+    /// This address must be a unique, valid physical address reference to a page.  In general the
+    /// only safe way to get one of these is using ::to_addr.
+    unsafe fn from_addr(addr: usize) -> Self;
+    fn to_addr(self) -> usize;
+}
+
+impl HardwarePage for Page4KB {
+    unsafe fn from_addr(addr: usize) -> Self {
+        Self::from_raw(vm::pa2ka(addr))
+    }
+
+    fn to_addr(self) -> usize {
+        vm::ka2pa(self.into_raw())
+    }
+}
+
+impl HardwarePage for Page2MB {
+    unsafe fn from_addr(addr: usize) -> Self {
+        Self::from_raw(vm::pa2ka(addr))
+    }
+
+    fn to_addr(self) -> usize {
+        vm::ka2pa(self.into_raw())
+    }
+}
+
+impl HardwarePage for Page1GB {
+    unsafe fn from_addr(addr: usize) -> Self {
+        Self::from_raw(vm::pa2ka(addr))
+    }
+
+    fn to_addr(self) -> usize {
+        vm::ka2pa(self.into_raw())
+    }
+}
+
+impl HardwarePage for ! {
+    unsafe fn from_addr(_: usize) -> Self {
+        unreachable!();
+    }
+
+    fn to_addr(self) -> usize {
+        unreachable!();
+    }
+}
+
+pub trait HardwarePageTable: Sized {
+    /// # Safety
+    /// This address must be a unique, valid physical address reference to a page.  In general the
+    /// only safe way to get one of these is using ::to_addr.
+    unsafe fn from_addr(addr: usize) -> Self;
+    fn to_addr(self) -> usize;
+}
+
+impl HardwarePageTable for ! {
+    unsafe fn from_addr(_: usize) -> Self {
+        unreachable!();
+    }
+
+    fn to_addr(self) -> usize {
+        unreachable!();
+    }
+}
+
+pub enum UnmappedPage<P: HardwarePage, T: HardwarePageTable> {
+    Null,
+    Page(P),
+    Table(T),
+}
+
+pub trait PageTableEntry {
+    type Page: HardwarePage;
+    type Table: HardwarePageTable;
+    type PageDescriptor: Descriptor;
+    type TableDescriptor: Descriptor = TableDescriptor;
+
+    fn bits(&self) -> u64;
+
+    /// # Safety
+    /// This must be a valid bit pattern for a page table entry.
+    unsafe fn set_bits(&mut self, bits: u64);
+
+    fn present(&self) -> bool {
+        self.bits() & 1 == 1
+    }
+
+    fn leaf(&self) -> bool {
+        self.present() && ((self.bits() >> 7) & 1 == 1)
+    }
+
+    fn map(
+        &mut self,
+        page: Self::Page,
+        prot: Permissions,
+    ) -> UnmappedPage<Self::Page, Self::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.set_bits(Self::PageDescriptor::new(page.to_addr(), prot).into_bits());
+        }
+        original
+    }
+
+    fn chain(
+        &mut self,
+        table: Self::Table,
+        prot: Permissions,
+    ) -> UnmappedPage<Self::Page, Self::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.set_bits(Self::TableDescriptor::new(table.to_addr(), prot).into_bits());
+        }
+        original
+    }
+
+    fn unmap(&mut self) -> UnmappedPage<Self::Page, Self::Table> {
+        if !self.present() {
+            UnmappedPage::Null
+        } else if self.leaf() {
+            unsafe {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                self.set_bits(0);
+                let addr = descriptor.address();
+                let page = Self::Page::from_addr(addr);
+                UnmappedPage::Page(page)
+            }
+        } else {
+            unsafe {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                self.set_bits(0);
+                let addr = descriptor.address();
+                let table = Self::Table::from_addr(addr);
+                UnmappedPage::Table(table)
+            }
+        }
+    }
+
+    fn protect(&mut self, prot: Permissions) {
+        if !self.present() {
+            panic!("Attempting to set protections on nonexistent page.");
+        } else if self.leaf() {
+            unsafe {
+                let mut descriptor = Self::PageDescriptor::from_bits(self.bits());
+                descriptor.set_permissions(prot);
+                self.set_bits(descriptor.into_bits());
+            }
+        } else {
+            unsafe {
+                let mut descriptor = Self::TableDescriptor::from_bits(self.bits());
+                descriptor.set_permissions(prot);
+                self.set_bits(descriptor.into_bits());
+            }
+        }
+    }
+}
+
+#[repr(transparent)]
+pub struct Entry<P: HardwarePage, T: HardwarePageTable> {
+    bits: u64,
+    _page: PhantomData<P>,
+    _table: PhantomData<T>,
+}
+
+pub type PageTable2MBEntry = Entry<Page4KB, !>;
+pub type PageTable1GBEntry = Entry<Page2MB, PageTable2MB>;
+pub type PageTable512GBEntry = Entry<Page1GB, PageTable1GB>;
+pub type PageTable256TBEntry = Entry<!, PageTable512GB>;
+
+pub type PageTable2MB = PageTable<PageTable2MBEntry>;
+pub type PageTable1GB = PageTable<PageTable1GBEntry>;
+pub type PageTable512GB = PageTable<PageTable512GBEntry>;
+pub type PageTable256TB = PageTable<PageTable256TBEntry>;
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct MemoryMap<T> {
+pub struct PageTable<T> {
     block: Page4KB,
     ptr: *mut [T; 512],
 }
 
-impl<T> Default for MemoryMap<T> {
-    fn default() -> Self {
+impl<T> PageTable<T> {
+    pub fn new() -> Self {
         let mut block = Page4KB::new().expect("could not allocate page table");
         block.fill(0);
         let ptr = block.kernel();
@@ -123,7 +488,13 @@ impl<T> Default for MemoryMap<T> {
     }
 }
 
-impl<T> Deref for MemoryMap<T> {
+impl<T> Default for PageTable<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Deref for PageTable<T> {
     type Target = [T; 512];
 
     fn deref(&self) -> &Self::Target {
@@ -131,202 +502,88 @@ impl<T> Deref for MemoryMap<T> {
     }
 }
 
-impl<T> DerefMut for MemoryMap<T> {
+impl<T> DerefMut for PageTable<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.ptr }
     }
 }
 
-pub(crate) type PageMapLevel4 = MemoryMap<Entry<!, PageDirectoryPointerTable>>;
-pub(crate) type PageDirectoryPointerTable = MemoryMap<Entry<Page1GB, PageDirectory>>;
-pub(crate) type PageDirectory = MemoryMap<Entry<Page2MB, PageTable>>;
-pub(crate) type PageTable = MemoryMap<Entry<Page4KB, !>>;
-
-pub(crate) trait Leaf {
-    const ORDER: usize;
-
-    fn into_raw(self) -> *mut ();
-    unsafe fn from_raw(addr: *mut ()) -> Self;
-}
-
-impl<const N: usize> Leaf for Block<N> {
-    const ORDER: usize = N;
-
-    fn into_raw(self) -> *mut () {
-        self.into_raw() as *mut ()
-    }
-
-    unsafe fn from_raw(addr: *mut ()) -> Self {
-        Self::from_raw(addr as *mut u8)
-    }
-}
-
-pub(crate) trait Table {
-    const REAL: bool;
-    fn into_raw(self) -> *mut ();
-    unsafe fn from_raw(addr: *mut ()) -> Self;
-}
-
-impl<T> Table for MemoryMap<T> {
-    const REAL: bool = true;
-
-    fn into_raw(self) -> *mut () {
-        let p = self.ptr as *mut ();
-        core::mem::forget(self);
-        p
-    }
-
-    unsafe fn from_raw(addr: *mut ()) -> Self {
-        let block = Page4KB::from_raw(addr as *mut u8);
+impl<P: HardwarePage, T: HardwarePageTable> HardwarePageTable for PageTable<Entry<P, T>>
+where
+    Entry<P, T>: PageTableEntry,
+{
+    unsafe fn from_addr(addr: usize) -> Self {
         Self {
-            ptr: addr as *mut [T; 512],
-            block,
+            block: Page4KB::from_raw(vm::pa2ka(addr)),
+            ptr: addr as *mut [Entry<P, T>; 512],
         }
     }
-}
 
-impl Leaf for ! {
-    const ORDER: usize = 0;
-
-    fn into_raw(self) -> *mut () {
-        unreachable!();
-    }
-
-    unsafe fn from_raw(_: *mut ()) -> Self {
-        unreachable!();
+    fn to_addr(self) -> usize {
+        vm::ka2pa(self.block.into_raw())
     }
 }
 
-impl Table for ! {
-    const REAL: bool = false;
+impl PageTableEntry for PageTable2MBEntry {
+    type Page = Page4KB;
+    type Table = !;
 
-    fn into_raw(self) -> *mut () {
-        unreachable!();
+    type PageDescriptor = HugePageDescriptor;
+    type TableDescriptor = TableDescriptor;
+
+    fn bits(&self) -> u64 {
+        self.bits
     }
 
-    unsafe fn from_raw(_: *mut ()) -> Self {
-        unreachable!();
-    }
-}
-
-pub(crate) union Entry<L: Leaf, T: Table> {
-    raw: u64,
-    common: CommonDescriptor,
-    leaf: LeafDescriptor,
-    terminal: TerminalDescriptor,
-    table: TableDescriptor,
-    phantom_leaf: PhantomData<L>,
-    phantom_table: PhantomData<T>,
-}
-
-pub(crate) enum ResolvedEntry<L, T> {
-    Null,
-    Leaf(L),
-    Table(T),
-}
-
-impl<L: Leaf, T: Table> Entry<L, T> {
-    pub fn is_null(&self) -> bool {
-        unsafe { !self.common.present() }
-    }
-
-    pub fn is_leaf(&self) -> bool {
-        !self.is_null() && unsafe { self.common.leaf() }
-    }
-
-    pub fn is_table(&self) -> bool {
-        !self.is_null() && !self.is_leaf()
-    }
-
-    pub fn map(&mut self, leaf: L, permissions: Permissions) -> ResolvedEntry<L, T> {
-        let old = self.unmap();
-        let leaf = leaf.into_raw();
-        self.leaf = LeafDescriptor::new()
-            .with_present(true)
-            .with_leaf(true)
-            .with_address(vm::ka2pa(leaf) >> 13);
-        self.protect(permissions);
-        old
-    }
-
-    pub fn chain(&mut self, table: T, permissions: Permissions) -> ResolvedEntry<L, T> {
-        let old = self.unmap();
-        self.table = TableDescriptor::new()
-            .with_present(true)
-            .with_leaf(false)
-            .with_address(vm::ka2pa(table.into_raw()) >> 12);
-        self.protect(permissions);
-        old
-    }
-
-    pub fn protect(&mut self, permissions: Permissions) {
-        let x = unsafe { self.common };
-        self.common = match permissions {
-            Permissions::None => x.with_user(false),
-            Permissions::ReadOnly => x
-                .with_user(true)
-                .with_writeable(false)
-                .with_execute_disable(true),
-            Permissions::ReadWrite => x
-                .with_user(true)
-                .with_writeable(true)
-                .with_execute_disable(true),
-            Permissions::Executable => x
-                .with_user(true)
-                .with_writeable(false)
-                .with_execute_disable(false),
-            Permissions::All => x
-                .with_user(true)
-                .with_writeable(true)
-                .with_execute_disable(false),
-        };
-    }
-
-    pub fn unmap(&mut self) -> ResolvedEntry<L, T> {
-        let result = if self.is_null() {
-            ResolvedEntry::Null
-        } else if self.is_leaf() {
-            unsafe {
-                let descriptor = self.leaf;
-                let addr = descriptor.address() << L::ORDER;
-                let leaf = L::from_raw(vm::pa2ka(addr));
-                ResolvedEntry::Leaf(leaf)
-            }
-        } else {
-            unsafe {
-                let descriptor = self.table;
-                let addr = descriptor.address() << 12;
-                let table = T::from_raw(vm::pa2ka(addr));
-                ResolvedEntry::Table(table)
-            }
-        };
-        self.common = CommonDescriptor::new().with_present(false);
-        result
+    unsafe fn set_bits(&mut self, bits: u64) {
+        self.bits = bits;
     }
 }
 
-impl<L: Leaf, T: Table> core::fmt::Debug for Entry<L, T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if self.is_null() {
-            f.debug_tuple("Entry::Null").finish()
-        } else if self.is_leaf() {
-            f.debug_tuple("Entry::Leaf")
-                .field(unsafe { &self.leaf })
-                .finish()
-        } else if self.is_table() {
-            f.debug_tuple("Entry::Table")
-                .field(unsafe { &self.table })
-                .finish()
-        } else {
-            f.debug_tuple("Entry::Invalid")
-                .field(unsafe { &self.raw })
-                .finish()
-        }
+impl PageTableEntry for PageTable1GBEntry {
+    type Page = Page2MB;
+    type Table = PageTable2MB;
+
+    type PageDescriptor = HugePageDescriptor;
+    type TableDescriptor = TableDescriptor;
+
+    fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    unsafe fn set_bits(&mut self, bits: u64) {
+        self.bits = bits;
     }
 }
 
-impl<L: Leaf, T: Table> Drop for Entry<L, T> {
-    fn drop(&mut self) {
-        self.unmap();
+impl PageTableEntry for PageTable512GBEntry {
+    type Page = Page1GB;
+    type Table = PageTable1GB;
+
+    type PageDescriptor = HugePageDescriptor;
+    type TableDescriptor = TableDescriptor;
+
+    fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    unsafe fn set_bits(&mut self, bits: u64) {
+        self.bits = bits;
+    }
+}
+
+impl PageTableEntry for PageTable256TBEntry {
+    type Page = !;
+    type Table = PageTable512GB;
+
+    type PageDescriptor = HugePageDescriptor;
+    type TableDescriptor = TableDescriptor;
+
+    fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    unsafe fn set_bits(&mut self, bits: u64) {
+        self.bits = bits;
     }
 }

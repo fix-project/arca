@@ -127,7 +127,7 @@ impl BuddyAllocator {
     }
 
     fn get_index(&self, addr: *const u8, log2_size: usize) -> usize {
-        let addr = vm::ka2pa(addr) as usize;
+        let addr = vm::ka2pa(addr);
         assert!(addr.trailing_zeros() as usize >= log2_size);
         let index_in_level = addr >> log2_size;
         let level_offset = (1 << (self.log2_address_space_size - log2_size)) - 1;
