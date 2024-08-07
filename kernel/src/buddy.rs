@@ -32,8 +32,8 @@ pub(crate) unsafe fn init(mmap: multiboot::MemoryMap) {
 }
 
 impl BuddyAllocator {
-    const MIN_ALLOCATION: usize = 4096;
-    const LOG2_MIN_ALLOCATION: usize = 12;
+    pub const MIN_ALLOCATION: usize = 4096;
+    pub const LOG2_MIN_ALLOCATION: usize = 12;
 
     fn new(mmap: multiboot::MemoryMap) -> Self {
         let max_address = vm::ka2pa(mmap.fold(core::ptr::null(), |a, x| {
@@ -107,6 +107,14 @@ impl BuddyAllocator {
         }
 
         alloc
+    }
+
+    pub fn log2_address_space_size(&self) -> usize {
+        self.log2_address_space_size
+    }
+
+    pub fn address_space_size(&self) -> usize {
+        1 << self.log2_address_space_size()
     }
 
     fn mark_free_between(&mut self, start: *const u8, end: *const u8) {
@@ -272,13 +280,6 @@ pub struct Block<const N: usize> {
 pub type Page4KB = Block<12>;
 pub type Page2MB = Block<21>;
 pub type Page1GB = Block<30>;
-
-#[derive(Debug)]
-pub enum Page {
-    FourKB(Page4KB),
-    TwoMB(Page2MB),
-    OneGB(Page1GB),
-}
 
 impl<const N: usize> Block<N> {
     pub const ORDER: usize = N;

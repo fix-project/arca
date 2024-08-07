@@ -2,7 +2,6 @@ use core::alloc::GlobalAlloc;
 
 /**
  * TODO:
- * - coalesce blocks
  * - allocate more precise amounts from the buddy allocator
  */
 use crate::{

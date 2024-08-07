@@ -11,6 +11,10 @@
 #![feature(never_type)]
 #![feature(min_specialization)]
 #![feature(associated_type_defaults)]
+#![feature(const_slice_from_raw_parts_mut)]
+#![feature(sync_unsafe_cell)]
+#![feature(new_uninit)]
+#![feature(maybe_uninit_slice)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -28,6 +32,7 @@ pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
 pub mod paging;
+pub mod refcnt;
 pub mod spinlock;
 pub mod tsc;
 pub mod vm;

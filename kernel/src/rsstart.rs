@@ -15,7 +15,7 @@ use crate::{
     msr,
     multiboot::MultibootInfo,
     paging::{self, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
-    vm,
+    refcnt, vm,
 };
 
 extern "C" {
@@ -56,7 +56,7 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usi
 
         let _ = log::set_logger(&LOGGER);
         log::set_max_level(LevelFilter::Info);
-        init_buddy_allocator(multiboot);
+        init_allocators(multiboot);
 
         LazyCell::force(&*addr_of!(IDT));
         crate::cpuinfo::NCORES.store(ncores as usize, Ordering::Release);
@@ -118,7 +118,7 @@ unsafe fn init_bss() {
     bss.fill(0);
 }
 
-unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
+unsafe fn init_allocators(multiboot: *const MultibootInfo) {
     let multiboot: &MultibootInfo = &*multiboot;
     log::info!(
         "kernel command line: {:?}",
@@ -129,6 +129,7 @@ unsafe fn init_buddy_allocator(multiboot: *const MultibootInfo) {
         .expect("could not get memory map from bootloader");
 
     buddy::init(mmap);
+    refcnt::init();
 }
 
 unsafe fn init_cpu_tls() {
