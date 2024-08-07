@@ -47,6 +47,19 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
+static mut PAGE_MAP: LazyCell<PageTable256TB> = LazyCell::new(|| {
+    let mut pdpt = PageTable512GB::new();
+    for (i, entry) in pdpt.make_mut().iter_mut().enumerate() {
+        unsafe {
+            entry.map_raw(i << 30, Permissions::All);
+        }
+    }
+
+    let mut map = PageTable256TB::new();
+    map.make_mut()[256].chain(pdpt, Permissions::All);
+    map
+});
+
 #[no_mangle]
 unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usize) -> *mut u8 {
     asm!("cli");
@@ -78,15 +91,7 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usi
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
     // enable new page table
-    let mut pdpt = PageTable512GB::new();
-    for (i, entry) in pdpt.iter_mut().enumerate() {
-        entry.map_raw(i << 30, Permissions::All);
-    }
-
-    let mut map = PageTable256TB::new();
-    map[256].chain(pdpt, Permissions::All);
-
-    paging::set_page_table(map);
+    paging::set_page_table(PAGE_MAP.clone());
 
     let stack_top = init_cpu_stack(id);
 

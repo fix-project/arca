@@ -56,3 +56,8 @@ new_gdt:
 set_pt:
   mov cr3, rdi
   ret
+
+.globl get_pt
+get_pt:
+  mov rax, cr3
+  ret

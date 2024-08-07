@@ -15,6 +15,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_write_slice)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
