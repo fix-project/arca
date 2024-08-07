@@ -379,7 +379,7 @@ pub trait PageTableEntry: Sized + Clone {
     type Page: HardwarePage;
     type Table: HardwarePageTable;
     type PageDescriptor: Descriptor;
-    type TableDescriptor: Descriptor = TableDescriptor;
+    type TableDescriptor: Descriptor;
 
     fn bits(&self) -> u64;
 
