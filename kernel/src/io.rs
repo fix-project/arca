@@ -11,6 +11,10 @@ pub(crate) unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+pub(crate) unsafe fn outw(port: u16, value: u32) {
+    asm!("out dx, ax", in("dx") port, in("ax") value);
+}
+
 pub(crate) unsafe fn wait() {
     outb(0x80, 0);
 }

@@ -3,7 +3,7 @@ use std::{
     sync::LazyLock,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use xshell::{cmd, Shell};
 
@@ -75,20 +75,37 @@ fn build(sh: &Shell, package: &str, extra_flags: &[&str], target: &str) -> Resul
     Ok(executables)
 }
 
-fn run(
-    sh: &Shell,
-    loader: &Path,
-    kernel: &Path,
+struct Config<'a> {
+    loader: &'a Path,
+    kernel: &'a Path,
     smp: usize,
     debug: bool,
     gdb: bool,
-    args: &[String],
-) -> Result<()> {
+    args: &'a [String],
+    test: bool,
+}
+
+fn run(sh: &Shell, config: &Config) -> Result<()> {
+    let &Config {
+        loader,
+        kernel,
+        smp,
+        debug,
+        gdb,
+        args,
+        test,
+    } = config;
     let loader = loader.display().to_string();
     let kernel = kernel.display().to_string();
     let smp = smp.to_string();
 
     let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
+
+    let qemu = if test {
+        qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+    } else {
+        qemu
+    };
 
     let qemu = if debug {
         qemu.args(["-d", "guest_errors"])
@@ -142,7 +159,18 @@ fn main() -> Result<()> {
             let smp = smp
                 .or_else(|| std::thread::available_parallelism().ok().map(|x| x.get()))
                 .unwrap_or(1);
-            run(&sh, loader, kernel, smp, debug, gdb, &args)
+            run(
+                &sh,
+                &Config {
+                    loader,
+                    kernel,
+                    smp,
+                    debug,
+                    gdb,
+                    args: &args,
+                    test: false,
+                },
+            )
         }
         SubCommand::Test {
             release,
@@ -161,7 +189,19 @@ fn main() -> Result<()> {
                 .or_else(|| std::thread::available_parallelism().ok().map(|x| x.get()))
                 .unwrap_or(1);
             for test in tests {
-                run(&sh, loader, test, smp, true, gdb, &args)?;
+                run(
+                    &sh,
+                    &Config {
+                        loader,
+                        kernel: test,
+                        smp,
+                        debug: false,
+                        gdb,
+                        args: &args,
+                        test: true,
+                    },
+                )
+                .context("test failed")?;
             }
             Ok(())
         }

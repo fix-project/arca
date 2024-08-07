@@ -61,5 +61,8 @@ pub fn shutdown() -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log::error!("{}", info);
+    unsafe {
+        io::outw(0xf4, 1);
+    }
     shutdown()
 }
