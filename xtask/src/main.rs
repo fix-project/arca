@@ -1,4 +1,3 @@
-#![feature(lazy_cell)]
 use std::{
     path::{Path, PathBuf},
     sync::LazyLock,

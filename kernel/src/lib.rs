@@ -4,7 +4,6 @@
 #![feature(alloc_layout_extra)]
 #![feature(optimize_attribute)]
 #![feature(const_size_of_val)]
-#![feature(lazy_cell)]
 #![feature(const_for)]
 #![feature(const_mut_refs)]
 #![feature(const_trait_impl)]

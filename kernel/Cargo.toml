@@ -5,6 +5,7 @@ name = "kernel"
 version = "0.1.0"
 edition = "2021"
 forced-target = "x86_64-unknown-none"
+rust-version = "1.80"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
