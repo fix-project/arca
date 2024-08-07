@@ -6,7 +6,7 @@ use core::{
 use bitfield_struct::bitfield;
 
 use crate::{
-    buddy::{Page1GB, Page2MB, Page4KB},
+    refcnt::{Page1GB, Page2MB, Page4KB},
     vm,
 };
 
@@ -401,6 +401,20 @@ pub trait PageTableEntry {
         original
     }
 
+    /// # Safety
+    /// The physical address being mapped must not cause a violation of Rust's safety model.
+    unsafe fn map_raw(
+        &mut self,
+        addr: usize,
+        prot: Permissions,
+    ) -> UnmappedPage<Self::Page, Self::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.set_bits(Self::PageDescriptor::new(addr, prot).into_bits());
+        }
+        original
+    }
+
     fn chain(
         &mut self,
         table: Self::Table,
@@ -480,7 +494,7 @@ pub struct PageTable<T> {
 
 impl<T> PageTable<T> {
     pub fn new() -> Self {
-        let block = Page4KB::new().expect("could not allocate page table");
+        let block = Page4KB::new();
         let ptr = block.as_ptr();
         unsafe { core::slice::from_raw_parts_mut(ptr, 4096).fill(0) };
         let ptr = ptr as *mut [T; 512];

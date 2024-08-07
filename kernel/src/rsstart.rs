@@ -8,7 +8,7 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
-    buddy::{self, Block, Page2MB},
+    buddy::{self, Page2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
@@ -80,10 +80,7 @@ unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usi
     // enable new page table
     let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
-        entry.map(
-            Block::<30>::from_raw((i << 30) as *mut u8),
-            Permissions::All,
-        );
+        entry.map_raw(i << 30, Permissions::All);
     }
 
     let mut map = PageTable256TB::new();
