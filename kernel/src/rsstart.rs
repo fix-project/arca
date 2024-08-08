@@ -14,8 +14,11 @@ use crate::{
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
-    paging::{self, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
-    refcnt, vm,
+    paging::{
+        self, HardwarePageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions,
+    },
+    refcnt::{self, RcPage},
+    vm,
 };
 
 extern "C" {
@@ -47,17 +50,17 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-static mut PAGE_MAP: LazyCell<PageTable256TB> = LazyCell::new(|| {
+static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| {
     let mut pdpt = PageTable512GB::new();
-    for (i, entry) in pdpt.make_mut().iter_mut().enumerate() {
+    for (i, entry) in pdpt.iter_mut().enumerate() {
         unsafe {
             entry.map_raw(i << 30, Permissions::All);
         }
     }
 
     let mut map = PageTable256TB::new();
-    map.make_mut()[256].chain(pdpt, Permissions::All);
-    map
+    map[256].chain(pdpt.into(), Permissions::All);
+    map.into()
 });
 
 #[no_mangle]
@@ -151,10 +154,10 @@ unsafe fn init_cpu_tls() {
 }
 
 unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
-    let stack = Page2MB::new().expect("could not allocate stack");
+    let mut stack = Page2MB::new();
     log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.as_ptr());
 
-    let stack_bottom = stack.as_ptr();
+    let stack_bottom = stack.as_mut_ptr();
     let stack_top = stack_bottom.add(0x200000);
     core::mem::forget(stack);
     stack_top

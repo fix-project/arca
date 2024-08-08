@@ -4,10 +4,7 @@ use core::alloc::GlobalAlloc;
  * TODO:
  * - allocate more precise amounts from the buddy allocator
  */
-use crate::{
-    buddy::{Page1GB, Page2MB, Page4KB},
-    spinlock::SpinLock,
-};
+use crate::spinlock::SpinLock;
 
 struct HeapAllocator {
     head: SpinLock<Block>,
@@ -82,26 +79,11 @@ unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut
         // this block is too small, continue to next block
         if next.is_null() {
             // allocate another page
-            let (ptr, size) = if needed_size <= Page4KB::LENGTH {
-                let page = match Page4KB::new() {
-                    Some(page) => page,
-                    None => return core::ptr::null_mut(),
-                };
-                (page.into_raw(), Page4KB::LENGTH)
-            } else if needed_size <= Page2MB::LENGTH {
-                let page = match Page2MB::new() {
-                    Some(page) => page,
-                    None => return core::ptr::null_mut(),
-                };
-                (page.into_raw(), Page2MB::LENGTH)
-            } else if needed_size <= Page1GB::LENGTH {
-                let page = match Page1GB::new() {
-                    Some(page) => page,
-                    None => return core::ptr::null_mut(),
-                };
-                (page.into_raw(), Page1GB::LENGTH)
-            } else {
-                return core::ptr::null_mut();
+            let size = core::cmp::max(needed_size, crate::buddy::BuddyAllocator::MIN_ALLOCATION)
+                .next_power_of_two();
+            let (ptr, size) = match crate::buddy::allocate_bytes(size) {
+                Some(page) => page.to_raw_parts(),
+                None => return core::ptr::null_mut(),
             };
             let block: *mut Block = core::mem::transmute(ptr);
             *block = Block {

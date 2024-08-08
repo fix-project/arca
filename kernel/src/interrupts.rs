@@ -3,8 +3,7 @@ use core::cell::LazyCell;
 use crate::buddy::Page2MB;
 
 #[core_local]
-pub(crate) static INTERRUPT_STACK: LazyCell<Page2MB> =
-    LazyCell::new(|| Page2MB::new().expect("could not allocate interrupt stack"));
+pub(crate) static INTERRUPT_STACK: LazyCell<Page2MB> = LazyCell::new(Page2MB::new);
 
 #[repr(C)]
 #[derive(Debug)]

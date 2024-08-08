@@ -8,6 +8,9 @@
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_write_slice)]
+#![feature(maybe_uninit_uninit_array_transpose)]
+#![feature(maybe_uninit_array_assume_init)]
+#![feature(ptr_metadata)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -24,6 +27,7 @@ pub mod cpuinfo;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
+pub mod page;
 pub mod paging;
 pub mod refcnt;
 pub mod spinlock;

@@ -7,11 +7,7 @@ extern crate kernel;
 
 use core::arch::asm;
 
-use kernel::{
-    buddy::{Block, Page2MB},
-    halt, shutdown,
-    spinlock::SpinLock,
-};
+use kernel::{buddy::Page2MB, halt, shutdown, spinlock::SpinLock};
 
 static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
 
@@ -25,7 +21,7 @@ struct RegisterFile {
 }
 
 impl RegisterFile {
-    pub fn function<const N: usize>(f: extern "C" fn() -> !, stack: &mut Block<N>) -> RegisterFile {
+    pub fn function(f: extern "C" fn() -> !, stack: &mut [u8]) -> RegisterFile {
         let mut regs = RegisterFile {
             registers: [0; 16],
             rip: f as usize as u64,
@@ -81,8 +77,8 @@ extern "C" fn kmain() -> ! {
         log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
 
         log::info!("About to switch to user mode.");
-        let mut stack = Page2MB::new().unwrap();
-        let mut regs = RegisterFile::function(umain, &mut stack);
+        let mut stack = Page2MB::new();
+        let mut regs = RegisterFile::function(umain, &mut *stack);
         loop {
             let result = regs.step();
             if result.code == 0x100 && regs.registers[7] == 0 {

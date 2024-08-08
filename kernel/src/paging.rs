@@ -1,9 +1,10 @@
-use core::{marker::PhantomData, mem::MaybeUninit, ops::Deref};
+use core::marker::PhantomData;
 
 use bitfield_struct::bitfield;
 
 use crate::{
-    refcnt::{Page1GB, Page2MB, Page4KB},
+    page::Page,
+    refcnt::{Page1GB, Page2MB, Page4KB, RcPage},
     vm,
 };
 
@@ -12,10 +13,10 @@ extern "C" {
 }
 
 #[core_local]
-static mut CURRENT_PAGE_TABLE: Option<PageTable256TB> = None;
+static mut CURRENT_PAGE_TABLE: Option<RcPage<PageTable256TB>> = None;
 
-pub(crate) unsafe fn set_page_table(page_table: PageTable256TB) {
-    set_pt(page_table.addr());
+pub(crate) unsafe fn set_page_table(page_table: RcPage<PageTable256TB>) {
+    set_pt(vm::ka2pa(page_table.as_ptr()));
     CURRENT_PAGE_TABLE.replace(page_table);
 }
 
@@ -298,81 +299,28 @@ impl Descriptor for PageDescriptor {
     }
 }
 
-pub trait HardwarePage: Sized + Clone {
-    /// # Safety
-    /// This address must be a unique, valid physical address reference to a page.  In general the
-    /// only safe way to get one of these is using ::to_addr.
-    unsafe fn from_addr(addr: usize) -> Self;
-    fn to_addr(self) -> usize;
-}
+pub trait HardwarePage: Sized + Clone {}
+impl HardwarePage for Page4KB {}
+impl HardwarePage for Page2MB {}
+impl HardwarePage for Page1GB {}
+impl HardwarePage for ! {}
 
-impl HardwarePage for Page4KB {
-    unsafe fn from_addr(addr: usize) -> Self {
-        Self::from_raw(vm::pa2ka(addr))
-    }
-
-    fn to_addr(self) -> usize {
-        vm::ka2pa(self.into_raw())
+/// # Safety
+/// Structs implementing this trait must be valid page tables on this architecture, and must be
+/// safely zero-initializable.
+pub unsafe trait HardwarePageTable: Sized + Clone {
+    fn new() -> Page<Self> {
+        unsafe { Page::zeroed().assume_init() }
     }
 }
 
-impl HardwarePage for Page2MB {
-    unsafe fn from_addr(addr: usize) -> Self {
-        Self::from_raw(vm::pa2ka(addr))
-    }
-
-    fn to_addr(self) -> usize {
-        vm::ka2pa(self.into_raw())
-    }
-}
-
-impl HardwarePage for Page1GB {
-    unsafe fn from_addr(addr: usize) -> Self {
-        Self::from_raw(vm::pa2ka(addr))
-    }
-
-    fn to_addr(self) -> usize {
-        vm::ka2pa(self.into_raw())
-    }
-}
-
-impl HardwarePage for ! {
-    unsafe fn from_addr(_: usize) -> Self {
-        unreachable!();
-    }
-
-    fn to_addr(self) -> usize {
-        unreachable!();
-    }
-}
-
-pub trait HardwarePageTable: Sized + Clone {
-    /// # Safety
-    /// This address must be a unique, valid physical address reference to a page.  In general the
-    /// only safe way to get one of these is using ::to_addr.
-    unsafe fn from_addr(addr: usize) -> Self;
-    fn to_addr(self) -> usize;
-    fn addr(&self) -> usize;
-}
-
-impl HardwarePageTable for ! {
-    unsafe fn from_addr(_: usize) -> Self {
-        unreachable!();
-    }
-
-    fn to_addr(self) -> usize {
-        unreachable!();
-    }
-
-    fn addr(&self) -> usize {
-        unreachable!()
-    }
-}
+unsafe impl HardwarePageTable for ! {}
 
 pub enum UnmappedPage<P: HardwarePage, T: HardwarePageTable> {
     Null,
-    Page(P),
-    Table(T),
+    Page(RcPage<P>),
+    Global(usize),
+    Table(RcPage<T>),
 }
 
 pub trait PageTableEntry: Sized + Clone {
@@ -401,12 +349,12 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn map(
         &mut self,
-        page: Self::Page,
+        page: RcPage<Self::Page>,
         prot: Permissions,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            self.set_bits(Self::PageDescriptor::new(page.to_addr(), prot).into_bits());
+            self.set_bits(Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), prot).into_bits());
         }
         original
     }
@@ -427,12 +375,14 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn chain(
         &mut self,
-        table: Self::Table,
+        table: RcPage<Self::Table>,
         prot: Permissions,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            self.set_bits(Self::TableDescriptor::new(table.to_addr(), prot).into_bits());
+            self.set_bits(
+                Self::TableDescriptor::new(vm::ka2pa(table.into_raw()), prot).into_bits(),
+            );
         }
         original
     }
@@ -445,7 +395,7 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let page = Self::Page::from_addr(addr);
+                let page = RcPage::from_raw(vm::pa2ka(addr));
                 UnmappedPage::Page(page)
             }
         } else {
@@ -453,7 +403,7 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let table = Self::Table::from_addr(addr);
+                let table = RcPage::from_raw(vm::pa2ka(addr));
                 UnmappedPage::Table(table)
             }
         }
@@ -485,17 +435,20 @@ pub trait PageTableEntry: Sized + Clone {
             unsafe {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
-                let page = Self::Page::from_addr(addr);
-                let page = page.clone();
-                page.to_addr();
+                let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
+                let new = page.clone();
+                core::mem::forget(page);
+                core::mem::forget(new);
             }
         } else {
             unsafe {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
-                let table = Self::Table::from_addr(addr);
+                let table: RcPage<Self::Table> = RcPage::from_raw(vm::pa2ka(addr));
                 let table = table.clone();
-                table.to_addr();
+                let new = table.clone();
+                core::mem::forget(table);
+                core::mem::forget(new);
             }
         }
         unsafe { Self::new(self.bits()) }
@@ -519,80 +472,12 @@ pub type PageTable1GB = PageTable<PageTable1GBEntry>;
 pub type PageTable512GB = PageTable<PageTable512GBEntry>;
 pub type PageTable256TB = PageTable<PageTable256TBEntry>;
 
-#[derive(Debug, Clone)]
-pub struct PageTable<T: Clone> {
-    block: Page4KB,
-    _phantom: PhantomData<T>,
-}
+type PageTable<T> = [T; 512];
 
-impl<T: Clone> PageTable<T> {
-    #[allow(dead_code)]
-    const MUST_BE_4KB: () = {
-        assert!(core::mem::size_of::<T>() == 8);
-    };
-
-    pub fn new() -> Self {
-        let block = Page4KB::new();
-        let ptr = block.as_ptr();
-        unsafe { core::slice::from_raw_parts_mut(ptr, 4096).fill(0) };
-        Self {
-            block,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn make_mut(&mut self) -> &mut [T; 512] {
-        if !self.block.unique() {
-            // make a copy so we can safely mutate it
-            let new = Page4KB::new();
-            unsafe {
-                let new: *mut MaybeUninit<T> = core::mem::transmute(new.as_ptr());
-                let ptr: &mut [MaybeUninit<T>] = core::slice::from_raw_parts_mut(new, 512);
-                MaybeUninit::clone_from_slice(ptr, &**self);
-            }
-            self.block = new;
-        }
-        unsafe { &mut *(self.block.as_ptr() as *mut [T; 512]) }
-    }
-
-    fn ptr(&self) -> *mut [T; 512] {
-        self.block.as_ptr() as *mut [T; 512]
-    }
-}
-
-impl<T: Clone> Default for PageTable<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Clone> Deref for PageTable<T> {
-    type Target = [T; 512];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.ptr() }
-    }
-}
-
-impl<P: HardwarePage, T: HardwarePageTable> HardwarePageTable for PageTable<Entry<P, T>>
-where
-    Entry<P, T>: PageTableEntry,
-{
-    unsafe fn from_addr(addr: usize) -> Self {
-        Self {
-            block: Page4KB::from_raw(vm::pa2ka(addr)),
-            _phantom: PhantomData,
-        }
-    }
-
-    fn to_addr(self) -> usize {
-        vm::ka2pa(self.block.into_raw())
-    }
-
-    fn addr(&self) -> usize {
-        vm::ka2pa(self.block.as_ptr())
-    }
-}
+unsafe impl HardwarePageTable for PageTable2MB {}
+unsafe impl HardwarePageTable for PageTable1GB {}
+unsafe impl HardwarePageTable for PageTable512GB {}
+unsafe impl HardwarePageTable for PageTable256TB {}
 
 impl PageTableEntry for PageTable2MBEntry {
     type Page = Page4KB;

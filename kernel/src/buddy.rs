@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
 use core::cell::OnceCell;
-use core::ops::Deref;
+use core::mem::MaybeUninit;
+use core::ptr::NonNull;
 
+use crate::page::Page;
 use crate::spinlock::SpinLock;
 use crate::{multiboot, vm};
 
@@ -82,16 +84,16 @@ impl BuddyAllocator {
             }; 64],
         };
 
-        let meta_start = free_bitmap_ptr;
+        let meta_start = free_bitmap_ptr as *mut ();
         log::trace!("{meta_start:p}");
-        let meta_end = unsafe { meta_start.add(metadata_space) };
+        let meta_end = unsafe { meta_start.byte_add(metadata_space) };
         for map in mmap {
             log::trace!("{:?}", map);
             if map.available() {
-                let start = map.base() as *const u8;
-                let end = unsafe { start.add(map.len()) };
+                let start = map.base();
+                let end = unsafe { start.byte_add(map.len()) };
                 log::trace!("{start:p} {end:p}");
-                let cutoff = low_memory_cutoff as *const u8;
+                let cutoff = low_memory_cutoff;
                 if end < cutoff {
                     continue;
                 }
@@ -117,7 +119,7 @@ impl BuddyAllocator {
         1 << self.log2_address_space_size()
     }
 
-    fn mark_free_between(&mut self, start: *const u8, end: *const u8) {
+    fn mark_free_between(&mut self, start: *const (), end: *const ()) {
         log::trace!("marking free between {start:p} and {end:p}");
         let start = vm::ka2pa(start);
         let end = vm::ka2pa(end);
@@ -134,7 +136,7 @@ impl BuddyAllocator {
         }
     }
 
-    fn get_index(&self, addr: *const u8, log2_size: usize) -> usize {
+    fn get_index(&self, addr: *const (), log2_size: usize) -> usize {
         let addr = vm::ka2pa(addr);
         assert!(addr.trailing_zeros() as usize >= log2_size);
         let index_in_level = addr >> log2_size;
@@ -142,7 +144,7 @@ impl BuddyAllocator {
         level_offset + index_in_level
     }
 
-    fn get_allocation(&self, index: usize) -> (*mut u8, usize) {
+    fn get_allocation(&self, index: usize) -> (*mut (), usize) {
         let leading = 63 - (index + 1).leading_zeros() as usize;
         let log2_size = self.log2_address_space_size - leading;
         let level_offset = ((1 << leading) - 1) as usize;
@@ -166,7 +168,7 @@ impl BuddyAllocator {
         }
     }
 
-    unsafe fn free_block(&mut self, addr: *mut u8, log2_size: usize) {
+    unsafe fn free_block(&mut self, addr: *mut (), log2_size: usize) {
         assert!(log2_size < self.log2_address_space_size);
         log::trace!("freeing block {addr:p}({log2_size})");
         let index = self.get_index(addr, log2_size);
@@ -208,7 +210,35 @@ impl BuddyAllocator {
         log::trace!("freed block {addr:p}({log2_size})");
     }
 
-    fn alloc_block(&mut self, log2_size: usize) -> *mut u8 {
+    pub const fn allocation_size<T: Sized>() -> usize {
+        let size = core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        let bigger = if size >= align { size } else { align };
+        if bigger <= Self::MIN_ALLOCATION {
+            Self::MIN_ALLOCATION
+        } else {
+            bigger.next_power_of_two()
+        }
+    }
+
+    pub fn allocate<T>(&mut self) -> *mut MaybeUninit<T> {
+        let size = Self::allocation_size::<T>();
+        unsafe { core::mem::transmute(self.alloc_block(size.trailing_zeros() as usize)) }
+    }
+
+    /// # Safety
+    /// This pointer must have come from [allocate], and must have been allocated as a layout-compatible type.
+    pub unsafe fn liberate<T>(&mut self, ptr: *mut T) {
+        let size = Self::allocation_size::<T>();
+        unsafe {
+            self.free_block(
+                core::mem::transmute::<*mut T, *mut ()>(ptr),
+                size.trailing_zeros() as usize,
+            )
+        };
+    }
+
+    fn alloc_block(&mut self, log2_size: usize) -> *mut () {
         log::trace!("allocating block ({log2_size})");
         if log2_size > self.log2_address_space_size {
             log::error!("block too large");
@@ -218,12 +248,12 @@ impl BuddyAllocator {
         let head = list.next;
         if !head.is_null() {
             log::trace!("found free list");
-            let ptr: *mut u8 = unsafe {
+            let ptr: *mut () = unsafe {
                 list.next = (*head).next;
                 if !list.next.is_null() {
                     (*list.next).prev = list;
                 }
-                core::mem::transmute::<*mut FreeBlock, *mut u8>(head)
+                core::mem::transmute::<*mut FreeBlock, *mut ()>(head)
             };
             let index = self.get_index(ptr, log2_size);
             assert!(self.is_block_free_bitmap(index));
@@ -239,7 +269,7 @@ impl BuddyAllocator {
             return bigger;
         }
         log::trace!("splitting block {bigger:p}({})", log2_size + 1);
-        let upper = unsafe { bigger.add(1 << log2_size) };
+        let upper = unsafe { bigger.byte_add(1 << log2_size) };
         let lower = bigger;
 
         let index_h = self.get_index(upper, log2_size);
@@ -255,73 +285,45 @@ impl BuddyAllocator {
     }
 }
 
-pub fn allocate<const N: usize>() -> Option<Block<N>> {
+pub fn allocate<T>() -> Option<NonNull<MaybeUninit<T>>> {
     let mut lock = PHYSICAL_ALLOCATOR.lock();
     let buddy = lock.get_mut().expect("physical allocator not initialized");
-    let base = buddy.alloc_block(N);
-    if base.is_null() {
-        None
-    } else {
-        Some(Block { base })
-    }
+    let base = buddy.allocate::<T>();
+    NonNull::new(base)
 }
 
-pub fn liberate<const N: usize>(block: Block<N>) {
+pub fn allocate_bytes(n: usize) -> Option<NonNull<[u8]>> {
     let mut lock = PHYSICAL_ALLOCATOR.lock();
     let buddy = lock.get_mut().expect("physical allocator not initialized");
-    unsafe { buddy.free_block(block.base, N) }
+    let size = n.next_power_of_two();
+    let base = buddy.alloc_block(size.trailing_zeros() as usize);
+    Some(NonNull::slice_from_raw_parts(
+        NonNull::new(base as *mut u8)?,
+        size,
+    ))
 }
 
-#[derive(Debug)]
-pub struct Block<const N: usize> {
-    base: *mut u8,
+/// # Safety
+/// This pointer must have been allocated using [allocate] as the same type, or a type with
+/// the same layout.
+pub unsafe fn liberate<T>(ptr: *mut T) {
+    let mut lock = PHYSICAL_ALLOCATOR.lock();
+    let buddy = lock.get_mut().expect("physical allocator not initialized");
+    unsafe { buddy.liberate(ptr) }
 }
 
-pub type Page4KB = Block<12>;
-pub type Page2MB = Block<21>;
-pub type Page1GB = Block<30>;
-
-impl<const N: usize> Block<N> {
-    pub const ORDER: usize = N;
-    pub const LENGTH: usize = (1 << N);
-
-    pub fn new() -> Option<Block<N>> {
-        allocate::<N>()
-    }
-
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.base
-    }
-
-    pub fn into_raw(self) -> *mut u8 {
-        let p = self.base;
-        core::mem::forget(self);
-        p
-    }
-
-    /// # Safety
-    /// This pointer must correspond to the beginning of a valid, non-aliased block with the
-    /// specified size (e.g., one created using `into_raw`).
-    pub unsafe fn from_raw(raw: *mut u8) -> Block<N> {
-        Block { base: raw }
-    }
+/// # Safety
+/// This slice must have been allocated using [allocate_bytes] with the same size.
+pub unsafe fn liberate_bytes(ptr: *mut [u8]) {
+    let mut lock = PHYSICAL_ALLOCATOR.lock();
+    let buddy = lock.get_mut().expect("physical allocator not initialized");
+    let (ptr, len) = ptr.to_raw_parts();
+    unsafe { buddy.free_block(ptr, len.trailing_zeros() as usize) }
 }
 
-impl<const N: usize> Drop for Block<N> {
-    fn drop(&mut self) {
-        let mut lock = PHYSICAL_ALLOCATOR.lock();
-        let buddy = lock.get_mut().expect("physical allocator not initialized");
-        unsafe { buddy.free_block(self.base, N) }
-    }
-}
-
-impl<const N: usize> Deref for Block<N> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(self.base, 1 << N) }
-    }
-}
+pub type Page4KB = Page<[u8; 1 << 12]>;
+pub type Page2MB = Page<[u8; 1 << 21]>;
+pub type Page1GB = Page<[u8; 1 << 30]>;
 
 #[cfg(test)]
 mod tests {
@@ -329,13 +331,13 @@ mod tests {
 
     #[test]
     pub fn test_alloc() {
-        Page4KB::new().unwrap();
+        Page4KB::new();
     }
 
     #[bench]
     pub fn bench_alloc_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let x = Page4KB::new().unwrap();
+            let x = Page4KB::new();
             core::mem::forget(x);
         });
     }
@@ -343,14 +345,14 @@ mod tests {
     #[bench]
     pub fn bench_alloc_free_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = Page4KB::new().unwrap();
+            let _ = Page4KB::new();
         });
     }
 
     #[bench]
     pub fn bench_alloc_free_2mb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = Page2MB::new().unwrap();
+            let _ = Page2MB::new();
         });
     }
 }
