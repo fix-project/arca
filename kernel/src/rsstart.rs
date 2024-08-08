@@ -54,7 +54,7 @@ static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| {
     let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
         unsafe {
-            entry.map_raw(i << 30, Permissions::All);
+            entry.map_global(i << 30, Permissions::All);
         }
     }
 

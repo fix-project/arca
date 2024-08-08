@@ -57,7 +57,13 @@ pub fn halt() -> ! {
 
 pub fn shutdown() -> ! {
     unsafe {
+        // it's very unlikely the zero page contains a valid page table
         core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0);
+        // since the kernel is marked as global we need to manually invalidate the relevant TLB
+        // entry
+        core::arch::asm!("invlpg [{addr}]", addr=in(reg) &shutdown);
+        // we need the invalidation to go through before executing any future instructions
+        core::arch::asm!("serialize");
     }
     halt();
 }

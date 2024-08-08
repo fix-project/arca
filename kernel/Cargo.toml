@@ -12,6 +12,7 @@ rust-version = "1.80"
 [[bin]]
 name = "kernel"
 harness = false
+test = false
 
 [dependencies]
 bitfield-struct = "0.7.0"

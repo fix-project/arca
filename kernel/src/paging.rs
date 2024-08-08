@@ -53,6 +53,9 @@ pub trait Descriptor: Default {
     fn set_execute_disable(&mut self, execute_disable: bool) -> &mut Self;
     fn execute_disable(&self) -> bool;
 
+    fn set_global(&mut self, global: bool) -> &mut Self;
+    fn global(&self) -> bool;
+
     fn set_permissions(&mut self, perm: Permissions) -> &mut Self {
         match perm {
             Permissions::None => {
@@ -205,6 +208,14 @@ impl Descriptor for TableDescriptor {
     fn execute_disable(&self) -> bool {
         self.execute_disable()
     }
+
+    fn set_global(&mut self, _: bool) -> &mut Self {
+        unreachable!();
+    }
+
+    fn global(&self) -> bool {
+        unreachable!();
+    }
 }
 
 impl Descriptor for HugePageDescriptor {
@@ -251,6 +262,15 @@ impl Descriptor for HugePageDescriptor {
     fn execute_disable(&self) -> bool {
         self.execute_disable()
     }
+
+    fn set_global(&mut self, global: bool) -> &mut Self {
+        self.set_global(global);
+        self
+    }
+
+    fn global(&self) -> bool {
+        self.global()
+    }
 }
 
 impl Descriptor for PageDescriptor {
@@ -296,6 +316,15 @@ impl Descriptor for PageDescriptor {
 
     fn execute_disable(&self) -> bool {
         self.execute_disable()
+    }
+
+    fn set_global(&mut self, global: bool) -> &mut Self {
+        self.set_global(global);
+        self
+    }
+
+    fn global(&self) -> bool {
+        self.global()
     }
 }
 
@@ -361,14 +390,16 @@ pub trait PageTableEntry: Sized + Clone {
 
     /// # Safety
     /// The physical address being mapped must not cause a violation of Rust's safety model.
-    unsafe fn map_raw(
+    unsafe fn map_global(
         &mut self,
         addr: usize,
         prot: Permissions,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            self.set_bits(Self::PageDescriptor::new(addr, prot).into_bits());
+            let mut desc = Self::PageDescriptor::new(addr, prot);
+            desc.set_global(true);
+            self.set_bits(desc.into_bits());
         }
         original
     }
@@ -395,8 +426,12 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let page = RcPage::from_raw(vm::pa2ka(addr));
-                UnmappedPage::Page(page)
+                if descriptor.global() {
+                    UnmappedPage::Global(addr)
+                } else {
+                    let page = RcPage::from_raw(vm::pa2ka(addr));
+                    UnmappedPage::Page(page)
+                }
             }
         } else {
             unsafe {
@@ -434,11 +469,13 @@ pub trait PageTableEntry: Sized + Clone {
         } else if self.leaf() {
             unsafe {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
-                let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
-                let new = page.clone();
-                core::mem::forget(page);
-                core::mem::forget(new);
+                if !descriptor.global() {
+                    let addr = descriptor.address();
+                    let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
+                    let new = page.clone();
+                    core::mem::forget(page);
+                    core::mem::forget(new);
+                }
             }
         } else {
             unsafe {
