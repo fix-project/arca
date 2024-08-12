@@ -5,55 +5,11 @@ extern crate alloc;
 
 extern crate kernel;
 
-use core::arch::asm;
+use core::{arch::asm, ptr::addr_of_mut};
 
-use kernel::{buddy::Page2MB, halt, shutdown, spinlock::SpinLock};
+use kernel::{arca::Arca, buddy::Page4KB, cpu::Register, halt, shutdown, spinlock::SpinLock};
 
 static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
-
-#[repr(C)]
-#[derive(Debug)]
-struct RegisterFile {
-    registers: [u64; 16],
-    rip: u64,
-    flags: u64,
-    mode: u64,
-}
-
-impl RegisterFile {
-    pub fn function(f: extern "C" fn() -> !, stack: &mut [u8]) -> RegisterFile {
-        let mut regs = RegisterFile {
-            registers: [0; 16],
-            rip: f as usize as u64,
-            flags: 0x202,
-            mode: 1,
-        };
-        regs.registers[4] = unsafe { stack.as_ptr().add(stack.len()) as u64 };
-        regs
-    }
-
-    pub fn step(&mut self) -> ExitStatus {
-        let syscall_safe =
-            self.registers[1] == self.rip && self.registers[11] == self.flags && self.mode == 1;
-        if syscall_safe {
-            unsafe { syscall_call_user(self) }
-        } else {
-            unsafe { isr_call_user(self) }
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct ExitStatus {
-    code: u64,
-    error: u64,
-}
-
-extern "C" {
-    fn syscall_call_user(registers: &mut RegisterFile) -> ExitStatus;
-    fn isr_call_user(registers: &mut RegisterFile) -> ExitStatus;
-}
 
 #[no_mangle]
 #[inline(never)]
@@ -76,15 +32,32 @@ extern "C" fn kmain() -> ! {
         log::info!("All {} cores done!", kernel::cpuinfo::ncores());
         log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
 
-        log::info!("About to switch to user mode.");
-        let mut stack = Page2MB::new();
-        let mut regs = RegisterFile::function(umain, &mut *stack);
+        let stack = Page4KB::new();
+        let mut arca = Arca::new();
+        arca.registers_mut()[Register::RSP] = unsafe { stack.as_ptr().add(stack.len()) as u64 };
+        arca.registers_mut()[Register::RIP] = umain as usize as u64;
+        let cpu = unsafe { &mut *addr_of_mut!(kernel::cpu::CPU) };
+        let mut cpu = cpu.borrow_mut();
+        let mut arca = arca.load(&mut cpu);
+        log::info!("About to switch to user mode!");
         loop {
-            let result = regs.step();
-            if result.code == 0x100 && regs.registers[7] == 0 {
-                break;
+            let result = arca.run();
+            if result.code == 0x100 || result.code == 0x80 {
+                if arca.registers()[Register::RDI] == 0 {
+                    break;
+                }
+            } else {
+                let registers = arca.registers();
+                log::error!("unexpected exit: {result:?} with status {registers:#x?}");
+                let mut cr2: u64;
+                unsafe {
+                    asm!("mov {cr2}, cr2", cr2=out(reg)cr2);
+                }
+                log::error!("CR2: {cr2:x}");
+                shutdown();
             }
         }
+        let _ = arca.unload();
         log::info!("Shutting down.");
         shutdown();
     }

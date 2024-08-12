@@ -50,16 +50,18 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| {
+pub(crate) static mut KERNEL_PAGES: LazyCell<RcPage<PageTable512GB>> = LazyCell::new(|| unsafe {
     let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
-        unsafe {
-            entry.map_global(i << 30, Permissions::All);
-        }
+        entry.map_global(i << 30, Permissions::None);
     }
+    pdpt.into()
+});
 
+pub(crate) static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| unsafe {
+    let pdpt = KERNEL_PAGES.clone();
     let mut map = PageTable256TB::new();
-    map[256].chain(pdpt.into(), Permissions::All);
+    map[256].chain(pdpt, Permissions::None);
     map.into()
 });
 

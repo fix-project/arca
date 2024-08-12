@@ -53,13 +53,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         crate::shutdown();
     }
     if registers.isr < 32 {
-        log::error!("unhandled exception: {:x?}", registers);
+        panic!("unhandled exception: {:x?}", registers);
     }
     if registers.isr == 0x30 {
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-    }
-
-    if registers.isr != 0x30 {
-        log::error!("unhandled system ISR: {:x?}", registers);
+    } else {
+        panic!("unhandled system ISR: {:x?}", registers);
     }
 }

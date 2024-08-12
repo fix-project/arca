@@ -11,6 +11,7 @@
 #![feature(maybe_uninit_uninit_array_transpose)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(ptr_metadata)]
+#![feature(negative_impls)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -22,7 +23,9 @@ pub extern crate macros;
 pub use macros::core_local;
 
 pub mod allocator;
+pub mod arca;
 pub mod buddy;
+pub mod cpu;
 pub mod cpuinfo;
 pub mod debugcon;
 pub mod io;

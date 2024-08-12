@@ -1,5 +1,6 @@
 use core::{
     mem::MaybeUninit,
+    ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -59,6 +60,35 @@ impl<T> RcPage<T> {
             ptr,
             refcnt: refcnt(ptr),
         }
+    }
+}
+
+impl<T: Clone> RcPage<T> {
+    pub fn make_mut(&mut self) -> &mut T {
+        unsafe {
+            if (*self.refcnt).load(Ordering::SeqCst) == 1 {
+                // only reference; access is safe
+                return &mut *self.ptr;
+            }
+            let copied = Page::from((*self.ptr).clone());
+            if (*self.refcnt).fetch_sub(1, Ordering::SeqCst) == 1 {
+                // now only reference; discard clone
+                (*self.refcnt).store(1, Ordering::SeqCst);
+                return &mut *self.ptr;
+            }
+            self.ptr = copied.into_raw();
+            self.refcnt = refcnt(self.ptr);
+            (*self.refcnt).store(1, Ordering::SeqCst);
+            &mut *self.ptr
+        }
+    }
+}
+
+impl<T> Deref for RcPage<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.ptr }
     }
 }
 
