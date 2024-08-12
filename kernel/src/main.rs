@@ -5,9 +5,15 @@ extern crate alloc;
 
 extern crate kernel;
 
-use core::{arch::asm, ptr::addr_of_mut};
+use core::arch::asm;
 
-use kernel::{arca::Arca, buddy::Page4KB, cpu::Register, halt, shutdown, spinlock::SpinLock};
+use kernel::{
+    arca::Arca,
+    buddy::Page4KB,
+    cpu::{Register, CPU},
+    halt, shutdown,
+    spinlock::SpinLock,
+};
 
 static DONE_COUNT: SpinLock<usize> = SpinLock::new(0);
 
@@ -44,8 +50,7 @@ extern "C" fn kmain() -> ! {
         arca1.registers_mut()[Register::RSP] = unsafe { stack1.as_ptr().add(stack1.len()) as u64 };
         arca1.registers_mut()[Register::RIP] = umain as usize as u64;
 
-        let cpu = unsafe { &mut *addr_of_mut!(kernel::cpu::CPU) };
-        let mut cpu = cpu.borrow_mut();
+        let mut cpu = CPU.borrow_mut();
         let mut arca = arca0.load(&mut cpu);
         let mut other = arca1;
         log::info!("About to switch to user mode!");

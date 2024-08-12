@@ -6,7 +6,7 @@ use core::{
 use crate::{paging::PageTable256TB, refcnt::RcPage, vm::ka2pa};
 
 #[core_local]
-pub static mut CPU: RefCell<Cpu> = RefCell::new(Cpu {
+pub static CPU: RefCell<Cpu> = RefCell::new(Cpu {
     current_page_table: None,
 });
 
