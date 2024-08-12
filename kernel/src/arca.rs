@@ -76,4 +76,13 @@ impl LoadedArca<'_> {
             page_table,
         }
     }
+
+    pub fn swap(&mut self, other: &mut Arca) {
+        other.page_table = unsafe {
+            self.cpu
+                .activate_page_table(other.page_table.clone())
+                .unwrap()
+        };
+        core::mem::swap(&mut self.register_file, &mut other.register_file);
+    }
 }
