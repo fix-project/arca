@@ -9,9 +9,11 @@ use core::arch::asm;
 
 use kernel::{
     arca::Arca,
-    buddy::Page4KB,
+    buddy::Page2MB,
     cpu::{Register, CPU},
-    halt, shutdown,
+    halt,
+    paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry, Permissions},
+    shutdown,
     spinlock::SpinLock,
 };
 
@@ -38,17 +40,27 @@ extern "C" fn kmain() -> ! {
         log::info!("All {} cores done!", kernel::cpuinfo::ncores());
         log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
 
-        let stack0 = Page4KB::new();
         let mut arca0 = Arca::new();
         arca0.registers_mut()[Register::RDI] = 0;
-        arca0.registers_mut()[Register::RSP] = unsafe { stack0.as_ptr().add(stack0.len()) as u64 };
+        arca0.registers_mut()[Register::RSP] = 1 << 21;
         arca0.registers_mut()[Register::RIP] = umain as usize as u64;
+        let stack0 = Page2MB::new();
+        let mut pd = PageTable1GB::new();
+        pd[0].map(stack0.into(), Permissions::All);
+        let mut pdpt = PageTable512GB::new();
+        pdpt[0].chain(pd.into(), Permissions::All);
+        arca0.mappings_mut().chain(pdpt.into(), Permissions::All);
 
-        let stack1 = Page4KB::new();
         let mut arca1 = Arca::new();
         arca1.registers_mut()[Register::RDI] = 1;
-        arca1.registers_mut()[Register::RSP] = unsafe { stack1.as_ptr().add(stack1.len()) as u64 };
+        arca1.registers_mut()[Register::RSP] = 1 << 21;
         arca1.registers_mut()[Register::RIP] = umain as usize as u64;
+        let stack1 = Page2MB::new();
+        let mut pd = PageTable1GB::new();
+        pd[0].map(stack1.into(), Permissions::All);
+        let mut pdpt = PageTable512GB::new();
+        pdpt[0].chain(pd.into(), Permissions::All);
+        arca1.mappings_mut().chain(pdpt.into(), Permissions::All);
 
         let mut cpu = CPU.borrow_mut();
         let mut arca = arca0.load(&mut cpu);

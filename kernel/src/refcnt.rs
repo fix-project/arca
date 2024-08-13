@@ -28,9 +28,13 @@ fn refcnt<T>(ptr: *const T) -> *const AtomicUsize {
     unsafe { &REFERENCE_COUNTS.assume_init_ref()[addr / 4096] }
 }
 
-pub type Page4KB = RcPage<[u8; 1 << 12]>;
-pub type Page2MB = RcPage<[u8; 1 << 21]>;
-pub type Page1GB = RcPage<[u8; 1 << 30]>;
+pub type Page4KB = [u8; 1 << 12];
+pub type Page2MB = [u8; 1 << 21];
+pub type Page1GB = [u8; 1 << 30];
+
+pub type RcPage4KB = RcPage<[u8; 1 << 12]>;
+pub type RcPage2MB = RcPage<[u8; 1 << 21]>;
+pub type RcPage1GB = RcPage<[u8; 1 << 30]>;
 
 #[derive(Debug)]
 pub struct RcPage<T> {

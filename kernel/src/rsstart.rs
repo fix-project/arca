@@ -15,7 +15,7 @@ use crate::{
     msr,
     multiboot::MultibootInfo,
     paging::{
-        self, HardwarePageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions,
+        self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions,
     },
     refcnt::{self, RcPage},
     vm,

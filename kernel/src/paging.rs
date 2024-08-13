@@ -20,6 +20,7 @@ pub(crate) unsafe fn set_page_table(page_table: RcPage<PageTable256TB>) {
     CURRENT_PAGE_TABLE.replace(page_table);
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum Permissions {
     None,
     ReadOnly,
@@ -28,7 +29,7 @@ pub enum Permissions {
     All,
 }
 
-pub trait Descriptor: Default {
+pub trait Descriptor: Default + core::fmt::Debug {
     fn new(addr: usize, perm: Permissions) -> Self {
         let mut x: Self = Default::default();
         x.set_address(addr);
@@ -337,15 +338,15 @@ impl HardwarePage for ! {}
 /// # Safety
 /// Structs implementing this trait must be valid page tables on this architecture, and must be
 /// safely zero-initializable.
-pub unsafe trait HardwarePageTable: Sized + Clone {
+pub unsafe trait PageTable: Sized + Clone {
     fn new() -> Page<Self> {
         unsafe { Page::zeroed().assume_init() }
     }
 }
 
-unsafe impl HardwarePageTable for ! {}
+unsafe impl PageTable for ! {}
 
-pub enum UnmappedPage<P: HardwarePage, T: HardwarePageTable> {
+pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     Null,
     Page(RcPage<P>),
     Global(usize),
@@ -353,8 +354,8 @@ pub enum UnmappedPage<P: HardwarePage, T: HardwarePageTable> {
 }
 
 pub trait PageTableEntry: Sized + Clone {
-    type Page: HardwarePage;
-    type Table: HardwarePageTable;
+    type Page: HardwarePage + core::fmt::Debug;
+    type Table: PageTable + core::fmt::Debug;
     type PageDescriptor: Descriptor;
     type TableDescriptor: Descriptor;
 
@@ -493,7 +494,8 @@ pub trait PageTableEntry: Sized + Clone {
 }
 
 #[repr(transparent)]
-pub struct Entry<P: HardwarePage, T: HardwarePageTable> {
+#[derive(Debug)]
+pub struct Entry<P: HardwarePage, T: PageTable> {
     bits: u64,
     _page: PhantomData<P>,
     _table: PhantomData<T>,
@@ -504,17 +506,15 @@ pub type PageTable1GBEntry = Entry<Page2MB, PageTable2MB>;
 pub type PageTable512GBEntry = Entry<Page1GB, PageTable1GB>;
 pub type PageTable256TBEntry = Entry<!, PageTable512GB>;
 
-pub type PageTable2MB = PageTable<PageTable2MBEntry>;
-pub type PageTable1GB = PageTable<PageTable1GBEntry>;
-pub type PageTable512GB = PageTable<PageTable512GBEntry>;
-pub type PageTable256TB = PageTable<PageTable256TBEntry>;
+pub type PageTable2MB = [PageTable2MBEntry; 512];
+pub type PageTable1GB = [PageTable1GBEntry; 512];
+pub type PageTable512GB = [PageTable512GBEntry; 512];
+pub type PageTable256TB = [PageTable256TBEntry; 512];
 
-type PageTable<T> = [T; 512];
-
-unsafe impl HardwarePageTable for PageTable2MB {}
-unsafe impl HardwarePageTable for PageTable1GB {}
-unsafe impl HardwarePageTable for PageTable512GB {}
-unsafe impl HardwarePageTable for PageTable256TB {}
+unsafe impl PageTable for PageTable2MB {}
+unsafe impl PageTable for PageTable1GB {}
+unsafe impl PageTable for PageTable512GB {}
+unsafe impl PageTable for PageTable256TB {}
 
 impl PageTableEntry for PageTable2MBEntry {
     type Page = Page4KB;

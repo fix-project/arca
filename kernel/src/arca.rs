@@ -1,6 +1,6 @@
 use crate::{
     cpu::{Cpu, ExitStatus, RegisterFile},
-    paging::{HardwarePageTable, PageTable256TB, PageTableEntry, Permissions},
+    paging::{PageTable, PageTable256TB, PageTable256TBEntry, PageTableEntry, Permissions},
     refcnt::RcPage,
 };
 
@@ -16,6 +16,7 @@ impl Arca {
         let kernel = pdpt.make_mut();
         kernel[0].protect(Permissions::All);
         page_table[256].chain(pdpt, Permissions::All);
+
         let register_file = RegisterFile::new();
         Arca {
             page_table: page_table.into(),
@@ -37,6 +38,14 @@ impl Arca {
 
     pub fn registers_mut(&mut self) -> &mut RegisterFile {
         &mut self.register_file
+    }
+
+    pub fn mappings(&self) -> &PageTable256TBEntry {
+        &self.page_table[0]
+    }
+
+    pub fn mappings_mut(&mut self) -> &mut PageTable256TBEntry {
+        &mut self.page_table.make_mut()[0]
     }
 }
 
