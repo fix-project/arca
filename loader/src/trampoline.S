@@ -89,6 +89,7 @@ protected_mode:
   mov ecx, 0xC0000080
   rdmsr
   or eax, 0x00000101
+  or eax, 0x00000800 // enable NX
   wrmsr
 
   // enable paging

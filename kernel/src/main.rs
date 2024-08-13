@@ -49,7 +49,9 @@ extern "C" fn kmain() -> ! {
         pd[0].map(stack0.into(), Permissions::All);
         let mut pdpt = PageTable512GB::new();
         pdpt[0].chain(pd.into(), Permissions::All);
-        arca0.mappings_mut().chain(pdpt.into(), Permissions::All);
+        arca0
+            .mappings_mut()
+            .chain(pdpt.into(), Permissions::ReadWrite);
 
         let mut arca1 = Arca::new();
         arca1.registers_mut()[Register::RDI] = 1;
@@ -57,10 +59,12 @@ extern "C" fn kmain() -> ! {
         arca1.registers_mut()[Register::RIP] = umain as usize as u64;
         let stack1 = Page2MB::new();
         let mut pd = PageTable1GB::new();
-        pd[0].map(stack1.into(), Permissions::All);
+        pd[0].map(stack1.into(), Permissions::ReadWrite);
         let mut pdpt = PageTable512GB::new();
-        pdpt[0].chain(pd.into(), Permissions::All);
-        arca1.mappings_mut().chain(pdpt.into(), Permissions::All);
+        pdpt[0].chain(pd.into(), Permissions::ReadWrite);
+        arca1
+            .mappings_mut()
+            .chain(pdpt.into(), Permissions::ReadWrite);
 
         let mut cpu = CPU.borrow_mut();
         let mut arca = arca0.load(&mut cpu);
@@ -74,7 +78,11 @@ extern "C" fn kmain() -> ! {
                     1 => {
                         arca.swap(&mut other);
                     }
-                    2 => {}
+                    2 => {
+                        let saved = arca.unload();
+                        arca = saved.load(&mut cpu);
+                    }
+                    3 => {}
                     x => {
                         unimplemented!("syscall {x}");
                     }
@@ -104,17 +112,23 @@ unsafe extern "C" fn umain(id: u64) -> ! {
     let iters = 0x1000;
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
-            asm!("int 0x80", in("rdi")2);
+            asm!("int 0x80", in("rdi")3);
         }
     });
     log::info!("{id}: Software Interrupt took {:?}", time / iters);
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
-            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")2);
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")3);
         }
     });
     log::info!("{id}: Syscall took {:?}", time / iters);
-    log::info!("{id}: Requesting switch.");
+    let time = kernel::tsc::time(|| {
+        for _ in 0..iters {
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")2);
+        }
+    });
+    log::info!("{id}: Syscall with invalidation took {:?}", time / iters);
+    log::info!("{id}: Yielding...");
     asm!("syscall", out("rcx")_, out("r11")_, in("rdi")1);
     log::info!("{id}: Exiting.");
     asm!("syscall", in("rdi") 0);

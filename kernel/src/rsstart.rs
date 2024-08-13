@@ -14,9 +14,7 @@ use crate::{
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
-    paging::{
-        self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions,
-    },
+    paging::{self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
     refcnt::{self, RcPage},
     vm,
 };
