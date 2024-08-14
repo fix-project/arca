@@ -57,12 +57,8 @@ pub struct MemoryMapping {
 }
 
 impl MemoryMapping {
-    pub fn base(&self) -> *mut () {
-        if self.base == 0 {
-            core::ptr::null_mut()
-        } else {
-            vm::pa2ka(self.base as usize)
-        }
+    pub fn base(&self) -> usize {
+        self.base as usize
     }
 
     pub fn len(&self) -> usize {
@@ -93,7 +89,7 @@ impl<'a> Iterator for MemoryMap<'a> {
         let current_p = self.current as *const MemoryMapping;
         let base_p = self.base as *const MemoryMapping;
         let length = self.length;
-        if current.base().is_null() && current.len() == 0 {
+        if current.base() == 0 && current.len() == 0 {
             return None;
         }
         if unsafe { current_p >= base_p.byte_add(length) } {

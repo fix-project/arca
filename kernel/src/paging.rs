@@ -16,11 +16,12 @@ extern "C" {
 static mut CURRENT_PAGE_TABLE: Option<RcPage<PageTable256TB>> = None;
 
 pub(crate) unsafe fn set_page_table(page_table: RcPage<PageTable256TB>) {
-    set_pt(vm::ka2pa(page_table.as_ptr()));
+    let addr = vm::ka2pa(page_table.as_ptr());
+    set_pt(addr);
     CURRENT_PAGE_TABLE.replace(page_table);
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Permissions {
     None,
     ReadOnly,
@@ -347,7 +348,7 @@ pub unsafe trait PageTable: Sized + Clone {
 unsafe impl PageTable for ! {}
 
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
-    Null,
+    None,
     Page(RcPage<P>),
     Global(usize),
     Table(RcPage<T>),
@@ -421,7 +422,7 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn unmap(&mut self) -> UnmappedPage<Self::Page, Self::Table> {
         if !self.present() {
-            UnmappedPage::Null
+            UnmappedPage::None
         } else if self.leaf() {
             unsafe {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
@@ -441,6 +442,50 @@ pub trait PageTableEntry: Sized + Clone {
                 let addr = descriptor.address();
                 let table = RcPage::from_raw(vm::pa2ka(addr));
                 UnmappedPage::Table(table)
+            }
+        }
+    }
+
+    fn get(&self) -> UnmappedPage<Self::Page, Self::Table> {
+        if !self.present() {
+            UnmappedPage::None
+        } else if self.leaf() {
+            unsafe {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                let addr = descriptor.address();
+                if descriptor.global() {
+                    UnmappedPage::Global(addr)
+                } else {
+                    let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
+                    let page2 = page.clone();
+                    core::mem::forget(page);
+                    UnmappedPage::Page(page2)
+                }
+            }
+        } else {
+            unsafe {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                let addr = descriptor.address();
+                let table: RcPage<Self::Table> = RcPage::from_raw(vm::pa2ka(addr));
+                let table2 = table.clone();
+                core::mem::forget(table);
+                UnmappedPage::Table(table2)
+            }
+        }
+    }
+
+    fn get_protection(&self) -> Permissions {
+        if !self.present() {
+            Permissions::None
+        } else if self.leaf() {
+            unsafe {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                descriptor.permissions()
+            }
+        } else {
+            unsafe {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                descriptor.permissions()
             }
         }
     }
@@ -494,11 +539,33 @@ pub trait PageTableEntry: Sized + Clone {
 }
 
 #[repr(transparent)]
-#[derive(Debug)]
 pub struct Entry<P: HardwarePage, T: PageTable> {
     bits: u64,
     _page: PhantomData<P>,
     _table: PhantomData<T>,
+}
+
+impl<P: HardwarePage, T: PageTable> core::fmt::Debug for Entry<P, T>
+where
+    Entry<P, T>: PageTableEntry,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let prot = self.get_protection();
+        match self.get() {
+            UnmappedPage::None => f.debug_struct("None").finish(),
+            UnmappedPage::Page(p) => f
+                .debug_tuple("Page")
+                .field(&p.as_ptr())
+                .field(&prot)
+                .finish(),
+            UnmappedPage::Global(g) => f.debug_tuple("Page").field(&g).field(&prot).finish(),
+            UnmappedPage::Table(t) => f
+                .debug_tuple("Table")
+                .field(&t.as_ptr())
+                .field(&prot)
+                .finish(),
+        }
+    }
 }
 
 pub type PageTable2MBEntry = Entry<Page4KB, !>;

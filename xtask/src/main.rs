@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tempfile::NamedTempFile;
 use xshell::{cmd, Shell};
 
 static CARGO: LazyLock<String> =
@@ -76,7 +77,6 @@ fn build(sh: &Shell, package: &str, extra_flags: &[&str], target: &str) -> Resul
 }
 
 struct Config<'a> {
-    loader: &'a Path,
     kernel: &'a Path,
     smp: usize,
     debug: bool,
@@ -87,7 +87,6 @@ struct Config<'a> {
 
 fn run(sh: &Shell, config: &Config) -> Result<()> {
     let &Config {
-        loader,
         kernel,
         smp,
         debug,
@@ -95,11 +94,13 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
         args,
         test,
     } = config;
-    let loader = loader.display().to_string();
     let kernel = kernel.display().to_string();
+    let bin = NamedTempFile::with_prefix("kernel-")?;
+    let name = bin.path();
+    cmd!(sh, "objcopy -Obinary {kernel} {name}").run()?;
     let smp = smp.to_string();
 
-    let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {loader} -device loader,file={kernel}");
+    let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {name}");
 
     let qemu = if test {
         qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
@@ -108,7 +109,7 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
     };
 
     let qemu = if debug {
-        qemu.args(["-d", "guest_errors"])
+        qemu.args(["-d", "guest_errors"]).args(["-d", "int"])
     } else {
         qemu
     };
@@ -126,7 +127,9 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
         qemu
     };
 
-    Ok(qemu.run()?)
+    qemu.run()?;
+    bin.close()?;
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -140,7 +143,6 @@ fn main() -> Result<()> {
                 args.push("--release");
             }
             build(&sh, "kernel", &args, "x86_64-unknown-none")?;
-            build(&sh, "loader", &args, "i686-unknown-none")?;
             Ok(())
         }
         SubCommand::Run {
@@ -154,7 +156,6 @@ fn main() -> Result<()> {
             if release {
                 flags.push("--release");
             }
-            let loader = &build(&sh, "loader", &flags, "i686-unknown-none")?[0];
             let kernel = &build(&sh, "kernel", &flags, "x86_64-unknown-none")?[0];
             let smp = smp
                 .or_else(|| std::thread::available_parallelism().ok().map(|x| x.get()))
@@ -162,7 +163,6 @@ fn main() -> Result<()> {
             run(
                 &sh,
                 &Config {
-                    loader,
                     kernel,
                     smp,
                     debug,
@@ -182,7 +182,6 @@ fn main() -> Result<()> {
             if release {
                 flags.push("--release");
             }
-            let loader = &build(&sh, "loader", &flags, "i686-unknown-none")?[0];
             flags.push("--tests");
             let tests = &build(&sh, "kernel", &flags, "x86_64-unknown-none")?;
             let smp = smp
@@ -192,7 +191,6 @@ fn main() -> Result<()> {
                 run(
                     &sh,
                     &Config {
-                        loader,
                         kernel: test,
                         smp,
                         debug: false,

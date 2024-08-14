@@ -108,7 +108,7 @@ extern "C" {
 }
 
 impl Cpu {
-    pub fn id() -> usize {
+    pub fn id() -> u32 {
         crate::cpuinfo::id()
     }
 

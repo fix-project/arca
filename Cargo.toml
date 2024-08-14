@@ -1,5 +1,5 @@
 [workspace]
-members = ["kernel", "loader", "macros", "xtask"]
+members = ["kernel", "macros", "xtask"]
 default-members = ["kernel", "xtask"]
 resolver = "2"
 

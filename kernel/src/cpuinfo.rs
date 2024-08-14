@@ -1,14 +1,14 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[core_local]
-pub(crate) static mut ACPI_ID: usize = 0;
+pub(crate) static mut ACPI_ID: u32 = 0;
 
 #[core_local]
 pub(crate) static mut IS_BOOTSTRAP: bool = false;
 
 pub(crate) static NCORES: AtomicUsize = AtomicUsize::new(0);
 
-pub fn id() -> usize {
+pub fn id() -> u32 {
     unsafe { *ACPI_ID }
 }
 

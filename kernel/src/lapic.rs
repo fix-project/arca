@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use bitfield_struct::bitfield;
-use core::{cell::RefCell, marker::PhantomData};
+use core::{arch::x86_64::_mm_pause, cell::RefCell, marker::PhantomData};
 
 use crate::{
     io::outb,
@@ -58,8 +58,13 @@ impl LocalApic {
         unsafe { wrmsr(0x800 + index as u32, value as u64) }
     }
 
-    pub fn id(&self) -> usize {
-        self.read(0x2) as usize
+    pub fn write64(&self, index: usize, value: u64) {
+        assert!(index <= 0x3FF);
+        unsafe { wrmsr(0x800 + index as u32, value) }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.read(0x2)
     }
 
     pub fn version(&self) -> u32 {
@@ -89,13 +94,51 @@ impl LocalApic {
     pub unsafe fn clear_interrupt(&mut self) {
         self.write(0xB, 0);
     }
+
+    /*
+    // send an INIT broadcast
+    *icr = (5 << 8 | 1 << 14 | 3 << 18);
+    // de-assert INIT
+    while (*icr & (1 << 12)) {
+    }
+    *icr = (5 << 8 | 1 << 15 | 3 << 18);
+    // send a SIPI with the trampoline page
+    while (*icr & (1 << 12)) {
+    }
+    *icr =
+        ((uint8_t)((uint32_t)trampoline / 0x1000) | 6 << 8 | 1 << 14 | 3 << 18);
+    while (*icr & (1 << 12)) {
+    }
+      */
+
+    pub unsafe fn boot_cpu(&mut self, id: u32, trampoline: usize) {
+        assert!(trampoline.trailing_zeros() >= 12);
+        assert!((trampoline >> 12) <= 255);
+        let id_mask = (id as u64) << 32;
+        self.write64(0x30, 5 << 8 | 1 << 14 | id_mask);
+        while (self.read(0x30) & (1 << 12)) != 0 {
+            _mm_pause();
+        }
+        self.write64(0x30, 5 << 8 | 1 << 15 | id_mask);
+        while (self.read(0x30) & (1 << 12)) != 0 {
+            _mm_pause();
+        }
+        self.write64(
+            0x30,
+            ((trampoline as u64) / 0x1000) | 6 << 8 | 1 << 14 | id_mask,
+        );
+    }
 }
 
 #[core_local]
 pub static LAPIC: RefCell<LocalApic> = RefCell::new(LocalApic(PhantomData));
 
-pub unsafe fn init() {
-    if crate::cpuinfo::is_bootstrap() {
+pub unsafe fn init(bootstrap: bool) {
+    // switch to x2APIC
+    let val = crate::msr::rdmsr(0x1B);
+    crate::msr::wrmsr(0x1B, val | 0b11 << 10);
+
+    if bootstrap {
         const PIC_1: u16 = 0x20;
         const PIC_2: u16 = 0xA0;
         const PIC_1_CMD: u16 = PIC_1;

@@ -12,6 +12,7 @@
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(ptr_metadata)]
 #![feature(negative_impls)]
+#![feature(slice_from_ptr_range)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -37,6 +38,7 @@ pub mod spinlock;
 pub mod tsc;
 pub mod vm;
 
+mod acpi;
 mod gdt;
 mod idt;
 mod interrupts;
@@ -44,6 +46,7 @@ mod lapic;
 #[allow(dead_code)]
 mod msr;
 mod multiboot;
+mod registers;
 mod rsstart;
 mod tss;
 

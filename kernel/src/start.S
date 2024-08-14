@@ -1,34 +1,41 @@
 .intel_syntax noprefix
 .code64
 
-# arg0 (edi): processor ID    (u32)
-# arg1 (esi): BSP ID          (bool)
-# arg2 (edx): number of cores (u32)
-# arg3 (rcx): multiboot info  (void *)
-
-.altmacro
-.macro print c
-  mov dx, 0xe9
-  mov al, \c
-  outb dx, al
-.endm
+# rbx: multiboot info (void *)
 
 .globl _start
+.globl _bsp_start
+.globl _ap_start
+.extern NEXT_STACK_ADDR
+.extern NEXT_CPU_READY
+.extern _rsstart_bsp
+.extern _rsstart_ap
+.extern _rscontinue
 .section ".text.start"
 _start:
-  # set up a 16KB stack for each processor (4MB total for 256 cores)
-  lea rsp, _sstack[rip]
-  mov rax, rdi
-  inc rax
-  shl rax, 14
-  add rsp, rax
-  sub rsp, 0x8
-  call _rsstart
+_bsp_start:
+  # set up a temporary stack
+  mov rsp, 0x0007FFF8
+  cmp rbx, 0
+  je halt
+  mov rdi, rbx
+  call _rsstart_bsp
   # _rsstart will allocate a "real" stack and return the top address
   mov rsp, rax
   sub rsp, 0x8
   call _rscontinue
+  jmp halt
+
+_ap_start:
+  mov rsp, qword ptr NEXT_STACK_ADDR[rip]
+  mov byte ptr NEXT_CPU_READY[rip], 1
+  call _rsstart_ap
+  call _rscontinue
+  jmp halt
+
 halt:
+  cli
+  hlt
   jmp halt
 
 .globl set_gdt

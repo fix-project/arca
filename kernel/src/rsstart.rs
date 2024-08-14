@@ -1,13 +1,16 @@
 use core::{
-    arch::asm,
+    arch::{asm, x86_64::_mm_pause},
     cell::LazyCell,
+    ops::Range,
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
+use alloc::vec::Vec;
 use log::LevelFilter;
 
 use crate::{
+    acpi::{self, ApicDescription, Table},
     buddy::{self, Page2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
@@ -16,6 +19,7 @@ use crate::{
     multiboot::MultibootInfo,
     paging::{self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
     refcnt::{self, RcPage},
+    registers::{ControlReg0, ControlReg4, ExtendedFeatureEnableReg},
     vm,
 };
 
@@ -28,11 +32,18 @@ extern "C" {
     static mut _scdata: u8;
     static mut _lcdata: u8;
     static mut _ecdata: u8;
+    static mut trampoline_start: u8;
+    static mut trampoline_end: u8;
     static isr_table: [usize; 256];
 }
 
+#[no_mangle]
+static mut NEXT_STACK_ADDR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+
+#[no_mangle]
+static NEXT_CPU_READY: AtomicBool = AtomicBool::new(false);
+
 static LOGGER: DebugLogger = DebugLogger;
-static SEMAPHORE: AtomicBool = AtomicBool::new(true);
 
 static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     Idt(unsafe {
@@ -51,7 +62,7 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
 pub(crate) static mut KERNEL_PAGES: LazyCell<RcPage<PageTable512GB>> = LazyCell::new(|| unsafe {
     let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
-        entry.map_global(i << 30, Permissions::None);
+        entry.map_global(i << 30, Permissions::All);
     }
     pdpt.into()
 });
@@ -59,57 +70,121 @@ pub(crate) static mut KERNEL_PAGES: LazyCell<RcPage<PageTable512GB>> = LazyCell:
 pub(crate) static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| unsafe {
     let pdpt = KERNEL_PAGES.clone();
     let mut map = PageTable256TB::new();
-    map[256].chain(pdpt, Permissions::None);
+    // map[0].chain(pdpt.clone(), Permissions::All);
+    map[256].chain(pdpt, Permissions::All);
     map.into()
 });
 
 #[no_mangle]
-unsafe extern "C" fn _rsstart(id: u32, bsp: bool, ncores: u32, multiboot_pa: usize) -> *mut u8 {
-    asm!("cli");
-    if bsp {
-        let multiboot = vm::pa2ka(multiboot_pa);
-        init_bss();
+unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
+    let multiboot = vm::pa2ka(multiboot_pa);
+    init_bss();
 
-        let _ = log::set_logger(&LOGGER);
-        log::set_max_level(LevelFilter::Info);
-        init_allocators(multiboot);
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(LevelFilter::Info);
+    init_allocators(multiboot);
 
-        LazyCell::force(&*addr_of!(IDT));
-        crate::cpuinfo::NCORES.store(ncores as usize, Ordering::Release);
-    } else {
-        while SEMAPHORE
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            core::arch::x86_64::_mm_pause();
+    let cpus: Vec<u32> = acpi::get_xsdt()
+        .find_map(|table| {
+            if let Table::MultipleAPIC(madt) = table {
+                Some(madt)
+            } else {
+                None
+            }
+        })
+        .expect("did not find madt")
+        .filter_map(|x| match x {
+            ApicDescription::Local(_, apic, _) => Some(apic as u32),
+            ApicDescription::Local2(apic, _, _) => Some(apic),
+            _ => None,
+        })
+        .collect();
+    log::info!("found {} processors", cpus.len());
+
+    LazyCell::force(&*addr_of!(IDT));
+    LazyCell::force(&*addr_of!(PAGE_MAP));
+
+    init_cpu_config();
+    init_cpu_tls();
+    init_syscalls();
+    crate::lapic::init(true);
+
+    let mut lapic = crate::lapic::LAPIC.borrow_mut();
+    *crate::cpuinfo::ACPI_ID = lapic.id();
+    *crate::cpuinfo::IS_BOOTSTRAP = true;
+    crate::cpuinfo::NCORES.store(cpus.len(), Ordering::SeqCst);
+
+    let trampoline = core::slice::from_ptr_range(Range {
+        start: addr_of!(trampoline_start),
+        end: addr_of!(trampoline_end),
+    });
+    let target = core::slice::from_raw_parts_mut(0x8000 as *mut u8, trampoline.len());
+    target.copy_from_slice(trampoline);
+    let stack_page = Page2MB::new().into_raw();
+    let stack_addr = addr_of_mut!((*stack_page.add(1))[0]);
+    for cpu in cpus {
+        if cpu == lapic.id() {
+            continue;
+        }
+        NEXT_CPU_READY.store(false, Ordering::SeqCst);
+        let page = Page2MB::new().into_raw();
+        NEXT_STACK_ADDR.store(addr_of_mut!((*page.add(1))[0]), Ordering::SeqCst);
+        log::debug!("Booting CPU {cpu} with stack {:p}", NEXT_STACK_ADDR);
+        lapic.boot_cpu(cpu, 0x8000);
+        while !NEXT_CPU_READY.load(Ordering::SeqCst) {
+            _mm_pause();
         }
     }
-    init_cpu_tls();
-    *crate::cpuinfo::ACPI_ID = id as usize;
-    *crate::cpuinfo::IS_BOOTSTRAP = bsp;
-    init_syscalls();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
-    // enable new page table
-    paging::set_page_table(PAGE_MAP.clone());
+    let idtr: IdtDescriptor = (&*IDT).into();
+    asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
 
-    let stack_top = init_cpu_stack(id);
+    stack_addr
+}
 
-    SEMAPHORE.store(false, Ordering::SeqCst);
-    stack_top
+#[no_mangle]
+unsafe extern "C" fn _rsstart_ap() {
+    init_cpu_config();
+    init_cpu_tls();
+    init_syscalls();
+    crate::lapic::init(false);
+
+    let lapic = crate::lapic::LAPIC.borrow();
+    let id = lapic.id();
+    *crate::cpuinfo::ACPI_ID = id;
+    *crate::cpuinfo::IS_BOOTSTRAP = false;
+
+    let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
+    set_gdt(addr_of!(gdtr));
+    asm!("ltr {tss:x}", tss=in(reg) 0x30);
+
+    let idtr: IdtDescriptor = (&*IDT).into();
+    asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
+
+    log::debug!("CPU {id} ready!");
+}
+
+unsafe fn init_cpu_config() {
+    crate::registers::write_cr0(ControlReg0::PE | ControlReg0::PG | ControlReg0::MP);
+    crate::registers::write_cr4(ControlReg4::PAE | ControlReg4::PGE | ControlReg4::FSGSBASE);
+    crate::registers::write_efer(
+        ExtendedFeatureEnableReg::LME
+            | ExtendedFeatureEnableReg::SCE
+            | ExtendedFeatureEnableReg::NXE,
+    );
 }
 
 #[no_mangle]
 unsafe extern "C" fn _rscontinue() -> ! {
-    let idtr: IdtDescriptor = (&*IDT).into();
-    asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
-
     crate::tsc::init();
     crate::kvmclock::init();
-    crate::lapic::init();
+
+    let map = PAGE_MAP.clone();
+    paging::set_page_table(map);
 
     asm!("sti");
     kmain();
@@ -151,16 +226,6 @@ unsafe fn init_cpu_tls() {
     }
     msr::wrmsr(0xC0000102, dst.as_ptr() as u64); // kernel GS base; actually really user GS base
     core::mem::forget(dst);
-}
-
-unsafe fn init_cpu_stack(id: u32) -> *mut u8 {
-    let mut stack = Page2MB::new();
-    log::debug!("CPU {} is using {:p}+2MB as %rsp", id, stack.as_ptr());
-
-    let stack_bottom = stack.as_mut_ptr();
-    let stack_top = stack_bottom.add(0x200000);
-    core::mem::forget(stack);
-    stack_top
 }
 
 extern "C" {

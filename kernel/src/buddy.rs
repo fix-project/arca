@@ -38,34 +38,30 @@ impl BuddyAllocator {
     pub const LOG2_MIN_ALLOCATION: usize = 12;
 
     fn new(mmap: multiboot::MemoryMap) -> Self {
-        let max_address = vm::ka2pa(mmap.fold(core::ptr::null(), |a, x| {
-            core::cmp::max(a, unsafe { x.base().byte_add(x.len()) })
-        }));
-        let address_space_size = (max_address as usize).next_power_of_two();
+        let max_address = mmap
+            .filter(|x| x.available())
+            .fold(0, |a, x| core::cmp::max(a, x.base() + x.len()));
+        let address_space_size = max_address.next_power_of_two();
         let log2_address_space_size = address_space_size.trailing_zeros() as usize;
+        log::debug!("address space size: {address_space_size:#x} ({log2_address_space_size} bits)");
         // TODO: use the xor trick to half the space consumption
         let metadata_space = address_space_size / Self::MIN_ALLOCATION / 4;
         let metadata_align = metadata_space.trailing_zeros() as usize;
 
-        let low_memory_cutoff = vm::pa2ka(16 * 1024 * 1024);
+        let low_memory_cutoff = 16 * 1024 * 1024;
         let alignment_mask = metadata_align - 1;
-        let free_bitmap_ptr = mmap
+        let free_bitmap_ptr = vm::pa2ka(mmap
             .filter(|x| x.available())
-            .map(|x| (x.base(), unsafe { x.base().byte_add(x.len()) }))
+            .map(|x| (x.base(), x.base() + x.len()))
             .filter(|x| x.1 >= low_memory_cutoff)
             .map(|x| (core::cmp::max(x.0, low_memory_cutoff), x.1))
-            .map(|x| {
-                (
-                    ((x.0 as usize + alignment_mask) & !alignment_mask) as *mut (),
-                    x.1,
-                )
-            })
+            .map(|x| (((x.0 + alignment_mask) & !alignment_mask), x.1))
             .filter(|x| x.0 < x.1)
-            .find(|x| unsafe { x.1.byte_offset_from(x.0) } as usize >= metadata_space)
+            .find(|x| x.1 + x.0 >= metadata_space)
             .map(|x| x.0)
             .expect(
                 "could not find satisfactory memory region for physical memory allocator metadata",
-            ) as *mut u8;
+            ));
         log::debug!(
             "using {:p}+{:#x} for page allocator metadata",
             free_bitmap_ptr,
@@ -88,12 +84,13 @@ impl BuddyAllocator {
         log::trace!("{meta_start:p}");
         let meta_end = unsafe { meta_start.byte_add(metadata_space) };
         for map in mmap {
-            log::trace!("{:?}", map);
             if map.available() {
-                let start = map.base();
+                log::trace!("{:x?}", map);
+                let start: *const () = vm::pa2ka(map.base());
                 let end = unsafe { start.byte_add(map.len()) };
+                assert!(end < vm::pa2ka(address_space_size));
                 log::trace!("{start:p} {end:p}");
-                let cutoff = low_memory_cutoff;
+                let cutoff = vm::pa2ka(low_memory_cutoff);
                 if end < cutoff {
                     continue;
                 }
@@ -198,6 +195,7 @@ impl BuddyAllocator {
             }
         }
         // add to free list
+        log::trace!("adding block @ index {index} to free list");
         let list = &mut self.free_lists[log2_size];
         let node: &mut FreeBlock = unsafe { core::mem::transmute(&mut *addr) };
         let head = list.next;

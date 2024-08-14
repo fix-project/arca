@@ -49,7 +49,7 @@ pub(crate) unsafe fn init() {
     }
     let tsc = sync_and_rdtsc(crate::cpuinfo::ncores());
     let id = crate::cpuinfo::id();
-    TSC_OFFSETS[id] = tsc;
+    TSC_OFFSETS[id as usize] = tsc;
     let result = core::arch::x86_64::__cpuid(0x40000010);
     *TSC_FREQUENCY_MHZ = result.eax;
     assert!(*TSC_FREQUENCY_MHZ != 0);

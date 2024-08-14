@@ -148,20 +148,20 @@ mod tests {
 
     #[test]
     pub fn test_alloc() {
-        Page4KB::new_bytes();
+        RcPage4KB::new_bytes();
     }
 
     #[bench]
     pub fn bench_alloc_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let x = Page4KB::new_bytes();
+            let x = RcPage4KB::new_bytes();
             core::mem::forget(x);
         });
     }
 
     #[bench]
     pub fn bench_clone_4kb(bench: impl FnOnce(&dyn Fn())) {
-        let x = Page4KB::new_bytes();
+        let x = RcPage4KB::new_bytes();
         bench(&|| {
             let y = x.clone();
             core::mem::forget(y);
@@ -171,14 +171,14 @@ mod tests {
     #[bench]
     pub fn bench_alloc_free_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = Page4KB::new_bytes();
+            let _ = RcPage4KB::new_bytes();
         });
     }
 
     #[bench]
     pub fn bench_alloc_free_2mb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = Page2MB::new_bytes();
+            let _ = RcPage2MB::new_bytes();
         });
     }
 }
