@@ -5,6 +5,9 @@ global _multiboot
 global common_boot
 extern _bsp_start
 extern _ap_start
+extern _load_addr
+extern _load_end_addr
+extern _bss_end_addr
 
 %define ka2pa(x) (x - start + 0x100000)
 
@@ -24,9 +27,9 @@ mbh_magic: dd MB_MAGIC
 mbh_flags: dd MB_FLAGS
 mbh_cksum: dd -(MB_MAGIC + MB_FLAGS)
 header_addr: dd ka2pa(start)
-load_addr: dd ka2pa(start)
-load_end_addr: dd 0
-bss_end_addr: dd 0
+load_addr: dd _load_addr
+load_end_addr: dd _load_end_addr
+bss_end_addr: dd _bss_end_addr
 entry_addr: dd ka2pa(_multiboot)
 
 ; pml4: 0x1000

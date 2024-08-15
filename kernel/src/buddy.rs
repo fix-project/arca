@@ -48,6 +48,7 @@ impl BuddyAllocator {
         let metadata_space = address_space_size / Self::MIN_ALLOCATION / 4;
         let metadata_align = metadata_space.trailing_zeros() as usize;
 
+        // TODO: calculate this cutoff using GRUB's multiboot info
         let low_memory_cutoff = 16 * 1024 * 1024;
         let alignment_mask = metadata_align - 1;
         let free_bitmap_ptr = vm::pa2ka(mmap

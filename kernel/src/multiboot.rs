@@ -100,6 +100,11 @@ impl<'a> Iterator for MemoryMap<'a> {
     }
 }
 
+extern "C" {
+    static _sbss: u8;
+    static _ebss: u8;
+}
+
 impl MultibootInfo {
     pub fn cmdline(&self) -> Option<&CStr> {
         if ((self.flags >> 2) & 1) == 1 {
