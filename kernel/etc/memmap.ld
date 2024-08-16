@@ -71,7 +71,4 @@ SECTIONS {
   {
     *(.eh_frame*)
   }
-  _load_addr = ADDR(.multiboot) & 0x7fffffff;
-  _load_end_addr = ADDR(.bss) & 0x7fffffff;
-  _bss_end_addr = (ADDR(.bss) + SIZEOF(.bss)) & 0x7fffffff;
 }

@@ -97,7 +97,7 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
     let kernel = kernel.display().to_string();
     let bin = NamedTempFile::with_prefix("kernel-")?;
     let name = bin.path();
-    cmd!(sh, "objcopy -Obinary {kernel} {name}").run()?;
+    cmd!(sh, "objcopy -Oelf32-i386 {kernel} {name}").run()?;
     let smp = smp.to_string();
 
     let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {name}");
