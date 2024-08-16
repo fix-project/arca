@@ -1,4 +1,4 @@
-use core::ffi::CStr;
+use core::{ffi::CStr, ops::Range};
 
 use crate::vm;
 
@@ -89,9 +89,6 @@ impl<'a> Iterator for MemoryMap<'a> {
         let current_p = self.current as *const MemoryMapping;
         let base_p = self.base as *const MemoryMapping;
         let length = self.length;
-        if current.base() == 0 && current.len() == 0 {
-            return None;
-        }
         if unsafe { current_p >= base_p.byte_add(length) } {
             return None;
         }
@@ -125,5 +122,68 @@ impl MultibootInfo {
         } else {
             None
         }
+    }
+
+    pub fn modules(&self) -> Option<Modules> {
+        if ((self.flags >> 3) & 1) == 1 && self.mods_count != 0 {
+            let base = unsafe { &*vm::pa2ka(self.mods_addr as usize) };
+            Some(Modules {
+                base,
+                count: self.mods_count as usize,
+                current: base,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[repr(C, packed)]
+#[derive(Debug)]
+pub struct Module {
+    start: u32,
+    end: u32,
+    string: u32,
+    reserved: u32,
+}
+
+impl Module {
+    pub fn label(&self) -> Option<&CStr> {
+        if self.string == 0 {
+            None
+        } else {
+            Some(unsafe { CStr::from_ptr(vm::pa2ka(self.string as usize)) })
+        }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_ptr_range(Range {
+                start: vm::pa2ka(self.start as usize),
+                end: vm::pa2ka(self.end as usize),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Modules<'a> {
+    base: &'a Module,
+    count: usize,
+    current: &'a Module,
+}
+
+impl<'a> Iterator for Modules<'a> {
+    type Item = &'a Module;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current;
+        let current_p = self.current as *const Module;
+        let base_p = self.base as *const Module;
+        if unsafe { current_p >= base_p.add(self.count) } {
+            return None;
+        }
+        self.current = unsafe { &*current_p.add(1) };
+        Some(current)
     }
 }

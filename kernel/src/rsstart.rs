@@ -207,6 +207,16 @@ unsafe fn init_allocators(multiboot: *const MultibootInfo) {
     let mmap = multiboot
         .memory_map()
         .expect("could not get memory map from bootloader");
+    let modules = multiboot.modules();
+    if let Some(modules) = modules {
+        for module in modules {
+            log::info!(
+                "Found module: {:?} @ {:p}",
+                module.label(),
+                module.data().as_ptr()
+            );
+        }
+    }
 
     buddy::init(mmap);
     refcnt::init();

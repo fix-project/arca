@@ -109,7 +109,7 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
     };
 
     let qemu = if debug {
-        qemu.args(["-d", "guest_errors"]).args(["-d", "int"])
+        qemu.args(["-d", "guest_errors"])
     } else {
         qemu
     };
