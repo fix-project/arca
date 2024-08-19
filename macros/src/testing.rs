@@ -24,11 +24,15 @@ pub fn test(_: TokenStream, item: TokenStream) -> TokenStream {
         fn #ident() {
             #inner
 
-            use #kernel::debugcon::DebugConsole;
+            use #kernel::debugcon::CONSOLE;
             use core::fmt::Write;
-            write!(DebugConsole, "Test {}::{}: ", module_path!(), stringify!(#ident)).unwrap();
+            let mut console = CONSOLE.lock();
+            write!(console, "Test {}::{}: ", module_path!(), stringify!(#ident)).unwrap();
+            console.unlock();
             test_case();
-            write!(DebugConsole, "PASS\n").unwrap();
+            let mut console = CONSOLE.lock();
+            write!(console, "PASS\n").unwrap();
+            console.unlock();
         }
     }
     .into()
@@ -49,9 +53,11 @@ pub fn bench(_: TokenStream, item: TokenStream) -> TokenStream {
             test_case(|f| {
                 use core::time::Duration;
                 use alloc::vec;
-                use #kernel::debugcon::DebugConsole;
+                use #kernel::debugcon::CONSOLE;
                 use core::fmt::Write;
-                write!(DebugConsole, "Test {}::{}: ", module_path!(), stringify!(#ident)).unwrap();
+                let mut console = CONSOLE.lock();
+                write!(console, "Test {}::{}: ", module_path!(), stringify!(#ident)).unwrap();
+                console.unlock();
 
                 let mut ts = vec![0.0; #reps];
                 for t in ts.iter_mut() {
@@ -70,7 +76,9 @@ pub fn bench(_: TokenStream, item: TokenStream) -> TokenStream {
                 let median = (median * 1e9) as u64;
                 let deviation = (deviation * 1e9) as u64;
 
-                write!(DebugConsole, "{} ns/iter (+/- {})\n", median, deviation).unwrap();
+                let mut console = CONSOLE.lock();
+                write!(console, "{} ns/iter (+/- {})\n", median, deviation).unwrap();
+                console.unlock();
             });
         }
     }
