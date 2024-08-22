@@ -39,8 +39,10 @@ pub type RcPage1GB = RcPage<[u8; 1 << 30]>;
 #[derive(Debug)]
 pub struct RcPage<T> {
     ptr: *mut T,
-    refcnt: *const AtomicUsize,
 }
+
+unsafe impl<T: Send> Send for RcPage<T> {}
+unsafe impl<T: Sync> Sync for RcPage<T> {}
 
 impl<T> RcPage<T> {
     pub fn new(value: T) -> Self {
@@ -57,32 +59,32 @@ impl<T> RcPage<T> {
         ptr
     }
 
+    pub fn refcnt(&self) -> *const AtomicUsize {
+        refcnt(self.ptr)
+    }
+
     /// # Safety
     /// This pointer must have come from [into_raw] and may only be passed to this function once.
     pub unsafe fn from_raw(ptr: *mut T) -> Self {
-        Self {
-            ptr,
-            refcnt: refcnt(ptr),
-        }
+        Self { ptr }
     }
 }
 
 impl<T: Clone> RcPage<T> {
     pub fn make_mut(&mut self) -> &mut T {
         unsafe {
-            if (*self.refcnt).load(Ordering::SeqCst) == 1 {
+            if (*self.refcnt()).load(Ordering::SeqCst) == 1 {
                 // only reference; access is safe
                 return &mut *self.ptr;
             }
             let copied = Page::from((*self.ptr).clone());
-            if (*self.refcnt).fetch_sub(1, Ordering::SeqCst) == 1 {
+            if (*self.refcnt()).fetch_sub(1, Ordering::SeqCst) == 1 {
                 // now only reference; discard clone
-                (*self.refcnt).store(1, Ordering::SeqCst);
+                (*self.refcnt()).store(1, Ordering::SeqCst);
                 return &mut *self.ptr;
             }
             self.ptr = copied.into_raw();
-            self.refcnt = refcnt(self.ptr);
-            (*self.refcnt).store(1, Ordering::SeqCst);
+            (*self.refcnt()).store(1, Ordering::SeqCst);
             &mut *self.ptr
         }
     }
@@ -115,14 +117,14 @@ impl<T> From<Page<T>> for RcPage<T> {
         unsafe {
             (*refcnt).store(1, Ordering::SeqCst);
         }
-        RcPage { ptr, refcnt }
+        RcPage { ptr }
     }
 }
 
 impl<T> Drop for RcPage<T> {
     fn drop(&mut self) {
         unsafe {
-            if (*self.refcnt).fetch_sub(1, Ordering::SeqCst) == 1 {
+            if (*self.refcnt()).fetch_sub(1, Ordering::SeqCst) == 1 {
                 let block = Page::from_raw(self.ptr);
                 core::mem::drop(block);
             }
@@ -133,11 +135,8 @@ impl<T> Drop for RcPage<T> {
 impl<T> Clone for RcPage<T> {
     fn clone(&self) -> Self {
         unsafe {
-            (*self.refcnt).fetch_add(1, Ordering::SeqCst);
-            Self {
-                ptr: self.ptr,
-                refcnt: self.refcnt,
-            }
+            (*self.refcnt()).fetch_add(1, Ordering::SeqCst);
+            Self { ptr: self.ptr }
         }
     }
 }

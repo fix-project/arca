@@ -13,6 +13,7 @@ use kernel::{
     cpu::{Register, CPU},
     halt,
     paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry, Permissions},
+    rt::{yield_now, Executor},
     shutdown,
     spinlock::SpinLock,
 };
@@ -40,6 +41,16 @@ extern "C" fn kmain() -> ! {
         log::info!("All {} cores done!", kernel::cpuinfo::ncores());
         log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
 
+        let mut exec = Executor::new();
+
+        let iters = 0x100;
+        let time = kernel::tsc::time(|| {
+            for _ in 0..iters {
+                let arca = Arca::new();
+            }
+        });
+        log::info!("Creation took {:?}", time / iters);
+
         let mut arca0 = Arca::new();
         arca0.registers_mut()[Register::RDI] = 0;
         arca0.registers_mut()[Register::RSP] = 1 << 21;
@@ -53,52 +64,47 @@ extern "C" fn kmain() -> ! {
             .mappings_mut()
             .chain(pdpt.into(), Permissions::ReadWrite);
 
-        let mut arca1 = Arca::new();
-        arca1.registers_mut()[Register::RDI] = 1;
-        arca1.registers_mut()[Register::RSP] = 1 << 21;
-        arca1.registers_mut()[Register::RIP] = umain as usize as u64;
-        let stack1 = Page2MB::new();
-        let mut pd = PageTable1GB::new();
-        pd[0].map(stack1.into(), Permissions::ReadWrite);
-        let mut pdpt = PageTable512GB::new();
-        pdpt[0].chain(pd.into(), Permissions::ReadWrite);
-        arca1
-            .mappings_mut()
-            .chain(pdpt.into(), Permissions::ReadWrite);
-
-        let mut cpu = CPU.borrow_mut();
-        let mut arca = arca0.load(&mut cpu);
-        let mut other = arca1;
-        log::info!("About to switch to user mode!");
-        'runner: loop {
-            let result = arca.run();
-            if result.code == 0x100 || result.code == 0x80 {
-                match arca.registers()[Register::RDI] {
-                    0 => break 'runner,
-                    1 => {
-                        arca.swap(&mut other);
+        exec.spawn(async move {
+            loop {
+                {
+                    let mut cpu = CPU.borrow_mut();
+                    let mut arca = arca0.load(&mut cpu);
+                    'runner: loop {
+                        let result = arca.run();
+                        if result.code == 0x100 || result.code == 0x80 {
+                            match arca.registers()[Register::RDI] {
+                                0 => {
+                                    return;
+                                }
+                                1 => {}
+                                2 => {
+                                    let saved = arca.unload();
+                                    arca = saved.load(&mut cpu);
+                                }
+                                3 => {
+                                    break 'runner;
+                                }
+                                x => {
+                                    unimplemented!("syscall {x}");
+                                }
+                            }
+                        } else {
+                            let registers = arca.registers();
+                            log::error!("unexpected exit: {result:?} with status {registers:#x?}");
+                            let mut cr2: u64;
+                            unsafe {
+                                asm!("mov {cr2}, cr2", cr2=out(reg)cr2);
+                            }
+                            log::error!("CR2: {cr2:x}");
+                            shutdown();
+                        }
                     }
-                    2 => {
-                        let saved = arca.unload();
-                        arca = saved.load(&mut cpu);
-                    }
-                    3 => {}
-                    x => {
-                        unimplemented!("syscall {x}");
-                    }
+                    arca0 = arca.unload();
                 }
-            } else {
-                let registers = arca.registers();
-                log::error!("unexpected exit: {result:?} with status {registers:#x?}");
-                let mut cr2: u64;
-                unsafe {
-                    asm!("mov {cr2}, cr2", cr2=out(reg)cr2);
-                }
-                log::error!("CR2: {cr2:x}");
-                shutdown();
+                yield_now().await;
             }
-        }
-        let _ = arca.unload();
+        });
+        exec.run();
         log::info!("Shutting down.");
         shutdown();
     }
@@ -112,24 +118,32 @@ unsafe extern "C" fn umain(id: u64) -> ! {
     let iters = 0x1000;
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
-            asm!("int 0x80", in("rdi")3);
+            asm!("int 0x80", in("rdi")1);
         }
     });
     log::info!("{id}: Software Interrupt took {:?}", time / iters);
+
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
-            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")3);
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")1);
         }
     });
     log::info!("{id}: Syscall took {:?}", time / iters);
+
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
             asm!("syscall", out("rcx")_, out("r11")_, in("rdi")2);
         }
     });
     log::info!("{id}: Syscall with invalidation took {:?}", time / iters);
-    log::info!("{id}: Yielding...");
-    asm!("syscall", out("rcx")_, out("r11")_, in("rdi")1);
+
+    let time = kernel::tsc::time(|| {
+        for _ in 0..iters {
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")3);
+        }
+    });
+    log::info!("{id}: Yielding took {:?}", time / iters);
+
     log::info!("{id}: Exiting.");
     asm!("syscall", in("rdi") 0);
     halt();

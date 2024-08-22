@@ -34,6 +34,7 @@ pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod refcnt;
+pub mod rt;
 pub mod spinlock;
 pub mod tsc;
 pub mod vm;
@@ -60,6 +61,10 @@ pub fn halt() -> ! {
     loop {
         unsafe { core::arch::asm!("hlt") }
     }
+}
+
+pub fn pause() {
+    unsafe { core::arch::asm!("pause") }
 }
 
 pub fn shutdown() -> ! {

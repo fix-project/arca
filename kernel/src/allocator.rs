@@ -108,7 +108,7 @@ unsafe fn find_allocation(head: *mut Block, layout: core::alloc::Layout) -> *mut
         let needed_size_split =
             layout.size() + layout.padding_needed_for(core::mem::align_of::<Block>());
         let leftover_size = *size - needed_size_split;
-        if leftover_size >= core::mem::size_of::<Block>() {
+        if *size >= needed_size_split && leftover_size >= core::mem::size_of::<Block>() {
             // split this block and add to the linked list
             split_allocation(head, needed_size_split);
         }
