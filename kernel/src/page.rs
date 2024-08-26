@@ -1,17 +1,48 @@
 use core::{
+    cell::RefCell,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
+    ptr::NonNull,
 };
 
-use crate::buddy::{allocate, liberate};
+use crate::{
+    arrayvec::ArrayVec,
+    buddy::{allocate, liberate, BuddyAllocator},
+};
 
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Page<T>(*mut T);
 
+#[core_local]
+static PAGE_CACHE: RefCell<ArrayVec<NonNull<MaybeUninit<[u8; 1 << 12]>>, 16>> =
+    RefCell::new(ArrayVec::new());
+
 impl<T> Page<T> {
+    const CACHEABLE: bool = BuddyAllocator::allocation_size::<T>()
+        == BuddyAllocator::allocation_size::<[u8; 1 << 12]>()
+        && BuddyAllocator::allocation_align::<T>()
+            == BuddyAllocator::allocation_align::<[u8; 1 << 12]>();
+
     fn allocate() -> *mut MaybeUninit<T> {
-        allocate::<T>()
+        let allocation = if Self::CACHEABLE {
+            let mut cache = PAGE_CACHE.borrow_mut();
+            if cache.is_empty() {
+                while cache.len() < cache.capacity() / 2 + 1 {
+                    if let Some(allocation) = allocate::<[u8; 1 << 12]>() {
+                        cache.push(allocation).unwrap();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let result: Option<NonNull<MaybeUninit<T>>> =
+                unsafe { core::mem::transmute(cache.pop()) };
+            result
+        } else {
+            allocate::<T>()
+        };
+        allocation
             .expect("could not allocate: physical memory exhausted")
             .as_ptr()
     }
@@ -114,7 +145,19 @@ impl<T> Drop for Page<T> {
     fn drop(&mut self) {
         unsafe {
             self.0.drop_in_place();
-            liberate(self.0)
+            if Self::CACHEABLE {
+                let mut cache = PAGE_CACHE.borrow_mut();
+                let untyped: *mut MaybeUninit<[u8; 1 << 12]> = core::mem::transmute(self.0);
+                let ptr = NonNull::new_unchecked(untyped);
+                cache.push(ptr).unwrap();
+                if cache.is_full() {
+                    while cache.len() >= cache.capacity() / 2 {
+                        liberate(cache.pop().unwrap().as_ptr());
+                    }
+                }
+            } else {
+                liberate(self.0)
+            }
         }
     }
 }
@@ -131,7 +174,7 @@ mod tests {
 
     #[test]
     pub fn test_uninit() {
-        let _ = Page::<u8>::uninit();
+        core::hint::black_box(Page::<u8>::uninit());
     }
 
     #[test]
@@ -151,5 +194,30 @@ mod tests {
         let p = Page::<[u8; 1024]>::new_cloned(31);
         let p = p.clone();
         assert_eq!(p[16], 31);
+    }
+
+    #[test]
+    pub fn test_alloc_many() {
+        let mut v = ArrayVec::<_, 64>::new();
+        (0..32).for_each(|_| {
+            v.push(Page::<u8>::from(31)).unwrap();
+        });
+    }
+
+    #[bench]
+    pub fn bench_alloc_cached(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            core::hint::black_box(Page::<u8>::from(31));
+        })
+    }
+
+    #[repr(C, align(8192))]
+    struct Weird(u8);
+
+    #[bench]
+    pub fn bench_alloc_uncached(bench: impl FnOnce(&dyn Fn())) {
+        bench(&|| {
+            core::hint::black_box(Page::<Weird>::uninit());
+        })
     }
 }

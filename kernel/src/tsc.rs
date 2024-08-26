@@ -89,7 +89,7 @@ pub fn read() -> Duration {
 }
 
 #[inline]
-pub fn time(f: impl Fn()) -> Duration {
+pub fn time(mut f: impl FnMut()) -> Duration {
     let start = read_cycles();
     unsafe {
         core::arch::x86_64::_mm_lfence();

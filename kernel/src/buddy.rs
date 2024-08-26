@@ -220,6 +220,10 @@ impl BuddyAllocator {
         }
     }
 
+    pub const fn allocation_align<T: Sized>() -> usize {
+        Self::allocation_size::<T>()
+    }
+
     pub fn allocate<T>(&mut self) -> *mut MaybeUninit<T> {
         let size = Self::allocation_size::<T>();
         unsafe { core::mem::transmute(self.alloc_block(size.trailing_zeros() as usize)) }
@@ -330,22 +334,7 @@ mod tests {
 
     #[test]
     pub fn test_alloc() {
-        Page4KB::new();
-    }
-
-    #[bench]
-    pub fn bench_alloc_4kb(bench: impl FnOnce(&dyn Fn())) {
-        bench(&|| {
-            let x = Page4KB::new();
-            core::mem::forget(x);
-        });
-    }
-
-    #[bench]
-    pub fn bench_alloc_free_4kb(bench: impl FnOnce(&dyn Fn())) {
-        bench(&|| {
-            let _ = Page4KB::new();
-        });
+        Page2MB::new();
     }
 
     #[bench]

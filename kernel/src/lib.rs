@@ -39,6 +39,7 @@ pub mod tsc;
 pub mod vm;
 
 mod acpi;
+mod arrayvec;
 mod gdt;
 mod idt;
 mod interrupts;

@@ -237,14 +237,14 @@ mod tests {
     #[bench]
     pub fn bench_alloc(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            core::mem::forget(alloc::vec![1, 2, 3, 4]);
+            core::mem::forget(core::hint::black_box(alloc::vec![1, 2, 3, 4]));
         });
     }
 
     #[bench]
     pub fn bench_alloc_free(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            core::mem::drop(alloc::vec![1, 2, 3, 4]);
+            core::hint::black_box(alloc::vec![1, 2, 3, 4]);
         });
     }
 }
