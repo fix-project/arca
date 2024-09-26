@@ -100,7 +100,7 @@ fn run(sh: &Shell, config: &Config) -> Result<()> {
     cmd!(sh, "objcopy -Oelf32-i386 {kernel} {name}").run()?;
     let smp = smp.to_string();
 
-    let qemu = cmd!(sh, "qemu-kvm -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {name}");
+    let qemu = cmd!(sh, "qemu-system-x86_64 -cpu host,+invtsc,+vmware-cpuid-freq -machine microvm -enable-kvm -monitor none -serial none -debugcon stdio -nographic -no-reboot -smp {smp} -m 4G -bios /usr/share/qemu/qboot.rom -kernel {name}");
 
     let qemu = if test {
         qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])

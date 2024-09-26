@@ -5,7 +5,6 @@
 #![feature(optimize_attribute)]
 #![feature(const_size_of_val)]
 #![feature(never_type)]
-#![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_write_slice)]
 #![feature(maybe_uninit_uninit_array_transpose)]
@@ -13,6 +12,7 @@
 #![feature(ptr_metadata)]
 #![feature(negative_impls)]
 #![feature(slice_from_ptr_range)]
+#![feature(new_zeroed_alloc)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
