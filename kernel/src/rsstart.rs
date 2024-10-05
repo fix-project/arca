@@ -38,7 +38,7 @@ extern "C" {
 }
 
 #[no_mangle]
-static mut NEXT_STACK_ADDR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static NEXT_STACK_ADDR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 #[no_mangle]
 static NEXT_CPU_READY: AtomicBool = AtomicBool::new(false);
@@ -59,13 +59,14 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static mut KERNEL_PAGES: LazyCell<SharedPage<PageTable512GB>> = LazyCell::new(|| unsafe {
-    let mut pdpt = PageTable512GB::new();
-    for (i, entry) in pdpt.iter_mut().enumerate() {
-        entry.map_global(i << 30, Permissions::All);
-    }
-    pdpt.into()
-});
+pub(crate) static mut KERNEL_PAGES: LazyCell<SharedPage<PageTable512GB>> =
+    LazyCell::new(|| unsafe {
+        let mut pdpt = PageTable512GB::new();
+        for (i, entry) in pdpt.iter_mut().enumerate() {
+            entry.map_global(i << 30, Permissions::All);
+        }
+        pdpt.into()
+    });
 
 pub(crate) static mut PAGE_MAP: LazyCell<SharedPage<PageTable256TB>> = LazyCell::new(|| unsafe {
     let pdpt = KERNEL_PAGES.clone();

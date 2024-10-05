@@ -46,7 +46,7 @@ extern "C" fn kmain() -> ! {
         let iters = 0x100;
         let time = kernel::tsc::time(|| {
             for _ in 0..iters {
-                let arca = Arca::new();
+                let _ = Arca::new();
             }
         });
         log::info!("Creation took {:?}", time / iters);
