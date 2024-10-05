@@ -9,7 +9,7 @@ use core::arch::asm;
 
 use kernel::{
     arca::Arca,
-    buddy::Page2MB,
+    buddy::UniquePage2MB,
     cpu::{Register, CPU},
     halt,
     paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry, Permissions},
@@ -55,7 +55,7 @@ extern "C" fn kmain() -> ! {
         arca0.registers_mut()[Register::RDI] = 0;
         arca0.registers_mut()[Register::RSP] = 1 << 21;
         arca0.registers_mut()[Register::RIP] = umain as usize as u64;
-        let stack0 = Page2MB::new();
+        let stack0 = UniquePage2MB::new();
         let mut pd = PageTable1GB::new();
         pd[0].map(stack0.into(), Permissions::All);
         let mut pdpt = PageTable512GB::new();

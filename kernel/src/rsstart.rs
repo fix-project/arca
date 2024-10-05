@@ -11,14 +11,14 @@ use log::LevelFilter;
 
 use crate::{
     acpi::{self, ApicDescription, Table},
-    buddy::{self, Page2MB},
+    buddy::{self, UniquePage2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
     paging::{self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
-    refcnt::{self, RcPage},
+    refcnt::{self, SharedPage},
     registers::{ControlReg0, ControlReg4, ExtendedFeatureEnableReg},
     vm,
 };
@@ -59,7 +59,7 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static mut KERNEL_PAGES: LazyCell<RcPage<PageTable512GB>> = LazyCell::new(|| unsafe {
+pub(crate) static mut KERNEL_PAGES: LazyCell<SharedPage<PageTable512GB>> = LazyCell::new(|| unsafe {
     let mut pdpt = PageTable512GB::new();
     for (i, entry) in pdpt.iter_mut().enumerate() {
         entry.map_global(i << 30, Permissions::All);
@@ -67,7 +67,7 @@ pub(crate) static mut KERNEL_PAGES: LazyCell<RcPage<PageTable512GB>> = LazyCell:
     pdpt.into()
 });
 
-pub(crate) static mut PAGE_MAP: LazyCell<RcPage<PageTable256TB>> = LazyCell::new(|| unsafe {
+pub(crate) static mut PAGE_MAP: LazyCell<SharedPage<PageTable256TB>> = LazyCell::new(|| unsafe {
     let pdpt = KERNEL_PAGES.clone();
     let mut map = PageTable256TB::new();
     // map[0].chain(pdpt.clone(), Permissions::All);
@@ -120,14 +120,14 @@ unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
     });
     let target = core::slice::from_raw_parts_mut(0x8000 as *mut u8, trampoline.len());
     target.copy_from_slice(trampoline);
-    let stack_page = Page2MB::new().into_raw();
+    let stack_page = UniquePage2MB::new().into_raw();
     let stack_addr = addr_of_mut!((*stack_page.add(1))[0]);
     for cpu in cpus {
         if cpu == lapic.id() {
             continue;
         }
         NEXT_CPU_READY.store(false, Ordering::SeqCst);
-        let page = Page2MB::new().into_raw();
+        let page = UniquePage2MB::new().into_raw();
         NEXT_STACK_ADDR.store(addr_of_mut!((*page.add(1))[0]), Ordering::SeqCst);
         log::debug!("Booting CPU {cpu} with stack {:p}", NEXT_STACK_ADDR);
         lapic.boot_cpu(cpu, 0x8000);

@@ -3,8 +3,8 @@ use core::marker::PhantomData;
 use bitfield_struct::bitfield;
 
 use crate::{
-    page::Page,
-    refcnt::{Page1GB, Page2MB, Page4KB, RcPage},
+    page::UniquePage,
+    refcnt::{Page1GB, Page2MB, Page4KB, SharedPage},
     vm,
 };
 
@@ -13,9 +13,9 @@ extern "C" {
 }
 
 #[core_local]
-static mut CURRENT_PAGE_TABLE: Option<RcPage<PageTable256TB>> = None;
+static mut CURRENT_PAGE_TABLE: Option<SharedPage<PageTable256TB>> = None;
 
-pub(crate) unsafe fn set_page_table(page_table: RcPage<PageTable256TB>) {
+pub(crate) unsafe fn set_page_table(page_table: SharedPage<PageTable256TB>) {
     let addr = vm::ka2pa(page_table.as_ptr());
     set_pt(addr);
     CURRENT_PAGE_TABLE.replace(page_table);
@@ -340,8 +340,8 @@ impl HardwarePage for ! {}
 /// Structs implementing this trait must be valid page tables on this architecture, and must be
 /// safely zero-initializable.
 pub unsafe trait PageTable: Sized + Clone {
-    fn new() -> Page<Self> {
-        unsafe { Page::zeroed().assume_init() }
+    fn new() -> UniquePage<Self> {
+        unsafe { UniquePage::zeroed().assume_init() }
     }
 }
 
@@ -349,9 +349,9 @@ unsafe impl PageTable for ! {}
 
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
-    Page(RcPage<P>),
+    Page(SharedPage<P>),
     Global(usize),
-    Table(RcPage<T>),
+    Table(SharedPage<T>),
 }
 
 pub trait PageTableEntry: Sized + Clone {
@@ -380,7 +380,7 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn map(
         &mut self,
-        page: RcPage<Self::Page>,
+        page: SharedPage<Self::Page>,
         prot: Permissions,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
@@ -408,7 +408,7 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn chain(
         &mut self,
-        table: RcPage<Self::Table>,
+        table: SharedPage<Self::Table>,
         prot: Permissions,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
@@ -431,7 +431,7 @@ pub trait PageTableEntry: Sized + Clone {
                 if descriptor.global() {
                     UnmappedPage::Global(addr)
                 } else {
-                    let page = RcPage::from_raw(vm::pa2ka(addr));
+                    let page = SharedPage::from_raw(vm::pa2ka(addr));
                     UnmappedPage::Page(page)
                 }
             }
@@ -440,7 +440,7 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let table = RcPage::from_raw(vm::pa2ka(addr));
+                let table = SharedPage::from_raw(vm::pa2ka(addr));
                 UnmappedPage::Table(table)
             }
         }
@@ -456,7 +456,7 @@ pub trait PageTableEntry: Sized + Clone {
                 if descriptor.global() {
                     UnmappedPage::Global(addr)
                 } else {
-                    let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
+                    let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
                     let page2 = page.clone();
                     core::mem::forget(page);
                     UnmappedPage::Page(page2)
@@ -466,7 +466,7 @@ pub trait PageTableEntry: Sized + Clone {
             unsafe {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
-                let table: RcPage<Self::Table> = RcPage::from_raw(vm::pa2ka(addr));
+                let table: SharedPage<Self::Table> = SharedPage::from_raw(vm::pa2ka(addr));
                 let table2 = table.clone();
                 core::mem::forget(table);
                 UnmappedPage::Table(table2)
@@ -517,7 +517,7 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
                 if !descriptor.global() {
                     let addr = descriptor.address();
-                    let page: RcPage<Self::Page> = RcPage::from_raw(vm::pa2ka(addr));
+                    let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
                     let new = page.clone();
                     core::mem::forget(page);
                     core::mem::forget(new);
@@ -527,7 +527,7 @@ pub trait PageTableEntry: Sized + Clone {
             unsafe {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
-                let table: RcPage<Self::Table> = RcPage::from_raw(vm::pa2ka(addr));
+                let table: SharedPage<Self::Table> = SharedPage::from_raw(vm::pa2ka(addr));
                 let table = table.clone();
                 let new = table.clone();
                 core::mem::forget(table);

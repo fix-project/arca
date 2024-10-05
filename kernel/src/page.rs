@@ -12,13 +12,13 @@ use crate::{
 
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct Page<T>(*mut T);
+pub struct UniquePage<T>(*mut T);
 
 #[core_local]
 static PAGE_CACHE: RefCell<ArrayVec<NonNull<MaybeUninit<[u8; 1 << 12]>>, 16>> =
     RefCell::new(ArrayVec::new());
 
-impl<T> Page<T> {
+impl<T> UniquePage<T> {
     const CACHEABLE: bool = BuddyAllocator::allocation_size::<T>()
         == BuddyAllocator::allocation_size::<[u8; 1 << 12]>()
         && BuddyAllocator::allocation_align::<T>()
@@ -47,14 +47,14 @@ impl<T> Page<T> {
             .as_ptr()
     }
 
-    pub fn uninit() -> Page<MaybeUninit<T>> {
-        Page(Self::allocate())
+    pub fn uninit() -> UniquePage<MaybeUninit<T>> {
+        UniquePage(Self::allocate())
     }
 
-    pub fn zeroed() -> Page<MaybeUninit<T>> {
+    pub fn zeroed() -> UniquePage<MaybeUninit<T>> {
         let page = Self::allocate();
         unsafe { (*page).write(core::mem::zeroed()) };
-        Page(page)
+        UniquePage(page)
     }
 
     pub fn as_ptr(&self) -> *mut T {
@@ -74,25 +74,25 @@ impl<T> Page<T> {
     }
 }
 
-impl<T> From<T> for Page<T> {
+impl<T> From<T> for UniquePage<T> {
     fn from(value: T) -> Self {
         let page = Self::allocate();
         let page: *mut T = unsafe {
             (*page).write(value);
             (*page).assume_init_mut()
         };
-        Page(page)
+        UniquePage(page)
     }
 }
 
-impl<T: Default> Default for Page<T> {
+impl<T: Default> Default for UniquePage<T> {
     fn default() -> Self {
         let default: T = Default::default();
         Self::from(default)
     }
 }
 
-impl<T: Copy, const N: usize> Page<[T; N]> {
+impl<T: Copy, const N: usize> UniquePage<[T; N]> {
     pub fn new_cloned(value: T) -> Self {
         let page = Self::allocate();
         let page: *mut [T; N] = unsafe {
@@ -100,26 +100,26 @@ impl<T: Copy, const N: usize> Page<[T; N]> {
             (*page).fill(MaybeUninit::new(value));
             core::mem::transmute(page)
         };
-        Page(page)
+        UniquePage(page)
     }
 }
 
-impl<const N: usize> Page<[u8; N]> {
+impl<const N: usize> UniquePage<[u8; N]> {
     pub fn new() -> Self {
         unsafe { Self::uninit().assume_init() }
     }
 }
 
-impl<T> Page<MaybeUninit<T>> {
+impl<T> UniquePage<MaybeUninit<T>> {
     /// # Safety
     /// This page's memory must be initialized to a valid bitpattern for T.
-    pub unsafe fn assume_init(self) -> Page<T> {
+    pub unsafe fn assume_init(self) -> UniquePage<T> {
         let ptr = self.0;
         core::mem::forget(self);
-        Page(core::mem::transmute::<*mut MaybeUninit<T>, *mut T>(ptr))
+        UniquePage(core::mem::transmute::<*mut MaybeUninit<T>, *mut T>(ptr))
     }
 
-    pub fn write(self, value: T) -> Page<T> {
+    pub fn write(self, value: T) -> UniquePage<T> {
         unsafe {
             (*self.0).write(value);
             self.assume_init()
@@ -127,7 +127,7 @@ impl<T> Page<MaybeUninit<T>> {
     }
 }
 
-impl<T> Deref for Page<T> {
+impl<T> Deref for UniquePage<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -135,13 +135,13 @@ impl<T> Deref for Page<T> {
     }
 }
 
-impl<T> DerefMut for Page<T> {
+impl<T> DerefMut for UniquePage<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0 }
     }
 }
 
-impl<T> Drop for Page<T> {
+impl<T> Drop for UniquePage<T> {
     fn drop(&mut self) {
         unsafe {
             self.0.drop_in_place();
@@ -162,7 +162,7 @@ impl<T> Drop for Page<T> {
     }
 }
 
-impl<T: Clone> Clone for Page<T> {
+impl<T: Clone> Clone for UniquePage<T> {
     fn clone(&self) -> Self {
         Self::uninit().write(unsafe { (*self.0).clone() })
     }
@@ -174,24 +174,24 @@ mod tests {
 
     #[test]
     pub fn test_uninit() {
-        core::hint::black_box(Page::<u8>::uninit());
+        core::hint::black_box(UniquePage::<u8>::uninit());
     }
 
     #[test]
     pub fn test_new() {
-        let p = Page::<u8>::from(31);
+        let p = UniquePage::<u8>::from(31);
         assert_eq!(*p, 31);
     }
 
     #[test]
     pub fn test_cloned() {
-        let p = Page::<[u8; 1024]>::new_cloned(31);
+        let p = UniquePage::<[u8; 1024]>::new_cloned(31);
         assert_eq!(p[16], 31);
     }
 
     #[test]
     pub fn test_clone() {
-        let p = Page::<[u8; 1024]>::new_cloned(31);
+        let p = UniquePage::<[u8; 1024]>::new_cloned(31);
         let p = p.clone();
         assert_eq!(p[16], 31);
     }
@@ -200,14 +200,14 @@ mod tests {
     pub fn test_alloc_many() {
         let mut v = ArrayVec::<_, 64>::new();
         (0..32).for_each(|_| {
-            v.push(Page::<u8>::from(31)).unwrap();
+            v.push(UniquePage::<u8>::from(31)).unwrap();
         });
     }
 
     #[bench]
     pub fn bench_alloc_cached(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            core::hint::black_box(Page::<u8>::from(31));
+            core::hint::black_box(UniquePage::<u8>::from(31));
         })
     }
 
@@ -217,7 +217,7 @@ mod tests {
     #[bench]
     pub fn bench_alloc_uncached(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            core::hint::black_box(Page::<Weird>::uninit());
+            core::hint::black_box(UniquePage::<Weird>::uninit());
         })
     }
 }

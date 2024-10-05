@@ -1,9 +1,9 @@
 use core::cell::LazyCell;
 
-use crate::buddy::Page2MB;
+use crate::buddy::UniquePage2MB;
 
 #[core_local]
-pub(crate) static INTERRUPT_STACK: LazyCell<Page2MB> = LazyCell::new(Page2MB::new);
+pub(crate) static INTERRUPT_STACK: LazyCell<UniquePage2MB> = LazyCell::new(UniquePage2MB::new);
 
 #[repr(C)]
 #[derive(Debug)]

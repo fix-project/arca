@@ -6,7 +6,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{buddy, page::Page, vm};
+use crate::{buddy, page::UniquePage, vm};
 
 pub static mut REFERENCE_COUNTS: MaybeUninit<&'static [AtomicUsize]> = MaybeUninit::uninit();
 
@@ -32,21 +32,21 @@ pub type Page4KB = [u8; 1 << 12];
 pub type Page2MB = [u8; 1 << 21];
 pub type Page1GB = [u8; 1 << 30];
 
-pub type RcPage4KB = RcPage<[u8; 1 << 12]>;
-pub type RcPage2MB = RcPage<[u8; 1 << 21]>;
-pub type RcPage1GB = RcPage<[u8; 1 << 30]>;
+pub type SharedPage4KB = SharedPage<[u8; 1 << 12]>;
+pub type SharedPage2MB = SharedPage<[u8; 1 << 21]>;
+pub type SharedPage1GB = SharedPage<[u8; 1 << 30]>;
 
 #[derive(Debug)]
-pub struct RcPage<T> {
+pub struct SharedPage<T> {
     ptr: *mut T,
 }
 
-unsafe impl<T: Send> Send for RcPage<T> {}
-unsafe impl<T: Sync> Sync for RcPage<T> {}
+unsafe impl<T: Send> Send for SharedPage<T> {}
+unsafe impl<T: Sync> Sync for SharedPage<T> {}
 
-impl<T> RcPage<T> {
+impl<T> SharedPage<T> {
     pub fn new(value: T) -> Self {
-        Page::from(value).into()
+        UniquePage::from(value).into()
     }
 
     pub fn as_ptr(&self) -> *mut T {
@@ -70,14 +70,14 @@ impl<T> RcPage<T> {
     }
 }
 
-impl<T: Clone> RcPage<T> {
+impl<T: Clone> SharedPage<T> {
     pub fn make_mut(&mut self) -> &mut T {
         unsafe {
             if (*self.refcnt()).load(Ordering::SeqCst) == 1 {
                 // only reference; access is safe
                 return &mut *self.ptr;
             }
-            let copied = Page::from((*self.ptr).clone());
+            let copied = UniquePage::from((*self.ptr).clone());
             if (*self.refcnt()).fetch_sub(1, Ordering::SeqCst) == 1 {
                 // now only reference; discard clone
                 (*self.refcnt()).store(1, Ordering::SeqCst);
@@ -90,7 +90,7 @@ impl<T: Clone> RcPage<T> {
     }
 }
 
-impl<T> Deref for RcPage<T> {
+impl<T> Deref for SharedPage<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -98,41 +98,41 @@ impl<T> Deref for RcPage<T> {
     }
 }
 
-impl<const N: usize> RcPage<[u8; N]> {
+impl<const N: usize> SharedPage<[u8; N]> {
     pub fn new_bytes() -> Self {
-        Page::new().into()
+        UniquePage::new().into()
     }
 }
 
-impl<T: Default> Default for RcPage<T> {
+impl<T: Default> Default for SharedPage<T> {
     fn default() -> Self {
-        Page::<T>::default().into()
+        UniquePage::<T>::default().into()
     }
 }
 
-impl<T> From<Page<T>> for RcPage<T> {
-    fn from(value: Page<T>) -> Self {
+impl<T> From<UniquePage<T>> for SharedPage<T> {
+    fn from(value: UniquePage<T>) -> Self {
         let ptr = value.into_raw();
         let refcnt = refcnt(ptr);
         unsafe {
             (*refcnt).store(1, Ordering::SeqCst);
         }
-        RcPage { ptr }
+        SharedPage { ptr }
     }
 }
 
-impl<T> Drop for RcPage<T> {
+impl<T> Drop for SharedPage<T> {
     fn drop(&mut self) {
         unsafe {
             if (*self.refcnt()).fetch_sub(1, Ordering::SeqCst) == 1 {
-                let block = Page::from_raw(self.ptr);
+                let block = UniquePage::from_raw(self.ptr);
                 core::mem::drop(block);
             }
         }
     }
 }
 
-impl<T> Clone for RcPage<T> {
+impl<T> Clone for SharedPage<T> {
     fn clone(&self) -> Self {
         unsafe {
             (*self.refcnt()).fetch_add(1, Ordering::SeqCst);
@@ -147,20 +147,20 @@ mod tests {
 
     #[test]
     pub fn test_alloc() {
-        RcPage4KB::new_bytes();
+        SharedPage4KB::new_bytes();
     }
 
     #[bench]
     pub fn bench_alloc_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let x = RcPage4KB::new_bytes();
+            let x = SharedPage4KB::new_bytes();
             core::mem::forget(x);
         });
     }
 
     #[bench]
     pub fn bench_clone_4kb(bench: impl FnOnce(&dyn Fn())) {
-        let x = RcPage4KB::new_bytes();
+        let x = SharedPage4KB::new_bytes();
         bench(&|| {
             let y = x.clone();
             core::mem::forget(y);
@@ -170,14 +170,14 @@ mod tests {
     #[bench]
     pub fn bench_alloc_free_4kb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = RcPage4KB::new_bytes();
+            let _ = SharedPage4KB::new_bytes();
         });
     }
 
     #[bench]
     pub fn bench_alloc_free_2mb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = RcPage2MB::new_bytes();
+            let _ = SharedPage2MB::new_bytes();
         });
     }
 }

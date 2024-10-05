@@ -1,11 +1,11 @@
 use crate::{
     cpu::{Cpu, ExitStatus, RegisterFile},
     paging::{PageTable, PageTable256TB, PageTable256TBEntry, PageTableEntry, Permissions},
-    refcnt::RcPage,
+    refcnt::SharedPage,
 };
 
 pub struct Arca {
-    page_table: RcPage<PageTable256TB>,
+    page_table: SharedPage<PageTable256TB>,
     register_file: RegisterFile,
 }
 

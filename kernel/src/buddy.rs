@@ -4,7 +4,7 @@ use core::cell::OnceCell;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
-use crate::page::Page;
+use crate::page::UniquePage;
 use crate::spinlock::SpinLock;
 use crate::{multiboot, vm};
 
@@ -324,9 +324,9 @@ pub unsafe fn liberate_bytes(ptr: *mut [u8]) {
     unsafe { buddy.free_block(ptr, len.trailing_zeros() as usize) }
 }
 
-pub type Page4KB = Page<[u8; 1 << 12]>;
-pub type Page2MB = Page<[u8; 1 << 21]>;
-pub type Page1GB = Page<[u8; 1 << 30]>;
+pub type UniquePage4KB = UniquePage<[u8; 1 << 12]>;
+pub type UniquePage2MB = UniquePage<[u8; 1 << 21]>;
+pub type UniquePage1GB = UniquePage<[u8; 1 << 30]>;
 
 #[cfg(test)]
 mod tests {
@@ -334,13 +334,13 @@ mod tests {
 
     #[test]
     pub fn test_alloc() {
-        Page2MB::new();
+        UniquePage2MB::new();
     }
 
     #[bench]
     pub fn bench_alloc_free_2mb(bench: impl FnOnce(&dyn Fn())) {
         bench(&|| {
-            let _ = Page2MB::new();
+            let _ = UniquePage2MB::new();
         });
     }
 }

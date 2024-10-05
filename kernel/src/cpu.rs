@@ -3,7 +3,7 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-use crate::{paging::PageTable256TB, refcnt::RcPage, vm::ka2pa};
+use crate::{paging::PageTable256TB, refcnt::SharedPage, vm::ka2pa};
 
 #[core_local]
 pub static CPU: RefCell<Cpu> = RefCell::new(Cpu {
@@ -11,7 +11,7 @@ pub static CPU: RefCell<Cpu> = RefCell::new(Cpu {
 });
 
 pub struct Cpu {
-    current_page_table: Option<RcPage<PageTable256TB>>,
+    current_page_table: Option<SharedPage<PageTable256TB>>,
 }
 
 impl !Sync for Cpu {}
@@ -121,8 +121,8 @@ impl Cpu {
     /// generally means kernel data structures should not be mapped in any other location.
     pub unsafe fn activate_page_table(
         &mut self,
-        page_table: RcPage<PageTable256TB>,
-    ) -> Option<RcPage<PageTable256TB>> {
+        page_table: SharedPage<PageTable256TB>,
+    ) -> Option<SharedPage<PageTable256TB>> {
         set_pt(ka2pa(page_table.as_ptr()));
         self.current_page_table.replace(page_table)
     }
