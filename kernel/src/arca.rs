@@ -12,7 +12,7 @@ pub struct Arca {
 impl Arca {
     pub fn new() -> Arca {
         let mut page_table = PageTable256TB::new();
-        let mut pdpt = unsafe { crate::rsstart::KERNEL_PAGES.clone() };
+        let mut pdpt = crate::rsstart::KERNEL_PAGES.lock().clone();
         let kernel = pdpt.make_mut();
         kernel[0].protect(Permissions::All);
         page_table[256].chain(pdpt, Permissions::All);
@@ -76,7 +76,7 @@ impl LoadedArca<'_> {
     pub fn unload(self) -> Arca {
         let page_table = unsafe {
             self.cpu
-                .activate_page_table(crate::rsstart::PAGE_MAP.clone())
+                .activate_page_table(crate::rsstart::PAGE_MAP.lock().clone())
                 .unwrap()
         };
 

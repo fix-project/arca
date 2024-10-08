@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{cell::RefCell, marker::PhantomData};
 
 use bitfield_struct::bitfield;
 
@@ -13,12 +13,12 @@ extern "C" {
 }
 
 #[core_local]
-static mut CURRENT_PAGE_TABLE: Option<SharedPage<PageTable256TB>> = None;
+static CURRENT_PAGE_TABLE: RefCell<Option<SharedPage<PageTable256TB>>> = RefCell::new(None);
 
 pub(crate) unsafe fn set_page_table(page_table: SharedPage<PageTable256TB>) {
     let addr = vm::ka2pa(page_table.as_ptr());
     set_pt(addr);
-    CURRENT_PAGE_TABLE.replace(page_table);
+    CURRENT_PAGE_TABLE.borrow_mut().replace(page_table);
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

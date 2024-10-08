@@ -20,6 +20,7 @@ use crate::{
     paging::{self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
     refcnt::{self, SharedPage},
     registers::{ControlReg0, ControlReg4, ExtendedFeatureEnableReg},
+    spinlock::SpinLock,
     vm,
 };
 
@@ -59,22 +60,22 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static mut KERNEL_PAGES: LazyCell<SharedPage<PageTable512GB>> =
-    LazyCell::new(|| unsafe {
+pub(crate) static KERNEL_PAGES: SpinLock<LazyCell<SharedPage<PageTable512GB>>> =
+    SpinLock::new(LazyCell::new(|| unsafe {
         let mut pdpt = PageTable512GB::new();
         for (i, entry) in pdpt.iter_mut().enumerate() {
             entry.map_global(i << 30, Permissions::All);
         }
         pdpt.into()
-    });
+    }));
 
-pub(crate) static mut PAGE_MAP: LazyCell<SharedPage<PageTable256TB>> = LazyCell::new(|| unsafe {
-    let pdpt = KERNEL_PAGES.clone();
-    let mut map = PageTable256TB::new();
-    // map[0].chain(pdpt.clone(), Permissions::All);
-    map[256].chain(pdpt, Permissions::All);
-    map.into()
-});
+pub(crate) static PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>> =
+    SpinLock::new(LazyCell::new(|| {
+        let pdpt = KERNEL_PAGES.lock().clone();
+        let mut map = PageTable256TB::new();
+        map[256].chain(pdpt, Permissions::All);
+        map.into()
+    }));
 
 #[no_mangle]
 unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
@@ -103,7 +104,7 @@ unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
     log::info!("found {} processors", cpus.len());
 
     LazyCell::force(&*addr_of!(IDT));
-    LazyCell::force(&*addr_of!(PAGE_MAP));
+    LazyCell::force(&*PAGE_MAP.lock());
 
     init_cpu_config();
     init_cpu_tls();
@@ -184,7 +185,7 @@ unsafe extern "C" fn _rscontinue() -> ! {
     crate::tsc::init();
     crate::kvmclock::init();
 
-    let map = PAGE_MAP.clone();
+    let map = PAGE_MAP.lock().clone();
     paging::set_page_table(map);
 
     asm!("sti");

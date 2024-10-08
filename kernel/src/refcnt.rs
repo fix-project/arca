@@ -6,9 +6,10 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{buddy, page::UniquePage, vm};
+use crate::{buddy, page::UniquePage, spinlock::SpinLock, vm};
 
-pub static mut REFERENCE_COUNTS: MaybeUninit<&'static [AtomicUsize]> = MaybeUninit::uninit();
+pub static REFERENCE_COUNTS: SpinLock<MaybeUninit<&'static [AtomicUsize]>> =
+    SpinLock::new(MaybeUninit::uninit());
 
 pub(crate) unsafe fn init() {
     let size = {
@@ -20,12 +21,12 @@ pub(crate) unsafe fn init() {
     };
     let array: &'static [AtomicUsize] =
         MaybeUninit::slice_assume_init_ref(Box::leak::<'static>(Box::new_zeroed_slice(size)));
-    REFERENCE_COUNTS.write(array);
+    REFERENCE_COUNTS.lock().write(array);
 }
 
 fn refcnt<T>(ptr: *const T) -> *const AtomicUsize {
     let addr = vm::ka2pa(ptr);
-    unsafe { &REFERENCE_COUNTS.assume_init_ref()[addr / 4096] }
+    unsafe { &REFERENCE_COUNTS.lock().assume_init_ref()[addr / 4096] }
 }
 
 pub type Page4KB = [u8; 1 << 12];

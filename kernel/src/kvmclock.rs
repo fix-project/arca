@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use crate::vm;
 
-static mut BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
+static BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
 #[core_local]
 static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(Default::default);
