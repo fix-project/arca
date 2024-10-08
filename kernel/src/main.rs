@@ -57,7 +57,7 @@ extern "C" fn kmain() -> ! {
         arca0.registers_mut()[Register::RIP] = umain as usize as u64;
         let stack0 = UniquePage2MB::new();
         let mut pd = PageTable1GB::new();
-        pd[0].map(stack0.into(), Permissions::All);
+        pd[0].map_unique(stack0);
         let mut pdpt = PageTable512GB::new();
         pdpt[0].chain(pd.into(), Permissions::All);
         arca0

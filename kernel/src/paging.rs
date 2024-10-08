@@ -349,7 +349,8 @@ unsafe impl PageTable for ! {}
 
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
-    Page(SharedPage<P>),
+    Unique(UniquePage<P>),
+    Shared(SharedPage<P>),
     Global(usize),
     Table(SharedPage<T>),
 }
@@ -378,14 +379,29 @@ pub trait PageTableEntry: Sized + Clone {
         self.present() && ((self.bits() >> 7) & 1 == 1)
     }
 
-    fn map(
+    fn map_unique(
         &mut self,
-        page: SharedPage<Self::Page>,
-        prot: Permissions,
+        page: UniquePage<Self::Page>,
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            self.set_bits(Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), prot).into_bits());
+            self.set_bits(
+                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::All).into_bits(),
+            );
+        }
+        original
+    }
+
+    fn map_shared(
+        &mut self,
+        page: SharedPage<Self::Page>,
+    ) -> UnmappedPage<Self::Page, Self::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.set_bits(
+                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::Executable)
+                    .into_bits(),
+            );
         }
         original
     }
@@ -430,9 +446,12 @@ pub trait PageTableEntry: Sized + Clone {
                 let addr = descriptor.address();
                 if descriptor.global() {
                     UnmappedPage::Global(addr)
+                } else if descriptor.writeable() {
+                    let page = UniquePage::from_raw(vm::pa2ka(addr));
+                    UnmappedPage::Unique(page)
                 } else {
                     let page = SharedPage::from_raw(vm::pa2ka(addr));
-                    UnmappedPage::Page(page)
+                    UnmappedPage::Shared(page)
                 }
             }
         } else {
@@ -459,7 +478,7 @@ pub trait PageTableEntry: Sized + Clone {
                     let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
                     let page2 = page.clone();
                     core::mem::forget(page);
-                    UnmappedPage::Page(page2)
+                    UnmappedPage::Shared(page2)
                 }
             }
         } else {
@@ -553,8 +572,13 @@ where
         let prot = self.get_protection();
         match self.get() {
             UnmappedPage::None => f.debug_struct("None").finish(),
-            UnmappedPage::Page(p) => f
-                .debug_tuple("Page")
+            UnmappedPage::Unique(p) => f
+                .debug_tuple("Unique")
+                .field(&p.as_ptr())
+                .field(&prot)
+                .finish(),
+            UnmappedPage::Shared(p) => f
+                .debug_tuple("Shared")
                 .field(&p.as_ptr())
                 .field(&prot)
                 .finish(),
