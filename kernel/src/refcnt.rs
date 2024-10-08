@@ -1,4 +1,5 @@
 use core::{
+    cell::RefCell,
     mem::MaybeUninit,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
@@ -10,6 +11,9 @@ use crate::{buddy, page::UniquePage, spinlock::SpinLock, vm};
 
 pub static REFERENCE_COUNTS: SpinLock<MaybeUninit<&'static [AtomicUsize]>> =
     SpinLock::new(MaybeUninit::uninit());
+
+#[core_local]
+pub static LOCAL_REFERENCE_COUNTS: RefCell<Option<&'static [AtomicUsize]>> = RefCell::new(None);
 
 pub(crate) unsafe fn init() {
     let size = {
@@ -26,7 +30,17 @@ pub(crate) unsafe fn init() {
 
 fn refcnt<T>(ptr: *const T) -> *const AtomicUsize {
     let addr = vm::ka2pa(ptr);
-    unsafe { &REFERENCE_COUNTS.lock().assume_init_ref()[addr / 4096] }
+    let rc = LOCAL_REFERENCE_COUNTS.borrow();
+    match *rc {
+        Some(rc) => &rc[addr / 4096],
+        None => {
+            core::mem::drop(rc);
+            let mut rc = LOCAL_REFERENCE_COUNTS.borrow_mut();
+            let target = *unsafe { REFERENCE_COUNTS.lock().assume_init_ref() };
+            *rc = Some(target);
+            &target[addr / 4096]
+        }
+    }
 }
 
 pub type Page4KB = [u8; 1 << 12];
