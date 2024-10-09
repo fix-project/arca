@@ -7,12 +7,13 @@ extern crate kernel;
 
 use core::arch::asm;
 
+use alloc::vec;
 use kernel::{
-    arca::Arca,
-    buddy::UniquePage2MB,
+    arca::{Arca, Blob},
+    buddy::{UniquePage2MB, UniquePage4KB},
     cpu::{Register, CPU},
     halt,
-    paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry, Permissions},
+    paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry},
     rt::{yield_now, Executor},
     shutdown,
     spinlock::SpinLock,
@@ -51,6 +52,12 @@ extern "C" fn kmain() -> ! {
         });
         log::info!("Creation took {:?}", time / iters);
 
+        let mut data = unsafe { UniquePage4KB::zeroed().assume_init() };
+        data[0..13].copy_from_slice(b"hello, world!");
+
+        let pages = vec![data.into()];
+        let blob = Blob { pages };
+
         let mut arca0 = Arca::new();
         arca0.registers_mut()[Register::RDI] = 0;
         arca0.registers_mut()[Register::RSP] = 1 << 21;
@@ -59,10 +66,8 @@ extern "C" fn kmain() -> ! {
         let mut pd = PageTable1GB::new();
         pd[0].map_unique(stack0);
         let mut pdpt = PageTable512GB::new();
-        pdpt[0].chain(pd.into(), Permissions::All);
-        arca0
-            .mappings_mut()
-            .chain(pdpt.into(), Permissions::ReadWrite);
+        pdpt[0].chain(pd.into());
+        arca0.mappings_mut().chain(pdpt.into());
 
         exec.spawn(async move {
             loop {
@@ -83,6 +88,10 @@ extern "C" fn kmain() -> ! {
                                 }
                                 3 => {
                                     break 'runner;
+                                }
+                                4 => {
+                                    let addr = arca.registers()[Register::RSI];
+                                    arca.map(&blob, addr as usize);
                                 }
                                 x => {
                                     unimplemented!("syscall {x}");
@@ -143,6 +152,15 @@ unsafe extern "C" fn umain(id: u64) -> ! {
         }
     });
     log::info!("{id}: Yielding took {:?}", time / iters);
+
+    let time = kernel::tsc::time(|| {
+        for _ in 0..iters {
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")4, in("rsi")0x400000);
+        }
+    });
+    log::info!("{id}: Mapping took {:?}", time / iters);
+    let s = core::ffi::CStr::from_ptr(0x400000 as *const i8);
+    log::info!("{id}: Blob Contents: {:?}", s);
 
     log::info!("{id}: Exiting.");
     asm!("syscall", in("rdi") 0);

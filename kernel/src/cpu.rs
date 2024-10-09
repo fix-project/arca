@@ -139,4 +139,16 @@ impl Cpu {
             unsafe { isr_call_user(registers) }
         }
     }
+
+    /// # Safety
+    /// This function may trigger undefined behavior if the modifications being made would affect
+    /// the currently running code.
+    pub unsafe fn modify_page_table(&mut self, f: impl FnOnce(&mut SharedPage<PageTable256TB>)) {
+        let mut pt = None;
+        core::mem::swap(&mut self.current_page_table, &mut pt);
+        let mut pt = pt.expect("cannot modify nonexistent page table");
+        f(&mut pt);
+        set_pt(ka2pa(pt.as_ptr()));
+        self.current_page_table = Some(pt);
+    }
 }

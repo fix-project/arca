@@ -1,4 +1,4 @@
-use core::{cell::RefCell, marker::PhantomData};
+use core::marker::PhantomData;
 
 use bitfield_struct::bitfield;
 
@@ -7,19 +7,6 @@ use crate::{
     refcnt::{Page1GB, Page2MB, Page4KB, SharedPage},
     vm,
 };
-
-extern "C" {
-    fn set_pt(page_map: usize);
-}
-
-#[core_local]
-static CURRENT_PAGE_TABLE: RefCell<Option<SharedPage<PageTable256TB>>> = RefCell::new(None);
-
-pub(crate) unsafe fn set_page_table(page_table: SharedPage<PageTable256TB>) {
-    let addr = vm::ka2pa(page_table.as_ptr());
-    set_pt(addr);
-    CURRENT_PAGE_TABLE.borrow_mut().replace(page_table);
-}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Permissions {
@@ -358,8 +345,8 @@ pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
 pub trait PageTableEntry: Sized + Clone {
     type Page: HardwarePage + core::fmt::Debug;
     type Table: PageTable + core::fmt::Debug;
-    type PageDescriptor: Descriptor;
-    type TableDescriptor: Descriptor;
+    type PageDescriptor: Descriptor + core::fmt::Debug;
+    type TableDescriptor: Descriptor + core::fmt::Debug;
 
     fn bits(&self) -> u64;
 
@@ -377,6 +364,10 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn leaf(&self) -> bool {
         self.present() && ((self.bits() >> 7) & 1 == 1)
+    }
+
+    fn nested(&self) -> bool {
+        self.present() && ((self.bits() >> 7) & 1 == 0)
     }
 
     fn map_unique(
@@ -398,10 +389,9 @@ pub trait PageTableEntry: Sized + Clone {
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            self.set_bits(
-                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::Executable)
-                    .into_bits(),
-            );
+            let desc =
+                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::Executable);
+            self.set_bits(desc.into_bits());
         }
         original
     }
@@ -422,15 +412,12 @@ pub trait PageTableEntry: Sized + Clone {
         original
     }
 
-    fn chain(
-        &mut self,
-        table: SharedPage<Self::Table>,
-        prot: Permissions,
-    ) -> UnmappedPage<Self::Page, Self::Table> {
+    fn chain(&mut self, table: SharedPage<Self::Table>) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
             self.set_bits(
-                Self::TableDescriptor::new(vm::ka2pa(table.into_raw()), prot).into_bits(),
+                Self::TableDescriptor::new(vm::ka2pa(table.into_raw()), Permissions::All)
+                    .into_bits(),
             );
         }
         original
@@ -461,34 +448,6 @@ pub trait PageTableEntry: Sized + Clone {
                 let addr = descriptor.address();
                 let table = SharedPage::from_raw(vm::pa2ka(addr));
                 UnmappedPage::Table(table)
-            }
-        }
-    }
-
-    fn get(&self) -> UnmappedPage<Self::Page, Self::Table> {
-        if !self.present() {
-            UnmappedPage::None
-        } else if self.leaf() {
-            unsafe {
-                let descriptor = Self::PageDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
-                if descriptor.global() {
-                    UnmappedPage::Global(addr)
-                } else {
-                    let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
-                    let page2 = page.clone();
-                    core::mem::forget(page);
-                    UnmappedPage::Shared(page2)
-                }
-            }
-        } else {
-            unsafe {
-                let descriptor = Self::TableDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
-                let table: SharedPage<Self::Table> = SharedPage::from_raw(vm::pa2ka(addr));
-                let table2 = table.clone();
-                core::mem::forget(table);
-                UnmappedPage::Table(table2)
             }
         }
     }
@@ -570,24 +529,26 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let prot = self.get_protection();
-        match self.get() {
-            UnmappedPage::None => f.debug_struct("None").finish(),
-            UnmappedPage::Unique(p) => f
-                .debug_tuple("Unique")
-                .field(&p.as_ptr())
-                .field(&prot)
-                .finish(),
-            UnmappedPage::Shared(p) => f
-                .debug_tuple("Shared")
-                .field(&p.as_ptr())
-                .field(&prot)
-                .finish(),
-            UnmappedPage::Global(g) => f.debug_tuple("Page").field(&g).field(&prot).finish(),
-            UnmappedPage::Table(t) => f
-                .debug_tuple("Table")
-                .field(&t.as_ptr())
-                .field(&prot)
-                .finish(),
+        if !self.present() {
+            f.debug_struct("None").finish()
+        } else if self.leaf() {
+            unsafe {
+                let descriptor = <Self as PageTableEntry>::PageDescriptor::from_bits(self.bits());
+                let addr = descriptor.address();
+                if descriptor.global() {
+                    f.debug_tuple("Global").field(&addr).field(&prot).finish()
+                } else if descriptor.writeable() {
+                    f.debug_tuple("Unique").field(&addr).field(&prot).finish()
+                } else {
+                    f.debug_tuple("Shared").field(&addr).field(&prot).finish()
+                }
+            }
+        } else {
+            unsafe {
+                let descriptor = <Self as PageTableEntry>::TableDescriptor::from_bits(self.bits());
+                let addr = descriptor.address();
+                f.debug_tuple("Table").field(&addr).field(&prot).finish()
+            }
         }
     }
 }
@@ -611,7 +572,7 @@ impl PageTableEntry for PageTable2MBEntry {
     type Page = Page4KB;
     type Table = !;
 
-    type PageDescriptor = HugePageDescriptor;
+    type PageDescriptor = PageDescriptor;
     type TableDescriptor = TableDescriptor;
 
     unsafe fn new(bits: u64) -> Self {

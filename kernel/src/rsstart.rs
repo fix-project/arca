@@ -17,7 +17,7 @@ use crate::{
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
     multiboot::MultibootInfo,
-    paging::{self, PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
+    paging::{PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
     refcnt::{self, SharedPage},
     registers::{ControlReg0, ControlReg4, ExtendedFeatureEnableReg},
     spinlock::SpinLock,
@@ -73,7 +73,7 @@ pub(crate) static PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>> =
     SpinLock::new(LazyCell::new(|| {
         let pdpt = KERNEL_PAGES.lock().clone();
         let mut map = PageTable256TB::new();
-        map[256].chain(pdpt, Permissions::All);
+        map[256].chain(pdpt);
         map.into()
     }));
 
@@ -186,7 +186,7 @@ unsafe extern "C" fn _rscontinue() -> ! {
     crate::kvmclock::init();
 
     let map = PAGE_MAP.lock().clone();
-    paging::set_page_table(map);
+    crate::cpu::CPU.borrow_mut().activate_page_table(map);
 
     asm!("sti");
     kmain();

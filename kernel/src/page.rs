@@ -14,6 +14,9 @@ use crate::{
 #[derive(Debug)]
 pub struct UniquePage<T>(*mut T);
 
+unsafe impl<T: Send> Send for UniquePage<T> {}
+unsafe impl<T: Sync> Sync for UniquePage<T> {}
+
 #[core_local]
 static PAGE_CACHE: RefCell<ArrayVec<NonNull<MaybeUninit<[u8; 1 << 12]>>, 16>> =
     RefCell::new(ArrayVec::new());
