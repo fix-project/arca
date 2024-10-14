@@ -25,6 +25,7 @@ impl Blob {
     }
 }
 
+#[derive(Clone)]
 pub struct Arca {
     page_table: SharedPage<PageTable256TB>,
     register_file: RegisterFile,

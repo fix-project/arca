@@ -74,56 +74,60 @@ extern "C" fn kmain() -> ! {
         pdpt[0].chain(pd.into());
         arca0.mappings_mut().chain(pdpt.into());
 
-        exec.spawn(async move {
-            loop {
-                {
-                    let mut cpu = CPU.borrow_mut();
-                    let mut arca = arca0.load(&mut cpu);
-                    'runner: loop {
-                        let result = arca.run();
-                        if result.code == 0x100 || result.code == 0x80 {
-                            match arca.registers()[Register::RDI] {
-                                0 => {
-                                    return;
-                                }
-                                1 => {}
-                                2 => {
-                                    let saved = arca.unload();
-                                    arca = saved.load(&mut cpu);
-                                }
-                                3 => {
-                                    break 'runner;
-                                }
-                                4 => {
-                                    let addr = arca.registers()[Register::RSI];
-                                    arca.map(&blob, addr as usize);
-                                }
-                                x => {
-                                    unimplemented!("syscall {x}");
-                                }
-                            }
-                        } else {
-                            let registers = arca.registers();
-                            log::error!("unexpected exit: {result:?} with status {registers:#x?}");
-                            let mut cr2: u64;
-                            unsafe {
-                                asm!("mov {cr2}, cr2", cr2=out(reg)cr2);
-                            }
-                            log::error!("CR2: {cr2:x}");
-                            shutdown();
-                        }
-                    }
-                    arca0 = arca.unload();
-                }
-                yield_now().await;
-            }
-        });
-        exec.run();
+        run(arca0, &blob);
+        // exec.spawn(run(arca0, &blob));
+        // exec.run();
         log::info!("Shutting down.");
         shutdown();
     }
     count.unlock();
     halt();
+}
+
+fn run(target: Arca, blob: &Blob) {
+    let mut cpu = CPU.borrow_mut();
+    let mut arca = target.load(&mut cpu);
+    loop {
+        let result = arca.run();
+        if result.code == 0x100 || result.code == 0x80 {
+            match arca.registers()[Register::RDI] {
+                0 => {
+                    return;
+                }
+                1 => {}
+                2 => {
+                    let saved = arca.unload();
+                    arca = saved.load(&mut cpu);
+                }
+                3 => {
+                    let mut unloaded = arca.unload();
+                    let mut forked = unloaded.clone();
+                    forked.registers_mut()[Register::RAX] = 1;
+                    unloaded.registers_mut()[Register::RAX] = 0;
+                    core::mem::drop(cpu);
+                    run(forked, blob);
+                    cpu = CPU.borrow_mut();
+                    arca = unloaded.load(&mut cpu);
+                }
+                4 => {
+                    let addr = arca.registers()[Register::RSI];
+                    arca.map(blob, addr as usize);
+                }
+                x => {
+                    unimplemented!("syscall {x}");
+                }
+            }
+        } else {
+            let registers = arca.registers();
+            log::error!("unexpected exit: {result:?} with status {registers:#x?}");
+            let mut cr2: u64;
+            unsafe {
+                asm!("mov {cr2}, cr2", cr2=out(reg)cr2);
+            }
+            log::error!("CR2: {cr2:x}");
+            shutdown();
+        }
+    }
 }
 
 #[no_mangle]
@@ -149,14 +153,18 @@ unsafe extern "C" fn umain(id: u64) -> ! {
             asm!("syscall", out("rcx")_, out("r11")_, in("rdi")2);
         }
     });
-    log::info!("{id}: Syscall with invalidation took {:?}", time / iters);
+    log::info!("{id}: Reload took {:?}", time / iters);
 
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
-            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")3);
+            let mut x: u64;
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")3, out("rax")x);
+            if x == 1 {
+                asm!("syscall", in("rdi") 0);
+            }
         }
     });
-    log::info!("{id}: Yielding took {:?}", time / iters);
+    log::info!("{id}: Forking took {:?}", time / iters);
 
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
