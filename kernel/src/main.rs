@@ -55,8 +55,13 @@ extern "C" fn kmain() -> ! {
         let mut data = unsafe { UniquePage4KB::zeroed().assume_init() };
         data[0..13].copy_from_slice(b"hello, world!");
 
-        let pages = vec![data.into()];
+        let mut pages = vec![data.into()];
+        pages.extend(pages.clone());
+        pages.extend(pages.clone());
+        pages.extend(pages.clone());
+        pages.extend(pages.clone());
         let blob = Blob { pages };
+        log::info!("blob is {} bytes", blob.len());
 
         let mut arca0 = Arca::new();
         arca0.registers_mut()[Register::RDI] = 0;
