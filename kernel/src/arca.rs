@@ -25,6 +25,158 @@ impl Blob {
     }
 }
 
+pub struct MapConfig {
+    pub offset: usize,
+    pub addr: usize,
+    pub len: usize,
+    pub unique: bool,
+}
+
+pub trait AddressSpace {
+    fn with_page_table_mut(&mut self, f: impl FnOnce(&mut SharedPage<PageTable256TB>));
+
+    fn map_blob(&mut self, blob: &Blob, config: MapConfig) {
+        let MapConfig {
+            offset,
+            addr,
+            len,
+            unique,
+        } = config;
+        assert!(addr % 4096 == 0);
+        assert!(offset % 4096 == 0);
+        assert!(len % 4096 == 0);
+        self.with_page_table_mut(|pml4| {
+            let mut pml4i = (addr >> 39) & 255;
+            let mut pdpti = (addr >> 30) & 511;
+            let mut pdi = (addr >> 21) & 511;
+            let mut pti = (addr >> 12) & 511;
+
+            let mut pdpt = match pml4.make_mut()[pml4i].unmap() {
+                UnmappedPage::Table(pdpt) => pdpt,
+                _ => PageTable512GB::new().into(),
+            };
+            let mut pd = match pdpt.make_mut()[pdpti].unmap() {
+                UnmappedPage::Table(pt) => pt,
+                _ => PageTable1GB::new().into(),
+            };
+            let mut pt = match pd.make_mut()[pdi].unmap() {
+                UnmappedPage::Table(pt) => pt,
+                _ => PageTable2MB::new().into(),
+            };
+
+            for page in &blob.pages[offset / 4096..(offset + len) / 4096] {
+                let pte = &mut pt.make_mut()[pti];
+                if unique {
+                    pte.map_unique(page.clone_unique());
+                } else {
+                    pte.map_shared(page.clone());
+                }
+
+                pti += 1;
+                if pti >= 512 {
+                    pti = 0;
+                    pdi += 1;
+                    pd.make_mut()[pdi].chain(pt);
+                    pt = match pd.make_mut()[pdi].unmap() {
+                        UnmappedPage::Table(pt) => pt,
+                        _ => PageTable2MB::new().into(),
+                    };
+                }
+                if pdi >= 512 {
+                    pdi = 0;
+                    pdpti += 1;
+                    pdpt.make_mut()[pdpti].chain(pd);
+                    pd = match pdpt.make_mut()[pdpti].unmap() {
+                        UnmappedPage::Table(pt) => pt,
+                        _ => PageTable1GB::new().into(),
+                    };
+                }
+                if pdpti >= 512 {
+                    pdpti = 0;
+                    pml4i += 1;
+                    pml4.make_mut()[pml4i].chain(pdpt);
+                    pdpt = match pml4.make_mut()[pml4i].unmap() {
+                        UnmappedPage::Table(pdpt) => pdpt,
+                        _ => PageTable512GB::new().into(),
+                    };
+                }
+                if pml4i >= 256 {
+                    panic!("attempted to map into kernel space");
+                }
+            }
+
+            pd.make_mut()[pdi].chain(pt);
+            pdpt.make_mut()[pdpti].chain(pd);
+            pml4.make_mut()[pml4i].chain(pdpt);
+        });
+    }
+
+    fn unmap(&mut self, addr: usize, len: usize) {
+        assert!(addr % 4096 == 0);
+        assert!(len % 4096 == 0);
+        self.with_page_table_mut(|pml4| {
+            let mut pml4i = (addr >> 39) & 255;
+            let mut pdpti = (addr >> 30) & 511;
+            let mut pdi = (addr >> 21) & 511;
+            let mut pti = (addr >> 12) & 511;
+
+            let mut pdpt = match pml4.make_mut()[pml4i].unmap() {
+                UnmappedPage::Table(pdpt) => pdpt,
+                _ => PageTable512GB::new().into(),
+            };
+            let mut pd = match pdpt.make_mut()[pdpti].unmap() {
+                UnmappedPage::Table(pt) => pt,
+                _ => PageTable1GB::new().into(),
+            };
+            let mut pt = match pd.make_mut()[pdi].unmap() {
+                UnmappedPage::Table(pt) => pt,
+                _ => PageTable2MB::new().into(),
+            };
+
+            for _ in 0..len / 4096 {
+                let pte = &mut pt.make_mut()[pti];
+                pte.unmap();
+
+                pti += 1;
+                if pti >= 512 {
+                    pti = 0;
+                    pdi += 1;
+                    pd.make_mut()[pdi].chain(pt);
+                    pt = match pd.make_mut()[pdi].unmap() {
+                        UnmappedPage::Table(pt) => pt,
+                        _ => PageTable2MB::new().into(),
+                    };
+                }
+                if pdi >= 512 {
+                    pdi = 0;
+                    pdpti += 1;
+                    pdpt.make_mut()[pdpti].chain(pd);
+                    pd = match pdpt.make_mut()[pdpti].unmap() {
+                        UnmappedPage::Table(pt) => pt,
+                        _ => PageTable1GB::new().into(),
+                    };
+                }
+                if pdpti >= 512 {
+                    pdpti = 0;
+                    pml4i += 1;
+                    pml4.make_mut()[pml4i].chain(pdpt);
+                    pdpt = match pml4.make_mut()[pml4i].unmap() {
+                        UnmappedPage::Table(pdpt) => pdpt,
+                        _ => PageTable512GB::new().into(),
+                    };
+                }
+                if pml4i >= 256 {
+                    panic!("attempted to map into kernel space");
+                }
+            }
+
+            pd.make_mut()[pdi].chain(pt);
+            pdpt.make_mut()[pdpti].chain(pd);
+            pml4.make_mut()[pml4i].chain(pdpt);
+        });
+    }
+}
+
 #[derive(Clone)]
 pub struct Arca {
     page_table: SharedPage<PageTable256TB>,
@@ -68,69 +220,11 @@ impl Arca {
     pub fn mappings_mut(&mut self) -> &mut PageTable256TBEntry {
         &mut self.page_table.make_mut()[0]
     }
+}
 
-    pub fn map(&mut self, blob: &Blob, addr: usize) {
-        assert!(addr % 4096 == 0);
-
-        let mut pml4i = (addr >> 39) & 255;
-        let mut pdpti = (addr >> 30) & 511;
-        let mut pdi = (addr >> 21) & 511;
-        let mut pti = (addr >> 12) & 511;
-
-        let pml4 = &mut self.page_table;
-        let mut pdpt = match pml4.make_mut()[pml4i].unmap() {
-            UnmappedPage::Table(pdpt) => pdpt,
-            _ => PageTable512GB::new().into(),
-        };
-        let mut pd = match pdpt.make_mut()[pdpti].unmap() {
-            UnmappedPage::Table(pt) => pt,
-            _ => PageTable1GB::new().into(),
-        };
-        let mut pt = match pd.make_mut()[pdi].unmap() {
-            UnmappedPage::Table(pt) => pt,
-            _ => PageTable2MB::new().into(),
-        };
-
-        for page in &blob.pages {
-            let pte = &mut pt.make_mut()[pti];
-            pte.map_shared(page.clone());
-
-            pti += 1;
-            if pti >= 512 {
-                pti = 0;
-                pdi += 1;
-                pd.make_mut()[pdi].chain(pt);
-                pt = match pd.make_mut()[pdi].unmap() {
-                    UnmappedPage::Table(pt) => pt,
-                    _ => PageTable2MB::new().into(),
-                };
-            }
-            if pdi >= 512 {
-                pdi = 0;
-                pdpti += 1;
-                pdpt.make_mut()[pdpti].chain(pd);
-                pd = match pdpt.make_mut()[pdpti].unmap() {
-                    UnmappedPage::Table(pt) => pt,
-                    _ => PageTable1GB::new().into(),
-                };
-            }
-            if pdpti >= 512 {
-                pdpti = 0;
-                pml4i += 1;
-                pml4.make_mut()[pml4i].chain(pdpt);
-                pdpt = match pml4.make_mut()[pml4i].unmap() {
-                    UnmappedPage::Table(pdpt) => pdpt,
-                    _ => PageTable512GB::new().into(),
-                };
-            }
-            if pml4i >= 256 {
-                panic!("attempted to map into kernel space");
-            }
-        }
-
-        pd.make_mut()[pdi].chain(pt);
-        pdpt.make_mut()[pdpti].chain(pd);
-        pml4.make_mut()[pml4i].chain(pdpt);
+impl AddressSpace for Arca {
+    fn with_page_table_mut(&mut self, f: impl FnOnce(&mut SharedPage<PageTable256TB>)) {
+        f(&mut self.page_table);
     }
 }
 
@@ -179,98 +273,12 @@ impl LoadedArca<'_> {
         };
         core::mem::swap(&mut self.register_file, &mut other.register_file);
     }
+}
 
-    pub fn map(&mut self, blob: &Blob, addr: usize) {
-        assert!(addr % 4096 == 0);
+impl<'a> AddressSpace for LoadedArca<'a> {
+    fn with_page_table_mut(&mut self, f: impl FnOnce(&mut SharedPage<PageTable256TB>)) {
         unsafe {
-            self.cpu.modify_page_table(|pml4| {
-                let mut pml4i = (addr >> 39) & 255;
-                let mut pdpti = (addr >> 30) & 511;
-                let mut pdi = (addr >> 21) & 511;
-                let mut pti = (addr >> 12) & 511;
-
-                let mut pdpt = match pml4.make_mut()[pml4i].unmap() {
-                    UnmappedPage::Table(pdpt) => pdpt,
-                    _ => PageTable512GB::new().into(),
-                };
-                let mut pd = match pdpt.make_mut()[pdpti].unmap() {
-                    UnmappedPage::Table(pt) => pt,
-                    _ => PageTable1GB::new().into(),
-                };
-                let mut pt = match pd.make_mut()[pdi].unmap() {
-                    UnmappedPage::Table(pt) => pt,
-                    _ => PageTable2MB::new().into(),
-                };
-
-                for page in &blob.pages {
-                    let pte = &mut pt.make_mut()[pti];
-                    pte.map_shared(page.clone());
-
-                    pti += 1;
-                    if pti >= 512 {
-                        pti = 0;
-                        pdi += 1;
-                        pd.make_mut()[pdi].chain(pt);
-                        pt = match pd.make_mut()[pdi].unmap() {
-                            UnmappedPage::Table(pt) => pt,
-                            _ => PageTable2MB::new().into(),
-                        };
-                    }
-                    if pdi >= 512 {
-                        pdi = 0;
-                        pdpti += 1;
-                        pdpt.make_mut()[pdpti].chain(pd);
-                        pd = match pdpt.make_mut()[pdpti].unmap() {
-                            UnmappedPage::Table(pt) => pt,
-                            _ => PageTable1GB::new().into(),
-                        };
-                    }
-                    if pdpti >= 512 {
-                        pdpti = 0;
-                        pml4i += 1;
-                        pml4.make_mut()[pml4i].chain(pdpt);
-                        pdpt = match pml4.make_mut()[pml4i].unmap() {
-                            UnmappedPage::Table(pdpt) => pdpt,
-                            _ => PageTable512GB::new().into(),
-                        };
-                    }
-                    if pml4i >= 256 {
-                        panic!("attempted to map into kernel space");
-                    }
-                }
-
-                pd.make_mut()[pdi].chain(pt);
-                pdpt.make_mut()[pdpti].chain(pd);
-                pml4.make_mut()[pml4i].chain(pdpt);
-            });
-        }
-    }
-
-    pub fn create_blob(&mut self, blob: &Blob, addr: usize) {
-        assert!(addr % 4096 == 0);
-        unsafe {
-            self.cpu.modify_page_table(|pml4| {
-                for i in 0..blob.pages.len() {
-                    let current = addr + i * 4096;
-                    let mut pdpt = match pml4.make_mut()[(current >> 39) & 255].unmap() {
-                        UnmappedPage::Table(pdpt) => pdpt,
-                        _ => PageTable512GB::new().into(),
-                    };
-                    let mut pd = match pdpt.make_mut()[(current >> 30) & 511].unmap() {
-                        UnmappedPage::Table(pt) => pt,
-                        _ => PageTable1GB::new().into(),
-                    };
-                    let mut pt = match pd.make_mut()[(current >> 21) & 511].unmap() {
-                        UnmappedPage::Table(pt) => pt,
-                        _ => PageTable2MB::new().into(),
-                    };
-                    let page = blob.pages[i].clone();
-                    pt.make_mut()[(current >> 12) & 511].map_shared(page);
-                    pd.make_mut()[(current >> 21) & 511].chain(pt);
-                    pdpt.make_mut()[(current >> 30) & 511].chain(pd);
-                    pml4.make_mut()[(current >> 39) & 255].chain(pdpt);
-                }
-            });
+            self.cpu.modify_page_table(f);
         }
     }
 }

@@ -9,12 +9,11 @@ use core::arch::asm;
 
 use alloc::vec;
 use kernel::{
-    arca::{Arca, Blob},
+    arca::{AddressSpace, Arca, Blob, MapConfig},
     buddy::{UniquePage2MB, UniquePage4KB},
     cpu::{Register, CPU},
     halt,
     paging::{PageTable, PageTable1GB, PageTable512GB, PageTableEntry},
-    rt::{yield_now, Executor},
     shutdown,
     spinlock::SpinLock,
 };
@@ -41,8 +40,6 @@ extern "C" fn kmain() -> ! {
         log::info!("On core {}", kernel::cpuinfo::id());
         log::info!("All {} cores done!", kernel::cpuinfo::ncores());
         log::info!("Boot took {:?}", kernel::kvmclock::time_since_boot());
-
-        let mut exec = Executor::new();
 
         let iters = 0x100;
         let time = kernel::tsc::time(|| {
@@ -75,8 +72,6 @@ extern "C" fn kmain() -> ! {
         arca0.mappings_mut().chain(pdpt.into());
 
         run(arca0, &blob);
-        // exec.spawn(run(arca0, &blob));
-        // exec.run();
         log::info!("Shutting down.");
         shutdown();
     }
@@ -111,7 +106,20 @@ fn run(target: Arca, blob: &Blob) {
                 }
                 4 => {
                     let addr = arca.registers()[Register::RSI];
-                    arca.map(blob, addr as usize);
+                    arca.map_blob(
+                        blob,
+                        MapConfig {
+                            offset: 0,
+                            addr: addr as usize,
+                            len: blob.len(),
+                            unique: false,
+                        },
+                    );
+                }
+                5 => {
+                    let addr = arca.registers()[Register::RSI];
+                    let len = arca.registers()[Register::RDX] as usize;
+                    arca.unmap(addr as usize, len);
                 }
                 x => {
                     unimplemented!("syscall {x}");
@@ -172,6 +180,7 @@ unsafe extern "C" fn umain(id: u64) -> ! {
         }
     });
     log::info!("{id}: Mapping took {:?}", time / iters);
+    asm!("syscall", out("rcx")_, out("r11")_, in("rdi")5, in("rsi")0x401000, in("rdx")4096);
     let s = core::ffi::CStr::from_ptr(0x400000 as *const i8);
     log::info!("{id}: Blob Contents: {:?}", s);
 
