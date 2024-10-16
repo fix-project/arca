@@ -334,6 +334,7 @@ pub unsafe trait PageTable: Sized + Clone {
 
 unsafe impl PageTable for ! {}
 
+#[derive(Debug)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
     Unique(UniquePage<P>),
@@ -367,7 +368,7 @@ pub trait PageTableEntry: Sized + Clone {
     }
 
     fn nested(&self) -> bool {
-        self.present() && ((self.bits() >> 7) & 1 == 0)
+        self.present() && !self.leaf()
     }
 
     fn map_unique(
@@ -495,10 +496,17 @@ pub trait PageTableEntry: Sized + Clone {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
                 if !descriptor.global() {
                     let addr = descriptor.address();
-                    let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
-                    let new = page.clone();
-                    core::mem::forget(page);
-                    core::mem::forget(new);
+                    if descriptor.writeable() {
+                        let page: UniquePage<Self::Page> = UniquePage::from_raw(vm::pa2ka(addr));
+                        let new = page.clone();
+                        core::mem::forget(page);
+                        core::mem::forget(new);
+                    } else {
+                        let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
+                        let new = page.clone();
+                        core::mem::forget(page);
+                        core::mem::forget(new);
+                    }
                 }
             }
         } else {
@@ -517,7 +525,10 @@ pub trait PageTableEntry: Sized + Clone {
 }
 
 #[repr(transparent)]
-pub struct Entry<P: HardwarePage, T: PageTable> {
+pub struct Entry<P: HardwarePage, T: PageTable>
+where
+    Entry<P, T>: PageTableEntry,
+{
     bits: u64,
     _page: PhantomData<P>,
     _table: PhantomData<T>,
@@ -589,6 +600,10 @@ impl PageTableEntry for PageTable2MBEntry {
 
     unsafe fn set_bits(&mut self, bits: u64) {
         self.bits = bits;
+    }
+
+    fn leaf(&self) -> bool {
+        self.present()
     }
 }
 
@@ -685,5 +700,53 @@ impl Clone for PageTable512GBEntry {
 impl Clone for PageTable256TBEntry {
     fn clone(&self) -> Self {
         self.duplicate()
+    }
+}
+
+impl<P: HardwarePage, T: PageTable> Drop for Entry<P, T>
+where
+    Entry<P, T>: PageTableEntry,
+{
+    fn drop(&mut self) {
+        self.unmap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_refcnt() {
+        for _ in 0..10000 {
+            let mut pml4 = PageTable256TB::new();
+            let mut pdpt = PageTable512GB::new();
+            let mut pd = PageTable1GB::new();
+            let mut pt = PageTable2MB::new();
+
+            let page: SharedPage<Page4KB> =
+                unsafe { UniquePage::<Page4KB>::uninit().assume_init() }.into();
+            for i in 0..512 {
+                if i % 2 == 0 {
+                    pt[i].map_shared(page.clone());
+                } else {
+                    let page = unsafe { UniquePage::<Page4KB>::uninit().assume_init() };
+                    pt[i].map_unique(page);
+                }
+            }
+
+            let pt = SharedPage::from(pt);
+            pd[0].chain(pt.clone());
+            pd[1].chain(pt);
+            pdpt[0].chain(pd.into());
+            pml4[0].chain(pdpt.into());
+
+            let pml4 = SharedPage::from(pml4);
+
+            let mut v = alloc::vec![];
+            for _ in 0..100 {
+                v.push(pml4.clone());
+            }
+        }
     }
 }

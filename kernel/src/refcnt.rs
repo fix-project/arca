@@ -103,6 +103,22 @@ impl<T: Clone> SharedPage<T> {
             &mut *self.ptr
         }
     }
+
+    pub fn clone_unique(&self) -> UniquePage<T> {
+        unsafe { UniquePage::from((*self.ptr).clone()) }
+    }
+
+    pub fn make_unique(self) -> UniquePage<T> {
+        unsafe {
+            if (*self.refcnt()).load(Ordering::SeqCst) == 1 {
+                // only reference; access is safe
+                (*self.refcnt()).fetch_sub(1, Ordering::SeqCst);
+                let uniq = UniquePage::from_raw(self.into_raw());
+                return uniq;
+            }
+            self.clone_unique()
+        }
+    }
 }
 
 impl<T> Deref for SharedPage<T> {
