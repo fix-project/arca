@@ -60,7 +60,7 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static KERNEL_PAGES: SpinLock<LazyCell<SharedPage<PageTable512GB>>> =
+pub(crate) static KERNEL_MAPPINGS: SpinLock<LazyCell<SharedPage<PageTable512GB>>> =
     SpinLock::new(LazyCell::new(|| unsafe {
         let mut pdpt = PageTable512GB::new();
         for (i, entry) in pdpt.iter_mut().enumerate() {
@@ -69,9 +69,9 @@ pub(crate) static KERNEL_PAGES: SpinLock<LazyCell<SharedPage<PageTable512GB>>> =
         pdpt.into()
     }));
 
-pub(crate) static PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>> =
+pub(crate) static KERNEL_PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>> =
     SpinLock::new(LazyCell::new(|| {
-        let pdpt = KERNEL_PAGES.lock().clone();
+        let pdpt = KERNEL_MAPPINGS.lock().clone();
         let mut map = PageTable256TB::new();
         map[256].chain(pdpt);
         map.into()
@@ -104,7 +104,7 @@ unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
     log::info!("found {} processors", cpus.len());
 
     LazyCell::force(&*addr_of!(IDT));
-    LazyCell::force(&*PAGE_MAP.lock());
+    LazyCell::force(&*KERNEL_PAGE_MAP.lock());
 
     init_cpu_config();
     init_cpu_tls();
@@ -185,7 +185,7 @@ unsafe extern "C" fn _rscontinue() -> ! {
     crate::tsc::init();
     crate::kvmclock::init();
 
-    let map = PAGE_MAP.lock().clone();
+    let map = KERNEL_PAGE_MAP.lock().clone();
     crate::cpu::CPU.borrow_mut().activate_page_table(map);
 
     asm!("sti");

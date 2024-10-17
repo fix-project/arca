@@ -4,7 +4,7 @@ use crate::{
     cpu::{Cpu, ExitStatus, RegisterFile},
     paging::{
         PageTable, PageTable1GB, PageTable256TB, PageTable256TBEntry, PageTable2MB, PageTable512GB,
-        PageTableEntry, Permissions, UnmappedPage,
+        PageTableEntry, UnmappedPage,
     },
     refcnt::{SharedPage, SharedPage4KB},
 };
@@ -186,8 +186,7 @@ pub struct Arca {
 impl Arca {
     pub fn new() -> Arca {
         let mut page_table = PageTable256TB::new();
-        let mut pdpt = crate::rsstart::KERNEL_PAGES.lock().clone();
-        pdpt.make_mut()[0].protect(Permissions::All);
+        let pdpt = crate::rsstart::KERNEL_MAPPINGS.lock().clone();
         page_table[256].chain(pdpt);
 
         let register_file = RegisterFile::new();
@@ -255,7 +254,7 @@ impl LoadedArca<'_> {
     pub fn unload(self) -> Arca {
         let page_table = unsafe {
             self.cpu
-                .activate_page_table(crate::rsstart::PAGE_MAP.lock().clone())
+                .activate_page_table(crate::rsstart::KERNEL_PAGE_MAP.lock().clone())
                 .unwrap()
         };
 
