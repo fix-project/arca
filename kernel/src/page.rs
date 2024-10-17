@@ -1,14 +1,9 @@
 use core::{
-    cell::RefCell,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
-    ptr::NonNull,
 };
 
-use crate::{
-    arrayvec::ArrayVec,
-    buddy::{allocate, liberate, BuddyAllocator},
-};
+use crate::buddy::{allocate, liberate};
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -17,34 +12,9 @@ pub struct UniquePage<T>(*mut T);
 unsafe impl<T: Send> Send for UniquePage<T> {}
 unsafe impl<T: Sync> Sync for UniquePage<T> {}
 
-#[core_local]
-static PAGE_CACHE: RefCell<ArrayVec<NonNull<MaybeUninit<[u8; 1 << 12]>>, 16>> =
-    RefCell::new(ArrayVec::new());
-
 impl<T> UniquePage<T> {
-    const CACHEABLE: bool = BuddyAllocator::allocation_size::<T>()
-        == BuddyAllocator::allocation_size::<[u8; 1 << 12]>()
-        && BuddyAllocator::allocation_align::<T>()
-            == BuddyAllocator::allocation_align::<[u8; 1 << 12]>();
-
     fn allocate() -> *mut MaybeUninit<T> {
-        let allocation = if Self::CACHEABLE {
-            let mut cache = PAGE_CACHE.borrow_mut();
-            if cache.is_empty() {
-                while cache.len() < cache.capacity() / 2 + 1 {
-                    if let Some(allocation) = allocate::<[u8; 1 << 12]>() {
-                        cache.push(allocation).unwrap();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            let result: Option<NonNull<MaybeUninit<T>>> =
-                unsafe { core::mem::transmute(cache.pop()) };
-            result
-        } else {
-            allocate::<T>()
-        };
+        let allocation = allocate::<T>();
         allocation
             .expect("could not allocate: physical memory exhausted")
             .as_ptr()
@@ -148,19 +118,7 @@ impl<T> Drop for UniquePage<T> {
     fn drop(&mut self) {
         unsafe {
             self.0.drop_in_place();
-            if Self::CACHEABLE {
-                let mut cache = PAGE_CACHE.borrow_mut();
-                let untyped: *mut MaybeUninit<[u8; 1 << 12]> = core::mem::transmute(self.0);
-                let ptr = NonNull::new_unchecked(untyped);
-                cache.push(ptr).unwrap();
-                if cache.is_full() {
-                    while cache.len() >= cache.capacity() / 2 {
-                        liberate(cache.pop().unwrap().as_ptr());
-                    }
-                }
-            } else {
-                liberate(self.0)
-            }
+            liberate(self.0)
         }
     }
 }

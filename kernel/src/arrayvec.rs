@@ -1,3 +1,4 @@
+#![allow(unused)]
 use core::{
     mem::MaybeUninit,
     ops::{Index, IndexMut},

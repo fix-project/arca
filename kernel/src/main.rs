@@ -28,13 +28,6 @@ extern "C" fn kmain() -> ! {
     }
 
     let mut count = DONE_COUNT.lock();
-    log::info!(
-        "Hello from CPU {}/{} (n={}) (t={:?})!",
-        kernel::cpuinfo::id(),
-        kernel::cpuinfo::ncores(),
-        *count,
-        kernel::kvmclock::time_since_boot(),
-    );
     *count += 1;
     if *count == kernel::cpuinfo::ncores() {
         log::info!("On core {}", kernel::cpuinfo::id());
