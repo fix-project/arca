@@ -72,7 +72,7 @@ extern "C" fn kmain() -> ! {
     halt();
 }
 
-fn run(target: Arca, blob: &Blob) {
+fn run(target: Arca, blob: &Blob) -> u64 {
     let mut cpu = CPU.borrow_mut();
     let mut arca = target.load(&mut cpu);
     loop {
@@ -80,7 +80,7 @@ fn run(target: Arca, blob: &Blob) {
         if result.code == 0x100 || result.code == 0x80 {
             match arca.registers()[Register::RDI] {
                 0 => {
-                    return;
+                    return arca.registers()[Register::RSI];
                 }
                 1 => {}
                 2 => {
@@ -113,6 +113,17 @@ fn run(target: Arca, blob: &Blob) {
                     let addr = arca.registers()[Register::RSI];
                     let len = arca.registers()[Register::RDX] as usize;
                     arca.unmap(addr as usize, len);
+                }
+                6 => {
+                    let mut unloaded = arca.unload();
+                    let mut forked = unloaded.clone();
+                    forked.registers_mut()[Register::RAX] = 1;
+                    unloaded.registers_mut()[Register::RAX] = 0;
+                    core::mem::drop(cpu);
+                    let result = run(forked, blob);
+                    unloaded.registers_mut()[Register::RDX] = result;
+                    cpu = CPU.borrow_mut();
+                    arca = unloaded.load(&mut cpu);
                 }
                 x => {
                     unimplemented!("syscall {x}");
@@ -166,6 +177,22 @@ unsafe extern "C" fn umain(id: u64) -> ! {
         }
     });
     log::info!("{id}: Forking took {:?}", time / iters);
+
+    let time = kernel::tsc::time(|| {
+        for i in 0..iters {
+            let x: u64 = i.into();
+            let y: u64 = (i + 1).into();
+            let mut child: u64;
+            let mut result: u64;
+            asm!("syscall", out("rcx")_, out("r11")_, in("rdi")6, out("rax")child, out("rdx")result);
+            if child == 1 {
+                asm!("syscall", in("rdi") 0, in("rsi") x + y);
+            }
+            assert!(result == x + y);
+        }
+    });
+    log::info!("{id}: Adding took {:?}", time / iters);
+    asm!("syscall", out("rcx")_, out("r11")_, in("rdi")5, in("rsi")0x401000, in("rdx")4096);
 
     let time = kernel::tsc::time(|| {
         for _ in 0..iters {
