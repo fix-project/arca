@@ -7,7 +7,7 @@ use core::{
     alloc::Layout,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use std::alloc::{AllocError, Allocator};
 
@@ -23,42 +23,42 @@ pub enum AllocationError {
 
 #[repr(C)]
 pub struct BitRef<'a> {
-    byte: &'a AtomicU8,
+    word: &'a AtomicU64,
     offset: usize,
 }
 
 impl<'a> BitRef<'a> {
-    pub fn new(byte: &'a AtomicU8, offset: usize) -> BitRef<'a> {
-        assert!(offset < 8);
-        BitRef { byte, offset }
+    pub fn new(word: &'a AtomicU64, offset: usize) -> BitRef<'a> {
+        assert!(offset < core::mem::size_of::<AtomicU64>() * 8);
+        BitRef { word, offset }
     }
 
     pub fn load(&self, ordering: Ordering) -> bool {
-        ((self.byte.load(ordering) >> self.offset) & 1) == 1
+        ((self.word.load(ordering) >> self.offset) & 1) == 1
     }
 
     pub fn set(&self, ordering: Ordering) -> bool {
         loop {
-            let old = self.byte.load(ordering);
+            let old = self.word.load(ordering);
             let new = old | (1 << self.offset);
-            if let Ok(byte) = self
-                .byte
+            if let Ok(word) = self
+                .word
                 .compare_exchange(old, new, ordering, Ordering::SeqCst)
             {
-                return ((byte >> self.offset) & 1) == 1;
+                return ((word >> self.offset) & 1) == 1;
             }
         }
     }
 
     pub fn clear(&self, ordering: Ordering) -> bool {
         loop {
-            let old = self.byte.load(ordering);
+            let old = self.word.load(ordering);
             let new = old & !(1 << self.offset);
-            if let Ok(byte) = self
-                .byte
+            if let Ok(word) = self
+                .word
                 .compare_exchange(old, new, ordering, Ordering::SeqCst)
             {
-                return ((byte >> self.offset) & 1) == 1;
+                return ((word >> self.offset) & 1) == 1;
             }
         }
     }
@@ -74,12 +74,12 @@ impl<'a> BitRef<'a> {
 
 #[repr(C)]
 pub struct BitSlice<'a> {
-    base: &'a AtomicU8,
+    base: &'a AtomicU64,
     length: usize,
 }
 
 impl<'a> BitSlice<'a> {
-    pub fn new(slice: &'a [AtomicU8], length: usize) -> BitSlice<'a> {
+    pub fn new(slice: &'a [AtomicU64], length: usize) -> BitSlice<'a> {
         assert!(length <= core::mem::size_of_val(slice) * 8);
         BitSlice {
             base: &slice[0],
@@ -90,9 +90,34 @@ impl<'a> BitSlice<'a> {
     pub fn bit(&self, index: usize) -> BitRef<'a> {
         assert!(index < self.length);
         BitRef {
-            byte: unsafe { &(*(self.base as *const AtomicU8).byte_add(index / 8)) },
-            offset: index % 8,
+            word: unsafe {
+                &(*(self.base as *const AtomicU64)
+                    .add(index / (core::mem::size_of::<AtomicU64>() * 8)))
+            },
+            offset: index % (core::mem::size_of::<AtomicU64>() * 8),
         }
+    }
+
+    pub fn clear_first_set(&self) -> Option<usize> {
+        for i in 0..self.len().div_ceil(core::mem::size_of::<AtomicU64>() * 8) {
+            let byte = unsafe { &*((self.base as *const AtomicU64).add(i)) };
+            let mut value = byte.load(Ordering::SeqCst);
+            while value.trailing_zeros() as usize != (core::mem::size_of::<AtomicU64>() * 8) {
+                let set = 1 << value.trailing_zeros();
+                let new = value & !set;
+                if let Err(x) =
+                    byte.compare_exchange(value, new, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    value = x;
+                } else {
+                    return Some(
+                        i * (core::mem::size_of::<AtomicU64>() * 8)
+                            + value.trailing_zeros() as usize,
+                    );
+                }
+            }
+        }
+        None
     }
 
     pub fn len(&self) -> usize {
@@ -105,14 +130,14 @@ impl<'a> BitSlice<'a> {
     }
 }
 
-impl<'a> From<&'a [AtomicU8]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU8]) -> Self {
+impl<'a> From<&'a [AtomicU64]> for BitSlice<'a> {
+    fn from(value: &'a [AtomicU64]) -> Self {
         Self::new(value, core::mem::size_of_val(value) * 8)
     }
 }
 
-impl<'a, const N: usize> From<&'a [AtomicU8; N]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU8; N]) -> Self {
+impl<'a, const N: usize> From<&'a [AtomicU64; N]> for BitSlice<'a> {
+    fn from(value: &'a [AtomicU64; N]) -> Self {
         Self::new(value, core::mem::size_of_val(value) * 8)
     }
 }
@@ -157,10 +182,8 @@ impl<'a> AllocatorLevel<'a> {
                 .allocate(size_log2 - 1)
                 .map(|x| 2 * x);
         }
-        for i in 0..self.bitmap.len() {
-            if let Ok(index) = self.reserve(i) {
-                return Ok(index);
-            }
+        if let Some(index) = self.bitmap.clear_first_set() {
+            return Ok(index);
         }
         self.next_level
             .and_then(|next| next.allocate(0).ok())
@@ -176,9 +199,8 @@ impl<'a> AllocatorLevel<'a> {
         }
         if let Some(next) = self.next_level {
             let buddy = index ^ 1;
-            let lower = index & !1;
             if self.bitmap.bit(buddy).clear(Ordering::SeqCst) {
-                next.free(lower, 0);
+                next.free(index / 2, 0);
                 return;
             }
         }
@@ -209,9 +231,9 @@ impl<'a> BuddyAllocator<'a> {
         let mut backing = Vec::new();
         for level in (min_level..(max_level + 1)).rev() {
             let size = backing.len();
-            let bytes = (1 << (level - min_level)) / 8;
-            let bytes = core::cmp::max(bytes, 1);
-            backing.resize_with(size + bytes, || AtomicU8::new(0));
+            let words = (1 << (level - min_level)) / (core::mem::size_of::<AtomicU64>() * 8);
+            let words = core::cmp::max(words, 1);
+            backing.resize_with(size + words, || AtomicU64::new(0));
         }
 
         let temp_backing = Box::leak(backing.into_boxed_slice());
@@ -219,10 +241,10 @@ impl<'a> BuddyAllocator<'a> {
         let mut temp_level: Option<&AllocatorLevel<'_>> = None;
         for i in (min_level..(max_level + 1)).rev() {
             let bits: usize = 1 << (max_level - i);
-            let bytes = bits.div_ceil(8);
+            let words = bits.div_ceil(core::mem::size_of::<AtomicU64>() * 8);
 
-            let bitmap: &[AtomicU8] = &temp_backing[current..current + bytes];
-            current += bytes;
+            let bitmap: &[AtomicU64] = &temp_backing[current..current + words];
+            current += words;
 
             let slice = BitSlice::from(bitmap);
             let new_level = Box::new(AllocatorLevel::new(slice, i, temp_level));
@@ -243,21 +265,21 @@ impl<'a> BuddyAllocator<'a> {
         };
 
         // allocate the relevant space within the buddy allocator itself
-        let size = temp_backing.len();
+        let size = core::mem::size_of_val(temp_backing);
         let backing = unsafe {
             core::slice::from_raw_parts_mut(
-                core::mem::transmute::<*mut (), *mut AtomicU8>(temp.allocate_raw(size)),
-                size,
+                core::mem::transmute::<*mut (), *mut AtomicU64>(temp.allocate_raw(size)),
+                temp_backing.len(),
             )
         };
         let mut current = 0;
         let mut level: Option<&'static AllocatorLevel<'static>> = None;
         for i in (min_level..(max_level + 1)).rev() {
             let bits: usize = 1 << (max_level - i);
-            let bytes = bits.div_ceil(8);
+            let words = bits.div_ceil(core::mem::size_of::<AtomicU64>() * 8);
 
-            let bitmap: &'static [AtomicU8] = &backing[current..current + bytes];
-            current += bytes;
+            let bitmap: &'static [AtomicU64] = &backing[current..current + words];
+            current += words;
 
             let slice = BitSlice::from(bitmap);
             let new_level = Box::new(AllocatorLevel::new(slice, i, level));
@@ -290,8 +312,8 @@ impl<'a> BuddyAllocator<'a> {
 
         unsafe {
             core::mem::drop(Box::from_raw(core::mem::transmute::<
-                *const [AtomicU8],
-                *mut [AtomicU8],
+                *const [AtomicU64],
+                *mut [AtomicU64],
             >(temp_backing)));
         }
 
@@ -383,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_bitref() {
-        let byte = AtomicU8::new(10);
+        let byte = AtomicU64::new(10);
         let r0 = BitRef::new(&byte, 0);
         let r1 = BitRef::new(&byte, 1);
         r0.set(Ordering::SeqCst);
@@ -397,19 +419,22 @@ mod tests {
 
     #[test]
     fn test_bitslice() {
-        let bytes = [const { AtomicU8::new(0) }; 16];
-        let slice = BitSlice::from(&bytes);
+        let words = [const { AtomicU64::new(0) }; 2];
+        let slice = BitSlice::from(&words);
         let r0 = slice.bit(0);
         let r1 = slice.bit(1);
         let r127 = slice.bit(127);
 
         r0.set(Ordering::SeqCst);
-        assert_eq!(bytes[0].load(Ordering::SeqCst), 1);
+        assert_eq!(words[0].load(Ordering::SeqCst), 1);
         r1.set(Ordering::SeqCst);
-        assert_eq!(bytes[0].load(Ordering::SeqCst), 3);
+        assert_eq!(words[0].load(Ordering::SeqCst), 3);
         r127.set(Ordering::SeqCst);
-        assert_eq!(bytes[0].load(Ordering::SeqCst), 3);
-        assert_eq!(bytes[15].load(Ordering::SeqCst), 128);
+        assert_eq!(words[0].load(Ordering::SeqCst), 3);
+        assert_eq!(
+            words[127 / (core::mem::size_of::<AtomicU64>() * 8)].load(Ordering::SeqCst),
+            1 << (127 % (core::mem::size_of::<AtomicU64>() * 8))
+        );
     }
 
     #[test]
@@ -444,16 +469,14 @@ mod tests {
     }
 
     #[bench]
-    fn bench_allocate_late(b: &mut Bencher) {
+    fn bench_allocate_many(b: &mut Bencher) {
         let region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
         let region = Box::leak(region);
         let allocator = BuddyAllocator::new(region);
         let mut v = vec![];
-        for _ in 0..10000 {
-            v.push(Box::new_in(0, &*allocator));
-        }
-        b.iter(|| {
-            core::mem::drop(Box::new_in(0, &*allocator));
+        b.iter(|| match Box::try_new_in(0, &*allocator) {
+            Ok(x) => v.push(x),
+            Err(_) => v.clear(),
         });
         core::mem::drop(v);
         unsafe { core::mem::drop(Box::from_raw(allocator.destroy())) };
