@@ -17,6 +17,14 @@ use thiserror::Error;
 pub enum AllocationError {
     #[error("the requested allocation of order {order} at index {index} is already in use")]
     RegionInUse { index: usize, order: u32 },
+    #[error(
+        "the requested reservation of size {size} at index {index} is invalid at order {order}"
+    )]
+    InvalidReservation {
+        index: usize,
+        size: usize,
+        order: u32,
+    },
     #[error("no regions of order {0} are available")]
     SpaceExhausted(u32),
 }
@@ -163,14 +171,32 @@ impl<'a> AllocatorLevel<'a> {
         }
     }
 
-    pub fn reserve(&self, index: usize) -> Result<usize, AllocationError> {
+    pub fn reserve(&self, size_log2: u32, index: usize) -> Result<usize, AllocationError> {
+        if size_log2 > 0 {
+            if index % 2 != 0 {
+                return Err(AllocationError::InvalidReservation {
+                    index,
+                    size: 1 << size_log2,
+                    order: self.order,
+                });
+            }
+            return self
+                .next_level
+                .ok_or(AllocationError::SpaceExhausted(self.order))?
+                .reserve(size_log2 - 1, index / 2)
+                .map(|x| 2 * x);
+        }
         if self.bitmap.bit(index).clear(Ordering::SeqCst) {
             Ok(index)
         } else {
-            Err(AllocationError::RegionInUse {
-                index,
-                order: self.order,
-            })
+            self.next_level
+                .ok_or(AllocationError::RegionInUse {
+                    index,
+                    order: self.order,
+                })?
+                .reserve(0, index / 2)?;
+            self.free(index ^ 1, 0);
+            Ok(index)
         }
     }
 
@@ -187,8 +213,8 @@ impl<'a> AllocatorLevel<'a> {
         }
         self.next_level
             .and_then(|next| next.allocate(0).ok())
-            .map(|i| 2 * i)
-            .inspect(|i| self.free(i + 1, 0))
+            .map(|i| (2 * i) + 1) // bias allocations towards the upper end of the address space
+            .inspect(|i| self.free(i - 1, 0))
             .ok_or(AllocationError::SpaceExhausted(self.order))
     }
 
@@ -331,6 +357,58 @@ impl<'a> BuddyAllocator<'a> {
         )
     }
 
+    pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
+        let level = size.next_power_of_two().ilog2();
+        let level = core::cmp::max(self.min_level, level);
+        let size_log2 = level - self.min_level;
+        let index = address >> 12;
+        self.level
+            .reserve(size_log2, index)
+            .map_or(core::ptr::null_mut(), |i| unsafe {
+                self.start.byte_add(i * (1 << self.min_level))
+            })
+    }
+
+    pub fn reserve_uninit<T: Sized>(&self, address: usize) -> *mut MaybeUninit<T> {
+        let size = core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        assert!(align <= self.max_align);
+        let size = core::cmp::max(size, align);
+        let raw = self.reserve_raw(address, size);
+        unsafe { core::mem::transmute(raw) }
+    }
+
+    pub fn reserve<T: Sized>(&self, address: usize, value: T) -> *mut T {
+        let uninit = self.reserve_uninit::<T>(address);
+        unsafe {
+            (*uninit).write(value);
+            (*uninit).assume_init_mut()
+        }
+    }
+
+    pub fn reserve_boxed<T: Sized>(&self, address: usize) -> Option<Box<MaybeUninit<T>, &Self>> {
+        let uninit = NonNull::new(self.reserve_uninit::<T>(address))?;
+        Some(unsafe { Box::from_non_null_in(uninit, self) })
+    }
+
+    pub fn reserve_boxed_slice<T: Sized>(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Option<Box<[MaybeUninit<T>], &Self>> {
+        unsafe {
+            let size = core::mem::size_of::<T>() * length;
+            let align = core::mem::align_of::<T>();
+            assert!(align <= self.max_align);
+            let size = core::cmp::max(size, align);
+            let raw = self.reserve_raw(address, size);
+            let uninit: *mut MaybeUninit<T> = core::mem::transmute(raw);
+            let slice = core::ptr::slice_from_raw_parts_mut(uninit, length);
+            let slice = NonNull::new(slice)?;
+            Some(Box::from_non_null_in(slice, self))
+        }
+    }
+
     pub fn allocate_raw(&self, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
         let level = core::cmp::max(self.min_level, level);
@@ -372,6 +450,16 @@ impl<'a> BuddyAllocator<'a> {
         let align = core::mem::align_of::<T>();
         let size = core::cmp::max(size, align);
         self.free_raw(ptr as usize as *mut (), size);
+    }
+
+    pub fn base_address(&self) -> *mut () {
+        self.start
+    }
+
+    pub fn get_offset<T>(&self, allocation: &T) -> usize {
+        let base = self.base_address();
+        let current = allocation as *const T as *const ();
+        unsafe { usize::try_from(current.byte_offset_from(base)).unwrap() }
     }
 }
 
