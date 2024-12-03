@@ -78,6 +78,18 @@ pub(crate) static KERNEL_PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>
     }));
 
 #[no_mangle]
+unsafe extern "C" fn _start(number: u64) -> ! {
+    init_bss();
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(LevelFilter::Info);
+    log::info!("Booted with argument: {:#x}!", number);
+    asm!("hlt");
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[no_mangle]
 unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
     let multiboot = vm::pa2ka(multiboot_pa);
     init_bss();

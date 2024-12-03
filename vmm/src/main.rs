@@ -172,8 +172,9 @@ fn main() {
 
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = start_address;
-    vcpu_regs.rax = 2;
-    vcpu_regs.rbx = 3;
+    println!("starting at {:x}", start_address);
+    vcpu_regs.rsp = 0x1000;
+    vcpu_regs.rdi = 0xcafeb0ba;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 

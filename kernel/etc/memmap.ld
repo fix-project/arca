@@ -1,18 +1,11 @@
-ENTRY(_multiboot)                /* the name of the entry label */
+ENTRY(_start)
 
-/* based on https://wiki.osdev.org/Memory_Map_(x86) */
-/* QEMU should copy this to `lower`, but the loader will map it to `upper` */
 MEMORY {
   cls   (rwx) : ORIGIN = 0x0000000000000000, LENGTH = 2M
   upper (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 1M
 }
 
 SECTIONS {
-  .multiboot :
-  {
-    . = ALIGN(16);
-    KEEP(*(.multiboot))
-  } > upper
   .text :
   {
     . = ALIGN(16);
