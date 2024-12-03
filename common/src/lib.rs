@@ -250,7 +250,7 @@ impl<'a> BuddyAllocator<'a> {
         let raw_size = core::mem::size_of_val(base);
         let min_level = 12;
         let max_level = raw_size.ilog2();
-        let start: *mut () = unsafe { core::mem::transmute(&mut base[0] as *mut u8) };
+        let start: *mut () = &mut base[0] as *mut u8 as *mut ();
         let max_align = 1 << (start as usize).trailing_zeros();
 
         // allocate this on the heap for now
@@ -294,7 +294,7 @@ impl<'a> BuddyAllocator<'a> {
         let size = core::mem::size_of_val(temp_backing);
         let backing = unsafe {
             core::slice::from_raw_parts_mut(
-                core::mem::transmute::<*mut (), *mut AtomicU64>(temp.allocate_raw(size)),
+                temp.allocate_raw(size) as *mut AtomicU64,
                 temp_backing.len(),
             )
         };
@@ -329,18 +329,16 @@ impl<'a> BuddyAllocator<'a> {
         while let Some(level) = temp_level {
             temp_level = level.next_level;
             unsafe {
-                core::mem::drop(Box::from_raw(core::mem::transmute::<
-                    *const AllocatorLevel<'static>,
-                    *mut AllocatorLevel<'static>,
-                >(level)))
+                core::mem::drop(Box::from_raw(
+                    level as *const AllocatorLevel<'static> as *mut AllocatorLevel<'static>,
+                ))
             };
         }
 
         unsafe {
-            core::mem::drop(Box::from_raw(core::mem::transmute::<
-                *const [AtomicU64],
-                *mut [AtomicU64],
-            >(temp_backing)));
+            core::mem::drop(Box::from_raw(
+                temp_backing as *const [AtomicU64] as *mut [AtomicU64],
+            ));
         }
 
         unsafe { &mut *real }
@@ -351,10 +349,7 @@ impl<'a> BuddyAllocator<'a> {
     /// This function can only be called after *all* allocations that came from this allocator have
     /// been freed or forgotten, and if this is the only reference to this allocator.
     pub unsafe fn destroy(&mut self) -> &'a mut [u8] {
-        core::slice::from_raw_parts_mut(
-            core::mem::transmute::<*mut (), *mut u8>(self.start),
-            self.raw_size,
-        )
+        core::slice::from_raw_parts_mut(self.start as *mut u8, self.raw_size)
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -375,7 +370,7 @@ impl<'a> BuddyAllocator<'a> {
         assert!(align <= self.max_align);
         let size = core::cmp::max(size, align);
         let raw = self.reserve_raw(address, size);
-        unsafe { core::mem::transmute(raw) }
+        raw as *mut MaybeUninit<T>
     }
 
     pub fn reserve<T: Sized>(&self, address: usize, value: T) -> *mut T {
@@ -383,29 +378,6 @@ impl<'a> BuddyAllocator<'a> {
         unsafe {
             (*uninit).write(value);
             (*uninit).assume_init_mut()
-        }
-    }
-
-    pub fn reserve_boxed<T: Sized>(&self, address: usize) -> Option<Box<MaybeUninit<T>, &Self>> {
-        let uninit = NonNull::new(self.reserve_uninit::<T>(address))?;
-        Some(unsafe { Box::from_non_null_in(uninit, self) })
-    }
-
-    pub fn reserve_boxed_slice<T: Sized>(
-        &self,
-        address: usize,
-        length: usize,
-    ) -> Option<Box<[MaybeUninit<T>], &Self>> {
-        unsafe {
-            let size = core::mem::size_of::<T>() * length;
-            let align = core::mem::align_of::<T>();
-            assert!(align <= self.max_align);
-            let size = core::cmp::max(size, align);
-            let raw = self.reserve_raw(address, size);
-            let uninit: *mut MaybeUninit<T> = core::mem::transmute(raw);
-            let slice = core::ptr::slice_from_raw_parts_mut(uninit, length);
-            let slice = NonNull::new(slice)?;
-            Some(Box::from_non_null_in(slice, self))
         }
     }
 
@@ -425,8 +397,7 @@ impl<'a> BuddyAllocator<'a> {
         let align = core::mem::align_of::<T>();
         assert!(align <= self.max_align);
         let size = core::cmp::max(size, align);
-        let raw = self.allocate_raw(size);
-        unsafe { core::mem::transmute(raw) }
+        self.allocate_raw(size) as *mut MaybeUninit<T>
     }
 
     pub fn allocate<T: Sized>(&self, value: T) -> *mut T {
@@ -452,6 +423,13 @@ impl<'a> BuddyAllocator<'a> {
         self.free_raw(ptr as usize as *mut (), size);
     }
 
+    pub fn free_slice<T>(&self, ptr: *const [T]) {
+        let size = core::mem::size_of::<T>() * ptr.len();
+        let align = core::mem::align_of::<T>();
+        let size = core::cmp::max(size, align);
+        self.free_raw(ptr as *const T as *mut (), size);
+    }
+
     pub fn base_address(&self) -> *mut () {
         self.start
     }
@@ -469,10 +447,7 @@ unsafe impl<'a> Allocator for BuddyAllocator<'a> {
         let align = layout.align();
         let size = core::cmp::max(size, align);
         let raw = self.allocate_raw(size);
-        let converted = unsafe {
-            let raw: *mut u8 = core::mem::transmute(raw);
-            core::ptr::slice_from_raw_parts_mut(raw, size)
-        };
+        let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
         NonNull::new(converted).ok_or(AllocError)
     }
 

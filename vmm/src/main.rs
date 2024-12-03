@@ -1,10 +1,15 @@
 #![feature(allocator_api)]
 
+use std::collections::HashSet;
+
 use common::BuddyAllocator;
+use elf::endian::AnyEndian;
+use elf::segment::ProgramHeader;
+use elf::ElfBytes;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 
-const ASM_CODE: &[u8] = include_bytes!("start.bin");
+const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() {
     use std::ptr::null_mut;
@@ -14,9 +19,8 @@ fn main() {
 
     // let mem_size = 0x100000000; // 4 GiB
 
-    let mem_size = 0x100000; // 4 GiB
-    let start_address = 0x8000;
-    let asm_code = ASM_CODE;
+    let mem_size = 0x1000000; // 4 MiB
+    let kernel_elf = KERNEL_ELF;
 
     let kvm = Kvm::new().unwrap();
     let vm = kvm.create_vm().unwrap();
@@ -37,19 +41,53 @@ fn main() {
 
     let allocator = &*BuddyAllocator::new(slice);
 
-    unsafe {
-        let allocation = allocator
-            .reserve_boxed_slice::<u8>(start_address, asm_code.len())
-            .expect("could not reserve memory for code");
-        let mut allocation = allocation.assume_init();
-        allocation.clone_from_slice(asm_code);
-        let allocation = core::hint::black_box(allocation);
-        Box::leak(allocation);
-    };
+    let elf =
+        ElfBytes::<AnyEndian>::minimal_parse(kernel_elf).expect("could not read kernel elf file");
+    let start_address = elf.ehdr.e_entry;
 
-    let slot = 0;
+    let segments: Vec<ProgramHeader> = elf
+        .segments()
+        .expect("could not find ELF segments")
+        .iter()
+        .collect();
+
+    let align_down = |alignment: u64, value: u64| value & !(alignment - 1);
+    let align_up = |alignment: u64, value: u64| value + (value.wrapping_neg() & (alignment - 1));
+
+    let mut mapped = HashSet::new();
+    for segment in segments {
+        match segment.p_type {
+            elf::abi::SHT_NULL => {}
+            elf::abi::SHT_PROGBITS => {
+                let alignment = segment.p_align;
+                let increment = segment.p_align as usize;
+                let mut current = align_down(alignment, segment.p_paddr) as usize;
+                let mut offset = align_down(alignment, segment.p_offset) as usize;
+                let end = align_up(alignment, segment.p_paddr + segment.p_memsz) as usize;
+                while current < end {
+                    if !mapped.contains(&current) {
+                        mapped.insert(current);
+                        let region = allocator.reserve_raw(current & !0xFFFF800000000000, increment)
+                            as *mut u8;
+                        assert_ne!(region, core::ptr::null_mut());
+                        let source = &kernel_elf[offset..offset + increment];
+                        unsafe {
+                            region.copy_from_nonoverlapping(&source[0], increment);
+                        }
+                    }
+                    current += increment;
+                    offset += increment;
+                }
+            }
+            0x60000000.. => {
+                // OS-specific (probably GNU/Linux cruft)
+            }
+            x => unimplemented!("segment type {x:#x}"),
+        }
+    }
+
     let mem_region = kvm_userspace_memory_region {
-        slot,
+        slot: 0,
         guest_phys_addr: 0,
         memory_size: mem_size as u64,
         userspace_addr: load_addr as u64,
@@ -71,6 +109,7 @@ fn main() {
     let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
         unsafe { Box::new_zeroed_in(allocator).assume_init() };
     pml4[0] = allocator.get_offset(&*pdpt) as u64 | 3;
+    pml4[256] = allocator.get_offset(&*pdpt) as u64 | 3;
     Box::leak(pdpt);
 
     vcpu_sregs.cr4 = (1 << 5) | (1 << 7); // PAE and PGE
@@ -132,7 +171,7 @@ fn main() {
     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
 
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
-    vcpu_regs.rip = start_address as u64;
+    vcpu_regs.rip = start_address;
     vcpu_regs.rax = 2;
     vcpu_regs.rbx = 3;
     vcpu_regs.rflags = 2;
@@ -147,10 +186,16 @@ fn main() {
                 );
             }
             VcpuExit::IoOut(addr, data) => {
-                println!(
-                    "Received an I/O out exit. Address: {:#x}. Data: {:#x?}",
-                    addr, data,
-                );
+                if addr == 0xe9 {
+                    let data = data[0];
+                    let c = data as char;
+                    print!("{c}");
+                } else {
+                    println!(
+                        "Received an I/O out exit. Address: {:#x}. Data: {:#x?}",
+                        addr, data,
+                    );
+                }
             }
             VcpuExit::MmioRead(addr, _) => {
                 println!("Received an MMIO Read Request for the address {:#x}.", addr,);

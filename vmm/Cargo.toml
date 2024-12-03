@@ -10,3 +10,5 @@ kvm-ioctls = "0.19.0"
 libc = "0.2.162"
 nasm-rs = "0.3.0"
 common = { path = "../common" }
+kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+elf = "0.7.4"
