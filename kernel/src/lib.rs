@@ -3,7 +3,6 @@
 #![feature(custom_test_frameworks)]
 #![feature(alloc_layout_extra)]
 #![feature(optimize_attribute)]
-#![feature(const_size_of_val)]
 #![feature(never_type)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_write_slice)]

@@ -1,11 +1,5 @@
 [unstable]
 bindeps = true
 
-[env]
-RUST_TARGET_PATH = { value = "loader", relative = true }
-
-[alias]
-xtask = "run --package xtask --"
-
 [target.x86_64-unknown-none]
 rustflags = []

@@ -1,6 +1,4 @@
 // https://www.kernel.org/doc/html/v5.9/virt/kvm/msr.html
-#![optimize(speed)]
-
 use core::{
     arch::asm,
     cell::LazyCell,

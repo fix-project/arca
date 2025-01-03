@@ -1,4 +1,3 @@
-#![optimize(speed)]
 use core::{
     arch::{asm, global_asm},
     sync::atomic::AtomicU64,

@@ -20,7 +20,8 @@ sudo [apt|dnf] install qemu-system-x86
 ### Toolchain
 
 Arca is written in nightly Rust.  You should install Rust and Cargo via
-`rustup`. Arca requires the `x86_64-unknown-none` target.
+`rustup`. Arca requires the `x86_64-unknown-none` target.  Arca expects Rust
+version 1.85+.
 
 Instructions for Debian- and RHEL-based distributions:
 ```sh
@@ -37,13 +38,10 @@ sudo [apt|dnf] install nasm
 
 ## Running
 
-Since Arca runs within QEMU, the `xtask` subproject contains a wrapper to set
-up QEMU correctly (and use the correct toolchains, and run the test harness if
-desired).  You can use these aliases in lieu of the default `cargo`
-build/run/test commands.
+Arca can be run using the standard Cargo build commands.
 
 ```sh
-cargo xtask build
-cargo xtask run
-cargo xtask test
+cargo build
+cargo run
+cargo test
 ```

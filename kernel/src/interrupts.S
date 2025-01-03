@@ -158,7 +158,7 @@ isr_stub:
   // rip                 20
   // error code          28
   // isr number          30
-  testq 0x18[rsp], 0b11
+  test qword ptr 0x18[rsp], 0b11
   jz 1f
   swapgs
 1:
@@ -200,7 +200,7 @@ isr_stub:
   pop r14
   pop r15
 
-  testq 0x18[rsp], 0b11
+  test qword ptr 0x18[rsp], 0b11
   jz 1f
   swapgs
 1:

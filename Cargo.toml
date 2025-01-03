@@ -1,11 +1,4 @@
 [workspace]
-members = [ "common", "vmm", "kernel", "macros", "xtask"]
-default-members = ["kernel", "xtask"]
+members = [ "common", "vmm", "kernel", "macros" ]
+default-members = [ "vmm" ]
 resolver = "2"
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-debug = true
