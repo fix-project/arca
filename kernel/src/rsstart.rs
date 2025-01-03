@@ -78,11 +78,23 @@ pub(crate) static KERNEL_PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>
     }));
 
 #[no_mangle]
-unsafe extern "C" fn _start(number: u64) -> ! {
+unsafe extern "C" fn _start(allocator_data: usize, allocator_meta: usize) -> ! {
     init_bss();
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(LevelFilter::Info);
-    log::info!("Booted with argument: {:#x}!", number);
+    let allocator =
+        common::BuddyAllocator::from_raw_parts(vm::pa2ka(0), allocator_data, allocator_meta);
+    crate::PHYSICAL_ALLOCATOR
+        .lock()
+        .set(allocator)
+        .unwrap_or_else(|_| panic!("could not initialize physical memory allocator"));
+    let lock = crate::PHYSICAL_ALLOCATOR.lock();
+    let allocator = lock.get().expect("could not get buddy allocator");
+    log::info!("Memory usage is {} bytes.", allocator.used_size());
+    use alloc::boxed::Box;
+    let leakable = Box::<u8, &common::BuddyAllocator>::new_uninit_in(allocator);
+    Box::leak(leakable);
+    log::info!("Memory usage is {} bytes.", allocator.used_size());
     asm!("hlt");
     loop {
         core::hint::spin_loop();

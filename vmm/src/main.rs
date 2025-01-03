@@ -12,14 +12,14 @@ use kvm_ioctls::VcpuExit;
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() {
+    env_logger::init();
     use std::ptr::null_mut;
 
     use kvm_bindings::kvm_userspace_memory_region;
     use kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES;
 
-    // let mem_size = 0x100000000; // 4 GiB
+    let mem_size = 0x100000000; // 4 GiB
 
-    let mem_size = 0x1000000; // 4 MiB
     let kernel_elf = KERNEL_ELF;
 
     let kvm = Kvm::new().unwrap();
@@ -39,7 +39,7 @@ fn main() {
 
     let slice = unsafe { core::slice::from_raw_parts_mut(load_addr, mem_size) };
 
-    let allocator = &*BuddyAllocator::new(slice);
+    let allocator = BuddyAllocator::new(slice);
 
     let elf =
         ElfBytes::<AnyEndian>::minimal_parse(kernel_elf).expect("could not read kernel elf file");
@@ -101,19 +101,19 @@ fn main() {
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
 
     let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
+        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
     for (i, entry) in pdpt.iter_mut().enumerate() {
         *entry = ((i << 30) | 0x83) as u64;
     }
 
     let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
-    pml4[0] = allocator.get_offset(&*pdpt) as u64 | 3;
-    pml4[256] = allocator.get_offset(&*pdpt) as u64 | 3;
+        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
+    // pml4[0] = allocator.to_offset(&*pdpt) as u64 | 3;
+    pml4[256] = allocator.to_offset(&*pdpt) as u64 | 3;
     Box::leak(pdpt);
 
     vcpu_sregs.cr4 = (1 << 5) | (1 << 7); // PAE and PGE
-    vcpu_sregs.cr3 = allocator.get_offset(&*pml4) as u64;
+    vcpu_sregs.cr3 = allocator.to_offset(&*pml4) as u64;
     Box::leak(pml4);
 
     vcpu_sregs.idt = kvm_bindings::kvm_dtable {
@@ -123,6 +123,11 @@ fn main() {
     };
     vcpu_sregs.efer |= (1 << 8) | (1 << 10); // LME and LMA
     vcpu_sregs.cr0 |= (1 << 0) | (1 << 31); // Paging and Protection
+
+    // enable SSE
+    vcpu_sregs.cr0 |= 1 << 1; // Monitor Coprocessor
+    vcpu_sregs.cr0 &= !(1 << 2); // x86 Emulation
+    vcpu_sregs.cr4 |= (1 << 9) | (1 << 10); // SIMD
 
     let code_segment = kvm_bindings::kvm_segment {
         base: 0,
@@ -173,10 +178,22 @@ fn main() {
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = start_address;
     println!("starting at {:x}", start_address);
-    vcpu_regs.rsp = 0x1000;
-    vcpu_regs.rdi = 0xcafeb0ba;
+    let initial_stack = unsafe {
+        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
+    };
+    let stack_start = allocator.to_offset(&*initial_stack);
+    Box::leak(initial_stack);
+
+    let (_, data, meta) = unsafe { allocator.clone().into_raw_parts() };
+    let pa2ka = |p: usize| (p | 0xFFFF800000000000);
+    vcpu_regs.rsp = pa2ka((stack_start + (2 * 0x400 * 0x400)) as usize) as u64;
+    vcpu_regs.rdi = data as u64;
+    vcpu_regs.rsi = meta as u64;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
+
+    println!("Inner is at offset {:#x}.", data);
+    println!("Memory usage is {} bytes.", allocator.used_size());
 
     loop {
         match vcpu_fd.run().expect("run failed") {
@@ -213,4 +230,5 @@ fn main() {
             r => panic!("Unexpected exit reason: {:?}", r),
         }
     }
+    println!("Memory usage is {} bytes.", allocator.used_size());
 }

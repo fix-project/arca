@@ -1,32 +1,35 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(new_zeroed_alloc)]
 #![feature(allocator_api)]
+#![feature(new_range_api)]
 #![feature(test)]
+#![feature(alloc_layout_extra)]
+#![feature(ptr_metadata)]
+#![feature(ptr_sub_ptr)]
+#![cfg_attr(test, feature(new_zeroed_alloc))]
 
 use core::{
     alloc::Layout,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
+    range::Range,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-use std::alloc::{AllocError, Allocator};
+extern crate alloc;
+use alloc::alloc::{AllocError, Allocator, Global};
+use alloc::boxed::Box;
 
-use thiserror::Error;
+use snafu::prelude::*;
 
-#[derive(Error, Debug)]
+#[derive(Snafu, Debug)]
 pub enum AllocationError {
-    #[error("the requested allocation of order {order} at index {index} is already in use")]
-    RegionInUse { index: usize, order: u32 },
-    #[error(
-        "the requested reservation of size {size} at index {index} is invalid at order {order}"
-    )]
-    InvalidReservation {
-        index: usize,
-        size: usize,
-        order: u32,
-    },
-    #[error("no regions of order {0} are available")]
-    SpaceExhausted(u32),
+    #[snafu(display(
+        "the requested reservation at index {index} of size {size} is already in use"
+    ))]
+    RegionInUse { index: usize, size: usize },
+    #[snafu(display("the requested reservation at index{index} of size {size} is invalid"))]
+    InvalidReservation { index: usize, size: usize },
+    #[snafu(display("no regions of size {size} are available"))]
+    SpaceExhausted { size: usize },
 }
 
 #[repr(C)]
@@ -81,40 +84,35 @@ impl<'a> BitRef<'a> {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct BitSlice<'a> {
-    base: &'a AtomicU64,
-    length: usize,
+    bits: usize,
+    data: &'a [AtomicU64],
 }
 
 impl<'a> BitSlice<'a> {
-    pub fn new(slice: &'a [AtomicU64], length: usize) -> BitSlice<'a> {
-        assert!(length <= core::mem::size_of_val(slice) * 8);
-        BitSlice {
-            base: &slice[0],
-            length,
-        }
+    pub fn new(bits: usize, data: &'a [AtomicU64]) -> BitSlice<'a> {
+        assert!(bits <= core::mem::size_of_val(data) * 8);
+        BitSlice { bits, data }
     }
 
-    pub fn bit(&self, index: usize) -> BitRef<'a> {
-        assert!(index < self.length);
+    pub fn bit(&self, index: usize) -> BitRef<'_> {
+        assert!(index < self.bits);
         BitRef {
-            word: unsafe {
-                &(*(self.base as *const AtomicU64)
-                    .add(index / (core::mem::size_of::<AtomicU64>() * 8)))
-            },
+            word: &self.data[index / (core::mem::size_of::<AtomicU64>() * 8)],
             offset: index % (core::mem::size_of::<AtomicU64>() * 8),
         }
     }
 
     pub fn clear_first_set(&self) -> Option<usize> {
         for i in 0..self.len().div_ceil(core::mem::size_of::<AtomicU64>() * 8) {
-            let byte = unsafe { &*((self.base as *const AtomicU64).add(i)) };
-            let mut value = byte.load(Ordering::SeqCst);
+            let word = &self.data[i];
+            let mut value = word.load(Ordering::SeqCst);
             while value.trailing_zeros() as usize != (core::mem::size_of::<AtomicU64>() * 8) {
                 let set = 1 << value.trailing_zeros();
                 let new = value & !set;
                 if let Err(x) =
-                    byte.compare_exchange(value, new, Ordering::SeqCst, Ordering::SeqCst)
+                    word.compare_exchange(value, new, Ordering::SeqCst, Ordering::SeqCst)
                 {
                     value = x;
                 } else {
@@ -129,7 +127,7 @@ impl<'a> BitSlice<'a> {
     }
 
     pub fn len(&self) -> usize {
-        self.length
+        self.bits
     }
 
     #[must_use]
@@ -138,236 +136,270 @@ impl<'a> BitSlice<'a> {
     }
 }
 
-impl<'a> From<&'a [AtomicU64]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU64]) -> Self {
-        Self::new(value, core::mem::size_of_val(value) * 8)
-    }
+#[repr(C)]
+pub struct AllocatorLevel<'a> {
+    bits: usize,
+    // true = available; false = unavailable
+    bitmap: &'a [AtomicU64],
 }
 
-impl<'a, const N: usize> From<&'a [AtomicU64; N]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU64; N]) -> Self {
-        Self::new(value, core::mem::size_of_val(value) * 8)
+impl<'a> AllocatorLevel<'a> {
+    pub fn new(bits: usize, bitmap: &'a [AtomicU64]) -> Self {
+        Self { bits, bitmap }
+    }
+
+    fn bits(&self) -> BitSlice<'_> {
+        BitSlice::new(self.bits, self.bitmap)
+    }
+
+    pub fn reserve(&self, index: usize) -> bool {
+        self.bits().bit(index).clear(Ordering::SeqCst)
+    }
+
+    pub fn allocate(&self) -> Option<usize> {
+        self.bits().clear_first_set()
+    }
+
+    pub fn free(&self, index: usize) {
+        assert!(
+            !self.bits().bit(index).set(Ordering::SeqCst),
+            "allocation was already free!"
+        );
     }
 }
 
 #[repr(C)]
-pub struct AllocatorLevel<'a> {
-    // true = available; false = unavailable
-    bitmap: BitSlice<'a>,
-    order: u32,
-    next_level: Option<&'a AllocatorLevel<'a>>,
+#[derive(Debug)]
+struct AllocatorMetadata {
+    refcnt: AtomicUsize,
+    used_size: AtomicUsize,
+    raw_size: usize,
+    total_size: usize,
+    max_align: usize,
+    level_range: Range<u32>,
 }
 
-impl<'a> AllocatorLevel<'a> {
-    pub fn new(
-        bitmap: BitSlice<'a>,
-        order: u32,
-        next_level: Option<&'a Self>,
-    ) -> AllocatorLevel<'a> {
-        AllocatorLevel {
-            bitmap,
-            order,
-            next_level,
+#[repr(C)]
+pub struct AllocatorInner {
+    meta: AllocatorMetadata,
+    data: [AtomicU64],
+}
+
+impl AllocatorInner {
+    pub fn new(slice: &mut [u8]) -> Box<AllocatorInner> {
+        Self::new_in(slice, Global)
+    }
+
+    pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Box<AllocatorInner, A> {
+        let raw_size = core::mem::size_of_val(slice);
+        let min_level = 12;
+        let max_level = raw_size.ilog2();
+        let total_size = 1 << max_level;
+        let max_align = 1 << (&raw const slice[0] as usize).trailing_zeros();
+
+        let level_range = Range {
+            start: min_level,
+            end: max_level + 1,
+        };
+
+        let levels = max_level - min_level + 1;
+        let space = (1 << (levels - 6)) + 6 - 1;
+
+        unsafe {
+            let layout = Layout::new::<AllocatorMetadata>()
+                .extend(Layout::new::<AtomicU64>().repeat(space).unwrap().0)
+                .unwrap()
+                .0
+                .pad_to_align();
+            let p = allocator
+                .allocate_zeroed(layout)
+                .expect("could not allocate space for allocator bitmap");
+            let p: *mut AllocatorInner = core::mem::transmute(p);
+            (&raw mut (*p).meta).write(AllocatorMetadata {
+                refcnt: AtomicUsize::new(1),
+                used_size: AtomicUsize::new(0),
+                raw_size,
+                total_size,
+                max_align,
+                level_range,
+            });
+            (*p).data[0].store(1, Ordering::SeqCst);
+            Box::from_raw_in(p, allocator)
         }
     }
 
-    pub fn reserve(&self, size_log2: u32, index: usize) -> Result<usize, AllocationError> {
-        if size_log2 > 0 {
-            if index % 2 != 0 {
-                return Err(AllocationError::InvalidReservation {
-                    index,
-                    size: 1 << size_log2,
-                    order: self.order,
-                });
-            }
-            return self
-                .next_level
-                .ok_or(AllocationError::SpaceExhausted(self.order))?
-                .reserve(size_log2 - 1, index / 2)
-                .map(|x| 2 * x);
+    pub fn len_bytes(&self) -> usize {
+        let Range { start, end } = self.meta.level_range;
+        let levels = end - start;
+        let space = (1 << (levels - 6)) + 6 - 1;
+        let layout = Layout::new::<AllocatorMetadata>()
+            .extend(Layout::new::<AtomicU64>().repeat(space).unwrap().0)
+            .unwrap()
+            .0
+            .pad_to_align();
+        layout.size()
+    }
+
+    pub fn size_of_level_bits(&self, level: u32) -> usize {
+        assert!(self.meta.level_range.contains(&level));
+        let inverse = self.meta.level_range.end - level - 1;
+        1 << inverse
+    }
+
+    pub fn size_of_level_words(&self, level: u32) -> usize {
+        self.size_of_level_bits(level)
+            .div_ceil(core::mem::size_of::<AtomicU64>())
+    }
+
+    pub fn offset_of_level_words(&self, level: u32) -> usize {
+        assert!(self.meta.level_range.contains(&level));
+        let inverse = self.meta.level_range.end - level - 1;
+        if inverse <= 6 {
+            inverse as usize
+        } else {
+            let power = inverse - 6;
+            (1 << (power)) + 6 - 1
         }
-        if self.bitmap.bit(index).clear(Ordering::SeqCst) {
+    }
+
+    pub fn level(&self, level: u32) -> AllocatorLevel<'_> {
+        let start = self.offset_of_level_words(level);
+        let size = self.size_of_level_words(level);
+        let end = start + size;
+        AllocatorLevel::new(self.size_of_level_bits(level), &self.data[start..end])
+    }
+
+    pub fn reserve(&self, index: usize, size_log2: u32) -> Result<usize, AllocationError> {
+        assert_ne!(self.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(size_log2, self.meta.level_range.start);
+        if size_log2 >= self.meta.level_range.end {
+            return Err(AllocationError::InvalidReservation {
+                index,
+                size: 1 << size_log2,
+            });
+        }
+        let level = self.level(size_log2);
+        if level.reserve(index) {
             Ok(index)
         } else {
-            self.next_level
-                .ok_or(AllocationError::RegionInUse {
+            match self.reserve(index / 2, size_log2 + 1) {
+                Ok(_) => {
+                    self.free(index ^ 1, size_log2);
+                    Ok(index)
+                }
+                Err(_) => Err(AllocationError::RegionInUse {
                     index,
-                    order: self.order,
-                })?
-                .reserve(0, index / 2)?;
-            self.free(index ^ 1, 0);
-            Ok(index)
+                    size: 1 << size_log2,
+                }),
+            }
         }
     }
 
     pub fn allocate(&self, size_log2: u32) -> Result<usize, AllocationError> {
-        if size_log2 > 0 {
-            return self
-                .next_level
-                .ok_or(AllocationError::SpaceExhausted(self.order))?
-                .allocate(size_log2 - 1)
-                .map(|x| 2 * x);
+        assert_ne!(self.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(size_log2, self.meta.level_range.start);
+        if size_log2 >= self.meta.level_range.end {
+            return Err(AllocationError::SpaceExhausted {
+                size: 1 << size_log2,
+            });
         }
-        if let Some(index) = self.bitmap.clear_first_set() {
-            return Ok(index);
+        let level = self.level(size_log2);
+        if let Some(index) = level.allocate() {
+            Ok(index)
+        } else {
+            match self.allocate(size_log2 + 1) {
+                Ok(index) => {
+                    let index = 2 * index;
+                    // bias allocations towards the upper end of the address space
+                    self.free(index, size_log2);
+                    Ok(index + 1)
+                }
+                Err(_) => Err(AllocationError::SpaceExhausted {
+                    size: 1 << size_log2,
+                }),
+            }
         }
-        self.next_level
-            .and_then(|next| next.allocate(0).ok())
-            .map(|i| (2 * i) + 1) // bias allocations towards the upper end of the address space
-            .inspect(|i| self.free(i - 1, 0))
-            .ok_or(AllocationError::SpaceExhausted(self.order))
     }
 
     pub fn free(&self, index: usize, size_log2: u32) {
-        if size_log2 > 0 {
-            assert_eq!(index % 2, 0);
-            return self.next_level.unwrap().free(index / 2, size_log2 - 1);
+        assert_ne!(self.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(size_log2, self.meta.level_range.start);
+        assert!(size_log2 < self.meta.level_range.end);
+        let level = self.level(size_log2);
+        if size_log2 == self.meta.level_range.end - 1 {
+            level.free(index);
+            return;
         }
-        if let Some(next) = self.next_level {
-            let buddy = index ^ 1;
-            if self.bitmap.bit(buddy).clear(Ordering::SeqCst) {
-                next.free(index / 2, 0);
-                return;
-            }
+        let buddy = index ^ 1;
+        if level.reserve(buddy) {
+            self.free(index / 2, size_log2 + 1);
+        } else {
+            // Possible race condition: we and our buddy could be trying to free at once.  Both
+            // would see the other as being in-use and get here.  This isn't incorrect, as both
+            // blocks do get freed, but leads to a missed coalescence.
+            level.free(index);
         }
-        assert!(!self.bitmap.bit(index).set(Ordering::SeqCst));
     }
 }
 
 #[repr(C)]
 pub struct BuddyAllocator<'a> {
     start: *mut (),
-    level: &'a AllocatorLevel<'a>,
-    max_align: usize,
-    max_level: u32,
-    min_level: u32,
-    raw_size: usize,
+    inner: &'a AllocatorInner,
 }
+
+unsafe impl Send for BuddyAllocator<'_> {}
 
 impl<'a> BuddyAllocator<'a> {
     #[cfg(feature = "std")]
-    pub fn new(base: &'a mut [u8]) -> &'a mut BuddyAllocator<'a> {
-        let raw_size = core::mem::size_of_val(base);
-        let min_level = 12;
-        let max_level = raw_size.ilog2();
-        let start: *mut () = &mut base[0] as *mut u8 as *mut ();
-        let max_align = 1 << (start as usize).trailing_zeros();
-
-        // allocate this on the heap for now
-        let mut backing = Vec::new();
-        for level in (min_level..(max_level + 1)).rev() {
-            let size = backing.len();
-            let words = (1 << (level - min_level)) / (core::mem::size_of::<AtomicU64>() * 8);
-            let words = core::cmp::max(words, 1);
-            backing.resize_with(size + words, || AtomicU64::new(0));
-        }
-
-        let temp_backing = Box::leak(backing.into_boxed_slice());
-        let mut current = 0;
-        let mut temp_level: Option<&AllocatorLevel<'_>> = None;
-        for i in (min_level..(max_level + 1)).rev() {
-            let bits: usize = 1 << (max_level - i);
-            let words = bits.div_ceil(core::mem::size_of::<AtomicU64>() * 8);
-
-            let bitmap: &[AtomicU64] = &temp_backing[current..current + words];
-            current += words;
-
-            let slice = BitSlice::from(bitmap);
-            let new_level = Box::new(AllocatorLevel::new(slice, i, temp_level));
-            if i == max_level {
-                new_level.free(0, 0);
-            }
-            temp_level = Some(Box::leak(new_level));
-        }
-
-        // create a buddy allocator using the heap-backed version
+    pub fn new(base: &'a mut [u8]) -> BuddyAllocator<'a> {
+        let start = &raw mut base[0] as *mut ();
+        // allocate on the normal heap
+        let inner = AllocatorInner::new(base);
         let temp = BuddyAllocator {
             start,
-            level: temp_level.unwrap(),
-            max_level,
-            min_level,
-            raw_size,
-            max_align,
+            inner: &inner,
         };
 
-        // allocate the relevant space within the buddy allocator itself
-        let size = core::mem::size_of_val(temp_backing);
-        let backing = unsafe {
-            core::slice::from_raw_parts_mut(
-                temp.allocate_raw(size) as *mut AtomicU64,
-                temp_backing.len(),
-            )
+        let new_inner = AllocatorInner::new_in(base, &temp);
+
+        let inner = unsafe {
+            let new_inner = Box::into_raw(new_inner);
+            let src = &raw const *inner;
+            let dst = &raw mut *new_inner;
+            let (src, src_size) = src.to_raw_parts();
+            let (dst, dst_size) = dst.to_raw_parts();
+            assert_eq!(src_size, dst_size);
+            core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
+            &*new_inner
         };
-        let mut current = 0;
-        let mut level: Option<&'static AllocatorLevel<'static>> = None;
-        for i in (min_level..(max_level + 1)).rev() {
-            let bits: usize = 1 << (max_level - i);
-            let words = bits.div_ceil(core::mem::size_of::<AtomicU64>() * 8);
+        // unimplemented!();
 
-            let bitmap: &'static [AtomicU64] = &backing[current..current + words];
-            current += words;
-
-            let slice = BitSlice::from(bitmap);
-            let new_level = Box::new(AllocatorLevel::new(slice, i, level));
-            level = Some(Box::leak(new_level));
-        }
-
-        let real = temp.allocate::<BuddyAllocator>(BuddyAllocator {
-            start,
-            level: level.unwrap(),
-            max_level,
-            min_level,
-            raw_size,
-            max_align,
-        });
-
-        // transfer the allocation information to the new backing region
-        for i in 0..backing.len() {
-            backing[i].store(temp_backing[i].load(Ordering::SeqCst), Ordering::SeqCst);
-        }
-
-        while let Some(level) = temp_level {
-            temp_level = level.next_level;
-            unsafe {
-                core::mem::drop(Box::from_raw(
-                    level as *const AllocatorLevel<'static> as *mut AllocatorLevel<'static>,
-                ))
-            };
-        }
-
-        unsafe {
-            core::mem::drop(Box::from_raw(
-                temp_backing as *const [AtomicU64] as *mut [AtomicU64],
-            ));
-        }
-
-        unsafe { &mut *real }
-    }
-
-    #[cfg(feature = "std")]
-    /// # Safety
-    /// This function can only be called after *all* allocations that came from this allocator have
-    /// been freed or forgotten, and if this is the only reference to this allocator.
-    pub unsafe fn destroy(&mut self) -> &'a mut [u8] {
-        core::slice::from_raw_parts_mut(self.start as *mut u8, self.raw_size)
+        BuddyAllocator { start, inner }
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
-        let index = address >> 12;
-        self.level
-            .reserve(size_log2, index)
-            .map_or(core::ptr::null_mut(), |i| unsafe {
-                self.start.byte_add(i * (1 << self.min_level))
+        assert_ne!(self.inner.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
+        let index = address >> size_log2;
+        self.inner
+            .reserve(index, size_log2)
+            .inspect(|_| {
+                self.inner
+                    .meta
+                    .used_size
+                    .fetch_add(1 << level, Ordering::SeqCst);
+            })
+            .map_or(core::ptr::null_mut(), |i| {
+                self.start.wrapping_byte_add(i * (1 << size_log2))
             })
     }
 
     pub fn reserve_uninit<T: Sized>(&self, address: usize) -> *mut MaybeUninit<T> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        assert!(align <= self.max_align);
+        assert!(align <= self.inner.meta.max_align);
         let size = core::cmp::max(size, align);
         let raw = self.reserve_raw(address, size);
         raw as *mut MaybeUninit<T>
@@ -375,45 +407,57 @@ impl<'a> BuddyAllocator<'a> {
 
     pub fn reserve<T: Sized>(&self, address: usize, value: T) -> *mut T {
         let uninit = self.reserve_uninit::<T>(address);
-        unsafe {
-            (*uninit).write(value);
-            (*uninit).assume_init_mut()
+        if uninit.is_null() {
+            core::ptr::null_mut()
+        } else {
+            unsafe { (*uninit).write(value) }
         }
     }
 
     pub fn allocate_raw(&self, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
-        self.level
+        assert_ne!(self.inner.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
+        self.inner
             .allocate(size_log2)
-            .map_or(core::ptr::null_mut(), |i| unsafe {
-                self.start.byte_add(i * (1 << self.min_level))
+            .inspect(|_| {
+                self.inner
+                    .meta
+                    .used_size
+                    .fetch_add(1 << level, Ordering::SeqCst);
+            })
+            .map_or(core::ptr::null_mut(), |i| {
+                self.start.wrapping_byte_add(i * (1 << size_log2))
             })
     }
 
     pub fn allocate_uninit<T: Sized>(&self) -> *mut MaybeUninit<T> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        assert!(align <= self.max_align);
+        assert!(align <= self.inner.meta.max_align);
         let size = core::cmp::max(size, align);
         self.allocate_raw(size) as *mut MaybeUninit<T>
     }
 
     pub fn allocate<T: Sized>(&self, value: T) -> *mut T {
         let uninit = self.allocate_uninit::<T>();
-        unsafe {
-            (*uninit).write(value);
-            (*uninit).assume_init_mut()
+        if uninit.is_null() {
+            core::ptr::null_mut()
+        } else {
+            unsafe { (*uninit).write(value) }
         }
     }
 
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
-        let index = (ptr as usize - self.start as usize) / (1 << self.min_level) as usize;
-        self.level.free(index, size_log2);
+        assert_ne!(self.inner.meta.level_range.start, 0);
+        let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
+        let index = (ptr as usize - self.start as usize) / (1 << size_log2) as usize;
+        self.inner.free(index, size_log2);
+        self.inner
+            .meta
+            .used_size
+            .fetch_sub(1 << size_log2, Ordering::SeqCst);
     }
 
     pub fn free<T: Sized>(&self, ptr: *const T) {
@@ -430,18 +474,77 @@ impl<'a> BuddyAllocator<'a> {
         self.free_raw(ptr as *const T as *mut (), size);
     }
 
-    pub fn base_address(&self) -> *mut () {
-        self.start
+    pub fn to_offset<T: ?Sized>(&self, allocation: *const T) -> isize {
+        let base = self.start;
+        let current = allocation as *const ();
+        current as isize - base as isize
     }
 
-    pub fn get_offset<T>(&self, allocation: &T) -> usize {
-        let base = self.base_address();
-        let current = allocation as *const T as *const ();
-        unsafe { usize::try_from(current.byte_offset_from(base)).unwrap() }
+    pub fn from_offset<T>(&self, offset: isize) -> *const T {
+        let base = self.start;
+        (base as isize + offset) as *const T
+    }
+
+    pub fn used_size(&self) -> usize {
+        self.inner.meta.used_size.load(Ordering::SeqCst)
+    }
+
+    pub fn total_size(&self) -> usize {
+        1 << (self.inner.meta.level_range.end - 1)
+    }
+
+    pub fn usage(&self) -> f64 {
+        self.used_size() as f64 / self.total_size() as f64
+    }
+
+    pub unsafe fn into_raw_parts(self) -> (*mut (), usize, usize) {
+        let BuddyAllocator { start, inner } = self;
+        let p = inner as *const AllocatorInner;
+        let (base, meta) = p.to_raw_parts();
+
+        core::mem::forget(self);
+        (start, base.byte_sub_ptr(start), meta)
+    }
+
+    pub unsafe fn from_raw_parts(start: *mut (), data_offset: usize, data_size: usize) -> Self {
+        let ptr = start.byte_add(data_offset);
+        BuddyAllocator {
+            start,
+            inner: &*core::ptr::from_raw_parts(ptr, data_size),
+        }
+    }
+
+    pub fn destroy(&mut self) -> Option<&'a mut [u8]> {
+        if self.inner.meta.refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
+            unsafe {
+                Some(core::slice::from_raw_parts_mut(
+                    self.start as *mut u8,
+                    self.inner.meta.raw_size,
+                ))
+            }
+        } else {
+            None
+        }
     }
 }
 
-unsafe impl<'a> Allocator for BuddyAllocator<'a> {
+impl Clone for BuddyAllocator<'_> {
+    fn clone(&self) -> Self {
+        self.inner.meta.refcnt.fetch_add(1, Ordering::SeqCst);
+        Self {
+            start: self.start,
+            inner: self.inner,
+        }
+    }
+}
+
+impl Drop for BuddyAllocator<'_> {
+    fn drop(&mut self) {
+        self.destroy();
+    }
+}
+
+unsafe impl Allocator for BuddyAllocator<'_> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let size = layout.size();
         let align = layout.align();
@@ -483,7 +586,7 @@ mod tests {
     #[test]
     fn test_bitslice() {
         let words = [const { AtomicU64::new(0) }; 2];
-        let slice = BitSlice::from(&words);
+        let slice = BitSlice::new(128, &words);
         let r0 = slice.bit(0);
         let r1 = slice.bit(1);
         let r127 = slice.bit(127);
@@ -502,46 +605,27 @@ mod tests {
 
     #[test]
     fn test_buddy_allocator() {
-        let region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let region = Box::leak(region);
-        let allocator = BuddyAllocator::new(region);
+        let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
 
-        let test = Box::new_in(10, &*allocator);
+        let test = Box::new_in(10, &allocator);
         assert_eq!(*test, 10);
 
-        let mut v = Vec::new_in(&*allocator);
+        let mut v = Vec::new_in(&allocator);
         for i in 0..10000 {
             v.push(i);
         }
-
-        core::mem::drop(test);
-        core::mem::drop(v);
-
-        unsafe { core::mem::drop(Box::from_raw(allocator.destroy())) };
     }
 
     #[bench]
     fn bench_allocate_free(b: &mut Bencher) {
-        let region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let region = Box::leak(region);
         let allocator = BuddyAllocator::new(region);
         b.iter(|| {
-            core::mem::drop(Box::new_in(0, &*allocator));
+            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+                Box::new_uninit_slice_in(4096, &allocator);
+            core::mem::drop(x);
         });
-        unsafe { core::mem::drop(Box::from_raw(allocator.destroy())) };
-    }
-
-    #[bench]
-    fn bench_allocate_many(b: &mut Bencher) {
-        let region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let region = Box::leak(region);
-        let allocator = BuddyAllocator::new(region);
-        let mut v = vec![];
-        b.iter(|| match Box::try_new_in(0, &*allocator) {
-            Ok(x) => v.push(x),
-            Err(_) => v.clear(),
-        });
-        core::mem::drop(v);
-        unsafe { core::mem::drop(Box::from_raw(allocator.destroy())) };
     }
 }

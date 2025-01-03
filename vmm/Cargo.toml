@@ -12,3 +12,4 @@ nasm-rs = "0.3.0"
 common = { path = "../common" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
+env_logger = "0.11.6"

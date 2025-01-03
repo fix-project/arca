@@ -12,6 +12,7 @@
 #![feature(negative_impls)]
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
+#![feature(allocator_api)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -19,6 +20,8 @@ extern crate alloc;
 
 #[macro_use]
 pub extern crate macros;
+
+use core::cell::OnceCell;
 
 pub use macros::core_local;
 
@@ -52,9 +55,13 @@ mod rsstart;
 mod tss;
 
 pub use lapic::LAPIC;
+use spinlock::SpinLock;
 
 #[cfg(test)]
 mod testing;
+
+pub(crate) static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<common::BuddyAllocator>> =
+    SpinLock::new(OnceCell::new());
 
 pub fn halt() -> ! {
     loop {
