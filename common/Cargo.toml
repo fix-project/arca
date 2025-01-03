@@ -8,7 +8,8 @@ default = ["std"]
 std = []
 
 [dependencies]
-thiserror = "2.0.3"
+log = "0.4.22"
+snafu = { version="0.8.5", default-features=false }
 
 [dev-dependencies]
 libc = "0.2.164"

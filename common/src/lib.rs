@@ -1,114 +1,131 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(new_zeroed_alloc)]
 #![feature(allocator_api)]
 #![feature(test)]
 
 use core::{
-    alloc::Layout,
+    alloc::{AllocError, Allocator, Layout},
+    marker::PhantomData,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-use std::alloc::{AllocError, Allocator};
 
-use thiserror::Error;
+use snafu::prelude::*;
 
-#[derive(Error, Debug)]
+#[derive(Snafu, Debug)]
 pub enum AllocationError {
-    #[error("the requested allocation of order {order} at index {index} is already in use")]
+    #[snafu(display(
+        "the requested allocation of order {order} at index {index} is already in use"
+    ))]
     RegionInUse { index: usize, order: u32 },
-    #[error(
+    #[snafu(display(
         "the requested reservation of size {size} at index {index} is invalid at order {order}"
-    )]
+    ))]
     InvalidReservation {
         index: usize,
         size: usize,
         order: u32,
     },
-    #[error("no regions of order {0} are available")]
-    SpaceExhausted(u32),
+    #[snafu(display("no regions of order {order} are available"))]
+    SpaceExhausted { order: u32 },
 }
 
 #[repr(C)]
 pub struct BitRef<'a> {
-    word: &'a AtomicU64,
+    word_offset: isize,
+    _phantom: PhantomData<&'a AtomicU64>,
     offset: usize,
 }
 
 impl<'a> BitRef<'a> {
-    pub fn new(word: &'a AtomicU64, offset: usize) -> BitRef<'a> {
+    fn word(&self, start: *const ()) -> &AtomicU64 {
+        (unsafe { &*((start as isize + self.word_offset) as *const AtomicU64) }) as _
+    }
+
+    pub fn new(start: *const (), word: &'a AtomicU64, offset: usize) -> BitRef<'a> {
         assert!(offset < core::mem::size_of::<AtomicU64>() * 8);
-        BitRef { word, offset }
+        BitRef {
+            _phantom: PhantomData,
+            word_offset: word as *const AtomicU64 as isize - start as isize,
+            offset,
+        }
     }
 
-    pub fn load(&self, ordering: Ordering) -> bool {
-        ((self.word.load(ordering) >> self.offset) & 1) == 1
+    pub fn load(&self, start: *const (), ordering: Ordering) -> bool {
+        ((self.word(start).load(ordering) >> self.offset) & 1) == 1
     }
 
-    pub fn set(&self, ordering: Ordering) -> bool {
+    pub fn set(&self, start: *const (), ordering: Ordering) -> bool {
         loop {
-            let old = self.word.load(ordering);
+            let old = self.word(start).load(ordering);
             let new = old | (1 << self.offset);
-            if let Ok(word) = self
-                .word
-                .compare_exchange(old, new, ordering, Ordering::SeqCst)
+            if let Ok(word) =
+                self.word(start)
+                    .compare_exchange(old, new, ordering, Ordering::SeqCst)
             {
                 return ((word >> self.offset) & 1) == 1;
             }
         }
     }
 
-    pub fn clear(&self, ordering: Ordering) -> bool {
+    pub fn clear(&self, start: *const (), ordering: Ordering) -> bool {
         loop {
-            let old = self.word.load(ordering);
+            let old = self.word(start).load(ordering);
             let new = old & !(1 << self.offset);
-            if let Ok(word) = self
-                .word
-                .compare_exchange(old, new, ordering, Ordering::SeqCst)
+            if let Ok(word) =
+                self.word(start)
+                    .compare_exchange(old, new, ordering, Ordering::SeqCst)
             {
                 return ((word >> self.offset) & 1) == 1;
             }
         }
     }
 
-    pub fn store(&self, value: bool, ordering: Ordering) -> bool {
+    pub fn store(&self, start: *const (), value: bool, ordering: Ordering) -> bool {
         if value {
-            self.set(ordering)
+            self.set(start, ordering)
         } else {
-            self.clear(ordering)
+            self.clear(start, ordering)
         }
     }
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct BitSlice<'a> {
-    base: &'a AtomicU64,
+    _phantom: PhantomData<&'a AtomicU64>,
+    base_offset: isize,
     length: usize,
 }
 
 impl<'a> BitSlice<'a> {
-    pub fn new(slice: &'a [AtomicU64], length: usize) -> BitSlice<'a> {
+    pub fn base(&self, start: *const ()) -> &AtomicU64 {
+        unsafe { &*((start as isize + self.base_offset) as *const AtomicU64) }
+    }
+
+    pub fn new(start: *const (), slice: &'a [AtomicU64], length: Option<usize>) -> BitSlice<'a> {
+        let length = length.unwrap_or_else(|| core::mem::size_of_val(slice) * 8);
         assert!(length <= core::mem::size_of_val(slice) * 8);
         BitSlice {
-            base: &slice[0],
+            _phantom: PhantomData,
+            base_offset: &slice[0] as *const AtomicU64 as isize - start as isize,
             length,
         }
     }
 
-    pub fn bit(&self, index: usize) -> BitRef<'a> {
+    pub fn bit(&self, _start: *const (), index: usize) -> BitRef<'a> {
         assert!(index < self.length);
         BitRef {
-            word: unsafe {
-                &(*(self.base as *const AtomicU64)
-                    .add(index / (core::mem::size_of::<AtomicU64>() * 8)))
-            },
+            _phantom: PhantomData,
+            word_offset: self.base_offset
+                + (index / (core::mem::size_of::<AtomicU64>() * 8)) as isize,
             offset: index % (core::mem::size_of::<AtomicU64>() * 8),
         }
     }
 
-    pub fn clear_first_set(&self) -> Option<usize> {
+    pub fn clear_first_set(&self, start: *const ()) -> Option<usize> {
         for i in 0..self.len().div_ceil(core::mem::size_of::<AtomicU64>() * 8) {
-            let byte = unsafe { &*((self.base as *const AtomicU64).add(i)) };
+            let byte = unsafe { &*((self.base(start) as *const AtomicU64).wrapping_add(i)) };
             let mut value = byte.load(Ordering::SeqCst);
             while value.trailing_zeros() as usize != (core::mem::size_of::<AtomicU64>() * 8) {
                 let set = 1 << value.trailing_zeros();
@@ -138,28 +155,24 @@ impl<'a> BitSlice<'a> {
     }
 }
 
-impl<'a> From<&'a [AtomicU64]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU64]) -> Self {
-        Self::new(value, core::mem::size_of_val(value) * 8)
-    }
-}
-
-impl<'a, const N: usize> From<&'a [AtomicU64; N]> for BitSlice<'a> {
-    fn from(value: &'a [AtomicU64; N]) -> Self {
-        Self::new(value, core::mem::size_of_val(value) * 8)
-    }
-}
-
 #[repr(C)]
+#[derive(Debug)]
 pub struct AllocatorLevel<'a> {
     // true = available; false = unavailable
     bitmap: BitSlice<'a>,
     order: u32,
-    next_level: Option<&'a AllocatorLevel<'a>>,
+    next_level: Option<isize>,
+    _phantom: PhantomData<&'a AllocatorLevel<'a>>,
 }
 
 impl<'a> AllocatorLevel<'a> {
+    fn next_level(&self, start: *const ()) -> Option<&'a Self> {
+        self.next_level
+            .map(|x| unsafe { &*((start as isize + x) as *const Self) })
+    }
+
     pub fn new(
+        start: *const (),
         bitmap: BitSlice<'a>,
         order: u32,
         next_level: Option<&'a Self>,
@@ -167,11 +180,17 @@ impl<'a> AllocatorLevel<'a> {
         AllocatorLevel {
             bitmap,
             order,
-            next_level,
+            next_level: next_level.map(|x| x as *const Self as isize - start as isize),
+            _phantom: PhantomData,
         }
     }
 
-    pub fn reserve(&self, size_log2: u32, index: usize) -> Result<usize, AllocationError> {
+    pub fn reserve(
+        &self,
+        start: *const (),
+        size_log2: u32,
+        index: usize,
+    ) -> Result<usize, AllocationError> {
         if size_log2 > 0 {
             if index % 2 != 0 {
                 return Err(AllocationError::InvalidReservation {
@@ -181,72 +200,87 @@ impl<'a> AllocatorLevel<'a> {
                 });
             }
             return self
-                .next_level
-                .ok_or(AllocationError::SpaceExhausted(self.order))?
-                .reserve(size_log2 - 1, index / 2)
+                .next_level(start)
+                .ok_or(AllocationError::SpaceExhausted { order: self.order })?
+                .reserve(start, size_log2 - 1, index / 2)
                 .map(|x| 2 * x);
         }
-        if self.bitmap.bit(index).clear(Ordering::SeqCst) {
+        if self.bitmap.bit(start, index).clear(start, Ordering::SeqCst) {
             Ok(index)
         } else {
-            self.next_level
+            self.next_level(start)
                 .ok_or(AllocationError::RegionInUse {
                     index,
                     order: self.order,
                 })?
-                .reserve(0, index / 2)?;
-            self.free(index ^ 1, 0);
+                .reserve(start, 0, index / 2)?;
+            self.free(start, index ^ 1, 0);
             Ok(index)
         }
     }
 
-    pub fn allocate(&self, size_log2: u32) -> Result<usize, AllocationError> {
+    pub fn allocate(&self, start: *const (), size_log2: u32) -> Result<usize, AllocationError> {
         if size_log2 > 0 {
             return self
-                .next_level
-                .ok_or(AllocationError::SpaceExhausted(self.order))?
-                .allocate(size_log2 - 1)
+                .next_level(start)
+                .ok_or(AllocationError::SpaceExhausted { order: self.order })?
+                .allocate(start, size_log2 - 1)
                 .map(|x| 2 * x);
         }
-        if let Some(index) = self.bitmap.clear_first_set() {
+        if let Some(index) = self.bitmap.clear_first_set(start) {
             return Ok(index);
         }
-        self.next_level
-            .and_then(|next| next.allocate(0).ok())
+        self.next_level(start)
+            .and_then(|next| next.allocate(start, 0).ok())
             .map(|i| (2 * i) + 1) // bias allocations towards the upper end of the address space
-            .inspect(|i| self.free(i - 1, 0))
-            .ok_or(AllocationError::SpaceExhausted(self.order))
+            .inspect(|i| self.free(start, i - 1, 0))
+            .ok_or(AllocationError::SpaceExhausted { order: self.order })
     }
 
-    pub fn free(&self, index: usize, size_log2: u32) {
+    pub fn free(&self, start: *const (), index: usize, size_log2: u32) {
         if size_log2 > 0 {
             assert_eq!(index % 2, 0);
-            return self.next_level.unwrap().free(index / 2, size_log2 - 1);
+            return self
+                .next_level(start)
+                .unwrap()
+                .free(start, index / 2, size_log2 - 1);
         }
-        if let Some(next) = self.next_level {
+        if let Some(next) = self.next_level(start) {
             let buddy = index ^ 1;
-            if self.bitmap.bit(buddy).clear(Ordering::SeqCst) {
-                next.free(index / 2, 0);
+            if self.bitmap.bit(start, buddy).clear(start, Ordering::SeqCst) {
+                next.free(start, index / 2, 0);
                 return;
             }
         }
-        assert!(!self.bitmap.bit(index).set(Ordering::SeqCst));
+        assert!(!self.bitmap.bit(start, index).set(start, Ordering::SeqCst));
     }
 }
 
 #[repr(C)]
-pub struct BuddyAllocator<'a> {
-    start: *mut (),
-    level: &'a AllocatorLevel<'a>,
+#[derive(Debug)]
+pub struct BuddyAllocatorInner<'a> {
+    _phantom: PhantomData<&'a AllocatorLevel<'a>>,
+    level_offset: isize,
     max_align: usize,
     max_level: u32,
     min_level: u32,
     raw_size: usize,
+    used_size: AtomicUsize,
+    refcnt: AtomicUsize,
 }
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct BuddyAllocator<'a> {
+    start: *mut (),
+    inner: &'a BuddyAllocatorInner<'a>,
+}
+
+unsafe impl Send for BuddyAllocator<'_> {}
 
 impl<'a> BuddyAllocator<'a> {
     #[cfg(feature = "std")]
-    pub fn new(base: &'a mut [u8]) -> &'a mut BuddyAllocator<'a> {
+    pub fn new(base: &'a mut [u8]) -> BuddyAllocator<'a> {
         let raw_size = core::mem::size_of_val(base);
         let min_level = 12;
         let max_level = raw_size.ilog2();
@@ -272,22 +306,29 @@ impl<'a> BuddyAllocator<'a> {
             let bitmap: &[AtomicU64] = &temp_backing[current..current + words];
             current += words;
 
-            let slice = BitSlice::from(bitmap);
-            let new_level = Box::new(AllocatorLevel::new(slice, i, temp_level));
+            let slice = BitSlice::new(start, bitmap, None);
+            let new_level = Box::new(AllocatorLevel::new(start, slice, i, temp_level));
             if i == max_level {
-                new_level.free(0, 0);
+                new_level.free(start, 0, 0);
             }
             temp_level = Some(Box::leak(new_level));
         }
 
         // create a buddy allocator using the heap-backed version
-        let temp = BuddyAllocator {
-            start,
-            level: temp_level.unwrap(),
+        let inner = BuddyAllocatorInner {
+            _phantom: PhantomData,
+            level_offset: temp_level.unwrap() as *const AllocatorLevel<'a> as isize
+                - start as isize,
             max_level,
             min_level,
             raw_size,
             max_align,
+            used_size: AtomicUsize::new(0),
+            refcnt: AtomicUsize::new(1),
+        };
+        let temp = BuddyAllocator {
+            start,
+            inner: &inner,
         };
 
         // allocate the relevant space within the buddy allocator itself
@@ -307,19 +348,31 @@ impl<'a> BuddyAllocator<'a> {
             let bitmap: &'static [AtomicU64] = &backing[current..current + words];
             current += words;
 
-            let slice = BitSlice::from(bitmap);
-            let new_level = Box::new(AllocatorLevel::new(slice, i, level));
-            level = Some(Box::leak(new_level));
+            let slice = BitSlice::new(start, bitmap, None);
+            let new_level = AllocatorLevel::new(start, slice, i, level);
+            let ptr = temp.allocate_raw(core::mem::size_of_val(&new_level));
+            unsafe {
+                let ptr = ptr as *mut MaybeUninit<AllocatorLevel<'static>>;
+                let ptr = (*ptr).write(new_level) as *mut AllocatorLevel<'static>;
+                level = Some(&*ptr);
+            }
         }
 
-        let real = temp.allocate::<BuddyAllocator>(BuddyAllocator {
-            start,
-            level: level.unwrap(),
+        let inner = temp.allocate::<BuddyAllocatorInner>(BuddyAllocatorInner {
+            _phantom: PhantomData,
+            level_offset: level.unwrap() as *const AllocatorLevel<'static> as isize
+                - start as isize,
             max_level,
             min_level,
             raw_size,
             max_align,
+            used_size: AtomicUsize::new(temp.inner.used_size.load(Ordering::SeqCst)),
+            refcnt: AtomicUsize::new(1),
         });
+        let real = BuddyAllocator {
+            start,
+            inner: unsafe { &*inner },
+        };
 
         // transfer the allocation information to the new backing region
         for i in 0..backing.len() {
@@ -327,7 +380,7 @@ impl<'a> BuddyAllocator<'a> {
         }
 
         while let Some(level) = temp_level {
-            temp_level = level.next_level;
+            temp_level = level.next_level(start);
             unsafe {
                 core::mem::drop(Box::from_raw(
                     level as *const AllocatorLevel<'static> as *mut AllocatorLevel<'static>,
@@ -341,33 +394,35 @@ impl<'a> BuddyAllocator<'a> {
             ));
         }
 
-        unsafe { &mut *real }
+        real
     }
 
-    #[cfg(feature = "std")]
-    /// # Safety
-    /// This function can only be called after *all* allocations that came from this allocator have
-    /// been freed or forgotten, and if this is the only reference to this allocator.
-    pub unsafe fn destroy(&mut self) -> &'a mut [u8] {
-        core::slice::from_raw_parts_mut(self.start as *mut u8, self.raw_size)
+    fn level(&self) -> &'a AllocatorLevel<'a> {
+        unsafe {
+            let p = (self.start as isize + self.inner.level_offset) as *const AllocatorLevel<'a>;
+            &*p
+        }
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
+        let level = core::cmp::max(self.inner.min_level, level);
+        let size_log2 = level - self.inner.min_level;
         let index = address >> 12;
-        self.level
-            .reserve(size_log2, index)
+        self.level()
+            .reserve(self.start, size_log2, index)
+            .inspect(|_| {
+                self.inner.used_size.fetch_add(1 << level, Ordering::SeqCst);
+            })
             .map_or(core::ptr::null_mut(), |i| unsafe {
-                self.start.byte_add(i * (1 << self.min_level))
+                self.start.byte_add(i * (1 << self.inner.min_level))
             })
     }
 
     pub fn reserve_uninit<T: Sized>(&self, address: usize) -> *mut MaybeUninit<T> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        assert!(align <= self.max_align);
+        assert!(align <= self.inner.max_align);
         let size = core::cmp::max(size, align);
         let raw = self.reserve_raw(address, size);
         raw as *mut MaybeUninit<T>
@@ -383,19 +438,22 @@ impl<'a> BuddyAllocator<'a> {
 
     pub fn allocate_raw(&self, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
-        self.level
-            .allocate(size_log2)
+        let level = core::cmp::max(self.inner.min_level, level);
+        let size_log2 = level - self.inner.min_level;
+        self.level()
+            .allocate(self.start, size_log2)
+            .inspect(|_| {
+                self.inner.used_size.fetch_add(1 << level, Ordering::SeqCst);
+            })
             .map_or(core::ptr::null_mut(), |i| unsafe {
-                self.start.byte_add(i * (1 << self.min_level))
+                self.start.byte_add(i * (1 << self.inner.min_level))
             })
     }
 
     pub fn allocate_uninit<T: Sized>(&self) -> *mut MaybeUninit<T> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        assert!(align <= self.max_align);
+        assert!(align <= self.inner.max_align);
         let size = core::cmp::max(size, align);
         self.allocate_raw(size) as *mut MaybeUninit<T>
     }
@@ -410,10 +468,11 @@ impl<'a> BuddyAllocator<'a> {
 
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
         let level = size.next_power_of_two().ilog2();
-        let level = core::cmp::max(self.min_level, level);
-        let size_log2 = level - self.min_level;
-        let index = (ptr as usize - self.start as usize) / (1 << self.min_level) as usize;
-        self.level.free(index, size_log2);
+        let level = core::cmp::max(self.inner.min_level, level);
+        let size_log2 = level - self.inner.min_level;
+        let index = (ptr as usize - self.start as usize) / (1 << self.inner.min_level) as usize;
+        self.level().free(self.start, index, size_log2);
+        self.inner.used_size.fetch_sub(1 << level, Ordering::SeqCst);
     }
 
     pub fn free<T: Sized>(&self, ptr: *const T) {
@@ -434,10 +493,69 @@ impl<'a> BuddyAllocator<'a> {
         self.start
     }
 
-    pub fn get_offset<T>(&self, allocation: &T) -> usize {
+    pub fn to_offset<T>(&self, allocation: *const T) -> isize {
         let base = self.base_address();
-        let current = allocation as *const T as *const ();
-        unsafe { usize::try_from(current.byte_offset_from(base)).unwrap() }
+        let current = allocation as *const ();
+        current as isize - base as isize
+    }
+
+    pub fn from_offset<T>(&self, offset: isize) -> *const T {
+        let base = self.base_address();
+        (base as isize + offset) as *const T
+    }
+
+    pub fn used_size(&self) -> usize {
+        self.inner.used_size.load(Ordering::SeqCst)
+    }
+
+    pub fn total_size(&self) -> usize {
+        1 << self.inner.max_level
+    }
+
+    pub fn usage(&self) -> f64 {
+        self.used_size() as f64 / self.total_size() as f64
+    }
+
+    pub unsafe fn into_raw_parts(self) -> (*mut (), *const BuddyAllocatorInner<'a>) {
+        let BuddyAllocator { start, inner } = self;
+        core::mem::forget(self);
+        (start, inner)
+    }
+
+    pub unsafe fn from_raw_parts(start: *mut (), inner: *const BuddyAllocatorInner<'a>) -> Self {
+        BuddyAllocator {
+            start,
+            inner: &*inner,
+        }
+    }
+
+    pub fn destroy(&mut self) -> Option<&'a mut [u8]> {
+        if self.inner.refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
+            unsafe {
+                Some(core::slice::from_raw_parts_mut(
+                    self.start as *mut u8,
+                    self.inner.raw_size,
+                ))
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> Clone for BuddyAllocator<'a> {
+    fn clone(&self) -> Self {
+        self.inner.refcnt.fetch_add(1, Ordering::SeqCst);
+        Self {
+            start: self.start,
+            inner: self.inner,
+        }
+    }
+}
+
+impl<'a> Drop for BuddyAllocator<'a> {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
 
