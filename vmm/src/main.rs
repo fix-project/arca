@@ -184,7 +184,7 @@ fn main() {
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let (_, data, meta) = unsafe { allocator.clone().into_raw_parts() };
+    let (_, data, meta) = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
     vcpu_regs.rsp = pa2ka((stack_start + (2 * 0x400 * 0x400)) as usize) as u64;
     vcpu_regs.rdi = data as u64;
