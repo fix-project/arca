@@ -427,23 +427,45 @@ impl AllocatorInner {
 
 #[repr(C)]
 pub struct BuddyAllocator<'a> {
-    start: *mut (),
+    base: *mut (),
     inner: &'a AllocatorInner,
+    refcnt: &'a [AtomicUsize],
+}
+
+#[repr(C)]
+pub struct BuddyAllocatorRawData {
+    pub base: *mut (),
+    pub inner_offset: usize,
+    pub inner_size: usize,
+    pub refcnt_offset: usize,
+    pub refcnt_size: usize,
 }
 
 unsafe impl Send for BuddyAllocator<'_> {}
+unsafe impl Sync for BuddyAllocator<'_> {}
 
 impl<'a> BuddyAllocator<'a> {
-    pub fn new(base: &'a mut [u8]) -> BuddyAllocator<'a> {
-        let start = &raw mut base[0] as *mut ();
+    pub const MIN_ALLOCATION: usize = 1 << 12;
+
+    pub fn new(slice: &'a mut [u8]) -> BuddyAllocator<'a> {
+        let base = &raw mut slice[0] as *mut ();
         // allocate on the normal heap
-        let inner = AllocatorInner::new(base);
-        let temp = BuddyAllocator {
-            start,
-            inner: &inner,
+        let inner = AllocatorInner::new(slice);
+
+        let refcnt_size = slice.len() / Self::MIN_ALLOCATION;
+
+        let refcnt = unsafe {
+            let data = Box::new_zeroed_slice(refcnt_size);
+            data.assume_init()
         };
 
-        let new_inner = AllocatorInner::new_in(base, &temp);
+        let temp = BuddyAllocator {
+            base,
+            inner: &inner,
+            refcnt: &refcnt,
+        };
+
+        let new_inner = AllocatorInner::new_in(slice, &temp);
 
         let inner = unsafe {
             let new_inner = Box::into_raw(new_inner);
@@ -455,9 +477,26 @@ impl<'a> BuddyAllocator<'a> {
             core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
             &*new_inner
         };
-        // unimplemented!();
+        let new_refcnt = unsafe {
+            let data = Box::new_zeroed_slice_in(refcnt_size, &temp);
+            data.assume_init()
+        };
+        let refcnt = unsafe {
+            let new_refcnt = Box::into_raw(new_refcnt);
+            let src = &raw const *refcnt;
+            let dst = &raw mut *new_refcnt;
+            let (src, src_size) = src.to_raw_parts();
+            let (dst, dst_size) = dst.to_raw_parts();
+            assert_eq!(src_size, dst_size);
+            core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
+            &*new_refcnt
+        };
 
-        BuddyAllocator { start, inner }
+        BuddyAllocator {
+            base,
+            inner,
+            refcnt,
+        }
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -466,7 +505,7 @@ impl<'a> BuddyAllocator<'a> {
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         let index = address >> size_log2;
         self.inner
-            .reserve(self.start, index, size_log2)
+            .reserve(self.base, index, size_log2)
             .inspect(|_| {
                 self.inner
                     .meta
@@ -474,7 +513,7 @@ impl<'a> BuddyAllocator<'a> {
                     .fetch_add(1 << size_log2, Ordering::SeqCst);
             })
             .map_or(core::ptr::null_mut(), |i| {
-                self.start.wrapping_byte_add(i * (1 << size_log2))
+                self.base.wrapping_byte_add(i * (1 << size_log2))
             })
     }
 
@@ -501,7 +540,7 @@ impl<'a> BuddyAllocator<'a> {
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         self.inner
-            .allocate(self.start, size_log2)
+            .allocate(self.base, size_log2)
             .inspect(|_| {
                 self.inner
                     .meta
@@ -509,62 +548,36 @@ impl<'a> BuddyAllocator<'a> {
                     .fetch_add(1 << size_log2, Ordering::SeqCst);
             })
             .map_or(core::ptr::null_mut(), |i| {
-                self.start.wrapping_byte_add(i * (1 << size_log2))
+                self.base.wrapping_byte_add(i * (1 << size_log2))
             })
-    }
-
-    pub fn allocate_uninit<T: Sized>(&self) -> *mut MaybeUninit<T> {
-        let size = core::mem::size_of::<T>();
-        let align = core::mem::align_of::<T>();
-        assert!(align <= self.inner.meta.max_align);
-        let size = core::cmp::max(size, align);
-        self.allocate_raw(size) as *mut MaybeUninit<T>
-    }
-
-    pub fn allocate<T: Sized>(&self, value: T) -> *mut T {
-        let uninit = self.allocate_uninit::<T>();
-        if uninit.is_null() {
-            core::ptr::null_mut()
-        } else {
-            unsafe { (*uninit).write(value) }
-        }
     }
 
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
-        let index = (ptr as usize - self.start as usize) / (1 << size_log2) as usize;
-        self.inner.free(self.start, index, size_log2, None);
+        let index = (ptr as usize - self.base as usize) / (1 << size_log2) as usize;
+        self.inner.free(self.base, index, size_log2, None);
         self.inner
             .meta
             .used_size
             .fetch_sub(1 << size_log2, Ordering::SeqCst);
     }
 
-    pub fn free<T: Sized>(&self, ptr: *const T) {
-        let size = core::mem::size_of::<T>();
-        let align = core::mem::align_of::<T>();
-        let size = core::cmp::max(size, align);
-        self.free_raw(ptr as usize as *mut (), size);
-    }
-
-    pub fn free_slice<T>(&self, ptr: *const [T]) {
-        let size = core::mem::size_of::<T>() * ptr.len();
-        let align = core::mem::align_of::<T>();
-        let size = core::cmp::max(size, align);
-        self.free_raw(ptr as *const T as *mut (), size);
-    }
-
-    pub fn to_offset<T: ?Sized>(&self, allocation: *const T) -> isize {
-        let base = self.start;
+    pub fn to_offset<T: ?Sized>(&self, allocation: *const T) -> usize {
+        let base = self.base;
         let current = allocation as *const ();
-        current as isize - base as isize
+        current as usize - base as usize
     }
 
-    pub fn from_offset<T>(&self, offset: isize) -> *const T {
-        let base = self.start;
-        (base as isize + offset) as *const T
+    pub fn from_offset<T>(&self, offset: usize) -> *const T {
+        let base = self.base;
+        (base as usize + offset) as *const T
+    }
+
+    pub fn refcnt<T: ?Sized>(&self, allocation: *const T) -> *const AtomicUsize {
+        let offset = self.to_offset(allocation) / Self::MIN_ALLOCATION;
+        &raw const self.refcnt[offset]
     }
 
     pub fn used_size(&self) -> usize {
@@ -579,24 +592,47 @@ impl<'a> BuddyAllocator<'a> {
         self.used_size() as f64 / self.total_size() as f64
     }
 
-    pub fn into_raw_parts(self) -> (*mut (), usize, usize) {
-        let BuddyAllocator { start, inner } = self;
+    pub fn into_raw_parts(self) -> BuddyAllocatorRawData {
+        let BuddyAllocator {
+            base,
+            inner,
+            refcnt,
+        } = self;
         let p = inner as *const AllocatorInner;
-        let (base, meta) = p.to_raw_parts();
+        let q = refcnt as *const [AtomicUsize];
+        let (metadata, inner_size) = p.to_raw_parts();
+        let (refcnt, refcnt_size) = q.to_raw_parts();
 
         core::mem::forget(self);
-        (start, base as usize - start as usize, meta)
+        let inner_offset = metadata as usize - base as usize;
+        let refcnt_offset = refcnt as usize - base as usize;
+        BuddyAllocatorRawData {
+            base,
+            inner_offset,
+            inner_size,
+            refcnt_offset,
+            refcnt_size,
+        }
     }
 
     /// # Safety
     ///
-    /// The base address, data offset, and data size passed to this function must be valid
-    /// parameters for an allocator (i.e., must have come from [into_raw_parts]).
-    pub unsafe fn from_raw_parts(start: *mut (), data_offset: usize, data_size: usize) -> Self {
-        let ptr = start.byte_add(data_offset);
+    /// The raw data passed to this function must be valid parameters for an allocator (i.e., must
+    /// have come from [into_raw_parts]).
+    pub unsafe fn from_raw_parts(raw: BuddyAllocatorRawData) -> Self {
+        let BuddyAllocatorRawData {
+            base,
+            inner_offset,
+            inner_size,
+            refcnt_offset,
+            refcnt_size,
+        } = raw;
+        let inner = core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
+        let refcnt = core::ptr::from_raw_parts_mut(base.byte_add(refcnt_offset), refcnt_size);
         BuddyAllocator {
-            start,
-            inner: &*core::ptr::from_raw_parts(ptr, data_size),
+            base,
+            inner: &*inner,
+            refcnt: &*refcnt,
         }
     }
 
@@ -604,7 +640,7 @@ impl<'a> BuddyAllocator<'a> {
         if self.inner.meta.refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
             unsafe {
                 Some(core::slice::from_raw_parts_mut(
-                    self.start as *mut u8,
+                    self.base as *mut u8,
                     self.inner.meta.raw_size,
                 ))
             }
@@ -618,8 +654,9 @@ impl Clone for BuddyAllocator<'_> {
     fn clone(&self) -> Self {
         self.inner.meta.refcnt.fetch_add(1, Ordering::SeqCst);
         Self {
-            start: self.start,
+            base: self.base,
             inner: self.inner,
+            refcnt: self.refcnt,
         }
     }
 }
@@ -715,7 +752,7 @@ mod tests {
         let allocator = BuddyAllocator::new(region);
         b.iter(|| {
             let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(4096, &allocator);
+                Box::new_uninit_slice_in(128, &allocator);
             core::mem::drop(x);
         });
     }

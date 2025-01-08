@@ -1,31 +1,24 @@
 use core::{
-    arch::{asm, x86_64::_mm_pause},
+    arch::asm,
     cell::LazyCell,
-    ops::Range,
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
-use alloc::vec::Vec;
 use log::LevelFilter;
 
 use crate::{
-    acpi::{self, ApicDescription, Table},
-    buddy::{self, UniquePage2MB},
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     msr,
-    multiboot::MultibootInfo,
+    page::SharedPage,
     paging::{PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
-    refcnt::{self, SharedPage},
-    registers::{ControlReg0, ControlReg4, ExtendedFeatureEnableReg},
-    spinlock::SpinLock,
+    spinlock::{SpinLock, SpinLockGuard},
     vm,
 };
 
 extern "C" {
-    fn kmain() -> !;
+    fn kmain();
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
@@ -33,16 +26,9 @@ extern "C" {
     static mut _scdata: u8;
     static mut _lcdata: u8;
     static mut _ecdata: u8;
-    static mut trampoline_start: u8;
-    static mut trampoline_end: u8;
     static isr_table: [usize; 256];
+    fn syscall_handler();
 }
-
-#[no_mangle]
-static NEXT_STACK_ADDR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
-
-#[no_mangle]
-static NEXT_CPU_READY: AtomicBool = AtomicBool::new(false);
 
 static LOGGER: DebugLogger = DebugLogger;
 
@@ -78,111 +64,28 @@ pub(crate) static KERNEL_PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>
     }));
 
 #[no_mangle]
-unsafe extern "C" fn _start(allocator_data: usize, allocator_meta: usize) -> ! {
+unsafe extern "C" fn _start(
+    inner_offset: usize,
+    inner_size: usize,
+    refcnt_offset: usize,
+    refcnt_size: usize,
+) -> ! {
     init_bss();
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(LevelFilter::Info);
-    let allocator =
-        common::BuddyAllocator::from_raw_parts(vm::pa2ka(0), allocator_data, allocator_meta);
-    crate::PHYSICAL_ALLOCATOR
-        .lock()
-        .set(allocator)
-        .unwrap_or_else(|_| panic!("could not initialize physical memory allocator"));
-    let lock = crate::PHYSICAL_ALLOCATOR.lock();
-    let allocator = lock.get().expect("could not get buddy allocator");
-    log::info!("Memory usage is {} bytes.", allocator.used_size());
-    use alloc::boxed::Box;
-    let leakable = Box::<u8, &common::BuddyAllocator>::new_uninit_in(allocator);
-    Box::leak(leakable);
-    log::info!("Memory usage is {} bytes.", allocator.used_size());
-    asm!("hlt");
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[no_mangle]
-unsafe extern "C" fn _rsstart_bsp(multiboot_pa: usize) -> *mut u8 {
-    let multiboot = vm::pa2ka(multiboot_pa);
-    init_bss();
-
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(LevelFilter::Info);
-    init_allocators(multiboot);
-
-    let cpus: Vec<u32> = acpi::get_xsdt()
-        .find_map(|table| {
-            if let Table::MultipleAPIC(madt) = table {
-                Some(madt)
-            } else {
-                None
-            }
-        })
-        .expect("did not find madt")
-        .filter_map(|x| match x {
-            ApicDescription::Local(_, apic, _) => Some(apic as u32),
-            ApicDescription::Local2(apic, _, _) => Some(apic),
-            _ => None,
-        })
-        .collect();
-    log::info!("found {} processors", cpus.len());
-
-    LazyCell::force(&*addr_of!(IDT));
-    LazyCell::force(&*KERNEL_PAGE_MAP.lock());
-
-    init_cpu_config();
-    init_cpu_tls();
-    init_syscalls();
-    crate::lapic::init(true);
-
-    let mut lapic = crate::lapic::LAPIC.borrow_mut();
-    *crate::cpuinfo::ACPI_ID = lapic.id();
-    *crate::cpuinfo::IS_BOOTSTRAP = true;
-    crate::cpuinfo::NCORES.store(cpus.len(), Ordering::SeqCst);
-
-    let trampoline = core::slice::from_ptr_range(Range {
-        start: addr_of!(trampoline_start),
-        end: addr_of!(trampoline_end),
+    let allocator = common::BuddyAllocator::from_raw_parts(common::buddy::BuddyAllocatorRawData {
+        base: vm::pa2ka(0),
+        inner_offset,
+        inner_size,
+        refcnt_offset,
+        refcnt_size,
     });
-    let target = core::slice::from_raw_parts_mut(0x8000 as *mut u8, trampoline.len());
-    target.copy_from_slice(trampoline);
-    let stack_page = UniquePage2MB::new().into_raw();
-    let stack_addr = addr_of_mut!((*stack_page.add(1))[0]);
-    for cpu in cpus {
-        if cpu == lapic.id() {
-            continue;
-        }
-        NEXT_CPU_READY.store(false, Ordering::SeqCst);
-        let page = UniquePage2MB::new().into_raw();
-        NEXT_STACK_ADDR.store(addr_of_mut!((*page.add(1))[0]), Ordering::SeqCst);
-        log::debug!("Booting CPU {cpu} with stack {:p}", NEXT_STACK_ADDR);
-        lapic.boot_cpu(cpu, 0x8000);
-        while !NEXT_CPU_READY.load(Ordering::SeqCst) {
-            _mm_pause();
-        }
-    }
+    let cell = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+    cell.set(allocator)
+        .unwrap_or_else(|_| panic!("could not initialize physical memory allocator"));
+    SpinLockGuard::unlock(cell);
 
-    let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
-    set_gdt(addr_of!(gdtr));
-    asm!("ltr {tss:x}", tss=in(reg) 0x30);
-
-    let idtr: IdtDescriptor = (&*IDT).into();
-    asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
-
-    stack_addr
-}
-
-#[no_mangle]
-unsafe extern "C" fn _rsstart_ap() {
-    init_cpu_config();
     init_cpu_tls();
-    init_syscalls();
-    crate::lapic::init(false);
-
-    let lapic = crate::lapic::LAPIC.borrow();
-    let id = lapic.id();
-    *crate::cpuinfo::ACPI_ID = id;
-    *crate::cpuinfo::IS_BOOTSTRAP = false;
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
@@ -191,29 +94,15 @@ unsafe extern "C" fn _rsstart_ap() {
     let idtr: IdtDescriptor = (&*IDT).into();
     asm!("lidt [{addr}]", addr=in(reg) addr_of!(idtr));
 
-    log::debug!("CPU {id} ready!");
-}
+    init_syscalls();
 
-unsafe fn init_cpu_config() {
-    crate::registers::write_cr0(ControlReg0::PE | ControlReg0::PG | ControlReg0::MP);
-    crate::registers::write_cr4(ControlReg4::PAE | ControlReg4::PGE | ControlReg4::FSGSBASE);
-    crate::registers::write_efer(
-        ExtendedFeatureEnableReg::LME
-            | ExtendedFeatureEnableReg::SCE
-            | ExtendedFeatureEnableReg::NXE,
-    );
-}
-
-#[no_mangle]
-unsafe extern "C" fn _rscontinue() -> ! {
-    crate::tsc::init();
     crate::kvmclock::init();
+    log::info!("the time is {:?}", crate::kvmclock::wall_clock_time());
 
-    let map = KERNEL_PAGE_MAP.lock().clone();
-    crate::cpu::CPU.borrow_mut().activate_page_table(map);
+    crate::lapic::init();
 
-    asm!("sti");
     kmain();
+    crate::shutdown();
 }
 
 unsafe fn init_bss() {
@@ -224,30 +113,12 @@ unsafe fn init_bss() {
     bss.fill(0);
 }
 
-unsafe fn init_allocators(multiboot: *const MultibootInfo) {
-    let multiboot: &MultibootInfo = &*multiboot;
-    log::info!(
-        "kernel command line: {:?}",
-        multiboot.cmdline().expect("could not find command line")
-    );
-    let mmap = multiboot
-        .memory_map()
-        .expect("could not get memory map from bootloader");
-    let modules = multiboot.modules();
-    if let Some(modules) = modules {
-        for module in modules {
-            log::info!(
-                "Found module: {:?} @ {:p}",
-                module.label(),
-                module.data().as_ptr()
-            );
-        }
-    }
+#[core_local]
+#[no_mangle]
+#[used]
+pub static FOO: usize = 0xcafeb0ba;
 
-    buddy::init(mmap);
-    refcnt::init();
-}
-
+#[inline(never)]
 unsafe fn init_cpu_tls() {
     let start = addr_of!(_scdata) as usize;
     let end = addr_of!(_ecdata) as usize;
@@ -261,11 +132,8 @@ unsafe fn init_cpu_tls() {
         "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_ptr()
     }
     msr::wrmsr(0xC0000102, dst.as_ptr() as u64); // kernel GS base; actually really user GS base
-    core::mem::forget(dst);
-}
 
-extern "C" {
-    fn syscall_handler();
+    core::mem::forget(dst);
 }
 
 unsafe fn init_syscalls() {

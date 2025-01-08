@@ -1,17 +1,19 @@
 #![feature(allocator_api)]
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::process::ExitCode;
 
 use common::BuddyAllocator;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
 use elf::ElfBytes;
+use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
-fn main() {
+fn main() -> ExitCode {
     env_logger::init();
     use std::ptr::null_mut;
 
@@ -24,6 +26,8 @@ fn main() {
 
     let kvm = Kvm::new().unwrap();
     let vm = kvm.create_vm().unwrap();
+    vm.create_irq_chip().unwrap();
+
     let load_addr: *mut u8 = unsafe {
         libc::mmap(
             null_mut(),
@@ -51,32 +55,40 @@ fn main() {
         .iter()
         .collect();
 
-    let align_down = |alignment: u64, value: u64| value & !(alignment - 1);
-    let align_up = |alignment: u64, value: u64| value + (value.wrapping_neg() & (alignment - 1));
+    let align_down = |alignment: usize, value: usize| value & !(alignment - 1);
 
-    let mut mapped = HashSet::new();
+    let mut reserved = HashMap::new();
+    let mut reserve = |addr: usize| -> *mut () {
+        let addr = align_down(4096, addr);
+        *reserved
+            .entry(addr)
+            .or_insert_with(|| allocator.reserve_raw(addr, 4096))
+    };
+    let mut reserve_range = |start: usize, end: usize| -> *mut [u8] {
+        let mut current = (start / 4096) * 4096;
+        let len = end - start;
+        let result = reserve(current).wrapping_byte_add(start - current);
+        current += 4096;
+        while current < end {
+            reserve(current);
+            current += 4096;
+        }
+        core::ptr::slice_from_raw_parts_mut(result as *mut u8, len)
+    };
+
+    // let mut mapped = HashSet::new();
     for segment in segments {
         match segment.p_type {
             elf::abi::SHT_NULL => {}
             elf::abi::SHT_PROGBITS => {
-                let alignment = segment.p_align;
-                let increment = segment.p_align as usize;
-                let mut current = align_down(alignment, segment.p_paddr) as usize;
-                let mut offset = align_down(alignment, segment.p_offset) as usize;
-                let end = align_up(alignment, segment.p_paddr + segment.p_memsz) as usize;
-                while current < end {
-                    if !mapped.contains(&current) {
-                        mapped.insert(current);
-                        let region = allocator.reserve_raw(current & !0xFFFF800000000000, increment)
-                            as *mut u8;
-                        assert_ne!(region, core::ptr::null_mut());
-                        let source = &kernel_elf[offset..offset + increment];
-                        unsafe {
-                            region.copy_from_nonoverlapping(&source[0], increment);
-                        }
-                    }
-                    current += increment;
-                    offset += increment;
+                let start = segment.p_paddr as usize & !0xFFFF800000000000;
+                let sz = segment.p_memsz as usize;
+                let end = start + sz;
+                let ptr = reserve_range(start, end);
+                let offset = segment.p_offset as usize;
+                let source = &kernel_elf[offset..offset + sz];
+                unsafe {
+                    (*ptr).copy_from_slice(source);
                 }
             }
             0x60000000.. => {
@@ -112,22 +124,26 @@ fn main() {
     pml4[256] = allocator.to_offset(&*pdpt) as u64 | 3;
     Box::leak(pdpt);
 
-    vcpu_sregs.cr4 = (1 << 5) | (1 << 7); // PAE and PGE
-    vcpu_sregs.cr3 = allocator.to_offset(&*pml4) as u64;
-    Box::leak(pml4);
-
     vcpu_sregs.idt = kvm_bindings::kvm_dtable {
         base: 0,
         limit: 0,
         padding: [0; 3],
     };
-    vcpu_sregs.efer |= (1 << 8) | (1 << 10); // LME and LMA
-    vcpu_sregs.cr0 |= (1 << 0) | (1 << 31); // Paging and Protection
+    use common::controlreg::*;
+    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP;
+    vcpu_sregs.cr0 &= !ControlReg0::EM;
+    vcpu_sregs.cr3 = allocator.to_offset(&*pml4) as u64;
+    vcpu_sregs.cr4 = ControlReg4::PAE
+        | ControlReg4::PGE
+        | ControlReg4::OSFXSR
+        | ControlReg4::OSXMMEXCPT
+        | ControlReg4::FSGSBASE;
+    vcpu_sregs.efer |= ExtendedFeatureEnableReg::LME
+        | ExtendedFeatureEnableReg::LMA
+        | ExtendedFeatureEnableReg::SCE;
+    Box::leak(pml4);
 
-    // enable SSE
-    vcpu_sregs.cr0 |= 1 << 1; // Monitor Coprocessor
-    vcpu_sregs.cr0 &= !(1 << 2); // x86 Emulation
-    vcpu_sregs.cr4 |= (1 << 9) | (1 << 10); // SIMD
+    vcpu_fd.set_tsc_khz(u32::MAX / 1000).unwrap();
 
     let code_segment = kvm_bindings::kvm_segment {
         base: 0,
@@ -173,48 +189,50 @@ fn main() {
         padding: [0; 3],
     };
 
+    // TODO: ensure all needed features are present and disable unneeded ones
+    let kvm_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+    vcpu_fd.set_cpuid2(&kvm_cpuid).unwrap();
+
     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
 
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = start_address;
-    println!("starting at {:x}", start_address);
     let initial_stack = unsafe {
         Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
     };
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let (_, data, meta) = allocator.clone().into_raw_parts();
+    let raw = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
     vcpu_regs.rsp = pa2ka((stack_start + (2 * 0x400 * 0x400)) as usize) as u64;
-    vcpu_regs.rdi = data as u64;
-    vcpu_regs.rsi = meta as u64;
+    vcpu_regs.rdi = raw.inner_offset as u64;
+    vcpu_regs.rsi = raw.inner_size as u64;
+    vcpu_regs.rdx = raw.refcnt_offset as u64;
+    vcpu_regs.rcx = raw.refcnt_size as u64;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
-    println!("Inner is at offset {:#x}.", data);
-    println!("Memory usage is {} bytes.", allocator.used_size());
-
     loop {
         match vcpu_fd.run().expect("run failed") {
-            VcpuExit::IoIn(addr, data) => {
-                println!(
-                    "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
-                    addr, data[0],
-                );
-            }
-            VcpuExit::IoOut(addr, data) => {
-                if addr == 0xe9 {
+            VcpuExit::IoIn(addr, data) => println!(
+                "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
+                addr, data[0],
+            ),
+            VcpuExit::IoOut(addr, data) => match addr {
+                0 => return ExitCode::from(data[0]),
+                0xe9 => {
                     let data = data[0];
                     let c = data as char;
                     print!("{c}");
-                } else {
+                }
+                _ => {
                     println!(
-                        "Received an I/O out exit. Address: {:#x}. Data: {:#x?}",
-                        addr, data,
+                        "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
+                        addr, data[0],
                     );
                 }
-            }
+            },
             VcpuExit::MmioRead(addr, _) => {
                 println!("Received an MMIO Read Request for the address {:#x}.", addr,);
             }
@@ -224,11 +242,7 @@ fn main() {
                     addr, data[0]
                 );
             }
-            VcpuExit::Hlt => {
-                break;
-            }
             r => panic!("Unexpected exit reason: {:?}", r),
         }
     }
-    println!("Memory usage is {} bytes.", allocator.used_size());
 }

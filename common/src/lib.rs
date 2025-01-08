@@ -6,7 +6,9 @@
 #![feature(ptr_metadata)]
 #![feature(ptr_sub_ptr)]
 #![feature(slice_from_ptr_range)]
-#![cfg_attr(test, feature(new_zeroed_alloc))]
+#![feature(new_zeroed_alloc)]
 
 pub mod buddy;
+pub mod refcnt;
 pub use buddy::BuddyAllocator;
+pub mod controlreg;

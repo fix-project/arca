@@ -1,9 +1,19 @@
+// use core::cell::LazyCell;
+
 use core::cell::LazyCell;
 
-use crate::buddy::UniquePage2MB;
+use alloc::boxed::Box;
+
+use crate::page::Page2MB;
 
 #[core_local]
-pub(crate) static INTERRUPT_STACK: LazyCell<UniquePage2MB> = LazyCell::new(UniquePage2MB::new);
+pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
+    let stack = Box::<Page2MB>::new_uninit();
+    unsafe {
+        let stack = stack.assume_init();
+        Box::leak(stack) as *mut Page2MB
+    }
+});
 
 #[repr(C)]
 #[derive(Debug)]
@@ -49,15 +59,21 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     }
     // supervisor mode
     if registers.isr == 0xd {
-        log::error!("GP! faulting segment: {:x}", registers.code);
-        crate::shutdown();
+        if registers.code == 0 {
+            panic!("Supervisor GP @ {:p}!", registers.rip as *mut ());
+        } else {
+            panic!(
+                "Supervisor GP @ {:p}! faulting segment: {:x}",
+                registers.rip as *mut (), registers.code
+            );
+        }
     }
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);
     }
-    if registers.isr == 0x30 {
-        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-    } else {
-        panic!("unhandled system ISR: {:x?}", registers);
-    }
+    // if registers.isr == 0x30 {
+    //     crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+    // } else {
+    panic!("unhandled system ISR: {:x?}", registers);
+    // }
 }

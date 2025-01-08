@@ -43,11 +43,21 @@ pub(crate) unsafe fn init() {
     let x = core::arch::x86_64::__cpuid(0x40000001);
     assert!((x.eax >> 3) & 1 == 1, "KVM Clock is not supported!");
 
-    if crate::cpuinfo::is_bootstrap() {
-        let boot_time = Box::into_raw(Default::default());
-        BOOT_TIME.store(boot_time, Ordering::SeqCst);
+    if BOOT_TIME.load(Ordering::SeqCst).is_null() {
+        let boot_time: *mut WallClock = Box::into_raw(Default::default());
         let value = vm::ka2pa(boot_time) as u64;
         asm!("wrmsr", in("edx") value>> 32, in("eax") value, in("ecx") 0x4b564d00);
+        if BOOT_TIME
+            .compare_exchange(
+                core::ptr::null_mut(),
+                boot_time,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            let _ = Box::from_raw(boot_time);
+        }
     }
 
     let value = vm::ka2pa(CPU_TIME_INFO.as_ref()) as u64 | 1;

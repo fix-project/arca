@@ -1,11 +1,8 @@
-#![allow(dead_code)]
+#![allow(unused)]
 use bitfield_struct::bitfield;
-use core::{arch::x86_64::_mm_pause, cell::RefCell, marker::PhantomData};
+use core::{cell::RefCell, marker::PhantomData};
 
-use crate::{
-    io::outb,
-    msr::{rdmsr, wrmsr},
-};
+use crate::msr::{rdmsr, wrmsr};
 
 #[bitfield(u32)]
 struct TimerConfig {
@@ -91,86 +88,40 @@ impl LocalApic {
         self.write(0x32, entry.into_bits());
     }
 
+    fn set_divide_configuration(&mut self, value: u32) {
+        self.write(0x3E, value);
+    }
+
+    fn set_initial_count(&mut self, value: u32) {
+        self.write(0x38, value);
+    }
+
     pub unsafe fn clear_interrupt(&mut self) {
         self.write(0xB, 0);
-    }
-
-    /*
-    // send an INIT broadcast
-    *icr = (5 << 8 | 1 << 14 | 3 << 18);
-    // de-assert INIT
-    while (*icr & (1 << 12)) {
-    }
-    *icr = (5 << 8 | 1 << 15 | 3 << 18);
-    // send a SIPI with the trampoline page
-    while (*icr & (1 << 12)) {
-    }
-    *icr =
-        ((uint8_t)((uint32_t)trampoline / 0x1000) | 6 << 8 | 1 << 14 | 3 << 18);
-    while (*icr & (1 << 12)) {
-    }
-      */
-
-    pub unsafe fn boot_cpu(&mut self, id: u32, trampoline: usize) {
-        assert!(trampoline.trailing_zeros() >= 12);
-        assert!((trampoline >> 12) <= 255);
-        let id_mask = (id as u64) << 32;
-        self.write64(0x30, 5 << 8 | 1 << 14 | id_mask);
-        while (self.read(0x30) & (1 << 12)) != 0 {
-            _mm_pause();
-        }
-        self.write64(0x30, 5 << 8 | 1 << 15 | id_mask);
-        while (self.read(0x30) & (1 << 12)) != 0 {
-            _mm_pause();
-        }
-        self.write64(
-            0x30,
-            ((trampoline as u64) / 0x1000) | 6 << 8 | 1 << 14 | id_mask,
-        );
     }
 }
 
 #[core_local]
 pub static LAPIC: RefCell<LocalApic> = RefCell::new(LocalApic(PhantomData));
 
-pub unsafe fn init(bootstrap: bool) {
+pub unsafe fn init() {
     // switch to x2APIC
+    // https://courses.cs.washington.edu/courses/cse451/21sp/readings/x2apic.pdf
+    // - section 2.2 (p2-2)
     let val = crate::msr::rdmsr(0x1B);
-    crate::msr::wrmsr(0x1B, val | 0b11 << 10);
+    crate::msr::wrmsr(0x1B, val | (0b11 << 10));
 
-    if bootstrap {
-        const PIC_1: u16 = 0x20;
-        const PIC_2: u16 = 0xA0;
-        const PIC_1_CMD: u16 = PIC_1;
-        const PIC_1_DATA: u16 = PIC_1 + 1;
-        const PIC_2_CMD: u16 = PIC_2;
-        const PIC_2_DATA: u16 = PIC_2 + 1;
+    // let mut lapic = LAPIC.borrow_mut();
+    //
+    // lapic.set_spurious_interrupt_vector(0xff);
+    // lapic.set_apic_enabled(false);
+    // lapic.set_divide_configuration(0x3);
+    // lapic.set_timer(
+    //     TimerConfig::new()
+    //         .with_mask(false)
+    //         .with_vector(0x30)
+    //         .with_mode(TimerMode::Periodic),
+    // );
 
-        // remap the PIC
-        outb(PIC_1_CMD, 0x11); // begin init
-        outb(PIC_2_CMD, 0x11); // begin init
-        outb(PIC_1_DATA, 0x20); // irq offset
-        outb(PIC_2_DATA, 0x28); // irq offset
-        outb(PIC_1_DATA, 1 << 2); // secondary at IRQ 2
-        outb(PIC_2_DATA, 2); // secondary ID=2
-        outb(PIC_1_DATA, 0x01); // 8086
-        outb(PIC_2_DATA, 0x01); // 8086
-
-        // disable the PIC
-        outb(PIC_1_DATA, 0xff); // no interrupts
-        outb(PIC_2_DATA, 0xff); // no interrupts
-    }
-
-    let mut lapic = LAPIC.borrow_mut();
-    lapic.set_spurious_interrupt_vector(0xff);
-    lapic.set_apic_enabled(false);
-    lapic.write(0x3E, 0x3);
-    lapic.set_timer(
-        TimerConfig::new()
-            .with_mask(false)
-            .with_vector(0x30)
-            .with_mode(TimerMode::Periodic),
-    );
-
-    lapic.write(0x38, 0x1000000);
+    // lapic.set_initial_count(0x1000000);
 }

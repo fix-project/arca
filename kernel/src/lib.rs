@@ -21,76 +21,66 @@ extern crate alloc;
 #[macro_use]
 pub extern crate macros;
 
-use core::cell::OnceCell;
-
 pub use macros::core_local;
 
 pub mod allocator;
 pub mod arca;
-pub mod buddy;
 pub mod cpu;
-pub mod cpuinfo;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
-pub mod refcnt;
-pub mod rt;
+// pub mod refcnt;
+// pub mod rt;
 pub mod spinlock;
-pub mod tsc;
+// pub mod tsc;
 pub mod vm;
 
-mod acpi;
-mod arrayvec;
+// mod arrayvec;
 mod gdt;
 mod idt;
 mod interrupts;
 mod lapic;
-#[allow(dead_code)]
 mod msr;
-mod multiboot;
 mod registers;
 mod rsstart;
 mod tss;
 
 pub use lapic::LAPIC;
-use spinlock::SpinLock;
 
 #[cfg(test)]
 mod testing;
 
-pub(crate) static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<common::BuddyAllocator>> =
-    SpinLock::new(OnceCell::new());
+#[no_mangle]
+static mut EXIT_CODE: u8 = 0;
 
-pub fn halt() -> ! {
-    loop {
-        unsafe { core::arch::asm!("hlt") }
+pub fn halt() {
+    unsafe {
+        core::arch::asm!("hlt");
     }
 }
 
 pub fn pause() {
-    unsafe { core::arch::asm!("pause") }
+    unsafe {
+        core::arch::x86_64::_mm_pause();
+    }
 }
 
 pub fn shutdown() -> ! {
-    unsafe {
-        // it's very unlikely the zero page contains a valid page table
-        core::arch::asm!("mov cr3, {bad:r}", bad = in(reg) 0);
-        // since the kernel is marked as global we need to manually invalidate the relevant TLB
-        // entry
-        core::arch::asm!("invlpg [{addr}]", addr=in(reg) &shutdown);
-        // we need the invalidation to go through before executing any future instructions
-        core::arch::asm!("serialize");
+    loop {
+        unsafe {
+            io::outb(0, 0);
+        }
+        core::hint::spin_loop();
     }
-    halt();
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log::error!("{}", info);
-    unsafe {
-        io::outw(0xf4, 1);
+    loop {
+        unsafe { io::outb(0, 1) }
+        core::hint::spin_loop();
     }
-    shutdown()
 }

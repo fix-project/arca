@@ -1,12 +1,9 @@
 use core::marker::PhantomData;
 
 use bitfield_struct::bitfield;
+use common::BuddyAllocator;
 
-use crate::{
-    page::UniquePage,
-    refcnt::{Page1GB, Page2MB, Page4KB, SharedPage},
-    vm,
-};
+use crate::{page::*, vm};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Permissions {
@@ -328,13 +325,17 @@ impl HardwarePage for ! {}
 /// safely zero-initializable.
 pub unsafe trait PageTable: Sized + Clone {
     fn new() -> UniquePage<Self> {
-        unsafe { UniquePage::zeroed().assume_init() }
+        unsafe {
+            let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+            let allocator: &BuddyAllocator<'static> =
+                core::mem::transmute(allocator.get().unwrap());
+            UniquePage::<Self>::new_zeroed_in(allocator).assume_init()
+        }
     }
 }
 
 unsafe impl PageTable for ! {}
 
-#[derive(Debug)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
     Unique(UniquePage<P>),
@@ -378,7 +379,8 @@ pub trait PageTableEntry: Sized + Clone {
         let original = self.unmap();
         unsafe {
             self.set_bits(
-                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::All).into_bits(),
+                Self::PageDescriptor::new(vm::ka2pa(UniquePage::into_raw(page)), Permissions::All)
+                    .into_bits(),
             );
         }
         original
@@ -390,8 +392,10 @@ pub trait PageTableEntry: Sized + Clone {
     ) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
-            let desc =
-                Self::PageDescriptor::new(vm::ka2pa(page.into_raw()), Permissions::Executable);
+            let desc = Self::PageDescriptor::new(
+                vm::ka2pa(SharedPage::into_raw(page)),
+                Permissions::Executable,
+            );
             self.set_bits(desc.into_bits());
         }
         original
@@ -417,8 +421,11 @@ pub trait PageTableEntry: Sized + Clone {
         let original = self.unmap();
         unsafe {
             self.set_bits(
-                Self::TableDescriptor::new(vm::ka2pa(table.into_raw()), Permissions::All)
-                    .into_bits(),
+                Self::TableDescriptor::new(
+                    vm::ka2pa(SharedPage::into_raw(table)),
+                    Permissions::All,
+                )
+                .into_bits(),
             );
         }
         original
@@ -435,19 +442,28 @@ pub trait PageTableEntry: Sized + Clone {
                 if descriptor.global() {
                     UnmappedPage::Global(addr)
                 } else if descriptor.writeable() {
-                    let page = UniquePage::from_raw(vm::pa2ka(addr));
+                    let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                    let allocator: &BuddyAllocator<'static> =
+                        core::mem::transmute(allocator.get().unwrap());
+                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), allocator);
                     UnmappedPage::Unique(page)
                 } else {
-                    let page = SharedPage::from_raw(vm::pa2ka(addr));
+                    let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                    let allocator: &BuddyAllocator<'static> =
+                        core::mem::transmute(allocator.get().unwrap());
+                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
                     UnmappedPage::Shared(page)
                 }
             }
         } else {
             unsafe {
+                let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                let allocator: &BuddyAllocator<'static> =
+                    core::mem::transmute(allocator.get().unwrap());
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let table = SharedPage::from_raw(vm::pa2ka(addr));
+                let table = SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
                 UnmappedPage::Table(table)
             }
         }
@@ -497,12 +513,20 @@ pub trait PageTableEntry: Sized + Clone {
                 if !descriptor.global() {
                     let addr = descriptor.address();
                     if descriptor.writeable() {
-                        let page: UniquePage<Self::Page> = UniquePage::from_raw(vm::pa2ka(addr));
+                        let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                        let allocator: &BuddyAllocator<'static> =
+                            core::mem::transmute(allocator.get().unwrap());
+                        let page: UniquePage<Self::Page> =
+                            UniquePage::from_raw_in(vm::pa2ka(addr), allocator);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
                     } else {
-                        let page: SharedPage<Self::Page> = SharedPage::from_raw(vm::pa2ka(addr));
+                        let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                        let allocator: &BuddyAllocator<'static> =
+                            core::mem::transmute(allocator.get().unwrap());
+                        let page: SharedPage<Self::Page> =
+                            SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
@@ -511,9 +535,13 @@ pub trait PageTableEntry: Sized + Clone {
             }
         } else {
             unsafe {
+                let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
+                let allocator: &BuddyAllocator<'static> =
+                    core::mem::transmute(allocator.get().unwrap());
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
-                let table: SharedPage<Self::Table> = SharedPage::from_raw(vm::pa2ka(addr));
+                let table: SharedPage<Self::Table> =
+                    SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
                 let table = table.clone();
                 let new = table.clone();
                 core::mem::forget(table);

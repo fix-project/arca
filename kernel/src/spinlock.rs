@@ -37,10 +37,14 @@ impl<T> SpinLock<T> {
             data: unsafe { &mut *self.data.get() },
         }
     }
+
+    pub fn get(&self) -> *mut T {
+        self.data.get()
+    }
 }
 
 impl<T> SpinLockGuard<'_, T> {
-    pub fn unlock(self) {}
+    pub fn unlock(_: Self) {}
 }
 
 impl<T> Drop for SpinLockGuard<'_, T> {

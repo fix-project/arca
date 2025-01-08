@@ -4,7 +4,7 @@ use crate::interrupts::INTERRUPT_STACK;
 
 #[core_local]
 pub(crate) static mut TSS: LazyCell<TaskStateSegment> =
-    LazyCell::new(|| TaskStateSegment::new(&***INTERRUPT_STACK));
+    LazyCell::new(|| TaskStateSegment::new(**INTERRUPT_STACK));
 
 #[repr(C, packed)]
 #[derive(Default)]
@@ -44,10 +44,10 @@ const _: () = const {
 };
 
 impl TaskStateSegment {
-    pub fn new(stack: &[u8]) -> TaskStateSegment {
+    pub fn new(stack: *mut [u8]) -> TaskStateSegment {
         let mut tss = TaskStateSegment {
             rsp: [
-                unsafe { addr_of!(stack[0]).add(stack.len()) } as usize as u64,
+                unsafe { addr_of!((*stack)[0]).add(stack.len()) } as usize as u64,
                 0,
                 0,
             ],

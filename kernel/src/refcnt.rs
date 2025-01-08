@@ -7,7 +7,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{buddy, page::UniquePage, spinlock::SpinLock, vm};
+use crate::{page::UniquePage, spinlock::SpinLock, vm};
 
 pub static REFERENCE_COUNTS: SpinLock<MaybeUninit<&'static [AtomicUsize]>> =
     SpinLock::new(MaybeUninit::uninit());
@@ -17,11 +17,11 @@ pub static LOCAL_REFERENCE_COUNTS: RefCell<Option<&'static [AtomicUsize]>> = Ref
 
 pub(crate) unsafe fn init() {
     let size = {
-        let buddy = buddy::PHYSICAL_ALLOCATOR.lock();
+        let buddy = crate::PHYSICAL_ALLOCATOR.lock();
         let buddy = buddy
             .get()
             .expect("attempted to initialize reference-counting allocator before buddy allocator");
-        buddy.address_space_size() / buddy::BuddyAllocator::MIN_ALLOCATION
+        buddy.total_size() / common::BuddyAllocator::MIN_ALLOCATION
     };
     let array: &'static [AtomicUsize] =
         MaybeUninit::slice_assume_init_ref(Box::leak::<'static>(Box::new_zeroed_slice(size)));

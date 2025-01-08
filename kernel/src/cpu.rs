@@ -3,7 +3,7 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-use crate::{paging::PageTable256TB, refcnt::SharedPage, vm::ka2pa};
+use crate::{page::SharedPage, paging::PageTable256TB, vm::ka2pa};
 
 #[core_local]
 pub static CPU: RefCell<Cpu> = RefCell::new(Cpu {
@@ -108,13 +108,13 @@ extern "C" {
 }
 
 impl Cpu {
-    pub fn id() -> u32 {
-        crate::cpuinfo::id()
-    }
+    // pub fn id() -> u32 {
+    //     crate::cpuinfo::id()
+    // }
 
-    pub fn bootstrap() -> bool {
-        crate::cpuinfo::is_bootstrap()
-    }
+    // pub fn bootstrap() -> bool {
+    //     crate::cpuinfo::is_bootstrap()
+    // }
 
     /// # Safety
     /// This page table must not cause any violations of Rust's memory safety rules.  This
