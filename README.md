@@ -4,18 +4,8 @@
 
 ### Runtime
 
-Arca is currently paravirtualized within QEMU; it specifically requires a Linux
-AMD64 machine with KVM and the `invtsc`/`constant_tsc` CPU feature.
-
-You can check for this feature using:
-```sh
-cat /proc/cpuinfo | grep -q "constant_tsc"
-```
-
-And you can install QEMU on Debian- or RHEL-based Linux distributions using:
-```sh
-sudo [apt|dnf] install qemu-system-x86
-```
+Arca is currently paravirtualized within a custom hypervisor; it requires a
+Linux AMD64 machine with KVM enabled.
 
 ### Toolchain
 
@@ -31,9 +21,9 @@ rustup toolchain install nightly
 rustup target install x86_64-unknown-none
 ```
 
-You also need the Netwide Assembler:
+You can update Rust and Cargo using:
 ```sh
-sudo [apt|dnf] install nasm
+rustup update
 ```
 
 ## Running
