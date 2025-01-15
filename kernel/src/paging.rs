@@ -1,9 +1,8 @@
 use core::marker::PhantomData;
 
 use bitfield_struct::bitfield;
-use common::BuddyAllocator;
 
-use crate::{page::*, vm};
+use crate::{allocator::PHYSICAL_ALLOCATOR, page::*, vm};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Permissions {
@@ -325,12 +324,7 @@ impl HardwarePage for ! {}
 /// safely zero-initializable.
 pub unsafe trait PageTable: Sized + Clone {
     fn new() -> UniquePage<Self> {
-        unsafe {
-            let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-            let allocator: &BuddyAllocator<'static> =
-                core::mem::transmute(allocator.get().unwrap());
-            UniquePage::<Self>::new_zeroed_in(allocator).assume_init()
-        }
+        unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
     }
 }
 
@@ -442,28 +436,19 @@ pub trait PageTableEntry: Sized + Clone {
                 if descriptor.global() {
                     UnmappedPage::Global(addr)
                 } else if descriptor.writeable() {
-                    let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                    let allocator: &BuddyAllocator<'static> =
-                        core::mem::transmute(allocator.get().unwrap());
-                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), allocator);
+                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                     UnmappedPage::Unique(page)
                 } else {
-                    let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                    let allocator: &BuddyAllocator<'static> =
-                        core::mem::transmute(allocator.get().unwrap());
-                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
+                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                     UnmappedPage::Shared(page)
                 }
             }
         } else {
             unsafe {
-                let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                let allocator: &BuddyAllocator<'static> =
-                    core::mem::transmute(allocator.get().unwrap());
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 self.set_bits(0);
                 let addr = descriptor.address();
-                let table = SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
+                let table = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                 UnmappedPage::Table(table)
             }
         }
@@ -513,20 +498,14 @@ pub trait PageTableEntry: Sized + Clone {
                 if !descriptor.global() {
                     let addr = descriptor.address();
                     if descriptor.writeable() {
-                        let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                        let allocator: &BuddyAllocator<'static> =
-                            core::mem::transmute(allocator.get().unwrap());
                         let page: UniquePage<Self::Page> =
-                            UniquePage::from_raw_in(vm::pa2ka(addr), allocator);
+                            UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
                     } else {
-                        let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                        let allocator: &BuddyAllocator<'static> =
-                            core::mem::transmute(allocator.get().unwrap());
                         let page: SharedPage<Self::Page> =
-                            SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
+                            SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
@@ -535,13 +514,10 @@ pub trait PageTableEntry: Sized + Clone {
             }
         } else {
             unsafe {
-                let allocator = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-                let allocator: &BuddyAllocator<'static> =
-                    core::mem::transmute(allocator.get().unwrap());
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
                 let addr = descriptor.address();
                 let table: SharedPage<Self::Table> =
-                    SharedPage::from_raw_in(vm::pa2ka(addr), allocator);
+                    SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                 let table = table.clone();
                 let new = table.clone();
                 core::mem::forget(table);

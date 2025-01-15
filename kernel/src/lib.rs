@@ -40,6 +40,7 @@ pub mod vm;
 // mod arrayvec;
 mod gdt;
 mod idt;
+mod initcell;
 mod interrupts;
 mod lapic;
 mod msr;

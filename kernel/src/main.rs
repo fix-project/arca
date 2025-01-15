@@ -9,6 +9,7 @@ extern crate kernel;
 use core::arch::asm;
 
 use kernel::{
+    allocator::PHYSICAL_ALLOCATOR,
     arca::Arca,
     cpu::Register,
     page::{Page2MB, UniquePage},
@@ -20,12 +21,7 @@ use kernel::{
 extern "C" fn kmain() -> ! {
     log::info!("kmain");
 
-    let allocator = unsafe {
-        (*kernel::allocator::PHYSICAL_ALLOCATOR.get())
-            .get()
-            .unwrap()
-    };
-    let stack = UniquePage::<Page2MB>::new_uninit_in(allocator);
+    let stack = UniquePage::<Page2MB>::new_uninit_in(&PHYSICAL_ALLOCATOR);
     let stack_end = UniquePage::into_raw(stack).wrapping_offset(1) as *mut u8;
     let mut arca = Arca::new();
     arca.registers_mut()[Register::RIP] = umain as usize as u64;

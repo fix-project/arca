@@ -7,13 +7,14 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
+    allocator::PHYSICAL_ALLOCATOR,
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
+    initcell::InitCell,
     msr,
     page::SharedPage,
     paging::{PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
-    spinlock::{SpinLock, SpinLockGuard},
     vm,
 };
 
@@ -46,22 +47,21 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static KERNEL_MAPPINGS: SpinLock<LazyCell<SharedPage<PageTable512GB>>> =
-    SpinLock::new(LazyCell::new(|| unsafe {
+pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<PageTable512GB>> =
+    InitCell::new(|| unsafe {
         let mut pdpt = PageTable512GB::new();
         for (i, entry) in pdpt.iter_mut().enumerate() {
             entry.map_global(i << 30, Permissions::All);
         }
         pdpt.into()
-    }));
+    });
 
-pub(crate) static KERNEL_PAGE_MAP: SpinLock<LazyCell<SharedPage<PageTable256TB>>> =
-    SpinLock::new(LazyCell::new(|| {
-        let pdpt = KERNEL_MAPPINGS.lock().clone();
-        let mut map = PageTable256TB::new();
-        map[256].chain(pdpt);
-        map.into()
-    }));
+pub(crate) static KERNEL_PAGE_MAP: InitCell<SharedPage<PageTable256TB>> = InitCell::new(|| {
+    let pdpt = KERNEL_MAPPINGS.clone();
+    let mut map = PageTable256TB::new();
+    map[256].chain(pdpt);
+    map.into()
+});
 
 #[no_mangle]
 unsafe extern "C" fn _start(
@@ -80,10 +80,7 @@ unsafe extern "C" fn _start(
         refcnt_offset,
         refcnt_size,
     });
-    let cell = crate::allocator::PHYSICAL_ALLOCATOR.lock();
-    cell.set(allocator)
-        .unwrap_or_else(|_| panic!("could not initialize physical memory allocator"));
-    SpinLockGuard::unlock(cell);
+    InitCell::initialize(&PHYSICAL_ALLOCATOR, || allocator);
 
     init_cpu_tls();
 

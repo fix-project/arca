@@ -13,7 +13,8 @@ pub struct RefCnt<'a, T: ?Sized> {
     allocator: &'a BuddyAllocator<'a>,
 }
 
-unsafe impl<T: ?Sized> Send for RefCnt<'_, T> {}
+unsafe impl<T: Sync + Send + ?Sized> Send for RefCnt<'_, T> {}
+unsafe impl<T: Sync + Send + ?Sized> Sync for RefCnt<'_, T> {}
 
 impl<'a, T: ?Sized> RefCnt<'a, T> {
     pub fn refcnt(this: &Self) -> &AtomicUsize {

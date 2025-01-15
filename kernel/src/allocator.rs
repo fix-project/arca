@@ -1,11 +1,8 @@
-use core::{alloc::GlobalAlloc, cell::OnceCell};
+use core::alloc::GlobalAlloc;
 
-use crate::spinlock::SpinLock;
+use crate::initcell::InitCell;
 
-// TODO: there must be a better way to deal with initalizing this, without wrapping everything in a
-// lock
-pub static PHYSICAL_ALLOCATOR: SpinLock<OnceCell<common::BuddyAllocator>> =
-    SpinLock::new(OnceCell::new());
+pub static PHYSICAL_ALLOCATOR: InitCell<common::BuddyAllocator> = InitCell::empty();
 
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
@@ -14,8 +11,7 @@ struct Allocator;
 
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let lock = PHYSICAL_ALLOCATOR.lock();
-        let allocator = lock.get().unwrap();
+        let allocator = &PHYSICAL_ALLOCATOR;
         let size = layout.size();
         let align = layout.align();
         let size = core::cmp::max(size, align);
@@ -23,8 +19,7 @@ unsafe impl GlobalAlloc for Allocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        let lock = PHYSICAL_ALLOCATOR.lock();
-        let allocator = lock.get().unwrap();
+        let allocator = &PHYSICAL_ALLOCATOR;
         let size = layout.size();
         let align = layout.align();
         let size = core::cmp::max(size, align);
