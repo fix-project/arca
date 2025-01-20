@@ -24,17 +24,16 @@ pub extern crate macros;
 pub use macros::core_local;
 
 pub mod allocator;
-pub mod arca;
 pub mod cpu;
 pub mod debugcon;
 pub mod io;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
-// pub mod refcnt;
-// pub mod rt;
+pub mod rt;
 pub mod spinlock;
 // pub mod tsc;
+pub mod types;
 pub mod vm;
 
 // mod arrayvec;

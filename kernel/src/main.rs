@@ -10,10 +10,10 @@ use core::arch::asm;
 
 use kernel::{
     allocator::PHYSICAL_ALLOCATOR,
-    arca::Arca,
     cpu::Register,
     page::{Page2MB, UniquePage},
     shutdown,
+    types::Arca,
 };
 
 #[no_mangle]
@@ -35,8 +35,14 @@ extern "C" fn kmain() -> ! {
         }
     };
     log::info!("done: {:?}", result);
-    log::info!("about to shut down");
     shutdown();
+}
+
+#[inline(always)]
+unsafe extern "C" fn syscall(num: u64, a0: u64, a1: u64) -> u64 {
+    let mut val: u64;
+    asm!("syscall", in("rdi")num, in("rsi")a0, in("rdx")a1, out("rax")val, out("rcx")_, out("r11")_);
+    val
 }
 
 unsafe extern "C" fn umain() -> ! {
@@ -44,11 +50,11 @@ unsafe extern "C" fn umain() -> ! {
     let count = 0x1000;
     let time = kernel::kvmclock::time(|| {
         for _ in 0..count {
-            asm!("syscall", in("rdi")1, out("rcx")_, out("r11")_);
+            syscall(1, 0, 0);
         }
     });
     log::info!("syscall took: {} ns", time.as_nanos() / count);
     loop {
-        asm!("syscall", in("rdi")0, out("rcx")_, out("r11")_);
+        syscall(0, 0, 0);
     }
 }

@@ -1,14 +1,19 @@
+use alloc::{vec, vec::Vec};
+
 use crate::{
     cpu::{Cpu, ExitStatus, RegisterFile},
     page::SharedPage,
-    paging::{PageTable, PageTable256TB, PageTable256TBEntry, PageTableEntry},
+    paging::{PageTable as _, PageTable256TB, PageTable256TBEntry, PageTableEntry},
     rsstart::KERNEL_PAGE_MAP,
 };
+
+use super::Value;
 
 #[derive(Clone)]
 pub struct Arca {
     page_table: SharedPage<PageTable256TB>,
     register_file: RegisterFile,
+    descriptors: Vec<Value>,
 }
 
 impl Arca {
@@ -21,6 +26,7 @@ impl Arca {
         Arca {
             page_table: page_table.into(),
             register_file,
+            descriptors: vec![],
         }
     }
 
@@ -28,6 +34,7 @@ impl Arca {
         unsafe { cpu.activate_page_table(self.page_table) };
         LoadedArca {
             register_file: self.register_file,
+            descriptors: self.descriptors,
             cpu,
         }
     }
@@ -47,6 +54,14 @@ impl Arca {
     pub fn mappings_mut(&mut self) -> &mut PageTable256TBEntry {
         &mut SharedPage::make_mut(&mut self.page_table)[0]
     }
+
+    pub fn descriptors(&self) -> &Vec<Value> {
+        &self.descriptors
+    }
+
+    pub fn descriptors_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.descriptors
+    }
 }
 
 impl Default for Arca {
@@ -57,6 +72,7 @@ impl Default for Arca {
 
 pub struct LoadedArca<'a> {
     register_file: RegisterFile,
+    descriptors: Vec<Value>,
     cpu: &'a mut Cpu,
 }
 
@@ -73,6 +89,14 @@ impl LoadedArca<'_> {
         &mut self.register_file
     }
 
+    pub fn descriptors(&self) -> &Vec<Value> {
+        &self.descriptors
+    }
+
+    pub fn descriptors_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.descriptors
+    }
+
     pub fn unload(self) -> Arca {
         let page_table = unsafe {
             self.cpu
@@ -82,6 +106,7 @@ impl LoadedArca<'_> {
 
         Arca {
             register_file: self.register_file,
+            descriptors: self.descriptors,
             page_table,
         }
     }
