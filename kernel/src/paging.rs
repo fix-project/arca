@@ -330,6 +330,7 @@ pub unsafe trait PageTable: Sized + Clone {
 
 unsafe impl PageTable for ! {}
 
+#[derive(Debug)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
     Unique(UniquePage<P>),
@@ -549,7 +550,7 @@ where
         } else if self.leaf() {
             unsafe {
                 let descriptor = <Self as PageTableEntry>::PageDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
+                let addr = descriptor.address() as *mut ();
                 if descriptor.global() {
                     f.debug_tuple("Global").field(&addr).field(&prot).finish()
                 } else if descriptor.writeable() {
@@ -561,7 +562,7 @@ where
         } else {
             unsafe {
                 let descriptor = <Self as PageTableEntry>::TableDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
+                let addr = descriptor.address() as *mut ();
                 f.debug_tuple("Table").field(&addr).field(&prot).finish()
             }
         }

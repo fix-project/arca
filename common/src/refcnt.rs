@@ -22,11 +22,14 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
     }
 
     pub fn into_raw(this: Self) -> *mut T {
-        this.ptr
+        let p = this.ptr;
+        core::mem::forget(this);
+        p
     }
 
     pub fn into_raw_with_allocator(this: Self) -> (*mut T, &'a BuddyAllocator<'a>) {
-        (this.ptr, this.allocator)
+        let allocator = this.allocator;
+        (Self::into_raw(this), allocator)
     }
 
     /// # Safety
@@ -94,6 +97,12 @@ impl<'a, T: ?Sized> From<Box<T, &'a BuddyAllocator<'a>>> for RefCnt<'a, T> {
         let rc = RefCnt { ptr, allocator };
         Self::refcnt(&rc).store(1, Ordering::SeqCst);
         rc
+    }
+}
+
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RefCnt<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
     }
 }
 

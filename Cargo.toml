@@ -1,4 +1,5 @@
 [workspace]
-members = [ "common", "vmm", "kernel", "macros" ]
+members = [ "common", "vmm", "kernel", "macros" , "user" ]
 default-members = [ "vmm", "common" ]
+
 resolver = "2"

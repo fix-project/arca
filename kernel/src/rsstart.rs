@@ -94,7 +94,6 @@ unsafe extern "C" fn _start(
     init_syscalls();
 
     crate::kvmclock::init();
-    log::info!("the time is {:?}", crate::kvmclock::wall_clock_time());
 
     crate::lapic::init();
 
