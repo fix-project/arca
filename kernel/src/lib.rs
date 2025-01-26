@@ -17,6 +17,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
+extern crate defs;
 
 #[macro_use]
 pub extern crate macros;
@@ -33,6 +34,7 @@ pub mod paging;
 pub mod rt;
 pub mod spinlock;
 // pub mod tsc;
+pub mod prelude;
 pub mod types;
 pub mod vm;
 

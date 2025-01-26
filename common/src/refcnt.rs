@@ -106,6 +106,15 @@ impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RefCnt<'_, T> {
     }
 }
 
+impl<T: ?Sized + PartialEq> PartialEq for RefCnt<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.allocator as *const _, other.allocator as *const _)
+            && (core::ptr::eq(self.ptr, other.ptr) || (*self == *other))
+    }
+}
+
+impl<T: ?Sized + Eq> Eq for RefCnt<'_, T> {}
+
 #[cfg(test)]
 mod tests {
     extern crate test;

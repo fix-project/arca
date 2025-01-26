@@ -114,6 +114,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "defs"
+version = "0.1.0"
+
+[[package]]
 name = "deranged"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -205,6 +209,7 @@ dependencies = [
  "bitfield-struct",
  "cc",
  "common",
+ "defs",
  "elf",
  "glob",
  "log",
@@ -440,6 +445,9 @@ checksum = "adb9e6ca4f869e1180728b7950e35922a7fc6397f7b641499e8f3ef06e50dc83"
 [[package]]
 name = "user"
 version = "0.1.0"
+dependencies = [
+ "defs",
+]
 
 [[package]]
 name = "utf8parse"

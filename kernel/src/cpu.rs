@@ -24,7 +24,7 @@ pub enum Mode {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RegisterFile {
     registers: [u64; 16],
     rip: u64,

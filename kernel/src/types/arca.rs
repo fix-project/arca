@@ -1,15 +1,10 @@
 use alloc::{vec, vec::Vec};
 
-use crate::{
-    cpu::{Cpu, ExitStatus, RegisterFile},
-    page::SharedPage,
-    paging::{PageTable as _, PageTable256TB, PageTable256TBEntry, PageTableEntry},
-    rsstart::KERNEL_PAGE_MAP,
-};
+use crate::{cpu::ExitStatus, prelude::*, rsstart::KERNEL_PAGE_MAP};
 
 use super::Value;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: SharedPage<PageTable256TB>,
     register_file: RegisterFile,

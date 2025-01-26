@@ -530,6 +530,7 @@ pub trait PageTableEntry: Sized + Clone {
 }
 
 #[repr(transparent)]
+#[derive(Eq, PartialEq)]
 pub struct Entry<P: HardwarePage, T: PageTable>
 where
     Entry<P, T>: PageTableEntry,

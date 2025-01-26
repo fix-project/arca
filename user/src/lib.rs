@@ -1,10 +1,12 @@
 #![no_std]
 #![allow(unused)]
 
+extern crate defs;
+
 pub mod syscall {
     use core::arch::asm;
 
-    pub const SYS_EXIT: u32 = 0;
+    use defs::syscall::*;
 
     #[inline(always)]
     unsafe extern "C" fn syscall0(num: u64) -> u64 {

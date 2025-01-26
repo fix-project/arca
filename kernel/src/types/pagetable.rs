@@ -3,7 +3,7 @@ use crate::{
     paging::{PageTable1GB, PageTable256TB, PageTable2MB, PageTable512GB},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PageTable {
     PageTable2MB(SharedPage<PageTable2MB>),
     PageTable1GB(SharedPage<PageTable1GB>),

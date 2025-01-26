@@ -19,6 +19,7 @@ log = "0.4.21"
 time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 macros = { path = "../macros" }
 common = { path = "../common", default-features = false }
+defs = { path = "../defs" }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = { version = "0.7.4", default-features = false }
 
