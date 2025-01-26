@@ -3,7 +3,9 @@
 
 extern crate user;
 
+/// Return the function's argument unmodified.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    user::syscall::exit();
+    let arg = user::syscall::argument();
+    user::syscall::exit(arg);
 }

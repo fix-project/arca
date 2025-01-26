@@ -2,7 +2,7 @@ ENTRY(_start)
 
 MEMORY {
   cls   (rwx) : ORIGIN = 0x0000000000000000, LENGTH = 2M
-  upper (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 1M
+  upper (rw)  : ORIGIN = 0xFFFF800000100000, LENGTH = 4M
 }
 
 SECTIONS {

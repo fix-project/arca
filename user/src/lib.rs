@@ -4,42 +4,64 @@
 extern crate defs;
 
 pub mod syscall {
-    use core::arch::asm;
+    use core::arch::{asm, global_asm};
+
+    global_asm!(
+        "
+    .globl syscall
+    syscall:
+        mov r10, rcx
+        syscall
+        ret
+    "
+    );
 
     use defs::syscall::*;
 
-    #[inline(always)]
-    unsafe extern "C" fn syscall0(num: u64) -> u64 {
-        unsafe {
-            let mut val: u64;
-            asm!("syscall", in("rdi")num, out("rax")val, out("rcx")_, out("r11")_);
-            val
-        }
+    unsafe extern "C" {
+        fn syscall(num: u64, ...) -> u64;
     }
 
-    #[inline(always)]
-    unsafe extern "C" fn syscall1(num: u64, a0: u64) -> u64 {
-        unsafe {
-            let mut val: u64;
-            asm!("syscall", in("rdi")num, in("rsi")a0, out("rax")val, out("rcx")_, out("r11")_);
-            val
-        }
+    pub fn noop() -> ! {
+        unsafe { syscall(NOOP) };
+        unreachable!();
     }
 
-    #[inline(always)]
-    unsafe extern "C" fn syscall2(num: u64, a0: u64, a1: u64) -> u64 {
-        unsafe {
-            let mut val: u64;
-            asm!("syscall", in("rdi")num, in("rsi")a0, in("rdx")a1, out("rax")val, out("rcx")_, out("r11")_);
-            val
-        }
+    pub fn exit(result: isize) -> ! {
+        unsafe { syscall(EXIT, result) };
+        unreachable!();
     }
 
-    pub fn exit() -> ! {
-        loop {
-            unsafe { syscall0(SYS_EXIT.into()) };
-            core::hint::spin_loop();
-        }
+    pub fn force(i: isize) -> isize {
+        unsafe { syscall(EXIT, i) as isize }
+    }
+
+    pub fn argument() -> isize {
+        unsafe { syscall(ARGUMENT) as isize }
+    }
+
+    pub fn eq(a: isize, b: isize) -> bool {
+        unsafe { syscall(EQ, a, b) == 1 }
+    }
+
+    pub fn find(haystack: isize, needle: isize) -> isize {
+        unsafe { syscall(FIND, haystack, needle) as isize }
+    }
+
+    pub fn len(value: isize) -> usize {
+        unsafe { syscall(LEN, value) as usize }
+    }
+
+    pub fn atom_create(data: &[u8]) -> isize {
+        unsafe { syscall(ATOM_CREATE, data.as_ptr(), data.len()) as isize }
+    }
+
+    pub fn blob_create(data: &[u8]) -> isize {
+        unsafe { syscall(BLOB_CREATE, data.as_ptr(), data.len()) as isize }
+    }
+
+    pub fn blob_read(blob: isize, buffer: &mut [u8], offset: usize) -> usize {
+        unsafe { syscall(BLOB_READ, blob, buffer.as_ptr(), buffer.len(), offset) as usize }
     }
 }
 
