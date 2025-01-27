@@ -24,10 +24,10 @@ impl Thunk {
             let result = arca.run();
             if result.code != 256 {
                 log::debug!("exited with exception: {result:?}");
-                let arca = arca.unload();
+                // let arca = arca.unload();
                 let tree = vec![
                     Value::Atom("exception".into()),
-                    Value::Thunk(Thunk::new(Lambda::new(arca), x)),
+                    // Value::Thunk(Thunk::new(Lambda::new(arca), x)),
                     Value::Blob(result.code.to_ne_bytes().into()),
                     Value::Blob(result.error.to_ne_bytes().into()),
                 ];
@@ -45,71 +45,64 @@ impl Thunk {
             log::debug!("exited with syscall: {num:#x?}({args:?})");
             let result = &mut [0, 0];
             match num {
-                defs::syscall::NOOP => {
-                    continue;
+                defs::syscall::RESIZE => {
+                    let len = args[0] as usize;
+                    arca.descriptors_mut().resize(len, Value::None);
+                    result[0] = 0;
                 }
                 defs::syscall::EXIT => {
                     let idx = args[0] as usize;
-                    let val = arca.descriptors_mut().get_mut(idx);
-                    return match val {
-                        Some(x) => {
-                            let mut val = Value::None;
-                            core::mem::swap(x, &mut val);
-                            val
-                        }
-                        None => {
-                            let tree = vec![
-                                Value::Atom("invalid index".into()),
-                                Value::Blob(idx.to_ne_bytes().into()),
-                            ];
-                            Value::Error(Value::Tree(tree.into()).into())
-                        }
+                    if let Some(x) = arca.descriptors_mut().get_mut(idx) {
+                        let mut val = Value::None;
+                        core::mem::swap(x, &mut val);
+                        return val;
                     };
                 }
                 defs::syscall::ARGUMENT => {
-                    let idx = arca.descriptors().len();
-                    let mut y = Value::None;
-                    core::mem::swap(&mut *x, &mut y);
-                    arca.descriptors_mut().push(y);
-                    result[0] = idx as u64;
-                }
-                defs::syscall::LEN => {
                     let idx = args[0] as usize;
-                    let val = arca.descriptors_mut().get(idx);
-                    let y = match val {
-                        Some(Value::None) => 0,
-                        Some(Value::Blob(x)) => x.len() as isize,
-                        Some(Value::Tree(x)) => x.len() as isize,
-                        _ => -1,
-                    };
-                    result[0] = y as u64;
+                    if let Some(spot) = arca.descriptors_mut().get_mut(idx) {
+                        core::mem::swap(spot, &mut x);
+                        result[0] = 0;
+                    } else {
+                        result[0] = defs::error::BAD_INDEX;
+                    }
                 }
-                defs::syscall::BLOB_READ => {
+                defs::syscall::READ => 'read: {
                     // TODO: sanitize user inputs
                     let idx = args[0] as usize;
-                    let val = arca.descriptors_mut().get(idx);
-                    let Some(Value::Blob(x)) = val else {
-                        unimplemented!();
+                    let Some(val) = arca.descriptors_mut().get(idx) else {
+                        result[0] = defs::error::BAD_INDEX;
+                        break 'read;
                     };
+                    match val {
+                        Value::Blob(blob) => {
+                            let ptr = args[1] as *mut u8;
+                            let len = args[2] as usize;
+                            unsafe {
+                                let slice = core::slice::from_raw_parts_mut(ptr, len);
+                                slice.copy_from_slice(blob);
+                            }
+                            result[0] = 0;
+                        }
+                        _ => {
+                            result[0] = defs::error::BAD_TYPE;
+                        }
+                    }
+                }
+                defs::syscall::CREATE_BLOB => 'create: {
+                    // TODO: sanitize user inputs
+                    let idx = args[0] as usize;
+                    if idx >= arca.descriptors().len() {
+                        result[0] = defs::error::BAD_INDEX;
+                        break 'create;
+                    }
                     let ptr = args[1] as *mut u8;
                     let len = args[2] as usize;
-                    let offset = args[3] as usize;
                     unsafe {
                         let slice = core::slice::from_raw_parts_mut(ptr, len);
-                        slice.copy_from_slice(&x[offset..]);
+                        arca.descriptors_mut()[idx] = Value::Blob(slice.into());
+                        result[0] = 0;
                     }
-                    result[0] = (x.len() - offset) as u64;
-                }
-                defs::syscall::BLOB_CREATE => {
-                    // TODO: sanitize user inputs
-                    let idx = arca.descriptors().len();
-                    let ptr = args[0] as *mut u8;
-                    let len = args[1] as usize;
-                    unsafe {
-                        let slice = core::slice::from_raw_parts_mut(ptr, len);
-                        arca.descriptors_mut().push(Value::Blob(slice.into()));
-                    }
-                    result[0] = idx as u64;
                 }
                 _ => {
                     log::error!("invalid syscall {num:#x}");
@@ -123,8 +116,8 @@ impl Thunk {
                 }
             }
             let regs = arca.registers_mut();
-            regs[Register::RAX] = result[0];
-            regs[Register::RDX] = result[1];
+            regs[Register::RAX] = result[0] as u64;
+            regs[Register::RDX] = result[1] as u64;
         }
     }
 }

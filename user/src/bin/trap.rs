@@ -7,7 +7,7 @@ extern crate user;
 
 unsafe extern "C" {
     /// Immediately force a trap using the breakpoint instruction (interrupt #3).  This program
-    /// does not need a stack or any data, just a mapped text segment.
+    /// does not need a stack or any data or any system calls, just a mapped text segment.
     fn _start() -> !;
 }
 global_asm!(
