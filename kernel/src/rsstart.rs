@@ -51,7 +51,7 @@ pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<PageTable512GB>> =
     InitCell::new(|| unsafe {
         let mut pdpt = PageTable512GB::new();
         for (i, entry) in pdpt.iter_mut().enumerate() {
-            entry.map_global(i << 30, Permissions::All);
+            entry.map_global(i << 30, Permissions::None);
         }
         pdpt.into()
     });

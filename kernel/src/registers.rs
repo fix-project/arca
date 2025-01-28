@@ -8,6 +8,12 @@ pub unsafe fn write_cr0(x: u64) {
     asm!("mov cr0, {x}", x=in(reg)x);
 }
 
+pub unsafe fn read_cr2() -> u64 {
+    let mut x: u64;
+    asm!("mov {x}, cr2", x=out(reg)x);
+    x
+}
+
 pub unsafe fn write_cr4(x: u64) {
     asm!("mov cr4, {x}", x=in(reg)x);
 }

@@ -47,16 +47,26 @@ impl Thunk {
             match num {
                 defs::syscall::RESIZE => {
                     let len = args[0] as usize;
-                    arca.descriptors_mut().resize(len, Value::None);
+                    arca.descriptors_mut().resize(len, Value::Null);
                     result[0] = 0;
+                }
+                defs::syscall::NULL => {
+                    let idx = args[0] as usize;
+                    if let Some(x) = arca.descriptors_mut().get_mut(idx) {
+                        *x = Value::Null;
+                        result[0] = 0;
+                    } else {
+                        result[0] = defs::error::BAD_INDEX;
+                    }
                 }
                 defs::syscall::EXIT => {
                     let idx = args[0] as usize;
                     if let Some(x) = arca.descriptors_mut().get_mut(idx) {
-                        let mut val = Value::None;
+                        let mut val = Value::Null;
                         core::mem::swap(x, &mut val);
                         return val;
                     };
+                    result[0] = defs::error::BAD_INDEX;
                 }
                 defs::syscall::ARGUMENT => {
                     let idx = args[0] as usize;
@@ -68,7 +78,6 @@ impl Thunk {
                     }
                 }
                 defs::syscall::READ => 'read: {
-                    // TODO: sanitize user inputs
                     let idx = args[0] as usize;
                     let Some(val) = arca.descriptors_mut().get(idx) else {
                         result[0] = defs::error::BAD_INDEX;
@@ -76,43 +85,73 @@ impl Thunk {
                     };
                     match val {
                         Value::Blob(blob) => {
-                            let ptr = args[1] as *mut u8;
+                            let ptr = args[1] as usize;
                             let len = args[2] as usize;
+                            let len = core::cmp::min(len, blob.len());
                             unsafe {
-                                let slice = core::slice::from_raw_parts_mut(ptr, len);
-                                slice.copy_from_slice(blob);
+                                let success = crate::vm::copy_kernel_to_user(ptr, &blob[..len]);
+
+                                if success {
+                                    result[0] = len as i64;
+                                } else {
+                                    result[0] = defs::error::BAD_ARGUMENT
+                                }
                             }
-                            result[0] = 0;
+                        }
+                        Value::Tree(tree) => {
+                            let tree = tree.clone();
+                            let ptr = args[1] as usize;
+                            let len = args[2] as usize;
+                            let len = core::cmp::min(len, tree.len());
+                            let mut buffer = vec![0u8; len * core::mem::size_of::<u64>()];
+                            unsafe {
+                                let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
+                                if !success {
+                                    result[0] = defs::error::BAD_ARGUMENT;
+                                    break 'read;
+                                }
+                            }
+                            let indices = buffer.chunks(core::mem::size_of::<u64>()).map(|x| {
+                                let bytes: [u8; core::mem::size_of::<u64>()] = x.try_into().ok()?;
+                                Some(u64::from_ne_bytes(bytes) as usize)
+                            });
+                            for (x, i) in tree.iter().zip(indices) {
+                                let Some(i) = i else {
+                                    result[0] = defs::error::BAD_INDEX;
+                                    break 'read;
+                                };
+                                arca.descriptors_mut()[i] = x.clone();
+                            }
+                            result[0] = len as i64;
                         }
                         _ => {
+                            log::warn!("READ called with invalid type");
                             result[0] = defs::error::BAD_TYPE;
                         }
                     }
                 }
                 defs::syscall::CREATE_BLOB => 'create: {
-                    // TODO: sanitize user inputs
                     let idx = args[0] as usize;
                     if idx >= arca.descriptors().len() {
                         result[0] = defs::error::BAD_INDEX;
                         break 'create;
                     }
-                    let ptr = args[1] as *mut u8;
+                    let ptr = args[1] as usize;
                     let len = args[2] as usize;
                     unsafe {
-                        let slice = core::slice::from_raw_parts_mut(ptr, len);
-                        arca.descriptors_mut()[idx] = Value::Blob(slice.into());
-                        result[0] = 0;
+                        let mut buffer = Box::new_uninit_slice(len).assume_init();
+                        let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
+                        if !success {
+                            result[0] = defs::error::BAD_ARGUMENT;
+                            break 'create;
+                        }
+                        arca.descriptors_mut()[idx] = Value::Blob(buffer.into());
+                        result[0] = len as i64;
                     }
                 }
                 _ => {
                     log::error!("invalid syscall {num:#x}");
-                    // let arca = arca.unload();
-                    let tree = vec![
-                        Value::Atom("invalid syscall".into()),
-                        Value::Blob(num.to_ne_bytes().into()),
-                        // Value::Thunk(Thunk::new(Lambda::new(arca), x)),
-                    ];
-                    return Value::Error(Value::Tree(tree.into()).into());
+                    result[0] = defs::error::BAD_SYSCALL;
                 }
             }
             let regs = arca.registers_mut();

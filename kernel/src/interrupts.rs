@@ -1,6 +1,9 @@
 // use core::cell::LazyCell;
 
-use core::cell::LazyCell;
+use core::{
+    cell::LazyCell,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 use alloc::boxed::Box;
 
@@ -14,6 +17,11 @@ pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
         Box::leak(stack) as *mut Page2MB
     }
 });
+
+#[core_local]
+#[no_mangle]
+pub(crate) static SEGFAULT_ESCAPE_ADDR: AtomicPtr<fn(u64, u64) -> !> =
+    AtomicPtr::new(core::ptr::null_mut());
 
 #[repr(C)]
 #[derive(Debug)]
@@ -67,6 +75,25 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
                 registers.rip as *mut (), registers.code
             );
         }
+    } else if registers.isr == 0xe {
+        // page fault
+
+        // it could be caused by copy_user_to_kernel or copy_kernel_to_user, which is okay
+        let escape = SEGFAULT_ESCAPE_ADDR.load(Ordering::SeqCst);
+
+        if !escape.is_null() {
+            log::warn!(
+                "user program provided invalid address to kernel: {:p}",
+                crate::registers::read_cr2() as *const u8,
+            );
+            registers.rip = escape as usize as u64;
+            return;
+        }
+        panic!(
+            "unhandled page fault ({:b}) @ {:p}:",
+            registers.code,
+            crate::registers::read_cr2() as *const u8,
+        );
     }
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);

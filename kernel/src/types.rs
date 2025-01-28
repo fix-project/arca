@@ -16,7 +16,7 @@ pub use thunk::Thunk;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Value {
-    None,
+    Null,
     Error(Arc<Value>),
     Atom(String),
     Blob(Blob),

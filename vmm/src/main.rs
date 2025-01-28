@@ -137,7 +137,9 @@ fn main() -> ExitCode {
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
         | ControlReg4::OSXMMEXCPT
-        | ControlReg4::FSGSBASE;
+        | ControlReg4::FSGSBASE
+        | ControlReg4::SMAP
+        | ControlReg4::SMEP;
     vcpu_sregs.efer |= ExtendedFeatureEnableReg::LME
         | ExtendedFeatureEnableReg::LMA
         | ExtendedFeatureEnableReg::SCE;

@@ -83,7 +83,7 @@ impl Lambda {
             }
         }
 
-        let addr = 0x0;
+        let addr = 1 << 30;
         let stack =
             unsafe { UniquePage::<Page2MB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         let i1 = (addr >> 12) & 0x1ff;
