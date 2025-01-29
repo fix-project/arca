@@ -326,9 +326,15 @@ pub unsafe trait PageTable: Sized + Clone {
     fn new() -> UniquePage<Self> {
         unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
     }
+
+    fn unique_size(&self) -> usize;
 }
 
-unsafe impl PageTable for ! {}
+unsafe impl PageTable for ! {
+    fn unique_size(&self) -> usize {
+        0
+    }
+}
 
 #[derive(Debug)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
@@ -551,6 +557,39 @@ pub trait PageTableEntry: Sized + Clone {
             }
         }
     }
+
+    fn unique_size(&self) -> usize {
+        if !self.present() {
+            0
+        } else if self.leaf() {
+            unsafe {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                if !descriptor.global() {
+                    if descriptor.writeable() {
+                        core::mem::size_of::<Self::Page>()
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+        } else {
+            unsafe {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                if descriptor.writeable() {
+                    let addr = descriptor.address();
+                    let table: UniquePage<Self::Table> =
+                        UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let size = table.unique_size() + core::mem::size_of::<Self::Table>();
+                    core::mem::forget(table);
+                    size
+                } else {
+                    0
+                }
+            }
+        }
+    }
 }
 
 #[repr(transparent)]
@@ -620,10 +659,29 @@ pub type PageTable1GB = [PageTable1GBEntry; 512];
 pub type PageTable512GB = [PageTable512GBEntry; 512];
 pub type PageTable256TB = [PageTable256TBEntry; 512];
 
-unsafe impl PageTable for PageTable2MB {}
-unsafe impl PageTable for PageTable1GB {}
-unsafe impl PageTable for PageTable512GB {}
-unsafe impl PageTable for PageTable256TB {}
+unsafe impl PageTable for PageTable2MB {
+    fn unique_size(&self) -> usize {
+        self.iter().map(|x| x.unique_size()).sum()
+    }
+}
+
+unsafe impl PageTable for PageTable1GB {
+    fn unique_size(&self) -> usize {
+        self.iter().map(|x| x.unique_size()).sum()
+    }
+}
+
+unsafe impl PageTable for PageTable512GB {
+    fn unique_size(&self) -> usize {
+        self.iter().map(|x| x.unique_size()).sum()
+    }
+}
+
+unsafe impl PageTable for PageTable256TB {
+    fn unique_size(&self) -> usize {
+        self.iter().map(|x| x.unique_size()).sum()
+    }
+}
 
 impl PageTableEntry for PageTable2MBEntry {
     type Page = Page4KB;

@@ -132,7 +132,7 @@ pub fn wall_clock_time() -> OffsetDateTime {
 }
 
 #[inline]
-pub fn time(f: impl Fn()) -> Duration {
+pub fn time(f: impl FnOnce()) -> Duration {
     unsafe {
         core::arch::x86_64::_mm_lfence();
     };

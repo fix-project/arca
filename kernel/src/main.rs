@@ -49,7 +49,7 @@ extern "C" fn kmain() -> ! {
     }
 
     let identity = Lambda::from_elf(IDENTITY_ELF).apply(Value::Null);
-    const ITERS: usize = 1000;
+    const ITERS: usize = 100;
     log::info!("running identity program {} times", ITERS);
     let time = kernel::kvmclock::time(|| {
         for _ in 0..ITERS {
