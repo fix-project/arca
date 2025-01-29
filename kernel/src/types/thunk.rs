@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, string::String, vec};
 
 use crate::prelude::*;
 
@@ -17,10 +17,12 @@ impl Thunk {
         let mut cpu = CPU.borrow_mut();
         let Thunk { f, mut x } = self;
         let Lambda { arca } = f;
-        log::debug!("loading Arca");
+        log::debug!("loading Arca with argument: {x:?}");
         let mut arca = arca.load(&mut cpu);
         loop {
-            log::debug!("jumping into Arca");
+            let unloaded = arca.unload();
+            log::debug!("jumping into Arca {:?}", unloaded);
+            arca = unloaded.load(&mut cpu);
             let result = arca.run();
             if result.code != 256 {
                 log::debug!("exited with exception: {result:?}");
@@ -66,6 +68,7 @@ impl Thunk {
                         core::mem::swap(x, &mut val);
                         return val;
                     };
+                    log::warn!("exit failed with invalid index");
                     result[0] = defs::error::BAD_INDEX;
                 }
                 defs::syscall::ARGUMENT => {
@@ -148,6 +151,52 @@ impl Thunk {
                         arca.descriptors_mut()[idx] = Value::Blob(buffer.into());
                         result[0] = len as i64;
                     }
+                }
+                defs::syscall::CONTINUATION => {
+                    let idx = args[0] as usize;
+                    if idx >= arca.descriptors().len() {
+                        result[0] = defs::error::BAD_INDEX;
+                    } else {
+                        let unloaded = arca.unload();
+                        let mut copy = unloaded.clone();
+                        copy.registers_mut()[Register::RAX] = defs::error::CONTINUED as u64;
+                        arca = unloaded.load(&mut cpu);
+                        arca.descriptors_mut()[idx] = Value::Lambda(Lambda::new(copy));
+                        result[0] = 0;
+                    }
+                }
+                defs::syscall::SHOW => 'show: {
+                    let ptr = args[0] as usize;
+                    let len = args[1] as usize;
+                    let msg = unsafe {
+                        let mut buffer = Box::new_uninit_slice(len).assume_init();
+                        let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
+                        if !success {
+                            break 'show;
+                        }
+                        String::from_utf8_lossy(&buffer).into_owned()
+                    };
+                    let idx = args[2] as usize;
+                    if idx >= arca.descriptors().len() {
+                        break 'show;
+                    }
+                    let val = &arca.descriptors()[idx];
+                    log::info!("user message - \"{msg}\": {val:?}");
+                    result[0] = 0;
+                }
+                defs::syscall::LOG => 'log: {
+                    let ptr = args[0] as usize;
+                    let len = args[1] as usize;
+                    let msg = unsafe {
+                        let mut buffer = Box::new_uninit_slice(len).assume_init();
+                        let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
+                        if !success {
+                            break 'log;
+                        }
+                        String::from_utf8_lossy(&buffer).into_owned()
+                    };
+                    log::info!("user message - \"{msg}\"");
+                    result[0] = 0;
                 }
                 _ => {
                     log::error!("invalid syscall {num:#x}");

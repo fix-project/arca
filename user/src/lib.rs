@@ -32,8 +32,8 @@ pub mod syscall {
 
     pub fn exit(value: u64) -> ! {
         unsafe {
-            syscall(EXIT);
-            asm!("int3");
+            syscall(EXIT, value);
+            asm!("ud2");
         }
         unreachable!();
     }
@@ -52,6 +52,18 @@ pub mod syscall {
 
     pub fn create_blob(dst: u64, buffer: &[u8]) -> i64 {
         unsafe { syscall(CREATE_BLOB, dst, buffer.as_ptr(), buffer.len()) }
+    }
+
+    pub fn continuation(dst: u64) -> i64 {
+        unsafe { syscall(CONTINUATION, dst) }
+    }
+
+    pub fn show(msg: &str, idx: u64) -> i64 {
+        unsafe { syscall(SHOW, msg.as_ptr(), msg.len(), idx) }
+    }
+
+    pub fn log(msg: &str) -> i64 {
+        unsafe { syscall(LOG, msg.as_ptr(), msg.len()) }
     }
 }
 

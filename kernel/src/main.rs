@@ -65,24 +65,22 @@ extern "C" fn kmain() -> ! {
     const N: usize = 1000;
     log::info!("running add program on {} inputs", N);
     let add = Lambda::from_elf(ADD_ELF);
-    for i in 0..N {
-        let x = i as u64;
-        let y = (i % 5) as u64;
+    for _ in 0..N {
+        let i = 0;
+        let x = ((10 * i + 11) % 31) as u64;
+        let y = ((13 * i + 2) % 29) as u64;
         let f = add.clone();
-        let args = Value::Tree(
-            vec![
-                Value::Blob(x.to_ne_bytes().into()),
-                Value::Blob(y.to_ne_bytes().into()),
-            ]
-            .into(),
-        );
-        let result = f.apply(args).run();
+        let fx = f.apply(Value::Blob(x.to_ne_bytes().into())).run();
+        let Value::Lambda(fx) = fx else {
+            panic!("add program did not produce a lambda: {:?}", fx);
+        };
+        let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
         let Value::Blob(z) = result else {
-            panic!("increment program did not produce a blob");
+            panic!("add program did not produce a blob: {:?}", result);
         };
         let bytes: [u8; 8] = (&*z)
             .try_into()
-            .expect("increment program produced a blob of the wrong size");
+            .expect("add program produced a blob of the wrong size");
         let z = u64::from_ne_bytes(bytes);
         assert_eq!(x + y, z);
     }

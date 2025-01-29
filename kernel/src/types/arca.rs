@@ -6,7 +6,7 @@ use super::Value;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
-    page_table: SharedPage<PageTable256TB>,
+    page_table: UniquePage<PageTable256TB>,
     register_file: RegisterFile,
     descriptors: Vec<Value>,
 }
@@ -19,14 +19,14 @@ impl Arca {
 
         let register_file = RegisterFile::new();
         Arca {
-            page_table: page_table.into(),
+            page_table,
             register_file,
             descriptors: vec![],
         }
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
-        unsafe { cpu.activate_page_table(self.page_table) };
+        unsafe { cpu.activate_page_table(self.page_table.into()) };
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
@@ -47,7 +47,7 @@ impl Arca {
     }
 
     pub fn mappings_mut(&mut self) -> &mut PageTable256TBEntry {
-        &mut SharedPage::make_mut(&mut self.page_table)[0]
+        &mut self.page_table[0]
     }
 
     pub fn descriptors(&self) -> &Vec<Value> {
@@ -102,16 +102,7 @@ impl LoadedArca<'_> {
         Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
-            page_table,
+            page_table: RefCnt::to_unique(page_table),
         }
-    }
-
-    pub fn swap(&mut self, other: &mut Arca) {
-        other.page_table = unsafe {
-            self.cpu
-                .activate_page_table(other.page_table.clone())
-                .unwrap()
-        };
-        core::mem::swap(&mut self.register_file, &mut other.register_file);
     }
 }

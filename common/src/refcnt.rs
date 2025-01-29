@@ -40,7 +40,7 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
     }
 }
 
-impl<T: Clone> RefCnt<'_, T> {
+impl<'a, T: Clone> RefCnt<'a, T> {
     pub fn make_mut(this: &mut Self) -> &mut T {
         let refcnt = Self::refcnt(this);
         if refcnt.load(Ordering::SeqCst) == 1 {
@@ -58,6 +58,15 @@ impl<T: Clone> RefCnt<'_, T> {
         this.ptr = Box::into_raw(inner);
         Self::refcnt(this).store(1, Ordering::SeqCst);
         unsafe { &mut *this.ptr }
+    }
+
+    pub fn to_unique(this: Self) -> Box<T, &'a BuddyAllocator<'a>> {
+        let mut this = this;
+        Self::make_mut(&mut this);
+        Self::refcnt(&this).store(0, Ordering::SeqCst);
+        let x = unsafe { Box::from_raw_in(this.ptr, this.allocator) };
+        core::mem::forget(this);
+        x
     }
 }
 

@@ -326,9 +326,15 @@ pub unsafe trait PageTable: Sized + Clone {
     fn new() -> UniquePage<Self> {
         unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
     }
+
+    fn writeable(&self) -> bool;
 }
 
-unsafe impl PageTable for ! {}
+unsafe impl PageTable for ! {
+    fn writeable(&self) -> bool {
+        false
+    }
+}
 
 #[derive(Debug)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
@@ -361,6 +367,10 @@ pub trait PageTableEntry: Sized + Clone {
 
     fn leaf(&self) -> bool {
         self.present() && ((self.bits() >> 7) & 1 == 1)
+    }
+
+    fn writeable(&self) -> bool {
+        self.present() && (self.bits() & 2 == 2)
     }
 
     fn nested(&self) -> bool {
@@ -415,10 +425,15 @@ pub trait PageTableEntry: Sized + Clone {
     fn chain(&mut self, table: SharedPage<Self::Table>) -> UnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
         unsafe {
+            let writeable = table.writeable();
             self.set_bits(
                 Self::TableDescriptor::new(
                     vm::ka2pa(SharedPage::into_raw(table)),
-                    Permissions::All,
+                    if writeable {
+                        Permissions::All
+                    } else {
+                        Permissions::Executable
+                    },
                 )
                 .into_bits(),
             );
@@ -490,20 +505,21 @@ pub trait PageTableEntry: Sized + Clone {
     }
 
     fn duplicate(&self) -> Self {
-        // safety assumption: cloning a page or table will increment the reference count without
-        // changing the referenced address
+        // safety assumption: cloning a shared page or table will increment the reference count
+        // without changing the referenced address
         if !self.present() {
+            unsafe { Self::new(self.bits()) }
         } else if self.leaf() {
             unsafe {
-                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                let mut descriptor = Self::PageDescriptor::from_bits(self.bits());
                 if !descriptor.global() {
                     let addr = descriptor.address();
                     if descriptor.writeable() {
                         let page: UniquePage<Self::Page> =
                             UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                         let new = page.clone();
+                        descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
                         core::mem::forget(page);
-                        core::mem::forget(new);
                     } else {
                         let page: SharedPage<Self::Page> =
                             SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
@@ -512,20 +528,31 @@ pub trait PageTableEntry: Sized + Clone {
                         core::mem::forget(new);
                     }
                 }
+                Self::new(descriptor.into_bits())
             }
         } else {
             unsafe {
-                let descriptor = Self::TableDescriptor::from_bits(self.bits());
-                let addr = descriptor.address();
-                let table: SharedPage<Self::Table> =
-                    SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
-                let table = table.clone();
-                let new = table.clone();
-                core::mem::forget(table);
-                core::mem::forget(new);
+                let mut descriptor = Self::TableDescriptor::from_bits(self.bits());
+                if descriptor.writeable() {
+                    let addr = descriptor.address();
+                    let table: SharedPage<Self::Table> =
+                        SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let new = SharedPage::to_unique(table.clone()).into();
+                    descriptor.set_address(vm::ka2pa(SharedPage::into_raw(new)));
+                    core::mem::forget(table);
+                    Self::new(descriptor.into_bits())
+                } else {
+                    let addr = descriptor.address();
+                    let table: SharedPage<Self::Table> =
+                        SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = table.clone();
+                    let new = table.clone();
+                    core::mem::forget(table);
+                    core::mem::forget(new);
+                    Self::new(descriptor.into_bits())
+                }
             }
         }
-        unsafe { Self::new(self.bits()) }
     }
 }
 
@@ -580,10 +607,26 @@ pub type PageTable1GB = [PageTable1GBEntry; 512];
 pub type PageTable512GB = [PageTable512GBEntry; 512];
 pub type PageTable256TB = [PageTable256TBEntry; 512];
 
-unsafe impl PageTable for PageTable2MB {}
-unsafe impl PageTable for PageTable1GB {}
-unsafe impl PageTable for PageTable512GB {}
-unsafe impl PageTable for PageTable256TB {}
+unsafe impl PageTable for PageTable2MB {
+    fn writeable(&self) -> bool {
+        self.iter().any(|x| x.writeable())
+    }
+}
+unsafe impl PageTable for PageTable1GB {
+    fn writeable(&self) -> bool {
+        self.iter().any(|x| x.writeable())
+    }
+}
+unsafe impl PageTable for PageTable512GB {
+    fn writeable(&self) -> bool {
+        self.iter().any(|x| x.writeable())
+    }
+}
+unsafe impl PageTable for PageTable256TB {
+    fn writeable(&self) -> bool {
+        self.iter().any(|x| x.writeable())
+    }
+}
 
 impl PageTableEntry for PageTable2MBEntry {
     type Page = Page4KB;

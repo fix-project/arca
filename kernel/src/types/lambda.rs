@@ -65,7 +65,11 @@ impl Lambda {
                         UnmappedPage::None => RefCnt::from(PageTable2MB::new()),
                         _ => panic!("invalid mapping (L1) @ {i2:#x}"),
                     };
-                    RefCnt::make_mut(&mut pt)[i1].map_unique(page);
+                    if segment.p_flags & elf::abi::PF_W != 0 {
+                        RefCnt::make_mut(&mut pt)[i1].map_unique(page);
+                    } else {
+                        RefCnt::make_mut(&mut pt)[i1].map_shared(page.into());
+                    }
                     RefCnt::make_mut(&mut pd)[i2].chain(pt);
                     RefCnt::make_mut(&mut pdpt)[i3].chain(pd);
                     arca.mappings_mut().chain(pdpt);
@@ -85,7 +89,7 @@ impl Lambda {
 
         let addr = 1 << 30;
         let stack =
-            unsafe { UniquePage::<Page2MB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
+            unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         let i1 = (addr >> 12) & 0x1ff;
         assert_eq!(i1, 0);
         let i2 = (addr >> 21) & 0x1ff;
@@ -102,10 +106,16 @@ impl Lambda {
             UnmappedPage::None => RefCnt::from(PageTable1GB::new()),
             _ => panic!("invalid mapping (L2) @ {i3:#x}"),
         };
-        RefCnt::make_mut(&mut pd)[i2].map_unique(stack);
+        let mut pt = match RefCnt::make_mut(&mut pd)[i2].unmap() {
+            UnmappedPage::Table(table) => table,
+            UnmappedPage::None => RefCnt::from(PageTable2MB::new()),
+            _ => panic!("invalid mapping (L1) @ {i2:#x}"),
+        };
+        RefCnt::make_mut(&mut pt)[i1].map_unique(stack);
+        RefCnt::make_mut(&mut pd)[i2].chain(pt);
         RefCnt::make_mut(&mut pdpt)[i3].chain(pd);
         arca.mappings_mut().chain(pdpt);
-        arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 21);
+        arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 12);
         Lambda { arca }
     }
 
