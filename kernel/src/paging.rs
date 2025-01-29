@@ -336,7 +336,7 @@ unsafe impl PageTable for ! {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnmappedPage<P: HardwarePage, T: PageTable> {
     None,
     UniquePage(UniquePage<P>),

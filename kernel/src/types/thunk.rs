@@ -165,6 +165,11 @@ impl Thunk {
                         result[0] = 0;
                     }
                 }
+                defs::syscall::RETURN_CONTINUATION => {
+                    let mut unloaded = arca.unload();
+                    unloaded.registers_mut()[Register::RAX] = 0;
+                    return Value::Lambda(Lambda::new(unloaded));
+                }
                 defs::syscall::SHOW => 'show: {
                     let ptr = args[0] as usize;
                     let len = args[1] as usize;

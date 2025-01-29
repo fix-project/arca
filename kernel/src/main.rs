@@ -49,11 +49,12 @@ extern "C" fn kmain() -> ! {
     }
 
     let identity = Lambda::from_elf(IDENTITY_ELF).apply(Value::Null);
-    const ITERS: usize = 100;
+    const ITERS: usize = 500;
     log::info!("running identity program {} times", ITERS);
+    let mut identities = vec![];
+    identities.resize_with(ITERS, || identity.clone());
     let time = kernel::kvmclock::time(|| {
-        for _ in 0..ITERS {
-            let f = identity.clone();
+        for f in identities {
             let _ = core::hint::black_box(f.run());
         }
     });
@@ -84,6 +85,21 @@ extern "C" fn kmain() -> ! {
         let z = u64::from_ne_bytes(bytes);
         assert_eq!(x + y, z);
     }
+
+    let add = Lambda::from_elf(ADD_ELF);
+    log::info!("running add program {} times", ITERS);
+    let mut adds = vec![];
+    adds.resize_with(ITERS, || add.clone());
+    let time = kernel::kvmclock::time(|| {
+        for f in adds {
+            let Value::Lambda(f) = f.apply(Value::Blob(100u64.to_ne_bytes().into())).run() else {
+                panic!()
+            };
+            let f = f.apply(Value::Blob(100u64.to_ne_bytes().into()));
+            let _ = core::hint::black_box(f.run());
+        }
+    });
+    log::info!("add program takes {} ns", time.as_nanos() / ITERS as u128);
 
     let error = Lambda::from_elf(ERROR_ELF).apply(Value::Blob(b"hello".as_slice().into()));
     log::info!("running error program");

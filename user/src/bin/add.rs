@@ -13,10 +13,7 @@ pub extern "C" fn _start() -> ! {
     user::syscall::read_blob(0, &mut x);
     let x = u64::from_ne_bytes(x);
 
-    let result = user::syscall::continuation(0);
-    if result != defs::error::CONTINUED {
-        user::syscall::exit(0);
-    }
+    user::syscall::return_continuation();
 
     let mut y = [0; 8];
     user::syscall::argument(0);

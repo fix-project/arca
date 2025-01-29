@@ -89,11 +89,10 @@ impl Lambda {
             }
         }
 
-        let addr = 1 << 30;
+        let addr = (1 << 12) * 16;
         let stack =
             unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         let i1 = (addr >> 12) & 0x1ff;
-        assert_eq!(i1, 0);
         let i2 = (addr >> 21) & 0x1ff;
         let i3 = (addr >> 30) & 0x1ff;
 
@@ -126,5 +125,9 @@ impl Lambda {
 
     pub fn apply<T: Into<Box<Value>>>(self, x: T) -> Thunk {
         Thunk::new(self, x)
+    }
+
+    pub fn arca(self) -> Arca {
+        self.arca
     }
 }

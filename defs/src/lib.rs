@@ -26,6 +26,7 @@ pub mod syscall {
     pub const EXPLODE: u64 = 0x54;
     pub const IMPLODE: u64 = 0x55;
     pub const FORCE: u64 = 0x56;
+    pub const RETURN_CONTINUATION: u64 = 0x57;
 
     pub const SHOW: u64 = 0xf0;
     pub const LOG: u64 = 0xf1;

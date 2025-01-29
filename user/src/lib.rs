@@ -58,6 +58,10 @@ pub mod syscall {
         unsafe { syscall(CONTINUATION, dst) }
     }
 
+    pub fn return_continuation() -> i64 {
+        unsafe { syscall(RETURN_CONTINUATION) }
+    }
+
     pub fn show(msg: &str, idx: u64) -> i64 {
         unsafe { syscall(SHOW, msg.as_ptr(), msg.len(), idx) }
     }
