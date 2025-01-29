@@ -1,5 +1,4 @@
 use alloc::{boxed::Box, vec::Vec};
-use common::refcnt::RefCnt;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 
 use crate::prelude::*;
@@ -51,28 +50,31 @@ impl Lambda {
 
                     let pdpt = arca.mappings_mut().unmap();
                     let mut pdpt = match pdpt {
-                        UnmappedPage::Table(table) => table,
-                        UnmappedPage::None => RefCnt::from(PageTable512GB::new()),
+                        UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+                        UnmappedPage::UniqueTable(table) => table,
+                        UnmappedPage::None => PageTable512GB::new(),
                         _ => panic!("invalid mapping (L3) @ 0x0"),
                     };
-                    let mut pd = match RefCnt::make_mut(&mut pdpt)[i3].unmap() {
-                        UnmappedPage::Table(table) => table,
-                        UnmappedPage::None => RefCnt::from(PageTable1GB::new()),
+                    let mut pd = match pdpt[i3].unmap() {
+                        UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+                        UnmappedPage::UniqueTable(table) => table,
+                        UnmappedPage::None => PageTable1GB::new(),
                         _ => panic!("invalid mapping (L2) @ {i3:#x}"),
                     };
-                    let mut pt = match RefCnt::make_mut(&mut pd)[i2].unmap() {
-                        UnmappedPage::Table(table) => table,
-                        UnmappedPage::None => RefCnt::from(PageTable2MB::new()),
+                    let mut pt = match pd[i2].unmap() {
+                        UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+                        UnmappedPage::UniqueTable(table) => table,
+                        UnmappedPage::None => PageTable2MB::new(),
                         _ => panic!("invalid mapping (L1) @ {i2:#x}"),
                     };
                     if segment.p_flags & elf::abi::PF_W != 0 {
-                        RefCnt::make_mut(&mut pt)[i1].map_unique(page);
+                        pt[i1].map_unique(page);
                     } else {
-                        RefCnt::make_mut(&mut pt)[i1].map_shared(page.into());
+                        pt[i1].map_shared(page.into());
                     }
-                    RefCnt::make_mut(&mut pd)[i2].chain(pt);
-                    RefCnt::make_mut(&mut pdpt)[i3].chain(pd);
-                    arca.mappings_mut().chain(pdpt);
+                    pd[i2].chain_unique(pt);
+                    pdpt[i3].chain_unique(pd);
+                    arca.mappings_mut().chain_unique(pdpt);
                 }
                 elf::abi::PT_PHDR => {
                     // program header
@@ -97,24 +99,27 @@ impl Lambda {
 
         let pdpt = arca.mappings_mut().unmap();
         let mut pdpt = match pdpt {
-            UnmappedPage::Table(table) => table,
-            UnmappedPage::None => RefCnt::from(PageTable512GB::new()),
+            UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+            UnmappedPage::UniqueTable(table) => table,
+            UnmappedPage::None => PageTable512GB::new(),
             _ => panic!("invalid mapping (L3) @ 0x0"),
         };
-        let mut pd = match RefCnt::make_mut(&mut pdpt)[i3].unmap() {
-            UnmappedPage::Table(table) => table,
-            UnmappedPage::None => RefCnt::from(PageTable1GB::new()),
+        let mut pd = match pdpt[i3].unmap() {
+            UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+            UnmappedPage::UniqueTable(table) => table,
+            UnmappedPage::None => PageTable1GB::new(),
             _ => panic!("invalid mapping (L2) @ {i3:#x}"),
         };
-        let mut pt = match RefCnt::make_mut(&mut pd)[i2].unmap() {
-            UnmappedPage::Table(table) => table,
-            UnmappedPage::None => RefCnt::from(PageTable2MB::new()),
+        let mut pt = match pd[i2].unmap() {
+            UnmappedPage::SharedTable(table) => SharedPage::into_unique(table),
+            UnmappedPage::UniqueTable(table) => table,
+            UnmappedPage::None => PageTable2MB::new(),
             _ => panic!("invalid mapping (L1) @ {i2:#x}"),
         };
-        RefCnt::make_mut(&mut pt)[i1].map_unique(stack);
-        RefCnt::make_mut(&mut pd)[i2].chain(pt);
-        RefCnt::make_mut(&mut pdpt)[i3].chain(pd);
-        arca.mappings_mut().chain(pdpt);
+        pt[i1].map_unique(stack);
+        pd[i2].chain_unique(pt);
+        pdpt[i3].chain_unique(pd);
+        arca.mappings_mut().chain_unique(pdpt);
         arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 12);
         Lambda { arca }
     }

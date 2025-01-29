@@ -59,7 +59,7 @@ pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<PageTable512GB>> =
 pub(crate) static KERNEL_PAGE_MAP: InitCell<SharedPage<PageTable256TB>> = InitCell::new(|| {
     let pdpt = KERNEL_MAPPINGS.clone();
     let mut map = PageTable256TB::new();
-    map[256].chain(pdpt);
+    map[256].chain_shared(pdpt);
     map.into()
 });
 

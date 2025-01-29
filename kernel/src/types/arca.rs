@@ -15,7 +15,7 @@ impl Arca {
     pub fn new() -> Arca {
         let mut page_table = PageTable256TB::new();
         let pdpt = crate::rsstart::KERNEL_MAPPINGS.clone();
-        page_table[256].chain(pdpt);
+        page_table[256].chain_shared(pdpt);
 
         let register_file = RegisterFile::new();
         Arca {
@@ -102,7 +102,7 @@ impl LoadedArca<'_> {
         Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
-            page_table: RefCnt::to_unique(page_table),
+            page_table: RefCnt::into_unique(page_table),
         }
     }
 }

@@ -60,7 +60,7 @@ impl<'a, T: Clone> RefCnt<'a, T> {
         unsafe { &mut *this.ptr }
     }
 
-    pub fn to_unique(this: Self) -> Box<T, &'a BuddyAllocator<'a>> {
+    pub fn into_unique(this: Self) -> Box<T, &'a BuddyAllocator<'a>> {
         let mut this = this;
         Self::make_mut(&mut this);
         Self::refcnt(&this).store(0, Ordering::SeqCst);
