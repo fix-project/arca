@@ -38,10 +38,6 @@ pub mod syscall {
         unreachable!();
     }
 
-    pub fn argument(dst: u64) -> i64 {
-        unsafe { syscall(ARGUMENT, dst) }
-    }
-
     pub fn read_blob(src: u64, buffer: &mut [u8]) -> i64 {
         unsafe { syscall(READ, src, buffer.as_ptr(), buffer.len()) }
     }
@@ -58,8 +54,8 @@ pub mod syscall {
         unsafe { syscall(CONTINUATION, dst) }
     }
 
-    pub fn return_continuation() -> i64 {
-        unsafe { syscall(RETURN_CONTINUATION) }
+    pub fn prompt(dst: u64) -> i64 {
+        unsafe { syscall(PROMPT, dst) }
     }
 
     pub fn show(msg: &str, idx: u64) -> i64 {

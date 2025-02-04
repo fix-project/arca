@@ -19,7 +19,7 @@ const ERROR_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_error"));
 extern "C" fn kmain() -> ! {
     log::info!("kmain");
 
-    let trap = Lambda::from_elf(TRAP_ELF).apply(Value::Null);
+    let trap = Thunk::from_elf(TRAP_ELF);
     log::info!("running trap program");
     let result = trap.run();
     match result {
@@ -40,7 +40,10 @@ extern "C" fn kmain() -> ! {
     ];
 
     log::info!("running identity program on {} inputs", inputs.len());
-    let identity = Lambda::from_elf(IDENTITY_ELF);
+    let identity = Thunk::from_elf(IDENTITY_ELF);
+    let Value::Lambda(identity) = identity.run() else {
+        panic!();
+    };
     for input in inputs {
         let id = identity.clone();
         let id = id.apply(input.clone());
@@ -48,7 +51,7 @@ extern "C" fn kmain() -> ! {
         assert_eq!(input, result);
     }
 
-    let identity = Lambda::from_elf(IDENTITY_ELF).apply(Value::Null);
+    let identity = identity.apply(Value::Null);
     const ITERS: usize = 500;
     log::info!("running identity program {} times", ITERS);
     let mut identities = vec![];
@@ -65,7 +68,10 @@ extern "C" fn kmain() -> ! {
 
     const N: usize = 1000;
     log::info!("running add program on {} inputs", N);
-    let add = Lambda::from_elf(ADD_ELF);
+    let add = Thunk::from_elf(ADD_ELF);
+    let Value::Lambda(add) = add.run() else {
+        panic!();
+    };
     for _ in 0..N {
         let i = 0;
         let x = ((10 * i + 11) % 31) as u64;
@@ -86,7 +92,6 @@ extern "C" fn kmain() -> ! {
         assert_eq!(x + y, z);
     }
 
-    let add = Lambda::from_elf(ADD_ELF);
     log::info!("running add program {} times", ITERS);
     let mut adds = vec![];
     adds.resize_with(ITERS, || add.clone());
@@ -101,7 +106,11 @@ extern "C" fn kmain() -> ! {
     });
     log::info!("add program takes {} ns", time.as_nanos() / ITERS as u128);
 
-    let error = Lambda::from_elf(ERROR_ELF).apply(Value::Blob(b"hello".as_slice().into()));
+    let error = Thunk::from_elf(ERROR_ELF);
+    let Value::Lambda(error) = error.run() else {
+        panic!();
+    };
+    let error = error.apply(Value::Blob(b"hello".as_slice().into()));
     log::info!("running error program");
     let result = error.run();
     match result {

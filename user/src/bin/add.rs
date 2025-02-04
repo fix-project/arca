@@ -9,14 +9,12 @@ pub extern "C" fn _start() -> ! {
     user::syscall::resize(1);
 
     let mut x = [0; 8];
-    user::syscall::argument(0);
+    user::syscall::prompt(0);
     user::syscall::read_blob(0, &mut x);
     let x = u64::from_ne_bytes(x);
 
-    user::syscall::return_continuation();
-
     let mut y = [0; 8];
-    user::syscall::argument(0);
+    user::syscall::prompt(0);
     user::syscall::read_blob(0, &mut y);
     let y = u64::from_ne_bytes(y);
 

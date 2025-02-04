@@ -8,12 +8,11 @@ pub mod syscall {
     pub const RESIZE: u64 = 0x04;
 
     pub const EXIT: u64 = 0x10;
-    pub const ARGUMENT: u64 = 0x11;
-    pub const EQ: u64 = 0x12;
-    pub const FIND: u64 = 0x13;
-    pub const LEN: u64 = 0x14;
-    pub const READ: u64 = 0x15;
-    pub const TYPE: u64 = 0x16;
+    pub const EQ: u64 = 0x11;
+    pub const FIND: u64 = 0x12;
+    pub const LEN: u64 = 0x13;
+    pub const READ: u64 = 0x14;
+    pub const TYPE: u64 = 0x15;
 
     pub const CREATE_ATOM: u64 = 0x20;
     pub const CREATE_BLOB: u64 = 0x30;
@@ -26,7 +25,7 @@ pub mod syscall {
     pub const EXPLODE: u64 = 0x54;
     pub const IMPLODE: u64 = 0x55;
     pub const FORCE: u64 = 0x56;
-    pub const RETURN_CONTINUATION: u64 = 0x57;
+    pub const PROMPT: u64 = 0x57;
 
     pub const SHOW: u64 = 0xf0;
     pub const LOG: u64 = 0xf1;

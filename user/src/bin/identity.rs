@@ -8,6 +8,6 @@ extern crate user;
 pub extern "C" fn _start() -> ! {
     let arg = 0;
     user::syscall::resize(1);
-    user::syscall::argument(arg);
+    user::syscall::prompt(0);
     user::syscall::exit(arg);
 }

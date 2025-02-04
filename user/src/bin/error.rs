@@ -7,7 +7,7 @@ extern crate user;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     user::syscall::resize(1);
-    user::syscall::argument(0);
+    user::syscall::prompt(0);
     let result = user::syscall::read_blob(0, unsafe {
         core::slice::from_raw_parts_mut(0xff as *mut _, 8)
     });
