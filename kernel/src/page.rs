@@ -12,8 +12,11 @@ pub type Page4KB = [u8; 1 << 12];
 pub type Page2MB = [u8; 1 << 21];
 pub type Page1GB = [u8; 1 << 30];
 
-#[allow(type_alias_bounds)]
-pub type UniquePage<T: HardwarePage> = Box<T, &'static BuddyAllocator<'static>>;
+pub type UniquePage<T> = Box<T, &'static BuddyAllocator<'static>>;
+pub type SharedPage<T> = RefCnt<'static, T>;
 
-#[allow(type_alias_bounds)]
-pub type SharedPage<T: HardwarePage> = RefCnt<'static, T>;
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum Page<T> {
+    Unique(UniquePage<T>),
+    Shared(SharedPage<T>),
+}

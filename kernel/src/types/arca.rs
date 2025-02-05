@@ -1,23 +1,21 @@
 use alloc::{vec, vec::Vec};
 
-use crate::{cpu::ExitStatus, prelude::*, rsstart::KERNEL_PAGE_MAP};
+use crate::{cpu::ExitStatus, prelude::*};
 
 use super::Value;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
-    page_table: UniquePage<PageTable256TB>,
+    page_table: AddressSpace,
     register_file: RegisterFile,
     descriptors: Vec<Value>,
 }
 
 impl Arca {
     pub fn new() -> Arca {
-        let mut page_table = PageTable256TB::new();
-        let pdpt = crate::rsstart::KERNEL_MAPPINGS.clone();
-        page_table[256].chain_shared(pdpt);
-
+        let page_table = AddressSpace::new();
         let register_file = RegisterFile::new();
+
         Arca {
             page_table,
             register_file,
@@ -26,7 +24,7 @@ impl Arca {
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
-        unsafe { cpu.activate_page_table(self.page_table.into()) };
+        cpu.activate_address_space(self.page_table);
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
@@ -42,12 +40,12 @@ impl Arca {
         &mut self.register_file
     }
 
-    pub fn mappings(&self) -> &PageTable256TBEntry {
-        &self.page_table[0]
-    }
+    // pub fn mappings(&self) -> &PageTableEntry<PageTable256TB> {
+    //     &self.page_table[0]
+    // }
 
-    pub fn mappings_mut(&mut self) -> &mut PageTable256TBEntry {
-        &mut self.page_table[0]
+    pub fn mappings_mut(&mut self) -> &mut AddressSpace {
+        &mut self.page_table
     }
 
     pub fn descriptors(&self) -> &Vec<Value> {
@@ -93,16 +91,12 @@ impl LoadedArca<'_> {
     }
 
     pub fn unload(self) -> Arca {
-        let page_table = unsafe {
-            self.cpu
-                .activate_page_table(KERNEL_PAGE_MAP.clone())
-                .unwrap()
-        };
+        let page_table = self.cpu.deactivate_address_space();
 
         Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
-            page_table: RefCnt::into_unique(page_table),
+            page_table,
         }
     }
 }

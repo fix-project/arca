@@ -7,14 +7,13 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
-    allocator::PHYSICAL_ALLOCATOR,
     debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     initcell::InitCell,
     msr,
-    page::SharedPage,
-    paging::{PageTable, PageTable256TB, PageTable512GB, PageTableEntry, Permissions},
+    paging::Permissions,
+    prelude::*,
     vm,
 };
 
@@ -50,18 +49,11 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
 pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<PageTable512GB>> =
     InitCell::new(|| unsafe {
         let mut pdpt = PageTable512GB::new();
-        for (i, entry) in pdpt.iter_mut().enumerate() {
-            entry.map_global(i << 30, Permissions::None);
+        for i in 0..512 {
+            pdpt[i].map_global(i << 30, Permissions::None);
         }
         pdpt.into()
     });
-
-pub(crate) static KERNEL_PAGE_MAP: InitCell<SharedPage<PageTable256TB>> = InitCell::new(|| {
-    let pdpt = KERNEL_MAPPINGS.clone();
-    let mut map = PageTable256TB::new();
-    map[256].chain_shared(pdpt);
-    map.into()
-});
 
 #[no_mangle]
 unsafe extern "C" fn _start(

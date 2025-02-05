@@ -7,7 +7,7 @@ pub mod pagetable;
 pub mod thunk;
 
 pub use arca::Arca;
-pub use page::Page;
+// pub use page::Page;
 pub use pagetable::PageTable;
 pub type Blob = Arc<[u8]>;
 pub type Tree = Arc<[Value]>;
@@ -21,7 +21,7 @@ pub enum Value {
     Atom(String),
     Blob(Blob),
     Tree(Tree),
-    Page(Page),
+    // Page(Page),
     PageTable(PageTable),
     Lambda(Lambda),
     Thunk(Thunk),
