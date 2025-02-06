@@ -135,9 +135,6 @@ pub unsafe fn init() {
 
     let mut lapic = LAPIC.borrow_mut();
 
-    log::info!("id: {}", lapic.id());
-    log::info!("version: {:#x}", lapic.version());
-
     lapic.set_spurious_interrupt_vector(0xff);
     lapic.set_apic_enabled(true);
     lapic.set_divide_configuration(TimerDivider::One);

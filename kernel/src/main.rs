@@ -41,8 +41,9 @@ extern "C" fn kmain() -> ! {
 
     log::info!("running identity program on {} inputs", inputs.len());
     let identity = Thunk::from_elf(IDENTITY_ELF);
-    let Value::Lambda(identity) = identity.run() else {
-        panic!();
+    let result = identity.run();
+    let Value::Lambda(identity) = result else {
+        panic!("{result:?}");
     };
     for input in inputs {
         let id = identity.clone();
