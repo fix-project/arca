@@ -89,6 +89,7 @@ unsafe extern "C" fn _start(
 
     crate::lapic::init();
 
+    // asm!("sti");
     kmain();
     crate::shutdown();
 }

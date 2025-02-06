@@ -27,6 +27,19 @@ enum TimerMode {
     TimeStampCounterDeadline = 0b10,
 }
 
+#[repr(u8)]
+#[derive(Debug)]
+enum TimerDivider {
+    Two = 0,
+    Four = 1,
+    Eight = 2,
+    Sixteen = 3,
+    ThirtyTwo = 4,
+    SixtyFour = 5,
+    OneHundredTwentyEight = 6,
+    One = 7,
+}
+
 impl TimerMode {
     pub const fn from_bits(bits: u8) -> Self {
         match bits {
@@ -88,12 +101,21 @@ impl LocalApic {
         self.write(0x32, entry.into_bits());
     }
 
-    fn set_divide_configuration(&mut self, value: u32) {
-        self.write(0x3E, value);
+    fn set_divide_configuration(&mut self, value: TimerDivider) {
+        self.write(0x3E, value as u32);
     }
 
     fn set_initial_count(&mut self, value: u32) {
         self.write(0x38, value);
+    }
+
+    fn get_current_count(&self) -> u32 {
+        self.read(0x39)
+    }
+
+    fn get_errors(&self) -> u32 {
+        self.write(0x28, 0);
+        self.read(0x28)
     }
 
     pub unsafe fn clear_interrupt(&mut self) {
@@ -105,23 +127,26 @@ impl LocalApic {
 pub static LAPIC: RefCell<LocalApic> = RefCell::new(LocalApic(PhantomData));
 
 pub unsafe fn init() {
-    // switch to x2APIC
+    // switch to x2APIC and enable LAPIC
     // https://courses.cs.washington.edu/courses/cse451/21sp/readings/x2apic.pdf
     // - section 2.2 (p2-2)
     let val = crate::msr::rdmsr(0x1B);
     crate::msr::wrmsr(0x1B, val | (0b11 << 10));
 
-    // let mut lapic = LAPIC.borrow_mut();
-    //
-    // lapic.set_spurious_interrupt_vector(0xff);
-    // lapic.set_apic_enabled(false);
-    // lapic.set_divide_configuration(0x3);
-    // lapic.set_timer(
-    //     TimerConfig::new()
-    //         .with_mask(false)
-    //         .with_vector(0x30)
-    //         .with_mode(TimerMode::Periodic),
-    // );
+    let mut lapic = LAPIC.borrow_mut();
 
-    // lapic.set_initial_count(0x1000000);
+    log::info!("id: {}", lapic.id());
+    log::info!("version: {:#x}", lapic.version());
+
+    lapic.set_spurious_interrupt_vector(0xff);
+    lapic.set_apic_enabled(true);
+    lapic.set_divide_configuration(TimerDivider::One);
+    lapic.set_timer(
+        TimerConfig::new()
+            .with_mask(false)
+            .with_vector(0x20)
+            .with_mode(TimerMode::Periodic),
+    );
+
+    // lapic.set_initial_count(0x1);
 }

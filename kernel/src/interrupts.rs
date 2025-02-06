@@ -56,6 +56,10 @@ extern "C" {
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     if registers.cs & 0b11 == 0b11 {
+        if registers.isr == 0x20 {
+            // crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+            log::info!("user tick");
+        }
         // return to user mode
         let regs = RegisterFile {
             registers: registers.registers,
@@ -98,9 +102,9 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);
     }
-    // if registers.isr == 0x30 {
-    //     crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-    // } else {
-    panic!("unhandled system ISR: {:x?}", registers);
-    // }
+    if registers.isr == 0x20 {
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+    } else {
+        panic!("unhandled system ISR: {:x?}", registers);
+    }
 }
