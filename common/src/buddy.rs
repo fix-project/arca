@@ -747,13 +747,40 @@ mod tests {
 
     #[bench]
     fn bench_allocate_free(b: &mut Bencher) {
-        let region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let region = Box::leak(region);
-        let allocator = BuddyAllocator::new(region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
         b.iter(|| {
             let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
                 Box::new_uninit_slice_in(128, &allocator);
             core::mem::drop(x);
         });
+    }
+
+    #[test]
+    fn stress_test() {
+        use std::hash::{BuildHasher, Hasher, RandomState};
+        let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
+        let mut v = vec![];
+        let random = |limit: usize| {
+            let x: u64 = RandomState::new().build_hasher().finish();
+            x as usize % limit
+        };
+        for _ in 0..100000 {
+            let used_before = allocator.used_size();
+            let remaining = allocator.total_size() - used_before;
+            let size = random(core::cmp::min(1 << 21, remaining / 2));
+            let alloc = Box::<[u8], &BuddyAllocator>::new_uninit_slice_in(size, &allocator);
+            let used_after = allocator.used_size();
+            assert!(used_after >= used_before + size);
+            if !v.is_empty() && size % 3 == 0 {
+                let number = random(v.len());
+                for _ in 0..number {
+                    let index = random(v.len());
+                    v.remove(index);
+                }
+            }
+            v.push(alloc);
+        }
     }
 }

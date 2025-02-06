@@ -18,13 +18,11 @@ unsafe impl GlobalAlloc for Allocator {
         allocator.allocate_raw(size) as *mut u8
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
-        // TODO: there's a bug somewhere in the buddy allocator leading to crashes
-
-        // let allocator = &PHYSICAL_ALLOCATOR;
-        // let size = layout.size();
-        // let align = layout.align();
-        // let size = core::cmp::max(size, align);
-        // allocator.free_raw(ptr as *mut (), size)
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        let allocator = &PHYSICAL_ALLOCATOR;
+        let size = layout.size();
+        let align = layout.align();
+        let size = core::cmp::max(size, align);
+        allocator.free_raw(ptr as *mut (), size)
     }
 }
