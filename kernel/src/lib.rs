@@ -34,6 +34,7 @@ pub mod page;
 pub mod paging;
 pub mod rt;
 pub mod spinlock;
+pub mod parser;
 // pub mod tsc;
 pub mod prelude;
 pub mod types;

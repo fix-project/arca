@@ -8,6 +8,8 @@ extern crate kernel;
 use alloc::vec;
 
 use kernel::{prelude::*, shutdown};
+use common::ringbuffer::RingBuffer;
+use common::message::RawMessage;
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -18,7 +20,7 @@ const PERFORM_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_perform"));
 
 #[no_mangle]
 #[inline(never)]
-extern "C" fn kmain() -> ! {
+extern "C" fn kmain(rb_in: RefCnt<RingBuffer<RawMessage>>, rb_out: RefCnt<RingBuffer<RawMessage>>) -> ! {
     log::info!("kmain");
     const ITERS: usize = 500;
     const N: usize = 1000;
