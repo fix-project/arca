@@ -18,6 +18,9 @@ use crate::{
     vm,
 };
 
+use common::message::Message;
+use common::ringbuffer::{RingBuffer, RingBufferRawData};
+
 extern "C" {
     fn kmain();
     fn set_gdt(gdtr: *const GdtDescriptor);
@@ -69,6 +72,7 @@ unsafe extern "C" fn _start(
     inner_size: usize,
     refcnt_offset: usize,
     refcnt_size: usize,
+    ring_buffer_data_ptr: usize,
 ) -> ! {
     init_bss();
     let _ = log::set_logger(&LOGGER);
@@ -96,6 +100,16 @@ unsafe extern "C" fn _start(
     crate::kvmclock::init();
 
     crate::lapic::init();
+
+    let mut data: RingBuffer<'_, Message> = RingBuffer::from_raw_parts(
+        *PHYSICAL_ALLOCATOR
+            .from_offset::<RingBufferRawData>(ring_buffer_data_ptr)
+            .as_ref()
+            .unwrap(),
+        &PHYSICAL_ALLOCATOR,
+    );
+    let res = data.read();
+    log::info!("read message with size {}", res.size);
 
     kmain();
     crate::shutdown();

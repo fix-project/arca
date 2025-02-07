@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
+use common::message::{Message, OpCode};
+use common::ringbuffer::RingBuffer;
 use common::BuddyAllocator;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
@@ -205,6 +207,17 @@ fn main() -> ExitCode {
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
+    let ring_buffer_raw = RingBuffer::<Message>::with_capacity(10, &allocator);
+    let ring_buffer_ptr = ring_buffer_raw.to_kernel_offset(&allocator);
+    let mut rb: RingBuffer<'_, Message> =
+        unsafe { RingBuffer::from_raw_parts(ring_buffer_raw, &allocator) };
+
+    rb.write(Message {
+        opcode: OpCode::CreateBlob,
+        ptr: 0,
+        size: 1048576,
+    });
+
     let raw = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
     vcpu_regs.rsp = pa2ka((stack_start + (2 * 0x400 * 0x400)) as usize) as u64;
@@ -212,6 +225,7 @@ fn main() -> ExitCode {
     vcpu_regs.rsi = raw.inner_size as u64;
     vcpu_regs.rdx = raw.refcnt_offset as u64;
     vcpu_regs.rcx = raw.refcnt_size as u64;
+    vcpu_regs.r8 = ring_buffer_ptr as u64;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 

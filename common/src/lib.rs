@@ -12,3 +12,5 @@ pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod controlreg;
+pub mod message;
+pub mod ringbuffer;
