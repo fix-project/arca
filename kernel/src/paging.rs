@@ -656,6 +656,18 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         original
     }
 
+    pub fn map_shared(
+        &mut self,
+        page: SharedPage<T::Page>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.0
+                .map_unchecked(SharedPage::into_raw(page), Permissions::Executable)
+        };
+        original
+    }
+
     /// # Safety
     /// The physical address being mapped must not cause a violation of Rust's safety model.
     pub unsafe fn map_global(

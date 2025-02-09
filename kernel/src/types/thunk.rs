@@ -3,7 +3,7 @@ use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 
 use crate::{
     prelude::*,
-    types::pagetable::{AnyUniqueEntry, UniqueEntry},
+    types::pagetable::{AnyEntry, Entry},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,17 +51,15 @@ impl Thunk {
                     page[offset..offset + filesz].copy_from_slice(data);
                     assert_eq!(page_start & 0xfff, 0);
 
-                    arca.mappings_mut().map_unique(
-                        page_start,
-                        AnyUniqueEntry::Entry4KB(UniqueEntry::Page(page)),
-                    );
-
-                    // TODO: support shared mappings
-                    // if segment.p_flags & elf::abi::PF_W != 0 {
-                    //     pt.get(i1).map_unique(page);
-                    // } else {
-                    //     pt.get(i1).map_shared(page.into());
-                    // }
+                    if segment.p_flags & elf::abi::PF_W != 0 {
+                        arca.mappings_mut()
+                            .map(page_start, AnyEntry::Entry4KB(Entry::UniquePage(page)));
+                    } else {
+                        arca.mappings_mut().map(
+                            page_start,
+                            AnyEntry::Entry4KB(Entry::SharedPage(page.into())),
+                        );
+                    }
                 }
                 elf::abi::PT_PHDR => {
                     // program header
@@ -80,7 +78,7 @@ impl Thunk {
         let stack =
             unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         arca.mappings_mut()
-            .map_unique(addr, AnyUniqueEntry::Entry4KB(UniqueEntry::Page(stack)));
+            .map(addr, AnyEntry::Entry4KB(Entry::UniquePage(stack)));
         arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 12);
         Thunk { arca }
     }

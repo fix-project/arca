@@ -5,7 +5,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{initcell::InitCell, prelude::*, types::pagetable::UniqueEntry, vm::ka2pa};
+use crate::{initcell::InitCell, prelude::*, types::pagetable::Entry, vm::ka2pa};
 
 #[core_local]
 pub static CPU: InitCell<RefCell<Cpu>> = InitCell::new(|| {
@@ -128,7 +128,7 @@ impl Cpu {
     pub fn activate_address_space(&mut self, address_space: AddressSpace) {
         match address_space {
             AddressSpace::AddressSpace0B => {}
-            AddressSpace::AddressSpace4KB(offset, unique_entry) => {
+            AddressSpace::AddressSpace4KB(offset, entry) => {
                 self.size = Some(12);
                 self.offset = offset;
 
@@ -136,9 +136,10 @@ impl Cpu {
                 let mut pd = self.pd.take().unwrap();
                 let mut pdpt = self.pdpt.take().unwrap();
 
-                match unique_entry {
-                    UniqueEntry::Page(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
-                    UniqueEntry::Table(t) => pt.entry_mut(offset & 0x1ff).chain_unique(t),
+                match entry {
+                    Entry::UniquePage(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
+                    Entry::SharedPage(p) => pt.entry_mut(offset & 0x1ff).map_shared(p),
+                    Entry::UniqueTable(t) => pt.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
                 pd.entry_mut((offset >> 9) & 0x1ff).chain_unique(pt);
@@ -147,16 +148,17 @@ impl Cpu {
                     .entry_mut((offset >> 27) & 0x1ff)
                     .chain_unique(pdpt);
             }
-            AddressSpace::AddressSpace2MB(offset, unique_entry) => {
+            AddressSpace::AddressSpace2MB(offset, entry) => {
                 self.size = Some(21);
                 self.offset = offset;
 
                 let mut pd = self.pd.take().unwrap();
                 let mut pdpt = self.pdpt.take().unwrap();
 
-                match unique_entry {
-                    UniqueEntry::Page(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
-                    UniqueEntry::Table(t) => pd.entry_mut(offset & 0x1ff).chain_unique(t),
+                match entry {
+                    Entry::UniquePage(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
+                    Entry::SharedPage(p) => pd.entry_mut(offset & 0x1ff).map_shared(p),
+                    Entry::UniqueTable(t) => pd.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
                 pdpt.entry_mut((offset >> 9) & 0x1ff).chain_unique(pd);
@@ -164,15 +166,16 @@ impl Cpu {
                     .entry_mut((offset >> 18) & 0x1ff)
                     .chain_unique(pdpt);
             }
-            AddressSpace::AddressSpace1GB(offset, unique_entry) => {
+            AddressSpace::AddressSpace1GB(offset, entry) => {
                 self.size = Some(30);
                 self.offset = offset;
 
                 let mut pdpt = self.pdpt.take().unwrap();
 
-                match unique_entry {
-                    UniqueEntry::Page(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
-                    UniqueEntry::Table(t) => pdpt.entry_mut(offset & 0x1ff).chain_unique(t),
+                match entry {
+                    Entry::UniquePage(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
+                    Entry::SharedPage(p) => pdpt.entry_mut(offset & 0x1ff).map_shared(p),
+                    Entry::UniqueTable(t) => pdpt.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
                 self.pml4
@@ -205,8 +208,8 @@ impl Cpu {
                     panic!();
                 };
                 let entry = match pt.entry_mut(offset & 0x1ff).unmap() {
-                    AugmentedUnmappedPage::UniquePage(p) => UniqueEntry::Page(p),
-                    AugmentedUnmappedPage::UniqueTable(t) => UniqueEntry::Table(t),
+                    AugmentedUnmappedPage::UniquePage(p) => Entry::UniquePage(p),
+                    AugmentedUnmappedPage::UniqueTable(t) => Entry::UniqueTable(t),
                     _ => todo!(),
                 };
                 self.pt = Some(pt);
@@ -232,7 +235,7 @@ impl Cpu {
                 };
                 self.pdpt = Some(pdpt);
                 self.pd = Some(pd);
-                AddressSpace::AddressSpace2MB(offset, UniqueEntry::Table(pt))
+                AddressSpace::AddressSpace2MB(offset, Entry::UniqueTable(pt))
             }
             Some(30) => {
                 let offset = self.offset;
@@ -246,7 +249,7 @@ impl Cpu {
                     panic!();
                 };
                 self.pdpt = Some(pdpt);
-                AddressSpace::AddressSpace1GB(offset, UniqueEntry::Table(pd))
+                AddressSpace::AddressSpace1GB(offset, Entry::UniqueTable(pd))
             }
             None => AddressSpace::new(),
             _ => todo!(),
