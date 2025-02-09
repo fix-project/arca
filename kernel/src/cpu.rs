@@ -3,29 +3,32 @@ use core::{
     ops::{Index, IndexMut},
 };
 
+use alloc::boxed::Box;
+
 use crate::{initcell::InitCell, prelude::*, types::pagetable::UniqueEntry, vm::ka2pa};
 
 #[core_local]
 pub static CPU: InitCell<RefCell<Cpu>> = InitCell::new(|| {
-    let mut pml4 = PageTable256TB::new();
-    pml4[256].chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
+    let mut pml4 = AugmentedPageTable::new();
+    pml4.entry_mut(256)
+        .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
     RefCell::new(Cpu {
         size: None,
         offset: 0,
         pml4,
-        pdpt: Some(PageTable512GB::new()),
-        pd: Some(PageTable1GB::new()),
-        pt: Some(PageTable2MB::new()),
+        pdpt: Some(AugmentedPageTable::new()),
+        pd: Some(AugmentedPageTable::new()),
+        pt: Some(AugmentedPageTable::new()),
     })
 });
 
 pub struct Cpu {
     size: Option<usize>,
     offset: usize,
-    pml4: UniquePage<PageTable256TB>,
-    pdpt: Option<UniquePage<PageTable512GB>>,
-    pd: Option<UniquePage<PageTable1GB>>,
-    pt: Option<UniquePage<PageTable2MB>>,
+    pml4: UniquePage<AugmentedPageTable<PageTable256TB>>,
+    pdpt: Option<UniquePage<AugmentedPageTable<PageTable512GB>>>,
+    pd: Option<UniquePage<AugmentedPageTable<PageTable1GB>>>,
+    pt: Option<UniquePage<AugmentedPageTable<PageTable2MB>>>,
 }
 
 impl !Sync for Cpu {}
@@ -134,13 +137,15 @@ impl Cpu {
                 let mut pdpt = self.pdpt.take().unwrap();
 
                 match unique_entry {
-                    UniqueEntry::Page(p) => pt[offset & 0x1ff].map_unique(p),
-                    UniqueEntry::Table(t) => pt[offset & 0x1ff].chain_unique(t),
+                    UniqueEntry::Page(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
+                    UniqueEntry::Table(t) => pt.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
-                pd[(offset >> 9) & 0x1ff].chain_unique(pt);
-                pdpt[(offset >> 18) & 0x1ff].chain_unique(pd);
-                self.pml4[(offset >> 27) & 0x1ff].chain_unique(pdpt);
+                pd.entry_mut((offset >> 9) & 0x1ff).chain_unique(pt);
+                pdpt.entry_mut((offset >> 18) & 0x1ff).chain_unique(pd);
+                self.pml4
+                    .entry_mut((offset >> 27) & 0x1ff)
+                    .chain_unique(pdpt);
             }
             AddressSpace::AddressSpace2MB(offset, unique_entry) => {
                 self.size = Some(21);
@@ -150,12 +155,14 @@ impl Cpu {
                 let mut pdpt = self.pdpt.take().unwrap();
 
                 match unique_entry {
-                    UniqueEntry::Page(p) => pd[offset & 0x1ff].map_unique(p),
-                    UniqueEntry::Table(t) => pd[offset & 0x1ff].chain_unique(t),
+                    UniqueEntry::Page(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
+                    UniqueEntry::Table(t) => pd.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
-                pdpt[(offset >> 9) & 0x1ff].chain_unique(pd);
-                self.pml4[(offset >> 18) & 0x1ff].chain_unique(pdpt);
+                pdpt.entry_mut((offset >> 9) & 0x1ff).chain_unique(pd);
+                self.pml4
+                    .entry_mut((offset >> 18) & 0x1ff)
+                    .chain_unique(pdpt);
             }
             AddressSpace::AddressSpace1GB(offset, unique_entry) => {
                 self.size = Some(30);
@@ -164,15 +171,17 @@ impl Cpu {
                 let mut pdpt = self.pdpt.take().unwrap();
 
                 match unique_entry {
-                    UniqueEntry::Page(p) => pdpt[offset & 0x1ff].map_unique(p),
-                    UniqueEntry::Table(t) => pdpt[offset & 0x1ff].chain_unique(t),
+                    UniqueEntry::Page(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
+                    UniqueEntry::Table(t) => pdpt.entry_mut(offset & 0x1ff).chain_unique(t),
                 };
 
-                self.pml4[(offset >> 9) & 0x1ff].chain_unique(pdpt);
+                self.pml4
+                    .entry_mut((offset >> 9) & 0x1ff)
+                    .chain_unique(pdpt);
             }
         }
         unsafe {
-            set_pt(ka2pa(self.pml4.as_ptr()));
+            set_pt(ka2pa(Box::as_ptr(&self.pml4)));
         }
     }
 
@@ -180,23 +189,24 @@ impl Cpu {
         match self.size.take() {
             Some(12) => {
                 let offset = self.offset;
-                let HardwareUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4[(offset >> 27) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
+                    self.pml4.entry_mut((offset >> 27) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let HardwareUnmappedPage::UniqueTable(mut pd) =
-                    pdpt[(offset >> 18) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pd) =
+                    pdpt.entry_mut((offset >> 18) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let HardwareUnmappedPage::UniqueTable(mut pt) = pd[(offset >> 9) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pt) =
+                    pd.entry_mut((offset >> 9) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let entry = match pt[offset & 0x1ff].unmap() {
-                    HardwareUnmappedPage::UniquePage(p) => UniqueEntry::Page(p),
-                    HardwareUnmappedPage::UniqueTable(t) => UniqueEntry::Table(t),
+                let entry = match pt.entry_mut(offset & 0x1ff).unmap() {
+                    AugmentedUnmappedPage::UniquePage(p) => UniqueEntry::Page(p),
+                    AugmentedUnmappedPage::UniqueTable(t) => UniqueEntry::Table(t),
                     _ => todo!(),
                 };
                 self.pt = Some(pt);
@@ -206,16 +216,18 @@ impl Cpu {
             }
             Some(21) => {
                 let offset = self.offset;
-                let HardwareUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4[(offset >> 18) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
+                    self.pml4.entry_mut((offset >> 18) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let HardwareUnmappedPage::UniqueTable(mut pd) = pdpt[(offset >> 9) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pd) =
+                    pdpt.entry_mut((offset >> 9) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let HardwareUnmappedPage::UniqueTable(pt) = pd[offset & 0x1ff].unmap() else {
+                let AugmentedUnmappedPage::UniqueTable(pt) = pd.entry_mut(offset & 0x1ff).unmap()
+                else {
                     todo!();
                 };
                 self.pdpt = Some(pdpt);
@@ -224,12 +236,13 @@ impl Cpu {
             }
             Some(30) => {
                 let offset = self.offset;
-                let HardwareUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4[(offset >> 9) & 0x1ff].unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
+                    self.pml4.entry_mut((offset >> 9) & 0x1ff).unmap()
                 else {
                     panic!();
                 };
-                let HardwareUnmappedPage::UniqueTable(pd) = pdpt[offset & 0x1ff].unmap() else {
+                let AugmentedUnmappedPage::UniqueTable(pd) = pdpt.entry_mut(offset & 0x1ff).unmap()
+                else {
                     panic!();
                 };
                 self.pdpt = Some(pdpt);

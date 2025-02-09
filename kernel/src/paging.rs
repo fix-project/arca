@@ -1,4 +1,8 @@
-use core::{marker::PhantomData, ops::IndexMut};
+use core::{
+    marker::PhantomData,
+    mem::{ManuallyDrop, MaybeUninit},
+    ops::IndexMut,
+};
 
 use crate::prelude::*;
 
@@ -67,17 +71,120 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         self.present() && !self.leaf()
     }
 
+    /// # Safety
+    /// This pointer must be a valid, aligned pointer for the correct page type.  Mapping this
+    /// pointer with these permissions must not violate Rust's aliasing model.  If anything was
+    /// mapped here before, it must be explicitly freed.
+    unsafe fn map_unchecked(&mut self, page: *const Self::Page, prot: Permissions) {
+        self.set_address_unchecked(vm::ka2pa(page), prot)
+    }
+
+    /// # Safety
+    /// This pointer must be a valid, aligned physical address for the correct page type.  Mapping
+    /// this page with these permissions must not violate Rust's aliasing model.  If anything was
+    /// mapped here before, it must be explicitly freed.
+    unsafe fn set_address_unchecked(&mut self, page: usize, prot: Permissions) {
+        self.set_bits(Self::PageDescriptor::new(page, prot).into_bits())
+    }
+
+    /// # Safety
+    /// This pointer must be a valid, aligned pointer for the correct table type.  Mapping this
+    /// pointer with these permissions must not violate Rust's aliasing model.  If anything was
+    /// mapped here before, it must be explicitly freed.
+    unsafe fn chain_unchecked(&mut self, page: *const Self::Table, prot: Permissions) {
+        self.set_bits(Self::TableDescriptor::new(vm::ka2pa(page), prot).into_bits())
+    }
+
+    /// # Safety
+    /// If anything was mapped here before, it must be explicitly freed.
+    unsafe fn clear_unchecked(&mut self) {
+        self.set_bits(0)
+    }
+
+    fn set_metadata(&mut self, metadata: u16) {
+        unsafe {
+            if !self.present() || self.leaf() {
+                let mut descriptor = Self::PageDescriptor::from_bits(self.bits());
+                descriptor.set_metadata(metadata);
+                self.set_bits(descriptor.into_bits());
+            } else {
+                let mut descriptor = Self::TableDescriptor::from_bits(self.bits());
+                descriptor.set_metadata(metadata);
+                self.set_bits(descriptor.into_bits());
+            }
+        }
+    }
+
+    fn get_metadata(&self) -> u16 {
+        unsafe {
+            if !self.present() || self.leaf() {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                descriptor.metadata()
+            } else {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                descriptor.metadata()
+            }
+        }
+    }
+
+    fn get_permissions(&self) -> Permissions {
+        unsafe {
+            if !self.present() {
+                Permissions::None
+            } else if self.leaf() {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                descriptor.permissions()
+            } else {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                descriptor.permissions()
+            }
+        }
+    }
+
+    fn get_page(&self) -> *const Self::Page {
+        unsafe {
+            if self.leaf() {
+                let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                vm::pa2ka(descriptor.address())
+            } else {
+                core::ptr::null()
+            }
+        }
+    }
+
+    fn get_table(&self) -> *const Self::Table {
+        unsafe {
+            if self.nested() {
+                let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                vm::pa2ka(descriptor.address())
+            } else {
+                core::ptr::null()
+            }
+        }
+    }
+
+    fn get_address(&self) -> Option<usize> {
+        unsafe {
+            if self.present() {
+                Some(if self.leaf() {
+                    let descriptor = Self::PageDescriptor::from_bits(self.bits());
+                    descriptor.address()
+                } else {
+                    let descriptor = Self::TableDescriptor::from_bits(self.bits());
+                    descriptor.address()
+                })
+            } else {
+                None
+            }
+        }
+    }
+
     fn map_unique(
         &mut self,
         page: UniquePage<Self::Page>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe {
-            self.set_bits(
-                Self::PageDescriptor::new(vm::ka2pa(UniquePage::into_raw(page)), Permissions::All)
-                    .into_bits(),
-            );
-        }
+        unsafe { self.map_unchecked(UniquePage::into_raw(page), Permissions::All) };
         original
     }
 
@@ -86,13 +193,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         page: SharedPage<Self::Page>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe {
-            let desc = Self::PageDescriptor::new(
-                vm::ka2pa(SharedPage::into_raw(page)),
-                Permissions::Executable,
-            );
-            self.set_bits(desc.into_bits());
-        }
+        unsafe { self.map_unchecked(SharedPage::into_raw(page), Permissions::Executable) };
         original
     }
 
@@ -104,11 +205,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         prot: Permissions,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe {
-            let mut desc = Self::PageDescriptor::new(addr, prot);
-            desc.set_global(true);
-            self.set_bits(desc.into_bits());
-        }
+        unsafe { self.set_address_unchecked(addr, prot) };
         original
     }
 
@@ -117,15 +214,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         table: SharedPage<Self::Table>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe {
-            self.set_bits(
-                Self::TableDescriptor::new(
-                    vm::ka2pa(SharedPage::into_raw(table)),
-                    Permissions::Executable,
-                )
-                .into_bits(),
-            );
-        }
+        unsafe { self.chain_unchecked(SharedPage::into_raw(table), Permissions::Executable) };
         original
     }
 
@@ -134,15 +223,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         table: UniquePage<Self::Table>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe {
-            self.set_bits(
-                Self::TableDescriptor::new(
-                    vm::ka2pa(UniquePage::into_raw(table)),
-                    Permissions::All,
-                )
-                .into_bits(),
-            );
-        }
+        unsafe { self.chain_unchecked(UniquePage::into_raw(table), Permissions::All) };
         original
     }
 
@@ -152,7 +233,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         } else if self.leaf() {
             unsafe {
                 let descriptor = Self::PageDescriptor::from_bits(self.bits());
-                self.set_bits(0);
+                self.clear_unchecked();
                 let addr = descriptor.address();
                 if descriptor.global() {
                     HardwareUnmappedPage::Global(addr)
@@ -167,7 +248,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         } else {
             unsafe {
                 let descriptor = Self::TableDescriptor::from_bits(self.bits());
-                self.set_bits(0);
+                self.clear_unchecked();
                 if descriptor.writeable() {
                     let addr = descriptor.address();
                     let table = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
@@ -177,22 +258,6 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                     let table = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
                     HardwareUnmappedPage::SharedTable(table)
                 }
-            }
-        }
-    }
-
-    fn get_protection(&self) -> Permissions {
-        if !self.present() {
-            Permissions::None
-        } else if self.leaf() {
-            unsafe {
-                let descriptor = Self::PageDescriptor::from_bits(self.bits());
-                descriptor.permissions()
-            }
-        } else {
-            unsafe {
-                let descriptor = Self::TableDescriptor::from_bits(self.bits());
-                descriptor.permissions()
             }
         }
     }
@@ -264,7 +329,7 @@ where
     Entry<P, T>: HardwarePageTableEntry,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let prot = self.get_protection();
+        let prot = self.get_permissions();
         if !self.present() {
             f.debug_struct("None").finish()
         } else if self.leaf() {
@@ -488,5 +553,233 @@ where
 {
     fn drop(&mut self) {
         self.unmap();
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct AugmentedPageTable<T: HardwarePageTable>([ManuallyDrop<T::Entry>; 512]);
+
+impl<T: HardwarePageTable> AugmentedPageTable<T> {
+    pub fn new() -> UniquePage<Self> {
+        unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
+    }
+
+    fn set_count(&mut self, count: usize) {
+        let entry = &mut self.0[0];
+        entry.set_metadata(count as u16 & 0b1111111111);
+    }
+
+    fn get_count(&self) -> usize {
+        let entry = &self.0[0];
+        entry.get_metadata() as usize
+    }
+
+    pub fn entry(&self, index: usize) -> Option<&AugmentedEntry<T::Entry>> {
+        let count = self.get_count();
+        if index >= count {
+            return None;
+        }
+        unsafe {
+            let entry: &T::Entry = &self.0[index];
+            let entry: &AugmentedEntry<T::Entry> = core::mem::transmute(entry);
+            Some(entry)
+        }
+    }
+
+    pub fn entry_mut(&mut self, index: usize) -> &mut AugmentedEntry<T::Entry> {
+        let count = self.get_count();
+        if index >= count {
+            self.set_count(index + 1);
+        }
+        unsafe {
+            let entry: &mut T::Entry = &mut self.0[index];
+            let entry: &mut AugmentedEntry<T::Entry> = core::mem::transmute(entry);
+            entry
+        }
+    }
+}
+
+impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
+    fn clone(&self) -> Self {
+        unsafe {
+            let array: [ManuallyDrop<T::Entry>; 512] = MaybeUninit::zeroed().assume_init();
+            let mut pt = AugmentedPageTable(array);
+            let count = self.get_count();
+            pt.set_count(count);
+            for i in 0..count {
+                let child = self.entry(i).unwrap().clone();
+                *pt.entry_mut(i) = child;
+            }
+            pt
+        }
+    }
+}
+
+impl<T: HardwarePageTable> Drop for AugmentedPageTable<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let count = self.get_count();
+            for i in 0..count {
+                let mut entry = ManuallyDrop::new(T::Entry::new(0));
+                core::mem::swap(&mut entry, &mut self.0[i]);
+                ManuallyDrop::drop(&mut entry);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AugmentedUnmappedPage<P: HardwarePage, T: HardwarePageTable> {
+    None,
+    UniquePage(UniquePage<P>),
+    SharedPage(SharedPage<P>),
+    Global(usize),
+    UniqueTable(UniquePage<AugmentedPageTable<T>>),
+    SharedTable(SharedPage<AugmentedPageTable<T>>),
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct AugmentedEntry<T: HardwarePageTableEntry>(T);
+
+impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
+    pub fn map_unique(
+        &mut self,
+        page: UniquePage<T::Page>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.0
+                .map_unchecked(UniquePage::into_raw(page), Permissions::All)
+        };
+        original
+    }
+
+    /// # Safety
+    /// The physical address being mapped must not cause a violation of Rust's safety model.
+    pub unsafe fn map_global(
+        &mut self,
+        addr: usize,
+        prot: Permissions,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe { self.0.set_address_unchecked(addr, prot) };
+        original
+    }
+
+    pub fn chain_unique(
+        &mut self,
+        table: UniquePage<AugmentedPageTable<T::Table>>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.0.chain_unchecked(
+                core::mem::transmute(UniquePage::into_raw(table)),
+                Permissions::All,
+            )
+        };
+        original
+    }
+
+    pub fn chain_shared(
+        &mut self,
+        table: SharedPage<AugmentedPageTable<T::Table>>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe {
+            self.0.chain_unchecked(
+                core::mem::transmute(SharedPage::into_raw(table)),
+                Permissions::Executable,
+            )
+        };
+        original
+    }
+
+    pub fn unmap(&mut self) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        if !self.0.present() {
+            AugmentedUnmappedPage::None
+        } else if self.0.leaf() {
+            unsafe {
+                let descriptor = T::PageDescriptor::from_bits(self.0.bits());
+                self.0.clear_unchecked();
+                let addr = descriptor.address();
+                if descriptor.global() {
+                    AugmentedUnmappedPage::Global(addr)
+                } else if descriptor.writeable() {
+                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    AugmentedUnmappedPage::UniquePage(page)
+                } else {
+                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    AugmentedUnmappedPage::SharedPage(page)
+                }
+            }
+        } else {
+            unsafe {
+                let descriptor = T::TableDescriptor::from_bits(self.0.bits());
+                self.0.clear_unchecked();
+                if descriptor.writeable() {
+                    let addr = descriptor.address();
+                    let table = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    AugmentedUnmappedPage::UniqueTable(table)
+                } else {
+                    let addr = descriptor.address();
+                    let table = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    AugmentedUnmappedPage::SharedTable(table)
+                }
+            }
+        }
+    }
+}
+
+impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
+    fn clone(&self) -> Self {
+        // safety assumption: cloning a shared page or table will increment the reference count
+        // without changing the referenced address
+        if !self.0.present() {
+            unsafe { AugmentedEntry(T::new(self.0.bits())) }
+        } else if self.0.leaf() {
+            unsafe {
+                let mut descriptor = T::PageDescriptor::from_bits(self.0.bits());
+                if !descriptor.global() {
+                    let addr = descriptor.address();
+                    if descriptor.writeable() {
+                        let page: UniquePage<T::Page> =
+                            UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        let new = page.clone();
+                        descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                        core::mem::forget(page);
+                    } else {
+                        let page: SharedPage<T::Page> =
+                            SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        let new = page.clone();
+                        core::mem::forget(page);
+                        core::mem::forget(new);
+                    }
+                }
+                AugmentedEntry(T::new(descriptor.into_bits()))
+            }
+        } else {
+            unsafe {
+                let mut descriptor = T::TableDescriptor::from_bits(self.0.bits());
+                if descriptor.writeable() {
+                    let addr = descriptor.address();
+                    let table: UniquePage<AugmentedPageTable<T::Table>> =
+                        UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let new = table.clone();
+                    descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                    core::mem::forget(table);
+                } else {
+                    let addr = descriptor.address();
+                    let table: SharedPage<AugmentedPageTable<T::Table>> =
+                        SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = table.clone();
+                    let new = table.clone();
+                    core::mem::forget(table);
+                    core::mem::forget(new);
+                }
+                AugmentedEntry(T::new(descriptor.into_bits()))
+            }
+        }
     }
 }

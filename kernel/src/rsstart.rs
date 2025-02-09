@@ -46,11 +46,11 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<PageTable512GB>> =
+pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<AugmentedPageTable<PageTable512GB>>> =
     InitCell::new(|| unsafe {
-        let mut pdpt = PageTable512GB::new();
+        let mut pdpt = AugmentedPageTable::new();
         for i in 0..512 {
-            pdpt[i].map_global(i << 30, Permissions::None);
+            pdpt.entry_mut(i).map_global(i << 30, Permissions::None);
         }
         pdpt.into()
     });

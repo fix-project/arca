@@ -1,20 +1,20 @@
-use crate::prelude::*;
+use crate::{paging::AugmentedPageTable, prelude::*};
 
 type GetPage<T> = <<T as HardwarePageTable>::Entry as HardwarePageTableEntry>::Page;
 type GetTable<T> = <<T as HardwarePageTable>::Entry as HardwarePageTableEntry>::Table;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PageTable {
-    PageTable2MB(Page<PageTable2MB>),
-    PageTable1GB(Page<PageTable1GB>),
-    PageTable512GB(Page<PageTable512GB>),
-    PageTable256TB(Page<PageTable256TB>),
+    PageTable2MB(Page<AugmentedPageTable<PageTable2MB>>),
+    PageTable1GB(Page<AugmentedPageTable<PageTable1GB>>),
+    PageTable512GB(Page<AugmentedPageTable<PageTable512GB>>),
+    PageTable256TB(Page<AugmentedPageTable<PageTable256TB>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UniqueEntry<T: HardwarePageTable> {
     Page(UniquePage<GetPage<T>>),
-    Table(UniquePage<GetTable<T>>),
+    Table(UniquePage<AugmentedPageTable<GetTable<T>>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,19 +33,28 @@ pub enum AddressSpace {
 }
 
 trait Embiggen: Sized + HardwarePageTable {
-    fn from_unique_page(index: usize, page: UniquePage<GetPage<Self>>) -> UniquePage<Self> {
-        let mut pt = Self::new();
-        pt[index].map_unique(page);
+    fn from_unique_page(
+        index: usize,
+        page: UniquePage<GetPage<Self>>,
+    ) -> UniquePage<AugmentedPageTable<Self>> {
+        let mut pt = AugmentedPageTable::<Self>::new();
+        pt.entry_mut(index).map_unique(page);
         pt
     }
 
-    fn from_unique_table(index: usize, table: UniquePage<GetTable<Self>>) -> UniquePage<Self> {
-        let mut pt = Self::new();
-        pt[index].chain_unique(table);
+    fn from_unique_table(
+        index: usize,
+        table: UniquePage<AugmentedPageTable<GetTable<Self>>>,
+    ) -> UniquePage<AugmentedPageTable<Self>> {
+        let mut pt = AugmentedPageTable::<Self>::new();
+        pt.entry_mut(index).chain_unique(table);
         pt
     }
 
-    fn from_unique_entry(index: usize, entry: UniqueEntry<Self>) -> UniquePage<Self> {
+    fn from_unique_entry(
+        index: usize,
+        entry: UniqueEntry<Self>,
+    ) -> UniquePage<AugmentedPageTable<Self>> {
         match entry {
             UniqueEntry::Page(p) => Self::from_unique_page(index, p),
             UniqueEntry::Table(t) => Self::from_unique_table(index, t),
@@ -95,10 +104,10 @@ impl AddressSpace {
                         UniqueEntry::Page(_) => todo!(),
                         UniqueEntry::Table(t1) => match x {
                             UniqueEntry::Page(p2) => {
-                                t1[index].map_unique(p2);
+                                t1.entry_mut(index).map_unique(p2);
                             }
                             UniqueEntry::Table(t2) => {
-                                t1[index].chain_unique(t2);
+                                t1.entry_mut(index).chain_unique(t2);
                             }
                         },
                     };
@@ -136,10 +145,10 @@ impl AddressSpace {
                         UniqueEntry::Page(_) => todo!(),
                         UniqueEntry::Table(t1) => match x {
                             UniqueEntry::Page(p2) => {
-                                t1[index].map_unique(p2);
+                                t1.entry_mut(index).map_unique(p2);
                             }
                             UniqueEntry::Table(t2) => {
-                                t1[index].chain_unique(t2);
+                                t1.entry_mut(index).chain_unique(t2);
                             }
                         },
                     };

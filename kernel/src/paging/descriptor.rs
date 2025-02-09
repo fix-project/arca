@@ -37,6 +37,9 @@ pub trait Descriptor: Default + core::fmt::Debug {
     fn set_global(&mut self, global: bool) -> &mut Self;
     fn global(&self) -> bool;
 
+    fn set_metadata(&mut self, metadata: u16) -> &mut Self;
+    fn metadata(&self) -> u16;
+
     fn set_permissions(&mut self, perm: Permissions) -> &mut Self {
         match perm {
             Permissions::None => {
@@ -197,6 +200,15 @@ impl Descriptor for TableDescriptor {
     fn global(&self) -> bool {
         unreachable!();
     }
+
+    fn set_metadata(&mut self, metadata: u16) -> &mut Self {
+        self.set_available_2(metadata);
+        self
+    }
+
+    fn metadata(&self) -> u16 {
+        self.available_2()
+    }
 }
 
 impl Descriptor for HugePageDescriptor {
@@ -252,6 +264,16 @@ impl Descriptor for HugePageDescriptor {
     fn global(&self) -> bool {
         self.global()
     }
+
+    fn set_metadata(&mut self, metadata: u16) -> &mut Self {
+        self.set_available_0((metadata & 0x7) as u8);
+        self.set_available_2((metadata >> 3) as u8);
+        self
+    }
+
+    fn metadata(&self) -> u16 {
+        self.available_0() as u16 | ((self.available_2() as u16) << 3)
+    }
 }
 
 impl Descriptor for PageDescriptor {
@@ -306,5 +328,15 @@ impl Descriptor for PageDescriptor {
 
     fn global(&self) -> bool {
         self.global()
+    }
+
+    fn set_metadata(&mut self, metadata: u16) -> &mut Self {
+        self.set_available_0((metadata & 0x7) as u8);
+        self.set_available_2((metadata >> 3) as u8);
+        self
+    }
+
+    fn metadata(&self) -> u16 {
+        self.available_0() as u16 | ((self.available_2() as u16) << 3)
     }
 }

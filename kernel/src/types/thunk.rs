@@ -76,7 +76,7 @@ impl Thunk {
             }
         }
 
-        let addr = (1 << 21) + (256 << 12);
+        let addr = (1 << 21) + (3 << 12);
         let stack =
             unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         arca.mappings_mut()
