@@ -19,47 +19,57 @@ pub enum Entry<T: HardwarePageTable> {
     SharedTable(SharedPage<AugmentedPageTable<GetTable<T>>>),
 }
 
+fn replace_with<T>(x: &mut T, f: impl FnOnce(T) -> T) {
+    unsafe {
+        let old = core::ptr::read(x);
+        let new = f(old);
+        core::ptr::write(x, new);
+    }
+}
+
 impl<T: HardwarePageTable> Entry<T> {
     pub fn insert(&mut self, index: usize, child: Entry<GetTable<T>>) {
-        match self {
+        replace_with(self, |this| match this {
             Entry::UniquePage(_) => todo!(),
             Entry::SharedPage(_) => todo!(),
-            Entry::UniqueTable(t1) => match child {
+            Entry::UniqueTable(mut t1) => {
+                match child {
+                    Entry::UniquePage(p2) => {
+                        t1.entry_mut(index).map_unique(p2);
+                    }
+                    Entry::SharedPage(p2) => {
+                        t1.entry_mut(index).map_shared(p2);
+                    }
+                    Entry::UniqueTable(t2) => {
+                        t1.entry_mut(index).chain_unique(t2);
+                    }
+                    Entry::SharedTable(t2) => {
+                        t1.entry_mut(index).chain_shared(t2);
+                    }
+                };
+                Entry::UniqueTable(t1)
+            }
+            Entry::SharedTable(mut t1) => match child {
                 Entry::UniquePage(p2) => {
-                    t1.entry_mut(index).map_unique(p2);
-                }
-                Entry::SharedPage(p2) => {
-                    t1.entry_mut(index).map_shared(p2);
-                }
-                Entry::UniqueTable(t2) => {
-                    t1.entry_mut(index).chain_unique(t2);
-                }
-                Entry::SharedTable(t2) => {
-                    t1.entry_mut(index).chain_shared(t2);
-                }
-            },
-            // TODO: this case makes an unnecessary clone
-            Entry::SharedTable(t1) => match child {
-                Entry::UniquePage(p2) => {
-                    let table = t1.clone();
-                    let mut table = RefCnt::into_unique(table);
+                    let mut table = RefCnt::into_unique(t1);
                     table.entry_mut(index).map_unique(p2);
-                    *self = Entry::UniqueTable(table);
+                    Entry::UniqueTable(table)
                 }
                 Entry::SharedPage(p2) => {
-                    RefCnt::make_mut(t1).entry_mut(index).map_shared(p2);
+                    RefCnt::make_mut(&mut t1).entry_mut(index).map_shared(p2);
+                    Entry::SharedTable(t1)
                 }
                 Entry::UniqueTable(t2) => {
-                    let table = t1.clone();
-                    let mut table = RefCnt::into_unique(table);
+                    let mut table = RefCnt::into_unique(t1);
                     table.entry_mut(index).chain_unique(t2);
-                    *self = Entry::UniqueTable(table);
+                    Entry::UniqueTable(table)
                 }
                 Entry::SharedTable(t2) => {
-                    RefCnt::make_mut(t1).entry_mut(index).chain_shared(t2);
+                    RefCnt::make_mut(&mut t1).entry_mut(index).chain_shared(t2);
+                    Entry::SharedTable(t1)
                 }
             },
-        };
+        })
     }
 }
 
@@ -142,9 +152,7 @@ impl AddressSpace {
     }
 
     pub fn map(&mut self, address: usize, entry: AnyEntry) {
-        let mut this = AddressSpace::AddressSpace0B;
-        core::mem::swap(&mut this, self);
-        *self = match (this, entry) {
+        replace_with(self, |this| match (this, entry) {
             (AddressSpace::AddressSpace0B, AnyEntry::Entry4KB(x)) => {
                 AddressSpace::AddressSpace4KB(address >> 12, x)
             }
@@ -212,7 +220,7 @@ impl AddressSpace {
                     this
                 }
             }
-        };
+        });
     }
 
     pub fn embiggen(&mut self) {
