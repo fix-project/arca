@@ -16,6 +16,51 @@ pub enum Entry<T: HardwarePageTable> {
     UniquePage(UniquePage<GetPage<T>>),
     SharedPage(SharedPage<GetPage<T>>),
     UniqueTable(UniquePage<AugmentedPageTable<GetTable<T>>>),
+    SharedTable(SharedPage<AugmentedPageTable<GetTable<T>>>),
+}
+
+impl<T: HardwarePageTable> Entry<T> {
+    pub fn insert(&mut self, index: usize, child: Entry<GetTable<T>>) {
+        match self {
+            Entry::UniquePage(_) => todo!(),
+            Entry::SharedPage(_) => todo!(),
+            Entry::UniqueTable(t1) => match child {
+                Entry::UniquePage(p2) => {
+                    t1.entry_mut(index).map_unique(p2);
+                }
+                Entry::SharedPage(p2) => {
+                    t1.entry_mut(index).map_shared(p2);
+                }
+                Entry::UniqueTable(t2) => {
+                    t1.entry_mut(index).chain_unique(t2);
+                }
+                Entry::SharedTable(t2) => {
+                    t1.entry_mut(index).chain_shared(t2);
+                }
+            },
+            // TODO: this case makes an unnecessary clone
+            Entry::SharedTable(t1) => match child {
+                Entry::UniquePage(p2) => {
+                    let table = t1.clone();
+                    let mut table = RefCnt::into_unique(table);
+                    table.entry_mut(index).map_unique(p2);
+                    *self = Entry::UniqueTable(table);
+                }
+                Entry::SharedPage(p2) => {
+                    RefCnt::make_mut(t1).entry_mut(index).map_shared(p2);
+                }
+                Entry::UniqueTable(t2) => {
+                    let table = t1.clone();
+                    let mut table = RefCnt::into_unique(table);
+                    table.entry_mut(index).chain_unique(t2);
+                    *self = Entry::UniqueTable(table);
+                }
+                Entry::SharedTable(t2) => {
+                    RefCnt::make_mut(t1).entry_mut(index).chain_shared(t2);
+                }
+            },
+        };
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +78,15 @@ pub enum AddressSpace {
     AddressSpace1GB(usize, Entry<PageTable512GB>),
 }
 
+impl<T: HardwarePageTable> From<Page<AugmentedPageTable<GetTable<T>>>> for Entry<T> {
+    fn from(value: Page<AugmentedPageTable<GetTable<T>>>) -> Self {
+        match value {
+            Page::Unique(x) => Entry::UniqueTable(x),
+            Page::Shared(x) => Entry::SharedTable(x),
+        }
+    }
+}
+
 trait Embiggen: Sized + HardwarePageTable {
     fn from_unique_page(
         index: usize,
@@ -46,10 +100,10 @@ trait Embiggen: Sized + HardwarePageTable {
     fn from_shared_page(
         index: usize,
         page: SharedPage<GetPage<Self>>,
-    ) -> UniquePage<AugmentedPageTable<Self>> {
+    ) -> SharedPage<AugmentedPageTable<Self>> {
         let mut pt = AugmentedPageTable::<Self>::new();
         pt.entry_mut(index).map_shared(page);
-        pt
+        pt.into()
     }
 
     fn from_unique_table(
@@ -61,11 +115,21 @@ trait Embiggen: Sized + HardwarePageTable {
         pt
     }
 
-    fn from_entry(index: usize, entry: Entry<Self>) -> UniquePage<AugmentedPageTable<Self>> {
+    fn from_shared_table(
+        index: usize,
+        table: SharedPage<AugmentedPageTable<GetTable<Self>>>,
+    ) -> SharedPage<AugmentedPageTable<Self>> {
+        let mut pt = AugmentedPageTable::<Self>::new();
+        pt.entry_mut(index).chain_shared(table);
+        pt.into()
+    }
+
+    fn from_entry(index: usize, entry: Entry<Self>) -> Page<AugmentedPageTable<Self>> {
         match entry {
-            Entry::UniquePage(p) => Self::from_unique_page(index, p),
-            Entry::SharedPage(p) => Self::from_shared_page(index, p),
-            Entry::UniqueTable(t) => Self::from_unique_table(index, t),
+            Entry::UniquePage(p) => Page::Unique(Self::from_unique_page(index, p)),
+            Entry::SharedPage(p) => Page::Shared(Self::from_shared_page(index, p)),
+            Entry::UniqueTable(t) => Page::Unique(Self::from_unique_table(index, t)),
+            Entry::SharedTable(t) => Page::Shared(Self::from_shared_table(index, t)),
         }
     }
 }
@@ -108,21 +172,7 @@ impl AddressSpace {
                 let page_num = address >> 21;
                 if page_num == offset {
                     let index = (address >> 12) & 0x1ff;
-                    match &mut entry {
-                        Entry::UniquePage(_) => todo!(),
-                        Entry::SharedPage(_) => todo!(),
-                        Entry::UniqueTable(t1) => match x {
-                            Entry::UniquePage(p2) => {
-                                t1.entry_mut(index).map_unique(p2);
-                            }
-                            Entry::SharedPage(p2) => {
-                                t1.entry_mut(index).map_shared(p2);
-                            }
-                            Entry::UniqueTable(t2) => {
-                                t1.entry_mut(index).chain_unique(t2);
-                            }
-                        },
-                    };
+                    entry.insert(index, x);
                     AddressSpace::AddressSpace2MB(offset, entry)
                 } else {
                     let mut this = AddressSpace::AddressSpace2MB(offset, entry);
@@ -144,7 +194,7 @@ impl AddressSpace {
             }
             (AddressSpace::AddressSpace1GB(offset, entry), AnyEntry::Entry4KB(x)) => {
                 let index = (address >> 12) & 0x1ff;
-                let x = Entry::UniqueTable(PageTable2MB::from_entry(index, x));
+                let x = PageTable2MB::from_entry(index, x).into();
                 let mut this = AddressSpace::AddressSpace1GB(offset, entry);
                 this.map(address, AnyEntry::Entry2MB(x));
                 this
@@ -153,21 +203,7 @@ impl AddressSpace {
                 let page_num = address >> 30;
                 if page_num == offset {
                     let index = (address >> 21) & 0x1ff;
-                    match &mut entry {
-                        Entry::UniquePage(_) => todo!(),
-                        Entry::SharedPage(_) => todo!(),
-                        Entry::UniqueTable(t1) => match x {
-                            Entry::UniquePage(p2) => {
-                                t1.entry_mut(index).map_unique(p2);
-                            }
-                            Entry::SharedPage(p2) => {
-                                t1.entry_mut(index).map_shared(p2);
-                            }
-                            Entry::UniqueTable(t2) => {
-                                t1.entry_mut(index).chain_unique(t2);
-                            }
-                        },
-                    };
+                    entry.insert(index, x);
                     AddressSpace::AddressSpace1GB(offset, entry)
                 } else {
                     let mut this = AddressSpace::AddressSpace1GB(offset, entry);
@@ -189,7 +225,7 @@ impl AddressSpace {
                 let outer = offset >> 9;
                 this = AddressSpace::AddressSpace2MB(
                     outer,
-                    Entry::UniqueTable(PageTable2MB::from_entry(inner, entry)),
+                    PageTable2MB::from_entry(inner, entry).into(),
                 );
             }
             AddressSpace::AddressSpace2MB(offset, entry) => {
@@ -197,7 +233,7 @@ impl AddressSpace {
                 let outer = offset >> 9;
                 this = AddressSpace::AddressSpace1GB(
                     outer,
-                    Entry::UniqueTable(PageTable1GB::from_entry(inner, entry)),
+                    PageTable1GB::from_entry(inner, entry).into(),
                 );
             }
             AddressSpace::AddressSpace1GB(offset, _entry) => {

@@ -140,6 +140,7 @@ impl Cpu {
                     Entry::UniquePage(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
                     Entry::SharedPage(p) => pt.entry_mut(offset & 0x1ff).map_shared(p),
                     Entry::UniqueTable(t) => pt.entry_mut(offset & 0x1ff).chain_unique(t),
+                    Entry::SharedTable(t) => pt.entry_mut(offset & 0x1ff).chain_shared(t),
                 };
 
                 pd.entry_mut((offset >> 9) & 0x1ff).chain_unique(pt);
@@ -159,6 +160,7 @@ impl Cpu {
                     Entry::UniquePage(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
                     Entry::SharedPage(p) => pd.entry_mut(offset & 0x1ff).map_shared(p),
                     Entry::UniqueTable(t) => pd.entry_mut(offset & 0x1ff).chain_unique(t),
+                    Entry::SharedTable(t) => pd.entry_mut(offset & 0x1ff).chain_shared(t),
                 };
 
                 pdpt.entry_mut((offset >> 9) & 0x1ff).chain_unique(pd);
@@ -176,6 +178,7 @@ impl Cpu {
                     Entry::UniquePage(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
                     Entry::SharedPage(p) => pdpt.entry_mut(offset & 0x1ff).map_shared(p),
                     Entry::UniqueTable(t) => pdpt.entry_mut(offset & 0x1ff).chain_unique(t),
+                    Entry::SharedTable(t) => pdpt.entry_mut(offset & 0x1ff).chain_shared(t),
                 };
 
                 self.pml4
@@ -229,13 +232,17 @@ impl Cpu {
                 else {
                     panic!();
                 };
-                let AugmentedUnmappedPage::UniqueTable(pt) = pd.entry_mut(offset & 0x1ff).unmap()
-                else {
-                    todo!();
+                let entry = match pd.entry_mut(offset & 0x1ff).unmap() {
+                    AugmentedUnmappedPage::None => todo!(),
+                    AugmentedUnmappedPage::UniquePage(_) => todo!(),
+                    AugmentedUnmappedPage::SharedPage(_) => todo!(),
+                    AugmentedUnmappedPage::Global(_) => todo!(),
+                    AugmentedUnmappedPage::UniqueTable(t) => Entry::UniqueTable(t),
+                    AugmentedUnmappedPage::SharedTable(t) => Entry::SharedTable(t),
                 };
                 self.pdpt = Some(pdpt);
                 self.pd = Some(pd);
-                AddressSpace::AddressSpace2MB(offset, Entry::UniqueTable(pt))
+                AddressSpace::AddressSpace2MB(offset, entry)
             }
             Some(30) => {
                 let offset = self.offset;
