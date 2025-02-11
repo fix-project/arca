@@ -2,6 +2,7 @@ use alloc::{boxed::Box, string::String, vec, vec::Vec};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 
 use crate::{
+    cpu::ExitReason,
     prelude::*,
     types::pagetable::{AnyEntry, Entry},
 };
@@ -89,27 +90,28 @@ impl Thunk {
         let mut arca = arca.load(&mut cpu);
         loop {
             let result = arca.run();
-            if result.code != 256 {
-                arca.unload();
-                log::debug!("exited with exception: {result:?}");
-                let tree = if result.code == 14 {
-                    log::info!(
-                        "user page fault @ {:p}",
-                        crate::registers::read_cr2() as *const ()
-                    );
-                    vec![
-                        Value::Atom("page fault".into()),
-                        Value::Blob(crate::registers::read_cr2().to_ne_bytes().into()),
-                        Value::Blob(result.error.to_ne_bytes().into()),
-                    ]
-                } else {
-                    vec![
+            match result {
+                ExitReason::SystemCall => {}
+                ExitReason::Interrupted(x) => {
+                    let arca = arca.unload();
+                    log::debug!("exited with interrupt: {x:?}");
+                    let tree = vec![
+                        Value::Atom("interrupt".into()),
+                        Value::Blob(x.to_ne_bytes().into()),
+                        Value::Thunk(Thunk { arca }),
+                    ];
+                    return Value::Error(Value::Tree(tree.into()).into());
+                }
+                x => {
+                    let arca = arca.unload();
+                    log::debug!("exited with exception: {x:?}");
+                    let tree = vec![
                         Value::Atom("exception".into()),
-                        Value::Blob(result.code.to_ne_bytes().into()),
-                        Value::Blob(result.error.to_ne_bytes().into()),
-                    ]
-                };
-                return Value::Error(Value::Tree(tree.into()).into());
+                        x.into(),
+                        Value::Thunk(Thunk { arca }),
+                    ];
+                    return Value::Error(Value::Tree(tree.into()).into());
+                }
             }
             let regs = arca.registers();
             let num = regs[Register::RDI];

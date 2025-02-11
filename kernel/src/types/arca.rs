@@ -1,6 +1,6 @@
 use alloc::{vec, vec::Vec};
 
-use crate::{cpu::ExitStatus, prelude::*};
+use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
@@ -70,7 +70,7 @@ pub struct LoadedArca<'a> {
 }
 
 impl LoadedArca<'_> {
-    pub fn run(&mut self) -> ExitStatus {
+    pub fn run(&mut self) -> ExitReason {
         unsafe { self.cpu.run(&mut self.register_file) }
     }
 

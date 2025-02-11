@@ -3,7 +3,7 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, format};
 
 use crate::{initcell::InitCell, prelude::*, types::pagetable::Entry, vm::ka2pa};
 
@@ -116,6 +116,72 @@ impl IndexMut<Register> for RegisterFile {
 pub struct ExitStatus {
     pub code: u64,
     pub error: u64,
+}
+
+#[derive(Debug)]
+pub enum ExitReason {
+    DivisionByZero,
+    Debug,
+    Interrupted(usize),
+    Breakpoint,
+    InvalidInstruction,
+    DeviceNotAvailable,
+    DoubleFault,
+    InvalidTSS { selector: usize },
+    SegmentNotPresent { selector: usize },
+    StackSegmentFault { selector: usize },
+    GeneralProtectionFault { selector: usize },
+    PageFault { addr: usize, error: u64 },
+    FloatingPointException,
+    AlignmentCheck { code: u64 },
+    MachineCheck,
+    SIMDException,
+    VirtualizationException,
+    ControlProtectionException,
+    HypervisorInjectionException,
+    VMMCommunicationException,
+    SecurityException,
+    SystemCall,
+}
+
+impl From<ExitStatus> for ExitReason {
+    fn from(value: ExitStatus) -> Self {
+        match value.code {
+            0 => ExitReason::DivisionByZero,
+            1 => ExitReason::Debug,
+            3 => ExitReason::Breakpoint,
+            6 => ExitReason::InvalidInstruction,
+            7 => ExitReason::DeviceNotAvailable,
+            8 => ExitReason::DoubleFault,
+            10 => ExitReason::InvalidTSS {
+                selector: value.error as usize,
+            },
+            11 => ExitReason::SegmentNotPresent {
+                selector: value.error as usize,
+            },
+            12 => ExitReason::StackSegmentFault {
+                selector: value.error as usize,
+            },
+            13 => ExitReason::GeneralProtectionFault {
+                selector: value.error as usize,
+            },
+            14 => ExitReason::PageFault {
+                addr: crate::registers::read_cr2() as usize,
+                error: value.error,
+            },
+            16 => ExitReason::FloatingPointException,
+            17 => ExitReason::AlignmentCheck { code: value.error },
+            18 => ExitReason::MachineCheck,
+            19 => ExitReason::SIMDException,
+            20 => ExitReason::VirtualizationException,
+            21 => ExitReason::ControlProtectionException,
+            28 => ExitReason::HypervisorInjectionException,
+            29 => ExitReason::VMMCommunicationException,
+            30 => ExitReason::SecurityException,
+            256 => ExitReason::SystemCall,
+            x => ExitReason::Interrupted(x as usize),
+        }
+    }
 }
 
 extern "C" {
@@ -261,14 +327,21 @@ impl Cpu {
 
     /// # Safety
     /// An appropriate page table must have been set before calling this function.
-    pub unsafe fn run(&mut self, registers: &mut RegisterFile) -> ExitStatus {
+    pub unsafe fn run(&mut self, registers: &mut RegisterFile) -> ExitReason {
         let syscall_safe = registers[Register::RCX] == registers.rip
             && registers[Register::R11] == registers.flags
             && registers.mode == Mode::User;
         if syscall_safe {
-            unsafe { syscall_call_user(registers) }
+            unsafe { syscall_call_user(registers).into() }
         } else {
-            unsafe { isr_call_user(registers) }
+            unsafe { isr_call_user(registers).into() }
         }
+    }
+}
+
+impl From<ExitReason> for Value {
+    fn from(value: ExitReason) -> Self {
+        let result = format!("{:?}", value);
+        Value::Atom(result)
     }
 }
