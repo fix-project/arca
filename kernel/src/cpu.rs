@@ -196,21 +196,19 @@ impl Cpu {
             Some(12) => {
                 let offset = self.offset;
                 let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.entry_mut((offset >> 27) & 0x1ff).unmap()
+                    self.pml4.unmap((offset >> 27) & 0x1ff)
                 else {
                     panic!();
                 };
-                let AugmentedUnmappedPage::UniqueTable(mut pd) =
-                    pdpt.entry_mut((offset >> 18) & 0x1ff).unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap((offset >> 18) & 0x1ff)
                 else {
                     panic!();
                 };
-                let AugmentedUnmappedPage::UniqueTable(mut pt) =
-                    pd.entry_mut((offset >> 9) & 0x1ff).unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pt) = pd.unmap((offset >> 9) & 0x1ff)
                 else {
                     panic!();
                 };
-                let entry = match pt.entry_mut(offset & 0x1ff).unmap() {
+                let entry = match pt.unmap(offset & 0x1ff) {
                     AugmentedUnmappedPage::UniquePage(p) => Entry::UniquePage(p),
                     AugmentedUnmappedPage::UniqueTable(t) => Entry::UniqueTable(t),
                     _ => todo!(),
@@ -223,16 +221,15 @@ impl Cpu {
             Some(21) => {
                 let offset = self.offset;
                 let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.entry_mut((offset >> 18) & 0x1ff).unmap()
+                    self.pml4.unmap((offset >> 18) & 0x1ff)
                 else {
                     panic!();
                 };
-                let AugmentedUnmappedPage::UniqueTable(mut pd) =
-                    pdpt.entry_mut((offset >> 9) & 0x1ff).unmap()
+                let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap((offset >> 9) & 0x1ff)
                 else {
                     panic!();
                 };
-                let entry = match pd.entry_mut(offset & 0x1ff).unmap() {
+                let entry = match pd.unmap(offset & 0x1ff) {
                     AugmentedUnmappedPage::None => todo!(),
                     AugmentedUnmappedPage::UniquePage(_) => todo!(),
                     AugmentedUnmappedPage::SharedPage(_) => todo!(),
@@ -247,12 +244,11 @@ impl Cpu {
             Some(30) => {
                 let offset = self.offset;
                 let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.entry_mut((offset >> 9) & 0x1ff).unmap()
+                    self.pml4.unmap((offset >> 9) & 0x1ff)
                 else {
                     panic!();
                 };
-                let AugmentedUnmappedPage::UniqueTable(pd) = pdpt.entry_mut(offset & 0x1ff).unmap()
-                else {
+                let AugmentedUnmappedPage::UniqueTable(pd) = pdpt.unmap(offset & 0x1ff) else {
                     panic!();
                 };
                 self.pdpt = Some(pdpt);

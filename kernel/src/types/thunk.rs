@@ -92,11 +92,23 @@ impl Thunk {
             if result.code != 256 {
                 arca.unload();
                 log::debug!("exited with exception: {result:?}");
-                let tree = vec![
-                    Value::Atom("exception".into()),
-                    Value::Blob(result.code.to_ne_bytes().into()),
-                    Value::Blob(result.error.to_ne_bytes().into()),
-                ];
+                let tree = if result.code == 14 {
+                    log::info!(
+                        "user page fault @ {:p}",
+                        crate::registers::read_cr2() as *const ()
+                    );
+                    vec![
+                        Value::Atom("page fault".into()),
+                        Value::Blob(crate::registers::read_cr2().to_ne_bytes().into()),
+                        Value::Blob(result.error.to_ne_bytes().into()),
+                    ]
+                } else {
+                    vec![
+                        Value::Atom("exception".into()),
+                        Value::Blob(result.code.to_ne_bytes().into()),
+                        Value::Blob(result.error.to_ne_bytes().into()),
+                    ]
+                };
                 return Value::Error(Value::Tree(tree.into()).into());
             }
             let regs = arca.registers();

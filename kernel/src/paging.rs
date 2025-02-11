@@ -84,7 +84,9 @@ pub trait HardwarePageTableEntry: Sized + Clone {
     /// this page with these permissions must not violate Rust's aliasing model.  If anything was
     /// mapped here before, it must be explicitly freed.
     unsafe fn set_address_unchecked(&mut self, page: usize, prot: Permissions) {
-        self.set_bits(Self::PageDescriptor::new(page, prot).into_bits())
+        let mut descriptor = Self::PageDescriptor::new(page, prot);
+        descriptor.set_metadata(self.get_metadata());
+        self.set_bits(descriptor.into_bits())
     }
 
     /// # Safety
@@ -92,13 +94,17 @@ pub trait HardwarePageTableEntry: Sized + Clone {
     /// pointer with these permissions must not violate Rust's aliasing model.  If anything was
     /// mapped here before, it must be explicitly freed.
     unsafe fn chain_unchecked(&mut self, page: *const Self::Table, prot: Permissions) {
-        self.set_bits(Self::TableDescriptor::new(vm::ka2pa(page), prot).into_bits())
+        let mut descriptor = Self::TableDescriptor::new(vm::ka2pa(page), prot);
+        descriptor.set_metadata(self.get_metadata());
+        self.set_bits(descriptor.into_bits())
     }
 
     /// # Safety
     /// If anything was mapped here before, it must be explicitly freed.
     unsafe fn clear_unchecked(&mut self) {
-        self.set_bits(0)
+        let meta = self.get_metadata();
+        self.set_bits(0);
+        self.set_metadata(meta);
     }
 
     fn set_metadata(&mut self, metadata: u16) {
@@ -565,19 +571,32 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
     }
 
-    fn set_count(&mut self, count: usize) {
+    fn set_lower(&mut self, lower: usize) {
+        debug_assert!(lower < (1 << 10));
         let entry = &mut self.0[0];
-        entry.set_metadata(count as u16 & 0b1111111111);
+        entry.set_metadata(lower as u16 & 0b1111111111);
     }
 
-    fn get_count(&self) -> usize {
+    fn get_lower(&self) -> usize {
         let entry = &self.0[0];
         entry.get_metadata() as usize
     }
 
+    fn set_upper(&mut self, upper: usize) {
+        debug_assert!(upper < (1 << 10));
+        let entry = &mut self.0[1];
+        entry.set_metadata(upper as u16 & 0b1111111111);
+    }
+
+    fn get_upper(&self) -> usize {
+        let entry = &self.0[1];
+        entry.get_metadata() as usize
+    }
+
     pub fn entry(&self, index: usize) -> Option<&AugmentedEntry<T::Entry>> {
-        let count = self.get_count();
-        if index >= count {
+        let lower = self.get_lower();
+        let upper = self.get_upper();
+        if index < lower || index >= upper {
             return None;
         }
         unsafe {
@@ -588,15 +607,60 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
     }
 
     pub fn entry_mut(&mut self, index: usize) -> &mut AugmentedEntry<T::Entry> {
-        let count = self.get_count();
-        if index >= count {
-            self.set_count(index + 1);
+        let lower = self.get_lower();
+        let upper = self.get_upper();
+        if index < lower {
+            self.set_lower(index);
         }
+        if index >= upper {
+            self.set_upper(index + 1);
+        }
+        // TODO: does this allow overwriting the metadata?
         unsafe {
             let entry: &mut T::Entry = &mut self.0[index];
             let entry: &mut AugmentedEntry<T::Entry> = core::mem::transmute(entry);
             entry
         }
+    }
+
+    pub fn unmap(
+        &mut self,
+        index: usize,
+    ) -> AugmentedUnmappedPage<
+        <T::Entry as HardwarePageTableEntry>::Page,
+        <T::Entry as HardwarePageTableEntry>::Table,
+    > {
+        let lower = self.get_lower();
+        let upper = self.get_upper();
+        if index < lower || index >= upper {
+            return AugmentedUnmappedPage::None;
+        }
+        let original = self.entry_mut(index).unmap();
+        if index == upper {
+            let mut index = index;
+            loop {
+                if index == lower {
+                    self.set_upper(index);
+                    break;
+                }
+                if self.entry(index).is_some() {
+                    self.set_upper(index + 1);
+                    break;
+                }
+                index -= 1;
+            }
+        }
+        if index == lower {
+            let mut index = index;
+            loop {
+                if index == upper || self.entry(index).is_some() {
+                    self.set_lower(index);
+                    break;
+                }
+                index += 1;
+            }
+        }
+        original
     }
 }
 
@@ -605,12 +669,14 @@ impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
         unsafe {
             let array: [ManuallyDrop<T::Entry>; 512] = MaybeUninit::zeroed().assume_init();
             let mut pt = AugmentedPageTable(array);
-            let count = self.get_count();
-            pt.set_count(count);
-            for i in 0..count {
+            let lower = self.get_lower();
+            let upper = self.get_upper();
+            for i in lower..upper {
                 let child = self.entry(i).unwrap().clone();
                 *pt.entry_mut(i) = child;
             }
+            pt.set_lower(lower);
+            pt.set_upper(upper);
             pt
         }
     }
@@ -619,8 +685,9 @@ impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
 impl<T: HardwarePageTable> Drop for AugmentedPageTable<T> {
     fn drop(&mut self) {
         unsafe {
-            let count = self.get_count();
-            for i in 0..count {
+            let lower = self.get_lower();
+            let upper = self.get_upper();
+            for i in lower..upper {
                 let mut entry = ManuallyDrop::new(T::Entry::new(0));
                 core::mem::swap(&mut entry, &mut self.0[i]);
                 ManuallyDrop::drop(&mut entry);
