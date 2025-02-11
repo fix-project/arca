@@ -754,7 +754,10 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         let original = self.unmap();
         unsafe {
             self.0.chain_unchecked(
-                core::mem::transmute(UniquePage::into_raw(table)),
+                core::mem::transmute::<
+                    *mut AugmentedPageTable<<T as HardwarePageTableEntry>::Table>,
+                    *const <T as HardwarePageTableEntry>::Table,
+                >(UniquePage::into_raw(table)),
                 Permissions::All,
             )
         };
@@ -768,7 +771,10 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         let original = self.unmap();
         unsafe {
             self.0.chain_unchecked(
-                core::mem::transmute(SharedPage::into_raw(table)),
+                core::mem::transmute::<
+                    *mut AugmentedPageTable<<T as HardwarePageTableEntry>::Table>,
+                    *const <T as HardwarePageTableEntry>::Table,
+                >(SharedPage::into_raw(table)),
                 Permissions::Executable,
             )
         };
