@@ -58,6 +58,10 @@ pub mod syscall {
         unsafe { syscall(PROMPT, dst) }
     }
 
+    pub fn prompt_effect(src: u64, dst: u64) -> i64 {
+        unsafe { syscall(PROMPT_EFFECT, src, dst) }
+    }
+
     pub fn show(msg: &str, idx: u64) -> i64 {
         unsafe { syscall(SHOW, msg.as_ptr(), msg.len(), idx) }
     }
