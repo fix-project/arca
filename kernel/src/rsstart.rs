@@ -19,6 +19,7 @@ use crate::{
 };
 
 use common::message::Message;
+use common::refcnt::RefCnt;
 use common::ringbuffer::{RingBuffer, RingBufferRawData};
 
 extern "C" {
@@ -101,14 +102,14 @@ unsafe extern "C" fn _start(
 
     crate::lapic::init();
 
-    let mut data: RingBuffer<'_, Message> = RingBuffer::from_raw_parts(
-        *PHYSICAL_ALLOCATOR
-            .from_offset::<RingBufferRawData>(ring_buffer_data_ptr)
-            .as_ref()
-            .unwrap(),
-        &PHYSICAL_ALLOCATOR,
-    );
-    let res = data.read();
+    let raw = *PHYSICAL_ALLOCATOR
+        .from_offset::<RingBufferRawData>(ring_buffer_data_ptr)
+        .as_ref()
+        .unwrap();
+    let ring_buffer: RefCnt<RingBuffer<Message>> =
+        RingBuffer::<Message>::from_raw_parts(raw, &PHYSICAL_ALLOCATOR).into();
+
+    let res = ring_buffer.read();
     log::info!("read message with size {}", res.size);
 
     kmain();
