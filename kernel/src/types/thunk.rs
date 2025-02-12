@@ -206,6 +206,13 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
+                defs::syscall::PROMPT_EFFECT => match sys_prompt_effect(args, arca) {
+                    Ok(result) => return result,
+                    Err((a, e)) => {
+                        arca = a;
+                        Err(e)
+                    }
+                },
                 defs::syscall::APPLY => sys_apply(args, &mut arca),
                 defs::syscall::SHOW => sys_show(args, &mut arca),
                 defs::syscall::LOG => sys_log(args, &mut arca),
@@ -390,6 +397,26 @@ fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Load
     } else {
         arca.registers_mut()[Register::RAX] = 0;
         Ok(LoadedValue::Lambda(LoadedLambda { arca, idx }))
+    }
+}
+
+fn sys_prompt_effect(
+    args: [u64; 5],
+    arca: LoadedArca,
+) -> Result<LoadedValue, (LoadedArca, u32)> {
+    let src_idx = args[0] as usize;
+    let dst_idx = args[1] as usize;
+    if src_idx >= arca.descriptors().len() || dst_idx >= arca.descriptors().len() {
+        Err((arca, error::BAD_INDEX))
+    } else {
+        let mut arca = arca.unload();
+        arca.registers_mut()[Register::RAX] = 0;
+        Ok(LoadedValue::Tree(
+            vec![
+                LoadedValue::Unloaded(arca.descriptors().get(src_idx).cloned().unwrap()),
+                LoadedValue::Unloaded(Value::Lambda(Lambda { arca, idx: dst_idx })),
+            ]
+        ))
     }
 }
 
