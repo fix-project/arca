@@ -245,6 +245,23 @@ impl Thunk {
                         return Value::Lambda(Lambda { arca, idx });
                     }
                 }
+                defs::syscall::PROMPT_EFFECT => {
+                    let src_idx = args[0] as usize;
+                    let dst_idx = args[1] as usize;
+                    if src_idx >= arca.descriptors().len() || dst_idx >= arca.descriptors().len() {
+                        result[0] = defs::error::BAD_INDEX;
+                    } else {
+                        let mut arca = arca.unload();
+                        arca.registers_mut()[Register::RAX] = 0;
+                        return Value::Tree(
+                            vec![
+                                arca.descriptors().get(src_idx).cloned().unwrap(),
+                                Value::Lambda(Lambda { arca, idx: dst_idx }),
+                            ]
+                            .into(),
+                        );
+                    }
+                }
                 defs::syscall::SHOW => 'show: {
                     let ptr = args[0] as usize;
                     let len = args[1] as usize;
