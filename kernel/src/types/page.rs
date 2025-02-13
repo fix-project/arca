@@ -1,8 +1,8 @@
-// use crate::page::{Page1GB, Page2MB, Page4KB, SharedPage};
+use crate::page::{Page as AnyPage, Page1GB, Page2MB, Page4KB};
 
-// #[derive(Clone, Debug, Eq, PartialEq)]
-// pub enum Page {
-//     Page4KB(SharedPage<Page4KB>),
-//     Page2MB(SharedPage<Page2MB>),
-//     Page1GB(SharedPage<Page1GB>),
-// }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Page {
+    Page4KB(AnyPage<Page4KB>),
+    Page2MB(AnyPage<Page2MB>),
+    Page1GB(AnyPage<Page1GB>),
+}

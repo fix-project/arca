@@ -22,6 +22,7 @@ pub static CPU: InitCell<RefCell<Cpu>> = InitCell::new(|| {
     })
 });
 
+#[derive(Debug)]
 pub struct Cpu {
     size: Option<usize>,
     offset: usize,

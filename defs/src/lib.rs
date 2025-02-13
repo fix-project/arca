@@ -32,11 +32,11 @@ pub mod syscall {
 }
 
 pub mod error {
-    pub const BAD_SYSCALL: i64 = -1;
-    pub const BAD_INDEX: i64 = -2;
-    pub const BAD_TYPE: i64 = -3;
-    pub const BAD_ARGUMENT: i64 = -4;
-    pub const OUT_OF_MEMORY: i64 = -5;
-    pub const INTERRUPTED: i64 = -6;
-    pub const CONTINUED: i64 = -7;
+    pub const BAD_SYSCALL: u32 = 1;
+    pub const BAD_INDEX: u32 = 2;
+    pub const BAD_TYPE: u32 = 3;
+    pub const BAD_ARGUMENT: u32 = 4;
+    pub const OUT_OF_MEMORY: u32 = 5;
+    pub const INTERRUPTED: u32 = 6;
+    pub const CONTINUED: u32 = 7;
 }

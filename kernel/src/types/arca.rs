@@ -40,9 +40,9 @@ impl Arca {
         &mut self.register_file
     }
 
-    // pub fn mappings(&self) -> &PageTableEntry<PageTable256TB> {
-    //     &self.page_table[0]
-    // }
+    pub fn mappings(&self) -> &AddressSpace {
+        &self.page_table
+    }
 
     pub fn mappings_mut(&mut self) -> &mut AddressSpace {
         &mut self.page_table
@@ -63,13 +63,14 @@ impl Default for Arca {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedArca<'a> {
     register_file: RegisterFile,
     descriptors: Vec<Value>,
     cpu: &'a mut Cpu,
 }
 
-impl LoadedArca<'_> {
+impl<'a> LoadedArca<'a> {
     pub fn run(&mut self) -> ExitReason {
         unsafe { self.cpu.run(&mut self.register_file) }
     }
@@ -91,12 +92,23 @@ impl LoadedArca<'_> {
     }
 
     pub fn unload(self) -> Arca {
+        self.unload_with_cpu().0
+    }
+
+    pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
         let page_table = self.cpu.deactivate_address_space();
 
-        Arca {
-            register_file: self.register_file,
-            descriptors: self.descriptors,
-            page_table,
-        }
+        (
+            Arca {
+                register_file: self.register_file,
+                descriptors: self.descriptors,
+                page_table,
+            },
+            self.cpu,
+        )
+    }
+
+    pub fn cpu(&mut self) -> &'_ mut Cpu {
+        self.cpu
     }
 }

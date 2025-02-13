@@ -10,6 +10,8 @@ pub use crate::{
         PageTable512GBEntry,
     },
     types::pagetable::AddressSpace,
-    types::{Arca, Blob, Lambda, Thunk, Tree, Value},
+    types::{
+        Arca, Blob, Lambda, LoadedArca, LoadedLambda, LoadedThunk, LoadedValue, Thunk, Tree, Value,
+    },
 };
 pub use common::refcnt::RefCnt;
