@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use defs::error;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 
@@ -22,7 +22,8 @@ impl Thunk {
     pub fn new<T: Into<Value>>(f: Lambda, x: T) -> Thunk {
         let mut arca = f.arca;
         let idx = f.idx;
-        arca.descriptors_mut()[idx] = x.into();
+        let x: Value = x.into();
+        arca.descriptors_mut()[idx] = x;
         Thunk { arca }
     }
 
@@ -41,31 +42,61 @@ impl Thunk {
         let mut arca = Arca::new();
         arca.registers_mut()[Register::RIP] = start_address;
 
+        let mut highest_addr = 0;
+
         for (i, segment) in segments.iter().enumerate() {
-            log::debug!("processing segment: {:?}", segment);
+            log::debug!("processing segment: {:x?}", segment);
             match segment.p_type {
                 elf::abi::PT_LOAD => {
                     let start = segment.p_vaddr as usize;
-                    let page_start = (start / 4096) * 4096;
-                    let offset = start - page_start;
+                    let page_start_memory = (start / 4096) * 4096;
+                    let offset = start - page_start_memory;
                     let filesz = segment.p_filesz as usize;
                     let memsz = segment.p_memsz as usize;
-                    assert!(offset + memsz <= 4096);
-                    let data = elf.segment_data(segment).expect("could not find segment");
-                    let mut page = unsafe {
-                        UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init()
-                    };
-                    page[offset..offset + filesz].copy_from_slice(data);
-                    assert_eq!(page_start & 0xfff, 0);
 
-                    if segment.p_flags & elf::abi::PF_W != 0 {
-                        arca.mappings_mut()
-                            .map(page_start, AnyEntry::Entry4KB(Entry::UniquePage(page)));
-                    } else {
-                        arca.mappings_mut().map(
-                            page_start,
-                            AnyEntry::Entry4KB(Entry::SharedPage(page.into())),
-                        );
+                    let mut pages = (offset + memsz) / 4096;
+                    if (offset + memsz % 4096) > 0 {
+                        pages += 1;
+                    }
+
+                    let mut memi = offset;
+                    let mut filei = 0;
+                    let data = elf.segment_data(segment).expect("could not find segment");
+                    for page in 0..pages {
+                        let mut unique_page = unsafe {
+                            UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init()
+                        };
+                        let page_start = page * 4096;
+                        assert!(memi >= page_start);
+                        let page_end = page_start + 4096;
+                        if memi >= page_start && memi < page_end && filei < filesz {
+                            let mem_left = page_end - memi;
+                            let file_left = filesz - filei;
+
+                            let copy_size = core::cmp::min(mem_left, file_left);
+                            let file_end = filei + copy_size;
+
+                            let copy_end = memi + copy_size;
+
+                            assert!(copy_end - memi <= 4096);
+                            unique_page[(memi - page_start)..(copy_end - page_start)]
+                                .copy_from_slice(&data[filei..file_end]);
+                            memi = page_end;
+                            filei += copy_size;
+                        }
+
+                        if segment.p_flags & elf::abi::PF_W != 0 {
+                            arca.mappings_mut().map(
+                                page_start_memory + page_start,
+                                AnyEntry::Entry4KB(Entry::UniquePage(unique_page)),
+                            );
+                        } else {
+                            arca.mappings_mut().map(
+                                page_start_memory + page_start,
+                                AnyEntry::Entry4KB(Entry::SharedPage(unique_page.into())),
+                            );
+                        }
+                        highest_addr = core::cmp::max(highest_addr, page_start_memory + page_start);
                     }
                 }
                 elf::abi::PT_PHDR => {
@@ -81,7 +112,7 @@ impl Thunk {
             }
         }
 
-        let addr = (1 << 21) + (3 << 12);
+        let addr = highest_addr + 4096;
         let stack =
             unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
         arca.mappings_mut()
@@ -123,7 +154,7 @@ impl<'a> LoadedThunk<'a> {
             match result {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
-                    log::debug!("exited with interrupt: {x:?}");
+                    log::info!("exited with interrupt: {x:?}");
                     let tree = vec![
                         LoadedValue::Unloaded(Value::Atom("interrupt".into())),
                         LoadedValue::Unloaded(Value::Blob(x.to_ne_bytes().into())),
@@ -132,7 +163,10 @@ impl<'a> LoadedThunk<'a> {
                     return LoadedValue::Error(LoadedValue::Tree(tree).into());
                 }
                 x => {
-                    log::debug!("exited with exception: {x:?}");
+                    log::info!(
+                        "exited with exception: {x:x?} @ rip={:#x}",
+                        arca.registers()[Register::RIP]
+                    );
                     let tree = vec![
                         LoadedValue::Unloaded(Value::Atom("exception".into())),
                         LoadedValue::Unloaded(x.into()),
@@ -163,6 +197,7 @@ impl<'a> LoadedThunk<'a> {
                 },
                 defs::syscall::READ => sys_read(args, &mut arca),
                 defs::syscall::CREATE_BLOB => sys_create_blob(args, &mut arca),
+                defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
                 defs::syscall::CONTINUATION => sys_continuation(args, &mut arca),
                 defs::syscall::PROMPT => match sys_prompt(args, arca) {
                     Ok(result) => return result,
@@ -171,8 +206,10 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
+                defs::syscall::APPLY => sys_apply(args, &mut arca),
                 defs::syscall::SHOW => sys_show(args, &mut arca),
                 defs::syscall::LOG => sys_log(args, &mut arca),
+                defs::syscall::TAILCALL => sys_tailcall(args, &mut arca),
                 _ => {
                     log::error!("invalid syscall {num:#x}");
                     Err(error::BAD_SYSCALL)
@@ -209,10 +246,9 @@ fn sys_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
 fn sys_exit(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let idx = args[0] as usize;
     if let Some(x) = arca.descriptors_mut().get_mut(idx) {
-        let mut val = Value::Null;
-        core::mem::swap(x, &mut val);
+        let x = core::mem::take(x);
         arca.unload();
-        Ok(LoadedValue::Unloaded(val))
+        Ok(LoadedValue::Unloaded(x))
     } else {
         log::warn!("exit failed with invalid index");
         Err((arca, error::BAD_INDEX))
@@ -221,7 +257,7 @@ fn sys_exit(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Loaded
 
 fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
-    let Some(val) = arca.descriptors_mut().get(idx) else {
+    let Some(val) = arca.descriptors_mut().get_mut(idx) else {
         return Err(error::BAD_INDEX);
     };
     match val {
@@ -239,8 +275,12 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
                 }
             }
         }
-        Value::Tree(tree) => {
-            let tree = tree.clone();
+        Value::Tree(_) => {
+            let value = core::mem::take(val);
+            let Value::Tree(mut tree) = value else {
+                panic!();
+            };
+            let tree = Arc::make_mut(&mut tree);
             let ptr = args[1] as usize;
             let len = args[2] as usize;
             let len = core::cmp::min(len, tree.len());
@@ -255,16 +295,17 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
                 let bytes: [u8; core::mem::size_of::<u64>()] = x.try_into().ok()?;
                 Some(u64::from_ne_bytes(bytes) as usize)
             });
-            for (x, i) in tree.iter().zip(indices) {
+            for (x, i) in tree.iter_mut().zip(indices) {
                 let Some(i) = i else {
                     return Err(error::BAD_INDEX);
                 };
-                arca.descriptors_mut()[i] = x.clone();
+                let x = core::mem::take(x);
+                arca.descriptors_mut()[i] = x;
             }
             Ok(len.try_into().expect("length was too long"))
         }
         _ => {
-            log::warn!("READ called with invalid type");
+            log::warn!("READ called with invalid type: {val:?}");
             Err(error::BAD_TYPE)
         }
     }
@@ -288,6 +329,36 @@ fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     }
 }
 
+fn sys_create_tree(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let idx = args[0] as usize;
+    if idx >= arca.descriptors().len() {
+        return Err(error::BAD_INDEX);
+    }
+    let ptr = args[1] as usize;
+    let len = args[2] as usize;
+    let mut buffer = vec![0u8; len * core::mem::size_of::<u64>()];
+    unsafe {
+        let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
+        if !success {
+            return Err(error::BAD_ARGUMENT);
+        }
+    }
+    let mut v = vec![];
+    let indices = buffer.chunks(core::mem::size_of::<u64>()).map(|x| {
+        let bytes: [u8; core::mem::size_of::<u64>()] = x.try_into().unwrap();
+        u64::from_ne_bytes(bytes) as usize
+    });
+    for i in indices {
+        let Some(x) = arca.descriptors_mut().get_mut(i) else {
+            return Err(error::BAD_INDEX);
+        };
+        let x = core::mem::take(x);
+        v.push(x);
+    }
+    arca.descriptors_mut()[idx] = Value::Tree(v.into());
+    Ok(len.try_into().expect("length was too long"))
+}
+
 fn replace_with<T>(x: &mut T, f: impl FnOnce(T) -> T) {
     unsafe {
         let old = core::ptr::read(x);
@@ -299,7 +370,7 @@ fn replace_with<T>(x: &mut T, f: impl FnOnce(T) -> T) {
 fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
     if idx >= arca.descriptors().len() {
-        return Err(error::BAD_INDEX);
+        Err(error::BAD_INDEX)
     } else {
         replace_with(arca, |arca| {
             let (mut unloaded, cpu) = arca.unload_with_cpu();
@@ -320,6 +391,32 @@ fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Load
         arca.registers_mut()[Register::RAX] = 0;
         Ok(LoadedValue::Lambda(LoadedLambda { arca, idx }))
     }
+}
+
+fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let lambda = args[0] as usize;
+    let arg = args[1] as usize;
+
+    let arg = arca
+        .descriptors_mut()
+        .get_mut(arg)
+        .ok_or(error::BAD_INDEX)?;
+    let x = core::mem::take(arg);
+
+    let lambda = arca
+        .descriptors_mut()
+        .get_mut(lambda)
+        .ok_or(error::BAD_INDEX)?;
+
+    let l = core::mem::take(lambda);
+
+    let Value::Lambda(l) = l else {
+        return Err(error::BAD_TYPE);
+    };
+
+    let mut t = Value::Thunk(l.apply(x));
+    core::mem::swap(&mut t, lambda);
+    Ok(0)
 }
 
 fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
@@ -354,5 +451,21 @@ fn sys_log(args: [u64; 5], _: &mut LoadedArca) -> Result<u32, u32> {
         String::from_utf8_lossy(&buffer).into_owned()
     };
     log::info!("user message - \"{msg}\"");
+    Ok(0)
+}
+
+fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let thunk = args[0] as usize;
+    let thunk = arca
+        .descriptors_mut()
+        .get_mut(thunk)
+        .ok_or(error::BAD_INDEX)?;
+    let thunk = core::mem::take(thunk);
+
+    let Value::Thunk(mut thunk) = thunk else {
+        return Err(error::BAD_TYPE);
+    };
+
+    arca.swap(&mut thunk.arca);
     Ok(0)
 }

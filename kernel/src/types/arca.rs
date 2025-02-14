@@ -95,6 +95,12 @@ impl<'a> LoadedArca<'a> {
         self.unload_with_cpu().0
     }
 
+    pub fn take(&mut self) -> Arca {
+        let mut original = Default::default();
+        self.swap(&mut original);
+        original
+    }
+
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
         let page_table = self.cpu.deactivate_address_space();
 
@@ -106,6 +112,12 @@ impl<'a> LoadedArca<'a> {
             },
             self.cpu,
         )
+    }
+
+    pub fn swap(&mut self, other: &mut Arca) {
+        core::mem::swap(&mut self.register_file, &mut other.register_file);
+        core::mem::swap(&mut self.descriptors, &mut other.descriptors);
+        self.cpu.swap_address_space(&mut other.page_table);
     }
 
     pub fn cpu(&mut self) -> &'_ mut Cpu {

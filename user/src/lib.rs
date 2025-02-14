@@ -50,6 +50,10 @@ pub mod syscall {
         unsafe { syscall(CREATE_BLOB, dst, buffer.as_ptr(), buffer.len()) }
     }
 
+    pub fn create_tree(dst: u64, buffer: &[u64]) -> i64 {
+        unsafe { syscall(CREATE_TREE, dst, buffer.as_ptr(), buffer.len()) }
+    }
+
     pub fn continuation(dst: u64) -> i64 {
         unsafe { syscall(CONTINUATION, dst) }
     }
@@ -58,12 +62,20 @@ pub mod syscall {
         unsafe { syscall(PROMPT, dst) }
     }
 
+    pub fn apply(lambda: u64, arg: u64) -> i64 {
+        unsafe { syscall(APPLY, lambda, arg) }
+    }
+
     pub fn show(msg: &str, idx: u64) -> i64 {
         unsafe { syscall(SHOW, msg.as_ptr(), msg.len(), idx) }
     }
 
     pub fn log(msg: &str) -> i64 {
         unsafe { syscall(LOG, msg.as_ptr(), msg.len()) }
+    }
+
+    pub fn tailcall(thunk: u64) -> i64 {
+        unsafe { syscall(TAILCALL, thunk) }
     }
 }
 

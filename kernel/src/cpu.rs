@@ -258,6 +258,15 @@ impl Cpu {
         }
     }
 
+    pub fn swap_address_space(&mut self, new: &mut AddressSpace) {
+        // TODO: unnecessary TLB invalidation
+        unsafe {
+            let replacement = core::ptr::read(new);
+            core::ptr::write(new, self.deactivate_address_space());
+            self.activate_address_space(replacement);
+        }
+    }
+
     pub fn deactivate_address_space(&mut self) -> AddressSpace {
         match self.size.take() {
             Some(12) => {

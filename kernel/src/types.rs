@@ -19,8 +19,9 @@ pub use lambda::LoadedLambda;
 pub use thunk::LoadedThunk;
 pub use thunk::Thunk;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum Value {
+    #[default]
     Null,
     Error(Arc<Value>),
     Atom(String),

@@ -13,11 +13,14 @@ const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const ERROR_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_error"));
+const CURRY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
 
 #[no_mangle]
 #[inline(never)]
 extern "C" fn kmain() -> ! {
     log::info!("kmain");
+    const ITERS: usize = 500;
+    const N: usize = 1000;
 
     let mut cpu = CPU.borrow_mut();
     let trap = Thunk::from_elf(TRAP_ELF);
@@ -54,7 +57,6 @@ extern "C" fn kmain() -> ! {
     }
 
     let identity = identity.apply(Value::Null);
-    const ITERS: usize = 500;
     log::info!("running identity program {} times", ITERS);
     let mut identities = vec![];
     identities.resize_with(ITERS, || identity.clone());
@@ -68,7 +70,6 @@ extern "C" fn kmain() -> ! {
         time.as_nanos() / ITERS as u128
     );
 
-    const N: usize = 1000;
     log::info!("running add program on {} inputs", N);
     let add = Thunk::from_elf(ADD_ELF);
     let Value::Lambda(add) = add.run(&mut cpu) else {
@@ -80,11 +81,15 @@ extern "C" fn kmain() -> ! {
         let y = ((13 * i + 2) % 29) as u64;
         let f = add.clone();
         let f = f.load(&mut cpu);
-        let fx = f.apply(Value::Blob(x.to_ne_bytes().into())).run();
-        let LoadedValue::Lambda(fx) = fx else {
-            panic!("add program did not produce a lambda: {:?}", fx);
-        };
-        let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
+        let result = f
+            .apply(Value::Tree(
+                vec![
+                    Value::Blob(x.to_ne_bytes().into()),
+                    Value::Blob(y.to_ne_bytes().into()),
+                ]
+                .into(),
+            ))
+            .run();
         let LoadedValue::Unloaded(Value::Blob(z)) = result else {
             panic!("add program did not produce a blob: {:?}", result);
         };
@@ -98,18 +103,81 @@ extern "C" fn kmain() -> ! {
     log::info!("running add program {} times", ITERS);
     let mut adds = vec![];
     adds.resize_with(ITERS, || add.clone());
+    let tree: Tree = vec![
+        Value::Blob(100u64.to_ne_bytes().into()),
+        Value::Blob(100u64.to_ne_bytes().into()),
+    ]
+    .into();
     let time = kernel::kvmclock::time(|| {
         for f in adds {
             let f = f.load(&mut cpu);
-            let LoadedValue::Lambda(f) = f.apply(Value::Blob(100u64.to_ne_bytes().into())).run()
-            else {
-                panic!()
-            };
-            let f = f.apply(Value::Blob(100u64.to_ne_bytes().into()));
+            let f = f.apply(Value::Tree(tree.clone()));
             let _ = core::hint::black_box(f.run());
         }
     });
     log::info!("add program takes {} ns", time.as_nanos() / ITERS as u128);
+
+    log::info!("running curried add program on {} inputs", N);
+    let curry = Thunk::from_elf(CURRY_ELF);
+    let curry = curry.load(&mut cpu);
+    let result = curry.run();
+    let LoadedValue::Lambda(curry) = result else {
+        panic!("expected lambda after start");
+    };
+    let LoadedValue::Lambda(cadd) = curry.apply(Value::Lambda(add.clone())).run() else {
+        panic!("expected lambda after function");
+    };
+    let LoadedValue::Lambda(cadd) = cadd.apply(Value::Blob(2_u64.to_ne_bytes().into())).run()
+    else {
+        panic!("expected lambda after count");
+    };
+    let cadd = cadd.unload();
+    for _ in 0..N {
+        let i = 0;
+        let x = ((10 * i + 11) % 31) as u64;
+        let y = ((13 * i + 2) % 29) as u64;
+        let f = cadd.clone();
+        let f = f.load(&mut cpu);
+        let LoadedValue::Lambda(fx) = f.apply(Value::Blob(x.to_ne_bytes().into())).run() else {
+            panic!();
+        };
+        let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
+        let LoadedValue::Unloaded(Value::Blob(z)) = result else {
+            panic!("curried add program did not produce a blob: {:?}", result);
+        };
+        let bytes: [u8; 8] = (&*z)
+            .try_into()
+            .expect("curried add program produced a blob of the wrong size");
+        let z = u64::from_ne_bytes(bytes);
+        assert_eq!(x + y, z);
+    }
+
+    log::info!("running curried add program {} times", ITERS);
+    let mut cadds = vec![];
+    cadds.resize_with(ITERS, || cadd.clone());
+    let time = kernel::kvmclock::time(|| {
+        for f in cadds {
+            let x = 100u64;
+            let y = 100u64;
+            let f = f.load(&mut cpu);
+            let LoadedValue::Lambda(fx) = f.apply(Value::Blob(x.to_ne_bytes().into())).run() else {
+                panic!();
+            };
+            let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
+            let LoadedValue::Unloaded(Value::Blob(z)) = result else {
+                panic!("curried add program did not produce a blob: {:?}", result);
+            };
+            let bytes: [u8; 8] = (&*z)
+                .try_into()
+                .expect("curried add program produced a blob of the wrong size");
+            let z = u64::from_ne_bytes(bytes);
+            assert_eq!(x + y, z);
+        }
+    });
+    log::info!(
+        "curried add program takes {} ns",
+        time.as_nanos() / ITERS as u128
+    );
 
     let error = Thunk::from_elf(ERROR_ELF);
     let Value::Lambda(error) = error.run(&mut cpu) else {
