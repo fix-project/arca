@@ -1,4 +1,5 @@
 #![feature(allocator_api)]
+#![feature(str_from_raw_parts)]
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -14,7 +15,7 @@ use kvm_ioctls::VcpuExit;
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() -> ExitCode {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     use std::ptr::null_mut;
 
     use kvm_bindings::kvm_userspace_memory_region;
@@ -215,6 +216,8 @@ fn main() -> ExitCode {
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
+    let mut record: usize = 0;
+
     loop {
         match vcpu_fd.run().expect("run failed") {
             VcpuExit::IoIn(addr, data) => println!(
@@ -223,6 +226,48 @@ fn main() -> ExitCode {
             ),
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => return ExitCode::from(data[0]),
+                1 => {
+                    record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                }
+                2 => {
+                    record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
+                    let record: *const common::LogRecord = allocator.from_offset(record);
+                    unsafe {
+                        let common::LogRecord {
+                            level,
+                            target,
+                            file,
+                            line,
+                            module_path,
+                            message,
+                        } = *record;
+                        let level = log::Level::iter().nth(level as usize - 1).unwrap();
+                        let target = std::str::from_raw_parts(
+                            allocator.from_offset::<u8>(target.0),
+                            target.1,
+                        );
+                        let file = file.map(|x| {
+                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                        });
+                        let module_path = module_path.map(|x| {
+                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                        });
+                        let message = std::str::from_raw_parts(
+                            allocator.from_offset::<u8>(message.0),
+                            message.1,
+                        );
+                        log::logger().log(
+                            &log::Record::builder()
+                                .level(level)
+                                .target(target)
+                                .file(file)
+                                .line(line)
+                                .module_path(module_path)
+                                .args(format_args!("{}", message))
+                                .build(),
+                        );
+                    }
+                }
                 0xe9 => {
                     let data = data[0];
                     let c = data as char;

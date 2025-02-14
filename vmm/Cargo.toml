@@ -3,6 +3,14 @@ name = "vmm"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+klog-trace = ["kernel/klog-trace"]
+klog-debug = ["kernel/klog-debug"]
+klog-info = ["kernel/klog-info"]
+klog-warn = ["kernel/klog-warn"]
+klog-error = ["kernel/klog-error"]
+klog-off = ["kernel/klog-off"]
+
 [dependencies]
 cc = "1.1.37"
 kvm-bindings = "0.10.0"
@@ -13,3 +21,4 @@ common = { path = "../common" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
+log = "0.4.25"

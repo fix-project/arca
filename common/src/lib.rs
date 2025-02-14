@@ -12,3 +12,13 @@ pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod controlreg;
+
+#[repr(C)]
+pub struct LogRecord {
+    pub level: u8,
+    pub target: (usize, usize),
+    pub file: Option<(usize, usize)>,
+    pub line: Option<u32>,
+    pub module_path: Option<(usize, usize)>,
+    pub message: (usize, usize),
+}

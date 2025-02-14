@@ -163,7 +163,7 @@ impl<'a> LoadedThunk<'a> {
                     return LoadedValue::Error(LoadedValue::Tree(tree).into());
                 }
                 x => {
-                    log::info!(
+                    log::warn!(
                         "exited with exception: {x:x?} @ rip={:#x}",
                         arca.registers()[Register::RIP]
                     );

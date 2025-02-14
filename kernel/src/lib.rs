@@ -41,6 +41,7 @@ pub mod vm;
 
 // mod arrayvec;
 mod gdt;
+mod host;
 mod idt;
 mod initcell;
 mod interrupts;
@@ -81,7 +82,13 @@ pub fn shutdown() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    log::error!("{}", info);
+    use core::fmt::Write;
+    use spinlock::SpinLockGuard;
+
+    let mut console = crate::debugcon::CONSOLE.lock();
+    let _ = writeln!(&mut *console, "{}", info);
+    SpinLockGuard::unlock(console);
+
     loop {
         unsafe { io::outb(0, 1) }
         core::hint::spin_loop();

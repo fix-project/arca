@@ -7,8 +7,8 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
-    debugcon::DebugLogger,
     gdt::{GdtDescriptor, PrivilegeLevel},
+    host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
     initcell::InitCell,
     msr,
@@ -29,8 +29,6 @@ extern "C" {
     static isr_table: [usize; 256];
     fn syscall_handler();
 }
-
-static LOGGER: DebugLogger = DebugLogger;
 
 static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     Idt(unsafe {
@@ -63,8 +61,22 @@ unsafe extern "C" fn _start(
     refcnt_size: usize,
 ) -> ! {
     init_bss();
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(LevelFilter::Info);
+    let _ = log::set_logger(&HOST);
+    if cfg!(feature = "klog-trace") {
+        log::set_max_level(LevelFilter::Trace);
+    } else if cfg!(feature = "klog-debug") {
+        log::set_max_level(LevelFilter::Debug);
+    } else if cfg!(feature = "klog-info") {
+        log::set_max_level(LevelFilter::Info);
+    } else if cfg!(feature = "klog-warn") {
+        log::set_max_level(LevelFilter::Warn);
+    } else if cfg!(feature = "klog-error") {
+        log::set_max_level(LevelFilter::Error);
+    } else if cfg!(feature = "klog-off") {
+        log::set_max_level(LevelFilter::Off);
+    } else {
+        log::set_max_level(LevelFilter::Info);
+    }
     let allocator = common::BuddyAllocator::from_raw_parts(common::buddy::BuddyAllocatorRawData {
         base: vm::pa2ka(0),
         inner_offset,
