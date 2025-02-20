@@ -10,6 +10,7 @@ pub extern "C" fn _start() -> ! {
     
     let effect = "effect";
     let x = effect.as_bytes();
+    // TODO(sebastian): This should be an Atom eventually.
     user::syscall::create_blob(0, x);
 
     user::syscall::prompt_effect(0, 1);
