@@ -31,7 +31,8 @@ impl From<u8> for OpCode {
     }
 }
 
-pub struct ArcaHandle(usize, usize);
+// offset
+pub type ArcaHandle = usize;
 
 unsafe fn as_u8_slice<T: Sized>(input: &T) -> &[u8] {
     core::slice::from_raw_parts((input as *const T) as *const u8, core::mem::size_of::<T>())
@@ -60,68 +61,113 @@ pub trait Message {
 
 #[repr(C)]
 pub struct CreateBlobMessage {
-    ptr: usize,
-    size: usize,
+    pub ptr: usize,
+    pub size: usize,
 }
 
 impl Message for CreateBlobMessage {
     const OPCODE: OpCode = OpCode::CreateBlob;
 }
 
+impl CreateBlobMessage {
+    pub fn new(ptr: usize, size: usize) -> Self {
+        Self { ptr, size }
+    }
+}
+
 #[repr(C)]
 pub struct CreateTreeMessage {
-    ptr: usize,
-    size: usize,
+    pub ptr: usize,
+    pub size: usize,
 }
 
 impl Message for CreateTreeMessage {
     const OPCODE: OpCode = OpCode::CreateTree;
 }
 
+impl CreateTreeMessage {
+    pub fn new(ptr: usize, size: usize) -> Self {
+        Self { ptr, size }
+    }
+}
+
 #[repr(C)]
 pub struct CreateThunkMessage {
-    handle: ArcaHandle,
+    pub handle: ArcaHandle,
 }
 
 impl Message for CreateThunkMessage {
     const OPCODE: OpCode = OpCode::CreateThunk;
 }
 
+impl CreateThunkMessage {
+    pub fn new(handle: ArcaHandle) -> Self {
+        Self { handle }
+    }
+}
+
 #[repr(C)]
 pub struct RunThunkMessage {
-    handle: ArcaHandle,
+    pub handle: ArcaHandle,
 }
 
 impl Message for RunThunkMessage {
     const OPCODE: OpCode = OpCode::RunThunk;
 }
 
+impl RunThunkMessage {
+    pub fn new(handle: ArcaHandle) -> Self {
+        Self { handle }
+    }
+}
+
 #[repr(C)]
 pub struct ApplyMessage {
-    thunk_handle: ArcaHandle,
-    arg_handle: ArcaHandle,
+    pub lambda_handle: ArcaHandle,
+    pub arg_handle: ArcaHandle,
 }
 
 impl Message for ApplyMessage {
     const OPCODE: OpCode = OpCode::Apply;
 }
 
+impl ApplyMessage {
+    pub fn new(lambda_handle: ArcaHandle, arg_handle: ArcaHandle) -> Self {
+        Self {
+            lambda_handle,
+            arg_handle,
+        }
+    }
+}
+
 #[repr(C)]
 pub struct ReplyMessage {
-    handle: ArcaHandle,
+    pub handle: ArcaHandle,
 }
 
 impl Message for ReplyMessage {
     const OPCODE: OpCode = OpCode::Reply;
 }
 
+impl ReplyMessage {
+    pub fn new(handle: ArcaHandle) -> Self {
+        Self { handle }
+    }
+}
+
 #[repr(C)]
 pub struct DropMessage {
-    handle: ArcaHandle,
+    pub handle: ArcaHandle,
 }
 
 impl Message for DropMessage {
     const OPCODE: OpCode = OpCode::Drop;
+}
+
+impl DropMessage {
+    pub fn new(handle: ArcaHandle) -> Self {
+        Self { handle }
+    }
 }
 
 pub enum Messages {
@@ -168,7 +214,7 @@ impl<'a> MessageParser<'a> {
         }
     }
 
-    fn to_message(raw: Box<[u8]>, opcode: &OpCode) -> Messages {
+    fn to_message(raw: Box<[u8]>, opcode: OpCode) -> Messages {
         match opcode {
             OpCode::CreateBlob => Messages::CreateBlobMessage(unsafe { from_boxed_u8_slice(raw) }),
             OpCode::CreateTree => Messages::CreateTreeMessage(unsafe { from_boxed_u8_slice(raw) }),
@@ -179,7 +225,9 @@ impl<'a> MessageParser<'a> {
             OpCode::Apply => Messages::ApplyMessage(unsafe { from_boxed_u8_slice(raw) }),
             OpCode::Reply => Messages::ReplyMessage(unsafe { from_boxed_u8_slice(raw) }),
             OpCode::Drop => Messages::DropMessage(unsafe { from_boxed_u8_slice(raw) }),
-            _ => todo!(),
+            OpCode::Dummy => {
+                panic!("Bad OpCode");
+            }
         }
     }
 
@@ -212,7 +260,7 @@ impl<'a> MessageParser<'a> {
 
                 return Some(Self::to_message(
                     self.pending_payload.take().unwrap(),
-                    &OpCode::from(self.pending_opcode),
+                    OpCode::from(self.pending_opcode),
                 ));
             }
         }
@@ -221,7 +269,7 @@ impl<'a> MessageParser<'a> {
     }
 }
 
-fn serialize<T: Message>(msg: Box<T>) -> (u8, Box<[u8]>) {
+pub fn serialize<T: Message>(msg: Box<T>) -> (u8, Box<[u8]>) {
     (T::OPCODE as u8, unsafe { to_boxed_u8_slice(msg) })
 }
 
@@ -236,7 +284,7 @@ pub struct MessageSerializer<'a> {
 impl<'a> MessageSerializer<'a> {
     pub fn new(rb: RefCnt<'a, RingBuffer>) -> MessageSerializer<'a> {
         Self {
-            opcode_written: false,
+            opcode_written: true,
             pending_opcode: 0,
             pending_payload: None,
             pending_payload_offset: 0,
@@ -251,15 +299,14 @@ impl<'a> MessageSerializer<'a> {
         }
     }
 
-    pub fn load<T: Message>(&mut self, msg: Box<T>) -> () {
+    pub fn load(&mut self, op: u8, msg: Box<[u8]>) -> () {
         if !self.loadable() {
             panic!("Not loadable");
         }
 
         self.opcode_written = false;
-        let res = serialize(msg);
-        self.pending_opcode = res.0;
-        self.pending_payload = Some(res.1);
+        self.pending_opcode = op;
+        self.pending_payload = Some(msg);
         return;
     }
 
