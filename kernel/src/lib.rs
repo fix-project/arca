@@ -15,6 +15,7 @@
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
 #![feature(bigint_helper_methods)]
+#![feature(box_into_inner)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -35,8 +36,8 @@ pub mod page;
 pub mod paging;
 pub mod rt;
 pub mod spinlock;
-pub mod parser;
 // pub mod tsc;
+pub mod client;
 pub mod prelude;
 pub mod types;
 pub mod vm;

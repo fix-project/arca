@@ -15,15 +15,13 @@ use crate::{
     paging::Permissions,
     prelude::*,
     vm,
-    parser::MessageParser,
 };
 
-use common::message::RawMessage;
 use common::refcnt::RefCnt;
 use common::ringbuffer::{RingBuffer, RingBufferRawData};
 
 extern "C" {
-    fn kmain( rb_in: RefCnt<RingBuffer<RawMessage>>, rb_out: RefCnt<RingBuffer<RawMessage>> );
+    fn kmain(rb_in: RefCnt<RingBuffer>, rb_out: RefCnt<RingBuffer>);
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
@@ -112,15 +110,15 @@ unsafe extern "C" fn _start(
         .from_offset::<RingBufferRawData>(ring_buffer_in_data_ptr)
         .as_ref()
         .unwrap();
-    let ring_buffer_in: RefCnt<RingBuffer<RawMessage>> =
-        RingBuffer::<RawMessage>::from_raw_parts(raw_in, &PHYSICAL_ALLOCATOR).into();
+    let ring_buffer_in: RefCnt<RingBuffer> =
+        RingBuffer::from_raw_parts(raw_in, &PHYSICAL_ALLOCATOR).into();
 
     let raw_out = *PHYSICAL_ALLOCATOR
         .from_offset::<RingBufferRawData>(ring_buffer_out_data_ptr)
         .as_ref()
         .unwrap();
-    let ring_buffer_out: RefCnt<RingBuffer<RawMessage>> =
-        RingBuffer::<RawMessage>::from_raw_parts(raw_out, &PHYSICAL_ALLOCATOR).into();
+    let ring_buffer_out: RefCnt<RingBuffer> =
+        RingBuffer::from_raw_parts(raw_out, &PHYSICAL_ALLOCATOR).into();
 
     //let res = ring_buffer.read();
     //log::info!("read message with size {}", res.size);
