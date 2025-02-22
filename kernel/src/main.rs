@@ -14,7 +14,7 @@ const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"))
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const ERROR_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_error"));
 const CURRY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
-const EFFECT_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_effect"));
+const PERFORM_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_perform"));
 
 #[no_mangle]
 #[inline(never)]
@@ -199,7 +199,7 @@ extern "C" fn kmain() -> ! {
         }
     };
 
-    // Test effect.rs
+    // Test perform.rs
     let inputs = [
         Value::Null,
         Value::Atom("hello".into()),
@@ -210,27 +210,27 @@ extern "C" fn kmain() -> ! {
         Value::Tree(vec![].into()),
     ];
 
-    log::info!("running effect program on {} inputs", inputs.len());
+    log::info!("running perform program on {} inputs", inputs.len());
 
-    let effect = Thunk::from_elf(EFFECT_ELF);
-    let result = effect.run(&mut cpu);
-    let Value::Tree(effect) = result else {
+    let perform = Thunk::from_elf(PERFORM_ELF);
+    let result = perform.run(&mut cpu);
+    let Value::Tree(perform) = result else {
         panic!("{result:?}");
     };
 
     let expected_payload = "effect".as_bytes();
-    let Value::Blob(effect_payload) = effect[0].clone() else {
-        panic!("{effect:?}");
+    let Value::Blob(perform_payload) = perform[0].clone() else {
+        panic!("{perform:?}");
     };
-    if effect_payload.as_ref() != expected_payload {
-        panic!("{effect:?}");
+    if perform_payload.as_ref() != expected_payload {
+        panic!("{perform:?}");
     }
 
-    let Value::Lambda(effect) = effect[1].clone() else {
-        panic!("{effect:?}");
+    let Value::Lambda(perform) = perform[1].clone() else {
+        panic!("{perform:?}");
     };
     for input in inputs {
-        let id = effect.clone();
+        let id = perform.clone();
         let id = id.apply(input.clone());
         let result = id.run(&mut cpu);
         assert_eq!(input, result);

@@ -206,7 +206,7 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
-                defs::syscall::PROMPT_EFFECT => match sys_prompt_effect(args, arca) {
+                defs::syscall::PERFORM => match sys_perform(args, arca) {
                     Ok(result) => return result,
                     Err((a, e)) => {
                         arca = a;
@@ -400,10 +400,7 @@ fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Load
     }
 }
 
-fn sys_prompt_effect(
-    args: [u64; 5],
-    arca: LoadedArca,
-) -> Result<LoadedValue, (LoadedArca, u32)> {
+fn sys_perform(args: [u64; 5], arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let src_idx = args[0] as usize;
     let dst_idx = args[1] as usize;
     if src_idx >= arca.descriptors().len() || dst_idx >= arca.descriptors().len() {
@@ -411,12 +408,10 @@ fn sys_prompt_effect(
     } else {
         let mut arca = arca.unload();
         arca.registers_mut()[Register::RAX] = 0;
-        Ok(LoadedValue::Tree(
-            vec![
-                LoadedValue::Unloaded(arca.descriptors().get(src_idx).cloned().unwrap()),
-                LoadedValue::Unloaded(Value::Lambda(Lambda { arca, idx: dst_idx })),
-            ]
-        ))
+        Ok(LoadedValue::Tree(vec![
+            LoadedValue::Unloaded(arca.descriptors().get(src_idx).cloned().unwrap()),
+            LoadedValue::Unloaded(Value::Lambda(Lambda { arca, idx: dst_idx })),
+        ]))
     }
 }
 

@@ -61,9 +61,9 @@ pub mod syscall {
     pub fn prompt(dst: u64) -> i64 {
         unsafe { syscall(PROMPT, dst) }
     }
-    
-    pub fn prompt_effect(src: u64, dst: u64) -> i64 {
-        unsafe { syscall(PROMPT_EFFECT, src, dst) }
+
+    pub fn perform(src: u64, dst: u64) -> i64 {
+        unsafe { syscall(PERFORM, src, dst) }
     }
 
     pub fn apply(lambda: u64, arg: u64) -> i64 {

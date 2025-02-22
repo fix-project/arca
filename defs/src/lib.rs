@@ -26,7 +26,7 @@ pub mod syscall {
     pub const IMPLODE: u64 = 0x55;
     pub const FORCE: u64 = 0x56;
     pub const PROMPT: u64 = 0x57;
-    pub const PROMPT_EFFECT: u64 = 0x58;
+    pub const PERFORM: u64 = 0x58;
     pub const TAILCALL: u64 = 0x59;
 
     pub const SHOW: u64 = 0xf0;
