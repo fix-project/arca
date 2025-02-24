@@ -62,6 +62,10 @@ pub mod syscall {
         unsafe { syscall(PROMPT, dst) }
     }
 
+    pub fn perform(src: u64, dst: u64) -> i64 {
+        unsafe { syscall(PERFORM, src, dst) }
+    }
+
     pub fn apply(lambda: u64, arg: u64) -> i64 {
         unsafe { syscall(APPLY, lambda, arg) }
     }
