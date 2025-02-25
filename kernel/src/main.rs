@@ -5,9 +5,11 @@
 extern crate alloc;
 extern crate kernel;
 
+use core::time::Duration;
+
 use alloc::vec;
 
-use kernel::{prelude::*, shutdown};
+use kernel::{kvmclock, prelude::*, shutdown};
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -15,6 +17,7 @@ const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const ERROR_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_error"));
 const CURRY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
 const PERFORM_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_perform"));
+const SPIN_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_spin"));
 
 #[no_mangle]
 #[inline(never)]
@@ -234,6 +237,23 @@ extern "C" fn kmain() -> ! {
         let id = id.apply(input.clone());
         let result = id.run(&mut cpu);
         assert_eq!(input, result);
+    }
+
+    // Test spin.rs
+    let mut lapic = kernel::LAPIC.borrow_mut();
+    lapic.set_initial_count(0x10);
+    core::mem::drop(lapic);
+
+    log::info!("running spin program for {} iterations", ITERS);
+    let spin = Thunk::from_elf(SPIN_ELF);
+    let mut spin = spin.load(&mut cpu);
+    let now = kvmclock::wall_clock_time();
+    for i in 0..ITERS {
+        let alarm = now + Duration::from_millis(i as u64);
+        let LoadedValue::Thunk(x) = spin.run_until(alarm) else {
+            panic!("expected spin program to time out");
+        };
+        spin = x;
     }
 
     log::info!("done");

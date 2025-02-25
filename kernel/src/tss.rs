@@ -1,4 +1,4 @@
-use core::{cell::LazyCell, ptr::addr_of};
+use core::cell::LazyCell;
 
 use crate::interrupts::INTERRUPT_STACK;
 
@@ -47,7 +47,7 @@ impl TaskStateSegment {
     pub fn new(stack: *mut [u8]) -> TaskStateSegment {
         let mut tss = TaskStateSegment {
             rsp: [
-                unsafe { addr_of!((*stack)[0]).add(stack.len()) } as usize as u64,
+                unsafe { (&raw const (*stack)[0]).add(stack.len()) } as usize as u64,
                 0,
                 0,
             ],

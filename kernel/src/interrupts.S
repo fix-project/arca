@@ -66,6 +66,7 @@ syscall_handler:
   // rflags -> r11
   // rip -> rcx
   // we are coming from user mode, so switch to kernel GS
+  cli
   swapgs
   mov gs:[SAVED_RSP], rsp
   mov rsp, gs:[REGISTER_SAVE_AREA]
@@ -101,7 +102,7 @@ syscall_return_to_system:
   pop rbx
   mov rax, 256  // exit due to syscall
   mov rdx, 0    // error code 0
-  sti
+  // sti
   ret
 
 .globl isr_call_user
@@ -229,17 +230,19 @@ isr_save_state_and_exit:
   pop r12
   pop rbp
   pop rbx
-  sti
+  // sti
   ret
 
 .macro def_stub_error num
 isr_stub_\num:
+  cli
   push \num
   jmp isr_stub
 .endm
 
 .macro def_stub_no_error num
 isr_stub_\num:
+  cli
   push 0
   push \num
   jmp isr_stub

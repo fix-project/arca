@@ -46,7 +46,7 @@ pub(crate) unsafe fn init() {
     if BOOT_TIME.load(Ordering::SeqCst).is_null() {
         let boot_time: *mut WallClock = Box::into_raw(Default::default());
         let value = vm::ka2pa(boot_time) as u64;
-        asm!("wrmsr", in("edx") value>> 32, in("eax") value, in("ecx") 0x4b564d00);
+        asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d00);
         if BOOT_TIME
             .compare_exchange(
                 core::ptr::null_mut(),
@@ -107,7 +107,8 @@ fn info_and_tsc_to_duration(info: CpuTimeInfo, tsc: u64) -> Duration {
     } else {
         time >> -info.tsc_shift
     };
-    let time = (time.wrapping_mul(info.tsc_to_system_mul as u64)) >> 32;
+    let time = time.widening_mul(info.tsc_to_system_mul as u64);
+    let time = (time.0 >> 32) | (time.1 << 32);
     let time = time.wrapping_add(info.system_time);
     Duration::from_nanos(time)
 }

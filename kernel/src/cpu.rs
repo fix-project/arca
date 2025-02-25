@@ -44,10 +44,10 @@ pub enum Mode {
 #[repr(C)]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RegisterFile {
-    registers: [u64; 16],
-    rip: u64,
-    flags: u64,
-    mode: Mode,
+    registers: [u64; 16], // 0x0
+    rip: u64,             // 0x80
+    flags: u64,           // 0x88
+    mode: Mode,           // 0x90
 }
 
 impl RegisterFile {

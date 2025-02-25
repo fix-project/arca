@@ -105,7 +105,7 @@ impl LocalApic {
         self.write(0x3E, value as u32);
     }
 
-    fn set_initial_count(&mut self, value: u32) {
+    pub fn set_initial_count(&mut self, value: u32) {
         self.write(0x38, value);
     }
 

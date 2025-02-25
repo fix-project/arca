@@ -271,7 +271,7 @@ fn main() -> ExitCode {
                 0xe9 => {
                     let data = data[0];
                     let c = data as char;
-                    print!("{c}");
+                    eprint!("{c}");
                 }
                 _ => {
                     println!(

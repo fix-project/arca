@@ -14,6 +14,7 @@
 #![feature(new_zeroed_alloc)]
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
+#![feature(bigint_helper_methods)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

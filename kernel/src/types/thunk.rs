@@ -1,9 +1,13 @@
+use core::time::Duration;
+
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use defs::error;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
+use time::OffsetDateTime;
 
 use crate::{
     cpu::ExitReason,
+    kvmclock,
     prelude::*,
     types::pagetable::{AnyEntry, Entry},
 };
@@ -148,12 +152,31 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run(self) -> LoadedValue<'a> {
+        self.run_for(Duration::from_secs(1))
+    }
+
+    pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {
+        let start = kvmclock::wall_clock_time();
+        let end = start + timeout;
+        self.run_until(end)
+    }
+
+    pub fn run_until(self, alarm: OffsetDateTime) -> LoadedValue<'a> {
         let LoadedThunk { mut arca } = self;
         loop {
             let result = arca.run();
             match result {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
+                    if x == 0x20 {
+                        let now = kvmclock::wall_clock_time();
+                        if now < alarm {
+                            log::debug!("program was interrupted, but time has not expired");
+                            continue;
+                        } else {
+                            return LoadedValue::Thunk(LoadedThunk { arca });
+                        }
+                    }
                     log::info!("exited with interrupt: {x:?}");
                     let tree = vec![
                         LoadedValue::Unloaded(Value::Atom("interrupt".into())),
