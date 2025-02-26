@@ -4,7 +4,12 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
-use common::message::{OpCode, RawMessage};
+extern crate alloc;
+use alloc::sync::Arc;
+use std::mem;
+use std::sync::RwLock;
+use std::thread;
+
 use common::refcnt::RefCnt;
 use common::ringbuffer::{RingBuffer, RingBufferRawData};
 use common::BuddyAllocator;
@@ -14,7 +19,9 @@ use elf::ElfBytes;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
+use vmm::client::Client;
 
+const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() -> ExitCode {
@@ -47,7 +54,7 @@ fn main() -> ExitCode {
 
     let slice = unsafe { core::slice::from_raw_parts_mut(load_addr, mem_size) };
 
-    let allocator = BuddyAllocator::new(slice);
+    let allocator: &BuddyAllocator = Box::leak(Box::new(BuddyAllocator::new(slice)));
 
     let elf =
         ElfBytes::<AnyEndian>::minimal_parse(kernel_elf).expect("could not read kernel elf file");
@@ -117,13 +124,13 @@ fn main() -> ExitCode {
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
 
     let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
+        unsafe { Box::new_zeroed_in(allocator).assume_init() };
     for (i, entry) in pdpt.iter_mut().enumerate() {
         *entry = ((i << 30) | 0x83) as u64;
     }
 
     let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
+        unsafe { Box::new_zeroed_in(allocator).assume_init() };
     // pml4[0] = allocator.to_offset(&*pdpt) as u64 | 3;
     pml4[256] = allocator.to_offset(&*pdpt) as u64 | 3;
     Box::leak(pdpt);
@@ -204,24 +211,20 @@ fn main() -> ExitCode {
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = start_address;
     let initial_stack = unsafe {
-        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
+        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(allocator).assume_init()
     };
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let ring_buffer_in: RefCnt<RingBuffer<RawMessage>> = RingBuffer::new_in(10, &allocator).into();
+    let ring_buffer_in: RefCnt<RingBuffer> = RingBuffer::new_in(1024, allocator).into();
     let ring_buffer_data_in: RefCnt<RingBufferRawData> =
-        Box::new_in(ring_buffer_in.into_raw_parts(&allocator), &allocator).into();
+        Box::new_in(ring_buffer_in.into_raw_parts(allocator), allocator).into();
 
-    let ring_buffer_out: RefCnt<RingBuffer<RawMessage>> = RingBuffer::new_in(10, &allocator).into();
+    let ring_buffer_out: RefCnt<RingBuffer> = RingBuffer::new_in(1024, allocator).into();
     let ring_buffer_data_out: RefCnt<RingBufferRawData> =
-        Box::new_in(ring_buffer_out.into_raw_parts(&allocator), &allocator).into();
+        Box::new_in(ring_buffer_out.into_raw_parts(allocator), allocator).into();
 
-    ring_buffer_in.write(RawMessage {
-        opcode: OpCode::CreateBlob,
-        fst: 0,
-        snd: 1048576,
-    });
+    let client = Arc::new(RwLock::new(Client::new(ring_buffer_in, ring_buffer_out)));
 
     let raw = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
@@ -230,12 +233,63 @@ fn main() -> ExitCode {
     vcpu_regs.rsi = raw.inner_size as u64;
     vcpu_regs.rdx = raw.refcnt_offset as u64;
     vcpu_regs.rcx = raw.refcnt_size as u64;
-    vcpu_regs.r8 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_in.clone())) as u64;
-    vcpu_regs.r9 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_out.clone())) as u64;
+    vcpu_regs.r8 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_out.clone())) as u64;
+    vcpu_regs.r9 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_in.clone())) as u64;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
     let mut record: usize = 0;
+    let client_handle = thread::spawn(move || {
+        let mut addelf =
+            unsafe { Arc::new_uninit_slice_in(ADD_ELF.len(), allocator).assume_init() };
+        Arc::get_mut(&mut addelf).unwrap().copy_from_slice(ADD_ELF);
+
+        let x = 1 as u64;
+        let y = 1 as u64;
+        let mut xblob = unsafe { Arc::new_uninit_slice_in(8, allocator).assume_init() };
+        let mut yblob = unsafe { Arc::new_uninit_slice_in(8, allocator).assume_init() };
+        Arc::get_mut(&mut xblob)
+            .unwrap()
+            .copy_from_slice(&x.to_ne_bytes());
+        Arc::get_mut(&mut yblob)
+            .unwrap()
+            .copy_from_slice(&y.to_ne_bytes());
+
+        client.write().unwrap().create_blob(addelf);
+        client.write().unwrap().create_blob(xblob);
+        client.write().unwrap().create_blob(yblob);
+        client.write().unwrap().send_all();
+
+        let thunkref = Client::get_reply(client.clone());
+        client.write().unwrap().create_thunk(thunkref);
+        let xref = Client::get_reply(client.clone());
+        let yref = Client::get_reply(client.clone());
+        client.write().unwrap().send_all();
+
+        let thunkref = Client::get_reply(client.clone());
+        client.write().unwrap().run_thunk(thunkref);
+        client.write().unwrap().send_all();
+
+        let lambdaref = Client::get_reply(client.clone());
+        let argtree = client
+            .write()
+            .unwrap()
+            .create_tree(vec![xref, yref], allocator);
+        client.write().unwrap().send_all();
+        let argtreeref = Client::get_reply(client.clone());
+
+        client.write().unwrap().apply_lambda(lambdaref, argtreeref);
+        client.write().unwrap().send_all();
+
+        let thunkref = Client::get_reply(client.clone());
+        client.write().unwrap().run_thunk(thunkref);
+        client.write().unwrap().send_all();
+
+        mem::drop(Client::get_reply(client.clone()));
+
+        println!("Done");
+        client.write().unwrap().send_all();
+    });
 
     loop {
         match vcpu_fd.run().expect("run failed") {
@@ -244,7 +298,10 @@ fn main() -> ExitCode {
                 addr, data[0],
             ),
             VcpuExit::IoOut(addr, data) => match addr {
-                0 => return ExitCode::from(data[0]),
+                0 => {
+                    client_handle.join().unwrap();
+                    return ExitCode::from(data[0]);
+                }
                 1 => {
                     record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
                 }
