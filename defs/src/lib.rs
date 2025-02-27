@@ -45,9 +45,13 @@ pub mod error {
 
 pub mod types {
     pub const NULL: u64 = 0x00;
-    pub const ATOM: u64 = 0x01;
-    pub const BLOB: u64 = 0x02;
-    pub const TREE: u64 = 0x03;
-    pub const LAMBDA: u64 = 0x04;
-    pub const THUNK: u64 = 0x05;
+    pub const ERROR: u64 = 0x01;
+    pub const ATOM: u64 = 0x02;
+    pub const BLOB: u64 = 0x03;
+    pub const TREE: u64 = 0x04;
+    pub const PAGE: u64 = 0x05;
+    pub const PAGETABLE: u64 = 0x06;
+    pub const LAMBDA: u64 = 0x05;
+    pub const THUNK: u64 = 0x06;
+
 }

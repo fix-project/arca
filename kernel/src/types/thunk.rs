@@ -379,12 +379,14 @@ fn sys_type(args: [u64; 5], arca: LoadedArca) -> Result<u32, u32> {
     };
     match val {
         Value::Null => Ok(defs::types::NULL),
+        Value::Error(_) => Ok(defs::types::ERROR),
         Value::Atom(_) => Ok(defs::types::ATOM),
         Value::Blob(_) => Ok(defs::types::BLOB),
         Value::Tree(_) => Ok(defs::types::TREE),
+        Value::Page(_) => Ok(defs::types::PAGE),
+        Value::PageTable(_) => Ok(defs::types::PAGETABLE),
         Value::Lambda(_) => Ok(defs::types::LAMBDA),
         Value::Thunk(_) => Ok(defs::types::THUNK),
-        _ => return Err(error::BAD_TYPE),
     }.map(|x| x.try_into().expect("type was too large"))
 }
 
