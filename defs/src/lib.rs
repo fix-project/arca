@@ -51,6 +51,6 @@ pub mod types {
     pub const TREE: u64 = 0x04;
     pub const PAGE: u64 = 0x05;
     pub const PAGETABLE: u64 = 0x06;
-    pub const LAMBDA: u64 = 0x05;
-    pub const THUNK: u64 = 0x06;
+    pub const LAMBDA: u64 = 0x07;
+    pub const THUNK: u64 = 0x08;
 }
