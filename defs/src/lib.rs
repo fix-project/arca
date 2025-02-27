@@ -42,3 +42,12 @@ pub mod error {
     pub const INTERRUPTED: u32 = 6;
     pub const CONTINUED: u32 = 7;
 }
+
+pub mod types {
+    pub const NULL: u64 = 0x00;
+    pub const ATOM: u64 = 0x01;
+    pub const BLOB: u64 = 0x02;
+    pub const TREE: u64 = 0x03;
+    pub const LAMBDA: u64 = 0x04;
+    pub const THUNK: u64 = 0x05;
+}

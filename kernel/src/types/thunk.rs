@@ -209,8 +209,10 @@ impl<'a> LoadedThunk<'a> {
             ];
             log::debug!("exited with syscall: {num:#x?}({args:?})");
             let result = match num {
-                defs::syscall::RESIZE => sys_resize(args, &mut arca),
+                defs::syscall::NOP => Ok(0),
                 defs::syscall::NULL => sys_null(args, &mut arca),
+                defs::syscall::RESIZE => sys_resize(args, &mut arca),
+
                 defs::syscall::EXIT => match sys_exit(args, arca) {
                     Ok(result) => return result,
                     Err((a, e)) => {
@@ -218,10 +220,15 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
+                defs::syscall::LEN => sys_len(args, arca),
                 defs::syscall::READ => sys_read(args, &mut arca),
+                defs::syscall::TYPE => sys_type(args, arca),
+
                 defs::syscall::CREATE_BLOB => sys_create_blob(args, &mut arca),
                 defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
+
                 defs::syscall::CONTINUATION => sys_continuation(args, &mut arca),
+                defs::syscall::APPLY => sys_apply(args, &mut arca),
                 defs::syscall::PROMPT => match sys_prompt(args, arca) {
                     Ok(result) => return result,
                     Err((a, e)) => {
@@ -236,14 +243,15 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
-                defs::syscall::APPLY => sys_apply(args, &mut arca),
+                defs::syscall::TAILCALL => sys_tailcall(args, &mut arca),
+
                 defs::syscall::SHOW => sys_show(args, &mut arca),
                 defs::syscall::LOG => sys_log(args, &mut arca),
-                defs::syscall::TAILCALL => sys_tailcall(args, &mut arca),
+
                 _ => {
                     log::error!("invalid syscall {num:#x}");
                     Err(error::BAD_SYSCALL)
-                }
+                },
             };
             let regs = arca.registers_mut();
             regs[Register::RAX] = match result {
@@ -257,12 +265,6 @@ impl<'a> LoadedThunk<'a> {
 // type ExitSyscall = fn([u64; 5], LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)>;
 // type Syscall = fn([u64; 5], &mut LoadedArca) -> Result<u32, u32>;
 
-fn sys_resize(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
-    let len = args[0] as usize;
-    arca.descriptors_mut().resize(len, Value::Null);
-    Ok(0)
-}
-
 fn sys_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
     if let Some(x) = arca.descriptors_mut().get_mut(idx) {
@@ -271,6 +273,12 @@ fn sys_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     } else {
         Err(error::BAD_INDEX)
     }
+}
+
+fn sys_resize(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let len = args[0] as usize;
+    arca.descriptors_mut().resize(len, Value::Null);
+    Ok(0)
 }
 
 #[allow(clippy::result_large_err)]
@@ -283,6 +291,28 @@ fn sys_exit(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Loaded
     } else {
         log::warn!("exit failed with invalid index");
         Err((arca, error::BAD_INDEX))
+    }
+}
+
+fn sys_len(args: [u64; 5], arca: LoadedArca) -> Result<u32, u32> {
+    let idx = args[0] as usize;
+    let Some(val) = arca.descriptors().get(idx) else {
+        return Err(error::BAD_INDEX);
+    };
+    let ptr = args[1] as usize;
+    let bytes: [u8; 8] = match val {
+        Value::Blob(blob) => blob.len().to_ne_bytes(),
+        Value::Tree(tree) => tree.len().to_ne_bytes(),
+        _ => return Err(error::BAD_TYPE),
+    };
+
+    unsafe {
+        let success = crate::vm::copy_kernel_to_user(ptr, &bytes);
+        if success {
+            Ok(0)
+        } else {
+            Err(error::BAD_ARGUMENT)
+        }
     }
 }
 
@@ -340,6 +370,22 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
             Err(error::BAD_TYPE)
         }
     }
+}
+
+fn sys_type(args: [u64; 5], arca: LoadedArca) -> Result<u32, u32> {
+    let idx = args[0] as usize;
+    let Some(val) = arca.descriptors().get(idx) else {
+        return Err(error::BAD_INDEX);
+    };
+    match val {
+        Value::Null => Ok(defs::types::NULL),
+        Value::Atom(_) => Ok(defs::types::ATOM),
+        Value::Blob(_) => Ok(defs::types::BLOB),
+        Value::Tree(_) => Ok(defs::types::TREE),
+        Value::Lambda(_) => Ok(defs::types::LAMBDA),
+        Value::Thunk(_) => Ok(defs::types::THUNK),
+        _ => return Err(error::BAD_TYPE),
+    }.map(|x| x.try_into().expect("type was too large"))
 }
 
 fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
@@ -414,6 +460,32 @@ fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     }
 }
 
+fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let lambda = args[0] as usize;
+    let arg = args[1] as usize;
+
+    let arg = arca
+        .descriptors_mut()
+        .get_mut(arg)
+        .ok_or(error::BAD_INDEX)?;
+    let x = core::mem::take(arg);
+
+    let lambda = arca
+        .descriptors_mut()
+        .get_mut(lambda)
+        .ok_or(error::BAD_INDEX)?;
+
+    let l = core::mem::take(lambda);
+
+    let Value::Lambda(l) = l else {
+        return Err(error::BAD_TYPE);
+    };
+
+    let mut t = Value::Thunk(l.apply(x));
+    core::mem::swap(&mut t, lambda);
+    Ok(0)
+}
+
 #[allow(clippy::result_large_err)]
 fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let idx = args[0] as usize;
@@ -441,29 +513,19 @@ fn sys_perform(args: [u64; 5], arca: LoadedArca) -> Result<LoadedValue, (LoadedA
     }
 }
 
-fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
-    let lambda = args[0] as usize;
-    let arg = args[1] as usize;
-
-    let arg = arca
+fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let thunk = args[0] as usize;
+    let thunk = arca
         .descriptors_mut()
-        .get_mut(arg)
+        .get_mut(thunk)
         .ok_or(error::BAD_INDEX)?;
-    let x = core::mem::take(arg);
+    let thunk = core::mem::take(thunk);
 
-    let lambda = arca
-        .descriptors_mut()
-        .get_mut(lambda)
-        .ok_or(error::BAD_INDEX)?;
-
-    let l = core::mem::take(lambda);
-
-    let Value::Lambda(l) = l else {
+    let Value::Thunk(mut thunk) = thunk else {
         return Err(error::BAD_TYPE);
     };
 
-    let mut t = Value::Thunk(l.apply(x));
-    core::mem::swap(&mut t, lambda);
+    arca.swap(&mut thunk.arca);
     Ok(0)
 }
 
@@ -499,21 +561,5 @@ fn sys_log(args: [u64; 5], _: &mut LoadedArca) -> Result<u32, u32> {
         String::from_utf8_lossy(&buffer).into_owned()
     };
     log::info!("user message - \"{msg}\"");
-    Ok(0)
-}
-
-fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
-    let thunk = args[0] as usize;
-    let thunk = arca
-        .descriptors_mut()
-        .get_mut(thunk)
-        .ok_or(error::BAD_INDEX)?;
-    let thunk = core::mem::take(thunk);
-
-    let Value::Thunk(mut thunk) = thunk else {
-        return Err(error::BAD_TYPE);
-    };
-
-    arca.swap(&mut thunk.arca);
     Ok(0)
 }
