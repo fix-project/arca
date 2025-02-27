@@ -273,6 +273,7 @@ fn sys_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn sys_exit(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let idx = args[0] as usize;
     if let Some(x) = arca.descriptors_mut().get_mut(idx) {
@@ -413,6 +414,7 @@ fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let idx = args[0] as usize;
     if idx >= arca.descriptors().len() {
@@ -423,6 +425,7 @@ fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Load
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn sys_perform(args: [u64; 5], arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let src_idx = args[0] as usize;
     let dst_idx = args[1] as usize;
