@@ -240,17 +240,22 @@ extern "C" fn kmain() -> ! {
     }
 
     // Test spin.rs
-    log::info!("running spin program for {} iterations", ITERS);
+    const DURATION: Duration = Duration::from_secs(1);
+    log::info!("running spin program for {:?}", DURATION);
     let spin = Thunk::from_elf(SPIN_ELF);
     let mut spin = spin.load(&mut cpu);
-    let now = kvmclock::wall_clock_time();
-    for i in 0..ITERS {
-        let alarm = now + Duration::from_millis(i as u64);
-        let LoadedValue::Thunk(x) = spin.run_until(alarm) else {
+    let mut now = kvmclock::now();
+    let end = now + DURATION;
+    let mut i = 0;
+    while now < end {
+        let LoadedValue::Thunk(x) = spin.run_for(Duration::from_millis(1)) else {
             panic!("expected spin program to time out");
         };
         spin = x;
+        now = kvmclock::now();
+        i += 1;
     }
+    log::info!("done after {i} iterations");
 
     log::info!("done");
     shutdown();

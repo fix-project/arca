@@ -105,7 +105,7 @@ impl LocalApic {
         self.write(0x3E, value as u32);
     }
 
-    pub fn set_initial_count(&mut self, value: u32) {
+    fn set_initial_count(&mut self, value: u32) {
         self.write(0x38, value);
     }
 
@@ -118,7 +118,7 @@ impl LocalApic {
         self.read(0x28)
     }
 
-    pub unsafe fn clear_interrupt(&mut self) {
+    pub(crate) unsafe fn clear_interrupt(&mut self) {
         self.write(0xB, 0);
     }
 }
@@ -145,5 +145,5 @@ pub unsafe fn init() {
             .with_mode(TimerMode::Periodic),
     );
 
-    lapic.set_initial_count(0x1000);
+    lapic.set_initial_count(0x10000); // O(1ms)
 }

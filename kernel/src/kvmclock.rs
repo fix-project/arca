@@ -120,7 +120,7 @@ pub fn time_since_boot() -> Duration {
 }
 
 #[inline]
-pub fn wall_clock_time() -> OffsetDateTime {
+pub fn now() -> OffsetDateTime {
     let boot_time = read_boot_time();
     let boot_time =
         Duration::from_secs(boot_time.sec as u64) + Duration::from_nanos(boot_time.nsec as u64);

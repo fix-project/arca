@@ -156,7 +156,7 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {
-        let start = kvmclock::wall_clock_time();
+        let start = kvmclock::now();
         let end = start + timeout;
         self.run_until(end)
     }
@@ -169,7 +169,7 @@ impl<'a> LoadedThunk<'a> {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
                     if x == 0x20 {
-                        let now = kvmclock::wall_clock_time();
+                        let now = kvmclock::now();
                         if now < alarm {
                             log::debug!("program was interrupted, but time has not expired");
                             continue;
