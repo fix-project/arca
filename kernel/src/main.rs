@@ -240,10 +240,6 @@ extern "C" fn kmain() -> ! {
     }
 
     // Test spin.rs
-    let mut lapic = kernel::LAPIC.borrow_mut();
-    lapic.set_initial_count(0x10);
-    core::mem::drop(lapic);
-
     log::info!("running spin program for {} iterations", ITERS);
     let spin = Thunk::from_elf(SPIN_ELF);
     let mut spin = spin.load(&mut cpu);

@@ -145,5 +145,5 @@ unsafe fn init_syscalls() {
     crate::msr::wrmsr(0xC0000081, ((0x18 | 0b11) << 48) | (0x08 << 32)); // STAR
     crate::msr::wrmsr(0xC0000082, syscall_handler as usize as u64); // LSTAR
     crate::msr::wrmsr(0xC0000083, syscall_handler as usize as u64); // CSTAR
-    crate::msr::wrmsr(0xC0000084, 0); // SFMASK
+    crate::msr::wrmsr(0xC0000084, 0x200); // SFMASK
 }
