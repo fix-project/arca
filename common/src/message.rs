@@ -1,7 +1,9 @@
 extern crate alloc;
 
-use crate::refcnt::RefCnt;
-use crate::ringbuffer::RingBuffer;
+use crate::ringbuffer::{
+    RingBufferEndPoint, RingBufferError, RingBufferReceiver, RingBufferSender,
+};
+use alloc::collections::VecDeque;
 
 #[derive(Clone)]
 #[repr(u8)]
@@ -123,17 +125,17 @@ impl Message {
     }
 }
 
-pub struct MessageParser<'a> {
+struct MessageParser<'a> {
     pending_opcode: Option<OpCode>,
     pending_opcode_buf: [u8; 1],
     pending_payload: [u8; 16],
     pending_payload_offset: usize,
     expected_payload_size: usize,
-    rb: RefCnt<'a, RingBuffer>,
+    rb: RingBufferReceiver<'a>,
 }
 
 impl<'a> MessageParser<'a> {
-    pub fn new(rb: RefCnt<'a, RingBuffer>) -> MessageParser<'a> {
+    fn new(rb: RingBufferReceiver<'a>) -> MessageParser<'a> {
         Self {
             pending_opcode: None,
             pending_opcode_buf: [0; 1],
@@ -145,60 +147,58 @@ impl<'a> MessageParser<'a> {
     }
 
     // Read exactly once
-    pub fn try_read(&mut self) -> Option<Message> {
-        if !self.rb.readable() {
-            return None;
-        }
-
+    fn read(&mut self) -> Result<Option<Message>, RingBufferError> {
         match &self.pending_opcode {
-            None => {
-                self.rb.try_read(&mut self.pending_opcode_buf);
-                self.pending_opcode = Some(
-                    OpCode::try_from(self.pending_opcode_buf[0]).expect("Failed to parse OpCode"),
-                );
-                self.expected_payload_size =
-                    Message::msg_size(&self.pending_opcode.as_ref().unwrap());
-                None
-            }
+            None => match self.rb.read(&mut self.pending_opcode_buf) {
+                Ok(_) => {
+                    self.pending_opcode = Some(
+                        OpCode::try_from(self.pending_opcode_buf[0])
+                            .expect("Failed to parse OpCode"),
+                    );
+                    self.expected_payload_size =
+                        Message::msg_size(&self.pending_opcode.as_ref().unwrap());
+                    Ok(None)
+                }
+                Err(e) => Err(e),
+            },
             Some(op) => {
-                // Read into pending_payload_offset
-                self.pending_payload_offset += self.rb.try_read(
+                match self.rb.read(
                     &mut self.pending_payload
                         [self.pending_payload_offset..self.expected_payload_size],
-                );
+                ) {
+                    Ok(n) => {
+                        self.pending_payload_offset += n;
+                        // Check whether end of message
+                        if self.pending_payload_offset == self.expected_payload_size {
+                            let result = Some(Message::parse(op, &self.pending_payload));
 
-                // Check whether end of message
-                if self.pending_payload_offset == self.expected_payload_size {
-                    let result = Some(Message::parse(op, &self.pending_payload));
+                            // Reset variables
+                            self.pending_payload_offset = 0;
+                            self.pending_opcode = None;
 
-                    // Reset variables
-                    self.pending_payload_offset = 0;
-                    self.pending_opcode = None;
-
-                    result
-                } else {
-                    None
+                            Ok(result)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    Err(e) => Err(e),
                 }
             }
         }
     }
 }
 
-//fn serialize<T: Message>(msg: Box<T>) -> (u8, Box<[u8]>) {
-//    (T::OPCODE as u8, unsafe { to_boxed_u8_slice(msg) })
-//}
-
-pub struct MessageSerializer<'a> {
+struct MessageSerializer<'a> {
     opcode_written: bool,
     pending_opcode: [u8; 1],
     pending_payload: [u8; 16],
     pending_payload_offset: usize,
     pending_payload_size: usize,
-    rb: RefCnt<'a, RingBuffer>,
+    rb: RingBufferSender<'a>,
 }
 
 impl<'a> MessageSerializer<'a> {
-    pub fn new(rb: RefCnt<'a, RingBuffer>) -> MessageSerializer<'a> {
+    fn new(rb: RingBufferSender<'a>) -> MessageSerializer<'a> {
         Self {
             opcode_written: true,
             pending_opcode: [0; 1],
@@ -209,7 +209,7 @@ impl<'a> MessageSerializer<'a> {
         }
     }
 
-    pub fn loadable(&self) -> bool {
+    fn loadable(&self) -> bool {
         self.opcode_written && self.pending_payload_offset == self.pending_payload_size
     }
 
@@ -245,7 +245,7 @@ impl<'a> MessageSerializer<'a> {
         }
     }
 
-    pub fn load(&mut self, msg: Message) -> Result<(), &'static str> {
+    fn load(&mut self, msg: Message) -> Result<(), &'static str> {
         if !self.loadable() {
             return Err("Not loadable");
         }
@@ -258,18 +258,96 @@ impl<'a> MessageSerializer<'a> {
         return Ok(());
     }
 
-    pub fn try_write(&mut self) -> () {
-        if !self.rb.writable() {
-            return;
-        }
-
+    fn write(&mut self) -> Result<(), RingBufferError> {
         if !self.opcode_written {
-            self.rb.write(&self.pending_opcode);
-            self.opcode_written = true;
+            match self.rb.write(&self.pending_opcode) {
+                Ok(_) => {
+                    self.opcode_written = true;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         } else {
-            self.pending_payload_offset += self.rb.try_write(
+            match self.rb.write(
                 &self.pending_payload[self.pending_payload_offset..self.pending_payload_size],
-            );
+            ) {
+                Ok(n) => {
+                    self.pending_payload_offset += n;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         }
+    }
+}
+
+struct Messenger<'a> {
+    serializer: MessageSerializer<'a>,
+    parser: MessageParser<'a>,
+    pending_outgoing_messages: VecDeque<Message>,
+    pending_incoming_messages: VecDeque<Message>,
+}
+
+impl<'a> Messenger<'a> {
+    pub fn new(endpoint: RingBufferEndPoint<'a>) -> Self {
+        let (sender, receiver) = endpoint.into_sender_receiver();
+        Self {
+            serializer: MessageSerializer::new(sender),
+            parser: MessageParser::new(receiver),
+            pending_outgoing_messages: VecDeque::new(),
+            pending_incoming_messages: VecDeque::new(),
+        }
+    }
+
+    fn loadable(&self) -> bool {
+        !self.pending_incoming_messages.is_empty() && self.serializer.loadable()
+    }
+
+    fn load(&mut self) -> () {
+        if self.loadable() {
+            let msg = self.pending_incoming_messages.pop_front().unwrap();
+            self.serializer.load(msg).expect("Failed to load");
+        }
+    }
+
+    pub fn push_outgoing_message(&mut self, msg: Message) -> () {
+        self.pending_incoming_messages.push_back(msg);
+        self.load()
+    }
+
+    pub fn write(&mut self) -> Result<(), RingBufferError> {
+        let res = self.serializer.write();
+        self.load();
+        res
+    }
+
+    pub fn write_all(&mut self) -> Result<(), RingBufferError> {
+        let n = self.pending_outgoing_messages.len();
+        while !self.pending_outgoing_messages.is_empty() {
+            let _ = self.write();
+        }
+        Ok(())
+    }
+
+    pub fn read(&mut self) -> Result<(), RingBufferError> {
+        match self.parser.read() {
+            Ok(None) => Ok(()),
+            Ok(Some(m)) => {
+                self.pending_incoming_messages.push_back(m);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn read_exact(&mut self, n: usize) -> Result<(), RingBufferError> {
+        while self.pending_incoming_messages.len() < n {
+            let _ = self.read();
+        }
+        Ok(())
+    }
+
+    pub fn pop_incoming_message(&mut self) -> Option<Message> {
+        self.pending_incoming_messages.pop_front()
     }
 }
