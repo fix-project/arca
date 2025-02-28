@@ -55,21 +55,6 @@ impl RingBuffer {
         }
     }
 
-    fn into_raw_parts(&self, allocator: &BuddyAllocator) -> (usize, usize) {
-        let self_ptr: *const RingBuffer = self;
-        let (ptr, metadata) = self_ptr.to_raw_parts();
-        (allocator.to_offset(ptr), metadata as usize)
-    }
-
-    unsafe fn from_raw_parts<'a>(
-        raw: (usize, usize),
-        allocator: &'a BuddyAllocator<'a>,
-    ) -> Box<RingBuffer, &'a BuddyAllocator<'a>> {
-        let ptr =
-            core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.0) as *mut (), raw.1);
-        Box::from_raw_in(ptr, allocator)
-    }
-
     fn read(&self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
         let len = buf.len();
         let read_count = self.read_counter.load(Ordering::SeqCst);
@@ -229,7 +214,7 @@ impl<'a> RingBufferEndPoint<'a> {
     }
 }
 
-pub struct RingBufferPair<'a>(RingBufferEndPoint<'a>, RingBufferEndPoint<'a>);
+pub type RingBufferPair<'a> = (RingBufferEndPoint<'a>, RingBufferEndPoint<'a>);
 
 fn make_ring_buffer_sender_receiver<'a>(
     capacity: usize,
@@ -257,5 +242,5 @@ pub fn make_ring_buffer_pair<'a>(
         sender: sender2,
         receiver: receiver1,
     };
-    RingBufferPair(endpoint1, endpoint2)
+    (endpoint1, endpoint2)
 }

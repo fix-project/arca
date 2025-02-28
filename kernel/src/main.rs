@@ -9,9 +9,7 @@ use core::time::Duration;
 
 use alloc::vec;
 
-use kernel::{kvmclock, prelude::*, shutdown};
-use common::ringbuffer::RingBuffer;
-use kernel::{client::Client, prelude::*, shutdown};
+use kernel::{client, kvmclock, prelude::*, shutdown};
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -23,21 +21,13 @@ const SPIN_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_spin"));
 
 #[no_mangle]
 #[inline(never)]
-extern "C" fn kmain(rb_in: RefCnt<RingBuffer>, rb_out: RefCnt<RingBuffer>) -> ! {
+extern "C" fn kmain() -> ! {
     log::info!("kmain");
     const ITERS: usize = 500;
     const N: usize = 1000;
     let mut cpu = CPU.borrow_mut();
 
-    let mut client = Client::new(rb_in, rb_out);
-    loop {
-        let msg = client.read_one_message();
-        let cont = client.process_incoming_message(msg, &mut cpu);
-        client.send_all();
-        if !cont {
-            break;
-        }
-    }
+    client::run(&mut cpu);
 
     // Test trap.rs
     let trap = Thunk::from_elf(TRAP_ELF);

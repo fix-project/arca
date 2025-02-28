@@ -36,6 +36,16 @@ impl TryFrom<u8> for OpCode {
 
 pub struct ArcaHandle(usize);
 
+impl ArcaHandle {
+    pub fn new(s: usize) -> Self {
+        Self(s)
+    }
+
+    pub fn to_offset(self) -> usize {
+        self.0
+    }
+}
+
 pub enum Message {
     CreateBlobMessage {
         ptr: usize,
@@ -252,6 +262,7 @@ impl<'a> MessageSerializer<'a> {
 
         self.opcode_written = false;
         self.pending_opcode[0] = msg.opcode() as u8;
+        self.pending_payload_offset = 0;
         self.pending_payload_size = Message::msg_size(&msg.opcode());
         self.serialize(msg);
 
@@ -281,7 +292,7 @@ impl<'a> MessageSerializer<'a> {
     }
 }
 
-struct Messenger<'a> {
+pub struct Messenger<'a> {
     serializer: MessageSerializer<'a>,
     parser: MessageParser<'a>,
     pending_outgoing_messages: VecDeque<Message>,
@@ -300,19 +311,20 @@ impl<'a> Messenger<'a> {
     }
 
     fn loadable(&self) -> bool {
-        !self.pending_incoming_messages.is_empty() && self.serializer.loadable()
+        !self.pending_outgoing_messages.is_empty() && self.serializer.loadable()
     }
 
     fn load(&mut self) -> () {
         if self.loadable() {
-            let msg = self.pending_incoming_messages.pop_front().unwrap();
+            let msg = self.pending_outgoing_messages.pop_front().unwrap();
             self.serializer.load(msg).expect("Failed to load");
         }
     }
 
-    pub fn push_outgoing_message(&mut self, msg: Message) -> () {
-        self.pending_incoming_messages.push_back(msg);
-        self.load()
+    pub fn push_outgoing_message(&mut self, msg: Message) -> Result<(), RingBufferError> {
+        self.pending_outgoing_messages.push_back(msg);
+        self.load();
+        Ok(())
     }
 
     pub fn write(&mut self) -> Result<(), RingBufferError> {
@@ -322,8 +334,7 @@ impl<'a> Messenger<'a> {
     }
 
     pub fn write_all(&mut self) -> Result<(), RingBufferError> {
-        let n = self.pending_outgoing_messages.len();
-        while !self.pending_outgoing_messages.is_empty() {
+        while !self.serializer.loadable() {
             let _ = self.write();
         }
         Ok(())

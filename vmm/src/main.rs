@@ -7,11 +7,10 @@ use std::process::ExitCode;
 extern crate alloc;
 use alloc::sync::Arc;
 use std::mem;
-use std::sync::RwLock;
 use std::thread;
 
-use common::refcnt::RefCnt;
-use common::ringbuffer::{RingBuffer, RingBufferRawData};
+use common::message::Messenger;
+use common::ringbuffer;
 use common::BuddyAllocator;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
@@ -19,7 +18,8 @@ use elf::ElfBytes;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
-use vmm::client::Client;
+use std::cell::RefCell;
+use vmm::client;
 
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
@@ -216,15 +216,8 @@ fn main() -> ExitCode {
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let ring_buffer_in: RefCnt<RingBuffer> = RingBuffer::new_in(1024, allocator).into();
-    let ring_buffer_data_in: RefCnt<RingBufferRawData> =
-        Box::new_in(ring_buffer_in.into_raw_parts(allocator), allocator).into();
-
-    let ring_buffer_out: RefCnt<RingBuffer> = RingBuffer::new_in(1024, allocator).into();
-    let ring_buffer_data_out: RefCnt<RingBufferRawData> =
-        Box::new_in(ring_buffer_out.into_raw_parts(allocator), allocator).into();
-
-    let client = Arc::new(RwLock::new(Client::new(ring_buffer_in, ring_buffer_out)));
+    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, allocator);
+    let endpoint_raw = Box::new_in(endpoint2.into_raw_parts(allocator), allocator);
 
     let raw = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
@@ -233,62 +226,52 @@ fn main() -> ExitCode {
     vcpu_regs.rsi = raw.inner_size as u64;
     vcpu_regs.rdx = raw.refcnt_offset as u64;
     vcpu_regs.rcx = raw.refcnt_size as u64;
-    vcpu_regs.r8 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_out.clone())) as u64;
-    vcpu_regs.r9 = allocator.to_offset(RefCnt::into_raw(ring_buffer_data_in.clone())) as u64;
+    vcpu_regs.r8 = allocator.to_offset(Box::into_raw(endpoint_raw)) as u64;
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
     let mut record: usize = 0;
-    let client_handle = thread::spawn(move || {
-        let mut addelf =
-            unsafe { Arc::new_uninit_slice_in(ADD_ELF.len(), allocator).assume_init() };
-        Arc::get_mut(&mut addelf).unwrap().copy_from_slice(ADD_ELF);
+    let thread_handle = thread::spawn(move || {
+        let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
+        let resultref;
+        {
+            let msger_mut: &mut Messenger = &mut msger.borrow_mut();
+            let x = 1 as u64;
+            let y = 1 as u64;
+            let lambdaref = client::create_blob(msger_mut, ADD_ELF, allocator)
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .and_then(|blobref| client::create_thunk(msger_mut, blobref))
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .and_then(|thunkref| client::run_thunk(msger_mut, thunkref))
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .ok()
+                .expect("Failed to create lambda");
 
-        let x = 1 as u64;
-        let y = 1 as u64;
-        let mut xblob = unsafe { Arc::new_uninit_slice_in(8, allocator).assume_init() };
-        let mut yblob = unsafe { Arc::new_uninit_slice_in(8, allocator).assume_init() };
-        Arc::get_mut(&mut xblob)
-            .unwrap()
-            .copy_from_slice(&x.to_ne_bytes());
-        Arc::get_mut(&mut yblob)
-            .unwrap()
-            .copy_from_slice(&y.to_ne_bytes());
+            resultref = client::create_blob(msger_mut, &x.to_ne_bytes(), allocator)
+                .and_then(|()| client::create_blob(msger_mut, &y.to_ne_bytes(), allocator))
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .and_then(|xref| {
+                    client::get_reply(msger_mut, msger.clone())
+                        .and_then(move |yref| Ok((xref, yref)))
+                })
+                .and_then(|(xref, yref)| {
+                    client::create_tree(msger_mut, vec![xref, yref], allocator)
+                })
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .and_then(|argtreeref| client::apply_lambda(msger_mut, lambdaref, argtreeref))
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .and_then(|thunkref| client::run_thunk(msger_mut, thunkref))
+                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
+                .ok()
+                .expect("Failed to get result.");
+        }
 
-        client.write().unwrap().create_blob(addelf);
-        client.write().unwrap().create_blob(xblob);
-        client.write().unwrap().create_blob(yblob);
-        client.write().unwrap().send_all();
-
-        let thunkref = Client::get_reply(client.clone());
-        client.write().unwrap().create_thunk(thunkref);
-        let xref = Client::get_reply(client.clone());
-        let yref = Client::get_reply(client.clone());
-        client.write().unwrap().send_all();
-
-        let thunkref = Client::get_reply(client.clone());
-        client.write().unwrap().run_thunk(thunkref);
-        client.write().unwrap().send_all();
-
-        let lambdaref = Client::get_reply(client.clone());
-        let argtree = client
-            .write()
-            .unwrap()
-            .create_tree(vec![xref, yref], allocator);
-        client.write().unwrap().send_all();
-        let argtreeref = Client::get_reply(client.clone());
-
-        client.write().unwrap().apply_lambda(lambdaref, argtreeref);
-        client.write().unwrap().send_all();
-
-        let thunkref = Client::get_reply(client.clone());
-        client.write().unwrap().run_thunk(thunkref);
-        client.write().unwrap().send_all();
-
-        mem::drop(Client::get_reply(client.clone()));
-
+        mem::drop(resultref);
+        (&mut msger.borrow_mut())
+            .write_all()
+            .ok()
+            .expect("Failed to drop");
         println!("Done");
-        client.write().unwrap().send_all();
     });
 
     loop {
@@ -299,7 +282,7 @@ fn main() -> ExitCode {
             ),
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
-                    client_handle.join().unwrap();
+                    thread_handle.join().unwrap();
                     return ExitCode::from(data[0]);
                 }
                 1 => {
