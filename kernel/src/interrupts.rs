@@ -69,11 +69,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
-            panic!("Supervisor GP @ {:p}!", registers.rip as *mut ());
+            panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
         } else {
             panic!(
-                "Supervisor GP @ {:p}! faulting segment: {:x}",
-                registers.rip as *mut (), registers.code
+                "Supervisor GP @ {:p}! faulting segment: {:#x}",
+                registers.rip as *mut (), registers.code,
             );
         }
     } else if registers.isr == 0xe {
@@ -91,9 +91,10 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
             return;
         }
         panic!(
-            "unhandled page fault ({:b}) @ {:p}:",
+            "unhandled page fault ({:b}) @ {:p} from RIP={:p}:",
             registers.code,
             crate::registers::read_cr2() as *const u8,
+            registers.rip as *const u8,
         );
     }
     if registers.isr < 32 {

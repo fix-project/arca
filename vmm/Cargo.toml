@@ -10,6 +10,7 @@ klog-info = ["kernel/klog-info"]
 klog-warn = ["kernel/klog-warn"]
 klog-error = ["kernel/klog-error"]
 klog-off = ["kernel/klog-off"]
+debugcon = ["kernel/debugcon"]
 
 [dependencies]
 cc = "1.1.37"

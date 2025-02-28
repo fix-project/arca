@@ -170,7 +170,6 @@ impl<'a> LoadedThunk<'a> {
                     if x == 0x20 {
                         let now = kvmclock::now();
                         if now < alarm {
-                            log::debug!("program was interrupted, but time has not expired");
                             continue;
                         } else {
                             return LoadedValue::Thunk(LoadedThunk { arca });
@@ -316,12 +315,14 @@ fn sys_len(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
 }
 
 fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    log::debug!("reading");
     let idx = args[0] as usize;
     let Some(val) = arca.descriptors_mut().get_mut(idx) else {
         return Err(error::BAD_INDEX);
     };
     match val {
         Value::Blob(blob) => {
+            log::debug!("reading blob");
             let ptr = args[1] as usize;
             let len = args[2] as usize;
             let len = core::cmp::min(len, blob.len());
@@ -336,10 +337,12 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
             }
         }
         Value::Tree(_) => {
+            log::debug!("reading tree");
             let value = core::mem::take(val);
             let Value::Tree(mut tree) = value else {
                 panic!();
             };
+            log::debug!("making tree mutable");
             let tree = Arc::make_mut(&mut tree);
             let ptr = args[1] as usize;
             let len = args[2] as usize;

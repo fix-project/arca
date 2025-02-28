@@ -1,7 +1,9 @@
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
+    marker::PhantomPinned,
     mem::MaybeUninit,
+    pin::Pin,
     ptr::NonNull,
     range::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -105,6 +107,7 @@ struct AllocatorLevel<'a> {
 }
 
 #[repr(C)]
+#[derive(Default)]
 struct ListNode {
     prev: Option<usize>,
     next: Option<usize>,
@@ -147,6 +150,7 @@ impl<'a> AllocatorLevel<'a> {
             let node = &mut *self.node(index);
             if let Some(prev) = node.prev {
                 let prev = &mut *self.node(prev);
+                assert_eq!(prev.next, Some(index));
                 prev.next = node.next;
             } else {
                 assert_eq!(*self.free, Some(index));
@@ -154,8 +158,10 @@ impl<'a> AllocatorLevel<'a> {
             }
             if let Some(next) = node.next {
                 let next = &mut *self.node(next);
+                assert_eq!(next.prev, Some(index));
                 next.prev = node.prev;
             }
+            *node = Default::default();
         };
         true
     }
@@ -163,7 +169,7 @@ impl<'a> AllocatorLevel<'a> {
     pub fn allocate(&mut self) -> Option<usize> {
         if let Some(index) = self.free {
             let index = *index;
-            self.reserve(index);
+            assert!(self.reserve(index));
             Some(index)
         } else {
             None
@@ -171,20 +177,22 @@ impl<'a> AllocatorLevel<'a> {
     }
 
     pub fn free(&mut self, index: usize) {
-        assert!(
-            !self.bits().bit(index).set(),
-            "allocation was already free!"
-        );
         unsafe {
             let node = &mut *self.node(index);
-            node.next = *self.free;
-            node.prev = None;
-            if let Some(next) = node.next {
-                let next = &mut *self.node(next);
+            *node = Default::default();
+            if let Some(head) = *self.free {
+                let next = &mut *self.node(head);
+                assert!(next.prev.is_none());
                 next.prev = Some(index);
+                node.next = Some(head);
             }
             *self.free = Some(index);
         };
+        assert!(
+            !self.bits().bit(index).set(),
+            "allocation {index} at level {} was already free!",
+            self.order
+        );
     }
 }
 
@@ -200,19 +208,21 @@ struct AllocatorMetadata {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 struct AllocatorInner {
     meta: AllocatorMetadata,
+    upin: PhantomPinned,
     lock: AtomicU64,
     free: UnsafeCell<[Option<usize>; 64]>,
     data: UnsafeCell<[u64]>,
 }
 
 impl AllocatorInner {
-    pub fn new(slice: &mut [u8]) -> Box<AllocatorInner> {
+    pub fn new(slice: &mut [u8]) -> Pin<Box<AllocatorInner>> {
         Self::new_in(slice, Global)
     }
 
-    pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Box<AllocatorInner, A> {
+    pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Pin<Box<AllocatorInner, A>> {
         let raw_size = core::mem::size_of_val(slice);
         let min_level = 12;
         let max_level = raw_size.ilog2();
@@ -230,6 +240,9 @@ impl AllocatorInner {
 
         unsafe {
             let layout = Layout::new::<AllocatorMetadata>()
+                .extend(Layout::new::<PhantomPinned>())
+                .unwrap()
+                .0
                 .extend(Layout::new::<AtomicU64>())
                 .unwrap()
                 .0
@@ -261,7 +274,7 @@ impl AllocatorInner {
                 &mut (*(*p).data.get())[0..1],
             );
             top.free(0);
-            Box::from_raw_in(p, allocator)
+            Pin::new_unchecked(Box::from_raw_in(p, allocator))
         }
     }
 
@@ -289,7 +302,7 @@ impl AllocatorInner {
 
     // deadlock safety: always lock levels in increasing order
     pub fn with_level<T>(
-        &self,
+        self: Pin<&Self>,
         base: *mut (),
         level: u32,
         f: impl FnOnce(&mut AllocatorLevel<'_>) -> T,
@@ -297,13 +310,15 @@ impl AllocatorInner {
         loop {
             let original = self.lock.load(Ordering::SeqCst);
             let cleared = original & !(1 << level);
-            let set = original | (1 << level);
-            if self
-                .lock
-                .compare_exchange(cleared, set, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                break;
+            if cleared == original {
+                let set = original | (1 << level);
+                if self
+                    .lock
+                    .compare_exchange(cleared, set, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break;
+                }
             }
             core::hint::spin_loop();
         }
@@ -337,7 +352,7 @@ impl AllocatorInner {
     }
 
     pub fn reserve(
-        &self,
+        self: Pin<&Self>,
         base: *mut (),
         index: usize,
         size_log2: u32,
@@ -368,7 +383,11 @@ impl AllocatorInner {
         })
     }
 
-    pub fn allocate(&self, base: *mut (), size_log2: u32) -> Result<usize, AllocationError> {
+    pub fn allocate(
+        self: Pin<&Self>,
+        base: *mut (),
+        size_log2: u32,
+    ) -> Result<usize, AllocationError> {
         assert_ne!(self.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(size_log2, self.meta.level_range.start);
         if size_log2 >= self.meta.level_range.end {
@@ -376,7 +395,6 @@ impl AllocatorInner {
                 size: 1 << size_log2,
             });
         }
-        // let level = self.level(size_log2);
         self.with_level(base, size_log2, |level: &mut AllocatorLevel<'_>| {
             if let Some(index) = level.allocate() {
                 Ok(index)
@@ -397,7 +415,7 @@ impl AllocatorInner {
     }
 
     pub fn free(
-        &self,
+        self: Pin<&Self>,
         base: *mut (),
         index: usize,
         size_log2: u32,
@@ -428,11 +446,18 @@ impl AllocatorInner {
 #[repr(C)]
 pub struct BuddyAllocator<'a> {
     base: *mut (),
-    inner: &'a AllocatorInner,
-    refcnt: &'a [AtomicUsize],
+    inner: Pin<&'a AllocatorInner>,
+    refcnt: Pin<&'a [AtomicUsize]>,
+}
+
+impl core::fmt::Debug for BuddyAllocator<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "BuddyAllocator @ {:p}", self.inner)
+    }
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct BuddyAllocatorRawData {
     pub base: *mut (),
     pub inner_offset: usize,
@@ -458,45 +483,49 @@ impl<'a> BuddyAllocator<'a> {
             let data = Box::new_zeroed_slice(refcnt_size);
             data.assume_init()
         };
+        let refcnt = Box::into_pin(refcnt);
 
         let temp = BuddyAllocator {
             base,
-            inner: &inner,
-            refcnt: &refcnt,
+            inner: inner.as_ref(),
+            refcnt: refcnt.as_ref(),
         };
 
         let new_inner = AllocatorInner::new_in(slice, &temp);
+        let new_refcnt = unsafe {
+            let data = Box::new_zeroed_slice_in(refcnt_size, &temp);
+            data.assume_init()
+        };
 
-        let inner = unsafe {
-            let new_inner = Box::into_raw(new_inner);
+        let new_inner = unsafe {
+            let new_inner = Box::leak(Pin::into_inner_unchecked(new_inner));
             let src = &raw const *inner;
             let dst = &raw mut *new_inner;
             let (src, src_size) = src.to_raw_parts();
             let (dst, dst_size) = dst.to_raw_parts();
             assert_eq!(src_size, dst_size);
             core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
-            &*new_inner
+            &*(new_inner as *mut AllocatorInner)
         };
         let new_refcnt = unsafe {
-            let data = Box::new_zeroed_slice_in(refcnt_size, &temp);
-            data.assume_init()
-        };
-        let refcnt = unsafe {
-            let new_refcnt = Box::into_raw(new_refcnt);
+            let new_refcnt = Box::leak(new_refcnt);
             let src = &raw const *refcnt;
             let dst = &raw mut *new_refcnt;
             let (src, src_size) = src.to_raw_parts();
             let (dst, dst_size) = dst.to_raw_parts();
             assert_eq!(src_size, dst_size);
             core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
-            &*new_refcnt
+            &*(new_refcnt as *mut [AtomicUsize])
         };
 
-        BuddyAllocator {
+        let allocator = BuddyAllocator {
             base,
-            inner,
-            refcnt,
-        }
+            inner: Pin::static_ref(new_inner),
+            refcnt: Pin::static_ref(new_refcnt),
+        };
+        let _ = inner;
+        let _ = refcnt;
+        allocator
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -504,7 +533,8 @@ impl<'a> BuddyAllocator<'a> {
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         let index = address >> size_log2;
-        self.inner
+        let ptr = self
+            .inner
             .reserve(self.base, index, size_log2)
             .inspect(|_| {
                 self.inner
@@ -514,7 +544,11 @@ impl<'a> BuddyAllocator<'a> {
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
-            })
+            });
+        unsafe {
+            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        }
+        ptr
     }
 
     pub fn reserve_uninit<T: Sized>(&self, address: usize) -> *mut MaybeUninit<T> {
@@ -539,7 +573,8 @@ impl<'a> BuddyAllocator<'a> {
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
-        self.inner
+        let ptr = self
+            .inner
             .allocate(self.base, size_log2)
             .inspect(|_| {
                 self.inner
@@ -549,10 +584,17 @@ impl<'a> BuddyAllocator<'a> {
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
-            })
+            });
+        unsafe {
+            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        }
+        ptr
     }
 
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
+        unsafe {
+            assert_eq!((*self.refcnt(ptr)).load(Ordering::SeqCst), 0);
+        }
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
@@ -598,8 +640,8 @@ impl<'a> BuddyAllocator<'a> {
             inner,
             refcnt,
         } = self;
-        let p = inner as *const AllocatorInner;
-        let q = refcnt as *const [AtomicUsize];
+        let p = inner.get_ref() as *const AllocatorInner;
+        let q = refcnt.get_ref() as *const [AtomicUsize];
         let (metadata, inner_size) = p.to_raw_parts();
         let (refcnt, refcnt_size) = q.to_raw_parts();
 
@@ -627,12 +669,13 @@ impl<'a> BuddyAllocator<'a> {
             refcnt_offset,
             refcnt_size,
         } = raw;
-        let inner = core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
+        let inner: *const AllocatorInner =
+            core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
         let refcnt = core::ptr::from_raw_parts_mut(base.byte_add(refcnt_offset), refcnt_size);
         BuddyAllocator {
             base,
-            inner: &*inner,
-            refcnt: &*refcnt,
+            inner: Pin::static_ref(&*inner),
+            refcnt: Pin::static_ref(&*refcnt),
         }
     }
 

@@ -1,8 +1,6 @@
 // https://www.kernel.org/doc/html/v5.9/virt/kvm/msr.html
 use core::{
     arch::asm,
-    cell::LazyCell,
-    ptr::addr_of,
     sync::atomic::{AtomicPtr, Ordering},
     time::Duration,
 };
@@ -14,7 +12,7 @@ use crate::prelude::*;
 static BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
 #[core_local]
-static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(Default::default);
+static mut CPU_TIME_INFO: *mut CpuTimeInfo = core::ptr::null_mut();
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -59,7 +57,9 @@ pub(crate) unsafe fn init() {
         }
     }
 
-    let value = vm::ka2pa(CPU_TIME_INFO.as_ref()) as u64 | 1;
+    let p: *mut CpuTimeInfo = Box::leak(Box::new(CpuTimeInfo::default()));
+    *CPU_TIME_INFO = p;
+    let value = vm::ka2pa(p) as u64 | 1;
     asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d01);
 }
 
@@ -68,10 +68,11 @@ fn read_boot_time() -> WallClock {
     unsafe {
         let boot_time: *mut WallClock = BOOT_TIME.load(Ordering::SeqCst);
         loop {
-            let v0 = addr_of!((*boot_time).version).read_volatile();
+            let v0 = (&raw const ((*boot_time).version)).read_volatile();
             let data = *boot_time;
-            let v1 = addr_of!((*boot_time).version).read_volatile();
+            let v1 = (&raw const ((*boot_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
+                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }
@@ -82,14 +83,15 @@ fn read_boot_time() -> WallClock {
 
 #[inline]
 fn read_current() -> (CpuTimeInfo, u64) {
-    let cpu_time = (**CPU_TIME_INFO).as_ref();
     unsafe {
+        let cpu_time = *CPU_TIME_INFO;
         loop {
-            let v0 = addr_of!(cpu_time.version).read_volatile();
-            let data = *cpu_time;
+            let v0 = (&raw const ((*cpu_time).version)).read_volatile();
+            let data = cpu_time.read_volatile();
             let tsc = core::arch::x86_64::_rdtsc();
-            let v1 = addr_of!(cpu_time.version).read_volatile();
+            let v1 = (&raw const ((*cpu_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
+                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }

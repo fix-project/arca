@@ -1,13 +1,14 @@
 #![no_main]
 #![no_std]
 #![feature(allocator_api)]
+#![feature(try_with_capacity)]
 
 extern crate alloc;
 extern crate kernel;
 
 use core::time::Duration;
 
-use alloc::vec;
+use alloc::{vec, vec::Vec};
 
 use kernel::{client, kvmclock, prelude::*, shutdown};
 
@@ -22,7 +23,8 @@ const SPIN_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_spin"));
 #[no_mangle]
 #[inline(never)]
 extern "C" fn kmain() -> ! {
-    log::info!("kmain");
+    let id = kernel::coreid();
+    log::info!("kmain @ {id}");
     const ITERS: usize = 500;
     const N: usize = 1000;
     let mut cpu = CPU.borrow_mut();
@@ -66,7 +68,7 @@ extern "C" fn kmain() -> ! {
 
     let identity = identity.apply(Value::Null);
     log::info!("running identity program {} times", ITERS);
-    let mut identities = vec![];
+    let mut identities = Vec::with_capacity(ITERS);
     identities.resize_with(ITERS, || identity.clone());
     let time = kernel::kvmclock::time(|| {
         for f in identities {
@@ -100,7 +102,7 @@ extern "C" fn kmain() -> ! {
             ))
             .run();
         let LoadedValue::Unloaded(Value::Blob(z)) = result else {
-            panic!("add program did not produce a blob: {:?}", result);
+            panic!("add program did not produce a blob");
         };
         let bytes: [u8; 8] = (&*z)
             .try_into()
@@ -153,7 +155,7 @@ extern "C" fn kmain() -> ! {
         };
         let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
         let LoadedValue::Unloaded(Value::Blob(z)) = result else {
-            panic!("curried add program did not produce a blob: {:?}", result);
+            panic!("curried add program did not produce a blob");
         };
         let bytes: [u8; 8] = (&*z)
             .try_into()

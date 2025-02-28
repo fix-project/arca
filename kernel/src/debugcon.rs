@@ -32,8 +32,9 @@ impl log::Log for DebugLogger {
         if self.enabled(record.metadata()) {
             let _ = writeln!(
                 con,
-                "[{} {}:{}] {}",
+                "[{:>5}({:02}) {}:{}] {}",
                 record.level(),
+                crate::coreid(),
                 record.file().unwrap_or("<unknown>"),
                 record.line().unwrap_or(0),
                 record.args(),
@@ -45,3 +46,5 @@ impl log::Log for DebugLogger {
         todo!()
     }
 }
+
+pub static DEBUG: DebugLogger = DebugLogger;

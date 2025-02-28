@@ -15,6 +15,7 @@ klog-info = []
 klog-warn = []
 klog-error = []
 klog-off = []
+debugcon = []
 
 [[bin]]
 name = "kernel"

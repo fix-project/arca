@@ -4,7 +4,6 @@
 #![feature(test)]
 #![feature(alloc_layout_extra)]
 #![feature(ptr_metadata)]
-#![feature(ptr_sub_ptr)]
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
 #![feature(sync_unsafe_cell)]

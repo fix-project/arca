@@ -62,6 +62,14 @@ mod testing;
 #[no_mangle]
 static mut EXIT_CODE: u8 = 0;
 
+pub fn coreid() -> u32 {
+    let mut id: u32 = 0;
+    unsafe {
+        core::arch::x86_64::__rdtscp(&mut id);
+    }
+    id
+}
+
 pub fn halt() {
     unsafe {
         core::arch::asm!("hlt");
