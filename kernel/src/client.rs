@@ -16,7 +16,7 @@ fn reply(value: Box<Value>) -> () {
     let msg = Message::ReplyMessage {
         handle: ArcaHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr)),
     };
-    let _ = MESSENGER.lock().push_outgoing_message(msg);
+    let _ = MESSENGER.lock().send(msg);
 }
 
 fn reconstruct(handle: ArcaHandle) -> Box<Value> {
@@ -94,12 +94,14 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
 
 pub fn run(cpu: &mut Cpu) -> () {
     loop {
-        let _ = MESSENGER.lock().read_exact(1);
-        let msg = MESSENGER.lock().pop_incoming_message().unwrap();
+        let msg = MESSENGER
+            .lock()
+            .get_exact_one()
+            .ok()
+            .expect("Failed to read msg");
         let cont = process_incoming_message(msg, cpu);
         if !cont {
             return;
         }
-        let _ = MESSENGER.lock().write_all();
     }
 }

@@ -233,45 +233,26 @@ fn main() -> ExitCode {
     let mut record: usize = 0;
     let thread_handle = thread::spawn(move || {
         let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
-        let resultref;
-        {
-            let msger_mut: &mut Messenger = &mut msger.borrow_mut();
-            let x = 1 as u64;
-            let y = 1 as u64;
-            let lambdaref = client::create_blob(msger_mut, ADD_ELF, allocator)
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .and_then(|blobref| client::create_thunk(msger_mut, blobref))
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .and_then(|thunkref| client::run_thunk(msger_mut, thunkref))
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .ok()
-                .expect("Failed to create lambda");
+        let x = 1 as u64;
+        let y = 1 as u64;
+        let lambdaref = client::create_blob(&msger, ADD_ELF, allocator)
+            .and_then(|blobref| client::create_thunk(&msger, blobref))
+            .and_then(|thunkref| client::run_thunk(&msger, thunkref))
+            .ok()
+            .expect("Failed to create lambda");
 
-            resultref = client::create_blob(msger_mut, &x.to_ne_bytes(), allocator)
-                .and_then(|()| client::create_blob(msger_mut, &y.to_ne_bytes(), allocator))
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .and_then(|xref| {
-                    client::get_reply(msger_mut, msger.clone())
-                        .and_then(move |yref| Ok((xref, yref)))
-                })
-                .and_then(|(xref, yref)| {
-                    client::create_tree(msger_mut, vec![xref, yref], allocator)
-                })
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .and_then(|argtreeref| client::apply_lambda(msger_mut, lambdaref, argtreeref))
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .and_then(|thunkref| client::run_thunk(msger_mut, thunkref))
-                .and_then(|()| client::get_reply(msger_mut, msger.clone()))
-                .ok()
-                .expect("Failed to get result.");
-        }
+        let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
+            .and_then(|xref| {
+                client::create_blob(&msger, &y.to_ne_bytes(), allocator)
+                    .and_then(move |yref| Ok((xref, yref)))
+            })
+            .and_then(|(xref, yref)| client::create_tree(&msger, vec![xref, yref], allocator))
+            .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref))
+            .and_then(|thunkref| client::run_thunk(&msger, thunkref))
+            .ok()
+            .expect("Failed to get result.");
 
         mem::drop(resultref);
-        (&mut msger.borrow_mut())
-            .write_all()
-            .ok()
-            .expect("Failed to drop");
-        println!("Done");
     });
 
     loop {

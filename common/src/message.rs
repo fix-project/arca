@@ -3,7 +3,6 @@ extern crate alloc;
 use crate::ringbuffer::{
     RingBufferEndPoint, RingBufferError, RingBufferReceiver, RingBufferSender,
 };
-use alloc::collections::VecDeque;
 
 #[derive(Clone)]
 #[repr(u8)]
@@ -196,6 +195,17 @@ impl<'a> MessageParser<'a> {
             }
         }
     }
+
+    fn read_exact_one(&mut self) -> Result<Message, RingBufferError> {
+        loop {
+            match self.read() {
+                Ok(Some(m)) => {
+                    return Ok(m);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 struct MessageSerializer<'a> {
@@ -255,9 +265,9 @@ impl<'a> MessageSerializer<'a> {
         }
     }
 
-    fn load(&mut self, msg: Message) -> Result<(), &'static str> {
+    fn load(&mut self, msg: Message) -> Result<(), RingBufferError> {
         if !self.loadable() {
-            return Err("Not loadable");
+            return Err(RingBufferError::Full);
         }
 
         self.opcode_written = false;
@@ -290,13 +300,18 @@ impl<'a> MessageSerializer<'a> {
             }
         }
     }
+
+    fn write_all(&mut self) -> Result<(), RingBufferError> {
+        while !self.loadable() {
+            let _ = self.write();
+        }
+        Ok(())
+    }
 }
 
 pub struct Messenger<'a> {
     serializer: MessageSerializer<'a>,
     parser: MessageParser<'a>,
-    pending_outgoing_messages: VecDeque<Message>,
-    pending_incoming_messages: VecDeque<Message>,
 }
 
 impl<'a> Messenger<'a> {
@@ -305,60 +320,20 @@ impl<'a> Messenger<'a> {
         Self {
             serializer: MessageSerializer::new(sender),
             parser: MessageParser::new(receiver),
-            pending_outgoing_messages: VecDeque::new(),
-            pending_incoming_messages: VecDeque::new(),
         }
     }
 
-    fn loadable(&self) -> bool {
-        !self.pending_outgoing_messages.is_empty() && self.serializer.loadable()
+    pub fn send(&mut self, msg: Message) -> Result<(), RingBufferError> {
+        self.serializer.load(msg)?;
+        self.serializer.write_all()
     }
 
-    fn load(&mut self) -> () {
-        if self.loadable() {
-            let msg = self.pending_outgoing_messages.pop_front().unwrap();
-            self.serializer.load(msg).expect("Failed to load");
-        }
+    pub fn get_exact_one(&mut self) -> Result<Message, RingBufferError> {
+        self.parser.read_exact_one()
     }
 
-    pub fn push_outgoing_message(&mut self, msg: Message) -> Result<(), RingBufferError> {
-        self.pending_outgoing_messages.push_back(msg);
-        self.load();
-        Ok(())
-    }
-
-    pub fn write(&mut self) -> Result<(), RingBufferError> {
-        let res = self.serializer.write();
-        self.load();
-        res
-    }
-
-    pub fn write_all(&mut self) -> Result<(), RingBufferError> {
-        while !self.serializer.loadable() {
-            let _ = self.write();
-        }
-        Ok(())
-    }
-
-    pub fn read(&mut self) -> Result<(), RingBufferError> {
-        match self.parser.read() {
-            Ok(None) => Ok(()),
-            Ok(Some(m)) => {
-                self.pending_incoming_messages.push_back(m);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    pub fn read_exact(&mut self, n: usize) -> Result<(), RingBufferError> {
-        while self.pending_incoming_messages.len() < n {
-            let _ = self.read();
-        }
-        Ok(())
-    }
-
-    pub fn pop_incoming_message(&mut self) -> Option<Message> {
-        self.pending_incoming_messages.pop_front()
+    pub fn get_reply(&mut self, msg: Message) -> Result<Message, RingBufferError> {
+        self.send(msg)?;
+        self.get_exact_one()
     }
 }
