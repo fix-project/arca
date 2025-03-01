@@ -54,7 +54,7 @@ fn main() -> ExitCode {
 
     let slice = unsafe { core::slice::from_raw_parts_mut(load_addr, mem_size) };
 
-    let allocator: &BuddyAllocator = Box::leak(Box::new(BuddyAllocator::new(slice)));
+    let allocator = BuddyAllocator::new(slice);
 
     let elf =
         ElfBytes::<AnyEndian>::minimal_parse(kernel_elf).expect("could not read kernel elf file");
@@ -124,13 +124,13 @@ fn main() -> ExitCode {
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
 
     let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
+        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
     for (i, entry) in pdpt.iter_mut().enumerate() {
         *entry = ((i << 30) | 0x83) as u64;
     }
 
     let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
+        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
     // pml4[0] = allocator.to_offset(&*pdpt) as u64 | 3;
     pml4[256] = allocator.to_offset(&*pdpt) as u64 | 3;
     Box::leak(pdpt);
@@ -211,13 +211,13 @@ fn main() -> ExitCode {
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = start_address;
     let initial_stack = unsafe {
-        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(allocator).assume_init()
+        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
     };
     let stack_start = allocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, allocator);
-    let endpoint_raw = Box::new_in(endpoint2.into_raw_parts(allocator), allocator);
+    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, &allocator);
+    let endpoint_raw = Box::new_in(endpoint2.into_raw_parts(&allocator), &allocator);
 
     let raw = allocator.clone().into_raw_parts();
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
@@ -231,105 +231,107 @@ fn main() -> ExitCode {
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
     let mut record: usize = 0;
-    let thread_handle = thread::spawn(move || {
-        let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
-        let x = 1 as u64;
-        let y = 1 as u64;
-        let lambdaref = client::create_blob(&msger, ADD_ELF, allocator)
-            .and_then(|blobref| client::create_thunk(&msger, blobref))
-            .and_then(|thunkref| client::run_thunk(&msger, thunkref))
-            .ok()
-            .expect("Failed to create lambda");
+    thread::scope(|s| {
+        let allocator = &allocator;
+        s.spawn(move || {
+            let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
+            let x = 1 as u64;
+            let y = 1 as u64;
+            let lambdaref = client::create_blob(&msger, ADD_ELF, allocator)
+                .and_then(|blobref| client::create_thunk(&msger, blobref))
+                .and_then(|thunkref| client::run_thunk(&msger, thunkref))
+                .ok()
+                .expect("Failed to create lambda");
 
-        let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
-            .and_then(|xref| {
-                client::create_blob(&msger, &y.to_ne_bytes(), allocator)
-                    .and_then(move |yref| Ok((xref, yref)))
-            })
-            .and_then(|(xref, yref)| client::create_tree(&msger, vec![xref, yref], allocator))
-            .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref))
-            .and_then(|thunkref| client::run_thunk(&msger, thunkref))
-            .ok()
-            .expect("Failed to get result.");
+            let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
+                .and_then(|xref| {
+                    client::create_blob(&msger, &y.to_ne_bytes(), allocator)
+                        .and_then(move |yref| Ok((xref, yref)))
+                })
+                .and_then(|(xref, yref)| client::create_tree(&msger, vec![xref, yref], allocator))
+                .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref))
+                .and_then(|thunkref| client::run_thunk(&msger, thunkref))
+                .ok()
+                .expect("Failed to get result.");
 
-        mem::drop(resultref);
-    });
+            mem::drop(resultref);
+        });
 
-    loop {
-        match vcpu_fd.run().expect("run failed") {
-            VcpuExit::IoIn(addr, data) => println!(
-                "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
-                addr, data[0],
-            ),
-            VcpuExit::IoOut(addr, data) => match addr {
-                0 => {
-                    thread_handle.join().unwrap();
-                    return ExitCode::from(data[0]);
-                }
-                1 => {
-                    record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
-                }
-                2 => {
-                    record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                    let record: *const common::LogRecord = allocator.from_offset(record);
-                    unsafe {
-                        let common::LogRecord {
-                            level,
-                            target,
-                            file,
-                            line,
-                            module_path,
-                            message,
-                        } = *record;
-                        let level = log::Level::iter().nth(level as usize - 1).unwrap();
-                        let target = std::str::from_raw_parts(
-                            allocator.from_offset::<u8>(target.0),
-                            target.1,
-                        );
-                        let file = file.map(|x| {
-                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
-                        });
-                        let module_path = module_path.map(|x| {
-                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
-                        });
-                        let message = std::str::from_raw_parts(
-                            allocator.from_offset::<u8>(message.0),
-                            message.1,
-                        );
-                        log::logger().log(
-                            &log::Record::builder()
-                                .level(level)
-                                .target(target)
-                                .file(file)
-                                .line(line)
-                                .module_path(module_path)
-                                .args(format_args!("{}", message))
-                                .build(),
+        loop {
+            match vcpu_fd.run().expect("run failed") {
+                VcpuExit::IoIn(addr, data) => println!(
+                    "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
+                    addr, data[0],
+                ),
+                VcpuExit::IoOut(addr, data) => match addr {
+                    0 => {
+                        return ExitCode::from(data[0]);
+                    }
+                    1 => {
+                        record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                    }
+                    2 => {
+                        record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
+                        let record: *const common::LogRecord = allocator.from_offset(record);
+                        unsafe {
+                            let common::LogRecord {
+                                level,
+                                target,
+                                file,
+                                line,
+                                module_path,
+                                message,
+                            } = *record;
+                            let level = log::Level::iter().nth(level as usize - 1).unwrap();
+                            let target = std::str::from_raw_parts(
+                                allocator.from_offset::<u8>(target.0),
+                                target.1,
+                            );
+                            let file = file.map(|x| {
+                                std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                            });
+                            let module_path = module_path.map(|x| {
+                                std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                            });
+                            let message = std::str::from_raw_parts(
+                                allocator.from_offset::<u8>(message.0),
+                                message.1,
+                            );
+                            log::logger().log(
+                                &log::Record::builder()
+                                    .level(level)
+                                    .target(target)
+                                    .file(file)
+                                    .line(line)
+                                    .module_path(module_path)
+                                    .args(format_args!("{}", message))
+                                    .build(),
+                            );
+                        }
+                    }
+                    0xe9 => {
+                        let data = data[0];
+                        let c = data as char;
+                        print!("{c}");
+                    }
+                    _ => {
+                        println!(
+                            "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
+                            addr, data[0],
                         );
                     }
+                },
+                VcpuExit::MmioRead(addr, _) => {
+                    println!("Received an MMIO Read Request for the address {:#x}.", addr,);
                 }
-                0xe9 => {
-                    let data = data[0];
-                    let c = data as char;
-                    eprint!("{c}");
-                }
-                _ => {
+                VcpuExit::MmioWrite(addr, data) => {
                     println!(
-                        "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
-                        addr, data[0],
+                        "Received an MMIO Write Request to the address {:#x}: {:x}.",
+                        addr, data[0]
                     );
                 }
-            },
-            VcpuExit::MmioRead(addr, _) => {
-                println!("Received an MMIO Read Request for the address {:#x}.", addr,);
+                r => panic!("Unexpected exit reason: {:?}", r),
             }
-            VcpuExit::MmioWrite(addr, data) => {
-                println!(
-                    "Received an MMIO Write Request to the address {:#x}: {:x}.",
-                    addr, data[0]
-                );
-            }
-            r => panic!("Unexpected exit reason: {:?}", r),
         }
-    }
+    })
 }
