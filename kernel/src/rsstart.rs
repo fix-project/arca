@@ -59,6 +59,8 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         pdpt.into()
     });
 
+static SYNC: SpinLock<()> = SpinLock::new(());
+
 #[no_mangle]
 unsafe extern "C" fn _start(
     inner_offset: usize,
@@ -71,7 +73,7 @@ unsafe extern "C" fn _start(
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;
 
-    if id == 0 {
+    let sync = if id == 0 {
         // one-time init
         init_bss();
         if cfg!(feature = "debugcon") {
@@ -103,22 +105,30 @@ unsafe extern "C" fn _start(
         };
         let allocator = common::BuddyAllocator::from_raw_parts(raw);
 
+        let sync = SYNC.lock();
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
 
         let raw_rb_data = Box::from_raw(
             PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr)
                 as *mut RingBufferEndPointRawData,
         );
-        let endpoint =
-            RingBufferEndPoint::from_raw_parts(Box::into_inner(raw_rb_data), &PHYSICAL_ALLOCATOR);
+        let endpoint = RingBufferEndPoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+        core::mem::forget(raw_rb_data);
         let messenger = Messenger::new(endpoint);
         let _ = MESSENGER.set(SpinLock::new(messenger));
-    }
+        sync
+    } else {
+        PHYSICAL_ALLOCATOR.wait();
+        SYNC.lock()
+    };
+    core::mem::drop(sync);
 
     // PHYSICAL_ALLOCATOR.wait();
 
     // per-cpu init
     init_cpu_tls();
+    crate::kvmclock::init();
+    log::info!("CPU {id} beginning init");
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
@@ -129,7 +139,6 @@ unsafe extern "C" fn _start(
 
     init_syscalls();
 
-    crate::kvmclock::init();
     crate::lapic::init();
 
     let mut pml4: UniquePage<AugmentedPageTable<PageTable256TB>> = AugmentedPageTable::new();
@@ -138,6 +147,7 @@ unsafe extern "C" fn _start(
     set_pt(vm::ka2pa(Box::leak(pml4)));
 
     kmain();
+    // core::mem::drop(sync);
 
     crate::shutdown();
 }
@@ -150,7 +160,6 @@ unsafe fn init_bss() {
     bss.fill(0);
 }
 
-#[inline(never)]
 unsafe fn init_cpu_tls() {
     let start = addr_of!(_scdata) as usize;
     let end = addr_of!(_ecdata) as usize;

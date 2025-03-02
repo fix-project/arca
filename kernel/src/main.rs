@@ -8,9 +8,9 @@ extern crate kernel;
 
 use core::time::Duration;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec;
 
-use kernel::{client, kvmclock, prelude::*, shutdown};
+use kernel::{client, kvmclock, prelude::*};
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -19,17 +19,19 @@ const ERROR_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_error"));
 const CURRY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
 const PERFORM_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_perform"));
 const SPIN_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_spin"));
+const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
 
 #[no_mangle]
-#[inline(never)]
-extern "C" fn kmain() -> ! {
+extern "C" fn kmain() {
     let id = kernel::coreid();
     log::info!("kmain @ {id}");
     const ITERS: usize = 500;
     const N: usize = 1000;
     let mut cpu = CPU.borrow_mut();
 
-    client::run(&mut cpu);
+    if id == 0 {
+        client::run(&mut cpu);
+    }
 
     // Test trap.rs
     let trap = Thunk::from_elf(TRAP_ELF);
@@ -67,11 +69,12 @@ extern "C" fn kmain() -> ! {
     }
 
     let identity = identity.apply(Value::Null);
-    log::info!("running identity program {} times", ITERS);
-    let mut identities = Vec::with_capacity(ITERS);
-    identities.resize_with(ITERS, || identity.clone());
+    if id == 0 {
+        log::info!("running identity program {} times", ITERS);
+    }
     let time = kernel::kvmclock::time(|| {
-        for f in identities {
+        for _ in 0..ITERS {
+            let f = identity.clone();
             let _ = core::hint::black_box(f.run(&mut cpu));
         }
     });
@@ -111,16 +114,17 @@ extern "C" fn kmain() -> ! {
         assert_eq!(x + y, z);
     }
 
-    log::info!("running add program {} times", ITERS);
-    let mut adds = vec![];
-    adds.resize_with(ITERS, || add.clone());
+    if id == 0 {
+        log::info!("running add program {} times", ITERS);
+    }
     let tree: Tree = vec![
         Value::Blob(100u64.to_ne_bytes().into()),
         Value::Blob(100u64.to_ne_bytes().into()),
     ]
     .into();
     let time = kernel::kvmclock::time(|| {
-        for f in adds {
+        for _ in 0..ITERS {
+            let f = add.clone();
             let f = f.load(&mut cpu);
             let f = f.apply(Value::Tree(tree.clone()));
             let _ = core::hint::black_box(f.run());
@@ -164,11 +168,12 @@ extern "C" fn kmain() -> ! {
         assert_eq!(x + y, z);
     }
 
-    log::info!("running curried add program {} times", ITERS);
-    let mut cadds = vec![];
-    cadds.resize_with(ITERS, || cadd.clone());
+    if id == 0 {
+        log::info!("running curried add program {} times", ITERS);
+    }
     let time = kernel::kvmclock::time(|| {
-        for f in cadds {
+        for _ in 0..ITERS {
+            let f = cadd.clone();
             let x = 100u64;
             let y = 100u64;
             let f = f.load(&mut cpu);
@@ -259,8 +264,51 @@ extern "C" fn kmain() -> ! {
         now = kvmclock::now();
         i += 1;
     }
+    spin.unload();
     log::info!("done after {i} iterations");
 
     log::info!("done");
-    shutdown();
+
+    let infinite = Thunk::from_elf(INFINITE_ELF);
+    if id == 0 {
+        log::info!("running infinite program for {} iterations", ITERS);
+    }
+    let mut infinite = infinite.load(&mut cpu);
+    let time = kernel::kvmclock::time(|| {
+        for _ in 0..ITERS {
+            let LoadedValue::Lambda(y) = infinite.run() else {
+                panic!();
+            };
+            infinite = y.apply(Value::Null);
+        }
+        infinite.unload();
+    });
+    if id == 0 {
+        log::info!(
+            "infinite program takes {} ns",
+            time.as_nanos() / ITERS as u128
+        );
+    }
+    if id == 0 {
+        log::info!(
+            "running infinite program with unloads for {} iterations",
+            ITERS
+        );
+    }
+    let mut infinite = Thunk::from_elf(INFINITE_ELF);
+    let time = kernel::kvmclock::time(|| {
+        for _ in 0..ITERS {
+            let loaded = infinite.load(&mut cpu);
+            let Value::Lambda(y) = loaded.run().unload() else {
+                panic!();
+            };
+            infinite = y.apply(Value::Null);
+        }
+    });
+    if id == 0 {
+        log::info!(
+            "infinite program takes {} ns",
+            time.as_nanos() / ITERS as u128
+        );
+    }
 }

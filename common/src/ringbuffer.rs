@@ -182,6 +182,7 @@ pub struct RingBufferEndPoint<'a> {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct RingBufferEndPointRawData(usize, usize, usize, usize);
 
 impl<'a> RingBufferEndPoint<'a> {
@@ -197,7 +198,7 @@ impl<'a> RingBufferEndPoint<'a> {
     }
 
     pub unsafe fn from_raw_parts(
-        raw: RingBufferEndPointRawData,
+        raw: &RingBufferEndPointRawData,
         allocator: &'a BuddyAllocator,
     ) -> Self {
         let sender_ptr =

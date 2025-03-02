@@ -145,5 +145,7 @@ pub unsafe fn init() {
             .with_mode(TimerMode::Periodic),
     );
 
-    lapic.set_initial_count(0x10000); // O(1ms)
+    lapic.set_initial_count(0x10000); // 1ms
+
+    // lapic.set_initial_count(0x40); // 1us
 }

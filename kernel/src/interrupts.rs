@@ -101,6 +101,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         panic!("unhandled exception: {:x?}", registers);
     }
     if registers.isr == 0x20 {
+        // crate::allocator::PHYSICAL_ALLOCATOR.try_replenish();
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         log::error!("kernel tick");
     } else {

@@ -28,12 +28,14 @@ impl<T, const N: usize> ArrayVec<T, N> {
     }
 
     pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            return None;
+        }
         unsafe {
-            if self.is_empty() {
-                return None;
-            }
             self.size -= 1;
-            Some(self.data[self.size].assume_init_read())
+            let mut temp = MaybeUninit::uninit();
+            core::mem::swap(&mut temp, &mut self.data[self.size]);
+            Some(temp.assume_init())
         }
     }
 
@@ -60,6 +62,12 @@ impl<T, const N: usize> ArrayVec<T, N> {
             }
         }
         self.size = 0;
+    }
+}
+
+impl<T, const N: usize> Default for ArrayVec<T, N> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

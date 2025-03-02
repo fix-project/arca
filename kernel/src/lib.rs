@@ -11,7 +11,6 @@
 #![feature(ptr_metadata)]
 #![feature(negative_impls)]
 #![feature(slice_from_ptr_range)]
-#![feature(new_zeroed_alloc)]
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
 #![feature(bigint_helper_methods)]
@@ -35,18 +34,15 @@ pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod rt;
-pub mod spinlock;
 // pub mod tsc;
 pub mod client;
 pub mod prelude;
 pub mod types;
 pub mod vm;
 
-mod arrayvec;
 mod gdt;
 mod host;
 mod idt;
-mod initcell;
 mod interrupts;
 mod lapic;
 mod msr;
@@ -54,6 +50,8 @@ mod registers;
 mod rsstart;
 mod tss;
 
+pub use common::util::initcell;
+pub use common::util::spinlock;
 pub use lapic::LAPIC;
 
 #[cfg(test)]

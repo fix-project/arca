@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![feature(allocator_api)]
 #![feature(new_range_api)]
 #![feature(test)]
@@ -7,13 +7,16 @@
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
 #![feature(sync_unsafe_cell)]
+#![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
 pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
+pub mod arrayvec;
 pub mod controlreg;
 pub mod message;
 pub mod ringbuffer;
+pub mod util;
 
 #[repr(C)]
 pub struct LogRecord {

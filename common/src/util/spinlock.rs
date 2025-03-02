@@ -24,17 +24,27 @@ impl<T> SpinLock<T> {
         }
     }
 
-    pub fn lock(&self) -> SpinLockGuard<T> {
-        while self
+    pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+        if self
             .lock
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
+            .is_ok()
         {
-            unsafe { core::arch::x86_64::_mm_pause() }
+            Some(SpinLockGuard {
+                lock: self,
+                data: unsafe { &mut *self.data.get() },
+            })
+        } else {
+            None
         }
-        SpinLockGuard {
-            lock: self,
-            data: unsafe { &mut *self.data.get() },
+    }
+
+    pub fn lock(&self) -> SpinLockGuard<T> {
+        loop {
+            if let Some(guard) = self.try_lock() {
+                return guard;
+            }
+            core::hint::spin_loop();
         }
     }
 

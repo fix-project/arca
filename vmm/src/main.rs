@@ -130,8 +130,11 @@ fn main() {
 
     let mut cpus = vec![];
 
-    for i in 0..1 {
-        let vcpu_fd = vm.create_vcpu(i).unwrap();
+    for i in 0..std::thread::available_parallelism()
+        .map(|x| x.into())
+        .unwrap_or(1)
+    {
+        let vcpu_fd = vm.create_vcpu(i as u64).unwrap();
 
         // set up the CPU in long mode
         let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
@@ -226,8 +229,6 @@ fn main() {
             Box::<[u8; STACK_SIZE], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
         };
         let stack_start = allocator.to_offset(&*initial_stack);
-        log::info!("stack start: {:#x}", stack_start);
-        log::info!("stack end: {:#x}", stack_start + STACK_SIZE);
         Box::leak(initial_stack);
 
         let raw = allocator.clone().into_raw_parts();
