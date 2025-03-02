@@ -7,10 +7,9 @@ use core::{
     time::Duration,
 };
 
-use alloc::boxed::Box;
 use time::OffsetDateTime;
 
-use crate::vm;
+use crate::prelude::*;
 
 static BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 

@@ -1,4 +1,6 @@
-use alloc::{boxed::Box, format};
+use crate::prelude::*;
+
+use alloc::format;
 
 pub struct HostLogger;
 

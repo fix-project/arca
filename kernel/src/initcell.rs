@@ -1,90 +1,168 @@
 use core::{
     cell::UnsafeCell,
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub struct InitCell<T, F = fn() -> T> {
+union Lazy<T, F = fn() -> T> {
+    thunk: ManuallyDrop<F>,
+    value: ManuallyDrop<T>,
+}
+
+pub struct LazyLock<T, F = fn() -> T> {
     stat: AtomicUsize,
-    init: UnsafeCell<Option<F>>,
-    data: UnsafeCell<MaybeUninit<T>>,
+    data: UnsafeCell<Lazy<T, F>>,
 }
 
-unsafe impl<T: Send, F: FnOnce() -> T> Send for InitCell<T, F> {}
-unsafe impl<T: Send + Sync, F: FnOnce() -> T> Sync for InitCell<T, F> {}
+unsafe impl<T: Send + Sync, F: Send> Sync for LazyLock<T, F> {}
 
-impl<T, F: FnOnce() -> T> InitCell<T, F> {
-    pub const fn new(f: F) -> InitCell<T, F> {
-        InitCell {
+impl<T, F: FnOnce() -> T> LazyLock<T, F> {
+    pub const fn new(f: F) -> LazyLock<T, F> {
+        LazyLock {
             stat: AtomicUsize::new(0),
-            init: UnsafeCell::new(Some(f)),
-            data: UnsafeCell::new(MaybeUninit::uninit()),
+            data: UnsafeCell::new(Lazy {
+                thunk: ManuallyDrop::new(f),
+            }),
         }
     }
 
-    pub const fn empty() -> InitCell<T, F> {
-        InitCell {
-            stat: AtomicUsize::new(0),
-            init: UnsafeCell::new(None),
-            data: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    pub fn initialize<G: FnOnce() -> T>(this: &Self, f: G) -> &T {
-        loop {
-            match this
-                .stat
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(0) => break,
-                Err(1) => core::hint::spin_loop(),
-                Err(2) => return unsafe { (*this.data.get()).assume_init_ref() },
-                Ok(x) => unreachable!("invalid value for InitCell.stat: {x}"),
-                Err(x) => unreachable!("invalid value for InitCell.stat: {x}"),
+    pub fn force(this: &Self) -> &T {
+        if this
+            .stat
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // this thread should initialize
+            let thunk = unsafe { ManuallyDrop::take(&mut (*this.data.get()).thunk) };
+            let value = thunk();
+            unsafe {
+                (*this.data.get()).value = ManuallyDrop::new(value);
+            }
+            this.stat.store(2, Ordering::Release);
+            unsafe { &(*this.data.get()).value }
+        } else {
+            loop {
+                if let Some(x) = LazyLock::get(this) {
+                    break x;
+                }
+                core::hint::spin_loop();
             }
         }
-        let data = unsafe { &mut *this.data.get() };
-        let init = unsafe { &mut *this.init.get() };
-        init.take();
-        let data = data.write(f());
-        this.stat.store(2, Ordering::SeqCst);
-        data
     }
 
-    pub fn force(this: &Self) -> Option<&T> {
-        loop {
-            match this
-                .stat
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(0) => break,
-                Err(1) => core::hint::spin_loop(),
-                Err(2) => return Some(unsafe { (*this.data.get()).assume_init_ref() }),
-                Ok(x) => unreachable!("invalid value for InitCell.stat: {x}"),
-                Err(x) => unreachable!("invalid value for InitCell.stat: {x}"),
-            }
+    pub fn get(this: &Self) -> Option<&T> {
+        if this.stat.load(Ordering::Acquire) == 2 {
+            Some(unsafe { &(*this.data.get()).value })
+        } else {
+            None
         }
-        let data = unsafe { &mut *this.data.get() };
-        let init = unsafe { &mut *this.init.get() };
-        let init = init.take()?;
-        let data = data.write(init());
-        this.stat.store(2, Ordering::SeqCst);
-        Some(data)
     }
 }
 
-impl<T, F: FnOnce() -> T> Deref for InitCell<T, F> {
+impl<T, F: FnOnce() -> T> Deref for LazyLock<T, F> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        InitCell::force(self)
-            .expect("attempted to dereference uninitialized InitCell with no initializer")
+        LazyLock::<T, F>::force(self)
     }
 }
 
-impl<T, F: FnOnce() -> T> Default for InitCell<T, F> {
+impl<T: Default> Default for LazyLock<T, fn() -> T> {
     fn default() -> Self {
-        Self::empty()
+        Self::new(Default::default)
+    }
+}
+
+impl<T, F> Drop for LazyLock<T, F> {
+    fn drop(&mut self) {
+        todo!("implement Drop for OnceLock");
+    }
+}
+
+pub struct OnceLock<T> {
+    stat: AtomicUsize,
+    data: UnsafeCell<MaybeUninit<T>>,
+}
+
+unsafe impl<T: Send> Send for OnceLock<T> {}
+unsafe impl<T: Send + Sync> Sync for OnceLock<T> {}
+
+impl<T> OnceLock<T> {
+    pub const fn new() -> OnceLock<T> {
+        OnceLock {
+            stat: AtomicUsize::new(0),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    pub fn set(&self, value: T) -> Result<(), T> {
+        if self
+            .stat
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // this thread should initialize
+            unsafe {
+                (*self.data.get()).write(value);
+            }
+            self.stat.store(2, Ordering::Release);
+            Ok(())
+        } else {
+            Err(value)
+        }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        if self.stat.load(Ordering::Acquire) == 2 {
+            unsafe { Some((*self.data.get()).assume_init_ref()) }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_or_init(&self, f: impl FnOnce() -> T) -> &T {
+        if self
+            .stat
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // this thread should initialize
+            unsafe {
+                (*self.data.get()).write(f());
+            }
+            self.stat.store(2, Ordering::Release);
+        }
+        self.wait()
+    }
+
+    pub fn wait(&self) -> &T {
+        loop {
+            if let Some(x) = self.get() {
+                return x;
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+impl<T> Deref for OnceLock<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+            .expect("attempted to dereference OnceLock before initialization")
+    }
+}
+
+impl<T: Default> Default for OnceLock<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Drop for OnceLock<T> {
+    fn drop(&mut self) {
+        todo!("implement Drop for OnceLock");
     }
 }

@@ -1,6 +1,5 @@
 use core::time::Duration;
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use defs::error;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use time::OffsetDateTime;

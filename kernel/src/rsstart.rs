@@ -11,7 +11,6 @@ use crate::{
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
-    initcell::InitCell,
     msr,
     paging::Permissions,
     prelude::*,
@@ -50,8 +49,8 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<AugmentedPageTable<PageTable512GB>>> =
-    InitCell::new(|| unsafe {
+pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTable512GB>>> =
+    LazyLock::new(|| unsafe {
         let mut pdpt = AugmentedPageTable::new();
         for i in 0..512 {
             pdpt.entry_mut(i).map_global(i << 30, Permissions::None);
@@ -91,8 +90,9 @@ unsafe extern "C" fn _start(
         refcnt_offset,
         refcnt_size,
     });
-    InitCell::initialize(&PHYSICAL_ALLOCATOR, || allocator);
+    let _ = PHYSICAL_ALLOCATOR.set(allocator);
 
+    // per-cpu init
     init_cpu_tls();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
@@ -141,15 +141,14 @@ unsafe fn init_cpu_tls() {
     let load = vm::pa2ka::<u8>(addr_of!(_lcdata) as usize);
     let length = end - start;
 
+    let allocator = PHYSICAL_ALLOCATOR.wait();
     let src = core::slice::from_raw_parts(load, length);
-    let dst = src.to_vec();
+    let dst: &mut [u8] = Box::leak(src.to_vec_in(&allocator).into_boxed_slice());
 
     asm! {
         "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_ptr()
     }
     msr::wrmsr(0xC0000102, dst.as_ptr() as u64); // kernel GS base; actually really user GS base
-
-    core::mem::forget(dst);
 }
 
 unsafe fn init_syscalls() {

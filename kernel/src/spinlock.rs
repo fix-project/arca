@@ -49,7 +49,7 @@ impl<T> SpinLockGuard<'_, T> {
 
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.lock.store(false, Ordering::SeqCst);
+        self.lock.lock.store(false, Ordering::Release);
     }
 }
 

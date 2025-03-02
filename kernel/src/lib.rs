@@ -42,7 +42,7 @@ pub mod prelude;
 pub mod types;
 pub mod vm;
 
-// mod arrayvec;
+mod arrayvec;
 mod gdt;
 mod host;
 mod idt;

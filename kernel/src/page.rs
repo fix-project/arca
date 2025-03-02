@@ -1,6 +1,5 @@
-use common::{refcnt::RefCnt, BuddyAllocator};
-extern crate alloc;
-use alloc::boxed::Box;
+use crate::prelude::*;
+use common::BuddyAllocator;
 
 pub trait HardwarePage: Sized + Clone {}
 impl HardwarePage for Page4KB {}

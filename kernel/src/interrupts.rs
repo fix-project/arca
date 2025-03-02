@@ -5,9 +5,7 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use alloc::boxed::Box;
-
-use crate::page::Page2MB;
+use crate::prelude::*;
 
 #[core_local]
 pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
