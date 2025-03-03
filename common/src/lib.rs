@@ -1,12 +1,12 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(allocator_api)]
 #![feature(new_range_api)]
-#![feature(test)]
 #![feature(alloc_layout_extra)]
 #![feature(ptr_metadata)]
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
 #![feature(sync_unsafe_cell)]
+#![feature(test)]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
 pub mod buddy;

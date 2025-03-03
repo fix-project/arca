@@ -1,7 +1,6 @@
 #![no_main]
 #![no_std]
 #![feature(allocator_api)]
-#![feature(try_with_capacity)]
 
 extern crate alloc;
 extern crate kernel;
