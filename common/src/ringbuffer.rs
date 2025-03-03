@@ -26,8 +26,7 @@ pub struct RingBufferReceiver<'a> {
 }
 
 pub enum RingBufferError {
-    Empty,
-    Full,
+    WouldBlock,
 }
 
 impl RingBuffer {
@@ -60,7 +59,7 @@ impl RingBuffer {
         let read_count = self.read_counter.load(Ordering::SeqCst);
         let write_count = self.write_counter.load(Ordering::SeqCst);
         if read_count == write_count {
-            return Err(RingBufferError::Empty);
+            return Err(RingBufferError::WouldBlock);
         }
 
         let mut end: usize;
@@ -92,7 +91,7 @@ impl RingBuffer {
         let read_count = self.read_counter.load(Ordering::SeqCst);
         let write_count = self.write_counter.load(Ordering::SeqCst);
         if (write_count + 1) % self.buf.get().len() == read_count {
-            return Err(RingBufferError::Full);
+            return Err(RingBufferError::WouldBlock);
         }
 
         let mut end: usize;

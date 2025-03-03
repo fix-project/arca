@@ -267,7 +267,7 @@ impl<'a> MessageSerializer<'a> {
 
     fn load(&mut self, msg: Message) -> Result<(), RingBufferError> {
         if !self.loadable() {
-            return Err(RingBufferError::Full);
+            return Err(RingBufferError::WouldBlock);
         }
 
         self.opcode_written = false;
