@@ -8,7 +8,7 @@ extern crate kernel;
 
 use core::time::Duration;
 
-use alloc::vec;
+use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
 use kernel::{client, kvmclock, prelude::*};
 
@@ -24,7 +24,12 @@ const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"))
 #[no_mangle]
 extern "C" fn kmain() {
     let id = kernel::coreid();
-    log::info!("kmain @ {id}");
+
+    kernel::profile::begin();
+
+    if id == 0 {
+        log::info!("kmain");
+    }
     const ITERS: usize = 500;
     const N: usize = 1000;
     let mut cpu = CPU.borrow_mut();
@@ -35,7 +40,9 @@ extern "C" fn kmain() {
 
     // Test trap.rs
     let trap = Thunk::from_elf(TRAP_ELF);
-    log::info!("running trap program");
+    if id == 0 {
+        log::info!("running trap program");
+    }
     let result = trap.run(&mut cpu);
     match result {
         Value::Error(_) => {}
@@ -55,7 +62,9 @@ extern "C" fn kmain() {
         Value::Tree(vec![].into()),
     ];
 
-    log::info!("running identity program on {} inputs", inputs.len());
+    if id == 0 {
+        log::info!("running identity program on {} inputs", inputs.len());
+    }
     let identity = Thunk::from_elf(IDENTITY_ELF);
     let result = identity.run(&mut cpu);
     let Value::Lambda(identity) = result else {
@@ -78,13 +87,17 @@ extern "C" fn kmain() {
             let _ = core::hint::black_box(f.run(&mut cpu));
         }
     });
-    log::info!(
-        "identity program takes {} ns",
-        time.as_nanos() / ITERS as u128
-    );
+    if id == 0 {
+        log::info!(
+            "identity program takes {} ns",
+            time.as_nanos() / ITERS as u128
+        );
+    }
 
     // Test add.rs
-    log::info!("running add program on {} inputs", N);
+    if id == 0 {
+        log::info!("running add program on {} inputs", N);
+    }
     let add = Thunk::from_elf(ADD_ELF);
     let Value::Lambda(add) = add.run(&mut cpu) else {
         panic!();
@@ -130,10 +143,14 @@ extern "C" fn kmain() {
             let _ = core::hint::black_box(f.run());
         }
     });
-    log::info!("add program takes {} ns", time.as_nanos() / ITERS as u128);
+    if id == 0 {
+        log::info!("add program takes {} ns", time.as_nanos() / ITERS as u128);
+    }
 
     // Test curry.rs
-    log::info!("running curried add program on {} inputs", N);
+    if id == 0 {
+        log::info!("running curried add program on {} inputs", N);
+    }
     let curry = Thunk::from_elf(CURRY_ELF);
     let curry = curry.load(&mut cpu);
     let result = curry.run();
@@ -191,10 +208,12 @@ extern "C" fn kmain() {
             assert_eq!(x + y, z);
         }
     });
-    log::info!(
-        "curried add program takes {} ns",
-        time.as_nanos() / ITERS as u128
-    );
+    if id == 0 {
+        log::info!(
+            "curried add program takes {} ns",
+            time.as_nanos() / ITERS as u128
+        );
+    }
 
     // Test error.rs
     let error = Thunk::from_elf(ERROR_ELF);
@@ -202,7 +221,9 @@ extern "C" fn kmain() {
         panic!();
     };
     let error = error.apply(Value::Blob(b"hello".as_slice().into()));
-    log::info!("running error program");
+    if id == 0 {
+        log::info!("running error program");
+    }
     let result = error.run(&mut cpu);
     match result {
         Value::Null => {}
@@ -222,7 +243,9 @@ extern "C" fn kmain() {
         Value::Tree(vec![].into()),
     ];
 
-    log::info!("running perform program on {} inputs", inputs.len());
+    if id == 0 {
+        log::info!("running perform program on {} inputs", inputs.len());
+    }
 
     let perform = Thunk::from_elf(PERFORM_ELF);
     let result = perform.run(&mut cpu);
@@ -249,8 +272,10 @@ extern "C" fn kmain() {
     }
 
     // Test spin.rs
-    const DURATION: Duration = Duration::from_secs(1);
-    log::info!("running spin program for {:?}", DURATION);
+    const DURATION: Duration = Duration::from_millis(100);
+    if id == 0 {
+        log::info!("running spin program for {:?}", DURATION);
+    }
     let spin = Thunk::from_elf(SPIN_ELF);
     let mut spin = spin.load(&mut cpu);
     let mut now = kvmclock::now();
@@ -265,9 +290,9 @@ extern "C" fn kmain() {
         i += 1;
     }
     spin.unload();
-    log::info!("done after {i} iterations");
-
-    log::info!("done");
+    if id == 0 {
+        log::info!("done after {i} iterations");
+    }
 
     let infinite = Thunk::from_elf(INFINITE_ELF);
     if id == 0 {
@@ -310,5 +335,30 @@ extern "C" fn kmain() {
             "infinite program takes {} ns",
             time.as_nanos() / ITERS as u128
         );
+    }
+
+    kernel::profile::end();
+
+    if id == 0 {
+        log::info!("most frequent functions:");
+        let entries = kernel::profile::entries();
+        let entries = entries
+            .into_iter()
+            .map(|(p, x)| {
+                (
+                    kernel::host::symname(p).unwrap_or_else(|| ("???".into(), 0)),
+                    x,
+                )
+            })
+            .fold(BTreeMap::new(), |mut map, ((name, _offset), count)| {
+                map.entry(name).and_modify(|e| *e += count).or_insert(count);
+                map
+            });
+        let mut entries = Vec::from_iter(entries);
+        entries.sort_by_key(|(_name, count)| *count);
+        entries.reverse();
+        for (i, &(ref name, count)) in entries[..16].iter().enumerate() {
+            log::info!("\t{i}: {count} - {name}");
+        }
     }
 }

@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-extern crate alloc;
-use alloc::sync::Arc;
 use std::mem;
 use std::thread;
 
@@ -234,6 +233,7 @@ fn main() {
         let raw = allocator.clone().into_raw_parts();
         let pa2ka = |p: usize| (p | 0xFFFF800000000000);
         vcpu_regs.rsp = pa2ka(stack_start + STACK_SIZE) as u64;
+        vcpu_regs.rbp = 0;
         vcpu_regs.rdi = raw.inner_offset as u64;
         vcpu_regs.rsi = raw.inner_size as u64;
         vcpu_regs.rdx = raw.refcnt_offset as u64;
@@ -254,8 +254,8 @@ fn main() {
         cpus.push(vcpu_fd);
     }
 
+    let elf = Arc::new(elf);
     let lock = AtomicBool::new(false);
-    let mut record: usize = 0;
     thread::scope(|s| {
         let allocator = &allocator;
         s.spawn(move || {
@@ -293,9 +293,12 @@ fn main() {
             mem::drop(resultref);
         });
 
-        for (i, mut vcpu_fd) in cpus.into_iter().enumerate() {
+        for mut vcpu_fd in cpus.into_iter() {
             let a = allocator.clone();
             let lock = &lock;
+            let mut log_record: usize = 0;
+            let mut symtab_record: usize = 0;
+            let elf = elf.clone();
             s.spawn(move || {
                 let allocator = a;
                 loop {
@@ -312,19 +315,18 @@ fn main() {
                         VcpuExit::IoOut(addr, data) => match addr {
                             0 => {
                                 if data[0] == 0 {
-                                    log::info!("CPU {i} exited successfully");
                                     return;
                                 }
                                 ExitCode::from(data[0]).exit_process();
                             }
                             1 => {
-                                record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                                log_record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
                             }
                             2 => {
-                                record |=
+                                log_record |=
                                     (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
                                 let record: *const common::LogRecord =
-                                    allocator.from_offset(record);
+                                    allocator.from_offset(log_record);
                                 unsafe {
                                     let common::LogRecord {
                                         level,
@@ -376,6 +378,54 @@ fn main() {
                                             .build(),
                                     );
                                     lock.store(false, Ordering::SeqCst);
+                                }
+                            }
+                            3 => {
+                                symtab_record =
+                                    u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                            }
+                            4 => {
+                                symtab_record |=
+                                    (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
+                                let record: *mut common::SymtabRecord =
+                                    allocator.from_offset(symtab_record);
+                                let record: &mut common::SymtabRecord = unsafe { &mut *record };
+                                let (symtab, strtab) = elf
+                                    .symbol_table()
+                                    .expect("could not parse ELF file")
+                                    .expect("could not find symbol table");
+                                let target = record.addr;
+                                if let Some((name, addr)) = symtab.into_iter().find_map(|symbol| {
+                                    let index = symbol.st_name as usize;
+                                    let addr = symbol.st_value as usize;
+                                    let size = symbol.st_size as usize;
+                                    let end = addr + size;
+                                    if target >= addr && target < end {
+                                        let name = strtab.get(index).unwrap();
+                                        let name = rustc_demangle::demangle(name);
+                                        Some((name.to_string(), addr))
+                                    } else {
+                                        None
+                                    }
+                                }) {
+                                    record.file_len = name.len();
+                                    let (ptr, cap) = record.file_buffer;
+                                    let buffer: &mut [u8] = unsafe {
+                                        core::slice::from_raw_parts_mut(
+                                            allocator.from_offset(ptr),
+                                            cap,
+                                        )
+                                    };
+                                    if name.len() > cap {
+                                        buffer.copy_from_slice(&name.as_bytes()[..cap]);
+                                    } else {
+                                        buffer[..name.len()].copy_from_slice(name.as_bytes());
+                                    }
+                                    record.offset = record.addr - addr;
+                                    record.addr = addr;
+                                    record.found = true;
+                                } else {
+                                    record.found = false;
                                 }
                             }
                             0xe9 => {

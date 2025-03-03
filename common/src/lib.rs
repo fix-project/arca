@@ -19,6 +19,7 @@ pub mod ringbuffer;
 pub mod util;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct LogRecord {
     pub level: u8,
     pub target: (usize, usize),
@@ -26,4 +27,14 @@ pub struct LogRecord {
     pub line: Option<u32>,
     pub module_path: Option<(usize, usize)>,
     pub message: (usize, usize),
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct SymtabRecord {
+    pub addr: usize,
+    pub offset: usize,
+    pub found: bool,
+    pub file_buffer: (usize, usize),
+    pub file_len: usize,
 }

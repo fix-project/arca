@@ -128,7 +128,7 @@ unsafe extern "C" fn _start(
     // per-cpu init
     init_cpu_tls();
     crate::kvmclock::init();
-    log::info!("CPU {id} beginning init");
+    crate::profile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
@@ -145,6 +145,8 @@ unsafe extern "C" fn _start(
     pml4.entry_mut(256)
         .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
     set_pt(vm::ka2pa(Box::leak(pml4)));
+
+    core::arch::asm!("sti");
 
     kmain();
     // core::mem::drop(sync);

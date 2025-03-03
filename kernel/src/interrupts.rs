@@ -36,15 +36,15 @@ const _: () = const {
 
 #[repr(C)]
 #[derive(Debug)]
-struct IsrRegisterFile {
-    registers: [u64; 16],
-    isr: u64,
-    code: u64,
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
+pub(crate) struct IsrRegisterFile {
+    pub registers: [u64; 16],
+    pub isr: u64,
+    pub code: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 extern "C" {
@@ -83,7 +83,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         let escape = SEGFAULT_ESCAPE_ADDR.load(Ordering::SeqCst);
 
         if !escape.is_null() {
-            log::warn!(
+            log::debug!(
                 "user program provided invalid address to kernel: {:p}",
                 crate::registers::read_cr2() as *const u8,
             );
@@ -102,8 +102,8 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     }
     if registers.isr == 0x20 {
         // crate::allocator::PHYSICAL_ALLOCATOR.try_replenish();
+        crate::profile::tick(registers);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-        log::error!("kernel tick");
     } else {
         panic!("unhandled system ISR: {:x?}", registers);
     }

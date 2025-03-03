@@ -15,6 +15,7 @@
 #![feature(box_as_ptr)]
 #![feature(bigint_helper_methods)]
 #![feature(box_into_inner)]
+#![feature(new_zeroed_alloc)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -36,12 +37,13 @@ pub mod paging;
 pub mod rt;
 // pub mod tsc;
 pub mod client;
+pub mod host;
 pub mod prelude;
+pub mod profile;
 pub mod types;
 pub mod vm;
 
 mod gdt;
-mod host;
 mod idt;
 mod interrupts;
 mod lapic;

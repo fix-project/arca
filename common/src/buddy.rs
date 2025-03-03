@@ -179,7 +179,8 @@ impl<'a> AllocatorLevel<'a> {
     pub fn free(&mut self, index: usize) {
         unsafe {
             let node = &mut *self.node(index);
-            *node = Default::default();
+            node.next = None;
+            node.prev = None;
             if let Some(head) = *self.free {
                 let next = &mut *self.node(head);
                 assert!(next.prev.is_none());
@@ -303,6 +304,7 @@ impl AllocatorInner {
     }
 
     // deadlock safety: always lock levels in increasing order
+    #[inline(never)]
     pub fn with_level<T>(
         self: Pin<&Self>,
         base: *mut (),
@@ -707,9 +709,10 @@ impl<'a> BuddyAllocator<'a> {
         current as usize - base as usize
     }
 
-    pub fn from_offset<T>(&self, offset: usize) -> *const T {
+    pub fn from_offset<T>(&self, offset: usize) -> *mut T {
+        assert!(offset & 0xFFFF800000000000 == 0);
         let base = self.base;
-        (base as usize + offset) as *const T
+        (base as usize + offset) as *mut T
     }
 
     pub fn refcnt<T: ?Sized>(&self, allocation: *const T) -> *const AtomicUsize {
