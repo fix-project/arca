@@ -27,6 +27,8 @@ pub struct RingBufferReceiver<'a> {
 
 pub enum RingBufferError {
     WouldBlock,
+    ParseError,
+    TypeError,
 }
 
 impl RingBuffer {

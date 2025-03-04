@@ -2,7 +2,9 @@ use crate::initcell::InitCell;
 use crate::prelude::*;
 use crate::spinlock::SpinLock;
 use crate::types::Value;
-use common::message::{ArcaHandle, Message, Messenger};
+use common::message::{
+    ArcaHandle, BlobHandle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
+};
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -12,15 +14,43 @@ use alloc::vec::Vec;
 pub static MESSENGER: InitCell<SpinLock<Messenger>> = InitCell::empty();
 
 fn reply(value: Box<Value>) -> () {
-    let ptr = Box::into_raw(value);
-    let msg = Message::ReplyMessage {
-        handle: ArcaHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr)),
+    let msg = match (&value).as_ref() {
+        Value::Blob(_) => {
+            let ptr = Box::into_raw(value);
+            Message::ReplyMessage {
+                handle: ArcaHandle::BlobHandle(BlobHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
+            }
+        }
+        Value::Tree(_) => {
+            let ptr = Box::into_raw(value);
+            Message::ReplyMessage {
+                handle: ArcaHandle::TreeHandle(TreeHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
+            }
+        }
+        Value::Lambda(_) => {
+            let ptr = Box::into_raw(value);
+            Message::ReplyMessage {
+                handle: ArcaHandle::LambdaHandle(LambdaHandle::new(
+                    PHYSICAL_ALLOCATOR.to_offset(ptr),
+                )),
+            }
+        }
+        Value::Thunk(_) => {
+            let ptr = Box::into_raw(value);
+            Message::ReplyMessage {
+                handle: ArcaHandle::ThunkHandle(ThunkHandle::new(
+                    PHYSICAL_ALLOCATOR.to_offset(ptr),
+                )),
+            }
+        }
+        _ => todo!(),
     };
+
     let _ = MESSENGER.lock().send(msg);
 }
 
-fn reconstruct(handle: ArcaHandle) -> Box<Value> {
-    let ptr = PHYSICAL_ALLOCATOR.from_offset::<Value>(handle.to_offset());
+fn reconstruct<T: Into<ArcaHandle>>(handle: T) -> Box<Value> {
+    let ptr = PHYSICAL_ALLOCATOR.from_offset::<Value>(ArcaHandle::to_offset(handle));
     unsafe { Box::from_raw(ptr as *mut Value) }
 }
 

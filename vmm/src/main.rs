@@ -20,6 +20,7 @@ use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use std::cell::RefCell;
 use vmm::client;
+use vmm::client::ArcaRef;
 
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
@@ -237,20 +238,31 @@ fn main() -> ExitCode {
             let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
             let x = 1 as u64;
             let y = 1 as u64;
-            let lambdaref = client::create_blob(&msger, ADD_ELF, allocator)
+            let ArcaRef::LambdaRef(lambdaref) = client::create_blob(&msger, ADD_ELF, allocator)
                 .and_then(|blobref| client::create_thunk(&msger, blobref))
                 .and_then(|thunkref| client::run_thunk(&msger, thunkref))
                 .ok()
-                .expect("Failed to create lambda");
+                .expect("Failed to create lambda")
+            else {
+                panic!("Expecting LambdaRef")
+            };
 
             let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
                 .and_then(|xref| {
                     client::create_blob(&msger, &y.to_ne_bytes(), allocator)
                         .and_then(move |yref| Ok((xref, yref)))
                 })
-                .and_then(|(xref, yref)| client::create_tree(&msger, vec![xref, yref], allocator))
-                .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref))
-                .and_then(|thunkref| client::run_thunk(&msger, thunkref))
+                .and_then(|(xref, yref)| {
+                    client::create_tree(&msger, vec![xref.into(), yref.into()], allocator)
+                })
+                .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref.into()))
+                .and_then(|thunkref| {
+                    if let ArcaRef::ThunkRef(thunkref) = thunkref {
+                        client::run_thunk(&msger, thunkref)
+                    } else {
+                        panic!("Expecting ThunkRef")
+                    }
+                })
                 .ok()
                 .expect("Failed to get result.");
 
