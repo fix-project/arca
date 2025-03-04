@@ -220,9 +220,9 @@ impl<'a> LoadedThunk<'a> {
                         Err(e)
                     }
                 },
-                defs::syscall::LEN => sys_len(args, arca),
+                defs::syscall::LEN => sys_len(args, &mut arca),
                 defs::syscall::READ => sys_read(args, &mut arca),
-                defs::syscall::TYPE => sys_type(args, arca),
+                defs::syscall::TYPE => sys_type(args, &mut arca),
 
                 defs::syscall::CREATE_BLOB => sys_create_blob(args, &mut arca),
                 defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
@@ -294,7 +294,7 @@ fn sys_exit(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (Loaded
     }
 }
 
-fn sys_len(args: [u64; 5], arca: LoadedArca) -> Result<u32, u32> {
+fn sys_len(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
     let Some(val) = arca.descriptors().get(idx) else {
         return Err(error::BAD_INDEX);
@@ -372,7 +372,7 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     }
 }
 
-fn sys_type(args: [u64; 5], arca: LoadedArca) -> Result<u32, u32> {
+fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
     let Some(val) = arca.descriptors().get(idx) else {
         return Err(error::BAD_INDEX);
