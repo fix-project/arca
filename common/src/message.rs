@@ -338,13 +338,13 @@ impl<'a> MessageParser<'a> {
         }
     }
 
-    fn read_exact_one(&mut self) -> Result<Message, RingBufferError> {
+    fn read_one(&mut self) -> Result<Message, RingBufferError> {
         loop {
             match self.read() {
                 Ok(Some(m)) => {
                     return Ok(m);
                 }
-                _ => {}
+                _ => core::hint::spin_loop(),
             }
         }
     }
@@ -477,12 +477,12 @@ impl<'a> Messenger<'a> {
         self.serializer.write_all()
     }
 
-    pub fn get_exact_one(&mut self) -> Result<Message, RingBufferError> {
-        self.parser.read_exact_one()
+    pub fn get_one(&mut self) -> Result<Message, RingBufferError> {
+        self.parser.read_one()
     }
 
     pub fn get_reply(&mut self, msg: Message) -> Result<Message, RingBufferError> {
         self.send(msg)?;
-        self.get_exact_one()
+        self.get_one()
     }
 }

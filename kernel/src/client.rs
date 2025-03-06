@@ -124,11 +124,7 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
 
 pub fn run(cpu: &mut Cpu) -> () {
     loop {
-        let msg = MESSENGER
-            .lock()
-            .get_exact_one()
-            .ok()
-            .expect("Failed to read msg");
+        let msg = MESSENGER.lock().get_one().ok().expect("Failed to read msg");
         let cont = process_incoming_message(msg, cpu);
         if !cont {
             return;
