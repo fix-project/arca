@@ -19,6 +19,7 @@ libc = "0.2.162"
 nasm-rs = "0.3.0"
 common = { path = "../common" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"

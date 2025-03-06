@@ -7,6 +7,7 @@ use core::{
 use log::LevelFilter;
 
 use crate::{
+    client::MESSENGER,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
@@ -14,8 +15,13 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
+    spinlock::SpinLock,
     vm,
 };
+
+use alloc::boxed::Box;
+use common::message::Messenger;
+use common::ringbuffer::{RingBufferEndPoint, RingBufferEndPointRawData};
 
 extern "C" {
     fn kmain();
@@ -59,6 +65,7 @@ unsafe extern "C" fn _start(
     inner_size: usize,
     refcnt_offset: usize,
     refcnt_size: usize,
+    ring_buffer_data_ptr: usize,
 ) -> ! {
     init_bss();
     let _ = log::set_logger(&HOST);
@@ -101,10 +108,15 @@ unsafe extern "C" fn _start(
 
     crate::lapic::init();
 
-    // asm!("sti");
-    // loop {
-    //     core::hint::spin_loop();
-    // }
+    let raw_rb_data = Box::from_raw(
+        PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr)
+            as *mut RingBufferEndPointRawData,
+    );
+    let endpoint =
+        RingBufferEndPoint::from_raw_parts(Box::into_inner(raw_rb_data), &PHYSICAL_ALLOCATOR);
+    let messenger = Messenger::new(endpoint);
+    InitCell::initialize(&MESSENGER, || SpinLock::new(messenger));
+
     kmain();
     crate::shutdown();
 }

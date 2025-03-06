@@ -469,6 +469,7 @@ dependencies = [
  "libc",
  "log",
  "nasm-rs",
+ "user",
 ]
 
 [[package]]

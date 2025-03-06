@@ -7,11 +7,14 @@
 #![feature(ptr_sub_ptr)]
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
+#![feature(sync_unsafe_cell)]
 
 pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod controlreg;
+pub mod message;
+pub mod ringbuffer;
 
 #[repr(C)]
 pub struct LogRecord {

@@ -9,7 +9,7 @@ use core::time::Duration;
 
 use alloc::vec;
 
-use kernel::{kvmclock, prelude::*, shutdown};
+use kernel::{client, kvmclock, prelude::*, shutdown};
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -26,6 +26,8 @@ extern "C" fn kmain() -> ! {
     const ITERS: usize = 500;
     const N: usize = 1000;
     let mut cpu = CPU.borrow_mut();
+
+    client::run(&mut cpu);
 
     // Test trap.rs
     let trap = Thunk::from_elf(TRAP_ELF);
