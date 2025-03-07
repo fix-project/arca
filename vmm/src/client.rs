@@ -4,15 +4,16 @@ use common::message::{
 use common::ringbuffer::RingBufferError;
 use common::BuddyAllocator;
 extern crate alloc;
+use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
 
 pub struct Ref<'a, T: Into<ArcaHandle>> {
     handle: Option<T>,
-    msger: Arc<RefCell<Messenger<'a>>>,
+    msger: Rc<RefCell<Messenger<'a>>>,
 }
 
-impl<'a, T: Into<ArcaHandle>> Ref<'a, T> {
+impl<T: Into<ArcaHandle>> Ref<'_, T> {
     fn take(&mut self) -> Option<T> {
         self.handle.take()
     }
@@ -21,11 +22,8 @@ impl<'a, T: Into<ArcaHandle>> Ref<'a, T> {
 impl<T: Into<ArcaHandle>> Drop for Ref<'_, T> {
     fn drop(&mut self) {
         let h = self.handle.take();
-        match h {
-            Some(h) => {
-                let _ = drop_handle(&mut self.msger.borrow_mut(), h);
-            }
-            None => {}
+        if let Some(h) = h {
+            let _ = drop_handle(&mut self.msger.borrow_mut(), h);
         }
     }
 }
@@ -67,7 +65,7 @@ impl<'a> From<ThunkRef<'a>> for ArcaRef<'a> {
 }
 
 impl<'a> ArcaRef<'a> {
-    fn new(handle: ArcaHandle, msger: Arc<RefCell<Messenger<'a>>>) -> Self {
+    fn new(handle: ArcaHandle, msger: Rc<RefCell<Messenger<'a>>>) -> Self {
         match handle {
             ArcaHandle::BlobHandle(h) => ArcaRef::BlobRef(BlobRef {
                 handle: Some(h),
@@ -98,10 +96,10 @@ impl<'a> ArcaRef<'a> {
     }
 }
 
-fn get_reply<'a>(
+fn get_reply(
     msg: Message,
-    msger: Arc<RefCell<Messenger<'a>>>,
-) -> Result<ArcaRef<'a>, RingBufferError> {
+    msger: Rc<RefCell<Messenger<'_>>>,
+) -> Result<ArcaRef<'_>, RingBufferError> {
     match msg {
         Message::ReplyMessage { handle } => Ok(ArcaRef::new(handle, msger)),
         _ => Err(RingBufferError::TypeError),
@@ -109,7 +107,7 @@ fn get_reply<'a>(
 }
 
 fn create_blob_internal<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     blob: Arc<[u8], &BuddyAllocator>,
 ) -> Result<BlobRef<'a>, RingBufferError> {
     let (slice_ptr, a) = Arc::into_raw_with_allocator(blob);
@@ -126,7 +124,7 @@ fn create_blob_internal<'a>(
 }
 
 pub fn create_blob<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     blob: &[u8],
     allocator: &BuddyAllocator,
 ) -> Result<BlobRef<'a>, RingBufferError> {
@@ -136,7 +134,7 @@ pub fn create_blob<'a>(
 }
 
 fn create_tree_internal<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     tree: Box<[ArcaHandle], &BuddyAllocator>,
 ) -> Result<TreeRef<'a>, RingBufferError> {
     let (slice_ptr, a) = Box::into_raw_with_allocator(tree);
@@ -153,7 +151,7 @@ fn create_tree_internal<'a>(
 }
 
 pub fn create_tree<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     tree: Vec<ArcaRef>,
     allocator: &BuddyAllocator,
 ) -> Result<TreeRef<'a>, RingBufferError> {
@@ -165,7 +163,7 @@ pub fn create_tree<'a>(
 }
 
 pub fn create_thunk<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     mut blobref: BlobRef,
 ) -> Result<ThunkRef<'a>, RingBufferError> {
     let reply = msger.borrow_mut().get_reply(Message::CreateThunkMessage {
@@ -179,7 +177,7 @@ pub fn create_thunk<'a>(
 }
 
 pub fn run_thunk<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     mut thunkref: ThunkRef,
 ) -> Result<ArcaRef<'a>, RingBufferError> {
     let reply = msger.borrow_mut().get_reply(Message::RunThunkMessage {
@@ -189,7 +187,7 @@ pub fn run_thunk<'a>(
 }
 
 pub fn apply_lambda<'a>(
-    msger: &Arc<RefCell<Messenger<'a>>>,
+    msger: &Rc<RefCell<Messenger<'a>>>,
     mut lambdaref: LambdaRef,
     mut argref: ArcaRef,
 ) -> Result<ArcaRef<'a>, RingBufferError> {

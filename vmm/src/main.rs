@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::process::ExitCode;
 
 extern crate alloc;
-use alloc::sync::Arc;
+use alloc::rc::Rc;
 use std::mem;
 use std::thread;
 
@@ -235,9 +235,9 @@ fn main() -> ExitCode {
     thread::scope(|s| {
         let allocator = &allocator;
         s.spawn(move || {
-            let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
-            let x = 1 as u64;
-            let y = 1 as u64;
+            let msger = Rc::new(RefCell::new(Messenger::new(endpoint1)));
+            let x = 1_u64;
+            let y = 1_u64;
             let ArcaRef::LambdaRef(lambdaref) = client::create_blob(&msger, ADD_ELF, allocator)
                 .and_then(|blobref| client::create_thunk(&msger, blobref))
                 .and_then(|thunkref| client::run_thunk(&msger, thunkref))
@@ -250,7 +250,7 @@ fn main() -> ExitCode {
             let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
                 .and_then(|xref| {
                     client::create_blob(&msger, &y.to_ne_bytes(), allocator)
-                        .and_then(move |yref| Ok((xref, yref)))
+                        .map(move |yref| (xref, yref))
                 })
                 .and_then(|(xref, yref)| {
                     client::create_tree(&msger, vec![xref.into(), yref.into()], allocator)
