@@ -3,9 +3,17 @@ name = "common"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["std", "thread_local_cache"]
+std = []
+thread_local_cache = ["cache"]
+core_local_cache = ["macros", "cache"]
+cache = []
+
 [dependencies]
 log = "0.4.22"
 snafu = { version="0.8.5", default-features=false }
+macros = { path = "../macros", optional=true }
 
 [dev-dependencies]
 libc = "0.2.164"

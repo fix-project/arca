@@ -102,7 +102,7 @@ syscall_return_to_system:
   pop rbx
   mov rax, 256  // exit due to syscall
   mov rdx, 0    // error code 0
-  // sti
+  sti
   ret
 
 .globl isr_call_user
@@ -230,7 +230,7 @@ isr_save_state_and_exit:
   pop r12
   pop rbp
   pop rbx
-  // sti
+  sti
   ret
 
 .macro def_stub_error num
@@ -301,5 +301,3 @@ isr_table:
     addr_isr_stub %i
 .set i,i+1
 .endr
-
-message: .ascii "Error!\n"

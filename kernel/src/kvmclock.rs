@@ -1,21 +1,18 @@
 // https://www.kernel.org/doc/html/v5.9/virt/kvm/msr.html
 use core::{
     arch::asm,
-    cell::LazyCell,
-    ptr::addr_of,
     sync::atomic::{AtomicPtr, Ordering},
     time::Duration,
 };
 
-use alloc::boxed::Box;
 use time::OffsetDateTime;
 
-use crate::vm;
+use crate::prelude::*;
 
 static BOOT_TIME: AtomicPtr<WallClock> = AtomicPtr::new(core::ptr::null_mut());
 
 #[core_local]
-static CPU_TIME_INFO: LazyCell<Box<CpuTimeInfo>> = LazyCell::new(Default::default);
+static mut CPU_TIME_INFO: *mut CpuTimeInfo = core::ptr::null_mut();
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -43,8 +40,9 @@ pub(crate) unsafe fn init() {
     let x = core::arch::x86_64::__cpuid(0x40000001);
     assert!((x.eax >> 3) & 1 == 1, "KVM Clock is not supported!");
 
+    let allocator = PHYSICAL_ALLOCATOR.wait();
     if BOOT_TIME.load(Ordering::SeqCst).is_null() {
-        let boot_time: *mut WallClock = Box::into_raw(Default::default());
+        let boot_time: *mut WallClock = Box::into_raw(Box::new_in(Default::default(), &allocator));
         let value = vm::ka2pa(boot_time) as u64;
         asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d00);
         if BOOT_TIME
@@ -56,11 +54,13 @@ pub(crate) unsafe fn init() {
             )
             .is_err()
         {
-            let _ = Box::from_raw(boot_time);
+            let _ = Box::from_raw_in(boot_time, &allocator);
         }
     }
 
-    let value = vm::ka2pa(CPU_TIME_INFO.as_ref()) as u64 | 1;
+    let p: *mut CpuTimeInfo = Box::leak(Box::new_in(CpuTimeInfo::default(), &allocator));
+    *CPU_TIME_INFO = p;
+    let value = vm::ka2pa(p) as u64 | 1;
     asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d01);
 }
 
@@ -69,10 +69,11 @@ fn read_boot_time() -> WallClock {
     unsafe {
         let boot_time: *mut WallClock = BOOT_TIME.load(Ordering::SeqCst);
         loop {
-            let v0 = addr_of!((*boot_time).version).read_volatile();
+            let v0 = (&raw const ((*boot_time).version)).read_volatile();
             let data = *boot_time;
-            let v1 = addr_of!((*boot_time).version).read_volatile();
+            let v1 = (&raw const ((*boot_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
+                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }
@@ -83,14 +84,15 @@ fn read_boot_time() -> WallClock {
 
 #[inline]
 fn read_current() -> (CpuTimeInfo, u64) {
-    let cpu_time = (**CPU_TIME_INFO).as_ref();
     unsafe {
+        let cpu_time = *CPU_TIME_INFO;
         loop {
-            let v0 = addr_of!(cpu_time.version).read_volatile();
-            let data = *cpu_time;
+            let v0 = (&raw const ((*cpu_time).version)).read_volatile();
+            let data = cpu_time.read_volatile();
             let tsc = core::arch::x86_64::_rdtsc();
-            let v1 = addr_of!(cpu_time.version).read_volatile();
+            let v1 = (&raw const ((*cpu_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
+                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }

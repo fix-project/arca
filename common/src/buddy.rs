@@ -1,7 +1,9 @@
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
+    marker::PhantomPinned,
     mem::MaybeUninit,
+    pin::Pin,
     ptr::NonNull,
     range::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -105,6 +107,7 @@ struct AllocatorLevel<'a> {
 }
 
 #[repr(C)]
+#[derive(Default)]
 struct ListNode {
     prev: Option<usize>,
     next: Option<usize>,
@@ -147,6 +150,7 @@ impl<'a> AllocatorLevel<'a> {
             let node = &mut *self.node(index);
             if let Some(prev) = node.prev {
                 let prev = &mut *self.node(prev);
+                assert_eq!(prev.next, Some(index));
                 prev.next = node.next;
             } else {
                 assert_eq!(*self.free, Some(index));
@@ -154,8 +158,10 @@ impl<'a> AllocatorLevel<'a> {
             }
             if let Some(next) = node.next {
                 let next = &mut *self.node(next);
+                assert_eq!(next.prev, Some(index));
                 next.prev = node.prev;
             }
+            *node = Default::default();
         };
         true
     }
@@ -163,7 +169,7 @@ impl<'a> AllocatorLevel<'a> {
     pub fn allocate(&mut self) -> Option<usize> {
         if let Some(index) = self.free {
             let index = *index;
-            self.reserve(index);
+            assert!(self.reserve(index));
             Some(index)
         } else {
             None
@@ -171,20 +177,23 @@ impl<'a> AllocatorLevel<'a> {
     }
 
     pub fn free(&mut self, index: usize) {
-        assert!(
-            !self.bits().bit(index).set(),
-            "allocation was already free!"
-        );
         unsafe {
             let node = &mut *self.node(index);
-            node.next = *self.free;
+            node.next = None;
             node.prev = None;
-            if let Some(next) = node.next {
-                let next = &mut *self.node(next);
+            if let Some(head) = *self.free {
+                let next = &mut *self.node(head);
+                assert!(next.prev.is_none());
                 next.prev = Some(index);
+                node.next = Some(head);
             }
             *self.free = Some(index);
         };
+        assert!(
+            !self.bits().bit(index).set(),
+            "allocation {index} at level {} was already free!",
+            self.order
+        );
     }
 }
 
@@ -197,22 +206,25 @@ struct AllocatorMetadata {
     total_size: usize,
     max_align: usize,
     level_range: Range<u32>,
+    request_count: [AtomicUsize; 64],
 }
 
 #[repr(C)]
+#[derive(Debug)]
 struct AllocatorInner {
     meta: AllocatorMetadata,
+    upin: PhantomPinned,
     lock: AtomicU64,
     free: UnsafeCell<[Option<usize>; 64]>,
     data: UnsafeCell<[u64]>,
 }
 
 impl AllocatorInner {
-    pub fn new(slice: &mut [u8]) -> Box<AllocatorInner> {
+    pub fn new(slice: &mut [u8]) -> Pin<Box<AllocatorInner>> {
         Self::new_in(slice, Global)
     }
 
-    pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Box<AllocatorInner, A> {
+    pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Pin<Box<AllocatorInner, A>> {
         let raw_size = core::mem::size_of_val(slice);
         let min_level = 12;
         let max_level = raw_size.ilog2();
@@ -230,6 +242,9 @@ impl AllocatorInner {
 
         unsafe {
             let layout = Layout::new::<AllocatorMetadata>()
+                .extend(Layout::new::<PhantomPinned>())
+                .unwrap()
+                .0
                 .extend(Layout::new::<AtomicU64>())
                 .unwrap()
                 .0
@@ -252,6 +267,7 @@ impl AllocatorInner {
                 total_size,
                 max_align,
                 level_range,
+                request_count: [const { AtomicUsize::new(0) }; 64],
             });
             let mut top = AllocatorLevel::new(
                 slice.as_ptr() as *mut _,
@@ -261,7 +277,7 @@ impl AllocatorInner {
                 &mut (*(*p).data.get())[0..1],
             );
             top.free(0);
-            Box::from_raw_in(p, allocator)
+            Pin::new_unchecked(Box::from_raw_in(p, allocator))
         }
     }
 
@@ -288,25 +304,13 @@ impl AllocatorInner {
     }
 
     // deadlock safety: always lock levels in increasing order
+    #[inline(never)]
     pub fn with_level<T>(
-        &self,
+        self: Pin<&Self>,
         base: *mut (),
         level: u32,
         f: impl FnOnce(&mut AllocatorLevel<'_>) -> T,
     ) -> T {
-        loop {
-            let original = self.lock.load(Ordering::SeqCst);
-            let cleared = original & !(1 << level);
-            let set = original | (1 << level);
-            if self
-                .lock
-                .compare_exchange(cleared, set, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                break;
-            }
-            core::hint::spin_loop();
-        }
         let start = self.offset_of_level_words(level);
         let size = self.size_of_level_words(level);
         let end = start + size;
@@ -320,24 +324,41 @@ impl AllocatorInner {
         };
         let mut allocator_level =
             AllocatorLevel::new(base, level, self.size_of_level_bits(level), free, slice);
-        let result = f(&mut allocator_level);
-        loop {
-            let original = self.lock.load(Ordering::SeqCst);
-            let cleared = original & !(1 << level);
-            if self
-                .lock
-                .compare_exchange(original, cleared, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                break;
-            }
+        f(&mut allocator_level)
+    }
+
+    unsafe fn try_lock(self: Pin<&Self>) -> bool {
+        self.lock
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    unsafe fn lock(self: Pin<&Self>) {
+        while !self.try_lock() {
             core::hint::spin_loop();
         }
-        result
+    }
+
+    unsafe fn unlock(self: Pin<&Self>) {
+        self.lock.store(0, Ordering::SeqCst);
     }
 
     pub fn reserve(
-        &self,
+        self: Pin<&Self>,
+        base: *mut (),
+        index: usize,
+        size_log2: u32,
+    ) -> Result<usize, AllocationError> {
+        unsafe {
+            self.lock();
+            let result = self.reserve_unchecked(base, index, size_log2);
+            self.unlock();
+            result
+        }
+    }
+
+    unsafe fn reserve_unchecked(
+        self: Pin<&Self>,
         base: *mut (),
         index: usize,
         size_log2: u32,
@@ -354,9 +375,9 @@ impl AllocatorInner {
             if level.reserve(index) {
                 Ok(index)
             } else {
-                match self.reserve(base, index / 2, size_log2 + 1) {
+                match self.reserve_unchecked(base, index / 2, size_log2 + 1) {
                     Ok(_) => {
-                        self.free(base, index ^ 1, size_log2, Some(level));
+                        self.free_unchecked(base, index ^ 1, size_log2, Some(level));
                         Ok(index)
                     }
                     Err(_) => Err(AllocationError::RegionInUse {
@@ -368,7 +389,11 @@ impl AllocatorInner {
         })
     }
 
-    pub fn allocate(&self, base: *mut (), size_log2: u32) -> Result<usize, AllocationError> {
+    unsafe fn allocate_unchecked(
+        self: Pin<&Self>,
+        base: *mut (),
+        size_log2: u32,
+    ) -> Result<usize, AllocationError> {
         assert_ne!(self.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(size_log2, self.meta.level_range.start);
         if size_log2 >= self.meta.level_range.end {
@@ -376,16 +401,15 @@ impl AllocatorInner {
                 size: 1 << size_log2,
             });
         }
-        // let level = self.level(size_log2);
         self.with_level(base, size_log2, |level: &mut AllocatorLevel<'_>| {
             if let Some(index) = level.allocate() {
                 Ok(index)
             } else {
-                match self.allocate(base, size_log2 + 1) {
+                match self.allocate_unchecked(base, size_log2 + 1) {
                     Ok(index) => {
                         let index = 2 * index;
                         // bias allocations towards the upper end of the address space
-                        self.free(base, index, size_log2, Some(level));
+                        self.free_unchecked(base, index, size_log2, Some(level));
                         Ok(index + 1)
                     }
                     Err(_) => Err(AllocationError::SpaceExhausted {
@@ -396,8 +420,8 @@ impl AllocatorInner {
         })
     }
 
-    pub fn free(
-        &self,
+    unsafe fn free_unchecked(
+        self: Pin<&Self>,
         base: *mut (),
         index: usize,
         size_log2: u32,
@@ -413,7 +437,7 @@ impl AllocatorInner {
             }
             let buddy = index ^ 1;
             if level.reserve(buddy) {
-                self.free(base, index / 2, size_log2 + 1, None);
+                self.free_unchecked(base, index / 2, size_log2 + 1, None);
             } else {
                 level.free(index);
             }
@@ -428,11 +452,19 @@ impl AllocatorInner {
 #[repr(C)]
 pub struct BuddyAllocator<'a> {
     base: *mut (),
-    inner: &'a AllocatorInner,
-    refcnt: &'a [AtomicUsize],
+    caching: bool,
+    inner: Pin<&'a AllocatorInner>,
+    refcnt: Pin<&'a [AtomicUsize]>,
+}
+
+impl core::fmt::Debug for BuddyAllocator<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "BuddyAllocator @ {:p}", self.inner)
+    }
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct BuddyAllocatorRawData {
     pub base: *mut (),
     pub inner_offset: usize,
@@ -458,45 +490,59 @@ impl<'a> BuddyAllocator<'a> {
             let data = Box::new_zeroed_slice(refcnt_size);
             data.assume_init()
         };
+        let refcnt = Box::into_pin(refcnt);
 
         let temp = BuddyAllocator {
             base,
-            inner: &inner,
-            refcnt: &refcnt,
+            caching: false,
+            inner: inner.as_ref(),
+            refcnt: refcnt.as_ref(),
         };
 
-        let new_inner = AllocatorInner::new_in(slice, &temp);
+        // prevent physical zero page from being allocated
+        assert_eq!(temp.to_offset(temp.reserve_raw(0, 4096)), 0);
 
-        let inner = unsafe {
-            let new_inner = Box::into_raw(new_inner);
+        let new_inner = AllocatorInner::new_in(slice, &temp);
+        let new_refcnt = unsafe {
+            let data = Box::new_zeroed_slice_in(refcnt_size, &temp);
+            data.assume_init()
+        };
+
+        let new_inner = unsafe {
+            let new_inner = Box::leak(Pin::into_inner_unchecked(new_inner));
             let src = &raw const *inner;
             let dst = &raw mut *new_inner;
             let (src, src_size) = src.to_raw_parts();
             let (dst, dst_size) = dst.to_raw_parts();
             assert_eq!(src_size, dst_size);
             core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
-            &*new_inner
+            &*(new_inner as *mut AllocatorInner)
         };
         let new_refcnt = unsafe {
-            let data = Box::new_zeroed_slice_in(refcnt_size, &temp);
-            data.assume_init()
-        };
-        let refcnt = unsafe {
-            let new_refcnt = Box::into_raw(new_refcnt);
+            let new_refcnt = Box::leak(new_refcnt);
             let src = &raw const *refcnt;
             let dst = &raw mut *new_refcnt;
             let (src, src_size) = src.to_raw_parts();
             let (dst, dst_size) = dst.to_raw_parts();
             assert_eq!(src_size, dst_size);
             core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
-            &*new_refcnt
+            &*(new_refcnt as *mut [AtomicUsize])
         };
 
-        BuddyAllocator {
+        let allocator = BuddyAllocator {
             base,
-            inner,
-            refcnt,
-        }
+            caching: cfg!(feature = "cache"),
+            inner: Pin::static_ref(new_inner),
+            refcnt: Pin::static_ref(new_refcnt),
+        };
+        let _ = inner;
+        let _ = refcnt;
+        allocator
+    }
+
+    #[cfg(feature = "cache")]
+    pub fn set_caching(&mut self, enable: bool) {
+        self.caching = enable;
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -504,7 +550,9 @@ impl<'a> BuddyAllocator<'a> {
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         let index = address >> size_log2;
-        self.inner
+        self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
+        let ptr = self
+            .inner
             .reserve(self.base, index, size_log2)
             .inspect(|_| {
                 self.inner
@@ -514,7 +562,11 @@ impl<'a> BuddyAllocator<'a> {
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
-            })
+            });
+        unsafe {
+            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        }
+        ptr
     }
 
     pub fn reserve_uninit<T: Sized>(&self, address: usize) -> *mut MaybeUninit<T> {
@@ -536,11 +588,57 @@ impl<'a> BuddyAllocator<'a> {
     }
 
     pub fn allocate_raw(&self, size: usize) -> *mut () {
+        unsafe {
+            self.inner.lock();
+            let result = self.allocate_raw_unchecked(size);
+            self.inner.unlock();
+            result
+        }
+    }
+
+    pub fn try_allocate_many_raw(&self, size: usize, ptrs: &mut [*mut ()]) -> Option<usize> {
+        unsafe {
+            if !self.inner.try_lock() {
+                return None;
+            }
+            for (i, item) in ptrs.iter_mut().enumerate() {
+                let result = self.allocate_raw_unchecked(size);
+                if result.is_null() {
+                    return Some(i);
+                }
+                *item = result;
+            }
+            self.inner.unlock();
+            Some(ptrs.len())
+        }
+    }
+
+    pub fn allocate_many_raw(&self, size: usize, ptrs: &mut [*mut ()]) -> usize {
+        unsafe {
+            self.inner.lock();
+            for (i, item) in ptrs.iter_mut().enumerate() {
+                let result = self.allocate_raw_unchecked(size);
+                if result.is_null() {
+                    return i;
+                }
+                *item = result;
+            }
+            self.inner.unlock();
+            ptrs.len()
+        }
+    }
+
+    /// # Safety
+    ///
+    /// This allocator must be locked by the current thread.
+    pub unsafe fn allocate_raw_unchecked(&self, size: usize) -> *mut () {
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
-        self.inner
-            .allocate(self.base, size_log2)
+        self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
+        let ptr = self
+            .inner
+            .allocate_unchecked(self.base, size_log2)
             .inspect(|_| {
                 self.inner
                     .meta
@@ -549,15 +647,56 @@ impl<'a> BuddyAllocator<'a> {
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
-            })
+            });
+        unsafe {
+            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        }
+        ptr
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
+        unsafe {
+            self.inner.lock();
+            self.free_raw_unchecked(ptr, size);
+            self.inner.unlock();
+        }
+    }
+
+    pub fn free_many_raw(&self, size: usize, ptrs: &[*mut ()]) {
+        unsafe {
+            self.inner.lock();
+            for item in ptrs.iter() {
+                self.free_raw_unchecked(*item, size);
+            }
+            self.inner.unlock();
+        }
+    }
+
+    pub fn try_free_many_raw(&self, size: usize, ptrs: &[*mut ()]) -> Option<()> {
+        unsafe {
+            if !self.inner.try_lock() {
+                return None;
+            }
+            for item in ptrs.iter() {
+                self.free_raw_unchecked(*item, size);
+            }
+            self.inner.unlock();
+        }
+        Some(())
+    }
+
+    /// # Safety
+    ///
+    /// This allocator must be locked by the current thread.
+    pub unsafe fn free_raw_unchecked(&self, ptr: *mut (), size: usize) {
+        assert_eq!((*self.refcnt(ptr)).load(Ordering::SeqCst), 0);
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
+        self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
         let index = (ptr as usize - self.base as usize) / (1 << size_log2) as usize;
-        self.inner.free(self.base, index, size_log2, None);
+        self.inner.free_unchecked(self.base, index, size_log2, None);
         self.inner
             .meta
             .used_size
@@ -570,9 +709,10 @@ impl<'a> BuddyAllocator<'a> {
         current as usize - base as usize
     }
 
-    pub fn from_offset<T>(&self, offset: usize) -> *const T {
+    pub fn from_offset<T>(&self, offset: usize) -> *mut T {
+        assert!(offset & 0xFFFF800000000000 == 0);
         let base = self.base;
-        (base as usize + offset) as *const T
+        (base as usize + offset) as *mut T
     }
 
     pub fn refcnt<T: ?Sized>(&self, allocation: *const T) -> *const AtomicUsize {
@@ -592,14 +732,21 @@ impl<'a> BuddyAllocator<'a> {
         self.used_size() as f64 / self.total_size() as f64
     }
 
+    pub fn requests(&self, results: &mut [usize; 64]) {
+        for (y, x) in results.iter_mut().zip(self.inner.meta.request_count.iter()) {
+            *y = x.load(Ordering::SeqCst);
+        }
+    }
+
     pub fn into_raw_parts(self) -> BuddyAllocatorRawData {
         let BuddyAllocator {
             base,
+            caching: _caching,
             inner,
             refcnt,
         } = self;
-        let p = inner as *const AllocatorInner;
-        let q = refcnt as *const [AtomicUsize];
+        let p = inner.get_ref() as *const AllocatorInner;
+        let q = refcnt.get_ref() as *const [AtomicUsize];
         let (metadata, inner_size) = p.to_raw_parts();
         let (refcnt, refcnt_size) = q.to_raw_parts();
 
@@ -627,12 +774,14 @@ impl<'a> BuddyAllocator<'a> {
             refcnt_offset,
             refcnt_size,
         } = raw;
-        let inner = core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
+        let inner: *const AllocatorInner =
+            core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
         let refcnt = core::ptr::from_raw_parts_mut(base.byte_add(refcnt_offset), refcnt_size);
         BuddyAllocator {
             base,
-            inner: &*inner,
-            refcnt: &*refcnt,
+            caching: cfg!(feature = "cache"),
+            inner: Pin::static_ref(&*inner),
+            refcnt: Pin::static_ref(&*refcnt),
         }
     }
 
@@ -655,6 +804,7 @@ impl Clone for BuddyAllocator<'_> {
         self.inner.meta.refcnt.fetch_add(1, Ordering::SeqCst);
         Self {
             base: self.base,
+            caching: self.caching,
             inner: self.inner,
             refcnt: self.refcnt,
         }
@@ -667,11 +817,107 @@ impl Drop for BuddyAllocator<'_> {
     }
 }
 
+#[cfg(all(not(feature = "std"), feature = "core_local_cache"))]
+pub mod cache {
+    use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};
+    use macros::core_local;
+
+    pub static CAPACITY: usize = 1024;
+    pub static INCREMENT: usize = 64;
+    pub static WATERMARK_LOW: usize = CAPACITY / 4;
+    pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
+
+    #[core_local]
+    pub static ALLOCATION_CACHE: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+        LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+}
+
+#[cfg(all(feature = "std", feature = "thread_local_cache"))]
+pub mod cache {
+    use std::sync::LazyLock;
+
+    use crate::{arrayvec::ArrayVec, util::spinlock::SpinLock};
+
+    pub static CAPACITY: usize = 1024;
+    pub static INCREMENT: usize = 64;
+    pub static WATERMARK_LOW: usize = CAPACITY / 4;
+    pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
+
+    #[thread_local]
+    pub static ALLOCATION_CACHE: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+        LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+}
+
+#[cfg(feature = "cache")]
+impl BuddyAllocator<'_> {
+    fn allocate_from_cache(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
+        let mut cache = cache::ALLOCATION_CACHE.lock();
+        if cache.is_empty() {
+            let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+            let count = self.allocate_many_raw(size, &mut space);
+            for entry in space.iter().take(count) {
+                cache.push(*entry).unwrap();
+            }
+        }
+        let raw = cache.pop().unwrap();
+        let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
+        NonNull::new(converted).ok_or(AllocError)
+    }
+
+    fn free_to_cache(&self, ptr: *mut (), size: usize) {
+        let mut cache = cache::ALLOCATION_CACHE.lock();
+        if cache.len() == cache.capacity() {
+            let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+            for spot in space.iter_mut() {
+                *spot = cache.pop().unwrap();
+            }
+            self.free_many_raw(size, &space);
+        }
+        cache.push(ptr).unwrap();
+    }
+
+    pub fn try_replenish(&self) -> bool {
+        let Some(mut cache) = cache::ALLOCATION_CACHE.try_lock() else {
+            return false;
+        };
+        let size = 4096;
+        if cache.len() >= cache::WATERMARK_HIGH {
+            let mut space: [*mut (); cache::INCREMENT] = [core::ptr::null_mut(); cache::INCREMENT];
+            for spot in space.iter_mut() {
+                *spot = cache.pop().unwrap();
+            }
+            if self.try_free_many_raw(size, &space).is_none() {
+                return false;
+            }
+            return true;
+        }
+        if cache.len() < cache::WATERMARK_HIGH {
+            let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+            let Some(count) = self.try_allocate_many_raw(size, &mut space) else {
+                return false;
+            };
+            for entry in space.iter().take(count) {
+                cache.push(*entry).unwrap();
+            }
+            return true;
+        }
+        true
+    }
+}
+
 unsafe impl Allocator for BuddyAllocator<'_> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let size = layout.size();
         let align = layout.align();
         let size = core::cmp::max(size, align);
+
+        #[cfg(feature = "cache")]
+        {
+            if self.caching && size <= 4096 && align <= 4096 {
+                return self.allocate_from_cache(size);
+            }
+        }
+
         let raw = self.allocate_raw(size);
         let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
         NonNull::new(converted).ok_or(AllocError)
@@ -681,7 +927,16 @@ unsafe impl Allocator for BuddyAllocator<'_> {
         let size = layout.size();
         let align = layout.align();
         let size = core::cmp::max(size, align);
-        self.free_raw(ptr.as_ptr() as usize as *mut (), size)
+
+        #[cfg(feature = "cache")]
+        {
+            if self.caching && size <= 4096 && align <= 4096 {
+                self.free_to_cache(ptr.as_ptr() as *mut (), size);
+                return;
+            }
+        }
+
+        self.free_raw(ptr.as_ptr() as *mut (), size)
     }
 }
 
@@ -746,7 +1001,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_allocate_free(b: &mut Bencher) {
+    fn bench_allocate_free_cache(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         b.iter(|| {
@@ -756,11 +1011,77 @@ mod tests {
         });
     }
 
+    #[bench]
+    fn bench_allocate_free_no_cache(b: &mut Bencher) {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
+        b.iter(|| {
+            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+                Box::new_uninit_slice_in(128, &allocator);
+            core::mem::drop(x);
+        });
+    }
+
+    #[bench]
+    fn bench_contended_allocate_free_cache(b: &mut Bencher) {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
+        let f = || {
+            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+                Box::new_uninit_slice_in(128, &allocator);
+            core::mem::drop(x);
+        };
+        use core::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        std::thread::scope(|s| {
+            let flag = Arc::new(AtomicBool::new(true));
+            for _ in 0..16 {
+                let flag = flag.clone();
+                s.spawn(move || {
+                    while flag.load(Ordering::SeqCst) {
+                        f();
+                    }
+                });
+            }
+            b.iter(f);
+            flag.store(false, Ordering::SeqCst);
+        });
+    }
+
+    #[bench]
+    fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
+        let f = || {
+            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+                Box::new_uninit_slice_in(128, &allocator);
+            core::mem::drop(x);
+        };
+        use core::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        std::thread::scope(|s| {
+            let flag = Arc::new(AtomicBool::new(true));
+            for _ in 0..16 {
+                let flag = flag.clone();
+                s.spawn(move || {
+                    while flag.load(Ordering::SeqCst) {
+                        f();
+                    }
+                });
+            }
+            b.iter(f);
+            flag.store(false, Ordering::SeqCst);
+        });
+    }
+
     #[test]
     fn stress_test() {
         use std::hash::{BuildHasher, Hasher, RandomState};
         let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let mut v = vec![];
         let random = |limit: usize| {
             let x: u64 = RandomState::new().build_hasher().finish();

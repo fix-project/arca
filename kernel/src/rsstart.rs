@@ -1,17 +1,17 @@
 use core::{
     arch::asm,
-    cell::LazyCell,
     ptr::{addr_of, addr_of_mut},
 };
 
+use alloc::boxed::Box;
 use log::LevelFilter;
 
 use crate::{
     client::MESSENGER,
+    debugcon::DEBUG,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
-    initcell::InitCell,
     msr,
     paging::Permissions,
     prelude::*,
@@ -19,7 +19,6 @@ use crate::{
     vm,
 };
 
-use alloc::boxed::Box;
 use common::message::Messenger;
 use common::ringbuffer::{RingBufferEndPoint, RingBufferEndPointRawData};
 
@@ -34,9 +33,10 @@ extern "C" {
     static mut _ecdata: u8;
     static isr_table: [usize; 256];
     fn syscall_handler();
+    fn set_pt(page_map: usize);
 }
 
-static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
+static IDT: LazyLock<Idt> = LazyLock::new(|| {
     Idt(unsafe {
         isr_table.map(|address| {
             IdtEntry::new(
@@ -50,14 +50,16 @@ static mut IDT: LazyCell<Idt> = LazyCell::new(|| {
     })
 });
 
-pub(crate) static KERNEL_MAPPINGS: InitCell<SharedPage<AugmentedPageTable<PageTable512GB>>> =
-    InitCell::new(|| unsafe {
+pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTable512GB>>> =
+    LazyLock::new(|| unsafe {
         let mut pdpt = AugmentedPageTable::new();
         for i in 0..512 {
             pdpt.entry_mut(i).map_global(i << 30, Permissions::None);
         }
         pdpt.into()
     });
+
+static SYNC: SpinLock<()> = SpinLock::new(());
 
 #[no_mangle]
 unsafe extern "C" fn _start(
@@ -67,33 +69,66 @@ unsafe extern "C" fn _start(
     refcnt_size: usize,
     ring_buffer_data_ptr: usize,
 ) -> ! {
-    init_bss();
-    let _ = log::set_logger(&HOST);
-    if cfg!(feature = "klog-trace") {
-        log::set_max_level(LevelFilter::Trace);
-    } else if cfg!(feature = "klog-debug") {
-        log::set_max_level(LevelFilter::Debug);
-    } else if cfg!(feature = "klog-info") {
-        log::set_max_level(LevelFilter::Info);
-    } else if cfg!(feature = "klog-warn") {
-        log::set_max_level(LevelFilter::Warn);
-    } else if cfg!(feature = "klog-error") {
-        log::set_max_level(LevelFilter::Error);
-    } else if cfg!(feature = "klog-off") {
-        log::set_max_level(LevelFilter::Off);
-    } else {
-        log::set_max_level(LevelFilter::Info);
-    }
-    let allocator = common::BuddyAllocator::from_raw_parts(common::buddy::BuddyAllocatorRawData {
-        base: vm::pa2ka(0),
-        inner_offset,
-        inner_size,
-        refcnt_offset,
-        refcnt_size,
-    });
-    InitCell::initialize(&PHYSICAL_ALLOCATOR, || allocator);
+    let mut id = 0;
+    core::arch::x86_64::__rdtscp(&mut id);
+    let id = id as usize;
 
+    let sync = if id == 0 {
+        // one-time init
+        init_bss();
+        if cfg!(feature = "debugcon") {
+            let _ = log::set_logger(&DEBUG);
+        } else {
+            let _ = log::set_logger(&HOST);
+        }
+        if cfg!(feature = "klog-trace") {
+            log::set_max_level(LevelFilter::Trace);
+        } else if cfg!(feature = "klog-debug") {
+            log::set_max_level(LevelFilter::Debug);
+        } else if cfg!(feature = "klog-info") {
+            log::set_max_level(LevelFilter::Info);
+        } else if cfg!(feature = "klog-warn") {
+            log::set_max_level(LevelFilter::Warn);
+        } else if cfg!(feature = "klog-error") {
+            log::set_max_level(LevelFilter::Error);
+        } else if cfg!(feature = "klog-off") {
+            log::set_max_level(LevelFilter::Off);
+        } else {
+            log::set_max_level(LevelFilter::Info);
+        }
+        let raw = common::buddy::BuddyAllocatorRawData {
+            base: vm::pa2ka(0),
+            inner_offset,
+            inner_size,
+            refcnt_offset,
+            refcnt_size,
+        };
+        let allocator = common::BuddyAllocator::from_raw_parts(raw);
+
+        let sync = SYNC.lock();
+        PHYSICAL_ALLOCATOR.set(allocator).unwrap();
+
+        let raw_rb_data = Box::from_raw(
+            PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr)
+                as *mut RingBufferEndPointRawData,
+        );
+        let endpoint = RingBufferEndPoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+        core::mem::forget(raw_rb_data);
+        let messenger = Messenger::new(endpoint);
+        let _ = MESSENGER.set(SpinLock::new(messenger));
+        sync
+    } else {
+        PHYSICAL_ALLOCATOR.wait();
+        SYNC.lock()
+    };
+    core::mem::drop(sync);
+
+    // PHYSICAL_ALLOCATOR.wait();
+
+    // per-cpu init
     init_cpu_tls();
+    crate::kvmclock::init();
+    crate::profile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
     set_gdt(addr_of!(gdtr));
@@ -104,20 +139,18 @@ unsafe extern "C" fn _start(
 
     init_syscalls();
 
-    crate::kvmclock::init();
-
     crate::lapic::init();
 
-    let raw_rb_data = Box::from_raw(
-        PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr)
-            as *mut RingBufferEndPointRawData,
-    );
-    let endpoint =
-        RingBufferEndPoint::from_raw_parts(Box::into_inner(raw_rb_data), &PHYSICAL_ALLOCATOR);
-    let messenger = Messenger::new(endpoint);
-    InitCell::initialize(&MESSENGER, || SpinLock::new(messenger));
+    let mut pml4: UniquePage<AugmentedPageTable<PageTable256TB>> = AugmentedPageTable::new();
+    pml4.entry_mut(256)
+        .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
+    set_pt(vm::ka2pa(Box::leak(pml4)));
+
+    core::arch::asm!("sti");
 
     kmain();
+    // core::mem::drop(sync);
+
     crate::shutdown();
 }
 
@@ -129,27 +162,20 @@ unsafe fn init_bss() {
     bss.fill(0);
 }
 
-#[core_local]
-#[no_mangle]
-#[used]
-pub static FOO: usize = 0xcafeb0ba;
-
-#[inline(never)]
 unsafe fn init_cpu_tls() {
     let start = addr_of!(_scdata) as usize;
     let end = addr_of!(_ecdata) as usize;
     let load = vm::pa2ka::<u8>(addr_of!(_lcdata) as usize);
     let length = end - start;
 
+    let allocator = PHYSICAL_ALLOCATOR.wait();
     let src = core::slice::from_raw_parts(load, length);
-    let dst = src.to_vec();
+    let dst: &mut [u8] = Box::leak(src.to_vec_in(&allocator).into_boxed_slice());
 
     asm! {
-        "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_ptr()
+        "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_mut_ptr()
     }
-    msr::wrmsr(0xC0000102, dst.as_ptr() as u64); // kernel GS base; actually really user GS base
-
-    core::mem::forget(dst);
+    msr::wrmsr(0xC0000102, dst.as_mut_ptr() as u64); // kernel GS base; actually really user GS base
 }
 
 unsafe fn init_syscalls() {

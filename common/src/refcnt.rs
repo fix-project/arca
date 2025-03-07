@@ -36,7 +36,9 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
     /// This raw pointer and allocator pair must have been previously returned by a call to
     /// [into_raw_with_allocator].
     pub unsafe fn from_raw_in(ptr: *mut T, allocator: &'a BuddyAllocator<'a>) -> RefCnt<'a, T> {
-        RefCnt { ptr, allocator }
+        let rc = RefCnt { ptr, allocator };
+        assert_ne!((*allocator.refcnt(ptr)).load(Ordering::SeqCst), 0);
+        rc
     }
 }
 
@@ -51,19 +53,16 @@ impl<'a, T: Clone> RefCnt<'a, T> {
             b.write((*this.ptr).clone());
             b.assume_init()
         };
-        if refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
-            refcnt.store(1, Ordering::SeqCst);
-            return unsafe { &mut *this.ptr };
-        }
-        this.ptr = Box::into_raw(inner);
-        Self::refcnt(this).store(1, Ordering::SeqCst);
+        let mut inner = inner.into();
+        core::mem::swap(&mut inner, this);
+        assert_eq!(Self::refcnt(this).load(Ordering::SeqCst), 1);
         unsafe { &mut *this.ptr }
     }
 
     pub fn into_unique(this: Self) -> Box<T, &'a BuddyAllocator<'a>> {
         let mut this = this;
         Self::make_mut(&mut this);
-        Self::refcnt(&this).store(0, Ordering::SeqCst);
+        assert_eq!(Self::refcnt(&this).swap(0, Ordering::SeqCst), 1);
         let x = unsafe { Box::from_raw_in(this.ptr, this.allocator) };
         core::mem::forget(this);
         x
@@ -73,9 +72,11 @@ impl<'a, T: Clone> RefCnt<'a, T> {
 impl<T: ?Sized> Drop for RefCnt<'_, T> {
     fn drop(&mut self) {
         let refcnt = Self::refcnt(self);
-        if refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
+        let decrement = refcnt.fetch_sub(1, Ordering::SeqCst);
+        if decrement == 1 {
             unsafe {
                 let _ = Box::from_raw_in(self.ptr, self.allocator);
+                assert_eq!(Self::refcnt(self).swap(0, Ordering::SeqCst), 0);
             }
         }
     }
@@ -104,7 +105,7 @@ impl<'a, T: ?Sized> From<Box<T, &'a BuddyAllocator<'a>>> for RefCnt<'a, T> {
         let allocator = &**Box::allocator(&value);
         let ptr = Box::into_raw(value);
         let rc = RefCnt { ptr, allocator };
-        Self::refcnt(&rc).store(1, Ordering::SeqCst);
+        assert_eq!(Self::refcnt(&rc).swap(1, Ordering::SeqCst), 0);
         rc
     }
 }
@@ -133,8 +134,9 @@ mod tests {
 
     #[test]
     fn test_from_box() {
-        let mut region = unsafe { Box::new_uninit_slice(0x100000).assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -147,8 +149,9 @@ mod tests {
 
     #[test]
     fn test_clone_drop() {
-        let mut region = unsafe { Box::new_uninit_slice(0x100000).assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -172,8 +175,9 @@ mod tests {
 
     #[test]
     fn test_make_mut() {
-        let mut region = unsafe { Box::new_uninit_slice(0x100000).assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let original = allocator.used_size();
         let check_allocations = |x: usize| {
             assert_eq!(
@@ -208,8 +212,9 @@ mod tests {
 
     #[bench]
     fn bench_clone_drop(b: &mut Bencher) {
-        let mut region = unsafe { Box::new_uninit_slice(0x100000).assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
 
@@ -231,8 +236,9 @@ mod tests {
 
     #[bench]
     fn bench_make_mut(b: &mut Bencher) {
-        let mut region = unsafe { Box::new_uninit_slice(0x100000).assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let mut allocator = BuddyAllocator::new(&mut *region);
+        allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         let check_allocations = |x: usize| {

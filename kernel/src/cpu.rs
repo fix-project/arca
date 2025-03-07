@@ -3,12 +3,12 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-use alloc::{boxed::Box, format};
+use alloc::format;
 
-use crate::{initcell::InitCell, prelude::*, types::pagetable::Entry, vm::ka2pa};
+use crate::{initcell::LazyLock, prelude::*, types::pagetable::Entry, vm::ka2pa};
 
 #[core_local]
-pub static CPU: InitCell<RefCell<Cpu>> = InitCell::new(|| {
+pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
     let mut pml4 = AugmentedPageTable::new();
     pml4.entry_mut(256)
         .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());

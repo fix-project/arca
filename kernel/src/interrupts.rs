@@ -5,9 +5,7 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use alloc::boxed::Box;
-
-use crate::page::Page2MB;
+use crate::prelude::*;
 
 #[core_local]
 pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
@@ -38,15 +36,15 @@ const _: () = const {
 
 #[repr(C)]
 #[derive(Debug)]
-struct IsrRegisterFile {
-    registers: [u64; 16],
-    isr: u64,
-    code: u64,
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
+pub(crate) struct IsrRegisterFile {
+    pub registers: [u64; 16],
+    pub isr: u64,
+    pub code: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 extern "C" {
@@ -71,11 +69,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
-            panic!("Supervisor GP @ {:p}!", registers.rip as *mut ());
+            panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
         } else {
             panic!(
-                "Supervisor GP @ {:p}! faulting segment: {:x}",
-                registers.rip as *mut (), registers.code
+                "Supervisor GP @ {:p}! faulting segment: {:#x}",
+                registers.rip as *mut (), registers.code,
             );
         }
     } else if registers.isr == 0xe {
@@ -85,7 +83,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         let escape = SEGFAULT_ESCAPE_ADDR.load(Ordering::SeqCst);
 
         if !escape.is_null() {
-            log::warn!(
+            log::debug!(
                 "user program provided invalid address to kernel: {:p}",
                 crate::registers::read_cr2() as *const u8,
             );
@@ -93,17 +91,19 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
             return;
         }
         panic!(
-            "unhandled page fault ({:b}) @ {:p}:",
+            "unhandled page fault ({:b}) @ {:p} from RIP={:p}:",
             registers.code,
             crate::registers::read_cr2() as *const u8,
+            registers.rip as *const u8,
         );
     }
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);
     }
     if registers.isr == 0x20 {
+        // crate::allocator::PHYSICAL_ALLOCATOR.try_replenish();
+        crate::profile::tick(registers);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-        log::error!("kernel tick");
     } else {
         panic!("unhandled system ISR: {:x?}", registers);
     }

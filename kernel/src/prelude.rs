@@ -1,4 +1,10 @@
-pub(crate) use crate::vm;
+pub(crate) use crate::{
+    initcell::{LazyLock, OnceLock},
+    vm,
+};
+
+pub(crate) use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+
 pub use crate::{
     allocator::PHYSICAL_ALLOCATOR,
     cpu::{Cpu, Register, RegisterFile, CPU},

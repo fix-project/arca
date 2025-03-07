@@ -1,4 +1,4 @@
-use crate::initcell::InitCell;
+use crate::initcell::OnceLock;
 use crate::prelude::*;
 use crate::spinlock::SpinLock;
 use crate::types::Value;
@@ -11,9 +11,9 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-pub static MESSENGER: InitCell<SpinLock<Messenger>> = InitCell::empty();
+pub static MESSENGER: OnceLock<SpinLock<Messenger>> = OnceLock::new();
 
-fn reply(value: Box<Value>) -> () {
+fn reply(value: Box<Value>) {
     let msg = match (&value).as_ref() {
         Value::Blob(_) => {
             let ptr = Box::into_raw(value);

@@ -1,21 +1,13 @@
 #![no_main]
 #![no_std]
 #![feature(custom_test_frameworks)]
-#![feature(alloc_layout_extra)]
-#![feature(optimize_attribute)]
 #![feature(never_type)]
-#![feature(maybe_uninit_slice)]
-#![feature(maybe_uninit_write_slice)]
-#![feature(maybe_uninit_uninit_array_transpose)]
-#![feature(maybe_uninit_array_assume_init)]
-#![feature(ptr_metadata)]
 #![feature(negative_impls)]
-#![feature(slice_from_ptr_range)]
-#![feature(new_zeroed_alloc)]
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
 #![feature(bigint_helper_methods)]
 #![feature(box_into_inner)]
+#![feature(new_zeroed_alloc)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -35,18 +27,16 @@ pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod rt;
-pub mod spinlock;
 // pub mod tsc;
 pub mod client;
+pub mod host;
 pub mod prelude;
+pub mod profile;
 pub mod types;
 pub mod vm;
 
-// mod arrayvec;
 mod gdt;
-mod host;
 mod idt;
-mod initcell;
 mod interrupts;
 mod lapic;
 mod msr;
@@ -54,6 +44,8 @@ mod registers;
 mod rsstart;
 mod tss;
 
+pub use common::util::initcell;
+pub use common::util::spinlock;
 pub use lapic::LAPIC;
 
 #[cfg(test)]
@@ -61,6 +53,14 @@ mod testing;
 
 #[no_mangle]
 static mut EXIT_CODE: u8 = 0;
+
+pub fn coreid() -> u32 {
+    let mut id: u32 = 0;
+    unsafe {
+        core::arch::x86_64::__rdtscp(&mut id);
+    }
+    id
+}
 
 pub fn halt() {
     unsafe {

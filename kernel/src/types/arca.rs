@@ -1,4 +1,4 @@
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{cpu::ExitReason, prelude::*};
 
@@ -19,7 +19,7 @@ impl Arca {
         Arca {
             page_table,
             register_file,
-            descriptors: vec![],
+            descriptors: Vec::with_capacity(1024),
         }
     }
 

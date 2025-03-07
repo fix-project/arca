@@ -1,6 +1,4 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::{string::String, sync::Arc};
+use crate::prelude::*;
 
 pub mod arca;
 pub mod lambda;

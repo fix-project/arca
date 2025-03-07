@@ -1,11 +1,13 @@
 #![feature(allocator_api)]
 #![feature(str_from_raw_parts)]
+#![feature(exitcode_exit_method)]
 
 use std::collections::HashMap;
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-extern crate alloc;
-use alloc::sync::Arc;
 use std::mem;
 use std::thread;
 
@@ -25,7 +27,7 @@ use vmm::client::ArcaRef;
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
-fn main() -> ExitCode {
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     use std::ptr::null_mut;
 
@@ -119,125 +121,147 @@ fn main() -> ExitCode {
     };
     unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-    let mut vcpu_fd = vm.create_vcpu(0).unwrap();
+    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, &allocator);
+    let endpoint_raw = Box::into_raw(Box::new_in(
+        endpoint2.into_raw_parts(&allocator),
+        &allocator,
+    ));
 
-    // set up the CPU in long mode
-    let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
+    let mut cpus = vec![];
 
-    let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
-    for (i, entry) in pdpt.iter_mut().enumerate() {
-        *entry = ((i << 30) | 0x83) as u64;
+    for i in 0..std::thread::available_parallelism()
+        .map(|x| x.into())
+        .unwrap_or(1)
+    {
+        let vcpu_fd = vm.create_vcpu(i as u64).unwrap();
+
+        // set up the CPU in long mode
+        let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
+
+        let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
+            unsafe { Box::new_zeroed_in(&allocator).assume_init() };
+        for (i, entry) in pdpt.iter_mut().enumerate() {
+            *entry = ((i << 30) | 0x183) as u64;
+        }
+
+        let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
+            unsafe { Box::new_zeroed_in(&allocator).assume_init() };
+        pml4[256] = allocator.to_offset(Box::leak(pdpt)) as u64 | 3;
+        let pml4 = Box::leak(pml4);
+
+        vcpu_sregs.idt = kvm_bindings::kvm_dtable {
+            base: 0,
+            limit: 0,
+            padding: [0; 3],
+        };
+        use common::controlreg::*;
+        vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP;
+        vcpu_sregs.cr0 &= !ControlReg0::EM;
+        vcpu_sregs.cr3 = allocator.to_offset(pml4) as u64;
+        vcpu_sregs.cr4 = ControlReg4::PAE
+            | ControlReg4::PGE
+            | ControlReg4::OSFXSR
+            | ControlReg4::OSXMMEXCPT
+            | ControlReg4::FSGSBASE
+            | ControlReg4::SMAP
+            | ControlReg4::SMEP;
+        vcpu_sregs.efer |= ExtendedFeatureEnableReg::LME
+            | ExtendedFeatureEnableReg::LMA
+            | ExtendedFeatureEnableReg::SCE;
+
+        vcpu_fd.set_tsc_khz(u32::MAX / 1000).unwrap();
+
+        let code_segment = kvm_bindings::kvm_segment {
+            base: 0,
+            limit: 0xffffffff,
+            selector: 0x8,
+            type_: 0b1010,
+            present: 1,
+            dpl: 0,
+            db: 0,
+            s: 1,
+            l: 1,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+        let data_segment = kvm_bindings::kvm_segment {
+            base: 0,
+            limit: 0xffffffff,
+            selector: 0x10,
+            type_: 0b0010,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+
+        vcpu_sregs.cs = code_segment;
+        vcpu_sregs.ds = data_segment;
+        vcpu_sregs.es = data_segment;
+        vcpu_sregs.fs = data_segment;
+        vcpu_sregs.gs = data_segment;
+
+        // the guest should set up its own gdt
+        vcpu_sregs.gdt = kvm_bindings::kvm_dtable {
+            base: 0,
+            limit: 0,
+            padding: [0; 3],
+        };
+
+        // TODO: ensure all needed features are present and disable unneeded ones
+        let kvm_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+        vcpu_fd.set_cpuid2(&kvm_cpuid).unwrap();
+
+        vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
+
+        let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
+        vcpu_regs.rip = start_address;
+        const STACK_SIZE: usize = 2 * 0x400 * 0x400;
+        let initial_stack = unsafe {
+            Box::<[u8; STACK_SIZE], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
+        };
+        let stack_start = allocator.to_offset(&*initial_stack);
+        Box::leak(initial_stack);
+
+        let raw = allocator.clone().into_raw_parts();
+        let pa2ka = |p: usize| (p | 0xFFFF800000000000);
+        vcpu_regs.rsp = pa2ka(stack_start + STACK_SIZE) as u64;
+        vcpu_regs.rbp = 0;
+        vcpu_regs.rdi = raw.inner_offset as u64;
+        vcpu_regs.rsi = raw.inner_size as u64;
+        vcpu_regs.rdx = raw.refcnt_offset as u64;
+        vcpu_regs.rcx = raw.refcnt_size as u64;
+        vcpu_regs.r8 = allocator.to_offset(endpoint_raw) as u64;
+        vcpu_regs.rflags = 2;
+        vcpu_fd.set_regs(&vcpu_regs).unwrap();
+
+        let mut msrs = kvm_bindings::Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+            index: 0xC0000103,
+            ..Default::default()
+        }])
+        .unwrap();
+        vcpu_fd.get_msrs(&mut msrs).unwrap();
+        let x = &mut msrs.as_mut_slice()[0];
+        x.data = i as u64;
+        vcpu_fd.set_msrs(&msrs).unwrap();
+        cpus.push(vcpu_fd);
     }
 
-    let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(&allocator).assume_init() };
-    // pml4[0] = allocator.to_offset(&*pdpt) as u64 | 3;
-    pml4[256] = allocator.to_offset(&*pdpt) as u64 | 3;
-    Box::leak(pdpt);
-
-    vcpu_sregs.idt = kvm_bindings::kvm_dtable {
-        base: 0,
-        limit: 0,
-        padding: [0; 3],
-    };
-    use common::controlreg::*;
-    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP;
-    vcpu_sregs.cr0 &= !ControlReg0::EM;
-    vcpu_sregs.cr3 = allocator.to_offset(&*pml4) as u64;
-    vcpu_sregs.cr4 = ControlReg4::PAE
-        | ControlReg4::PGE
-        | ControlReg4::OSFXSR
-        | ControlReg4::OSXMMEXCPT
-        | ControlReg4::FSGSBASE
-        | ControlReg4::SMAP
-        | ControlReg4::SMEP;
-    vcpu_sregs.efer |= ExtendedFeatureEnableReg::LME
-        | ExtendedFeatureEnableReg::LMA
-        | ExtendedFeatureEnableReg::SCE;
-    Box::leak(pml4);
-
-    vcpu_fd.set_tsc_khz(u32::MAX / 1000).unwrap();
-
-    let code_segment = kvm_bindings::kvm_segment {
-        base: 0,
-        limit: 0xffffffff,
-        selector: 0x8,
-        type_: 0b1010,
-        present: 1,
-        dpl: 0,
-        db: 0,
-        s: 1,
-        l: 1,
-        g: 1,
-        avl: 0,
-        unusable: 0,
-        padding: 0,
-    };
-    let data_segment = kvm_bindings::kvm_segment {
-        base: 0,
-        limit: 0xffffffff,
-        selector: 0x10,
-        type_: 0b0010,
-        present: 1,
-        dpl: 0,
-        db: 1,
-        s: 1,
-        l: 0,
-        g: 1,
-        avl: 0,
-        unusable: 0,
-        padding: 0,
-    };
-
-    vcpu_sregs.cs = code_segment;
-    vcpu_sregs.ds = data_segment;
-    vcpu_sregs.es = data_segment;
-    vcpu_sregs.fs = data_segment;
-    vcpu_sregs.gs = data_segment;
-
-    // the guest should set up its own gdt
-    vcpu_sregs.gdt = kvm_bindings::kvm_dtable {
-        base: 0,
-        limit: 0,
-        padding: [0; 3],
-    };
-
-    // TODO: ensure all needed features are present and disable unneeded ones
-    let kvm_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
-    vcpu_fd.set_cpuid2(&kvm_cpuid).unwrap();
-
-    vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
-
-    let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
-    vcpu_regs.rip = start_address;
-    let initial_stack = unsafe {
-        Box::<[u8; 2 * 0x400 * 0x400], &BuddyAllocator>::new_uninit_in(&allocator).assume_init()
-    };
-    let stack_start = allocator.to_offset(&*initial_stack);
-    Box::leak(initial_stack);
-
-    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, &allocator);
-    let endpoint_raw = Box::new_in(endpoint2.into_raw_parts(&allocator), &allocator);
-
-    let raw = allocator.clone().into_raw_parts();
-    let pa2ka = |p: usize| (p | 0xFFFF800000000000);
-    vcpu_regs.rsp = pa2ka((stack_start + (2 * 0x400 * 0x400)) as usize) as u64;
-    vcpu_regs.rdi = raw.inner_offset as u64;
-    vcpu_regs.rsi = raw.inner_size as u64;
-    vcpu_regs.rdx = raw.refcnt_offset as u64;
-    vcpu_regs.rcx = raw.refcnt_size as u64;
-    vcpu_regs.r8 = allocator.to_offset(Box::into_raw(endpoint_raw)) as u64;
-    vcpu_regs.rflags = 2;
-    vcpu_fd.set_regs(&vcpu_regs).unwrap();
-
-    let mut record: usize = 0;
+    let elf = Arc::new(elf);
+    let lock = AtomicBool::new(false);
     thread::scope(|s| {
         let allocator = &allocator;
         s.spawn(move || {
             let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
-            let x = 1 as u64;
-            let y = 1 as u64;
+            let x: u64 = 1;
+            let y: u64 = 1;
             let ArcaRef::LambdaRef(lambdaref) = client::create_blob(&msger, ADD_ELF, allocator)
                 .and_then(|blobref| client::create_thunk(&msger, blobref))
                 .and_then(|thunkref| client::run_thunk(&msger, thunkref))
@@ -269,81 +293,166 @@ fn main() -> ExitCode {
             mem::drop(resultref);
         });
 
-        loop {
-            match vcpu_fd.run().expect("run failed") {
-                VcpuExit::IoIn(addr, data) => println!(
-                    "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
-                    addr, data[0],
-                ),
-                VcpuExit::IoOut(addr, data) => match addr {
-                    0 => {
-                        return ExitCode::from(data[0]);
-                    }
-                    1 => {
-                        record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
-                    }
-                    2 => {
-                        record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                        let record: *const common::LogRecord = allocator.from_offset(record);
-                        unsafe {
-                            let common::LogRecord {
-                                level,
-                                target,
-                                file,
-                                line,
-                                module_path,
-                                message,
-                            } = *record;
-                            let level = log::Level::iter().nth(level as usize - 1).unwrap();
-                            let target = std::str::from_raw_parts(
-                                allocator.from_offset::<u8>(target.0),
-                                target.1,
-                            );
-                            let file = file.map(|x| {
-                                std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
-                            });
-                            let module_path = module_path.map(|x| {
-                                std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
-                            });
-                            let message = std::str::from_raw_parts(
-                                allocator.from_offset::<u8>(message.0),
-                                message.1,
-                            );
-                            log::logger().log(
-                                &log::Record::builder()
-                                    .level(level)
-                                    .target(target)
-                                    .file(file)
-                                    .line(line)
-                                    .module_path(module_path)
-                                    .args(format_args!("{}", message))
-                                    .build(),
+        for mut vcpu_fd in cpus.into_iter() {
+            let a = allocator.clone();
+            let lock = &lock;
+            let mut log_record: usize = 0;
+            let mut symtab_record: usize = 0;
+            let elf = elf.clone();
+            s.spawn(move || {
+                let allocator = a;
+                loop {
+                    vcpu_fd
+                        .set_mp_state(kvm_bindings::kvm_mp_state {
+                            mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
+                        })
+                        .unwrap();
+                    match vcpu_fd.run().expect("run failed") {
+                        VcpuExit::IoIn(addr, data) => println!(
+                            "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
+                            addr, data[0],
+                        ),
+                        VcpuExit::IoOut(addr, data) => match addr {
+                            0 => {
+                                if data[0] == 0 {
+                                    return;
+                                }
+                                ExitCode::from(data[0]).exit_process();
+                            }
+                            1 => {
+                                log_record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                            }
+                            2 => {
+                                log_record |=
+                                    (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
+                                let record: *const common::LogRecord =
+                                    allocator.from_offset(log_record);
+                                unsafe {
+                                    let common::LogRecord {
+                                        level,
+                                        target,
+                                        file,
+                                        line,
+                                        module_path,
+                                        message,
+                                    } = *record;
+                                    let level = log::Level::iter().nth(level as usize - 1).unwrap();
+                                    let target = std::str::from_raw_parts(
+                                        allocator.from_offset::<u8>(target.0),
+                                        target.1,
+                                    );
+                                    let file = file.map(|x| {
+                                        std::str::from_raw_parts(
+                                            allocator.from_offset::<u8>(x.0),
+                                            x.1,
+                                        )
+                                    });
+                                    let module_path = module_path.map(|x| {
+                                        std::str::from_raw_parts(
+                                            allocator.from_offset::<u8>(x.0),
+                                            x.1,
+                                        )
+                                    });
+                                    let message = std::str::from_raw_parts(
+                                        allocator.from_offset::<u8>(message.0),
+                                        message.1,
+                                    );
+
+                                    while lock
+                                        .compare_exchange(
+                                            false,
+                                            true,
+                                            Ordering::SeqCst,
+                                            Ordering::SeqCst,
+                                        )
+                                        .is_err()
+                                    {}
+                                    log::logger().log(
+                                        &log::Record::builder()
+                                            .level(level)
+                                            .target(target)
+                                            .file(file)
+                                            .line(line)
+                                            .module_path(module_path)
+                                            .args(format_args!("{}", message))
+                                            .build(),
+                                    );
+                                    lock.store(false, Ordering::SeqCst);
+                                }
+                            }
+                            3 => {
+                                symtab_record =
+                                    u32::from_ne_bytes(data.try_into().unwrap()) as usize;
+                            }
+                            4 => {
+                                symtab_record |=
+                                    (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
+                                let record: *mut common::SymtabRecord =
+                                    allocator.from_offset(symtab_record);
+                                let record: &mut common::SymtabRecord = unsafe { &mut *record };
+                                let (symtab, strtab) = elf
+                                    .symbol_table()
+                                    .expect("could not parse ELF file")
+                                    .expect("could not find symbol table");
+                                let target = record.addr;
+                                if let Some((name, addr)) = symtab.into_iter().find_map(|symbol| {
+                                    let index = symbol.st_name as usize;
+                                    let addr = symbol.st_value as usize;
+                                    let size = symbol.st_size as usize;
+                                    let end = addr + size;
+                                    if target >= addr && target < end {
+                                        let name = strtab.get(index).unwrap();
+                                        let name = rustc_demangle::demangle(name);
+                                        Some((name.to_string(), addr))
+                                    } else {
+                                        None
+                                    }
+                                }) {
+                                    record.file_len = name.len();
+                                    let (ptr, cap) = record.file_buffer;
+                                    let buffer: &mut [u8] = unsafe {
+                                        core::slice::from_raw_parts_mut(
+                                            allocator.from_offset(ptr),
+                                            cap,
+                                        )
+                                    };
+                                    if name.len() > cap {
+                                        buffer.copy_from_slice(&name.as_bytes()[..cap]);
+                                    } else {
+                                        buffer[..name.len()].copy_from_slice(name.as_bytes());
+                                    }
+                                    record.offset = record.addr - addr;
+                                    record.addr = addr;
+                                    record.found = true;
+                                } else {
+                                    record.found = false;
+                                }
+                            }
+                            0xe9 => {
+                                let data = data[0];
+                                let c = data as char;
+                                eprint!("{c}");
+                            }
+                            _ => {
+                                println!(
+                                    "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
+                                    addr, data[0],
+                                );
+                            }
+                        },
+                        VcpuExit::MmioRead(addr, _) => {
+                            println!("Received an MMIO Read Request for the address {:#x}.", addr,);
+                        }
+                        VcpuExit::MmioWrite(addr, data) => {
+                            println!(
+                                "Received an MMIO Write Request to the address {:#x}: {:x}.",
+                                addr, data[0]
                             );
                         }
+                        r => panic!("Unexpected exit reason: {:?}", r),
                     }
-                    0xe9 => {
-                        let data = data[0];
-                        let c = data as char;
-                        print!("{c}");
-                    }
-                    _ => {
-                        println!(
-                            "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
-                            addr, data[0],
-                        );
-                    }
-                },
-                VcpuExit::MmioRead(addr, _) => {
-                    println!("Received an MMIO Read Request for the address {:#x}.", addr,);
                 }
-                VcpuExit::MmioWrite(addr, data) => {
-                    println!(
-                        "Received an MMIO Write Request to the address {:#x}: {:x}.",
-                        addr, data[0]
-                    );
-                }
-                r => panic!("Unexpected exit reason: {:?}", r),
-            }
+            });
         }
-    })
+    });
 }
