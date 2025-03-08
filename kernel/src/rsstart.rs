@@ -109,8 +109,7 @@ unsafe extern "C" fn _start(
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
 
         let raw_rb_data = Box::from_raw(
-            PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr)
-                as *mut RingBufferEndPointRawData,
+            PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr),
         );
         let endpoint = RingBufferEndPoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
         core::mem::forget(raw_rb_data);

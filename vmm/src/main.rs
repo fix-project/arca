@@ -8,7 +8,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use std::mem;
 use std::thread;
 
 use common::message::Messenger;
@@ -21,11 +20,8 @@ use elf::ElfBytes;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
-use std::cell::RefCell;
-use vmm::client;
 use vmm::client::ArcaRef;
 use vmm::client::Client;
-use vmm::client::Ref;
 use vmm::client::ThunkRef;
 
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
@@ -263,19 +259,34 @@ fn main() {
     thread::scope(|s| {
         let allocator = &allocator;
         s.spawn(move || {
+            let m = Messenger::new(endpoint1);
+            let client = Client::new(m);
             let f = || -> Result<(), RingBufferError> {
-                let m = Messenger::new(endpoint1);
-                let client = Client::new(m);
-                let x: u64 = 1;
-                let y: u64 = 1;
+                let x: u64 = 123;
+                let y: u64 = 321;
                 let blob = client.create_blob(ADD_ELF)?;
                 let thunk = ThunkRef::new(blob)?;
-                let ArcaRef::Lambda(_) = thunk.run()? else {
-                    return Err(RingBufferError::TypeError);
+                let ArcaRef::Lambda(lambda) = thunk.run()? else {
+                    panic!("expected lambda");
                 };
+                let x = client.create_blob(&x.to_ne_bytes())?;
+                let y = client.create_blob(&y.to_ne_bytes())?;
+                let tree = client.create_tree(vec![x.into(), y.into()])?;
+                let thunk = lambda.apply(tree.into())?;
+                let ArcaRef::Blob(blob) = thunk.run()? else {
+                    panic!("expected blob");
+                };
+                let blob = blob.read()?;
+                assert_eq!(&blob[..], &(444u64.to_ne_bytes()[..]));
                 Ok(())
             };
+            let start = std::time::SystemTime::now();
             f().unwrap();
+            let end = std::time::SystemTime::now();
+            log::info!(
+                "running program within Arca took {:?}",
+                end.duration_since(start).unwrap()
+            );
         });
 
         for mut vcpu_fd in cpus.into_iter() {

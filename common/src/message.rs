@@ -15,6 +15,8 @@ enum OpCode {
     Apply = 4,
     Reply = 5,
     Drop = 6,
+    ReadBlob = 7,
+    BlobContents = 8,
 }
 
 impl TryFrom<u8> for OpCode {
@@ -29,6 +31,8 @@ impl TryFrom<u8> for OpCode {
             _ if value == OpCode::Apply as u8 => Ok(OpCode::Apply),
             _ if value == OpCode::Reply as u8 => Ok(OpCode::Reply),
             _ if value == OpCode::Drop as u8 => Ok(OpCode::Drop),
+            _ if value == OpCode::ReadBlob as u8 => Ok(OpCode::ReadBlob),
+            _ if value == OpCode::BlobContents as u8 => Ok(OpCode::BlobContents),
             _ => Err("Invalid raw u8 for OpCode"),
         }
     }
@@ -198,6 +202,13 @@ pub enum Message {
     DropMessage {
         handle: Handle,
     },
+    ReadBlobMessage {
+        handle: BlobHandle,
+    },
+    BlobContentsMessage {
+        ptr: usize,
+        size: usize,
+    },
 }
 
 impl Message {
@@ -210,12 +221,14 @@ impl Message {
             Message::ApplyMessage { .. } => OpCode::Apply,
             Message::ReplyMessage { .. } => OpCode::Reply,
             Message::DropMessage { .. } => OpCode::Drop,
+            Message::ReadBlobMessage { .. } => OpCode::ReadBlob,
+            Message::BlobContentsMessage { .. } => OpCode::BlobContents,
         }
     }
 
     fn parse(op: &OpCode, buf: &[u8; 18]) -> Option<Message> {
         match op {
-            OpCode::CreateBlob | OpCode::CreateTree => {
+            OpCode::CreateBlob | OpCode::CreateTree | OpCode::BlobContents => {
                 let left: &[u8; 8] = buf[0..8].try_into().expect("split slice with wrong length");
                 let right: &[u8; 8] = buf[8..16]
                     .try_into()
@@ -232,6 +245,10 @@ impl Message {
                         ptr: left,
                         size: right,
                     }),
+                    OpCode::BlobContents => Some(Message::BlobContentsMessage {
+                        ptr: left,
+                        size: right,
+                    }),
                     _ => unreachable!(),
                 }
             }
@@ -243,6 +260,13 @@ impl Message {
                     OpCode::CreateThunk => {
                         if let Handle::Blob(b) = left {
                             Some(Message::CreateThunkMessage { handle: b })
+                        } else {
+                            None
+                        }
+                    }
+                    OpCode::ReadBlob => {
+                        if let Handle::Blob(b) = left {
+                            Some(Message::ReadBlobMessage { handle: b })
                         } else {
                             None
                         }
@@ -285,6 +309,8 @@ impl Message {
             OpCode::Apply => 18,
             OpCode::Reply => 9,
             OpCode::Drop => 9,
+            OpCode::ReadBlob => 9,
+            OpCode::BlobContents => 16,
         }
     }
 }
@@ -430,6 +456,20 @@ impl<'a> MessageSerializer<'a> {
                 let left: &mut [u8; 9] = (&mut self.pending_payload[0..9]).try_into().unwrap();
                 *left = Handle::serialize(h)
             }
+            Message::ReadBlobMessage { handle: b } => {
+                let left: &mut [u8; 9] = (&mut self.pending_payload[0..9]).try_into().unwrap();
+                *left = Handle::serialize(Handle::Blob(b))
+            }
+            Message::BlobContentsMessage { ptr, size } => {
+                let (left, right) = self.pending_payload.split_at_mut(8);
+                let left: &mut [u8; 8] = left.try_into().expect("split slice with wrong length");
+                let right: &mut [u8; 8] = (&mut right[0..8])
+                    .try_into()
+                    .expect("split slice with wrong length");
+
+                *left = usize::to_ne_bytes(ptr);
+                *right = usize::to_ne_bytes(size);
+            }
         }
     }
 
@@ -501,10 +541,15 @@ impl<'a> Messenger<'a> {
         self.parser.read_one()
     }
 
-    pub fn send_and_receive(&mut self, msg: Message) -> Result<Handle, RingBufferError> {
+    pub fn send_and_receive(&mut self, msg: Message) -> Result<Message, RingBufferError> {
         self.send(msg)?;
         let response = self.parser.read_one()?;
         log::debug!("received {response:x?}");
+        Ok(response)
+    }
+
+    pub fn send_and_receive_handle(&mut self, msg: Message) -> Result<Handle, RingBufferError> {
+        let response = self.send_and_receive(msg)?;
         let Message::ReplyMessage { handle } = response else {
             return Err(RingBufferError::TypeError);
         };

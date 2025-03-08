@@ -17,28 +17,24 @@ fn reply(value: Box<Value>) {
     let msg = match value.as_ref() {
         Value::Blob(_) => {
             let ptr = Box::into_raw(value);
-            log::info!("sending blob {ptr:p}");
             Message::ReplyMessage {
                 handle: Handle::Blob(BlobHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
             }
         }
         Value::Tree(_) => {
             let ptr = Box::into_raw(value);
-            log::info!("sending tree {ptr:p}");
             Message::ReplyMessage {
                 handle: Handle::Tree(TreeHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
             }
         }
         Value::Lambda(_) => {
             let ptr = Box::into_raw(value);
-            log::info!("sending lambda {ptr:p}");
             Message::ReplyMessage {
                 handle: Handle::Lambda(LambdaHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
             }
         }
         Value::Thunk(_) => {
             let ptr = Box::into_raw(value);
-            log::info!("sending thunk {ptr:p}");
             Message::ReplyMessage {
                 handle: Handle::Thunk(ThunkHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
             }
@@ -51,11 +47,11 @@ fn reply(value: Box<Value>) {
 
 fn reconstruct<T: Into<Handle>>(handle: T) -> Box<Value> {
     let ptr = PHYSICAL_ALLOCATOR.from_offset::<Value>(Handle::to_offset(handle));
-    unsafe { Box::from_raw(ptr as *mut Value) }
+    unsafe { Box::from_raw(ptr) }
 }
 
 pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
-    log::info!("message: {msg:x?}");
+    log::debug!("message: {msg:x?}");
     match msg {
         Message::CreateBlobMessage { ptr, size } => {
             let blob: Blob = unsafe {
@@ -64,7 +60,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                     size,
                 ))
             };
-            log::info!("processed create blob");
             reply(Box::new(Value::Blob(blob)));
             true
         }
@@ -80,7 +75,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 vec.push(Box::into_inner(reconstruct(v)));
             }
             reply(Box::new(Value::Tree(vec.into())));
-            log::info!("processed create tree");
             true
         }
         Message::CreateThunkMessage { handle } => {
@@ -89,7 +83,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Blob(b) => reply(Box::new(Value::Thunk(Thunk::from_elf(&b)))),
                 _ => todo!(),
             };
-            log::info!("processed create thunk");
             true
         }
         Message::RunThunkMessage { handle } => {
@@ -98,7 +91,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Thunk(thunk) => reply(Box::new(thunk.run(cpu))),
                 _ => todo!(),
             };
-            log::info!("processed run thunk");
             true
         }
         Message::ApplyMessage {
@@ -111,12 +103,25 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Lambda(lambda) => reply(Box::new(Value::Thunk(lambda.apply(arg)))),
                 _ => todo!(),
             };
-            log::info!("processed apply lambda");
             true
         }
         Message::DropMessage { handle } => {
             let p = reconstruct(handle);
             core::mem::drop(p);
+            false
+        }
+        Message::ReadBlobMessage { handle } => {
+            let v = reconstruct(handle);
+            match v.as_ref() {
+                Value::Blob(blob) => {
+                    let (ptr, size) = (&raw const blob[0], blob.len());
+                    let ptr = PHYSICAL_ALLOCATOR.to_offset(ptr);
+                    let msg = Message::BlobContentsMessage { ptr, size };
+                    MESSENGER.lock().send(msg).unwrap();
+                }
+                _ => todo!(),
+            };
+            core::mem::forget(v);
             false
         }
         _ => todo!(),
