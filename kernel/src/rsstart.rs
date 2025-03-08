@@ -149,7 +149,6 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
 
     kmain();
-    // core::mem::drop(sync);
 
     crate::shutdown();
 }

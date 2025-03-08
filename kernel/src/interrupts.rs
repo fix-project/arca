@@ -69,7 +69,14 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
-            panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
+            if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {
+                panic!(
+                    "Supervisor GP @ {name}+{offset:#x} ({:p})!",
+                    registers.rip as *mut (),
+                );
+            } else {
+                panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
+            }
         } else {
             panic!(
                 "Supervisor GP @ {:p}! faulting segment: {:#x}",

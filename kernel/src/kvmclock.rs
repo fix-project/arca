@@ -73,7 +73,6 @@ fn read_boot_time() -> WallClock {
             let data = *boot_time;
             let v1 = (&raw const ((*boot_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
-                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }
@@ -92,7 +91,6 @@ fn read_current() -> (CpuTimeInfo, u64) {
             let tsc = core::arch::x86_64::_rdtsc();
             let v1 = (&raw const ((*cpu_time).version)).read_volatile();
             if v0 != v1 || (v0 % 2) != 0 || v0 == 0 {
-                log::info!("partial read");
                 core::arch::x86_64::_mm_pause();
                 continue;
             }

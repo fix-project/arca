@@ -9,33 +9,35 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 #[repr(C)]
-struct RingBuffer {
+struct RingBuffer<'a> {
     read_counter: AtomicUsize,
     write_counter: AtomicUsize,
+    allocator: &'a BuddyAllocator<'a>,
     buf: SyncUnsafeCell<[u8]>,
 }
 
 #[repr(C)]
 pub struct RingBufferSender<'a> {
-    rb: RefCnt<'a, RingBuffer>,
+    rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
 #[repr(C)]
 pub struct RingBufferReceiver<'a> {
-    rb: RefCnt<'a, RingBuffer>,
+    rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
+#[derive(Debug, Clone)]
 pub enum RingBufferError {
     WouldBlock,
     ParseError,
     TypeError,
 }
 
-impl RingBuffer {
-    fn new_in<'a>(
+impl<'a> RingBuffer<'a> {
+    fn new_in(
         capacity: usize,
         allocator: &'a BuddyAllocator<'a>,
-    ) -> Box<RingBuffer, &'a BuddyAllocator<'a>> {
+    ) -> Box<RingBuffer<'a>, &'a BuddyAllocator<'a>> {
         unsafe {
             let layout = Layout::new::<AtomicUsize>()
                 .extend(Layout::new::<AtomicUsize>())
@@ -52,6 +54,7 @@ impl RingBuffer {
             let p: *mut RingBuffer = core::mem::transmute(p);
             (*p).read_counter = AtomicUsize::new(0);
             (*p).write_counter = AtomicUsize::new(0);
+            (*p).allocator = allocator;
             Box::from_raw_in(p, allocator)
         }
     }
@@ -84,7 +87,7 @@ impl RingBuffer {
         }
 
         let readable = unsafe { &(*self.buf.get())[read_count..end] };
-        buf[..readable.len()].copy_from_slice(&readable);
+        buf[..readable.len()].copy_from_slice(readable);
         Ok(readable.len())
     }
 
@@ -139,17 +142,23 @@ impl RingBuffer {
 
     fn write_all(&self, mut buf: &[u8]) -> Result<(), RingBufferError> {
         while !buf.is_empty() {
-            match self.write(buf) {
-                Ok(n) => buf = &buf[n..],
-                Err(_) => {}
+            if let Ok(n) = self.write(buf) {
+                buf = &buf[n..]
             }
         }
         Ok(())
     }
+
+    pub fn allocator<'b>(&self) -> &'b BuddyAllocator<'a>
+    where
+        'a: 'b,
+    {
+        self.allocator
+    }
 }
 
 impl<'a> RingBufferSender<'a> {
-    fn new(rb: RefCnt<'a, RingBuffer>) -> Self {
+    fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
         Self { rb }
     }
 
@@ -160,10 +169,14 @@ impl<'a> RingBufferSender<'a> {
     pub fn write_all(&mut self, buf: &[u8]) -> Result<(), RingBufferError> {
         self.rb.write_all(buf)
     }
+
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
+        self.rb.allocator()
+    }
 }
 
 impl<'a> RingBufferReceiver<'a> {
-    fn new(rb: RefCnt<'a, RingBuffer>) -> Self {
+    fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
         Self { rb }
     }
 
@@ -173,6 +186,10 @@ impl<'a> RingBufferReceiver<'a> {
 
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), RingBufferError> {
         self.rb.read_exact(buf)
+    }
+
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
+        self.rb.allocator()
     }
 }
 
@@ -197,14 +214,15 @@ impl<'a> RingBufferEndPoint<'a> {
         )
     }
 
+    /// # Safety
+    /// This function's inputs must describe a valid RingBufferEndPoint in the current address
+    /// space, managed by the provided allocator.
     pub unsafe fn from_raw_parts(
         raw: &RingBufferEndPointRawData,
         allocator: &'a BuddyAllocator,
     ) -> Self {
-        let sender_ptr =
-            core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.0) as *mut (), raw.1);
-        let receiver_ptr =
-            core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.2) as *mut (), raw.3);
+        let sender_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.0), raw.1);
+        let receiver_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.2), raw.3);
         Self {
             sender: RingBufferSender::new(RefCnt::from_raw_in(sender_ptr, allocator)),
             receiver: RingBufferReceiver::new(RefCnt::from_raw_in(receiver_ptr, allocator)),
@@ -214,11 +232,19 @@ impl<'a> RingBufferEndPoint<'a> {
     pub fn into_sender_receiver(self) -> (RingBufferSender<'a>, RingBufferReceiver<'a>) {
         (self.sender, self.receiver)
     }
+
+    pub fn allocator(&self) -> &BuddyAllocator {
+        assert_eq!(
+            self.sender.allocator() as *const _,
+            self.receiver.allocator() as *const _
+        );
+        self.sender.allocator()
+    }
 }
 
 pub type RingBufferPair<'a> = (RingBufferEndPoint<'a>, RingBufferEndPoint<'a>);
 
-fn make_ring_buffer_sender_receiver<'a>(
+fn channel<'a>(
     capacity: usize,
     allocator: &'a BuddyAllocator<'a>,
 ) -> (RingBufferSender<'a>, RingBufferReceiver<'a>) {
@@ -229,12 +255,9 @@ fn make_ring_buffer_sender_receiver<'a>(
     )
 }
 
-pub fn make_ring_buffer_pair<'a>(
-    capacity: usize,
-    allocator: &'a BuddyAllocator<'a>,
-) -> RingBufferPair<'a> {
-    let (sender1, receiver1) = make_ring_buffer_sender_receiver(capacity, allocator);
-    let (sender2, receiver2) = make_ring_buffer_sender_receiver(capacity, allocator);
+pub fn pair<'a>(capacity: usize, allocator: &'a BuddyAllocator<'a>) -> RingBufferPair<'a> {
+    let (sender1, receiver1) = channel(capacity, allocator);
+    let (sender2, receiver2) = channel(capacity, allocator);
 
     let endpoint1: RingBufferEndPoint = RingBufferEndPoint {
         sender: sender1,

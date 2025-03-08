@@ -1,10 +1,11 @@
 extern crate alloc;
 
-use crate::ringbuffer::{
-    RingBufferEndPoint, RingBufferError, RingBufferReceiver, RingBufferSender,
+use crate::{
+    ringbuffer::{RingBufferEndPoint, RingBufferError, RingBufferReceiver, RingBufferSender},
+    BuddyAllocator,
 };
 
-#[derive(Clone)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
 enum OpCode {
     CreateBlob = 0,
@@ -33,31 +34,37 @@ impl TryFrom<u8> for OpCode {
     }
 }
 
-pub struct BlobHandle(usize);
-pub struct TreeHandle(usize);
-pub struct LambdaHandle(usize);
-pub struct ThunkHandle(usize);
+pub type RawHandle = usize;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct BlobHandle(RawHandle);
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct TreeHandle(RawHandle);
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct LambdaHandle(RawHandle);
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ThunkHandle(RawHandle);
 
 impl BlobHandle {
-    pub fn new(s: usize) -> Self {
+    pub fn new(s: RawHandle) -> Self {
         Self(s)
     }
 }
 
 impl TreeHandle {
-    pub fn new(s: usize) -> Self {
+    pub fn new(s: RawHandle) -> Self {
         Self(s)
     }
 }
 
 impl LambdaHandle {
-    pub fn new(s: usize) -> Self {
+    pub fn new(s: RawHandle) -> Self {
         Self(s)
     }
 }
 
 impl ThunkHandle {
-    pub fn new(s: usize) -> Self {
+    pub fn new(s: RawHandle) -> Self {
         Self(s)
     }
 }
@@ -84,79 +91,88 @@ impl TryFrom<u8> for HandleType {
     }
 }
 
-pub enum ArcaHandle {
-    BlobHandle(BlobHandle),
-    TreeHandle(TreeHandle),
-    LambdaHandle(LambdaHandle),
-    ThunkHandle(ThunkHandle),
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Handle {
+    Blob(BlobHandle),
+    Tree(TreeHandle),
+    Lambda(LambdaHandle),
+    Thunk(ThunkHandle),
 }
 
-impl ArcaHandle {
+pub trait ArcaHandle: Into<Handle> + Copy {}
+
+impl Handle {
     fn parse(buf: &[u8; 9]) -> Self {
         let handletype = HandleType::try_from(buf[0]).expect("");
         let offset = usize::from_ne_bytes(buf[1..9].try_into().unwrap());
         match handletype {
-            HandleType::Blob => Self::BlobHandle(BlobHandle(offset)),
-            HandleType::Tree => Self::TreeHandle(TreeHandle(offset)),
-            HandleType::Lambda => Self::LambdaHandle(LambdaHandle(offset)),
-            HandleType::Thunk => Self::ThunkHandle(ThunkHandle(offset)),
+            HandleType::Blob => Self::Blob(BlobHandle(offset)),
+            HandleType::Tree => Self::Tree(TreeHandle(offset)),
+            HandleType::Lambda => Self::Lambda(LambdaHandle(offset)),
+            HandleType::Thunk => Self::Thunk(ThunkHandle(offset)),
         }
     }
 
-    fn to_offset_internal(self) -> usize {
+    pub fn to_raw(&self) -> usize {
         match self {
-            ArcaHandle::BlobHandle(BlobHandle(h))
-            | ArcaHandle::TreeHandle(TreeHandle(h))
-            | ArcaHandle::LambdaHandle(LambdaHandle(h))
-            | ArcaHandle::ThunkHandle(ThunkHandle(h)) => h,
+            Handle::Blob(BlobHandle(h))
+            | Handle::Tree(TreeHandle(h))
+            | Handle::Lambda(LambdaHandle(h))
+            | Handle::Thunk(ThunkHandle(h)) => *h,
         }
     }
 
     fn serialize(self) -> [u8; 9] {
         let mut result: [u8; 9] = [0; 9];
         result[0] = match &self {
-            ArcaHandle::BlobHandle(_) => HandleType::Blob as u8,
-            ArcaHandle::TreeHandle(_) => HandleType::Tree as u8,
-            ArcaHandle::LambdaHandle(_) => HandleType::Lambda as u8,
-            ArcaHandle::ThunkHandle(_) => HandleType::Thunk as u8,
+            Handle::Blob(_) => HandleType::Blob as u8,
+            Handle::Tree(_) => HandleType::Tree as u8,
+            Handle::Lambda(_) => HandleType::Lambda as u8,
+            Handle::Thunk(_) => HandleType::Thunk as u8,
         };
 
         let sub: &mut [u8; 8] = (&mut result[1..9]).try_into().unwrap();
-        *sub = self.to_offset_internal().to_ne_bytes();
+        *sub = self.to_raw().to_ne_bytes();
 
         result
     }
 
-    pub fn to_offset<T: Into<ArcaHandle>>(x: T) -> usize {
-        let x: ArcaHandle = x.into();
-        x.to_offset_internal()
+    pub fn to_offset<T: Into<Handle>>(x: T) -> usize {
+        let x: Handle = x.into();
+        x.to_raw()
     }
 }
 
-impl From<BlobHandle> for ArcaHandle {
-    fn from(value: BlobHandle) -> ArcaHandle {
-        ArcaHandle::BlobHandle(value)
+impl From<BlobHandle> for Handle {
+    fn from(value: BlobHandle) -> Handle {
+        Handle::Blob(value)
     }
 }
 
-impl From<TreeHandle> for ArcaHandle {
-    fn from(value: TreeHandle) -> ArcaHandle {
-        ArcaHandle::TreeHandle(value)
+impl From<TreeHandle> for Handle {
+    fn from(value: TreeHandle) -> Handle {
+        Handle::Tree(value)
     }
 }
 
-impl From<LambdaHandle> for ArcaHandle {
-    fn from(value: LambdaHandle) -> ArcaHandle {
-        ArcaHandle::LambdaHandle(value)
+impl From<LambdaHandle> for Handle {
+    fn from(value: LambdaHandle) -> Handle {
+        Handle::Lambda(value)
     }
 }
 
-impl From<ThunkHandle> for ArcaHandle {
-    fn from(value: ThunkHandle) -> ArcaHandle {
-        ArcaHandle::ThunkHandle(value)
+impl From<ThunkHandle> for Handle {
+    fn from(value: ThunkHandle) -> Handle {
+        Handle::Thunk(value)
     }
 }
 
+impl ArcaHandle for BlobHandle {}
+impl ArcaHandle for TreeHandle {}
+impl ArcaHandle for LambdaHandle {}
+impl ArcaHandle for ThunkHandle {}
+
+#[derive(Debug)]
 pub enum Message {
     CreateBlobMessage {
         ptr: usize,
@@ -174,13 +190,13 @@ pub enum Message {
     },
     ApplyMessage {
         lambda_handle: LambdaHandle,
-        arg_handle: ArcaHandle,
+        arg_handle: Handle,
     },
     ReplyMessage {
-        handle: ArcaHandle,
+        handle: Handle,
     },
     DropMessage {
-        handle: ArcaHandle,
+        handle: Handle,
     },
 }
 
@@ -221,29 +237,29 @@ impl Message {
             }
             _ => {
                 let left: &[u8; 9] = buf[0..9].try_into().expect("split slice with wrong length");
-                let left = ArcaHandle::parse(left);
+                let left = Handle::parse(left);
 
                 match op {
                     OpCode::CreateThunk => {
-                        if let ArcaHandle::BlobHandle(b) = left {
+                        if let Handle::Blob(b) = left {
                             Some(Message::CreateThunkMessage { handle: b })
                         } else {
                             None
                         }
                     }
                     OpCode::RunThunk => {
-                        if let ArcaHandle::ThunkHandle(t) = left {
+                        if let Handle::Thunk(t) = left {
                             Some(Message::RunThunkMessage { handle: t })
                         } else {
                             None
                         }
                     }
                     OpCode::Apply => {
-                        if let ArcaHandle::LambdaHandle(l) = left {
+                        if let Handle::Lambda(l) = left {
                             let right: &[u8; 9] = buf[9..18]
                                 .try_into()
                                 .expect("split slice with wrong length");
-                            let right = ArcaHandle::parse(right);
+                            let right = Handle::parse(right);
                             Some(Message::ApplyMessage {
                                 lambda_handle: l,
                                 arg_handle: right,
@@ -260,7 +276,7 @@ impl Message {
         }
     }
 
-    fn msg_size(op: &OpCode) -> usize {
+    fn msg_size(op: OpCode) -> usize {
         match op {
             OpCode::CreateBlob => 16,
             OpCode::CreateTree => 16,
@@ -303,8 +319,7 @@ impl<'a> MessageParser<'a> {
                         OpCode::try_from(self.pending_opcode_buf[0])
                             .expect("Failed to parse OpCode"),
                     );
-                    self.expected_payload_size =
-                        Message::msg_size(&self.pending_opcode.as_ref().unwrap());
+                    self.expected_payload_size = Message::msg_size(self.pending_opcode.unwrap());
                     Ok(None)
                 }
                 Err(e) => Err(e),
@@ -347,6 +362,10 @@ impl<'a> MessageParser<'a> {
                 _ => core::hint::spin_loop(),
             }
         }
+    }
+
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
+        self.rb.allocator()
     }
 }
 
@@ -396,20 +415,20 @@ impl<'a> MessageSerializer<'a> {
                 let left: &mut [u8; 9] = left.try_into().expect("split slice with wrong length");
                 let right: &mut [u8; 9] = right.try_into().expect("split slice with wrong length");
 
-                *left = ArcaHandle::serialize(ArcaHandle::LambdaHandle(l));
-                *right = ArcaHandle::serialize(r);
+                *left = Handle::serialize(Handle::Lambda(l));
+                *right = Handle::serialize(r);
             }
             Message::CreateThunkMessage { handle: b } => {
                 let left: &mut [u8; 9] = (&mut self.pending_payload[0..9]).try_into().unwrap();
-                *left = ArcaHandle::serialize(ArcaHandle::BlobHandle(b))
+                *left = Handle::serialize(Handle::Blob(b))
             }
             Message::RunThunkMessage { handle: t } => {
                 let left: &mut [u8; 9] = (&mut self.pending_payload[0..9]).try_into().unwrap();
-                *left = ArcaHandle::serialize(ArcaHandle::ThunkHandle(t))
+                *left = Handle::serialize(Handle::Thunk(t))
             }
             Message::ReplyMessage { handle: h } | Message::DropMessage { handle: h } => {
                 let left: &mut [u8; 9] = (&mut self.pending_payload[0..9]).try_into().unwrap();
-                *left = ArcaHandle::serialize(h)
+                *left = Handle::serialize(h)
             }
         }
     }
@@ -422,14 +441,15 @@ impl<'a> MessageSerializer<'a> {
         self.opcode_written = false;
         self.pending_opcode[0] = msg.opcode() as u8;
         self.pending_payload_offset = 0;
-        self.pending_payload_size = Message::msg_size(&msg.opcode());
+        self.pending_payload_size = Message::msg_size(msg.opcode());
         self.serialize(msg);
 
-        return Ok(());
+        Ok(())
     }
 
     fn write(&mut self) -> Result<(), RingBufferError> {
         if !self.opcode_written {
+            log::debug!("writing opcode");
             match self.rb.write(&self.pending_opcode) {
                 Ok(_) => {
                     self.opcode_written = true;
@@ -438,6 +458,7 @@ impl<'a> MessageSerializer<'a> {
                 Err(e) => Err(e),
             }
         } else {
+            log::debug!("writing message");
             match self.rb.write(
                 &self.pending_payload[self.pending_payload_offset..self.pending_payload_size],
             ) {
@@ -452,9 +473,13 @@ impl<'a> MessageSerializer<'a> {
 
     fn write_all(&mut self) -> Result<(), RingBufferError> {
         while !self.loadable() {
-            let _ = self.write();
+            self.write()?;
         }
         Ok(())
+    }
+
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
+        self.rb.allocator()
     }
 }
 
@@ -472,17 +497,32 @@ impl<'a> Messenger<'a> {
         }
     }
 
-    pub fn send(&mut self, msg: Message) -> Result<(), RingBufferError> {
-        self.serializer.load(msg)?;
-        self.serializer.write_all()
-    }
-
-    pub fn get_one(&mut self) -> Result<Message, RingBufferError> {
+    pub fn receive(&mut self) -> Result<Message, RingBufferError> {
         self.parser.read_one()
     }
 
-    pub fn get_reply(&mut self, msg: Message) -> Result<Message, RingBufferError> {
+    pub fn send_and_receive(&mut self, msg: Message) -> Result<Handle, RingBufferError> {
         self.send(msg)?;
-        self.get_one()
+        let response = self.parser.read_one()?;
+        log::debug!("received {response:x?}");
+        let Message::ReplyMessage { handle } = response else {
+            return Err(RingBufferError::TypeError);
+        };
+        Ok(handle)
+    }
+
+    pub fn send(&mut self, msg: Message) -> Result<(), RingBufferError> {
+        log::debug!("sending {msg:x?}");
+        self.serializer.load(msg)?;
+        self.serializer.write_all()?;
+        Ok(())
+    }
+
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
+        assert_eq!(
+            self.serializer.allocator() as *const _,
+            self.parser.allocator() as *const _
+        );
+        self.serializer.allocator()
     }
 }
