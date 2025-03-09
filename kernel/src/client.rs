@@ -17,27 +17,27 @@ fn reply(value: Box<Value>) {
     let msg = match value.as_ref() {
         Value::Blob(_) => {
             let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: Handle::Blob(BlobHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+            Message::Created(Handle::Blob(BlobHandle::new(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         Value::Tree(_) => {
             let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: Handle::Tree(TreeHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+            Message::Created(Handle::Tree(TreeHandle::new(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         Value::Lambda(_) => {
             let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: Handle::Lambda(LambdaHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+            Message::Created(Handle::Lambda(LambdaHandle::new(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         Value::Thunk(_) => {
             let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: Handle::Thunk(ThunkHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+            Message::Created(Handle::Thunk(ThunkHandle::new(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         _ => todo!(),
     };
@@ -53,21 +53,21 @@ fn reconstruct<T: Into<Handle>>(handle: T) -> Box<Value> {
 pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
     log::debug!("message: {msg:x?}");
     match msg {
-        Message::CreateBlobMessage { ptr, size } => {
+        Message::CreateBlob { ptr, len } => {
             let blob: Blob = unsafe {
                 Arc::from_raw(core::ptr::slice_from_raw_parts(
                     PHYSICAL_ALLOCATOR.from_offset::<u8>(ptr),
-                    size,
+                    len,
                 ))
             };
             reply(Box::new(Value::Blob(blob)));
             true
         }
-        Message::CreateTreeMessage { ptr, size } => {
+        Message::CreateTree { ptr, len } => {
             let vals: Box<[Handle]> = unsafe {
                 Box::from_raw(core::ptr::slice_from_raw_parts_mut(
                     PHYSICAL_ALLOCATOR.from_offset::<Handle>(ptr),
-                    size,
+                    len,
                 ))
             };
             let mut vec = Vec::new();
@@ -77,7 +77,7 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
             reply(Box::new(Value::Tree(vec.into())));
             true
         }
-        Message::CreateThunkMessage { handle } => {
+        Message::CreateThunk(handle) => {
             let v = reconstruct(handle);
             match Box::into_inner(v) {
                 Value::Blob(b) => reply(Box::new(Value::Thunk(Thunk::from_elf(&b)))),
@@ -85,7 +85,7 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
             };
             true
         }
-        Message::RunThunkMessage { handle } => {
+        Message::Run(handle) => {
             let v = reconstruct(handle);
             match Box::into_inner(v) {
                 Value::Thunk(thunk) => reply(Box::new(thunk.run(cpu))),
@@ -93,30 +93,27 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
             };
             true
         }
-        Message::ApplyMessage {
-            lambda_handle,
-            arg_handle,
-        } => {
-            let v = Box::into_inner(reconstruct(lambda_handle));
-            let arg = Box::into_inner(reconstruct(arg_handle));
+        Message::Apply(lambda, arg) => {
+            let v = Box::into_inner(reconstruct(lambda));
+            let arg = Box::into_inner(reconstruct(arg));
             match v {
                 Value::Lambda(lambda) => reply(Box::new(Value::Thunk(lambda.apply(arg)))),
                 _ => todo!(),
             };
             true
         }
-        Message::DropMessage { handle } => {
+        Message::Drop(handle) => {
             let p = reconstruct(handle);
             core::mem::drop(p);
             false
         }
-        Message::ReadBlobMessage { handle } => {
+        Message::ReadBlob(handle) => {
             let v = reconstruct(handle);
             match v.as_ref() {
                 Value::Blob(blob) => {
-                    let (ptr, size) = (&raw const blob[0], blob.len());
+                    let (ptr, len) = (&raw const blob[0], blob.len());
                     let ptr = PHYSICAL_ALLOCATOR.to_offset(ptr);
-                    let msg = Message::BlobContentsMessage { ptr, size };
+                    let msg = Message::BlobContents { ptr, len };
                     MESSENGER.lock().send(msg).unwrap();
                 }
                 _ => todo!(),

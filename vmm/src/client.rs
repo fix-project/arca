@@ -33,9 +33,7 @@ where
 
 impl<T: ArcaHandle> Drop for Ref<'_, '_, T> {
     fn drop(&mut self) {
-        let msg = Message::DropMessage {
-            handle: self.handle.into(),
-        };
+        let msg = Message::Drop(self.handle.into());
         let mut messenger = self.client.messenger.lock();
         messenger.send(msg).unwrap();
     }
@@ -145,11 +143,11 @@ impl<'b> Client<'b> {
         Arc::make_mut(&mut buf).write_copy_of_slice(blob);
         let buf = unsafe { buf.assume_init() };
         let (slice, a) = Arc::into_raw_with_allocator(buf);
-        let (ptr, size) = slice.to_raw_parts();
+        let (ptr, len) = slice.to_raw_parts();
         let ptr = a.to_offset(ptr);
         let mut m = self.messenger.lock();
         if let ArcaRef::Blob(b) =
-            self.make_ref(m.send_and_receive_handle(Message::CreateBlobMessage { ptr, size })?)
+            self.make_ref(m.send_and_receive_handle(Message::CreateBlob { ptr, len })?)
         {
             Ok(b)
         } else {
@@ -170,12 +168,12 @@ impl<'b> Client<'b> {
         let tree = new.into_boxed_slice();
 
         let (slice, a) = Box::into_raw_with_allocator(tree);
-        let (ptr, size) = slice.to_raw_parts();
+        let (ptr, len) = slice.to_raw_parts();
 
         let ptr = a.to_offset(ptr);
         let mut m = self.messenger.lock();
         if let ArcaRef::Tree(t) =
-            self.make_ref(m.send_and_receive_handle(Message::CreateTreeMessage { ptr, size })?)
+            self.make_ref(m.send_and_receive_handle(Message::CreateTree { ptr, len })?)
         {
             Ok(t)
         } else {
@@ -191,15 +189,14 @@ where
     pub fn read(&self) -> Result<Arc<[u8], &BuddyAllocator>, RingBufferError> {
         let handle = self.handle;
         let mut m = self.client.messenger.lock();
-        let Message::BlobContentsMessage { ptr, size } =
-            m.send_and_receive(Message::ReadBlobMessage { handle })?
+        let Message::BlobContents { ptr, len } = m.send_and_receive(Message::ReadBlob(handle))?
         else {
             return Err(RingBufferError::TypeError);
         };
         let allocator = self.client.allocator;
         unsafe {
             let ptr: *const u8 = allocator.from_offset(ptr);
-            let ptr = core::ptr::from_raw_parts(ptr, size);
+            let ptr = core::ptr::from_raw_parts(ptr, len);
             let arc: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(ptr, allocator);
             Ok(arc)
         }
@@ -215,7 +212,7 @@ where
         core::mem::forget(blob);
         let mut m = client.messenger.lock();
         if let ArcaRef::Thunk(t) =
-            client.make_ref(m.send_and_receive_handle(Message::CreateThunkMessage { handle })?)
+            client.make_ref(m.send_and_receive_handle(Message::CreateThunk(handle))?)
         {
             Ok(t)
         } else {
@@ -227,7 +224,7 @@ where
         let ThunkRef { client, handle } = self;
         core::mem::forget(self);
         let mut m = client.messenger.lock();
-        Ok(client.make_ref(m.send_and_receive_handle(Message::RunThunkMessage { handle })?))
+        Ok(client.make_ref(m.send_and_receive_handle(Message::Run(handle))?))
     }
 }
 
@@ -243,10 +240,7 @@ where
         core::mem::forget(value);
         let mut m = client.messenger.lock();
         if let ArcaRef::Thunk(t) =
-            client.make_ref(m.send_and_receive_handle(Message::ApplyMessage {
-                lambda_handle: handle,
-                arg_handle,
-            })?)
+            client.make_ref(m.send_and_receive_handle(Message::Apply(handle, arg_handle))?)
         {
             Ok(t)
         } else {

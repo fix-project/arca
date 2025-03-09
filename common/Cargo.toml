@@ -14,6 +14,7 @@ cache = []
 log = "0.4.22"
 snafu = { version="0.8.5", default-features=false }
 macros = { path = "../macros", optional=true }
+bincode = { version = "2.0.0", features = ["alloc", "derive", "bincode_derive"], default-features = false }
 
 [dev-dependencies]
 libc = "0.2.164"
