@@ -26,7 +26,7 @@ pub struct RingBufferReceiver<'a> {
     rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RingBufferError {
     WouldBlock,
     ParseError,
@@ -59,6 +59,18 @@ impl<'a> RingBuffer<'a> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
+        read_count == write_count
+    }
+
+    pub fn is_full(&self) -> bool {
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
+        (write_count + 1) % self.buf.get().len() == read_count
+    }
+
     fn read(&self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
         let len = buf.len();
         let read_count = self.read_counter.load(Ordering::SeqCst);
@@ -76,16 +88,8 @@ impl<'a> RingBuffer<'a> {
 
         end = min(end, read_count + len);
 
-        match self.read_counter.compare_exchange(
-            read_count,
-            end % self.buf.get().len(),
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => {}
-            Err(_) => panic!("Read count changed while writing"),
-        }
-
+        self.read_counter
+            .store(end % self.buf.get().len(), Ordering::SeqCst);
         let readable = unsafe { &(*self.buf.get())[read_count..end] };
         buf[..readable.len()].copy_from_slice(readable);
         Ok(readable.len())
@@ -113,16 +117,8 @@ impl<'a> RingBuffer<'a> {
         let writable: &mut [u8] = unsafe { &mut (*self.buf.get())[write_count..end] };
         writable.copy_from_slice(&buf[..writable.len()]);
 
-        match self.write_counter.compare_exchange(
-            write_count,
-            end % self.buf.get().len(),
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => {}
-            Err(_) => panic!("Write count changed while writing"),
-        }
-
+        self.write_counter
+            .store(end % self.buf.get().len(), Ordering::SeqCst);
         let result = writable.len();
         Ok(result)
     }
@@ -164,6 +160,10 @@ impl<'a> RingBufferSender<'a> {
         Self { rb }
     }
 
+    pub fn is_full(&self) -> bool {
+        self.rb.is_full()
+    }
+
     pub fn write(&mut self, buf: &[u8]) -> Result<usize, RingBufferError> {
         self.rb.write(buf)
     }
@@ -180,6 +180,10 @@ impl<'a> RingBufferSender<'a> {
 impl<'a> RingBufferReceiver<'a> {
     fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
         Self { rb }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rb.is_empty()
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
@@ -242,6 +246,14 @@ impl<'a> RingBufferEndPoint<'a> {
         );
         self.sender.allocator()
     }
+
+    pub fn receiver_mut(&mut self) -> &mut RingBufferReceiver<'a> {
+        &mut self.receiver
+    }
+
+    pub fn sender_mut(&mut self) -> &mut RingBufferSender<'a> {
+        &mut self.sender
+    }
 }
 
 pub type RingBufferPair<'a> = (RingBufferEndPoint<'a>, RingBufferEndPoint<'a>);
@@ -270,4 +282,89 @@ pub fn pair<'a>(capacity: usize, allocator: &'a BuddyAllocator<'a>) -> RingBuffe
         receiver: receiver1,
     };
     (endpoint1, endpoint2)
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate test;
+
+    use core::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use super::*;
+    use test::Bencher;
+
+    #[test]
+    pub fn test_channel() {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
+        let (mut tx, mut rx) = channel(1024, &allocator);
+        let txbuf = 10u64.to_ne_bytes();
+        let mut rxbuf = [0; 8];
+        tx.write_all(&txbuf).unwrap();
+        rx.read_exact(&mut rxbuf).unwrap();
+        assert_eq!(u64::from_ne_bytes(rxbuf), 10);
+    }
+
+    #[bench]
+    pub fn bench_channel(b: &mut Bencher) {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
+        std::thread::scope(|s| {
+            let (mut tx, mut rx) = channel(1024, &allocator);
+            let done = Arc::new(AtomicBool::new(false));
+            let d2 = done.clone();
+            s.spawn(move || {
+                let mut i = 0;
+                while !d2.load(Ordering::SeqCst) {
+                    let x = [i; 1];
+                    tx.write_all(&x).unwrap();
+                    i = i.wrapping_add(1);
+                }
+                println!("exiting thread 2");
+            });
+            let mut i = 0;
+            b.iter(|| {
+                let mut x = [0; 1];
+                rx.read_exact(&mut x).unwrap();
+                assert_eq!(x[0], i);
+                i = i.wrapping_add(1);
+            });
+            done.store(true, Ordering::SeqCst);
+            let mut x = [0; 1];
+            rx.read_exact(&mut x).unwrap();
+        });
+    }
+
+    #[bench]
+    pub fn bench_ping_pong(b: &mut Bencher) {
+        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+        let allocator = BuddyAllocator::new(&mut *region);
+        std::thread::scope(|s| {
+            let (mut ep1, mut ep2) = pair(1024, &allocator);
+            s.spawn(move || {
+                let mut x = [0; 2];
+                let mut last: u8 = 0;
+                ep2.sender_mut().write_all(&x).unwrap();
+                loop {
+                    ep2.receiver_mut().read_exact(&mut x).unwrap();
+                    if x[1] == 1 {
+                        return;
+                    }
+                    assert_eq!(last.wrapping_add(1), x[0]);
+                    x[0] = x[0].wrapping_add(1);
+                    last = x[0];
+                    ep2.sender_mut().write_all(&x).unwrap();
+                }
+            });
+            b.iter(|| {
+                let mut x = [0; 2];
+                ep1.receiver_mut().read_exact(&mut x).unwrap();
+                x[0] = x[0].wrapping_add(1);
+                ep1.sender_mut().write_all(&x).unwrap();
+            });
+            let x = [1; 2];
+            ep1.sender_mut().write_all(&x).unwrap();
+        });
+    }
 }

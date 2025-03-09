@@ -67,7 +67,7 @@ where
 impl ArcaRef<'_, '_> {
     pub fn handle(&self) -> Handle {
         match self {
-            ArcaRef::Null(h) => Handle::Null(h.handle),
+            ArcaRef::Null(_) => Handle::Null,
             ArcaRef::Blob(h) => Handle::Blob(h.handle),
             ArcaRef::Tree(h) => Handle::Tree(h.handle),
             ArcaRef::Lambda(h) => Handle::Lambda(h.handle),
@@ -126,8 +126,8 @@ impl<'b> Client<'b> {
         'b: 'a,
     {
         match handle {
-            Handle::Null(handle) => ArcaRef::Null(NullRef {
-                handle,
+            Handle::Null => ArcaRef::Null(NullRef {
+                handle: NullHandle,
                 client: self,
             }),
             Handle::Blob(handle) => ArcaRef::Blob(BlobRef {
@@ -153,12 +153,10 @@ impl<'b> Client<'b> {
     where
         'b: 'a,
     {
-        let mut m = self.messenger.lock();
-        if let ArcaRef::Null(n) = self.make_ref(m.send_and_receive_handle(Message::CreateNull)?) {
-            Ok(n)
-        } else {
-            Err(RingBufferError::TypeError)
-        }
+        Ok(NullRef {
+            handle: NullHandle,
+            client: self,
+        })
     }
 
     pub fn create_blob<'a>(&'a self, blob: &[u8]) -> Result<BlobRef<'a, 'b>, RingBufferError>
@@ -214,18 +212,15 @@ where
     'b: 'a,
 {
     pub fn read(&self) -> Result<Arc<[u8], &BuddyAllocator>, RingBufferError> {
-        let handle = self.handle;
-        let mut m = self.client.messenger.lock();
-        let Message::BlobContents { ptr, len } = m.send_and_receive(Message::ReadBlob(handle))?
-        else {
-            return Err(RingBufferError::TypeError);
-        };
-        let allocator = self.client.allocator;
+        let BlobHandle { ptr, len } = self.handle;
         unsafe {
-            let ptr: *const u8 = allocator.from_offset(ptr);
-            let ptr = core::ptr::from_raw_parts(ptr, len);
-            let arc: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(ptr, allocator);
-            Ok(arc)
+            let this: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(
+                core::ptr::from_raw_parts(self.client.allocator.from_offset::<u8>(ptr), len),
+                self.client.allocator,
+            );
+            let new = this.clone();
+            core::mem::forget(this);
+            Ok(new)
         }
     }
 }

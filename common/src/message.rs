@@ -9,7 +9,6 @@ use crate::{
 
 #[derive(Encode, Decode, Debug)]
 pub enum Message {
-    CreateNull,
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
     CreateThunk(BlobHandle),
@@ -17,79 +16,29 @@ pub enum Message {
     Apply(LambdaHandle, Handle),
     Created(Handle),
     Drop(Handle),
-    ReadBlob(BlobHandle),
-    BlobContents { ptr: usize, len: usize },
     Exit,
 }
 
-pub type RawHandle = usize;
-
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
-pub struct NullHandle(RawHandle);
+pub struct NullHandle;
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
-pub struct BlobHandle(RawHandle);
+pub struct BlobHandle {
+    pub ptr: usize,
+    pub len: usize,
+}
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
-pub struct TreeHandle(RawHandle);
+pub struct TreeHandle {
+    pub ptr: usize,
+    pub len: usize,
+}
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
-pub struct LambdaHandle(RawHandle);
+pub struct LambdaHandle(pub usize);
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
-pub struct ThunkHandle(RawHandle);
-
-impl NullHandle {
-    pub fn new(s: RawHandle) -> Self {
-        Self(s)
-    }
-}
-
-impl BlobHandle {
-    pub fn new(s: RawHandle) -> Self {
-        Self(s)
-    }
-}
-
-impl TreeHandle {
-    pub fn new(s: RawHandle) -> Self {
-        Self(s)
-    }
-}
-
-impl LambdaHandle {
-    pub fn new(s: RawHandle) -> Self {
-        Self(s)
-    }
-}
-
-impl ThunkHandle {
-    pub fn new(s: RawHandle) -> Self {
-        Self(s)
-    }
-}
-
-#[repr(u8)]
-enum HandleType {
-    Blob = 0,
-    Tree = 1,
-    Thunk = 2,
-    Lambda = 3,
-}
-
-impl TryFrom<u8> for HandleType {
-    type Error = &'static str;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            _ if value == HandleType::Blob as u8 => Ok(HandleType::Blob),
-            _ if value == HandleType::Tree as u8 => Ok(HandleType::Tree),
-            _ if value == HandleType::Thunk as u8 => Ok(HandleType::Thunk),
-            _ if value == HandleType::Lambda as u8 => Ok(HandleType::Lambda),
-            _ => Err("Invalid raw u8 for HandleType"),
-        }
-    }
-}
+pub struct ThunkHandle(pub usize);
 
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Handle {
-    Null(NullHandle),
+    Null,
     Blob(BlobHandle),
     Tree(TreeHandle),
     Lambda(LambdaHandle),
@@ -98,26 +47,9 @@ pub enum Handle {
 
 pub trait ArcaHandle: Into<Handle> + Copy {}
 
-impl Handle {
-    pub fn to_raw(&self) -> usize {
-        match self {
-            Handle::Null(NullHandle(h))
-            | Handle::Blob(BlobHandle(h))
-            | Handle::Tree(TreeHandle(h))
-            | Handle::Lambda(LambdaHandle(h))
-            | Handle::Thunk(ThunkHandle(h)) => *h,
-        }
-    }
-
-    pub fn to_offset<T: Into<Handle>>(x: T) -> usize {
-        let x: Handle = x.into();
-        x.to_raw()
-    }
-}
-
 impl From<NullHandle> for Handle {
-    fn from(value: NullHandle) -> Handle {
-        Handle::Null(value)
+    fn from(_: NullHandle) -> Handle {
+        Handle::Null
     }
 }
 
@@ -165,6 +97,14 @@ impl<'a> Messenger<'a> {
             sender,
             receiver,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.sender.is_full()
     }
 
     pub fn send(&mut self, msg: Message) -> Result<(), RingBufferError> {

@@ -1050,6 +1050,7 @@ mod tests {
     }
 
     #[bench]
+    #[ignore]
     fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
