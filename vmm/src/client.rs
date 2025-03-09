@@ -24,6 +24,13 @@ impl<'a> Client<'a> {
     }
 }
 
+impl Drop for Client<'_> {
+    fn drop(&mut self) {
+        let mut m = self.messenger.lock();
+        m.send(Message::Exit).unwrap();
+    }
+}
+
 pub struct Ref<'a, 'b, T: ArcaHandle>
 where
     'b: 'a,

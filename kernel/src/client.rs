@@ -1,3 +1,5 @@
+use core::ops::ControlFlow;
+
 use crate::initcell::OnceLock;
 use crate::prelude::*;
 use crate::spinlock::SpinLock;
@@ -56,12 +58,11 @@ fn reconstruct<T: Into<Handle>>(handle: T) -> Box<Value> {
     unsafe { Box::from_raw(ptr) }
 }
 
-pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
+pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> ControlFlow<()> {
     log::debug!("message: {msg:x?}");
     match msg {
         Message::CreateNull => {
             reply(Box::new(Value::Null));
-            true
         }
         Message::CreateBlob { ptr, len } => {
             let blob: Blob = unsafe {
@@ -71,7 +72,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 ))
             };
             reply(Box::new(Value::Blob(blob)));
-            true
         }
         Message::CreateTree { ptr, len } => {
             let vals: Box<[Handle]> = unsafe {
@@ -85,7 +85,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 vec.push(Box::into_inner(reconstruct(v)));
             }
             reply(Box::new(Value::Tree(vec.into())));
-            true
         }
         Message::CreateThunk(handle) => {
             let v = reconstruct(handle);
@@ -93,7 +92,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Blob(b) => reply(Box::new(Value::Thunk(Thunk::from_elf(&b)))),
                 _ => todo!(),
             };
-            true
         }
         Message::Run(handle) => {
             let v = reconstruct(handle);
@@ -101,7 +99,6 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Thunk(thunk) => reply(Box::new(thunk.run(cpu))),
                 _ => todo!(),
             };
-            true
         }
         Message::Apply(lambda, arg) => {
             let v = Box::into_inner(reconstruct(lambda));
@@ -110,12 +107,10 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 Value::Lambda(lambda) => reply(Box::new(Value::Thunk(lambda.apply(arg)))),
                 _ => todo!(),
             };
-            true
         }
         Message::Drop(handle) => {
             let p = reconstruct(handle);
             core::mem::drop(p);
-            false
         }
         Message::ReadBlob(handle) => {
             let v = reconstruct(handle);
@@ -129,19 +124,21 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
                 _ => todo!(),
             };
             core::mem::forget(v);
-            false
+        }
+        Message::Exit => {
+            return ControlFlow::Break(());
         }
         x => todo!("handling {x:?}"),
     }
+    ControlFlow::Continue(())
 }
 
 pub fn run(cpu: &mut Cpu) {
     loop {
         let msg = MESSENGER.lock().receive().expect("Failed to read msg");
-        let cont = process_incoming_message(msg, cpu);
-        core::hint::spin_loop();
-        if !cont {
+        if process_incoming_message(msg, cpu) == ControlFlow::Break(()) {
             return;
         }
+        core::hint::spin_loop();
     }
 }

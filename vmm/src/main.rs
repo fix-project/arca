@@ -262,32 +262,52 @@ fn main() {
         s.spawn(move || {
             let m = Messenger::new(endpoint1);
             let client = Client::new(m);
-            let f = || -> Result<_, RingBufferError> {
-                let x: u64 = 123;
-                let y: u64 = 321;
-                let add = client.create_blob(ADD_ELF)?;
-                let add = ThunkRef::new(add)?;
-                let ArcaRef::Lambda(add) = add.run()? else {
-                    panic!("expected lambda");
-                };
-                let x = client.create_blob(&x.to_ne_bytes())?;
-                let y = client.create_blob(&y.to_ne_bytes())?;
-                let tree = client.create_tree(vec![x.into(), y.into()])?;
-                let thunk = add.apply(tree.into())?;
-                let start = std::time::SystemTime::now();
-                let ArcaRef::Blob(blob) = thunk.run()? else {
-                    panic!("expected blob");
-                };
-                let end = std::time::SystemTime::now();
-                let blob = blob.read()?;
-                assert_eq!(&blob[..], &(444u64.to_ne_bytes()[..]));
-                core::mem::forget(blob);
-                // let inf = client.create_blob(INFINITE_ELF)?;
-                // let mut inf = ThunkRef::new(inf)?;
-                Ok(end.duration_since(start).unwrap())
+            let f = |count| -> Result<(), RingBufferError> {
+                for i in 0..count {
+                    let x = i as u64;
+                    let y = 100u64;
+                    let add = client.create_blob(ADD_ELF)?;
+                    let add = ThunkRef::new(add)?;
+                    let ArcaRef::Lambda(add) = add.run()? else {
+                        panic!("expected lambda");
+                    };
+                    let x = client.create_blob(&x.to_ne_bytes())?;
+                    let y = client.create_blob(&y.to_ne_bytes())?;
+                    let tree = client.create_tree(vec![x.into(), y.into()])?;
+                    let thunk = add.apply(tree.into())?;
+                    let ArcaRef::Blob(blob) = thunk.run()? else {
+                        panic!("expected blob");
+                    };
+                    let blob = blob.read()?;
+                    assert_eq!(&blob[..], &((i as u64 + 100).to_ne_bytes()[..]));
+                }
+                Ok(())
             };
-            let result = f().unwrap();
-            log::info!("running program within Arca took {:?}", result);
+            let inf = client.create_blob(INFINITE_ELF).unwrap();
+            let mut inf = ThunkRef::new(inf).unwrap();
+            let g = |count| -> Result<(), RingBufferError> {
+                for _ in 0..count {
+                    inf = match inf.run()? {
+                        ArcaRef::Lambda(l) => l.apply(ArcaRef::Null(client.null()?))?,
+                        _ => unreachable!(),
+                    };
+                }
+                Ok(())
+            };
+
+            let iters = 100;
+            let start = std::time::SystemTime::now();
+            f(iters).unwrap();
+            let end = std::time::SystemTime::now();
+            let a = end.duration_since(start).unwrap() / iters as u32;
+            log::info!("running add within Arca took {:?}", a);
+
+            let start = std::time::SystemTime::now();
+            g(iters).unwrap();
+            let end = std::time::SystemTime::now();
+            let b = end.duration_since(start).unwrap() / iters as u32;
+
+            log::info!("running infinite within Arca took {:?}", b);
         });
 
         for mut vcpu_fd in cpus.into_iter() {

@@ -19,6 +19,7 @@ pub enum Message {
     Drop(Handle),
     ReadBlob(BlobHandle),
     BlobContents { ptr: usize, len: usize },
+    Exit,
 }
 
 pub type RawHandle = usize;
