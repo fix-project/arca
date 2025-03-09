@@ -170,14 +170,11 @@ impl<'b> Client<'b> {
         let (slice, a) = Arc::into_raw_with_allocator(buf);
         let (ptr, len) = slice.to_raw_parts();
         let ptr = a.to_offset(ptr);
-        let mut m = self.messenger.lock();
-        if let ArcaRef::Blob(b) =
-            self.make_ref(m.send_and_receive_handle(Message::CreateBlob { ptr, len })?)
-        {
-            Ok(b)
-        } else {
-            Err(RingBufferError::TypeError)
-        }
+        let handle = BlobHandle { ptr, len };
+        Ok(BlobRef {
+            handle,
+            client: self,
+        })
     }
 
     pub fn create_tree<'a>(&'a self, tree: Vec<ArcaRef>) -> Result<TreeRef<'a, 'b>, RingBufferError>
