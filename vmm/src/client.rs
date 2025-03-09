@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use common::message::{
-    ArcaHandle, BlobHandle, Handle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
+    ArcaHandle, BlobHandle, Handle, LambdaHandle, Message, Messenger, NullHandle, ThunkHandle,
+    TreeHandle,
 };
 use common::ringbuffer::RingBufferError;
 use common::BuddyAllocator;
@@ -39,6 +40,7 @@ impl<T: ArcaHandle> Drop for Ref<'_, '_, T> {
     }
 }
 
+pub type NullRef<'a, 'b> = Ref<'a, 'b, NullHandle>;
 pub type BlobRef<'a, 'b> = Ref<'a, 'b, BlobHandle>;
 pub type TreeRef<'a, 'b> = Ref<'a, 'b, TreeHandle>;
 pub type LambdaRef<'a, 'b> = Ref<'a, 'b, LambdaHandle>;
@@ -48,6 +50,7 @@ pub enum ArcaRef<'a, 'b>
 where
     'b: 'a,
 {
+    Null(NullRef<'a, 'b>),
     Blob(BlobRef<'a, 'b>),
     Tree(TreeRef<'a, 'b>),
     Lambda(LambdaRef<'a, 'b>),
@@ -57,6 +60,7 @@ where
 impl ArcaRef<'_, '_> {
     pub fn handle(&self) -> Handle {
         match self {
+            ArcaRef::Null(h) => Handle::Null(h.handle),
             ArcaRef::Blob(h) => Handle::Blob(h.handle),
             ArcaRef::Tree(h) => Handle::Tree(h.handle),
             ArcaRef::Lambda(h) => Handle::Lambda(h.handle),
@@ -115,6 +119,10 @@ impl<'b> Client<'b> {
         'b: 'a,
     {
         match handle {
+            Handle::Null(handle) => ArcaRef::Null(NullRef {
+                handle,
+                client: self,
+            }),
             Handle::Blob(handle) => ArcaRef::Blob(BlobRef {
                 handle,
                 client: self,
@@ -131,6 +139,18 @@ impl<'b> Client<'b> {
                 handle,
                 client: self,
             }),
+        }
+    }
+
+    pub fn null<'a>(&'a self) -> Result<NullRef<'a, 'b>, RingBufferError>
+    where
+        'b: 'a,
+    {
+        let mut m = self.messenger.lock();
+        if let ArcaRef::Null(n) = self.make_ref(m.send_and_receive_handle(Message::CreateNull)?) {
+            Ok(n)
+        } else {
+            Err(RingBufferError::TypeError)
         }
     }
 

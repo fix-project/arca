@@ -147,5 +147,5 @@ pub unsafe fn init() {
 
     lapic.set_initial_count(0x10000); // 1ms
 
-    // lapic.set_initial_count(0x40); // 1us
+    lapic.set_initial_count(0x40); // 1us
 }

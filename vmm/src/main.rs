@@ -25,6 +25,7 @@ use vmm::client::Client;
 use vmm::client::ThunkRef;
 
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() {
@@ -261,32 +262,32 @@ fn main() {
         s.spawn(move || {
             let m = Messenger::new(endpoint1);
             let client = Client::new(m);
-            let f = || -> Result<(), RingBufferError> {
+            let f = || -> Result<_, RingBufferError> {
                 let x: u64 = 123;
                 let y: u64 = 321;
-                let blob = client.create_blob(ADD_ELF)?;
-                let thunk = ThunkRef::new(blob)?;
-                let ArcaRef::Lambda(lambda) = thunk.run()? else {
+                let add = client.create_blob(ADD_ELF)?;
+                let add = ThunkRef::new(add)?;
+                let ArcaRef::Lambda(add) = add.run()? else {
                     panic!("expected lambda");
                 };
                 let x = client.create_blob(&x.to_ne_bytes())?;
                 let y = client.create_blob(&y.to_ne_bytes())?;
                 let tree = client.create_tree(vec![x.into(), y.into()])?;
-                let thunk = lambda.apply(tree.into())?;
+                let thunk = add.apply(tree.into())?;
+                let start = std::time::SystemTime::now();
                 let ArcaRef::Blob(blob) = thunk.run()? else {
                     panic!("expected blob");
                 };
+                let end = std::time::SystemTime::now();
                 let blob = blob.read()?;
                 assert_eq!(&blob[..], &(444u64.to_ne_bytes()[..]));
-                Ok(())
+                core::mem::forget(blob);
+                // let inf = client.create_blob(INFINITE_ELF)?;
+                // let mut inf = ThunkRef::new(inf)?;
+                Ok(end.duration_since(start).unwrap())
             };
-            let start = std::time::SystemTime::now();
-            f().unwrap();
-            let end = std::time::SystemTime::now();
-            log::info!(
-                "running program within Arca took {:?}",
-                end.duration_since(start).unwrap()
-            );
+            let result = f().unwrap();
+            log::info!("running program within Arca took {:?}", result);
         });
 
         for mut vcpu_fd in cpus.into_iter() {

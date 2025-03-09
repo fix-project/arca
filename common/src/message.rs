@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Encode, Decode, Debug)]
 pub enum Message {
+    CreateNull,
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
     CreateThunk(BlobHandle),
@@ -23,6 +24,8 @@ pub enum Message {
 pub type RawHandle = usize;
 
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct NullHandle(RawHandle);
+#[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct BlobHandle(RawHandle);
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct TreeHandle(RawHandle);
@@ -30,6 +33,12 @@ pub struct TreeHandle(RawHandle);
 pub struct LambdaHandle(RawHandle);
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ThunkHandle(RawHandle);
+
+impl NullHandle {
+    pub fn new(s: RawHandle) -> Self {
+        Self(s)
+    }
+}
 
 impl BlobHandle {
     pub fn new(s: RawHandle) -> Self {
@@ -79,6 +88,7 @@ impl TryFrom<u8> for HandleType {
 
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Handle {
+    Null(NullHandle),
     Blob(BlobHandle),
     Tree(TreeHandle),
     Lambda(LambdaHandle),
@@ -90,7 +100,8 @@ pub trait ArcaHandle: Into<Handle> + Copy {}
 impl Handle {
     pub fn to_raw(&self) -> usize {
         match self {
-            Handle::Blob(BlobHandle(h))
+            Handle::Null(NullHandle(h))
+            | Handle::Blob(BlobHandle(h))
             | Handle::Tree(TreeHandle(h))
             | Handle::Lambda(LambdaHandle(h))
             | Handle::Thunk(ThunkHandle(h)) => *h,
@@ -100,6 +111,12 @@ impl Handle {
     pub fn to_offset<T: Into<Handle>>(x: T) -> usize {
         let x: Handle = x.into();
         x.to_raw()
+    }
+}
+
+impl From<NullHandle> for Handle {
+    fn from(value: NullHandle) -> Handle {
+        Handle::Null(value)
     }
 }
 
@@ -127,6 +144,7 @@ impl From<ThunkHandle> for Handle {
     }
 }
 
+impl ArcaHandle for NullHandle {}
 impl ArcaHandle for BlobHandle {}
 impl ArcaHandle for TreeHandle {}
 impl ArcaHandle for LambdaHandle {}

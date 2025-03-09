@@ -132,6 +132,7 @@ impl<'a> RingBuffer<'a> {
             match self.read(buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    core::hint::spin_loop();
                     buf = &mut buf[n..];
                 }
                 Err(_) => {}
@@ -143,6 +144,7 @@ impl<'a> RingBuffer<'a> {
     fn write_all(&self, mut buf: &[u8]) -> Result<(), RingBufferError> {
         while !buf.is_empty() {
             if let Ok(n) = self.write(buf) {
+                core::hint::spin_loop();
                 buf = &buf[n..]
             }
         }

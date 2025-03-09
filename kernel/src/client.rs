@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::spinlock::SpinLock;
 use crate::types::Value;
 use common::message::{
-    BlobHandle, Handle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
+    BlobHandle, Handle, LambdaHandle, Message, Messenger, NullHandle, ThunkHandle, TreeHandle,
 };
 
 extern crate alloc;
@@ -15,6 +15,12 @@ pub static MESSENGER: OnceLock<SpinLock<Messenger>> = OnceLock::new();
 
 fn reply(value: Box<Value>) {
     let msg = match value.as_ref() {
+        Value::Null => {
+            let ptr = Box::into_raw(value);
+            Message::Created(Handle::Null(NullHandle::new(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
+        }
         Value::Blob(_) => {
             let ptr = Box::into_raw(value);
             Message::Created(Handle::Blob(BlobHandle::new(
@@ -53,6 +59,10 @@ fn reconstruct<T: Into<Handle>>(handle: T) -> Box<Value> {
 pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
     log::debug!("message: {msg:x?}");
     match msg {
+        Message::CreateNull => {
+            reply(Box::new(Value::Null));
+            true
+        }
         Message::CreateBlob { ptr, len } => {
             let blob: Blob = unsafe {
                 Arc::from_raw(core::ptr::slice_from_raw_parts(
@@ -121,7 +131,7 @@ pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
             core::mem::forget(v);
             false
         }
-        _ => todo!(),
+        x => todo!("handling {x:?}"),
     }
 }
 
@@ -129,6 +139,7 @@ pub fn run(cpu: &mut Cpu) {
     loop {
         let msg = MESSENGER.lock().receive().expect("Failed to read msg");
         let cont = process_incoming_message(msg, cpu);
+        core::hint::spin_loop();
         if !cont {
             return;
         }
