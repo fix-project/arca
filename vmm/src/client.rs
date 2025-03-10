@@ -120,6 +120,70 @@ where
     }
 }
 
+impl Clone for BlobRef<'_, '_> {
+    fn clone(&self) -> Self {
+        unsafe {
+            let BlobHandle { ptr, len } = self.handle;
+            let this: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(
+                core::ptr::from_raw_parts(self.client.allocator.from_offset::<u8>(ptr), len),
+                self.client.allocator,
+            );
+            let new = this.clone();
+            core::mem::forget(this);
+            let (slice, a) = Arc::into_raw_with_allocator(new);
+            let (ptr, len) = slice.to_raw_parts();
+            let ptr = a.to_offset(ptr);
+            let handle = BlobHandle { ptr, len };
+            BlobRef {
+                handle,
+                client: self.client,
+            }
+        }
+    }
+}
+
+impl Clone for TreeRef<'_, '_> {
+    fn clone(&self) -> Self {
+        let msg = Message::Clone(self.handle.into());
+        let mut messenger = self.client.messenger.lock();
+        let Handle::Tree(t) = messenger.send_and_receive_handle(msg).unwrap() else {
+            panic!();
+        };
+        Self {
+            handle: t,
+            client: self.client,
+        }
+    }
+}
+
+impl Clone for LambdaRef<'_, '_> {
+    fn clone(&self) -> Self {
+        let msg = Message::Clone(self.handle.into());
+        let mut messenger = self.client.messenger.lock();
+        let Handle::Lambda(l) = messenger.send_and_receive_handle(msg).unwrap() else {
+            panic!();
+        };
+        Self {
+            handle: l,
+            client: self.client,
+        }
+    }
+}
+
+impl Clone for ThunkRef<'_, '_> {
+    fn clone(&self) -> Self {
+        let msg = Message::Clone(self.handle.into());
+        let mut messenger = self.client.messenger.lock();
+        let Handle::Thunk(t) = messenger.send_and_receive_handle(msg).unwrap() else {
+            panic!();
+        };
+        Self {
+            handle: t,
+            client: self.client,
+        }
+    }
+}
+
 impl<'b> Client<'b> {
     fn make_ref<'a>(&'a self, handle: Handle) -> ArcaRef<'a, 'b>
     where

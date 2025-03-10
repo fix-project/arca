@@ -60,21 +60,21 @@ impl<'a> RingBuffer<'a> {
     }
 
     pub fn is_empty(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         read_count == write_count
     }
 
     pub fn is_full(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         (write_count + 1) % self.buf.get().len() == read_count
     }
 
     fn read(&self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         if read_count == write_count {
             return Err(RingBufferError::WouldBlock);
         }
@@ -89,7 +89,7 @@ impl<'a> RingBuffer<'a> {
         end = min(end, read_count + len);
 
         self.read_counter
-            .store(end % self.buf.get().len(), Ordering::SeqCst);
+            .store(end % self.buf.get().len(), Ordering::Release);
         let readable = unsafe { &(*self.buf.get())[read_count..end] };
         buf[..readable.len()].copy_from_slice(readable);
         Ok(readable.len())
@@ -97,8 +97,8 @@ impl<'a> RingBuffer<'a> {
 
     fn write(&self, buf: &[u8]) -> Result<usize, RingBufferError> {
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         if (write_count + 1) % self.buf.get().len() == read_count {
             return Err(RingBufferError::WouldBlock);
         }
@@ -118,7 +118,7 @@ impl<'a> RingBuffer<'a> {
         writable.copy_from_slice(&buf[..writable.len()]);
 
         self.write_counter
-            .store(end % self.buf.get().len(), Ordering::SeqCst);
+            .store(end % self.buf.get().len(), Ordering::Release);
         let result = writable.len();
         Ok(result)
     }

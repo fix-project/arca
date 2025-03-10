@@ -15,7 +15,8 @@ pub enum Message {
     Run(ThunkHandle),
     Apply(LambdaHandle, Handle),
     ApplyAndRun(LambdaHandle, Handle),
-    Created(Handle),
+    Reply(Handle),
+    Clone(Handle),
     Drop(Handle),
     Exit,
 }
@@ -131,6 +132,14 @@ impl<'a> Messenger<'a> {
         Ok(decoded)
     }
 
+    pub fn receive_handle(&mut self) -> Result<Handle, RingBufferError> {
+        let response = self.receive()?;
+        let Message::Reply(handle) = response else {
+            return Err(RingBufferError::TypeError);
+        };
+        Ok(handle)
+    }
+
     pub fn send_and_receive(&mut self, msg: Message) -> Result<Message, RingBufferError> {
         self.send(msg)?;
         let response = self.receive()?;
@@ -139,11 +148,10 @@ impl<'a> Messenger<'a> {
     }
 
     pub fn send_and_receive_handle(&mut self, msg: Message) -> Result<Handle, RingBufferError> {
-        let response = self.send_and_receive(msg)?;
-        let Message::Created(handle) = response else {
-            return Err(RingBufferError::TypeError);
-        };
-        Ok(handle)
+        self.send(msg)?;
+        let response = self.receive_handle()?;
+        log::debug!("received {response:x?}");
+        Ok(response)
     }
 
     pub fn allocator(&self) -> &'a BuddyAllocator<'a> {

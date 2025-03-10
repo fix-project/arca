@@ -259,23 +259,23 @@ fn main() {
     let lock = AtomicBool::new(false);
     thread::scope(|s| {
         let allocator = &allocator;
-        s.spawn(move || {
+        s.spawn(move || -> Result<(), RingBufferError> {
             let m = Messenger::new(endpoint1);
             let client = Client::new(m);
             let f = |count| -> Result<(), RingBufferError> {
+                let add = client.create_blob(ADD_ELF)?;
+                let add = ThunkRef::new(add)?;
                 for i in 0..count {
                     let x = i as u64;
                     let y = 100u64;
-                    let add = client.create_blob(ADD_ELF)?;
-                    let add = ThunkRef::new(add)?;
+                    let add = add.clone();
                     let ArcaRef::Lambda(add) = add.run()? else {
                         panic!("expected lambda");
                     };
                     let x = client.create_blob(&x.to_ne_bytes())?;
                     let y = client.create_blob(&y.to_ne_bytes())?;
                     let tree = client.create_tree(vec![x.into(), y.into()])?;
-                    let thunk = add.apply(tree.into())?;
-                    let ArcaRef::Blob(blob) = thunk.run()? else {
+                    let ArcaRef::Blob(blob) = add.apply_and_run(tree.into())? else {
                         panic!("expected blob");
                     };
                     let blob = blob.read()?;
@@ -283,9 +283,9 @@ fn main() {
                 }
                 Ok(())
             };
-            let inf = client.create_blob(INFINITE_ELF).unwrap();
-            let inf = ThunkRef::new(inf).unwrap();
-            let ArcaRef::Lambda(mut inf) = inf.run().unwrap() else {
+            let inf = client.create_blob(INFINITE_ELF)?;
+            let inf = ThunkRef::new(inf)?;
+            let ArcaRef::Lambda(mut inf) = inf.run()? else {
                 panic!();
             };
             let g = |count| -> Result<(), RingBufferError> {
@@ -300,7 +300,7 @@ fn main() {
 
             let iters = 100;
             let start = std::time::SystemTime::now();
-            f(iters).unwrap();
+            f(iters)?;
             let end = std::time::SystemTime::now();
             let a = end.duration_since(start).unwrap() / iters as u32;
             log::info!(
@@ -310,7 +310,7 @@ fn main() {
             );
 
             let start = std::time::SystemTime::now();
-            g(iters).unwrap();
+            g(iters)?;
             let end = std::time::SystemTime::now();
             let b = end.duration_since(start).unwrap() / iters as u32;
 
@@ -319,6 +319,7 @@ fn main() {
                 b,
                 1. / b.as_secs_f64()
             );
+            Ok(())
         });
 
         for mut vcpu_fd in cpus.into_iter() {
