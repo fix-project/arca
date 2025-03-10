@@ -266,4 +266,14 @@ where
             Err(RingBufferError::TypeError)
         }
     }
+
+    pub fn apply_and_run(self, value: ArcaRef<'a, 'b>) -> Result<ArcaRef<'a, 'b>, RingBufferError> {
+        // assert_eq!(self.client as *const _, value.client as *const _);
+        let LambdaRef { client, handle } = self;
+        core::mem::forget(self);
+        let arg_handle = value.handle();
+        core::mem::forget(value);
+        let mut m = client.messenger.lock();
+        Ok(client.make_ref(m.send_and_receive_handle(Message::ApplyAndRun(handle, arg_handle))?))
+    }
 }

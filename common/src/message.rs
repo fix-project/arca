@@ -14,6 +14,7 @@ pub enum Message {
     CreateThunk(BlobHandle),
     Run(ThunkHandle),
     Apply(LambdaHandle, Handle),
+    ApplyAndRun(LambdaHandle, Handle),
     Created(Handle),
     Drop(Handle),
     Exit,

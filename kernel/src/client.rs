@@ -118,6 +118,14 @@ pub fn process_incoming_message(m: &mut Messenger, msg: Message, cpu: &mut Cpu) 
                 _ => todo!(),
             };
         }
+        Message::ApplyAndRun(lambda, arg) => {
+            let v = reconstruct(lambda.into());
+            let arg = reconstruct(arg);
+            match v {
+                Value::Lambda(lambda) => reply(m, lambda.apply(arg).run(cpu)),
+                _ => todo!(),
+            };
+        }
         Message::Drop(handle) => {
             let p = reconstruct(handle);
             core::mem::drop(p);

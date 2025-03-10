@@ -284,11 +284,14 @@ fn main() {
                 Ok(())
             };
             let inf = client.create_blob(INFINITE_ELF).unwrap();
-            let mut inf = ThunkRef::new(inf).unwrap();
+            let inf = ThunkRef::new(inf).unwrap();
+            let ArcaRef::Lambda(mut inf) = inf.run().unwrap() else {
+                panic!();
+            };
             let g = |count| -> Result<(), RingBufferError> {
                 for _ in 0..count {
-                    inf = match inf.run()? {
-                        ArcaRef::Lambda(l) => l.apply(ArcaRef::Null(client.null()?))?,
+                    inf = match inf.apply_and_run(ArcaRef::Null(client.null()?))? {
+                        ArcaRef::Lambda(l) => l,
                         _ => unreachable!(),
                     };
                 }
@@ -300,14 +303,22 @@ fn main() {
             f(iters).unwrap();
             let end = std::time::SystemTime::now();
             let a = end.duration_since(start).unwrap() / iters as u32;
-            log::info!("running add within Arca took {:?}", a);
+            log::info!(
+                "running add within Arca took {:?} ({:.0}/s)",
+                a,
+                1. / a.as_secs_f64()
+            );
 
             let start = std::time::SystemTime::now();
             g(iters).unwrap();
             let end = std::time::SystemTime::now();
             let b = end.duration_since(start).unwrap() / iters as u32;
 
-            log::info!("running infinite within Arca took {:?}", b);
+            log::info!(
+                "running infinite within Arca took {:?} ({:.0}/s)",
+                b,
+                1. / b.as_secs_f64()
+            );
         });
 
         for mut vcpu_fd in cpus.into_iter() {
