@@ -55,8 +55,8 @@ extern "C" fn kmain() {
         Value::Null,
         Value::Atom("hello".into()),
         Value::Atom("world".into()),
+        Value::Word(0xcafeb0ba),
         Value::Blob(0x00000000_usize.to_ne_bytes().into()),
-        Value::Blob(0xcafeb0ba_usize.to_ne_bytes().into()),
         Value::Tree(vec![Value::Null, Value::Atom("1".into())].into()),
         Value::Tree(vec![].into()),
     ];
@@ -103,37 +103,23 @@ extern "C" fn kmain() {
     };
     for _ in 0..N {
         let i = 0;
-        let x = ((10 * i + 11) % 31) as u64;
-        let y = ((13 * i + 2) % 29) as u64;
+        let x = (10 * i + 11) % 31;
+        let y = (13 * i + 2) % 29;
         let f = add.clone();
         let f = f.load(&mut cpu);
         let result = f
-            .apply(Value::Tree(
-                vec![
-                    Value::Blob(x.to_ne_bytes().into()),
-                    Value::Blob(y.to_ne_bytes().into()),
-                ]
-                .into(),
-            ))
+            .apply(Value::Tree(vec![Value::Word(x), Value::Word(y)].into()))
             .run();
-        let LoadedValue::Unloaded(Value::Blob(z)) = result else {
-            panic!("add program did not produce a blob");
+        let LoadedValue::Unloaded(Value::Word(z)) = result else {
+            panic!("add program did not produce a word");
         };
-        let bytes: [u8; 8] = (&*z)
-            .try_into()
-            .expect("add program produced a blob of the wrong size");
-        let z = u64::from_ne_bytes(bytes);
         assert_eq!(x + y, z);
     }
 
     if id == 0 {
         log::info!("running add program {} times", ITERS);
     }
-    let tree: Tree = vec![
-        Value::Blob(100u64.to_ne_bytes().into()),
-        Value::Blob(100u64.to_ne_bytes().into()),
-    ]
-    .into();
+    let tree: Tree = vec![Value::Word(100), Value::Word(100)].into();
     let time = kernel::kvmclock::time(|| {
         for _ in 0..ITERS {
             let f = add.clone();
@@ -159,28 +145,23 @@ extern "C" fn kmain() {
     let LoadedValue::Lambda(cadd) = curry.apply(Value::Lambda(add.clone())).run() else {
         panic!("expected lambda after function");
     };
-    let LoadedValue::Lambda(cadd) = cadd.apply(Value::Blob(2_u64.to_ne_bytes().into())).run()
-    else {
+    let LoadedValue::Lambda(cadd) = cadd.apply(Value::Word(2)).run() else {
         panic!("expected lambda after count");
     };
     let cadd = cadd.unload();
     for _ in 0..N {
         let i = 0;
-        let x = ((10 * i + 11) % 31) as u64;
-        let y = ((13 * i + 2) % 29) as u64;
+        let x = (10 * i + 11) % 31;
+        let y = (13 * i + 2) % 29;
         let f = cadd.clone();
         let f = f.load(&mut cpu);
-        let LoadedValue::Lambda(fx) = f.apply(Value::Blob(x.to_ne_bytes().into())).run() else {
+        let LoadedValue::Lambda(fx) = f.apply(Value::Word(x)).run() else {
             panic!();
         };
-        let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
-        let LoadedValue::Unloaded(Value::Blob(z)) = result else {
-            panic!("curried add program did not produce a blob");
+        let result = fx.apply(Value::Word(y)).run();
+        let LoadedValue::Unloaded(Value::Word(z)) = result else {
+            panic!("curried add program did not produce a word");
         };
-        let bytes: [u8; 8] = (&*z)
-            .try_into()
-            .expect("curried add program produced a blob of the wrong size");
-        let z = u64::from_ne_bytes(bytes);
         assert_eq!(x + y, z);
     }
 
@@ -190,20 +171,16 @@ extern "C" fn kmain() {
     let time = kernel::kvmclock::time(|| {
         for _ in 0..ITERS {
             let f = cadd.clone();
-            let x = 100u64;
-            let y = 100u64;
+            let x = 100;
+            let y = 100;
             let f = f.load(&mut cpu);
-            let LoadedValue::Lambda(fx) = f.apply(Value::Blob(x.to_ne_bytes().into())).run() else {
+            let LoadedValue::Lambda(fx) = f.apply(Value::Word(x)).run() else {
                 panic!();
             };
-            let result = fx.apply(Value::Blob(y.to_ne_bytes().into())).run();
-            let LoadedValue::Unloaded(Value::Blob(z)) = result else {
-                panic!("curried add program did not produce a blob: {:?}", result);
+            let result = fx.apply(Value::Word(y)).run();
+            let LoadedValue::Unloaded(Value::Word(z)) = result else {
+                panic!("curried add program did not produce a word: {:?}", result);
             };
-            let bytes: [u8; 8] = (&*z)
-                .try_into()
-                .expect("curried add program produced a blob of the wrong size");
-            let z = u64::from_ne_bytes(bytes);
             assert_eq!(x + y, z);
         }
     });
@@ -236,8 +213,8 @@ extern "C" fn kmain() {
         Value::Null,
         Value::Atom("hello".into()),
         Value::Atom("world".into()),
+        Value::Word(0xcafeb0ba),
         Value::Blob(0x00000000_usize.to_ne_bytes().into()),
-        Value::Blob(0xcafeb0ba_usize.to_ne_bytes().into()),
         Value::Tree(vec![Value::Null, Value::Atom("1".into())].into()),
         Value::Tree(vec![].into()),
     ];

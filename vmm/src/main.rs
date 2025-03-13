@@ -266,20 +266,19 @@ fn main() {
                 let add = client.create_blob(ADD_ELF)?;
                 let add = ThunkRef::new(add)?;
                 for i in 0..count {
-                    let x = i as u64;
+                    let x = i;
                     let y = 100u64;
                     let add = add.clone();
                     let ArcaRef::Lambda(add) = add.run()? else {
                         panic!("expected lambda");
                     };
-                    let x = client.create_blob(&x.to_ne_bytes())?;
-                    let y = client.create_blob(&y.to_ne_bytes())?;
+                    let x = client.create_word(x);
+                    let y = client.create_word(y);
                     let tree = client.create_tree(vec![x.into(), y.into()])?;
-                    let ArcaRef::Blob(blob) = add.apply_and_run(tree.into())? else {
-                        panic!("expected blob");
+                    let ArcaRef::Word(word) = add.apply_and_run(tree.into())? else {
+                        panic!("expected word");
                     };
-                    let blob = blob.read()?;
-                    assert_eq!(&blob[..], &((i as u64 + 100).to_ne_bytes()[..]));
+                    assert_eq!(word.read(), i + 100);
                 }
                 Ok(())
             };

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use common::message::{
     ArcaHandle, BlobHandle, Handle, LambdaHandle, Message, Messenger, NullHandle, ThunkHandle,
-    TreeHandle,
+    TreeHandle, WordHandle,
 };
 use common::ringbuffer::RingBufferError;
 use common::BuddyAllocator;
@@ -48,6 +48,7 @@ impl<T: ArcaHandle> Drop for Ref<'_, '_, T> {
 }
 
 pub type NullRef<'a, 'b> = Ref<'a, 'b, NullHandle>;
+pub type WordRef<'a, 'b> = Ref<'a, 'b, WordHandle>;
 pub type BlobRef<'a, 'b> = Ref<'a, 'b, BlobHandle>;
 pub type TreeRef<'a, 'b> = Ref<'a, 'b, TreeHandle>;
 pub type LambdaRef<'a, 'b> = Ref<'a, 'b, LambdaHandle>;
@@ -58,6 +59,7 @@ where
     'b: 'a,
 {
     Null(NullRef<'a, 'b>),
+    Word(WordRef<'a, 'b>),
     Blob(BlobRef<'a, 'b>),
     Tree(TreeRef<'a, 'b>),
     Lambda(LambdaRef<'a, 'b>),
@@ -68,6 +70,7 @@ impl ArcaRef<'_, '_> {
     pub fn handle(&self) -> Handle {
         match self {
             ArcaRef::Null(_) => Handle::Null,
+            ArcaRef::Word(h) => Handle::Word(h.handle),
             ArcaRef::Blob(h) => Handle::Blob(h.handle),
             ArcaRef::Tree(h) => Handle::Tree(h.handle),
             ArcaRef::Lambda(h) => Handle::Lambda(h.handle),
@@ -84,6 +87,16 @@ where
         value.handle()
     }
 }
+
+impl<'a, 'b> From<WordRef<'a, 'b>> for ArcaRef<'a, 'b>
+where
+    'b: 'a,
+{
+    fn from(value: WordRef<'a, 'b>) -> ArcaRef<'a, 'b> {
+        ArcaRef::Word(value)
+    }
+}
+
 impl<'a, 'b> From<BlobRef<'a, 'b>> for ArcaRef<'a, 'b>
 where
     'b: 'a,
@@ -117,6 +130,15 @@ where
 {
     fn from(value: ThunkRef<'a, 'b>) -> ArcaRef<'a, 'b> {
         ArcaRef::Thunk(value)
+    }
+}
+
+impl Clone for WordRef<'_, '_> {
+    fn clone(&self) -> Self {
+        WordRef {
+            handle: self.handle,
+            client: self.client,
+        }
     }
 }
 
@@ -194,6 +216,10 @@ impl<'b> Client<'b> {
                 handle: NullHandle,
                 client: self,
             }),
+            Handle::Word(handle) => ArcaRef::Word(WordRef {
+                handle,
+                client: self,
+            }),
             Handle::Blob(handle) => ArcaRef::Blob(BlobRef {
                 handle,
                 client: self,
@@ -221,6 +247,16 @@ impl<'b> Client<'b> {
             handle: NullHandle,
             client: self,
         })
+    }
+
+    pub fn create_word<'a>(&'a self, word: u64) -> WordRef<'a, 'b>
+    where
+        'b: 'a,
+    {
+        WordRef {
+            handle: WordHandle(word),
+            client: self,
+        }
     }
 
     pub fn create_blob<'a>(&'a self, blob: &[u8]) -> Result<BlobRef<'a, 'b>, RingBufferError>
@@ -265,6 +301,15 @@ impl<'b> Client<'b> {
         } else {
             Err(RingBufferError::TypeError)
         }
+    }
+}
+
+impl<'a, 'b> Ref<'a, 'b, WordHandle>
+where
+    'b: 'a,
+{
+    pub fn read(&self) -> u64 {
+        self.handle.0
     }
 }
 

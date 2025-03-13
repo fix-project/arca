@@ -222,6 +222,7 @@ impl<'a> LoadedThunk<'a> {
                 defs::syscall::READ => sys_read(args, &mut arca),
                 defs::syscall::TYPE => sys_type(args, &mut arca),
 
+                defs::syscall::CREATE_WORD => sys_create_word(args, &mut arca),
                 defs::syscall::CREATE_BLOB => sys_create_blob(args, &mut arca),
                 defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
 
@@ -321,6 +322,20 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
         return Err(error::BAD_INDEX);
     };
     match val {
+        Value::Word(word) => {
+            log::debug!("reading word");
+            let ptr = args[1] as usize;
+            let bytes = word.to_ne_bytes();
+            unsafe {
+                let success = crate::vm::copy_kernel_to_user(ptr, &bytes);
+
+                if success {
+                    Ok(bytes.len() as u32)
+                } else {
+                    Err(error::BAD_ARGUMENT)
+                }
+            }
+        }
         Value::Blob(blob) => {
             log::debug!("reading blob");
             let ptr = args[1] as usize;
@@ -382,6 +397,7 @@ fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     match val {
         Value::Null => Ok(defs::types::NULL),
         Value::Error(_) => Ok(defs::types::ERROR),
+        Value::Word(_) => Ok(defs::types::WORD),
         Value::Atom(_) => Ok(defs::types::ATOM),
         Value::Blob(_) => Ok(defs::types::BLOB),
         Value::Tree(_) => Ok(defs::types::TREE),
@@ -391,6 +407,16 @@ fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
         Value::Thunk(_) => Ok(defs::types::THUNK),
     }
     .map(|x| x.try_into().expect("type was too large"))
+}
+
+fn sys_create_word(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let idx = args[0] as usize;
+    if idx >= arca.descriptors().len() {
+        return Err(error::BAD_INDEX);
+    }
+    let val = args[1];
+    arca.descriptors_mut()[idx] = Value::Word(val);
+    Ok(0)
 }
 
 fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {

@@ -5,7 +5,7 @@ use crate::prelude::*;
 use crate::spinlock::SpinLock;
 use crate::types::Value;
 use common::message::{
-    BlobHandle, Handle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
+    BlobHandle, Handle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle, WordHandle,
 };
 
 extern crate alloc;
@@ -72,6 +72,7 @@ impl<T> AsRef<T> for MaybeBoxed<T> {
 fn reply(m: &mut Messenger, value: MaybeBoxed<Value>) {
     let msg = match value.as_ref() {
         Value::Null => Message::Reply(Handle::Null),
+        Value::Word(word) => Message::Reply(Handle::Word(WordHandle(*word))),
         Value::Blob(blob) => {
             let ptr = Arc::into_raw(blob.clone());
             Message::Reply(Handle::Blob(BlobHandle {
@@ -98,7 +99,7 @@ fn reply(m: &mut Messenger, value: MaybeBoxed<Value>) {
                 PHYSICAL_ALLOCATOR.to_offset(ptr),
             )))
         }
-        _ => todo!(),
+        _ => todo!("replying with {value:?}"),
     };
     log::debug!("replying {msg:?}");
 
@@ -110,6 +111,7 @@ fn reconstruct(handle: Handle) -> MaybeBoxed<Value> {
     unsafe {
         match handle {
             Handle::Null => Value::Null.into(),
+            Handle::Word(x) => Value::Word(x.0).into(),
             Handle::Blob(handle) => Value::Blob(Arc::from_raw(core::ptr::from_raw_parts(
                 allocator.from_offset::<u8>(handle.ptr),
                 handle.len,

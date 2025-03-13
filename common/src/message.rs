@@ -24,6 +24,8 @@ pub enum Message {
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct NullHandle;
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct WordHandle(pub u64);
+#[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct BlobHandle {
     pub ptr: usize,
     pub len: usize,
@@ -41,6 +43,7 @@ pub struct ThunkHandle(pub usize);
 #[derive(Encode, Decode, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Handle {
     Null,
+    Word(WordHandle),
     Blob(BlobHandle),
     Tree(TreeHandle),
     Lambda(LambdaHandle),
@@ -52,6 +55,12 @@ pub trait ArcaHandle: Into<Handle> + Copy {}
 impl From<NullHandle> for Handle {
     fn from(_: NullHandle) -> Handle {
         Handle::Null
+    }
+}
+
+impl From<WordHandle> for Handle {
+    fn from(value: WordHandle) -> Handle {
+        Handle::Word(value)
     }
 }
 
@@ -80,6 +89,7 @@ impl From<ThunkHandle> for Handle {
 }
 
 impl ArcaHandle for NullHandle {}
+impl ArcaHandle for WordHandle {}
 impl ArcaHandle for BlobHandle {}
 impl ArcaHandle for TreeHandle {}
 impl ArcaHandle for LambdaHandle {}
