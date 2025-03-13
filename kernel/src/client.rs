@@ -1,9 +1,11 @@
+use core::ops::{ControlFlow, Deref};
+
 use crate::initcell::OnceLock;
 use crate::prelude::*;
 use crate::spinlock::SpinLock;
 use crate::types::Value;
 use common::message::{
-    ArcaHandle, BlobHandle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
+    BlobHandle, Handle, LambdaHandle, Message, Messenger, ThunkHandle, TreeHandle,
 };
 
 extern crate alloc;
@@ -13,121 +15,201 @@ use alloc::vec::Vec;
 
 pub static MESSENGER: OnceLock<SpinLock<Messenger>> = OnceLock::new();
 
-fn reply(value: Box<Value>) {
-    let msg = match (&value).as_ref() {
-        Value::Blob(_) => {
-            let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: ArcaHandle::BlobHandle(BlobHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+#[derive(Clone, Debug)]
+enum MaybeBoxed<T> {
+    Unboxed(T),
+    Boxed(Box<T>),
+}
+
+impl<T> From<T> for MaybeBoxed<T> {
+    fn from(value: T) -> Self {
+        MaybeBoxed::Unboxed(value)
+    }
+}
+
+impl<T> From<Box<T>> for MaybeBoxed<T> {
+    fn from(value: Box<T>) -> Self {
+        MaybeBoxed::Boxed(value)
+    }
+}
+
+impl<T> MaybeBoxed<T> {
+    fn unboxed(self) -> T {
+        match self {
+            MaybeBoxed::Unboxed(x) => x,
+            MaybeBoxed::Boxed(x) => *x,
         }
-        Value::Tree(_) => {
-            let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: ArcaHandle::TreeHandle(TreeHandle::new(PHYSICAL_ALLOCATOR.to_offset(ptr))),
-            }
+    }
+
+    fn boxed(self) -> Box<T> {
+        match self {
+            MaybeBoxed::Unboxed(x) => x.into(),
+            MaybeBoxed::Boxed(x) => x,
+        }
+    }
+}
+
+impl<T> Deref for MaybeBoxed<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            MaybeBoxed::Unboxed(x) => x,
+            MaybeBoxed::Boxed(x) => x,
+        }
+    }
+}
+
+impl<T> AsRef<T> for MaybeBoxed<T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            MaybeBoxed::Unboxed(x) => x,
+            MaybeBoxed::Boxed(x) => x,
+        }
+    }
+}
+
+fn reply(m: &mut Messenger, value: MaybeBoxed<Value>) {
+    let msg = match value.as_ref() {
+        Value::Null => Message::Reply(Handle::Null),
+        Value::Blob(blob) => {
+            let ptr = Arc::into_raw(blob.clone());
+            Message::Reply(Handle::Blob(BlobHandle {
+                ptr: PHYSICAL_ALLOCATOR.to_offset(ptr),
+                len: ptr.len(),
+            }))
+        }
+        Value::Tree(tree) => {
+            let ptr = Arc::into_raw(tree.clone());
+            Message::Reply(Handle::Tree(TreeHandle {
+                ptr: PHYSICAL_ALLOCATOR.to_offset(ptr),
+                len: ptr.len(),
+            }))
         }
         Value::Lambda(_) => {
-            let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: ArcaHandle::LambdaHandle(LambdaHandle::new(
-                    PHYSICAL_ALLOCATOR.to_offset(ptr),
-                )),
-            }
+            let ptr = Box::into_raw(value.boxed());
+            Message::Reply(Handle::Lambda(LambdaHandle(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         Value::Thunk(_) => {
-            let ptr = Box::into_raw(value);
-            Message::ReplyMessage {
-                handle: ArcaHandle::ThunkHandle(ThunkHandle::new(
-                    PHYSICAL_ALLOCATOR.to_offset(ptr),
-                )),
-            }
+            let ptr = Box::into_raw(value.boxed());
+            Message::Reply(Handle::Thunk(ThunkHandle(
+                PHYSICAL_ALLOCATOR.to_offset(ptr),
+            )))
         }
         _ => todo!(),
     };
+    log::debug!("replying {msg:?}");
 
-    let _ = MESSENGER.lock().send(msg);
+    m.send(msg).unwrap();
 }
 
-fn reconstruct<T: Into<ArcaHandle>>(handle: T) -> Box<Value> {
-    let ptr = PHYSICAL_ALLOCATOR.from_offset::<Value>(ArcaHandle::to_offset(handle));
-    unsafe { Box::from_raw(ptr as *mut Value) }
+fn reconstruct(handle: Handle) -> MaybeBoxed<Value> {
+    let allocator = &*PHYSICAL_ALLOCATOR;
+    unsafe {
+        match handle {
+            Handle::Null => Value::Null.into(),
+            Handle::Blob(handle) => Value::Blob(Arc::from_raw(core::ptr::from_raw_parts(
+                allocator.from_offset::<u8>(handle.ptr),
+                handle.len,
+            )))
+            .into(),
+            Handle::Tree(handle) => Value::Tree(Arc::from_raw(core::ptr::from_raw_parts(
+                allocator.from_offset::<Value>(handle.ptr),
+                handle.len,
+            )))
+            .into(),
+            Handle::Lambda(lambda) => {
+                Box::<Value>::from_raw(allocator.from_offset(lambda.0)).into()
+            }
+            Handle::Thunk(thunk) => Box::<Value>::from_raw(allocator.from_offset(thunk.0)).into(),
+        }
+    }
 }
 
-pub fn process_incoming_message(msg: Message, cpu: &mut Cpu) -> bool {
+pub fn process_incoming_message(m: &mut Messenger, msg: Message, cpu: &mut Cpu) -> ControlFlow<()> {
+    log::debug!("message: {msg:x?}");
     match msg {
-        Message::CreateBlobMessage { ptr, size } => {
+        Message::CreateBlob { ptr, len } => {
             let blob: Blob = unsafe {
                 Arc::from_raw(core::ptr::slice_from_raw_parts(
                     PHYSICAL_ALLOCATOR.from_offset::<u8>(ptr),
-                    size,
+                    len,
                 ))
             };
-            reply(Box::new(Value::Blob(blob)));
-            log::info!("processed create blob");
-            true
+            reply(m, Value::Blob(blob).into());
         }
-        Message::CreateTreeMessage { ptr, size } => {
-            let vals: Box<[ArcaHandle]> = unsafe {
+        Message::CreateTree { ptr, len } => {
+            let vals: Box<[Handle]> = unsafe {
                 Box::from_raw(core::ptr::slice_from_raw_parts_mut(
-                    PHYSICAL_ALLOCATOR.from_offset::<ArcaHandle>(ptr) as *mut ArcaHandle,
-                    size,
+                    PHYSICAL_ALLOCATOR.from_offset::<Handle>(ptr),
+                    len,
                 ))
             };
             let mut vec = Vec::new();
             for v in vals {
-                vec.push(Box::into_inner(reconstruct(v)));
+                vec.push(reconstruct(v).unboxed());
             }
-            reply(Box::new(Value::Tree(vec.into())));
-            log::info!("processed create tree");
-            true
+            reply(m, Value::Tree(vec.into()).into());
         }
-        Message::CreateThunkMessage { handle } => {
-            let v = reconstruct(handle);
-            match Box::into_inner(v) {
-                Value::Blob(b) => reply(Box::new(Value::Thunk(Thunk::from_elf(&*b)))),
-                _ => todo!(),
-            };
-            log::info!("processed create thunk");
-            true
-        }
-        Message::RunThunkMessage { handle } => {
-            let v = reconstruct(handle);
-            match Box::into_inner(v) {
-                Value::Thunk(thunk) => reply(Box::new(thunk.run(cpu))),
-                _ => todo!(),
-            };
-            log::info!("processed run thunk");
-            true
-        }
-        Message::ApplyMessage {
-            lambda_handle,
-            arg_handle,
-        } => {
-            let v = Box::into_inner(reconstruct(lambda_handle));
-            let arg = Box::into_inner(reconstruct(arg_handle));
+        Message::CreateThunk(handle) => {
+            let v = reconstruct(handle.into()).unboxed();
             match v {
-                Value::Lambda(lambda) => reply(Box::new(Value::Thunk(lambda.apply(arg)))),
+                Value::Blob(b) => reply(m, Value::Thunk(Thunk::from_elf(&b)).into()),
                 _ => todo!(),
             };
-            log::info!("processed apply lambda");
-            true
         }
-        Message::DropMessage { handle } => {
-            reconstruct(handle);
-            log::info!("processed drop");
-            false
+        Message::Run(handle) => {
+            let v = reconstruct(handle.into()).unboxed();
+            match v {
+                Value::Thunk(thunk) => reply(m, thunk.run(cpu).into()),
+                _ => todo!(),
+            };
         }
-        _ => todo!(),
+        Message::Apply(lambda, arg) => {
+            let v = reconstruct(lambda.into()).unboxed();
+            let arg = reconstruct(arg).unboxed();
+            match v {
+                Value::Lambda(lambda) => reply(m, Value::Thunk(lambda.apply(arg)).into()),
+                _ => todo!(),
+            };
+        }
+        Message::ApplyAndRun(lambda, arg) => {
+            let v = reconstruct(lambda.into()).unboxed();
+            let arg = reconstruct(arg).unboxed();
+            match v {
+                Value::Lambda(lambda) => reply(m, lambda.apply(arg).run(cpu).into()),
+                _ => todo!(),
+            };
+        }
+        Message::Clone(handle) => {
+            let p = reconstruct(handle);
+            let q = p.clone();
+            reply(m, q);
+            core::mem::forget(p);
+        }
+        Message::Drop(handle) => {
+            let p = reconstruct(handle);
+            core::mem::drop(p);
+        }
+        Message::Exit => {
+            return ControlFlow::Break(());
+        }
+        x => todo!("handling {x:?}"),
     }
+    ControlFlow::Continue(())
 }
 
-pub fn run(cpu: &mut Cpu) -> () {
+pub fn run(cpu: &mut Cpu) {
     loop {
-        let msg = MESSENGER.lock().get_one().ok().expect("Failed to read msg");
-        let cont = process_incoming_message(msg, cpu);
-        if !cont {
-            return;
+        let mut m = MESSENGER.lock();
+        if !m.is_empty() {
+            let msg = m.receive().expect("Failed to read msg");
+            if process_incoming_message(&mut m, msg, cpu) == ControlFlow::Break(()) {
+                return;
+            }
         }
+        core::hint::spin_loop();
     }
 }

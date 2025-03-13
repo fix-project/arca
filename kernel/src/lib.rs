@@ -8,6 +8,7 @@
 #![feature(bigint_helper_methods)]
 #![feature(box_into_inner)]
 #![feature(new_zeroed_alloc)]
+#![feature(ptr_metadata)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

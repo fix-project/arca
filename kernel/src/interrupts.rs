@@ -69,7 +69,14 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
-            panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
+            if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {
+                panic!(
+                    "Supervisor GP @ {name}+{offset:#x} ({:p})!",
+                    registers.rip as *mut (),
+                );
+            } else {
+                panic!("Supervisor GP @ {:p}!", registers.rip as *mut (),);
+            }
         } else {
             panic!(
                 "Supervisor GP @ {:p}! faulting segment: {:#x}",
@@ -90,12 +97,23 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
             registers.rip = escape as usize as u64;
             return;
         }
-        panic!(
-            "unhandled page fault ({:b}) @ {:p} from RIP={:p}:",
-            registers.code,
-            crate::registers::read_cr2() as *const u8,
-            registers.rip as *const u8,
-        );
+        if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {
+            panic!(
+                "unhandled page fault ({:b}) @ {:p} from RIP={:p} ({}+{:#x}):",
+                registers.code,
+                crate::registers::read_cr2() as *const u8,
+                registers.rip as *const u8,
+                name,
+                offset
+            );
+        } else {
+            panic!(
+                "unhandled page fault ({:b}) @ {:p} from RIP={:p}:",
+                registers.code,
+                crate::registers::read_cr2() as *const u8,
+                registers.rip as *const u8,
+            );
+        }
     }
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);

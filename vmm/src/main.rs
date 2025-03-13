@@ -8,11 +8,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use std::mem;
 use std::thread;
 
 use common::message::Messenger;
 use common::ringbuffer;
+use common::ringbuffer::RingBufferError;
 use common::BuddyAllocator;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
@@ -20,11 +20,12 @@ use elf::ElfBytes;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
-use std::cell::RefCell;
-use vmm::client;
 use vmm::client::ArcaRef;
+use vmm::client::Client;
+use vmm::client::ThunkRef;
 
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() {
@@ -121,7 +122,7 @@ fn main() {
     };
     unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-    let (endpoint1, endpoint2) = ringbuffer::make_ring_buffer_pair(1024, &allocator);
+    let (endpoint1, endpoint2) = ringbuffer::pair(1024, &allocator);
     let endpoint_raw = Box::into_raw(Box::new_in(
         endpoint2.into_raw_parts(&allocator),
         &allocator,
@@ -258,39 +259,67 @@ fn main() {
     let lock = AtomicBool::new(false);
     thread::scope(|s| {
         let allocator = &allocator;
-        s.spawn(move || {
-            let msger = Arc::new(RefCell::new(Messenger::new(endpoint1)));
-            let x: u64 = 1;
-            let y: u64 = 1;
-            let ArcaRef::LambdaRef(lambdaref) = client::create_blob(&msger, ADD_ELF, allocator)
-                .and_then(|blobref| client::create_thunk(&msger, blobref))
-                .and_then(|thunkref| client::run_thunk(&msger, thunkref))
-                .ok()
-                .expect("Failed to create lambda")
-            else {
-                panic!("Expecting LambdaRef")
+        s.spawn(move || -> Result<(), RingBufferError> {
+            let m = Messenger::new(endpoint1);
+            let client = Client::new(m);
+            let f = |count| -> Result<(), RingBufferError> {
+                let add = client.create_blob(ADD_ELF)?;
+                let add = ThunkRef::new(add)?;
+                for i in 0..count {
+                    let x = i as u64;
+                    let y = 100u64;
+                    let add = add.clone();
+                    let ArcaRef::Lambda(add) = add.run()? else {
+                        panic!("expected lambda");
+                    };
+                    let x = client.create_blob(&x.to_ne_bytes())?;
+                    let y = client.create_blob(&y.to_ne_bytes())?;
+                    let tree = client.create_tree(vec![x.into(), y.into()])?;
+                    let ArcaRef::Blob(blob) = add.apply_and_run(tree.into())? else {
+                        panic!("expected blob");
+                    };
+                    let blob = blob.read()?;
+                    assert_eq!(&blob[..], &((i as u64 + 100).to_ne_bytes()[..]));
+                }
+                Ok(())
+            };
+            let inf = client.create_blob(INFINITE_ELF)?;
+            let inf = ThunkRef::new(inf)?;
+            let ArcaRef::Lambda(mut inf) = inf.run()? else {
+                panic!();
+            };
+            let g = |count| -> Result<(), RingBufferError> {
+                for _ in 0..count {
+                    inf = match inf.apply_and_run(ArcaRef::Null(client.null()?))? {
+                        ArcaRef::Lambda(l) => l,
+                        _ => unreachable!(),
+                    };
+                }
+                Ok(())
             };
 
-            let resultref = client::create_blob(&msger, &x.to_ne_bytes(), allocator)
-                .and_then(|xref| {
-                    client::create_blob(&msger, &y.to_ne_bytes(), allocator)
-                        .and_then(move |yref| Ok((xref, yref)))
-                })
-                .and_then(|(xref, yref)| {
-                    client::create_tree(&msger, vec![xref.into(), yref.into()], allocator)
-                })
-                .and_then(|argtreeref| client::apply_lambda(&msger, lambdaref, argtreeref.into()))
-                .and_then(|thunkref| {
-                    if let ArcaRef::ThunkRef(thunkref) = thunkref {
-                        client::run_thunk(&msger, thunkref)
-                    } else {
-                        panic!("Expecting ThunkRef")
-                    }
-                })
-                .ok()
-                .expect("Failed to get result.");
+            let iters = 100;
+            let start = std::time::SystemTime::now();
+            f(iters)?;
+            let end = std::time::SystemTime::now();
+            let a = end.duration_since(start).unwrap() / iters as u32;
+            log::info!(
+                "running add within Arca took {:?} ({:.0}/s)",
+                a,
+                1. / a.as_secs_f64()
+            );
 
-            mem::drop(resultref);
+            let start = std::time::SystemTime::now();
+            g(iters)?;
+            let end = std::time::SystemTime::now();
+            let b = end.duration_since(start).unwrap() / iters as u32;
+
+            log::info!(
+                "running infinite within Arca took {:?} ({:.0}/s)",
+                b,
+                1. / b.as_secs_f64()
+            );
+            Ok(())
         });
 
         for mut vcpu_fd in cpus.into_iter() {

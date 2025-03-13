@@ -24,8 +24,6 @@ const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"))
 extern "C" fn kmain() {
     let id = kernel::coreid();
 
-    kernel::profile::begin();
-
     if id == 0 {
         log::info!("kmain");
     }
@@ -34,7 +32,9 @@ extern "C" fn kmain() {
     let mut cpu = CPU.borrow_mut();
 
     if id == 0 {
+        kernel::profile::begin();
         client::run(&mut cpu);
+        kernel::profile::end();
     }
 
     // Test trap.rs
@@ -336,8 +336,6 @@ extern "C" fn kmain() {
         );
     }
 
-    kernel::profile::end();
-
     if id == 0 {
         log::info!("most frequent functions:");
         let entries = kernel::profile::entries();
@@ -356,7 +354,7 @@ extern "C" fn kmain() {
         let mut entries = Vec::from_iter(entries);
         entries.sort_by_key(|(_name, count)| *count);
         entries.reverse();
-        for (i, &(ref name, count)) in entries[..16].iter().enumerate() {
+        for (i, &(ref name, count)) in entries.iter().take(8).enumerate() {
             log::info!("\t{i}: {count} - {name}");
         }
     }
