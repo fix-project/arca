@@ -6,12 +6,12 @@ use std::{
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread::JoinHandle,
 };
 
-use common::{message::Messenger, ringbuffer, BuddyAllocator};
+use common::{ringbuffer, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{
     kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
@@ -437,8 +437,7 @@ impl<'a> Runtime<'a> {
             &*allocator,
         ));
 
-        let messenger = Mutex::new(Messenger::new(endpoint1));
-        let client = Client::new(messenger);
+        let client = Client::new(endpoint1);
 
         let elf = Arc::new(elf);
 

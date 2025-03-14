@@ -6,6 +6,9 @@
 #![feature(slice_from_ptr_range)]
 #![feature(new_zeroed_alloc)]
 #![feature(sync_unsafe_cell)]
+#![feature(maybe_uninit_as_bytes)]
+#![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_write_slice)]
 #![feature(test)]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
@@ -16,6 +19,7 @@ pub mod arrayvec;
 pub mod controlreg;
 pub mod message;
 pub mod ringbuffer;
+pub mod sendable;
 pub mod util;
 
 #[repr(C)]

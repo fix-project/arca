@@ -1,8 +1,11 @@
 use crate::refcnt::RefCnt;
+use crate::sendable::Sendable;
 use crate::BuddyAllocator;
 use core::alloc::{Allocator, Layout};
 use core::cell::SyncUnsafeCell;
 use core::cmp::min;
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 extern crate alloc;
@@ -18,12 +21,14 @@ struct RingBuffer<'a> {
 }
 
 #[repr(C)]
-pub struct RingBufferSender<'a> {
+pub struct Sender<'a, T: Sendable> {
+    datatype: PhantomData<T>,
     rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
 #[repr(C)]
-pub struct RingBufferReceiver<'a> {
+pub struct Receiver<'a, T: Sendable> {
+    datatype: PhantomData<T>,
     rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
@@ -44,6 +49,9 @@ impl<'a> RingBuffer<'a> {
                 .extend(Layout::new::<AtomicUsize>())
                 .unwrap()
                 .0
+                .extend(Layout::new::<&'a BuddyAllocator<'a>>())
+                .unwrap()
+                .0
                 .extend(Layout::new::<u8>().repeat(capacity).unwrap().0)
                 .unwrap()
                 .0
@@ -52,7 +60,9 @@ impl<'a> RingBuffer<'a> {
             let p = allocator
                 .allocate_zeroed(layout)
                 .expect("failed to allocate");
-            let p: *mut RingBuffer = core::mem::transmute(p);
+            let p: *mut RingBuffer =
+                core::ptr::from_raw_parts_mut(&raw mut (*p.as_ptr())[0], capacity);
+            assert_eq!((*p).buf.get().len(), capacity);
             (*p).read_counter = AtomicUsize::new(0);
             (*p).write_counter = AtomicUsize::new(0);
             (*p).allocator = allocator;
@@ -61,21 +71,21 @@ impl<'a> RingBuffer<'a> {
     }
 
     pub fn is_empty(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::Acquire);
-        let write_count = self.write_counter.load(Ordering::Acquire);
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
         read_count == write_count
     }
 
     pub fn is_full(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::Acquire);
-        let write_count = self.write_counter.load(Ordering::Acquire);
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
         (write_count + 1) % self.buf.get().len() == read_count
     }
 
-    fn read(&self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
+    pub fn read(&self, buf: &mut [MaybeUninit<u8>]) -> Result<usize, RingBufferError> {
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::Acquire);
-        let write_count = self.write_counter.load(Ordering::Acquire);
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
         if read_count == write_count {
             return Err(RingBufferError::WouldBlock);
         }
@@ -89,17 +99,17 @@ impl<'a> RingBuffer<'a> {
 
         end = min(end, read_count + len);
 
-        self.read_counter
-            .store(end % self.buf.get().len(), Ordering::Release);
         let readable = unsafe { &(*self.buf.get())[read_count..end] };
-        buf[..readable.len()].copy_from_slice(readable);
+        buf[..readable.len()].write_copy_of_slice(readable);
+        self.read_counter
+            .store(end % self.buf.get().len(), Ordering::SeqCst);
         Ok(readable.len())
     }
 
-    fn write(&self, buf: &[u8]) -> Result<usize, RingBufferError> {
+    pub fn write(&self, buf: &[u8]) -> Result<usize, RingBufferError> {
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::Acquire);
-        let write_count = self.write_counter.load(Ordering::Acquire);
+        let read_count = self.read_counter.load(Ordering::SeqCst);
+        let write_count = self.write_counter.load(Ordering::SeqCst);
         if (write_count + 1) % self.buf.get().len() == read_count {
             return Err(RingBufferError::WouldBlock);
         }
@@ -111,6 +121,9 @@ impl<'a> RingBuffer<'a> {
             end = read_count - 1;
         } else {
             end = self.buf.get().len();
+            if read_count == 0 {
+                end -= 1;
+            }
         }
 
         end = min(end, write_count + len);
@@ -119,12 +132,12 @@ impl<'a> RingBuffer<'a> {
         writable.copy_from_slice(&buf[..writable.len()]);
 
         self.write_counter
-            .store(end % self.buf.get().len(), Ordering::Release);
+            .store(end % self.buf.get().len(), Ordering::SeqCst);
         let result = writable.len();
         Ok(result)
     }
 
-    fn read_exact(&self, mut buf: &mut [u8]) -> Result<(), RingBufferError> {
+    pub fn read_exact(&self, mut buf: &mut [MaybeUninit<u8>]) {
         while !buf.is_empty() {
             match self.read(buf) {
                 Ok(0) => break,
@@ -136,17 +149,15 @@ impl<'a> RingBuffer<'a> {
                 }
             }
         }
-        Ok(())
     }
 
-    fn write_all(&self, mut buf: &[u8]) -> Result<(), RingBufferError> {
+    pub fn write_all(&self, mut buf: &[u8]) {
         while !buf.is_empty() {
             if let Ok(n) = self.write(buf) {
                 buf = &buf[n..]
             }
             core::hint::spin_loop();
         }
-        Ok(())
     }
 
     pub fn allocator<'b>(&self) -> &'b BuddyAllocator<'a>
@@ -157,21 +168,27 @@ impl<'a> RingBuffer<'a> {
     }
 }
 
-impl<'a> RingBufferSender<'a> {
+impl<'a, T: Sendable> Sender<'a, T> {
     fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
-        Self { rb }
+        Self {
+            rb,
+            datatype: PhantomData,
+        }
     }
 
     pub fn is_full(&self) -> bool {
         self.rb.is_full()
     }
 
-    pub fn write(&mut self, buf: &[u8]) -> Result<usize, RingBufferError> {
-        self.rb.write(buf)
-    }
-
-    pub fn write_all(&mut self, buf: &[u8]) -> Result<(), RingBufferError> {
-        self.rb.write_all(buf)
+    pub fn send(&mut self, data: T) -> Result<(), ()> {
+        unsafe {
+            let slice = core::slice::from_raw_parts(
+                &data as *const _ as *const u8,
+                core::mem::size_of::<T>(),
+            );
+            self.rb.write_all(slice);
+        }
+        Ok(())
     }
 
     pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
@@ -179,21 +196,25 @@ impl<'a> RingBufferSender<'a> {
     }
 }
 
-impl<'a> RingBufferReceiver<'a> {
+impl<'a, T: Sendable> Receiver<'a, T> {
     fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
-        Self { rb }
+        Self {
+            rb,
+            datatype: PhantomData,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.rb.is_empty()
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, RingBufferError> {
-        self.rb.read(buf)
-    }
-
-    pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), RingBufferError> {
-        self.rb.read_exact(buf)
+    pub fn recv(&mut self) -> Result<T, ()> {
+        unsafe {
+            let mut x = MaybeUninit::uninit();
+            let slice = x.as_bytes_mut();
+            self.rb.read_exact(slice);
+            Ok(x.assume_init())
+        }
     }
 
     pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
@@ -201,20 +222,20 @@ impl<'a> RingBufferReceiver<'a> {
     }
 }
 
-pub struct RingBufferEndPoint<'a> {
-    sender: RingBufferSender<'a>,
-    receiver: RingBufferReceiver<'a>,
+pub struct Endpoint<'a, S: Sendable, R: Sendable> {
+    sender: Sender<'a, S>,
+    receiver: Receiver<'a, R>,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct RingBufferEndPointRawData(usize, usize, usize, usize);
+pub struct EndpointRawData(usize, usize, usize, usize);
 
-impl<'a> RingBufferEndPoint<'a> {
-    pub fn into_raw_parts(self, allocator: &BuddyAllocator) -> RingBufferEndPointRawData {
+impl<'a, S: Sendable, R: Sendable> Endpoint<'a, S, R> {
+    pub fn into_raw_parts(self, allocator: &BuddyAllocator) -> EndpointRawData {
         let sender_raw = RefCnt::into_raw(self.sender.rb).to_raw_parts();
         let receiver_raw = RefCnt::into_raw(self.receiver.rb).to_raw_parts();
-        RingBufferEndPointRawData(
+        EndpointRawData(
             allocator.to_offset(sender_raw.0),
             sender_raw.1,
             allocator.to_offset(receiver_raw.0),
@@ -225,23 +246,20 @@ impl<'a> RingBufferEndPoint<'a> {
     /// # Safety
     /// This function's inputs must describe a valid RingBufferEndPoint in the current address
     /// space, managed by the provided allocator.
-    pub unsafe fn from_raw_parts(
-        raw: &RingBufferEndPointRawData,
-        allocator: &'a BuddyAllocator,
-    ) -> Self {
+    pub unsafe fn from_raw_parts(raw: &EndpointRawData, allocator: &'a BuddyAllocator) -> Self {
         let sender_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.0), raw.1);
         let receiver_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.2), raw.3);
         Self {
-            sender: RingBufferSender::new(RefCnt::from_raw_in(sender_ptr, allocator)),
-            receiver: RingBufferReceiver::new(RefCnt::from_raw_in(receiver_ptr, allocator)),
+            sender: Sender::new(RefCnt::from_raw_in(sender_ptr, allocator)),
+            receiver: Receiver::new(RefCnt::from_raw_in(receiver_ptr, allocator)),
         }
     }
 
-    pub fn into_sender_receiver(self) -> (RingBufferSender<'a>, RingBufferReceiver<'a>) {
+    pub fn into_sender_receiver(self) -> (Sender<'a, S>, Receiver<'a, R>) {
         (self.sender, self.receiver)
     }
 
-    pub fn allocator(&self) -> &BuddyAllocator {
+    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
         assert_eq!(
             self.sender.allocator() as *const _,
             self.receiver.allocator() as *const _
@@ -249,37 +267,37 @@ impl<'a> RingBufferEndPoint<'a> {
         self.sender.allocator()
     }
 
-    pub fn receiver_mut(&mut self) -> &mut RingBufferReceiver<'a> {
+    pub fn receiver_mut(&mut self) -> &mut Receiver<'a, R> {
         &mut self.receiver
     }
 
-    pub fn sender_mut(&mut self) -> &mut RingBufferSender<'a> {
+    pub fn sender_mut(&mut self) -> &mut Sender<'a, S> {
         &mut self.sender
     }
 }
 
-pub type RingBufferPair<'a> = (RingBufferEndPoint<'a>, RingBufferEndPoint<'a>);
+pub type RingBufferPair<'a, A, B> = (Endpoint<'a, A, B>, Endpoint<'a, B, A>);
 
-fn channel<'a>(
+fn channel<'a, T: Sendable>(
     capacity: usize,
     allocator: &'a BuddyAllocator<'a>,
-) -> (RingBufferSender<'a>, RingBufferReceiver<'a>) {
+) -> (Sender<'a, T>, Receiver<'a, T>) {
     let rb: RefCnt<'a, RingBuffer> = RingBuffer::new_in(capacity, allocator).into();
-    (
-        RingBufferSender::new(rb.clone()),
-        RingBufferReceiver::new(rb),
-    )
+    (Sender::new(rb.clone()), Receiver::new(rb))
 }
 
-pub fn pair<'a>(capacity: usize, allocator: &'a BuddyAllocator<'a>) -> RingBufferPair<'a> {
+pub fn pair<'a, A: Sendable, B: Sendable>(
+    capacity: usize,
+    allocator: &'a BuddyAllocator<'a>,
+) -> RingBufferPair<'a, A, B> {
     let (sender1, receiver1) = channel(capacity, allocator);
     let (sender2, receiver2) = channel(capacity, allocator);
 
-    let endpoint1: RingBufferEndPoint = RingBufferEndPoint {
+    let endpoint1: Endpoint<A, B> = Endpoint {
         sender: sender1,
         receiver: receiver2,
     };
-    let endpoint2: RingBufferEndPoint = RingBufferEndPoint {
+    let endpoint2: Endpoint<B, A> = Endpoint {
         sender: sender2,
         receiver: receiver1,
     };
@@ -301,11 +319,10 @@ mod tests {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         let (mut tx, mut rx) = channel(1024, &allocator);
-        let txbuf = 10u64.to_ne_bytes();
-        let mut rxbuf = [0; 8];
-        tx.write_all(&txbuf).unwrap();
-        rx.read_exact(&mut rxbuf).unwrap();
-        assert_eq!(u64::from_ne_bytes(rxbuf), 10);
+        let txbuf = 10u64;
+        tx.send(txbuf).unwrap();
+        let rxbuf = rx.recv().unwrap();
+        assert_eq!(rxbuf, txbuf);
     }
 
     #[bench]
@@ -317,24 +334,21 @@ mod tests {
             let done = Arc::new(AtomicBool::new(false));
             let d2 = done.clone();
             s.spawn(move || {
-                let mut i = 0;
+                let mut i = 0u64;
                 while !d2.load(Ordering::SeqCst) {
                     let x = [i; 1];
-                    tx.write_all(&x).unwrap();
+                    tx.send(x).unwrap();
                     i = i.wrapping_add(1);
                 }
-                println!("exiting thread 2");
             });
-            let mut i = 0;
+            let mut i: u64 = 0;
             b.iter(|| {
-                let mut x = [0; 1];
-                rx.read_exact(&mut x).unwrap();
+                let x = rx.recv().unwrap();
                 assert_eq!(x[0], i);
                 i = i.wrapping_add(1);
             });
             done.store(true, Ordering::SeqCst);
-            let mut x = [0; 1];
-            rx.read_exact(&mut x).unwrap();
+            let _ = rx.recv().unwrap();
         });
     }
 
@@ -345,28 +359,27 @@ mod tests {
         std::thread::scope(|s| {
             let (mut ep1, mut ep2) = pair(1024, &allocator);
             s.spawn(move || {
-                let mut x = [0; 2];
-                let mut last: u8 = 0;
-                ep2.sender_mut().write_all(&x).unwrap();
+                let x = [0u64; 2];
+                let mut last: u64 = 0;
+                ep2.sender_mut().send(x).unwrap();
                 loop {
-                    ep2.receiver_mut().read_exact(&mut x).unwrap();
+                    let mut x: [u64; 2] = ep2.receiver_mut().recv().unwrap();
                     if x[1] == 1 {
                         return;
                     }
                     assert_eq!(last.wrapping_add(1), x[0]);
                     x[0] = x[0].wrapping_add(1);
                     last = x[0];
-                    ep2.sender_mut().write_all(&x).unwrap();
+                    ep2.sender_mut().send(x).unwrap();
                 }
             });
             b.iter(|| {
-                let mut x = [0; 2];
-                ep1.receiver_mut().read_exact(&mut x).unwrap();
+                let mut x = ep1.receiver_mut().recv().unwrap();
                 x[0] = x[0].wrapping_add(1);
-                ep1.sender_mut().write_all(&x).unwrap();
+                ep1.sender_mut().send(x).unwrap();
             });
             let x = [1; 2];
-            ep1.sender_mut().write_all(&x).unwrap();
+            ep1.sender_mut().send(x).unwrap();
         });
     }
 }

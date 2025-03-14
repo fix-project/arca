@@ -40,6 +40,24 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
         assert_ne!((*allocator.refcnt(ptr)).load(Ordering::SeqCst), 0);
         rc
     }
+
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        let refcnt = Self::refcnt(this);
+        if refcnt.load(Ordering::SeqCst) == 1 {
+            unsafe { Some(Self::get_mut_unchecked(this)) }
+        } else {
+            None
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Gets a mutable reference to the contents of this RefCnt. The caller is responsible for
+    /// ensuring there are no other references to these contents which would violate Rust's
+    /// aliasing model.
+    pub unsafe fn get_mut_unchecked(this: &mut Self) -> &mut T {
+        unsafe { &mut *this.ptr }
+    }
 }
 
 impl<'a, T: Clone> RefCnt<'a, T> {

@@ -258,7 +258,12 @@ impl AllocatorInner {
             let p = allocator
                 .allocate_zeroed(layout)
                 .expect("could not allocate space for allocator bitmap");
+
+            // TODO: this is being allocated wrong
             let p: *mut AllocatorInner = core::mem::transmute(p);
+            // let p: *mut AllocatorInner =
+            //     core::ptr::from_raw_parts_mut(&raw mut (*p.as_ptr())[0], space);
+            // log::info!("size of p: {}", core::mem::size_of_val(&*p));
             (*p).free.get().write([None; 64]);
             (&raw mut (*p).meta).write(AllocatorMetadata {
                 refcnt: AtomicUsize::new(1),

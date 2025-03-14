@@ -49,9 +49,10 @@ pub(crate) fn tick(registers: &IsrRegisterFile) {
     let end = &raw const _etext;
     let rip = registers.rip as *const u8;
     if rip < start || rip >= end {
-        log::warn!("instruction pointer {rip:p} was not within kernel");
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
-        return;
+        log::error!("instruction pointer {rip:p} was not within kernel");
+        crate::exit(1);
+        // return;
     }
 
     unsafe {

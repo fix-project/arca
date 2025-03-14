@@ -7,7 +7,6 @@ use alloc::boxed::Box;
 use log::LevelFilter;
 
 use crate::{
-    client::MESSENGER,
     debugcon::DEBUG,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
@@ -15,12 +14,13 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
+    server::{Server, SERVER},
     spinlock::SpinLock,
     vm,
 };
 
-use common::ringbuffer::{RingBufferEndPoint, RingBufferEndPointRawData};
-use common::{buddy::BuddyAllocatorRawData, message::Messenger};
+use common::buddy::BuddyAllocatorRawData;
+use common::ringbuffer::{Endpoint, EndpointRawData};
 
 extern "C" {
     fn kmain();
@@ -98,13 +98,12 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
         let sync = SYNC.lock();
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
 
-        let raw_rb_data = Box::from_raw(
-            PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr),
-        );
-        let endpoint = RingBufferEndPoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+        let raw_rb_data =
+            Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
+        let endpoint = Endpoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
         core::mem::forget(raw_rb_data);
-        let messenger = Messenger::new(endpoint);
-        let _ = MESSENGER.set(SpinLock::new(messenger));
+        let server = Server::new(endpoint);
+        let _ = SERVER.set(server);
         sync
     } else {
         PHYSICAL_ALLOCATOR.wait();

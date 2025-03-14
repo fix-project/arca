@@ -29,10 +29,10 @@ pub mod page;
 pub mod paging;
 pub mod rt;
 // pub mod tsc;
-pub mod client;
 pub mod host;
 pub mod prelude;
 pub mod profile;
+pub mod server;
 pub mod types;
 pub mod vm;
 
@@ -76,9 +76,13 @@ pub fn pause() {
 }
 
 pub fn shutdown() -> ! {
+    exit(0);
+}
+
+pub fn exit(code: u8) -> ! {
     loop {
         unsafe {
-            io::outb(0, 0);
+            io::outb(0, code);
         }
         core::hint::spin_loop();
     }

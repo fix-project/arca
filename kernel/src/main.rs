@@ -9,7 +9,7 @@ use core::time::Duration;
 
 use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
-use kernel::{client, kvmclock, prelude::*};
+use kernel::{kvmclock, prelude::*, server};
 
 const TRAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_trap"));
 const IDENTITY_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
@@ -36,7 +36,8 @@ extern "C" fn kmain() {
 
     if id == 0 {
         kernel::profile::begin();
-        client::run(&mut cpu);
+        let server = server::SERVER.wait();
+        server.run(&mut cpu);
         kernel::profile::end();
         return;
     }

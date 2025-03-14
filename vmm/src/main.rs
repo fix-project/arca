@@ -1,15 +1,13 @@
 #![feature(allocator_api)]
 
 use std::num::NonZero;
-use std::time::Duration;
 
 use kvm_ioctls::Kvm;
-use vmm::client::ArcaRef;
 use vmm::runtime::Mmap;
 use vmm::runtime::Runtime;
 
 // const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
-const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
+// const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
 // const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() -> anyhow::Result<()> {
@@ -23,25 +21,17 @@ fn main() -> anyhow::Result<()> {
     let runtime = Runtime::new(&kvm, &mut mmap, smp);
     log::info!("creating client");
     let client = runtime.client();
-    log::info!("sleeping");
-    std::thread::sleep(Duration::from_millis(100));
+    let port = client.port();
     let iters = 100000;
-    log::info!("creating blob");
-    let inf = client.create_blob(INFINITE_ELF);
-    let inf = inf.into_thunk()?;
-    let ArcaRef::Lambda(mut inf) = inf.run()? else {
-        panic!();
-    };
     let start = std::time::SystemTime::now();
+    let y = port.word(0xcafeb0ba);
     for _ in 0..iters {
-        let ArcaRef::Lambda(result) = inf.apply_and_run(client.null().into())? else {
-            panic!();
-        };
-        inf = result;
+        port.word(0xcafeb0ba);
     }
     let end = std::time::SystemTime::now();
     log::info!(
-        "running infinite program took {:?}",
+        "{:#x} - time={:?}",
+        y.read(),
         end.duration_since(start).unwrap() / iters
     );
     Ok(())
