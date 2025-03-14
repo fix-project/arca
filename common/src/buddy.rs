@@ -86,6 +86,10 @@ impl<'a> BitSlice<'a> {
         )
     }
 
+    pub fn data(&self) -> &[u64] {
+        self.data
+    }
+
     pub fn len(&self) -> usize {
         self.bits
     }
@@ -259,11 +263,8 @@ impl AllocatorInner {
                 .allocate_zeroed(layout)
                 .expect("could not allocate space for allocator bitmap");
 
-            // TODO: this is being allocated wrong
-            let p: *mut AllocatorInner = core::mem::transmute(p);
-            // let p: *mut AllocatorInner =
-            //     core::ptr::from_raw_parts_mut(&raw mut (*p.as_ptr())[0], space);
-            // log::info!("size of p: {}", core::mem::size_of_val(&*p));
+            let p: *mut AllocatorInner =
+                core::ptr::from_raw_parts_mut(&raw mut (*p.as_ptr())[0], space);
             (*p).free.get().write([None; 64]);
             (&raw mut (*p).meta).write(AllocatorMetadata {
                 refcnt: AtomicUsize::new(1),
@@ -294,7 +295,7 @@ impl AllocatorInner {
 
     pub fn size_of_level_words(&self, level: u32) -> usize {
         self.size_of_level_bits(level)
-            .div_ceil(core::mem::size_of::<AtomicU64>())
+            .div_ceil(core::mem::size_of::<AtomicU64>() * 8)
     }
 
     pub fn offset_of_level_words(&self, level: u32) -> usize {
@@ -318,12 +319,10 @@ impl AllocatorInner {
     ) -> T {
         let start = self.offset_of_level_words(level);
         let size = self.size_of_level_words(level);
-        let end = start + size;
         let (slice, free) = unsafe {
             // safe since we have the lock
             let start = &raw mut (*self.data.get())[start];
-            let end = &raw mut (*self.data.get())[end];
-            let slice = core::slice::from_mut_ptr_range(Range { start, end }.into());
+            let slice = core::slice::from_raw_parts_mut(start, size);
             let free = &mut (*self.free.get())[level as usize];
             (slice, free)
         };
@@ -520,10 +519,11 @@ impl<'a> BuddyAllocator<'a> {
             let new_inner = Box::leak(Pin::into_inner_unchecked(new_inner));
             let src = &raw const *inner;
             let dst = &raw mut *new_inner;
-            let (src, src_size) = src.to_raw_parts();
-            let (dst, dst_size) = dst.to_raw_parts();
-            assert_eq!(src_size, dst_size);
-            core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
+            core::ptr::copy_nonoverlapping(
+                src as *mut u8,
+                dst as *mut u8,
+                core::mem::size_of_val_raw(src),
+            );
             &*(new_inner as *mut AllocatorInner)
         };
         let new_refcnt = unsafe {
@@ -533,7 +533,11 @@ impl<'a> BuddyAllocator<'a> {
             let (src, src_size) = src.to_raw_parts();
             let (dst, dst_size) = dst.to_raw_parts();
             assert_eq!(src_size, dst_size);
-            core::ptr::copy_nonoverlapping(src as *mut u8, dst as *mut u8, src_size);
+            core::ptr::copy_nonoverlapping(
+                src as *mut u8,
+                dst as *mut u8,
+                core::mem::size_of_val_raw(src),
+            );
             &*(new_refcnt as *mut [AtomicUsize])
         };
 

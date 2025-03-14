@@ -9,6 +9,7 @@
 #![feature(maybe_uninit_as_bytes)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_write_slice)]
+#![feature(layout_for_ptr)]
 #![feature(test)]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
