@@ -11,7 +11,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use common::{message::Messenger, ringbuffer, BuddyAllocator};
+use common::{ringbuffer, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{
     kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
@@ -34,7 +34,7 @@ impl Mmap {
                 std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
+                libc::MAP_ANONYMOUS | libc::MAP_SHARED,
                 -1,
                 0,
             ) as *mut u8
@@ -208,13 +208,35 @@ impl<'a> Cpu<'a> {
     ) {
         let mut log_record: usize = 0;
         let mut symtab_record: usize = 0;
+
+        let lookup = |target| {
+            let (symtab, strtab) = elf
+                .symbol_table()
+                .expect("could not parse ELF file")
+                .expect("could not find symbol table");
+            symtab.into_iter().find_map(|symbol| {
+                let index = symbol.st_name as usize;
+                let addr = symbol.st_value as usize;
+                let size = symbol.st_size as usize;
+                let end = addr + size;
+                if target >= addr && target < end {
+                    let name = strtab.get(index).unwrap();
+                    let name = rustc_demangle::demangle(name);
+                    Some((name.to_string(), addr))
+                } else {
+                    None
+                }
+            })
+        };
+
         while !exit.load(Ordering::Acquire) {
             vcpu_fd
                 .set_mp_state(kvm_bindings::kvm_mp_state {
                     mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
                 })
                 .unwrap();
-            match vcpu_fd.run().expect("run failed") {
+            let vcpu_exit = vcpu_fd.run().expect("run failed");
+            match vcpu_exit {
                 VcpuExit::IoIn(addr, data) => println!(
                     "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
                     addr, data[0],
@@ -278,24 +300,8 @@ impl<'a> Cpu<'a> {
                         let record: *mut common::SymtabRecord =
                             allocator.from_offset(symtab_record);
                         let record: &mut common::SymtabRecord = unsafe { &mut *record };
-                        let (symtab, strtab) = elf
-                            .symbol_table()
-                            .expect("could not parse ELF file")
-                            .expect("could not find symbol table");
                         let target = record.addr;
-                        if let Some((name, addr)) = symtab.into_iter().find_map(|symbol| {
-                            let index = symbol.st_name as usize;
-                            let addr = symbol.st_value as usize;
-                            let size = symbol.st_size as usize;
-                            let end = addr + size;
-                            if target >= addr && target < end {
-                                let name = strtab.get(index).unwrap();
-                                let name = rustc_demangle::demangle(name);
-                                Some((name.to_string(), addr))
-                            } else {
-                                None
-                            }
-                        }) {
+                        if let Some((name, addr)) = lookup(target) {
                             record.file_len = name.len();
                             let (ptr, cap) = record.file_buffer;
                             let buffer: &mut [u8] = unsafe {
@@ -334,7 +340,16 @@ impl<'a> Cpu<'a> {
                         addr, data[0]
                     );
                 }
-                r => panic!("Unexpected exit reason: {:?}", r),
+                r => {
+                    let error = format!("{:?}", r);
+                    let regs = vcpu_fd.get_regs().unwrap();
+                    let rip = regs.rip as usize;
+                    if let Some((name, _)) = lookup(rip) {
+                        panic!("Unexpected exit reason: {} (in {})", error, name);
+                    } else {
+                        panic!("Unexpected exit reason: {} (@ {:#x})", error, rip);
+                    }
+                }
             }
         }
     }
@@ -353,7 +368,7 @@ impl Drop for Cpu<'_> {
 
 pub struct Runtime<'a> {
     client: Client<'a>,
-    _cpus: Vec<Cpu<'a>>,
+    cpus: Mutex<Vec<Cpu<'a>>>,
     _allocator: Box<BuddyAllocator<'a>>,
 }
 
@@ -430,15 +445,14 @@ impl<'a> Runtime<'a> {
 
         // This is okay because the allocator is in a fixed location on the heap, and will not be
         // freed until after everything holding this reference has been destroyed.
-        let a: &'a BuddyAllocator<'a> = unsafe { core::mem::transmute(&*allocator) };
+        let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
         let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
         let endpoint_raw = Box::into_raw(Box::new_in(
             endpoint2.into_raw_parts(&allocator),
             &*allocator,
         ));
 
-        let messenger = Mutex::new(Messenger::new(endpoint1));
-        let client = Client::new(messenger);
+        let client = Client::new(endpoint1);
 
         let elf = Arc::new(elf);
 
@@ -464,9 +478,9 @@ impl<'a> Runtime<'a> {
                 a,
                 elf.clone(),
                 &[
+                    cores as u64,
                     allocator.to_offset(allocator_raw) as u64,
                     allocator.to_offset(endpoint_raw) as u64,
-                    0,
                     0,
                     0,
                     0,
@@ -476,12 +490,18 @@ impl<'a> Runtime<'a> {
         }
         Self {
             client,
-            _cpus: cpus,
+            cpus: Mutex::new(cpus),
             _allocator: allocator,
         }
     }
 
-    pub fn client(&self) -> &Client<'a> {
+    pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    pub fn shutdown(&self) {
+        self.client.shutdown();
+        let mut cpus = self.cpus.lock().unwrap();
+        cpus.drain(..);
     }
 }

@@ -660,8 +660,10 @@ impl<'a> BuddyAllocator<'a> {
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
             });
-        unsafe {
-            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        if !ptr.is_null() {
+            unsafe {
+                (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+            }
         }
         ptr
     }
@@ -702,6 +704,9 @@ impl<'a> BuddyAllocator<'a> {
     ///
     /// This allocator must be locked by the current thread.
     pub unsafe fn free_raw_unchecked(&self, ptr: *mut (), size: usize) {
+        if ptr.is_null() {
+            return;
+        }
         assert_eq!((*self.refcnt(ptr)).load(Ordering::SeqCst), 0);
         let level = size.next_power_of_two().ilog2();
         assert_ne!(self.inner.meta.level_range.start, 0);
@@ -729,6 +734,7 @@ impl<'a> BuddyAllocator<'a> {
     }
 
     pub fn refcnt<T: ?Sized>(&self, allocation: *const T) -> *const AtomicUsize {
+        debug_assert!(!allocation.is_null());
         let offset = self.to_offset(allocation) / Self::MIN_ALLOCATION;
         &raw const self.refcnt[offset]
     }
