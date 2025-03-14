@@ -19,8 +19,8 @@ use crate::{
     vm,
 };
 
-use common::message::Messenger;
 use common::ringbuffer::{RingBufferEndPoint, RingBufferEndPointRawData};
+use common::{buddy::BuddyAllocatorRawData, message::Messenger};
 
 extern "C" {
     fn kmain();
@@ -62,13 +62,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 static SYNC: SpinLock<()> = SpinLock::new(());
 
 #[no_mangle]
-unsafe extern "C" fn _start(
-    inner_offset: usize,
-    inner_size: usize,
-    refcnt_offset: usize,
-    refcnt_size: usize,
-    ring_buffer_data_ptr: usize,
-) -> ! {
+unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usize) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;
@@ -96,13 +90,9 @@ unsafe extern "C" fn _start(
         } else {
             log::set_max_level(LevelFilter::Info);
         }
-        let raw = common::buddy::BuddyAllocatorRawData {
-            base: vm::pa2ka(0),
-            inner_offset,
-            inner_size,
-            refcnt_offset,
-            refcnt_size,
-        };
+        let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr);
+        let mut raw = *ptr;
+        raw.base = vm::pa2ka(0);
         let allocator = common::BuddyAllocator::from_raw_parts(raw);
 
         let sync = SYNC.lock();

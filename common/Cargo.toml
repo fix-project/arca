@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["std", "thread_local_cache"]
-std = []
+std = ["snafu/std"]
 thread_local_cache = ["cache"]
 core_local_cache = ["macros", "cache"]
 cache = []

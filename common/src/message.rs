@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Encode, Decode, Debug)]
 pub enum Message {
+    Nop,
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
     CreateThunk(BlobHandle),

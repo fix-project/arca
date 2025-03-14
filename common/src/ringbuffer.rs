@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 extern crate alloc;
 use alloc::boxed::Box;
+use snafu::Snafu;
 
 #[repr(C)]
 struct RingBuffer<'a> {
@@ -26,7 +27,7 @@ pub struct RingBufferReceiver<'a> {
     rb: RefCnt<'a, RingBuffer<'a>>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Snafu)]
 pub enum RingBufferError {
     WouldBlock,
     ParseError,

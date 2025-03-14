@@ -452,6 +452,7 @@ impl AllocatorInner {
 #[repr(C)]
 pub struct BuddyAllocator<'a> {
     base: *mut (),
+    size: usize,
     caching: bool,
     inner: Pin<&'a AllocatorInner>,
     refcnt: Pin<&'a [AtomicUsize]>,
@@ -464,9 +465,10 @@ impl core::fmt::Debug for BuddyAllocator<'_> {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct BuddyAllocatorRawData {
     pub base: *mut (),
+    pub size: usize,
     pub inner_offset: usize,
     pub inner_size: usize,
     pub refcnt_offset: usize,
@@ -494,6 +496,7 @@ impl<'a> BuddyAllocator<'a> {
 
         let temp = BuddyAllocator {
             base,
+            size: slice.len(),
             caching: false,
             inner: inner.as_ref(),
             refcnt: refcnt.as_ref(),
@@ -531,6 +534,7 @@ impl<'a> BuddyAllocator<'a> {
 
         let allocator = BuddyAllocator {
             base,
+            size: slice.len(),
             caching: cfg!(feature = "cache"),
             inner: Pin::static_ref(new_inner),
             refcnt: Pin::static_ref(new_refcnt),
@@ -712,6 +716,7 @@ impl<'a> BuddyAllocator<'a> {
     pub fn from_offset<T>(&self, offset: usize) -> *mut T {
         assert!(offset & 0xFFFF800000000000 == 0);
         let base = self.base;
+        debug_assert!(base as usize & 0xFFF == 0);
         (base as usize + offset) as *mut T
     }
 
@@ -741,6 +746,7 @@ impl<'a> BuddyAllocator<'a> {
     pub fn into_raw_parts(self) -> BuddyAllocatorRawData {
         let BuddyAllocator {
             base,
+            size,
             caching: _caching,
             inner,
             refcnt,
@@ -755,6 +761,7 @@ impl<'a> BuddyAllocator<'a> {
         let refcnt_offset = refcnt as usize - base as usize;
         BuddyAllocatorRawData {
             base,
+            size,
             inner_offset,
             inner_size,
             refcnt_offset,
@@ -769,6 +776,7 @@ impl<'a> BuddyAllocator<'a> {
     pub unsafe fn from_raw_parts(raw: BuddyAllocatorRawData) -> Self {
         let BuddyAllocatorRawData {
             base,
+            size,
             inner_offset,
             inner_size,
             refcnt_offset,
@@ -779,10 +787,24 @@ impl<'a> BuddyAllocator<'a> {
         let refcnt = core::ptr::from_raw_parts_mut(base.byte_add(refcnt_offset), refcnt_size);
         BuddyAllocator {
             base,
+            size,
             caching: cfg!(feature = "cache"),
             inner: Pin::static_ref(&*inner),
             refcnt: Pin::static_ref(&*refcnt),
         }
+    }
+
+    pub fn base(&self) -> *mut () {
+        self.base
+    }
+
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn destroy(&mut self) -> Option<&'a mut [u8]> {
@@ -804,6 +826,7 @@ impl Clone for BuddyAllocator<'_> {
         self.inner.meta.refcnt.fetch_add(1, Ordering::SeqCst);
         Self {
             base: self.base,
+            size: self.size,
             caching: self.caching,
             inner: self.inner,
             refcnt: self.refcnt,

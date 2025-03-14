@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use common::message::{
     ArcaHandle, BlobHandle, Handle, LambdaHandle, Message, Messenger, NullHandle, ThunkHandle,
@@ -7,18 +7,19 @@ use common::message::{
 use common::ringbuffer::RingBufferError;
 use common::BuddyAllocator;
 extern crate alloc;
-use common::util::spinlock::SpinLock;
 
 pub struct Client<'a> {
-    messenger: SpinLock<Messenger<'a>>,
+    messenger: Mutex<Messenger<'a>>,
     allocator: &'a BuddyAllocator<'a>,
 }
 
 impl<'a> Client<'a> {
-    pub fn new(messenger: Messenger<'a>) -> Self {
-        let allocator: &'a BuddyAllocator<'a> = messenger.allocator();
+    pub fn new(messenger: Mutex<Messenger<'a>>) -> Self {
+        let m = messenger.lock().unwrap();
+        let allocator: &'a BuddyAllocator<'a> = m.allocator();
+        core::mem::drop(m);
         Client {
-            messenger: SpinLock::new(messenger),
+            messenger,
             allocator,
         }
     }
@@ -26,7 +27,7 @@ impl<'a> Client<'a> {
 
 impl Drop for Client<'_> {
     fn drop(&mut self) {
-        let mut m = self.messenger.lock();
+        let mut m = self.messenger.lock().unwrap();
         m.send(Message::Exit).unwrap();
     }
 }
@@ -42,7 +43,7 @@ where
 impl<T: ArcaHandle> Drop for Ref<'_, '_, T> {
     fn drop(&mut self) {
         let msg = Message::Drop(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
+        let mut messenger = self.client.messenger.lock().unwrap();
         messenger.send(msg).unwrap();
     }
 }
@@ -85,6 +86,15 @@ where
 {
     fn from(value: ArcaRef<'a, 'b>) -> Self {
         value.handle()
+    }
+}
+
+impl<'a, 'b> From<NullRef<'a, 'b>> for ArcaRef<'a, 'b>
+where
+    'b: 'a,
+{
+    fn from(value: NullRef<'a, 'b>) -> ArcaRef<'a, 'b> {
+        ArcaRef::Null(value)
     }
 }
 
@@ -167,7 +177,7 @@ impl Clone for BlobRef<'_, '_> {
 impl Clone for TreeRef<'_, '_> {
     fn clone(&self) -> Self {
         let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
+        let mut messenger = self.client.messenger.lock().unwrap();
         let Handle::Tree(t) = messenger.send_and_receive_handle(msg).unwrap() else {
             panic!();
         };
@@ -181,7 +191,7 @@ impl Clone for TreeRef<'_, '_> {
 impl Clone for LambdaRef<'_, '_> {
     fn clone(&self) -> Self {
         let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
+        let mut messenger = self.client.messenger.lock().unwrap();
         let Handle::Lambda(l) = messenger.send_and_receive_handle(msg).unwrap() else {
             panic!();
         };
@@ -195,7 +205,7 @@ impl Clone for LambdaRef<'_, '_> {
 impl Clone for ThunkRef<'_, '_> {
     fn clone(&self) -> Self {
         let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
+        let mut messenger = self.client.messenger.lock().unwrap();
         let Handle::Thunk(t) = messenger.send_and_receive_handle(msg).unwrap() else {
             panic!();
         };
@@ -239,14 +249,14 @@ impl<'b> Client<'b> {
         }
     }
 
-    pub fn null<'a>(&'a self) -> Result<NullRef<'a, 'b>, RingBufferError>
+    pub fn null<'a>(&'a self) -> NullRef<'a, 'b>
     where
         'b: 'a,
     {
-        Ok(NullRef {
+        NullRef {
             handle: NullHandle,
             client: self,
-        })
+        }
     }
 
     pub fn create_word<'a>(&'a self, word: u64) -> WordRef<'a, 'b>
@@ -259,10 +269,11 @@ impl<'b> Client<'b> {
         }
     }
 
-    pub fn create_blob<'a>(&'a self, blob: &[u8]) -> Result<BlobRef<'a, 'b>, RingBufferError>
+    pub fn create_blob<'a, T: AsRef<[u8]>>(&'a self, blob: T) -> BlobRef<'a, 'b>
     where
         'b: 'a,
     {
+        let blob: &[u8] = blob.as_ref();
         let allocator = self.allocator;
         let mut buf = Arc::new_uninit_slice_in(blob.len(), allocator);
         Arc::make_mut(&mut buf).write_copy_of_slice(blob);
@@ -271,10 +282,22 @@ impl<'b> Client<'b> {
         let (ptr, len) = slice.to_raw_parts();
         let ptr = a.to_offset(ptr);
         let handle = BlobHandle { ptr, len };
-        Ok(BlobRef {
+        BlobRef {
             handle,
             client: self,
-        })
+        }
+    }
+
+    pub fn nop<'a>(&'a self) -> Result<NullRef<'a, 'b>, RingBufferError>
+    where
+        'b: 'a,
+    {
+        let mut m = self.messenger.lock().unwrap();
+        if let ArcaRef::Null(t) = self.make_ref(m.send_and_receive_handle(Message::Nop)?) {
+            Ok(t)
+        } else {
+            Err(RingBufferError::TypeError)
+        }
     }
 
     pub fn create_tree<'a>(&'a self, tree: Vec<ArcaRef>) -> Result<TreeRef<'a, 'b>, RingBufferError>
@@ -293,7 +316,7 @@ impl<'b> Client<'b> {
         let (ptr, len) = slice.to_raw_parts();
 
         let ptr = a.to_offset(ptr);
-        let mut m = self.messenger.lock();
+        let mut m = self.messenger.lock().unwrap();
         if let ArcaRef::Tree(t) =
             self.make_ref(m.send_and_receive_handle(Message::CreateTree { ptr, len })?)
         {
@@ -329,6 +352,10 @@ where
             Ok(new)
         }
     }
+
+    pub fn into_thunk(self) -> Result<ThunkRef<'a, 'b>, RingBufferError> {
+        ThunkRef::new(self)
+    }
 }
 
 impl<'a, 'b> Ref<'a, 'b, ThunkHandle>
@@ -338,7 +365,7 @@ where
     pub fn new(blob: BlobRef<'a, 'b>) -> Result<Self, RingBufferError> {
         let BlobRef { client, handle } = blob;
         core::mem::forget(blob);
-        let mut m = client.messenger.lock();
+        let mut m = client.messenger.lock().unwrap();
         if let ArcaRef::Thunk(t) =
             client.make_ref(m.send_and_receive_handle(Message::CreateThunk(handle))?)
         {
@@ -351,7 +378,7 @@ where
     pub fn run(self) -> Result<ArcaRef<'a, 'b>, RingBufferError> {
         let ThunkRef { client, handle } = self;
         core::mem::forget(self);
-        let mut m = client.messenger.lock();
+        let mut m = client.messenger.lock().unwrap();
         Ok(client.make_ref(m.send_and_receive_handle(Message::Run(handle))?))
     }
 }
@@ -366,7 +393,7 @@ where
         core::mem::forget(self);
         let arg_handle = value.handle();
         core::mem::forget(value);
-        let mut m = client.messenger.lock();
+        let mut m = client.messenger.lock().unwrap();
         if let ArcaRef::Thunk(t) =
             client.make_ref(m.send_and_receive_handle(Message::Apply(handle, arg_handle))?)
         {
@@ -382,7 +409,7 @@ where
         core::mem::forget(self);
         let arg_handle = value.handle();
         core::mem::forget(value);
-        let mut m = client.messenger.lock();
+        let mut m = client.messenger.lock().unwrap();
         Ok(client.make_ref(m.send_and_receive_handle(Message::ApplyAndRun(handle, arg_handle))?))
     }
 }

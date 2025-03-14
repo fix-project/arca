@@ -23,6 +23,9 @@ const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"))
 #[no_mangle]
 extern "C" fn kmain() {
     let id = kernel::coreid();
+    if id != 0 {
+        return;
+    }
 
     if id == 0 {
         log::info!("kmain");
@@ -35,6 +38,7 @@ extern "C" fn kmain() {
         kernel::profile::begin();
         client::run(&mut cpu);
         kernel::profile::end();
+        return;
     }
 
     // Test trap.rs

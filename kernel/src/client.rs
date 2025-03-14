@@ -198,6 +198,9 @@ pub fn process_incoming_message(m: &mut Messenger, msg: Message, cpu: &mut Cpu) 
         Message::Exit => {
             return ControlFlow::Break(());
         }
+        Message::Nop => {
+            reply(m, Value::Null.into());
+        }
         x => todo!("handling {x:?}"),
     }
     ControlFlow::Continue(())
@@ -207,7 +210,14 @@ pub fn run(cpu: &mut Cpu) {
     loop {
         let mut m = MESSENGER.lock();
         if !m.is_empty() {
+            // let start = kvmclock::now();
             let msg = m.receive().expect("Failed to read msg");
+            // let end = kvmclock::now();
+            // let duration = end - start;
+            // log::info!(
+            //     "spent {}ns reading message {msg:?}",
+            //     duration.whole_nanoseconds()
+            // );
             if process_incoming_message(&mut m, msg, cpu) == ControlFlow::Break(()) {
                 return;
             }
