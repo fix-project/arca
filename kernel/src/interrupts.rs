@@ -55,6 +55,7 @@ extern "C" {
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
+            crate::profile::tick(registers);
             crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         }
         // return to user mode

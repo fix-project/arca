@@ -129,9 +129,22 @@ impl Thunk {
         LoadedThunk { arca }
     }
 
-    pub fn run(self, cpu: &mut Cpu) -> Value {
+    pub fn run_on(self, cpu: &mut Cpu) -> Value {
         let loaded = self.load(cpu);
         let result = loaded.run();
+        result.into()
+    }
+
+    #[inline(never)]
+    pub fn run(self) -> Value {
+        let mut cpu = crate::cpu::CPU.borrow_mut();
+        self.run_on(&mut cpu)
+    }
+
+    pub fn run_for(self, duration: Duration) -> Value {
+        let mut cpu = crate::cpu::CPU.borrow_mut();
+        let loaded = self.load(&mut cpu);
+        let result = loaded.run_for(duration);
         result.into()
     }
 }
@@ -151,7 +164,7 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run(self) -> LoadedValue<'a> {
-        self.run_for(Duration::from_secs(1))
+        self.run_for(Duration::from_millis(10))
     }
 
     pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {

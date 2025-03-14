@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SpinLock<T> {
     lock: AtomicBool,
     data: UnsafeCell<T>,
