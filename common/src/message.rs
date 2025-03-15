@@ -6,18 +6,17 @@ extern crate alloc;
 #[repr(C)]
 pub enum Request {
     Nop,
-    Resize { size: usize },
-    Null { dst: usize },
-    CreateWord { dst: usize, value: u64 },
-    CreateAtom { dst: usize, ptr: usize, len: usize },
-    CreateBlob { dst: usize, ptr: usize, len: usize },
-    CreateTree { dst: usize, ptr: usize, len: usize },
-    CreateThunk { dst: usize, src: usize },
+    CreateNull,
+    CreateWord { value: u64 },
+    CreateAtom { ptr: usize, len: usize },
+    CreateBlob { ptr: usize, len: usize },
+    CreateTree { ptr: usize, len: usize },
+    CreateThunk { src: usize },
     Read { src: usize },
-    Apply { dst: usize, src: usize },
-    Run { dst: usize, src: usize },
-    Clone { dst: usize, src: usize },
-    Drop { dst: usize },
+    Apply { src: usize, arg: usize },
+    Run { src: usize },
+    Clone { src: usize },
+    Drop { src: usize },
 }
 
 unsafe impl Sendable for Request {}
@@ -39,33 +38,32 @@ unsafe impl Sendable for Type {}
 #[derive(Debug)]
 #[repr(C)]
 pub enum Response {
+    Ack,
     Null,
     Word(u64),
     Atom { ptr: usize, len: usize },
     Blob { ptr: usize, len: usize },
     Tree { ptr: usize, len: usize },
     Type(Type),
-    Handle { index: usize },
+    Handle(usize),
 }
 
 unsafe impl Sendable for Response {}
 
 #[derive(Debug)]
 #[repr(C)]
-pub enum MetaRequest {
-    OpenPort { port: usize, size: usize },
-    Request { port: usize, body: Request },
-    ClosePort { port: usize },
-    Exit,
+pub struct MetaRequest {
+    pub seqno: usize,
+    pub body: Request,
 }
 
 unsafe impl Sendable for MetaRequest {}
 
 #[derive(Debug)]
 #[repr(C)]
-pub enum MetaResponse {
-    Response { port: usize, body: Response },
-    Exit,
+pub struct MetaResponse {
+    pub seqno: usize,
+    pub body: Response,
 }
 
 unsafe impl Sendable for MetaResponse {}

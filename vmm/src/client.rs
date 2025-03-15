@@ -1,173 +1,180 @@
-use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use common::message::{MetaRequest, MetaResponse, Request, Response};
-use common::ringbuffer::{Endpoint, Receiver, Sender};
+use common::ringbuffer::{Endpoint, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
 
 pub struct Client<'a> {
-    port: AtomicUsize,
-    buffer: Mutex<HashMap<usize, VecDeque<Response>>>,
+    seqno: AtomicUsize,
     sender: Mutex<Sender<'a, MetaRequest>>,
     receiver: Mutex<Receiver<'a, MetaResponse>>,
-    _allocator: &'a BuddyAllocator<'a>,
+    allocator: &'a BuddyAllocator<'a>,
 }
 
 impl<'a> Client<'a> {
+    fn seqno(&self) -> usize {
+        self.seqno.fetch_add(1, Ordering::AcqRel)
+    }
+
     pub fn new(endpoint: Endpoint<'a, MetaRequest, MetaResponse>) -> Self {
         let allocator: &'a BuddyAllocator<'a> = endpoint.allocator();
         let (sender, receiver) = endpoint.into_sender_receiver();
         Client {
-            port: AtomicUsize::new(0),
-            buffer: Mutex::new(HashMap::new()),
+            seqno: AtomicUsize::new(0),
             sender: Mutex::new(sender),
             receiver: Mutex::new(receiver),
-            _allocator: allocator,
+            allocator,
         }
     }
 
-    pub fn port<'client>(&'client self) -> Port<'a, 'client> {
-        let port = self.port.fetch_add(1, Ordering::SeqCst);
+    fn send(&self, message: Request) -> Result<usize> {
+        let seqno = self.seqno();
         let mut tx = self.sender.lock().unwrap();
-        let size = 1024;
-        let mut assigned = Vec::with_capacity(size);
-        assigned.resize(size, false);
-        tx.send(MetaRequest::OpenPort { port, size }).unwrap();
-        Port {
-            client: self,
-            assigned: Mutex::new(assigned),
-            port,
-        }
-    }
-
-    fn send(&self, port: usize, message: Request) {
-        let mut tx = self.sender.lock().unwrap();
-        tx.send(MetaRequest::Request {
-            port,
+        tx.send(MetaRequest {
+            seqno,
             body: message,
+        })?;
+        Ok(seqno)
+    }
+
+    fn recv(&self, seqno: usize) -> Result<Response> {
+        let mut rx = self.receiver.lock().unwrap();
+        let expected = seqno;
+        let MetaResponse { seqno, body } = rx.recv()?;
+        assert_eq!(expected, seqno);
+        Ok(body)
+    }
+
+    fn fullsend(&self, message: Request) -> Result<Response> {
+        let seqno = self.send(message)?;
+        self.recv(seqno)
+    }
+
+    pub fn null<'client>(&'client self) -> Result<Handle<'a, 'client, Null>> {
+        let Response::Handle(index) = self.fullsend(Request::CreateNull)? else {
+            unreachable!();
+        };
+        Ok(Handle {
+            index,
+            client: self,
+            _phantom: PhantomData,
         })
-        .unwrap();
     }
 
-    fn recv(&self, port: usize) -> Response {
-        loop {
-            if let Ok(mut rx) = self.receiver.try_lock() {
-                let result = rx.recv().unwrap();
-                match result {
-                    MetaResponse::Response { port, body } => {
-                        let mut buffer = self.buffer.lock().unwrap();
-                        buffer.entry(port).or_default().push_back(body);
-                    }
-                    MetaResponse::Exit => todo!(),
-                }
-            }
-            if let Ok(mut buffer) = self.buffer.try_lock() {
-                let port = buffer.entry(port).or_default();
-                if let Some(front) = port.pop_front() {
-                    return front;
-                }
-            }
-            core::hint::spin_loop();
-        }
-    }
-}
-
-impl Drop for Client<'_> {
-    fn drop(&mut self) {
-        let mut tx = self.sender.lock().unwrap();
-        tx.send(MetaRequest::Exit).unwrap();
-    }
-}
-
-pub struct Port<'a, 'client> {
-    client: &'client Client<'a>,
-    assigned: Mutex<Vec<bool>>,
-    port: usize,
-}
-
-impl<'a, 'client> Port<'a, 'client> {
-    fn send(&self, message: Request) {
-        self.client.send(self.port, message);
-    }
-
-    fn recv(&self) -> Response {
-        self.client.recv(self.port)
-    }
-
-    fn assign(&self) -> usize {
-        let mut assigned = self.assigned.lock().unwrap();
-        if let Some(i) = assigned.iter().position(|x| !x) {
-            assigned[i] = true;
-            i
-        } else {
-            let i = assigned.len();
-            let size = 2 * i;
-            self.send(Request::Resize { size });
-            assigned.resize(size, false);
-            assigned[i] = true;
-            i
-        }
-    }
-
-    pub fn null<'port>(&'port self) -> Handle<'a, 'port, 'client, Null> {
-        let i = self.assign();
-        self.send(Request::Null { dst: i });
-        Handle {
-            idx: i,
-            port: self,
+    pub fn word<'client>(&'client self, value: u64) -> Result<Handle<'a, 'client, Word>> {
+        let Response::Handle(index) = self.fullsend(Request::CreateWord { value })? else {
+            unreachable!();
+        };
+        Ok(Handle {
+            index,
+            client: self,
             _phantom: PhantomData,
-        }
+        })
     }
 
-    pub fn word<'port>(&'port self, value: u64) -> Handle<'a, 'port, 'client, Word> {
-        let i = self.assign();
-        self.send(Request::CreateWord { dst: i, value });
-        Handle {
-            idx: i,
-            port: self,
+    pub fn blob<'client, T: AsRef<[u8]>>(
+        &'client self,
+        data: T,
+    ) -> Result<Handle<'a, 'client, Blob>> {
+        let data = data.as_ref();
+        let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
+        blob.write_copy_of_slice(data);
+        let blob = unsafe { blob.assume_init() };
+        let blob = Arc::from(blob);
+        let ptr: *const [u8] = Arc::into_raw(blob);
+        let (ptr, len) = ptr.to_raw_parts();
+        let ptr = self.allocator.to_offset(ptr);
+        let Response::Handle(index) = self.fullsend(Request::CreateBlob { ptr, len })? else {
+            unreachable!();
+        };
+        Ok(Handle {
+            index,
+            client: self,
             _phantom: PhantomData,
-        }
-    }
-}
-
-impl Drop for Port<'_, '_> {
-    fn drop(&mut self) {
-        let mut tx = self.client.sender.lock().unwrap();
-        tx.send(MetaRequest::ClosePort { port: self.port }).unwrap();
+        })
     }
 }
 
 pub struct Null;
 pub struct Word;
+pub struct Blob;
+pub struct Thunk;
+pub struct Opaque;
 
-pub struct Handle<'a, 'port, 'client, T> {
-    port: &'port Port<'a, 'client>,
-    idx: usize,
+pub struct Handle<'a, 'client, T> {
+    client: &'client Client<'a>,
+    index: usize,
     _phantom: PhantomData<T>,
 }
 
-impl<T> Handle<'_, '_, '_, T> {
+impl<T> Handle<'_, '_, T> {
     pub fn index(&self) -> usize {
-        self.idx
+        self.index
     }
 }
 
-impl Handle<'_, '_, '_, Word> {
-    pub fn read(&self) -> u64 {
-        self.port.send(Request::Read { src: self.idx });
-        let Response::Word(x) = self.port.recv() else {
+impl Handle<'_, '_, Word> {
+    pub fn read(&self) -> Result<u64> {
+        let Response::Word(x) = self.client.fullsend(Request::Read { src: self.index })? else {
             panic!();
         };
-        x
+        Ok(x)
     }
 }
 
-impl<T> Drop for Handle<'_, '_, '_, T> {
+impl<'a, 'client> Handle<'a, 'client, Blob> {
+    pub fn create_thunk(self) -> Result<Handle<'a, 'client, Thunk>> {
+        let Response::Handle(index) = self
+            .client
+            .fullsend(Request::CreateThunk { src: self.index })?
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(self);
+        Ok(new)
+    }
+}
+
+impl<'a, 'client> Handle<'a, 'client, Thunk> {
+    pub fn run(self) -> Result<Handle<'a, 'client, Opaque>> {
+        let Response::Handle(index) = self.client.fullsend(Request::Run { src: self.index })?
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(self);
+        Ok(new)
+    }
+}
+
+impl<T> Clone for Handle<'_, '_, T> {
+    fn clone(&self) -> Self {
+        let Ok(Response::Handle(index)) = self.client.fullsend(Request::Clone { src: self.index })
+        else {
+            unreachable!();
+        };
+        Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T> Drop for Handle<'_, '_, T> {
     fn drop(&mut self) {
-        self.port.send(Request::Drop { dst: self.idx });
-        self.port.assigned.lock().unwrap()[self.idx] = false;
+        let _ = self.client.fullsend(Request::Drop { src: self.index });
     }
 }

@@ -480,7 +480,7 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    pub fn client(&self) -> &Client<'a> {
+    pub fn client<'rt>(&'rt self) -> &'rt Client<'a> {
         &self.client
     }
 }

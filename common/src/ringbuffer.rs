@@ -5,8 +5,8 @@ use core::alloc::{Allocator, Layout};
 use core::cell::SyncUnsafeCell;
 use core::cmp::min;
 use core::marker::PhantomData;
-use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -14,6 +14,8 @@ use snafu::Snafu;
 
 #[repr(C)]
 struct RingBuffer<'a> {
+    read_hangup: AtomicBool,
+    write_hangup: AtomicBool,
     read_counter: AtomicUsize,
     write_counter: AtomicUsize,
     allocator: &'a BuddyAllocator<'a>,
@@ -23,21 +25,24 @@ struct RingBuffer<'a> {
 #[repr(C)]
 pub struct Sender<'a, T: Sendable> {
     datatype: PhantomData<T>,
-    rb: RefCnt<'a, RingBuffer<'a>>,
+    valid: bool,
+    rb: ManuallyDrop<RefCnt<'a, RingBuffer<'a>>>,
 }
 
 #[repr(C)]
 pub struct Receiver<'a, T: Sendable> {
     datatype: PhantomData<T>,
-    rb: RefCnt<'a, RingBuffer<'a>>,
+    valid: bool,
+    rb: ManuallyDrop<RefCnt<'a, RingBuffer<'a>>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Snafu)]
-pub enum RingBufferError {
+pub enum Error {
     WouldBlock,
-    ParseError,
-    TypeError,
+    Disconnected,
 }
+
+pub type Result<T> = core::result::Result<T, Error>;
 
 impl<'a> RingBuffer<'a> {
     fn new_in(
@@ -45,7 +50,13 @@ impl<'a> RingBuffer<'a> {
         allocator: &'a BuddyAllocator<'a>,
     ) -> Box<RingBuffer<'a>, &'a BuddyAllocator<'a>> {
         unsafe {
-            let layout = Layout::new::<AtomicUsize>()
+            let layout = Layout::new::<AtomicBool>()
+                .extend(Layout::new::<AtomicBool>())
+                .unwrap()
+                .0
+                .extend(Layout::new::<AtomicUsize>())
+                .unwrap()
+                .0
                 .extend(Layout::new::<AtomicUsize>())
                 .unwrap()
                 .0
@@ -63,6 +74,8 @@ impl<'a> RingBuffer<'a> {
             let p: *mut RingBuffer =
                 core::ptr::from_raw_parts_mut(&raw mut (*p.as_ptr())[0], capacity);
             assert_eq!((*p).buf.get().len(), capacity);
+            (*p).read_hangup = AtomicBool::new(false);
+            (*p).write_hangup = AtomicBool::new(false);
             (*p).read_counter = AtomicUsize::new(0);
             (*p).write_counter = AtomicUsize::new(0);
             (*p).allocator = allocator;
@@ -71,23 +84,26 @@ impl<'a> RingBuffer<'a> {
     }
 
     pub fn is_empty(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         read_count == write_count
     }
 
     pub fn is_full(&self) -> bool {
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         (write_count + 1) % self.buf.get().len() == read_count
     }
 
-    pub fn read(&self, buf: &mut [MaybeUninit<u8>]) -> Result<usize, RingBufferError> {
+    pub fn read(&self, buf: &mut [MaybeUninit<u8>]) -> Result<usize> {
+        if self.write_hangup.load(Ordering::Acquire) {
+            return Err(Error::Disconnected);
+        }
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         if read_count == write_count {
-            return Err(RingBufferError::WouldBlock);
+            return Err(Error::WouldBlock);
         }
 
         let mut end: usize;
@@ -102,16 +118,19 @@ impl<'a> RingBuffer<'a> {
         let readable = unsafe { &(*self.buf.get())[read_count..end] };
         buf[..readable.len()].write_copy_of_slice(readable);
         self.read_counter
-            .store(end % self.buf.get().len(), Ordering::SeqCst);
+            .store(end % self.buf.get().len(), Ordering::Release);
         Ok(readable.len())
     }
 
-    pub fn write(&self, buf: &[u8]) -> Result<usize, RingBufferError> {
+    pub fn write(&self, buf: &[u8]) -> Result<usize> {
+        if self.read_hangup.load(Ordering::Acquire) {
+            return Err(Error::Disconnected);
+        }
         let len = buf.len();
-        let read_count = self.read_counter.load(Ordering::SeqCst);
-        let write_count = self.write_counter.load(Ordering::SeqCst);
+        let read_count = self.read_counter.load(Ordering::Acquire);
+        let write_count = self.write_counter.load(Ordering::Acquire);
         if (write_count + 1) % self.buf.get().len() == read_count {
-            return Err(RingBufferError::WouldBlock);
+            return Err(Error::WouldBlock);
         }
 
         let mut end: usize;
@@ -132,32 +151,38 @@ impl<'a> RingBuffer<'a> {
         writable.copy_from_slice(&buf[..writable.len()]);
 
         self.write_counter
-            .store(end % self.buf.get().len(), Ordering::SeqCst);
+            .store(end % self.buf.get().len(), Ordering::Release);
         let result = writable.len();
         Ok(result)
     }
 
-    pub fn read_exact(&self, mut buf: &mut [MaybeUninit<u8>]) {
+    pub fn read_exact(&self, mut buf: &mut [MaybeUninit<u8>]) -> Result<()> {
         while !buf.is_empty() {
             match self.read(buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     buf = &mut buf[n..];
                 }
-                Err(_) => {
+                Err(Error::WouldBlock) => {
                     core::hint::spin_loop();
                 }
+                Err(e) => return Err(e),
             }
         }
+        Ok(())
     }
 
-    pub fn write_all(&self, mut buf: &[u8]) {
+    pub fn write_all(&self, mut buf: &[u8]) -> Result<()> {
         while !buf.is_empty() {
-            if let Ok(n) = self.write(buf) {
-                buf = &buf[n..]
+            match self.write(buf) {
+                Ok(n) => buf = &buf[n..],
+                Err(Error::WouldBlock) => {
+                    core::hint::spin_loop();
+                }
+                Err(e) => return Err(e),
             }
-            core::hint::spin_loop();
         }
+        Ok(())
     }
 
     pub fn allocator<'b>(&self) -> &'b BuddyAllocator<'a>
@@ -171,7 +196,8 @@ impl<'a> RingBuffer<'a> {
 impl<'a, T: Sendable> Sender<'a, T> {
     fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
         Self {
-            rb,
+            rb: ManuallyDrop::new(rb),
+            valid: true,
             datatype: PhantomData,
         }
     }
@@ -180,26 +206,53 @@ impl<'a, T: Sendable> Sender<'a, T> {
         self.rb.is_full()
     }
 
-    pub fn send(&mut self, data: T) -> Result<(), ()> {
+    pub fn send(&mut self, data: T) -> Result<()> {
         unsafe {
             let slice = core::slice::from_raw_parts(
                 &data as *const _ as *const u8,
                 core::mem::size_of::<T>(),
             );
-            self.rb.write_all(slice);
+            self.rb.write_all(slice)
         }
-        Ok(())
+    }
+
+    pub fn try_send(&mut self, data: T) -> Result<()> {
+        if self.rb.is_full() {
+            Err(Error::WouldBlock)
+        } else {
+            self.send(data)
+        }
     }
 
     pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
         self.rb.allocator()
+    }
+
+    pub fn into_raw_parts(mut self) -> (*mut (), usize) {
+        unsafe {
+            let inner = ManuallyDrop::take(&mut self.rb);
+            self.valid = false;
+            RefCnt::into_raw(inner).to_raw_parts()
+        }
+    }
+}
+
+impl<T: Sendable> Drop for Sender<'_, T> {
+    fn drop(&mut self) {
+        if self.valid {
+            self.rb.write_hangup.store(true, Ordering::Release);
+            unsafe {
+                ManuallyDrop::drop(&mut self.rb);
+            }
+        }
     }
 }
 
 impl<'a, T: Sendable> Receiver<'a, T> {
     fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
         Self {
-            rb,
+            rb: ManuallyDrop::new(rb),
+            valid: true,
             datatype: PhantomData,
         }
     }
@@ -208,17 +261,44 @@ impl<'a, T: Sendable> Receiver<'a, T> {
         self.rb.is_empty()
     }
 
-    pub fn recv(&mut self) -> Result<T, ()> {
+    pub fn recv(&mut self) -> Result<T> {
         unsafe {
             let mut x = MaybeUninit::uninit();
             let slice = x.as_bytes_mut();
-            self.rb.read_exact(slice);
+            self.rb.read_exact(slice)?;
             Ok(x.assume_init())
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Result<T> {
+        if self.rb.is_empty() {
+            Err(Error::WouldBlock)
+        } else {
+            self.recv()
         }
     }
 
     pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
         self.rb.allocator()
+    }
+
+    pub fn into_raw_parts(mut self) -> (*mut (), usize) {
+        unsafe {
+            let inner = ManuallyDrop::take(&mut self.rb);
+            self.valid = false;
+            RefCnt::into_raw(inner).to_raw_parts()
+        }
+    }
+}
+
+impl<T: Sendable> Drop for Receiver<'_, T> {
+    fn drop(&mut self) {
+        if self.valid {
+            self.rb.read_hangup.store(true, Ordering::Release);
+            unsafe {
+                ManuallyDrop::drop(&mut self.rb);
+            }
+        }
     }
 }
 
@@ -233,8 +313,8 @@ pub struct EndpointRawData(usize, usize, usize, usize);
 
 impl<'a, S: Sendable, R: Sendable> Endpoint<'a, S, R> {
     pub fn into_raw_parts(self, allocator: &BuddyAllocator) -> EndpointRawData {
-        let sender_raw = RefCnt::into_raw(self.sender.rb).to_raw_parts();
-        let receiver_raw = RefCnt::into_raw(self.receiver.rb).to_raw_parts();
+        let sender_raw = self.sender.into_raw_parts();
+        let receiver_raw = self.receiver.into_raw_parts();
         EndpointRawData(
             allocator.to_offset(sender_raw.0),
             sender_raw.1,
