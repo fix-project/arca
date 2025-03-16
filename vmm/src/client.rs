@@ -1,14 +1,14 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Waker, Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
-use std::future::Future;
-use std::pin::Pin;
 
 use common::message::{MetaRequest, MetaResponse, Request, Response};
-use common::ringbuffer::{Endpoint, Receiver, Result, Sender, Error};
+use common::ringbuffer::{Endpoint, Error, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
 
@@ -39,7 +39,7 @@ impl Synchronizer {
                 let response = match response {
                     Ok(response) => response,
                     Err(Error::WouldBlock) => {
-                        core::hint::spin_loop();
+                        std::thread::yield_now();
                         continue;
                     }
                     Err(_) => {
@@ -47,17 +47,17 @@ impl Synchronizer {
                         return;
                     }
                 };
-                let MetaResponse{seqno, body} = response;
+                let MetaResponse { seqno, body } = response;
                 let mut buffer = buffer.lock().unwrap();
                 match buffer.remove(&seqno) {
-                    Some(BufferEntry::Ignore) => {},
+                    Some(BufferEntry::Ignore) => {}
                     Some(BufferEntry::Waiting(waker)) => {
                         buffer.insert(seqno, BufferEntry::Received(body));
                         waker.wake();
-                    },
+                    }
                     Some(BufferEntry::Received(_)) => {
                         unreachable!("received same sequence number twice!");
-                    },
+                    }
                     None => {
                         buffer.insert(seqno, BufferEntry::Received(body));
                     }
@@ -76,20 +76,24 @@ impl Synchronizer {
         match buffer.remove(&seqno) {
             Some(BufferEntry::Waiting(_)) => {
                 unreachable!("ignoring sequence number that already has a waiter");
-            },
-            Some(BufferEntry::Received(_)) => {},
+            }
+            Some(BufferEntry::Received(_)) => {}
             Some(BufferEntry::Ignore) | None => {
                 buffer.insert(seqno, BufferEntry::Ignore);
             }
         }
     }
 
-    fn get(&self, seqno: usize) -> impl Future<Output=Result<Response>> {
+    fn get(&self, seqno: usize) -> impl Future<Output = Result<Response>> {
         ClientFuture {
             exit: self.exit.clone(),
             buffer: self.buffer.clone(),
             seqno,
         }
+    }
+
+    fn shutdown(&self) {
+        self.exit.store(true, Ordering::SeqCst);
     }
 }
 
@@ -220,6 +224,12 @@ impl<'a> Client<'a> {
             client: self,
             _phantom: PhantomData,
         })
+    }
+
+    pub fn shutdown(&self) {
+        let tx = self.sender.lock().unwrap();
+        tx.hangup();
+        self.synchronizer.shutdown();
     }
 }
 

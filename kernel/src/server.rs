@@ -45,7 +45,9 @@ impl Server {
                 }
             };
             log::debug!("got request {seqno}: {body:?}");
-            self.handle(seqno, body);
+            crate::rt::spawn(async move {
+                self.handle(seqno, body);
+            });
         }
     }
 
@@ -107,11 +109,11 @@ impl Server {
                 let Value::Blob(blob) = core::mem::take(&mut self.descriptors.lock()[src]) else {
                     todo!();
                 };
-                crate::rt::spawn(async move {
+                // crate::rt::spawn(async move {
                     let thunk = Thunk::from_elf(&blob);
                     self.descriptors.lock()[src] = Value::Thunk(thunk);
                     self.reply(seqno, Response::Handle(src));
-                });
+                // });
             }
             Request::Read { src } => match &self.descriptors.lock()[src] {
                 Value::Null => self.reply(seqno, Response::Null),
@@ -139,30 +141,29 @@ impl Server {
                 let Value::Thunk(thunk) = core::mem::take(&mut self.descriptors.lock()[src]) else {
                     todo!();
                 };
-                crate::rt::spawn(async move {
+                // crate::rt::spawn(async move {
                     let y = thunk.run_on_this_cpu();
                     self.descriptors.lock()[src] = y;
                     self.reply(seqno, Response::Handle(src));
-                });
+                // });
             }
             Request::Clone { src } => {
                 let dst = self.assign();
-                crate::rt::spawn(async move {
-                    let mut original = core::mem::take(&mut self.descriptors.lock()[src]);
-                    let new = original.clone();
+                // crate::rt::spawn(async move {
                     let mut descriptors = self.descriptors.lock();
-                    descriptors[src] = original;
+                    let mut original = &descriptors[src];
+                    let new = original.clone();
                     descriptors[dst] = new;
                     self.reply(seqno, Response::Handle(dst));
-                });
+                // });
             }
             Request::Drop { src } => {
                 let current = core::mem::take(&mut self.descriptors.lock()[src]);
-                crate::rt::spawn(async move {
+                // crate::rt::spawn(async move {
                     core::mem::drop(current);
                     self.unassign(src);
                     self.reply(seqno, Response::Ack);
-                });
+                // });
             }
         }
     }
