@@ -1,8 +1,6 @@
 use common::{
     message::{MetaRequest, MetaResponse, Request, Response},
-    ringbuffer::{Endpoint, Receiver, Sender},
-    util::spinlock::SpinLock,
-    BuddyAllocator,
+    ringbuffer::{Endpoint, Error, Receiver, Sender},
 };
 
 use crate::prelude::*;
@@ -11,43 +9,43 @@ extern crate alloc;
 
 pub static SERVER: OnceLock<Server> = OnceLock::new();
 
-pub struct Server<'a> {
+pub struct Server {
     assigned: SpinLock<Vec<bool>>,
     descriptors: SpinLock<Vec<Value>>,
-    sender: SpinLock<Sender<'a, MetaResponse>>,
-    receiver: SpinLock<Receiver<'a, MetaRequest>>,
-    _allocator: &'a BuddyAllocator<'a>,
+    sender: SpinLock<Sender<'static, MetaResponse>>,
+    receiver: SpinLock<Receiver<'static, MetaRequest>>,
 }
 
-impl<'a> Server<'a> {
-    pub fn new(endpoint: Endpoint<'a, MetaResponse, MetaRequest>) -> Self {
-        let allocator: &'a BuddyAllocator<'a> = endpoint.allocator();
+impl Server {
+    pub fn new(endpoint: Endpoint<'static, MetaResponse, MetaRequest>) -> Self {
         let (sender, receiver) = endpoint.into_sender_receiver();
         Server {
             assigned: SpinLock::new(Vec::new()),
             descriptors: SpinLock::new(Vec::new()),
             sender: SpinLock::new(sender),
             receiver: SpinLock::new(receiver),
-            _allocator: allocator,
         }
     }
 
-    pub fn run(&'a self, cpu: &mut Cpu) {
+    pub async fn run(&'static self) {
         loop {
-            let result = {
+            let attempt = {
                 let mut rx = self.receiver.lock();
-                rx.recv()
+                rx.try_recv()
             };
-            let Ok(MetaRequest { seqno, body }) = result else {
-                return;
+            let MetaRequest { seqno, body } = match attempt {
+                Ok(result) => result,
+                Err(Error::WouldBlock) => {
+                    core::hint::spin_loop();
+                    crate::rt::yield_now().await;
+                    continue;
+                }
+                Err(_) => {
+                    return;
+                }
             };
             log::debug!("got request {seqno}: {body:?}");
-            let body = self.handle(body, cpu);
-            let mut tx = self.sender.lock();
-            let result = tx.send(MetaResponse { seqno, body });
-            if result.is_err() {
-                return;
-            }
+            self.handle(seqno, body);
         }
     }
 
@@ -68,12 +66,17 @@ impl<'a> Server<'a> {
         }
     }
 
+    fn reply(&self, seqno: usize, body: Response) {
+        let mut tx = self.sender.lock();
+        let _ = tx.send(MetaResponse { seqno, body });
+    }
+
     fn unassign(&self, i: usize) {
         self.descriptors.lock()[i] = Value::Null;
         self.assigned.lock()[i] = false;
     }
 
-    fn handle(&self, message: Request, cpu: &mut Cpu) -> Response {
+    fn handle(&'static self, seqno: usize, message: Request) {
         log::debug!("got message {message:?}");
         #[allow(unused)]
         match message {
@@ -81,12 +84,12 @@ impl<'a> Server<'a> {
             Request::CreateNull => {
                 let dst = self.assign();
                 self.descriptors.lock()[dst] = Value::Null;
-                Response::Handle(dst)
+                self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateWord { value } => {
                 let dst = self.assign();
                 self.descriptors.lock()[dst] = Value::Word(value);
-                Response::Handle(dst)
+                self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateAtom { ptr, len } => todo!(),
             Request::CreateBlob { ptr, len } => {
@@ -97,21 +100,23 @@ impl<'a> Server<'a> {
                     let blob = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
                     self.descriptors.lock()[dst] = Value::Blob(blob);
                 }
-                Response::Handle(dst)
+                self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateTree { ptr, len } => todo!(),
             Request::CreateThunk { src } => {
                 let Value::Blob(blob) = core::mem::take(&mut self.descriptors.lock()[src]) else {
                     todo!();
                 };
-                let thunk = Thunk::from_elf(&blob);
-                self.descriptors.lock()[src] = Value::Thunk(thunk);
-                Response::Handle(src)
+                crate::rt::spawn(async move {
+                    let thunk = Thunk::from_elf(&blob);
+                    self.descriptors.lock()[src] = Value::Thunk(thunk);
+                    self.reply(seqno, Response::Handle(src));
+                });
             }
             Request::Read { src } => match &self.descriptors.lock()[src] {
-                Value::Null => Response::Null,
+                Value::Null => self.reply(seqno, Response::Null),
                 Value::Error(value) => todo!(),
-                Value::Word(word) => Response::Word(*word),
+                Value::Word(word) => self.reply(seqno, Response::Word(*word)),
                 Value::Atom(_) => todo!(),
                 Value::Blob(items) => todo!(),
                 Value::Tree(values) => todo!(),
@@ -128,26 +133,36 @@ impl<'a> Server<'a> {
                 let x = core::mem::take(&mut self.descriptors.lock()[arg]);
                 let thunk = lambda.apply(x);
                 self.descriptors.lock()[src] = Value::Thunk(thunk);
-                Response::Handle(src)
+                self.reply(seqno, Response::Handle(src));
             }
             Request::Run { src } => {
                 let Value::Thunk(thunk) = core::mem::take(&mut self.descriptors.lock()[src]) else {
                     todo!();
                 };
-                let y = thunk.run(cpu);
-                self.descriptors.lock()[src] = y;
-                Response::Handle(src)
+                crate::rt::spawn(async move {
+                    let y = thunk.run_on_this_cpu();
+                    self.descriptors.lock()[src] = y;
+                    self.reply(seqno, Response::Handle(src));
+                });
             }
             Request::Clone { src } => {
                 let dst = self.assign();
-                let mut descriptors = self.descriptors.lock();
-                descriptors[dst] = descriptors[src].clone();
-                Response::Handle(dst)
+                crate::rt::spawn(async move {
+                    let mut original = core::mem::take(&mut self.descriptors.lock()[src]);
+                    let new = original.clone();
+                    let mut descriptors = self.descriptors.lock();
+                    descriptors[src] = original;
+                    descriptors[dst] = new;
+                    self.reply(seqno, Response::Handle(dst));
+                });
             }
             Request::Drop { src } => {
-                core::mem::take(&mut self.descriptors.lock()[src]);
-                self.unassign(src);
-                Response::Ack
+                let current = core::mem::take(&mut self.descriptors.lock()[src]);
+                crate::rt::spawn(async move {
+                    core::mem::drop(current);
+                    self.unassign(src);
+                    self.reply(seqno, Response::Ack);
+                });
             }
         }
     }

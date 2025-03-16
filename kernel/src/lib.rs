@@ -9,6 +9,7 @@
 #![feature(box_into_inner)]
 #![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
+#![feature(atomic_try_update)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

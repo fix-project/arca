@@ -8,6 +8,9 @@ static PROFILING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static COUNTS: OnceLock<&'static [AtomicUsize]> = OnceLock::new();
 
+#[core_local]
+static MUTE_CORE: AtomicBool = AtomicBool::new(false);
+
 extern "C" {
     static mut _stext: u8;
     static mut _etext: u8;
@@ -32,6 +35,14 @@ pub fn end() {
     }
 }
 
+pub fn mute_core() {
+    MUTE_CORE.store(true, Ordering::SeqCst);
+}
+
+pub fn unmute_core() {
+    MUTE_CORE.store(false, Ordering::SeqCst);
+}
+
 pub fn reset() {
     end();
     for count in *COUNTS {
@@ -41,7 +52,7 @@ pub fn reset() {
 
 pub(crate) fn tick(registers: &IsrRegisterFile) {
     ACTIVE.fetch_add(1, Ordering::SeqCst);
-    if !PROFILING.load(Ordering::SeqCst) {
+    if !PROFILING.load(Ordering::SeqCst) || MUTE_CORE.load(Ordering::SeqCst) {
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
         return;
     }

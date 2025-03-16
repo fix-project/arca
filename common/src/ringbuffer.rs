@@ -83,6 +83,14 @@ impl<'a> RingBuffer<'a> {
         }
     }
 
+    pub fn is_read_closed(&self) -> bool {
+        self.read_hangup.load(Ordering::Acquire)
+    }
+
+    pub fn is_write_closed(&self) -> bool {
+        self.write_hangup.load(Ordering::Acquire)
+    }
+
     pub fn is_empty(&self) -> bool {
         let read_count = self.read_counter.load(Ordering::Acquire);
         let write_count = self.write_counter.load(Ordering::Acquire);
@@ -206,6 +214,10 @@ impl<'a, T: Sendable> Sender<'a, T> {
         self.rb.is_full()
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.rb.is_read_closed()
+    }
+
     pub fn send(&mut self, data: T) -> Result<()> {
         unsafe {
             let slice = core::slice::from_raw_parts(
@@ -217,7 +229,9 @@ impl<'a, T: Sendable> Sender<'a, T> {
     }
 
     pub fn try_send(&mut self, data: T) -> Result<()> {
-        if self.rb.is_full() {
+        if self.is_closed() {
+            Err(Error::Disconnected)
+        } else if self.is_full() {
             Err(Error::WouldBlock)
         } else {
             self.send(data)
@@ -235,12 +249,16 @@ impl<'a, T: Sendable> Sender<'a, T> {
             RefCnt::into_raw(inner).to_raw_parts()
         }
     }
+
+    pub fn hangup(&self) {
+        self.rb.write_hangup.store(true, Ordering::Release);
+    }
 }
 
 impl<T: Sendable> Drop for Sender<'_, T> {
     fn drop(&mut self) {
         if self.valid {
-            self.rb.write_hangup.store(true, Ordering::Release);
+            self.hangup();
             unsafe {
                 ManuallyDrop::drop(&mut self.rb);
             }
@@ -261,6 +279,10 @@ impl<'a, T: Sendable> Receiver<'a, T> {
         self.rb.is_empty()
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.rb.is_write_closed()
+    }
+
     pub fn recv(&mut self) -> Result<T> {
         unsafe {
             let mut x = MaybeUninit::uninit();
@@ -271,7 +293,9 @@ impl<'a, T: Sendable> Receiver<'a, T> {
     }
 
     pub fn try_recv(&mut self) -> Result<T> {
-        if self.rb.is_empty() {
+        if self.is_closed() {
+            Err(Error::Disconnected)
+        } else if self.is_empty() {
             Err(Error::WouldBlock)
         } else {
             self.recv()
@@ -289,12 +313,16 @@ impl<'a, T: Sendable> Receiver<'a, T> {
             RefCnt::into_raw(inner).to_raw_parts()
         }
     }
+
+    pub fn hangup(&self) {
+        self.rb.read_hangup.store(true, Ordering::Release);
+    }
 }
 
 impl<T: Sendable> Drop for Receiver<'_, T> {
     fn drop(&mut self) {
         if self.valid {
-            self.rb.read_hangup.store(true, Ordering::Release);
+            self.hangup();
             unsafe {
                 ManuallyDrop::drop(&mut self.rb);
             }

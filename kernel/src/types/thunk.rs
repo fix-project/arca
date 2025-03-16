@@ -134,6 +134,11 @@ impl Thunk {
         let result = loaded.run();
         result.into()
     }
+
+    pub fn run_on_this_cpu(self) -> Value {
+        let mut cpu = crate::cpu::CPU.borrow_mut();
+        self.run(&mut cpu)
+    }
 }
 
 impl<'a> LoadedThunk<'a> {

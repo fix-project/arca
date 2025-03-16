@@ -1,6 +1,7 @@
 use core::{
     arch::asm,
     ptr::{addr_of, addr_of_mut},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use alloc::boxed::Box;
@@ -15,7 +16,6 @@ use crate::{
     paging::Permissions,
     prelude::*,
     server::{Server, SERVER},
-    spinlock::SpinLock,
     vm,
 };
 
@@ -59,7 +59,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         pdpt.into()
     });
 
-static SYNC: SpinLock<()> = SpinLock::new(());
+static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usize) -> ! {
@@ -67,7 +67,7 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;
 
-    let sync = if id == 0 {
+    if id == 0 {
         // one-time init
         init_bss();
         if cfg!(feature = "debugcon") {
@@ -95,8 +95,9 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
         raw.base = vm::pa2ka(0);
         let allocator = common::BuddyAllocator::from_raw_parts(raw);
 
-        let sync = SYNC.lock();
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
+
+        init_cpu_tls();
 
         let raw_rb_data =
             Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
@@ -104,17 +105,13 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
         core::mem::forget(raw_rb_data);
         let server = Server::new(endpoint);
         let _ = SERVER.set(server);
-        sync
     } else {
         PHYSICAL_ALLOCATOR.wait();
-        SYNC.lock()
+        init_cpu_tls();
+        SERVER.wait();
     };
-    core::mem::drop(sync);
-
-    // PHYSICAL_ALLOCATOR.wait();
 
     // per-cpu init
-    init_cpu_tls();
     crate::kvmclock::init();
     crate::profile::init();
 
@@ -136,7 +133,15 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
 
     core::arch::asm!("sti");
 
-    kmain();
+    if id == 0 {
+        kmain();
+        START_RUNTIME.store(true, Ordering::Release);
+    } else {
+        while !START_RUNTIME.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+    crate::rt::run();
 
     crate::shutdown();
 }
