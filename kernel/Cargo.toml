@@ -31,6 +31,8 @@ common = { path = "../common", default-features = false, features = ["core_local
 defs = { path = "../defs" }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = { version = "0.7.4", default-features = false }
+rand_distr = { version = "0.5.1", default-features = false }
+rand = { version = "0.9.0", default-features = false, features = ["alloc", "small_rng"] }
 
 [build-dependencies]
 anyhow = "1.0.86"

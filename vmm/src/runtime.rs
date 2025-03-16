@@ -479,9 +479,9 @@ impl<'a> Runtime<'a> {
                 a,
                 elf.clone(),
                 &[
+                    cores as u64,
                     allocator.to_offset(allocator_raw) as u64,
                     allocator.to_offset(endpoint_raw) as u64,
-                    0,
                     0,
                     0,
                     0,

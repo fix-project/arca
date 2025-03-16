@@ -62,7 +62,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
-unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usize) -> ! {
+unsafe extern "C" fn _start(cores: usize, allocator_data_ptr: usize, ring_buffer_data_ptr: usize) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;
@@ -70,6 +70,9 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
     if id == 0 {
         // one-time init
         init_bss();
+
+        crate::NCORES.store(cores, Ordering::SeqCst);
+
         if cfg!(feature = "debugcon") {
             let _ = log::set_logger(&DEBUG);
         } else {
@@ -112,6 +115,7 @@ unsafe extern "C" fn _start(allocator_data_ptr: usize, ring_buffer_data_ptr: usi
     };
 
     // per-cpu init
+    crate::tsc::init();
     crate::kvmclock::init();
     crate::profile::init();
 

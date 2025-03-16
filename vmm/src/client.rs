@@ -236,6 +236,7 @@ impl<'a> Client<'a> {
 pub struct Null;
 pub struct Word;
 pub struct Blob;
+pub struct Lambda;
 pub struct Thunk;
 pub struct Opaque;
 
@@ -283,6 +284,25 @@ impl<'client> Handle<'client, Blob> {
     }
 }
 
+impl<'client> Handle<'client, Lambda> {
+    pub async fn apply(self, arg: Handle<'client, Opaque>) -> Result<Handle<'client, Thunk>> {
+        let Response::Handle(index) = self
+            .client
+            .fullsend(Request::Apply { src: self.index, arg: arg.index })
+            .await?
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(self);
+        Ok(new)
+    }
+}
+
 impl<'client> Handle<'client, Thunk> {
     pub async fn run(self) -> Result<Handle<'client, Opaque>> {
         let Response::Handle(index) = self
@@ -316,6 +336,30 @@ impl<T> Handle<'_, T> {
             index,
             _phantom: PhantomData,
         })
+    }
+}
+
+impl<'a> From<Handle<'a, Word>> for Handle<'a, Opaque> {
+    fn from(value: Handle<'a, Word>) -> Handle<'a, Opaque> {
+        let handle = Handle {
+            client: value.client,
+            index: value.index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(value);
+        handle
+    }
+}
+
+impl<'a> From<Handle<'a, Thunk>> for Handle<'a, Opaque> {
+    fn from(value: Handle<'a, Thunk>) -> Handle<'a, Opaque> {
+        let handle = Handle {
+            client: value.client,
+            index: value.index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(value);
+        handle
     }
 }
 
