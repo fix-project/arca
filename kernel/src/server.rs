@@ -10,8 +10,6 @@ extern crate alloc;
 pub static SERVER: OnceLock<Server> = OnceLock::new();
 
 pub struct Server {
-    assigned: SpinLock<Vec<bool>>,
-    descriptors: SpinLock<Vec<Value>>,
     sender: SpinLock<Sender<'static, MetaResponse>>,
     receiver: SpinLock<Receiver<'static, MetaRequest>>,
 }
@@ -20,8 +18,6 @@ impl Server {
     pub fn new(endpoint: Endpoint<'static, MetaResponse, MetaRequest>) -> Self {
         let (sender, receiver) = endpoint.into_sender_receiver();
         Server {
-            assigned: SpinLock::new(Vec::new()),
-            descriptors: SpinLock::new(Vec::new()),
             sender: SpinLock::new(sender),
             receiver: SpinLock::new(receiver),
         }
@@ -46,25 +42,10 @@ impl Server {
             };
             log::debug!("got request {seqno}: {body:?}");
             crate::rt::spawn(async move {
-                self.handle(seqno, body);
+                unsafe {
+                    self.handle(seqno, body);
+                }
             });
-        }
-    }
-
-    fn assign(&self) -> usize {
-        let mut assigned = self.assigned.lock();
-        if let Some(i) = assigned.iter().position(|x| !x) {
-            assigned[i] = true;
-            i
-        } else {
-            let i = assigned.len();
-            let size = 2 * i;
-            let size = core::cmp::max(size, 1024);
-            let mut descriptors = self.descriptors.lock();
-            descriptors.resize(size, Value::Null);
-            assigned.resize(size, false);
-            assigned[i] = true;
-            i
         }
     }
 
@@ -73,49 +54,55 @@ impl Server {
         let _ = tx.send(MetaResponse { seqno, body });
     }
 
-    fn unassign(&self, i: usize) {
-        self.descriptors.lock()[i] = Value::Null;
-        self.assigned.lock()[i] = false;
+    unsafe fn encode(&self, value: Box<Value>) -> usize {
+        let raw = Box::into_raw(value);
+        PHYSICAL_ALLOCATOR.to_offset(raw)
     }
 
-    fn handle(&'static self, seqno: usize, message: Request) {
+    unsafe fn peek(&self, handle: usize) -> &Value {
+        &*PHYSICAL_ALLOCATOR.from_offset(handle)
+    }
+
+    unsafe fn decode(&self, handle: usize) -> Box<Value> {
+        Box::from_raw(PHYSICAL_ALLOCATOR.from_offset(handle))
+    }
+
+    unsafe fn handle(&'static self, seqno: usize, message: Request) {
         log::debug!("got message {message:?}");
         #[allow(unused)]
         match message {
             Request::Nop => todo!(),
             Request::CreateNull => {
-                let dst = self.assign();
-                self.descriptors.lock()[dst] = Value::Null;
+                let dst = self.encode(Value::Null.into());
                 self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateWord { value } => {
-                let dst = self.assign();
-                self.descriptors.lock()[dst] = Value::Word(value);
+                let dst = self.encode(Value::Word(value).into());
                 self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateAtom { ptr, len } => todo!(),
             Request::CreateBlob { ptr, len } => {
-                let dst = self.assign();
                 let allocator = &*PHYSICAL_ALLOCATOR;
-                unsafe {
+                let dst = unsafe {
                     let ptr: *const u8 = allocator.from_offset(ptr);
                     let blob = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
-                    self.descriptors.lock()[dst] = Value::Blob(blob);
-                }
+                    let value = Value::Blob(blob);
+                    self.encode(value.into())
+                };
                 self.reply(seqno, Response::Handle(dst));
             }
             Request::CreateTree { ptr, len } => todo!(),
             Request::CreateThunk { src } => {
-                let Value::Blob(blob) = core::mem::take(&mut self.descriptors.lock()[src]) else {
+                let Value::Blob(blob) = *self.decode(src) else {
                     todo!();
                 };
                 // crate::rt::spawn(async move {
                     let thunk = Thunk::from_elf(&blob);
-                    self.descriptors.lock()[src] = Value::Thunk(thunk);
+                    let src = self.encode(Value::Thunk(thunk).into());
                     self.reply(seqno, Response::Handle(src));
                 // });
             }
-            Request::Read { src } => match &self.descriptors.lock()[src] {
+            Request::Read { src } => match &self.peek(src) {
                 Value::Null => self.reply(seqno, Response::Null),
                 Value::Error(value) => todo!(),
                 Value::Word(word) => self.reply(seqno, Response::Word(*word)),
@@ -128,40 +115,36 @@ impl Server {
                 Value::Thunk(thunk) => todo!(),
             },
             Request::Apply { src, arg } => {
-                let Value::Lambda(lambda) = core::mem::take(&mut self.descriptors.lock()[src])
-                else {
+                let Value::Lambda(lambda) = *self.decode(src) else {
                     todo!();
                 };
-                let x = core::mem::take(&mut self.descriptors.lock()[arg]);
-                let thunk = lambda.apply(x);
-                self.descriptors.lock()[src] = Value::Thunk(thunk);
-                self.reply(seqno, Response::Handle(src));
+                let x = self.decode(arg);
+                let thunk = lambda.apply(*x);
+                let dst = self.encode(Value::Thunk(thunk).into());
+                self.reply(seqno, Response::Handle(dst));
             }
             Request::Run { src } => {
-                let Value::Thunk(thunk) = core::mem::take(&mut self.descriptors.lock()[src]) else {
+                let Value::Thunk(thunk) = *self.decode(src) else {
                     todo!();
                 };
                 // crate::rt::spawn(async move {
                     let y = thunk.run_on_this_cpu();
-                    self.descriptors.lock()[src] = y;
-                    self.reply(seqno, Response::Handle(src));
+                    let dst = self.encode(y.into());
+                    self.reply(seqno, Response::Handle(dst));
                 // });
             }
             Request::Clone { src } => {
-                let dst = self.assign();
                 // crate::rt::spawn(async move {
-                    let mut descriptors = self.descriptors.lock();
-                    let mut original = &descriptors[src];
+                    let original = self.peek(src);
                     let new = original.clone();
-                    descriptors[dst] = new;
+                    let dst = self.encode(new.into());
                     self.reply(seqno, Response::Handle(dst));
                 // });
             }
             Request::Drop { src } => {
-                let current = core::mem::take(&mut self.descriptors.lock()[src]);
+                let current = self.decode(src);
                 // crate::rt::spawn(async move {
                     core::mem::drop(current);
-                    self.unassign(src);
                     self.reply(seqno, Response::Ack);
                 // });
             }

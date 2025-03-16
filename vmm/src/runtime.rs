@@ -7,6 +7,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
+        Mutex,
     },
     thread::JoinHandle,
 };
@@ -368,7 +369,7 @@ impl Drop for Cpu<'_> {
 
 pub struct Runtime<'a> {
     client: Client<'a>,
-    _cpus: Vec<Cpu<'a>>,
+    cpus: Mutex<Vec<Cpu<'a>>>,
     _allocator: Box<BuddyAllocator<'a>>,
 }
 
@@ -490,12 +491,18 @@ impl<'a> Runtime<'a> {
         }
         Self {
             client,
-            _cpus: cpus,
+            cpus: Mutex::new(cpus),
             _allocator: allocator,
         }
     }
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    pub fn shutdown(&self) {
+        self.client.shutdown();
+        let mut cpus = self.cpus.lock().unwrap();
+        cpus.drain(..);
     }
 }

@@ -51,9 +51,7 @@ impl Executor {
 
     #[inline(never)]
     fn wake_sleeping(&self) -> bool {
-        let Some(mut sleeping) = self.sleeping.try_lock() else {
-            return false;
-        };
+        let mut sleeping = self.sleeping.lock();
         let mut anything = false;
         while let Some(first) = sleeping.first_entry() {
             let now = kvmclock::now();
@@ -70,9 +68,7 @@ impl Executor {
 
     #[inline(never)]
     fn run_pending(&self) -> bool {
-        let Some(mut tasks) = self.pending.try_lock() else {
-            return false;
-        };
+        let mut tasks = self.pending.lock();
         let Some(task) = tasks.pop_front() else {
             return false;
         };

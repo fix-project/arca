@@ -23,20 +23,6 @@ unsafe impl Sendable for Request {}
 
 #[derive(Debug)]
 #[repr(C)]
-pub enum Type {
-    Null,
-    Word,
-    Atom,
-    Blob,
-    Tree,
-    Lambda,
-    Thunk,
-}
-
-unsafe impl Sendable for Type {}
-
-#[derive(Debug)]
-#[repr(C)]
 pub enum Response {
     Ack,
     Null,
@@ -44,7 +30,6 @@ pub enum Response {
     Atom { ptr: usize, len: usize },
     Blob { ptr: usize, len: usize },
     Tree { ptr: usize, len: usize },
-    Type(Type),
     Handle(usize),
 }
 

@@ -33,9 +33,9 @@ async fn main() -> anyhow::Result<()> {
         for _ in 0..iters {
             let m = measurements.clone();
             let inf = inf.clone();
-            let inf = inf.duplicate().await.unwrap();
             set.spawn(async move {
                 let start = std::time::SystemTime::now();
+                let inf = inf.duplicate().await.unwrap();
                 let inf = inf.create_thunk().await.unwrap();
                 inf.run().await.unwrap();
                 let end = std::time::SystemTime::now();
@@ -65,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
         log::info!("max: {max:?}");
         log::info!("time: {time:?}");
         log::info!("{iters} requests in {duration:?} = {:.0}/s", iters as f64 / duration.as_secs_f64());
+
+        runtime.shutdown();
         Ok(())
     }).await?
 }
