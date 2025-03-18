@@ -28,6 +28,13 @@ pub struct Executor {
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+#[core_local]
+static LAST_TIME: SpinLock<u128> = SpinLock::new(0);
+
+static TIME_SLEEPING: AtomicUsize = AtomicUsize::new(0);
+static TIME_WORKING: AtomicUsize = AtomicUsize::new(0);
+static TIME_SCHEDULING: AtomicUsize = AtomicUsize::new(0);
+
 enum Entry<T> {
     Nothing,
     Finished(Option<T>),
@@ -106,6 +113,14 @@ impl Executor {
         anything
     }
 
+    fn diff(&self) -> usize {
+        let mut time = LAST_TIME.lock();
+        let now = kvmclock::time_since_boot().as_nanos();
+        let diff = now - *time;
+        *time = now;
+        diff as usize
+    }
+
     #[inline(never)]
     fn run_pending(&self) -> bool {
         let tasks = self.pending.read();
@@ -118,7 +133,9 @@ impl Executor {
         };
         WriteGuard::unlock(tasks);
         self.parallel.fetch_add(1, Ordering::SeqCst);
+        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
         let result = task.poll();
+        TIME_WORKING.fetch_add(self.diff(), Ordering::SeqCst);
         self.parallel.fetch_sub(1, Ordering::SeqCst);
         if result.is_ready() {
             self.active.fetch_sub(1, Ordering::AcqRel);
@@ -128,12 +145,17 @@ impl Executor {
 
     #[inline(never)]
     fn sleep(&self) {
-        crate::profile::muted(|| unsafe {
-            core::arch::asm!("hlt");
-        });
+        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
+        unsafe {
+            crate::profile::muted(|| {
+                core::arch::asm!("hlt");
+            });
+        }
+        TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
     }
 
     pub fn run(&self) {
+        self.diff();
         while self.active.load(Ordering::Acquire) != 0 {
             let mut anything = false;
             anything |= self.wake_sleeping();
@@ -249,4 +271,29 @@ pub fn delay_for(duration: Duration) -> impl Future<Output = ()> {
 
 pub fn delay_until(time: OffsetDateTime) -> impl Future<Output = ()> {
     Delay(time)
+}
+
+pub fn reset_stats() {
+    TIME_SLEEPING.store(0, Ordering::SeqCst);
+    TIME_WORKING.store(0, Ordering::SeqCst);
+    TIME_SCHEDULING.store(0, Ordering::SeqCst);
+}
+
+pub fn profile() {
+    let scheduling = TIME_SCHEDULING.load(Ordering::SeqCst) as f64;
+    let working = TIME_WORKING.load(Ordering::SeqCst) as f64;
+    let sleeping = TIME_SLEEPING.load(Ordering::SeqCst) as f64;
+    let total = scheduling + working + sleeping;
+    log::info!(
+        "time spent sleeping:   {sleeping:12} ({:3.2}%)",
+        sleeping * 100. / total
+    );
+    log::info!(
+        "time spent working:    {working:12} ({:3.2}%)",
+        working * 100. / total
+    );
+    log::info!(
+        "time spent scheduling: {scheduling:12} ({:3.2}%)",
+        scheduling * 100. / total
+    );
 }

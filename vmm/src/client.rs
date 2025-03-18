@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
-use common::message::{MetaRequest, MetaResponse, Request, Response};
+use common::message::{MetaRequest, MetaResponse, Request, Response, Type};
 use common::ringbuffer::{Endpoint, Error, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
@@ -188,7 +188,7 @@ pub struct Client<'a> {
     _phantom: PhantomData<&'a ()>,
 }
 
-impl Client<'_> {
+impl<'a> Client<'a> {
     fn seqno(&self) -> usize {
         self.seqno.fetch_add(1, Ordering::AcqRel)
     }
@@ -272,6 +272,31 @@ impl Client<'_> {
         }
     }
 
+    pub async fn tree<I: IntoIterator<Item = Handle<'a, Opaque>>>(
+        &self,
+        elements: I,
+    ) -> Handle<Tree> {
+        let elements = elements.into_iter().map(|x| {
+            let index = x.index;
+            core::mem::forget(x);
+            index
+        });
+        let mut v = Vec::new_in(self.allocator);
+        v.extend(elements);
+        let data: Arc<[usize], &BuddyAllocator> = v.into();
+        let ptr: *const [usize] = Arc::into_raw(data);
+        let (ptr, len) = ptr.to_raw_parts();
+        let ptr = self.allocator.to_offset(ptr);
+        let Response::Handle(index) = self.fullsend(Request::CreateTree { ptr, len }).await else {
+            unreachable!();
+        };
+        Handle {
+            index,
+            client: self,
+            _phantom: PhantomData,
+        }
+    }
+
     pub fn shutdown(&self) {
         self.synchronizer.shutdown();
     }
@@ -280,6 +305,7 @@ impl Client<'_> {
 pub struct Null;
 pub struct Word;
 pub struct Blob;
+pub struct Tree;
 pub struct Lambda;
 pub struct Thunk;
 pub struct Opaque;
@@ -346,6 +372,7 @@ impl<'client> Handle<'client, Lambda> {
             _phantom: PhantomData,
         };
         core::mem::forget(self);
+        core::mem::forget(arg);
         new
     }
 }
@@ -395,8 +422,8 @@ impl<'a> From<Handle<'a, Word>> for Handle<'a, Opaque> {
     }
 }
 
-impl<'a> From<Handle<'a, Thunk>> for Handle<'a, Opaque> {
-    fn from(value: Handle<'a, Thunk>) -> Handle<'a, Opaque> {
+impl<'a> From<Handle<'a, Tree>> for Handle<'a, Opaque> {
+    fn from(value: Handle<'a, Tree>) -> Handle<'a, Opaque> {
         let handle = Handle {
             client: value.client,
             index: value.index,
@@ -404,6 +431,45 @@ impl<'a> From<Handle<'a, Thunk>> for Handle<'a, Opaque> {
         };
         core::mem::forget(value);
         handle
+    }
+}
+
+impl<'a> Handle<'a, Opaque> {
+    pub async fn as_word(self) -> core::result::Result<Handle<'a, Word>, Handle<'a, Opaque>> {
+        let datatype = self
+            .client
+            .fullsend(Request::GetType { src: self.index })
+            .await;
+        if let Response::Type(Type::Word) = datatype {
+            let handle = Handle {
+                client: self.client,
+                index: self.index,
+                _phantom: PhantomData,
+            };
+            core::mem::forget(self);
+            Ok(handle)
+        } else {
+            log::error!("{datatype:?}");
+            Err(self)
+        }
+    }
+
+    pub async fn as_lambda(self) -> core::result::Result<Handle<'a, Lambda>, Handle<'a, Opaque>> {
+        let datatype = self
+            .client
+            .fullsend(Request::GetType { src: self.index })
+            .await;
+        if let Response::Type(Type::Lambda) = datatype {
+            let handle = Handle {
+                client: self.client,
+                index: self.index,
+                _phantom: PhantomData,
+            };
+            core::mem::forget(self);
+            Ok(handle)
+        } else {
+            Err(self)
+        }
     }
 }
 

@@ -9,35 +9,42 @@ use core::time::Duration;
 
 use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
-use kernel::{kvmclock, rt, server, types::Thunk};
+use kernel::{
+    kvmclock, rt, server,
+    types::{Thunk, Value},
+};
 use macros::kmain;
 
-const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
+const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 
 #[kmain]
 async fn kmain() {
-    kernel::profile::begin();
+    // kernel::profile::begin();
     server::SERVER.wait().run().await;
-    kernel::profile::end();
-    profile();
+    // kernel::profile::end();
+    // profile();
 
     kernel::profile::reset();
-    log::info!("");
+    // log::info!("");
 
     kernel::profile::begin();
     bench().await;
+    kernel::profile::end();
     profile();
 }
 
 async fn bench() {
     let cores = kernel::ncores();
     let lg_cores = cores.ilog2();
-    let duration = Duration::from_millis(100);
-    let options = 0..(lg_cores + 6);
+    let duration = Duration::from_millis(1000);
+    let options = 0..(lg_cores + 3);
     for lg_n in options {
         let n = 1 << lg_n;
-        let mut set = vec![];
+        log::info!("");
+        log::info!("*** running on {n} threads ***");
+        let mut set = Vec::with_capacity(n);
         let now = kvmclock::time_since_boot();
+        rt::reset_stats();
         for _ in 0..n {
             set.push(rt::spawn(test(now + duration)));
         }
@@ -45,20 +52,29 @@ async fn bench() {
         for x in set {
             results.push(x.await);
         }
+        rt::profile();
         let elapsed = kvmclock::time_since_boot() - now;
         let iters: usize = results.iter().sum();
         let time = elapsed / iters as u32;
-        log::info!("{n:4} threads: {time:?} per iteration ({} total)", iters);
+        let iters_per_second = iters as f64 / elapsed.as_secs_f64();
+        log::info!("{n:4}/{cores:<3} threads: {time:?} per iteration ({iters_per_second:.2} iters/second) - ran for ({elapsed:?})",);
     }
 }
 
 async fn test(end: Duration) -> usize {
-    let thunk = Thunk::from_elf(INFINITE_ELF);
+    let thunk = Thunk::from_elf(ADD_ELF);
+    let Value::Lambda(lambda) = thunk.run() else {
+        panic!();
+    };
     let mut iters = 0;
     while kvmclock::time_since_boot() < end {
-        let thunk = thunk.clone();
-        thunk.run();
+        let lambda = lambda.clone();
+        let thunk = lambda.apply(Value::Tree(vec![Value::Word(1), Value::Word(2)].into()));
+        let _ = thunk.run();
         iters += 1;
+        if iters % 1000 == 0 {
+            rt::yield_now().await;
+        }
     }
     iters
 }

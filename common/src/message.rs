@@ -12,6 +12,7 @@ pub enum Request {
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
     CreateThunk { src: usize },
+    GetType { src: usize },
     Read { src: usize },
     Apply { src: usize, arg: usize },
     Run { src: usize },
@@ -20,6 +21,20 @@ pub enum Request {
 }
 
 unsafe impl Sendable for Request {}
+
+#[derive(Debug, Eq, PartialEq)]
+#[repr(C)]
+pub enum Type {
+    Null,
+    Word,
+    Atom,
+    Blob,
+    Tree,
+    Thunk,
+    Lambda,
+}
+
+unsafe impl Sendable for Type {}
 
 #[derive(Debug)]
 #[repr(C)]
@@ -31,6 +46,7 @@ pub enum Response {
     Blob { ptr: usize, len: usize },
     Tree { ptr: usize, len: usize },
     Handle(usize),
+    Type(Type),
 }
 
 unsafe impl Sendable for Response {}

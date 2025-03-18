@@ -6,8 +6,7 @@ use std::{
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
-        Mutex,
+        Arc, Mutex,
     },
     thread::JoinHandle,
 };
@@ -35,7 +34,7 @@ impl Mmap {
                 std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
+                libc::MAP_ANONYMOUS | libc::MAP_SHARED,
                 -1,
                 0,
             ) as *mut u8

@@ -62,7 +62,11 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
-unsafe extern "C" fn _start(cores: usize, allocator_data_ptr: usize, ring_buffer_data_ptr: usize) -> ! {
+unsafe extern "C" fn _start(
+    cores: usize,
+    allocator_data_ptr: usize,
+    ring_buffer_data_ptr: usize,
+) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;

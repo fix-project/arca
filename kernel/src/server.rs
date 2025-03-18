@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use common::{
-    message::{MetaRequest, MetaResponse, Request, Response},
+    message::{MetaRequest, MetaResponse, Request, Response, Type},
     ringbuffer::{Endpoint, Error, Receiver, Sender},
 };
 
@@ -43,9 +43,11 @@ impl Server {
                 }
             };
             log::debug!("got request {seqno}: {body:?}");
-            unsafe {
-                self.handle(seqno, body);
-            }
+            crate::rt::spawn(async move {
+                unsafe {
+                    self.handle(seqno, body);
+                }
+            });
         }
     }
 
@@ -91,7 +93,23 @@ impl Server {
                 };
                 self.reply(seqno, Response::Handle(dst));
             }
-            Request::CreateTree { ptr, len } => todo!(),
+            Request::CreateTree { ptr, len } => {
+                // crate::rt::spawn(async move {
+                let allocator = &*PHYSICAL_ALLOCATOR;
+                let dst = unsafe {
+                    let ptr: *const usize = allocator.from_offset(ptr);
+                    let elements: Arc<[usize]> = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
+                    let mut v = Vec::with_capacity(elements.len());
+                    for index in &*elements {
+                        let element = *self.decode(*index);
+                        v.push(element);
+                    }
+                    let value = Value::Tree(v.into());
+                    self.encode(value.into())
+                };
+                self.reply(seqno, Response::Handle(dst));
+                // });
+            }
             Request::CreateThunk { src } => {
                 let Value::Blob(blob) = *self.decode(src) else {
                     todo!();
@@ -102,6 +120,21 @@ impl Server {
                 self.reply(seqno, Response::Handle(src));
                 // });
             }
+            Request::GetType { src } => self.reply(
+                seqno,
+                Response::Type(match &self.peek(src) {
+                    Value::Null => Type::Null,
+                    Value::Error(value) => todo!(),
+                    Value::Word(_) => Type::Word,
+                    Value::Atom(_) => todo!(),
+                    Value::Blob(items) => Type::Blob,
+                    Value::Tree(values) => Type::Tree,
+                    Value::Page(page) => todo!(),
+                    Value::PageTable(page_table) => todo!(),
+                    Value::Lambda(lambda) => Type::Lambda,
+                    Value::Thunk(thunk) => Type::Thunk,
+                }),
+            ),
             Request::Read { src } => match &self.peek(src) {
                 Value::Null => self.reply(seqno, Response::Null),
                 Value::Error(value) => todo!(),
@@ -115,8 +148,9 @@ impl Server {
                 Value::Thunk(thunk) => todo!(),
             },
             Request::Apply { src, arg } => {
-                let Value::Lambda(lambda) = *self.decode(src) else {
-                    todo!();
+                let f = *self.decode(src);
+                let Value::Lambda(lambda) = f else {
+                    todo!("using {f:?} as a function");
                 };
                 let x = self.decode(arg);
                 let thunk = lambda.apply(*x);
@@ -127,11 +161,11 @@ impl Server {
                 let Value::Thunk(thunk) = *self.decode(src) else {
                     todo!();
                 };
-                crate::rt::spawn(async move {
-                    let y = thunk.run_for(Duration::from_millis(1));
-                    let dst = self.encode(y.into());
-                    self.reply(seqno, Response::Handle(dst));
-                });
+                // crate::rt::spawn(async move {
+                let y = thunk.run_for(Duration::from_millis(1000));
+                let dst = self.encode(y.into());
+                self.reply(seqno, Response::Handle(dst));
+                // });
             }
             Request::Clone { src } => {
                 // crate::rt::spawn(async move {
