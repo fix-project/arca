@@ -127,7 +127,6 @@ struct Task {
 }
 
 impl Task {
-    #[inline(never)]
     fn poll(self: Arc<Self>) -> Poll<()> {
         let waker = self.clone().into();
         let mut cx = Context::from_waker(&waker);
@@ -137,7 +136,6 @@ impl Task {
 }
 
 impl Wake for Task {
-    #[inline(never)]
     fn wake(self: Arc<Self>) {
         let other = self.clone();
         let mut tasks = other.pending.lock();

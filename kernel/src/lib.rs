@@ -24,16 +24,16 @@ pub use macros::core_local;
 pub mod allocator;
 pub mod cpu;
 pub mod debugcon;
+pub mod host;
 pub mod io;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
-pub mod rt;
-pub mod tsc;
-pub mod host;
 pub mod prelude;
 pub mod profile;
+pub mod rt;
 pub mod server;
+pub mod tsc;
 pub mod types;
 pub mod vm;
 
@@ -103,7 +103,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use spinlock::SpinLockGuard;
 
     let mut console = crate::debugcon::CONSOLE.lock();
-    let _ = writeln!(&mut *console, "{}", info);
+    let _ = writeln!(&mut *console, "KERNEL PANIC: {}", info);
     SpinLockGuard::unlock(console);
 
     loop {

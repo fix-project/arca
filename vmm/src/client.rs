@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -12,6 +13,7 @@ use common::ringbuffer::{Endpoint, Error, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
 
+#[derive(Debug)]
 enum BufferEntry {
     Ignore,
     Received(Response),
@@ -111,15 +113,27 @@ impl Future for ClientFuture {
         if self.exit.load(Ordering::SeqCst) {
             return Poll::Ready(Err(Error::Disconnected));
         }
-        if !buffer.contains_key(&self.seqno) {
-            let waker = cx.waker().clone();
-            buffer.insert(self.seqno, BufferEntry::Waiting(waker));
-            return Poll::Pending;
+        match buffer.entry(self.seqno) {
+            Entry::Occupied(e) => match e.remove() {
+                BufferEntry::Ignore => {
+                    unreachable!(
+                        "tried to poll seqno {} which was previously ignored",
+                        self.seqno
+                    );
+                }
+                BufferEntry::Received(response) => Poll::Ready(Ok(response)),
+                BufferEntry::Waiting(_) => {
+                    let waker = cx.waker().clone();
+                    buffer.insert(self.seqno, BufferEntry::Waiting(waker));
+                    Poll::Pending
+                }
+            },
+            Entry::Vacant(e) => {
+                let waker = cx.waker().clone();
+                e.insert(BufferEntry::Waiting(waker));
+                Poll::Pending
+            }
         }
-        let BufferEntry::Received(data) = buffer.remove(&self.seqno).unwrap() else {
-            unreachable!("tried to poll seqno with no data");
-        };
-        Poll::Ready(Ok(data))
     }
 }
 
@@ -139,7 +153,7 @@ pub struct Client<'a> {
     _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> Client<'a> {
+impl Client<'_> {
     fn seqno(&self) -> usize {
         self.seqno.fetch_add(1, Ordering::AcqRel)
     }
@@ -157,57 +171,54 @@ impl<'a> Client<'a> {
         }
     }
 
-    fn send(&self, message: Request) -> Result<usize> {
+    fn send(&self, message: Request) -> usize {
         let seqno = self.seqno();
         let mut tx = self.sender.lock().unwrap();
         tx.send(MetaRequest {
             seqno,
             body: message,
-        })?;
-        Ok(seqno)
+        })
+        .unwrap();
+        seqno
     }
 
-    async fn recv(&self, seqno: usize) -> Result<Response> {
-        self.synchronizer.get(seqno).await
+    async fn recv(&self, seqno: usize) -> Response {
+        self.synchronizer.get(seqno).await.unwrap()
     }
 
-    async fn fullsend(&self, message: Request) -> Result<Response> {
-        let seqno = self.send(message)?;
+    async fn fullsend(&self, message: Request) -> Response {
+        let seqno = self.send(message);
         self.recv(seqno).await
     }
 
-    fn send_and_ignore(&self, message: Request) -> Result<()> {
-        let seqno = self.send(message)?;
+    fn send_and_ignore(&self, message: Request) {
+        let seqno = self.send(message);
         self.synchronizer.ignore(seqno);
-        Ok(())
     }
 
-    pub async fn null<'client>(&'client self) -> Result<Handle<'client, Null>> {
-        let Response::Handle(index) = self.fullsend(Request::CreateNull).await? else {
+    pub async fn null<'client>(&'client self) -> Handle<'client, Null> {
+        let Response::Handle(index) = self.fullsend(Request::CreateNull).await else {
             unreachable!();
         };
-        Ok(Handle {
+        Handle {
             index,
             client: self,
             _phantom: PhantomData,
-        })
+        }
     }
 
-    pub async fn word<'client>(&'client self, value: u64) -> Result<Handle<'client, Word>> {
-        let Response::Handle(index) = self.fullsend(Request::CreateWord { value }).await? else {
+    pub async fn word<'client>(&'client self, value: u64) -> Handle<'client, Word> {
+        let Response::Handle(index) = self.fullsend(Request::CreateWord { value }).await else {
             unreachable!();
         };
-        Ok(Handle {
+        Handle {
             index,
             client: self,
             _phantom: PhantomData,
-        })
+        }
     }
 
-    pub async fn blob<'client, T: AsRef<[u8]>>(
-        &'client self,
-        data: T,
-    ) -> Result<Handle<'client, Blob>> {
+    pub async fn blob<'client, T: AsRef<[u8]>>(&'client self, data: T) -> Handle<'client, Blob> {
         let data = data.as_ref();
         let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
         blob.write_copy_of_slice(data);
@@ -216,14 +227,14 @@ impl<'a> Client<'a> {
         let ptr: *const [u8] = Arc::into_raw(blob);
         let (ptr, len) = ptr.to_raw_parts();
         let ptr = self.allocator.to_offset(ptr);
-        let Response::Handle(index) = self.fullsend(Request::CreateBlob { ptr, len }).await? else {
+        let Response::Handle(index) = self.fullsend(Request::CreateBlob { ptr, len }).await else {
             unreachable!();
         };
-        Ok(Handle {
+        Handle {
             index,
             client: self,
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn shutdown(&self) {
@@ -253,24 +264,24 @@ impl<T> Handle<'_, T> {
 }
 
 impl Handle<'_, Word> {
-    pub async fn read(&self) -> Result<u64> {
+    pub async fn read(&self) -> u64 {
         let Response::Word(x) = self
             .client
             .fullsend(Request::Read { src: self.index })
-            .await?
+            .await
         else {
             panic!();
         };
-        Ok(x)
+        x
     }
 }
 
 impl<'client> Handle<'client, Blob> {
-    pub async fn create_thunk(self) -> Result<Handle<'client, Thunk>> {
+    pub async fn create_thunk(self) -> Handle<'client, Thunk> {
         let Response::Handle(index) = self
             .client
             .fullsend(Request::CreateThunk { src: self.index })
-            .await?
+            .await
         else {
             unreachable!();
         };
@@ -280,16 +291,19 @@ impl<'client> Handle<'client, Blob> {
             _phantom: PhantomData,
         };
         core::mem::forget(self);
-        Ok(new)
+        new
     }
 }
 
 impl<'client> Handle<'client, Lambda> {
-    pub async fn apply(self, arg: Handle<'client, Opaque>) -> Result<Handle<'client, Thunk>> {
+    pub async fn apply(self, arg: Handle<'client, Opaque>) -> Handle<'client, Thunk> {
         let Response::Handle(index) = self
             .client
-            .fullsend(Request::Apply { src: self.index, arg: arg.index })
-            .await?
+            .fullsend(Request::Apply {
+                src: self.index,
+                arg: arg.index,
+            })
+            .await
         else {
             unreachable!();
         };
@@ -299,16 +313,13 @@ impl<'client> Handle<'client, Lambda> {
             _phantom: PhantomData,
         };
         core::mem::forget(self);
-        Ok(new)
+        new
     }
 }
 
 impl<'client> Handle<'client, Thunk> {
-    pub async fn run(self) -> Result<Handle<'client, Opaque>> {
-        let Response::Handle(index) = self
-            .client
-            .fullsend(Request::Run { src: self.index })
-            .await?
+    pub async fn run(self) -> Handle<'client, Opaque> {
+        let Response::Handle(index) = self.client.fullsend(Request::Run { src: self.index }).await
         else {
             unreachable!();
         };
@@ -318,24 +329,24 @@ impl<'client> Handle<'client, Thunk> {
             _phantom: PhantomData,
         };
         core::mem::forget(self);
-        Ok(new)
+        new
     }
 }
 
 impl<T> Handle<'_, T> {
-    pub async fn duplicate(&self) -> Result<Self> {
+    pub async fn duplicate(&self) -> Self {
         let Response::Handle(index) = self
             .client
             .fullsend(Request::Clone { src: self.index })
-            .await?
+            .await
         else {
             unreachable!();
         };
-        Ok(Handle {
+        Handle {
             client: self.client,
             index,
             _phantom: PhantomData,
-        })
+        }
     }
 }
 
@@ -365,8 +376,7 @@ impl<'a> From<Handle<'a, Thunk>> for Handle<'a, Opaque> {
 
 impl<T> Drop for Handle<'_, T> {
     fn drop(&mut self) {
-        let _ = self
-            .client
+        self.client
             .send_and_ignore(Request::Drop { src: self.index });
     }
 }

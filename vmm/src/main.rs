@@ -1,95 +1,69 @@
 #![feature(allocator_api)]
 #![feature(thread_sleep_until)]
+#![feature(future_join)]
 
 use std::num::NonZero;
-// use std::time::{Duration, Instant};
-// use std::future::Future;
+use std::sync::LazyLock;
+use std::time::Duration;
+use std::time::Instant;
 
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use kvm_ioctls::Kvm;
+use vmm::client::Client;
 use vmm::runtime::Mmap;
 use vmm::runtime::Runtime;
 
-// use rand_distr::Distribution;
+const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
 
-// const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
+static SMP: LazyLock<usize> = LazyLock::new(|| {
+    std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(1).unwrap())
+        .into()
+});
 
-fn main() -> anyhow::Result<()> {
-    smol::block_on(async {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    let kvm = Box::leak(Kvm::new().unwrap().into());
+    let mmap = Box::leak(Mmap::new(1 << 32).into());
+    Runtime::new(kvm, mmap, *SMP)
+});
+static CLIENT: LazyLock<&Client> = LazyLock::new(|| RUNTIME.client());
 
-        let kvm = Box::leak(Kvm::new().unwrap().into());
-        let mmap = Box::leak(Mmap::new(1 << 32).into());
-        let smp: usize = std::thread::available_parallelism()
-            .unwrap_or(NonZero::new(1).unwrap())
-            .into();
-        let runtime = Box::leak(Runtime::new(kvm, mmap, smp).into());
-        log::info!("creating client");
-        // let mut measurements = vec![];
-        // let client = Box::leak(runtime.client().into());
-
-        // let (tx, rx) = smol::channel::unbounded();
-        // let duration = Duration::from_secs(1);
-        // let start = Instant::now();
-        // generate_requests(100000., duration, tx, async || {
-        //     let inf = client.blob(INFINITE_ELF).await.unwrap();
-        //     let inf = inf.duplicate().await.unwrap();
-        //     let inf = inf.create_thunk().await.unwrap();
-        //     inf.run().await.unwrap();
-        // }).await;
-
-        // while let Ok(x) = rx.recv().await {
-        //     measurements.push(x);
-        // }
-        // let duration = start.elapsed();
-        // let iters = measurements.len();
-
-        // let time = duration/iters as u32;
-
-        // measurements.sort();
-        // let p99 = measurements[measurements.len()*99/100];
-        // dbg!(measurements.len());
-        // let mean =
-        //     measurements.iter().fold(Duration::ZERO, |x, y| x + *y) / measurements.len() as u32;
-        // let min = measurements.iter().min().unwrap();
-        // let max = measurements.iter().max().unwrap();
-
-        // log::info!("min: {min:?}");
-        // log::info!("µ: {mean:?}");
-        // log::info!("p99: {p99:?}");
-        // log::info!("max: {max:?}");
-        // log::info!("time: {time:?}");
-        // log::info!("{iters} requests in {duration:?} = {:.2}/s", iters as f64 / duration.as_secs_f64());
-
-        runtime.shutdown();
-        Ok(())
-    })
+async fn test(end: Instant) -> usize {
+    let client = &*CLIENT;
+    let elf = client.blob(INFINITE_ELF).await;
+    let thunk = elf.create_thunk().await;
+    let mut iters = 0;
+    while Instant::now() < end {
+        let thunk = thunk.duplicate().await;
+        let _ = thunk.run().await;
+        iters += 1;
+    }
+    iters
 }
 
-// async fn generate_requests<Fut: Future<Output=()> + Send>(rate: f64, duration: Duration, tx: smol::channel::Sender<Duration>, f: impl Fn() -> Fut + Send + 'static + Clone + Sync) {
+#[async_std::main]
+async fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let runtime = &*RUNTIME;
 
-//     let (tx2, rx2) = smol::channel::unbounded();
-//     let spawner = blocking::unblock(move || {
-//         let mut rng = rand::rng();
-//         let exp = rand_distr::Exp::new(rate).unwrap();
-//         let start = Instant::now();
-//         let mut last = start;
+    let cores = *SMP;
+    let lg_cores = cores.ilog2();
 
-//         while start.elapsed() < duration {
-//             let now = Instant::now();
-//             tx2.send_blocking(now).unwrap();
-//             let duration_secs = exp.sample(&mut rng);
-//             let duration = Duration::from_secs_f64(duration_secs);
-//             last += duration;
-//             std::thread::sleep_until(last);
-//         }
-//     });
+    let duration = Duration::from_millis(500);
+    for lg_n in 0..(lg_cores + 2) {
+        let n = 1 << lg_n;
+        let set = FuturesUnordered::new();
+        let now = Instant::now();
+        for _ in 0..n {
+            set.push(test(now + duration));
+        }
+        let results: Vec<_> = set.collect().await;
+        let iters: usize = results.iter().sum();
+        let time = now.elapsed() / iters as u32;
+        log::info!("{n:2} cores: {time:?} per iteration ({} total)", iters);
+    }
 
-//     while let Ok(start) = rx2.recv().await {
-//         let start = Instant::now();
-//         f().await;
-//         let time = start.elapsed();
-//         tx.send(time).await.unwrap();
-//     }
-
-//     spawner.await;
-// }
+    runtime.shutdown();
+    Ok(())
+}

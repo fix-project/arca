@@ -32,20 +32,17 @@ impl Server {
             let MetaRequest { seqno, body } = match attempt {
                 Ok(result) => result,
                 Err(Error::WouldBlock) => {
-                    core::hint::spin_loop();
                     crate::rt::yield_now().await;
                     continue;
                 }
                 Err(_) => {
-                    return;
+                    break;
                 }
             };
             log::debug!("got request {seqno}: {body:?}");
-            crate::rt::spawn(async move {
-                unsafe {
-                    self.handle(seqno, body);
-                }
-            });
+            unsafe {
+                self.handle(seqno, body);
+            }
         }
     }
 
@@ -97,9 +94,9 @@ impl Server {
                     todo!();
                 };
                 // crate::rt::spawn(async move {
-                    let thunk = Thunk::from_elf(&blob);
-                    let src = self.encode(Value::Thunk(thunk).into());
-                    self.reply(seqno, Response::Handle(src));
+                let thunk = Thunk::from_elf(&blob);
+                let src = self.encode(Value::Thunk(thunk).into());
+                self.reply(seqno, Response::Handle(src));
                 // });
             }
             Request::Read { src } => match &self.peek(src) {
@@ -128,24 +125,24 @@ impl Server {
                     todo!();
                 };
                 // crate::rt::spawn(async move {
-                    let y = thunk.run_on_this_cpu();
-                    let dst = self.encode(y.into());
-                    self.reply(seqno, Response::Handle(dst));
+                let y = thunk.run_on_this_cpu();
+                let dst = self.encode(y.into());
+                self.reply(seqno, Response::Handle(dst));
                 // });
             }
             Request::Clone { src } => {
                 // crate::rt::spawn(async move {
-                    let original = self.peek(src);
-                    let new = original.clone();
-                    let dst = self.encode(new.into());
-                    self.reply(seqno, Response::Handle(dst));
+                let original = self.peek(src);
+                let new = original.clone();
+                let dst = self.encode(new.into());
+                self.reply(seqno, Response::Handle(dst));
                 // });
             }
             Request::Drop { src } => {
                 let current = self.decode(src);
                 // crate::rt::spawn(async move {
-                    core::mem::drop(current);
-                    self.reply(seqno, Response::Ack);
+                core::mem::drop(current);
+                self.reply(seqno, Response::Ack);
                 // });
             }
         }
