@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -22,17 +21,41 @@ enum BufferEntry {
 
 struct Synchronizer {
     exit: Arc<AtomicBool>,
+    channel: async_std::channel::Sender<MetaRequest>,
     buffer: Arc<Mutex<HashMap<usize, BufferEntry>>>,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    send_thread: Mutex<Option<JoinHandle<()>>>,
+    receive_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Synchronizer {
-    fn new(receiver: Receiver<'static, MetaResponse>) -> Self {
-        let buffer = Arc::new(Mutex::new(HashMap::new()));
-        let buffer2 = buffer.clone();
+    fn new(
+        sender: Sender<'static, MetaRequest>,
+        receiver: Receiver<'static, MetaResponse>,
+    ) -> Self {
+        let (tx, rx) = async_std::channel::unbounded();
         let exit = Arc::new(AtomicBool::new(false));
         let exit2 = exit.clone();
-        let thread = Mutex::new(Some(std::thread::spawn(|| {
+        let send_thread = Mutex::new(Some(std::thread::spawn(move || {
+            let mut sender = sender;
+            let exit = exit2;
+            while !exit.load(Ordering::SeqCst) {
+                let Ok(request) = rx.recv_blocking() else {
+                    break;
+                };
+                while sender.is_full() {
+                    std::thread::yield_now();
+                }
+                if sender.send(request).is_err() {
+                    exit.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+            sender.hangup();
+        })));
+        let buffer = Arc::new(Mutex::new(HashMap::new()));
+        let buffer2 = buffer.clone();
+        let exit2 = exit.clone();
+        let receive_thread = Mutex::new(Some(std::thread::spawn(|| {
             let mut receiver = receiver;
             let buffer = buffer2;
             let exit = exit2;
@@ -55,6 +78,7 @@ impl Synchronizer {
                     Some(BufferEntry::Ignore) => {}
                     Some(BufferEntry::Waiting(waker)) => {
                         buffer.insert(seqno, BufferEntry::Received(body));
+                        core::mem::drop(buffer);
                         waker.wake();
                     }
                     Some(BufferEntry::Received(_)) => {
@@ -65,11 +89,14 @@ impl Synchronizer {
                     }
                 }
             }
+            receiver.hangup();
         })));
         Synchronizer {
             exit,
             buffer,
-            thread,
+            channel: tx,
+            send_thread,
+            receive_thread,
         }
     }
 
@@ -94,7 +121,21 @@ impl Synchronizer {
         }
     }
 
+    async fn put(&self, seqno: usize, body: Request) {
+        self.channel
+            .send(MetaRequest { seqno, body })
+            .await
+            .unwrap();
+    }
+
+    fn put_blocking(&self, seqno: usize, body: Request) {
+        self.channel
+            .send_blocking(MetaRequest { seqno, body })
+            .unwrap();
+    }
+
     fn shutdown(&self) {
+        self.channel.close();
         self.exit.store(true, Ordering::SeqCst);
     }
 }
@@ -113,24 +154,17 @@ impl Future for ClientFuture {
         if self.exit.load(Ordering::SeqCst) {
             return Poll::Ready(Err(Error::Disconnected));
         }
-        match buffer.entry(self.seqno) {
-            Entry::Occupied(e) => match e.remove() {
-                BufferEntry::Ignore => {
-                    unreachable!(
-                        "tried to poll seqno {} which was previously ignored",
-                        self.seqno
-                    );
-                }
-                BufferEntry::Received(response) => Poll::Ready(Ok(response)),
-                BufferEntry::Waiting(_) => {
-                    let waker = cx.waker().clone();
-                    buffer.insert(self.seqno, BufferEntry::Waiting(waker));
-                    Poll::Pending
-                }
-            },
-            Entry::Vacant(e) => {
+        match buffer.remove(&self.seqno) {
+            Some(BufferEntry::Ignore) => {
+                unreachable!(
+                    "tried to poll seqno {} which was previously ignored",
+                    self.seqno
+                );
+            }
+            Some(BufferEntry::Received(response)) => Poll::Ready(Ok(response)),
+            Some(BufferEntry::Waiting(_)) | None => {
                 let waker = cx.waker().clone();
-                e.insert(BufferEntry::Waiting(waker));
+                buffer.insert(self.seqno, BufferEntry::Waiting(waker));
                 Poll::Pending
             }
         }
@@ -140,7 +174,9 @@ impl Future for ClientFuture {
 impl Drop for Synchronizer {
     fn drop(&mut self) {
         self.exit.store(true, Ordering::SeqCst);
-        let handle = self.thread.lock().unwrap().take().unwrap();
+        let handle = self.send_thread.lock().unwrap().take().unwrap();
+        handle.join().unwrap();
+        let handle = self.receive_thread.lock().unwrap().take().unwrap();
         handle.join().unwrap();
     }
 }
@@ -148,7 +184,6 @@ impl Drop for Synchronizer {
 pub struct Client<'a> {
     synchronizer: Synchronizer,
     seqno: AtomicUsize,
-    sender: Mutex<Sender<'static, MetaRequest>>,
     allocator: &'static BuddyAllocator<'static>,
     _phantom: PhantomData<&'a ()>,
 }
@@ -161,24 +196,24 @@ impl Client<'_> {
     pub fn new(endpoint: Endpoint<'static, MetaRequest, MetaResponse>) -> Self {
         let allocator: &'static BuddyAllocator<'static> = endpoint.allocator();
         let (sender, receiver) = endpoint.into_sender_receiver();
-        let synchronizer = Synchronizer::new(receiver);
+        let synchronizer = Synchronizer::new(sender, receiver);
         Client {
             synchronizer,
             seqno: AtomicUsize::new(0),
-            sender: Mutex::new(sender),
             allocator,
             _phantom: PhantomData,
         }
     }
 
-    fn send(&self, message: Request) -> usize {
+    async fn send(&self, message: Request) -> usize {
         let seqno = self.seqno();
-        let mut tx = self.sender.lock().unwrap();
-        tx.send(MetaRequest {
-            seqno,
-            body: message,
-        })
-        .unwrap();
+        self.synchronizer.put(seqno, message).await;
+        seqno
+    }
+
+    fn send_blocking(&self, message: Request) -> usize {
+        let seqno = self.seqno();
+        self.synchronizer.put_blocking(seqno, message);
         seqno
     }
 
@@ -187,16 +222,16 @@ impl Client<'_> {
     }
 
     async fn fullsend(&self, message: Request) -> Response {
-        let seqno = self.send(message);
+        let seqno = self.send(message).await;
         self.recv(seqno).await
     }
 
-    fn send_and_ignore(&self, message: Request) {
-        let seqno = self.send(message);
+    fn send_and_ignore_blocking(&self, message: Request) {
+        let seqno = self.send_blocking(message);
         self.synchronizer.ignore(seqno);
     }
 
-    pub async fn null<'client>(&'client self) -> Handle<'client, Null> {
+    pub async fn null(&self) -> Handle<Null> {
         let Response::Handle(index) = self.fullsend(Request::CreateNull).await else {
             unreachable!();
         };
@@ -207,7 +242,7 @@ impl Client<'_> {
         }
     }
 
-    pub async fn word<'client>(&'client self, value: u64) -> Handle<'client, Word> {
+    pub async fn word(&self, value: u64) -> Handle<Word> {
         let Response::Handle(index) = self.fullsend(Request::CreateWord { value }).await else {
             unreachable!();
         };
@@ -218,7 +253,7 @@ impl Client<'_> {
         }
     }
 
-    pub async fn blob<'client, T: AsRef<[u8]>>(&'client self, data: T) -> Handle<'client, Blob> {
+    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Handle<Blob> {
         let data = data.as_ref();
         let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
         blob.write_copy_of_slice(data);
@@ -238,8 +273,6 @@ impl Client<'_> {
     }
 
     pub fn shutdown(&self) {
-        let tx = self.sender.lock().unwrap();
-        tx.hangup();
         self.synchronizer.shutdown();
     }
 }
@@ -377,6 +410,6 @@ impl<'a> From<Handle<'a, Thunk>> for Handle<'a, Opaque> {
 impl<T> Drop for Handle<'_, T> {
     fn drop(&mut self) {
         self.client
-            .send_and_ignore(Request::Drop { src: self.index });
+            .send_and_ignore_blocking(Request::Drop { src: self.index });
     }
 }

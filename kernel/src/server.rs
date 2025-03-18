@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use common::{
     message::{MetaRequest, MetaResponse, Request, Response},
     ringbuffer::{Endpoint, Error, Receiver, Sender},
@@ -23,6 +25,7 @@ impl Server {
         }
     }
 
+    #[inline(never)]
     pub async fn run(&'static self) {
         loop {
             let attempt = {
@@ -124,11 +127,11 @@ impl Server {
                 let Value::Thunk(thunk) = *self.decode(src) else {
                     todo!();
                 };
-                // crate::rt::spawn(async move {
-                let y = thunk.run_on_this_cpu();
-                let dst = self.encode(y.into());
-                self.reply(seqno, Response::Handle(dst));
-                // });
+                crate::rt::spawn(async move {
+                    let y = thunk.run_for(Duration::from_millis(1));
+                    let dst = self.encode(y.into());
+                    self.reply(seqno, Response::Handle(dst));
+                });
             }
             Request::Clone { src } => {
                 // crate::rt::spawn(async move {

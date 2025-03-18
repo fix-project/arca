@@ -12,7 +12,7 @@ use alloc::{
     sync::Arc,
     task::Wake,
 };
-use common::util::spinlock::SpinLockGuard;
+use common::util::rwlock::{ReadGuard, RwLock, WriteGuard};
 use time::OffsetDateTime;
 
 use crate::{kvmclock, prelude::*};
@@ -20,40 +20,78 @@ use crate::{kvmclock, prelude::*};
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
 pub struct Executor {
-    pending: Arc<SpinLock<VecDeque<Arc<Task>>>>,
-    sleeping: SpinLock<BTreeMap<OffsetDateTime, Waker>>,
+    pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
+    sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
     active: AtomicUsize,
+    parallel: AtomicUsize,
 }
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+enum Entry<T> {
+    Nothing,
+    Finished(Option<T>),
+    Waiting(Waker),
+}
+
 impl Executor {
     fn new() -> Executor {
         Executor {
-            pending: Arc::new(SpinLock::new(VecDeque::new())),
-            sleeping: SpinLock::new(BTreeMap::new()),
+            pending: Arc::new(RwLock::new(VecDeque::new())),
+            sleeping: RwLock::new(BTreeMap::new()),
             active: AtomicUsize::new(0),
+            parallel: AtomicUsize::new(0),
         }
     }
 
-    pub fn spawn<F>(&self, future: F)
+    #[inline(never)]
+    async fn resolve<F, T>(future: F, entry: Arc<RwLock<Entry<T>>>)
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
+        let result = future.await;
+        let mut entry = entry.write();
+        let mut replacement = Entry::Finished(Some(result));
+        core::mem::swap(&mut *entry, &mut replacement);
+        match replacement {
+            Entry::Nothing => {}
+            Entry::Finished(_) => unreachable!(),
+            Entry::Waiting(waker) => {
+                waker.wake();
+            }
+        }
+    }
+
+    pub fn spawn<F, T>(&self, future: F) -> JoinHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let entry = Arc::new(RwLock::new(Entry::Nothing));
+        let future = Self::resolve(future, entry.clone());
         let task = Arc::new(Task {
             future: SpinLock::new(Box::pin(future)),
             pending: self.pending.clone(),
         });
-        let mut tasks = self.pending.lock();
+        let handle = JoinHandle { entry };
         self.active.fetch_add(1, Ordering::AcqRel);
-        tasks.push_back(task)
+        let mut tasks = self.pending.write();
+        tasks.push_back(task);
+        handle
     }
 
     #[inline(never)]
     fn wake_sleeping(&self) -> bool {
-        let Some(mut sleeping) = self.sleeping.try_lock() else {
+        let now = kvmclock::now();
+        let sleeping = self.sleeping.read();
+        let Some((first, _)) = sleeping.first_key_value() else {
             return false;
         };
+        if first > &now {
+            return false;
+        }
+        let mut sleeping = ReadGuard::upgrade(sleeping);
         let mut anything = false;
         while let Some(first) = sleeping.first_entry() {
             let now = kvmclock::now();
@@ -70,14 +108,19 @@ impl Executor {
 
     #[inline(never)]
     fn run_pending(&self) -> bool {
-        let Some(mut tasks) = self.pending.try_lock() else {
+        let tasks = self.pending.read();
+        if tasks.is_empty() {
             return false;
-        };
+        }
+        let mut tasks = ReadGuard::upgrade(tasks);
         let Some(task) = tasks.pop_front() else {
             return false;
         };
-        SpinLockGuard::unlock(tasks);
-        if task.poll().is_ready() {
+        WriteGuard::unlock(tasks);
+        self.parallel.fetch_add(1, Ordering::SeqCst);
+        let result = task.poll();
+        self.parallel.fetch_sub(1, Ordering::SeqCst);
+        if result.is_ready() {
             self.active.fetch_sub(1, Ordering::AcqRel);
         }
         true
@@ -85,9 +128,9 @@ impl Executor {
 
     #[inline(never)]
     fn sleep(&self) {
-        unsafe {
+        crate::profile::muted(|| unsafe {
             core::arch::asm!("hlt");
-        }
+        });
     }
 
     pub fn run(&self) {
@@ -96,19 +139,37 @@ impl Executor {
             anything |= self.wake_sleeping();
             anything |= self.run_pending();
             if !anything {
-                // crate::profile::mute_core();
                 self.sleep();
-                // crate::profile::unmute_core();
             }
         }
     }
 }
 
-pub fn spawn<F>(future: F)
+pub struct JoinHandle<T> {
+    entry: Arc<RwLock<Entry<T>>>,
+}
+
+impl<T> Future for JoinHandle<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut result = self.entry.write();
+        match &mut *result {
+            Entry::Nothing | Entry::Waiting(_) => {
+                *result = Entry::Waiting(cx.waker().clone());
+                Poll::Pending
+            }
+            Entry::Finished(value) => Poll::Ready(value.take().unwrap()),
+        }
+    }
+}
+
+pub fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
 {
-    EXECUTOR.spawn(future);
+    EXECUTOR.spawn(future)
 }
 
 pub fn run() {
@@ -123,7 +184,7 @@ impl Default for Executor {
 
 struct Task {
     future: SpinLock<BoxFuture>,
-    pending: Arc<SpinLock<VecDeque<Arc<Task>>>>,
+    pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
 }
 
 impl Task {
@@ -138,7 +199,7 @@ impl Task {
 impl Wake for Task {
     fn wake(self: Arc<Self>) {
         let other = self.clone();
-        let mut tasks = other.pending.lock();
+        let mut tasks = other.pending.write();
         tasks.push_back(self);
     }
 }
@@ -176,7 +237,7 @@ impl Future for Delay {
             return Poll::Ready(());
         }
         let waker = cx.waker().clone();
-        let mut sleeping = EXECUTOR.sleeping.lock();
+        let mut sleeping = EXECUTOR.sleeping.write();
         sleeping.insert(self.0, waker);
         Poll::Pending
     }

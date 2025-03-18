@@ -7,13 +7,9 @@ extern crate kernel;
 
 use core::time::Duration;
 
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
-use futures::{stream::FuturesUnordered, StreamExt};
-use kernel::{
-    kvmclock, rt, server,
-    types::{Blob, Thunk},
-};
+use kernel::{kvmclock, rt, server, types::Thunk};
 use macros::kmain;
 
 const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
@@ -21,11 +17,7 @@ const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"))
 #[kmain]
 async fn kmain() {
     kernel::profile::begin();
-    let set = FuturesUnordered::new();
-    for _ in 0..kernel::ncores() {
-        set.push(server::SERVER.wait().run());
-    }
-    let _: Vec<_> = set.collect().await;
+    server::SERVER.wait().run().await;
     kernel::profile::end();
     profile();
 
@@ -34,26 +26,29 @@ async fn kmain() {
 
     kernel::profile::begin();
     bench().await;
-    kernel::profile::end();
     profile();
 }
 
 async fn bench() {
     let cores = kernel::ncores();
     let lg_cores = cores.ilog2();
-    let duration = Duration::from_millis(500);
-    for lg_n in 0..(lg_cores + 6) {
+    let duration = Duration::from_millis(100);
+    let options = 0..(lg_cores + 6);
+    for lg_n in options {
         let n = 1 << lg_n;
-        let set = FuturesUnordered::new();
+        let mut set = vec![];
         let now = kvmclock::time_since_boot();
         for _ in 0..n {
-            set.push(test(now + duration));
+            set.push(rt::spawn(test(now + duration)));
         }
-        let results: Vec<_> = set.collect().await;
+        let mut results = vec![];
+        for x in set {
+            results.push(x.await);
+        }
         let elapsed = kvmclock::time_since_boot() - now;
         let iters: usize = results.iter().sum();
         let time = elapsed / iters as u32;
-        log::info!("{n:2} cores: {time:?} per iteration ({} total)", iters);
+        log::info!("{n:4} threads: {time:?} per iteration ({} total)", iters);
     }
 }
 
@@ -62,7 +57,7 @@ async fn test(end: Duration) -> usize {
     let mut iters = 0;
     while kvmclock::time_since_boot() < end {
         let thunk = thunk.clone();
-        thunk.run_on_this_cpu();
+        thunk.run();
         iters += 1;
     }
     iters
@@ -74,10 +69,14 @@ fn profile() {
     let entries = entries
         .into_iter()
         .map(|(p, x)| {
-            (
-                kernel::host::symname(p).unwrap_or_else(|| ("???".into(), 0)),
-                x,
-            )
+            if p.is_null() {
+                (("USER CODE".into(), 0), x)
+            } else {
+                (
+                    kernel::host::symname(p).unwrap_or_else(|| ("???".into(), 0)),
+                    x,
+                )
+            }
         })
         .fold(BTreeMap::new(), |mut map, ((name, _offset), count)| {
             map.entry(name).and_modify(|e| *e += count).or_insert(count);

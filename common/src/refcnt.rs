@@ -18,6 +18,7 @@ unsafe impl<T: Sync + Send + ?Sized> Sync for RefCnt<'_, T> {}
 
 impl<'a, T: ?Sized> RefCnt<'a, T> {
     pub fn refcnt(this: &Self) -> &AtomicUsize {
+        debug_assert!(!this.ptr.is_null());
         unsafe { &*this.allocator.refcnt(this.ptr) }
     }
 
@@ -36,6 +37,7 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
     /// This raw pointer and allocator pair must have been previously returned by a call to
     /// [into_raw_with_allocator].
     pub unsafe fn from_raw_in(ptr: *mut T, allocator: &'a BuddyAllocator<'a>) -> RefCnt<'a, T> {
+        debug_assert!(!ptr.is_null());
         let rc = RefCnt { ptr, allocator };
         assert_ne!((*allocator.refcnt(ptr)).load(Ordering::SeqCst), 0);
         rc

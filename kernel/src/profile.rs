@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{
+    future::Future,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use alloc::collections::btree_map::BTreeMap;
 
@@ -7,6 +10,7 @@ use crate::{interrupts::IsrRegisterFile, prelude::*};
 static PROFILING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static COUNTS: OnceLock<&'static [AtomicUsize]> = OnceLock::new();
+static USER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[core_local]
 static MUTE_CORE: AtomicBool = AtomicBool::new(false);
@@ -35,6 +39,22 @@ pub fn end() {
     }
 }
 
+pub fn muted<T, F: FnOnce() -> T>(f: F) -> T {
+    let old = MUTE_CORE.load(Ordering::SeqCst);
+    MUTE_CORE.store(true, Ordering::SeqCst);
+    let result = f();
+    MUTE_CORE.store(old, Ordering::SeqCst);
+    result
+}
+
+pub async fn muted_async<T, Fut: Future<Output = T>, F: FnOnce() -> Fut>(f: F) -> T {
+    let old = MUTE_CORE.load(Ordering::SeqCst);
+    MUTE_CORE.store(true, Ordering::SeqCst);
+    let result = f().await;
+    MUTE_CORE.store(old, Ordering::SeqCst);
+    result
+}
+
 pub fn mute_core() {
     MUTE_CORE.store(true, Ordering::SeqCst);
 }
@@ -48,6 +68,7 @@ pub fn reset() {
     for count in *COUNTS {
         count.store(0, Ordering::SeqCst);
     }
+    USER_COUNT.store(0, Ordering::SeqCst);
 }
 
 pub(crate) fn tick(registers: &IsrRegisterFile) {
@@ -56,19 +77,24 @@ pub(crate) fn tick(registers: &IsrRegisterFile) {
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
         return;
     }
-    let start = &raw const _stext;
-    let end = &raw const _etext;
-    let rip = registers.rip as *const u8;
-    if rip < start || rip >= end {
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
-        log::error!("instruction pointer {rip:p} was not within kernel");
-        crate::exit(1);
-        // return;
-    }
+    if registers.cs & 0b11 == 0b11 {
+        // user mode
+        USER_COUNT.fetch_add(1, Ordering::SeqCst);
+    } else {
+        let start = &raw const _stext;
+        let end = &raw const _etext;
+        let rip = registers.rip as *const u8;
+        if rip < start || rip >= end {
+            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            log::error!("instruction pointer {rip:p} was not within kernel");
+            crate::exit(1);
+            // return;
+        }
 
-    unsafe {
-        let offset = rip.offset_from_unsigned(start);
-        COUNTS[offset].fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            let offset = rip.offset_from_unsigned(start);
+            COUNTS[offset].fetch_add(1, Ordering::SeqCst);
+        }
     }
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
@@ -87,6 +113,10 @@ pub fn entries() -> BTreeMap<*const (), usize> {
                 entries.insert(start.byte_add(i), count);
             }
         }
+    }
+    let user = USER_COUNT.load(Ordering::SeqCst);
+    if user > 0 {
+        entries.insert(core::ptr::null(), user);
     }
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
     entries

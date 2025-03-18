@@ -172,6 +172,10 @@ impl<'a> RingBuffer<'a> {
                     buf = &mut buf[n..];
                 }
                 Err(Error::WouldBlock) => {
+                    #[cfg(feature = "std")]
+                    {
+                        std::thread::yield_now();
+                    }
                     core::hint::spin_loop();
                 }
                 Err(e) => return Err(e),
@@ -185,6 +189,10 @@ impl<'a> RingBuffer<'a> {
             match self.write(buf) {
                 Ok(n) => buf = &buf[n..],
                 Err(Error::WouldBlock) => {
+                    #[cfg(feature = "std")]
+                    {
+                        std::thread::yield_now();
+                    }
                     core::hint::spin_loop();
                 }
                 Err(e) => return Err(e),

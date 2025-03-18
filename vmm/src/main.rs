@@ -7,14 +7,13 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use kvm_ioctls::Kvm;
 use vmm::client::Client;
 use vmm::runtime::Mmap;
 use vmm::runtime::Runtime;
 
 const INFINITE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_infinite"));
+// const SPIN_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_spin"));
 
 static SMP: LazyLock<usize> = LazyLock::new(|| {
     std::thread::available_parallelism()
@@ -50,20 +49,28 @@ async fn main() -> anyhow::Result<()> {
     let cores = *SMP;
     let lg_cores = cores.ilog2();
 
-    let duration = Duration::from_millis(500);
-    for lg_n in 0..(lg_cores + 2) {
+    let duration = Duration::from_millis(100);
+    let options = 0..(lg_cores + 6);
+    for lg_n in options {
         let n = 1 << lg_n;
-        let set = FuturesUnordered::new();
         let now = Instant::now();
+        let mut set = vec![];
         for _ in 0..n {
-            set.push(test(now + duration));
+            set.push(async_std::task::spawn(test(now + duration)));
         }
-        let results: Vec<_> = set.collect().await;
-        let iters: usize = results.iter().sum();
+        let mut results = vec![];
+        for x in set {
+            results.push(x.await);
+        }
+        let mut iters: usize = results.iter().sum();
+        if iters == 0 {
+            iters = 1;
+        }
         let time = now.elapsed() / iters as u32;
-        log::info!("{n:2} cores: {time:?} per iteration ({} total)", iters);
+        log::info!("{n:4} threads: {time:?} per iteration ({} total)", iters);
     }
 
+    log::info!("shutting down");
     runtime.shutdown();
     Ok(())
 }
