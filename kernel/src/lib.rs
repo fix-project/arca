@@ -23,16 +23,15 @@ pub use macros::core_local;
 pub mod allocator;
 pub mod cpu;
 pub mod debugcon;
+pub mod host;
 pub mod io;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
-pub mod rt;
-// pub mod tsc;
-pub mod client;
-pub mod host;
 pub mod prelude;
 pub mod profile;
+pub mod rt;
+pub mod tsc;
 pub mod types;
 pub mod vm;
 
@@ -49,11 +48,15 @@ pub use common::util::initcell;
 pub use common::util::spinlock;
 pub use lapic::LAPIC;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 #[cfg(test)]
 mod testing;
 
 #[no_mangle]
 static mut EXIT_CODE: u8 = 0;
+
+pub(crate) static NCORES: AtomicUsize = AtomicUsize::new(0);
 
 pub fn coreid() -> u32 {
     let mut id: u32 = 0;
@@ -61,6 +64,10 @@ pub fn coreid() -> u32 {
         core::arch::x86_64::__rdtscp(&mut id);
     }
     id
+}
+
+pub fn ncores() -> usize {
+    NCORES.load(Ordering::SeqCst)
 }
 
 pub fn halt() {
@@ -76,9 +83,13 @@ pub fn pause() {
 }
 
 pub fn shutdown() -> ! {
+    exit(0);
+}
+
+pub fn exit(code: u8) -> ! {
     loop {
         unsafe {
-            io::outb(0, 0);
+            io::outb(0, code);
         }
         core::hint::spin_loop();
     }
@@ -90,7 +101,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use spinlock::SpinLockGuard;
 
     let mut console = crate::debugcon::CONSOLE.lock();
-    let _ = writeln!(&mut *console, "{}", info);
+    let _ = writeln!(&mut *console, "KERNEL PANIC: {}", info);
     SpinLockGuard::unlock(console);
 
     loop {

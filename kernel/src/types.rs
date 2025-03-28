@@ -22,6 +22,7 @@ pub enum Value {
     #[default]
     Null,
     Error(Arc<Value>),
+    Word(u64),
     Atom(String),
     Blob(Blob),
     Tree(Tree),
