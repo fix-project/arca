@@ -1,6 +1,6 @@
 use core::{
     arch::asm,
-    ptr::{addr_of, addr_of_mut},
+    ptr::{addr_of, addr_of_mut, NonNull},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -15,15 +15,13 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
-    server::{Server, SERVER},
     vm,
 };
 
 use common::buddy::BuddyAllocatorRawData;
-use common::ringbuffer::{Endpoint, EndpointRawData};
 
 extern "C" {
-    fn kmain();
+    fn kmain(argc: usize, argv: *const usize);
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
@@ -65,7 +63,8 @@ static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 unsafe extern "C" fn _start(
     cores: usize,
     allocator_data_ptr: usize,
-    ring_buffer_data_ptr: usize,
+    argc: usize,
+    argv_offset: usize,
 ) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
@@ -105,17 +104,9 @@ unsafe extern "C" fn _start(
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
 
         init_cpu_tls();
-
-        let raw_rb_data =
-            Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
-        let endpoint = Endpoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
-        core::mem::forget(raw_rb_data);
-        let server = Server::new(endpoint);
-        let _ = SERVER.set(server);
     } else {
         PHYSICAL_ALLOCATOR.wait();
         init_cpu_tls();
-        SERVER.wait();
     };
 
     // per-cpu init
@@ -142,7 +133,9 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
 
     if id == 0 {
-        kmain();
+        let argv: *mut usize = PHYSICAL_ALLOCATOR.from_offset(argv_offset);
+        let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
+        kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);
     } else {
         while !START_RUNTIME.load(Ordering::Acquire) {

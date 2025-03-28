@@ -31,7 +31,6 @@ pub mod paging;
 pub mod prelude;
 pub mod profile;
 pub mod rt;
-pub mod server;
 pub mod tsc;
 pub mod types;
 pub mod vm;

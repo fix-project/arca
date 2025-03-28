@@ -10,7 +10,7 @@ use core::time::Duration;
 use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
 use kernel::{
-    kvmclock, rt, server,
+    kvmclock, rt,
     types::{Thunk, Value},
 };
 use macros::kmain;
@@ -18,15 +18,7 @@ use macros::kmain;
 const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 
 #[kmain]
-async fn kmain() {
-    // kernel::profile::begin();
-    server::SERVER.wait().run().await;
-    // kernel::profile::end();
-    // profile();
-
-    kernel::profile::reset();
-    // log::info!("");
-
+async fn kmain(_: &[usize]) {
     kernel::profile::begin();
     bench().await;
     kernel::profile::end();
