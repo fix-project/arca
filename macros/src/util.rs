@@ -19,11 +19,15 @@ pub fn kmain(_: TokenStream, item: TokenStream) -> TokenStream {
     let kernel = kernel_ident();
     quote! {
         #[no_mangle]
-        extern "C" fn kmain() {
+        extern "C" fn kmain(argc: usize, argv: *const usize) {
             #item
 
+            let slice = unsafe {
+                core::slice::from_raw_parts(argv, argc)
+            };
+
             #kernel::rt::spawn(async {
-                #ident().await;
+                #ident(slice).await;
             });
         }
     }

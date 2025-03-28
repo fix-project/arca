@@ -1,15 +1,21 @@
+#![no_main]
+#![no_std]
+#![feature(ptr_metadata)]
+
 use core::time::Duration;
 
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use common::{
     message::{MetaRequest, MetaResponse, Request, Response, Type},
-    ringbuffer::{Endpoint, Error, Receiver, Sender},
+    ringbuffer::{Endpoint, EndpointRawData, Error, Receiver, Sender},
 };
+use macros::kmain;
 
-use crate::prelude::*;
+use kernel::prelude::*;
+use kernel::rt;
+use kernel::rt::profile;
 
 extern crate alloc;
-
-pub static SERVER: OnceLock<Server> = OnceLock::new();
 
 pub struct Server {
     sender: SpinLock<Sender<'static, MetaResponse>>,
@@ -35,7 +41,7 @@ impl Server {
             let MetaRequest { seqno, body } = match attempt {
                 Ok(result) => result,
                 Err(Error::WouldBlock) => {
-                    crate::rt::yield_now().await;
+                    kernel::rt::yield_now().await;
                     continue;
                 }
                 Err(_) => {
@@ -43,7 +49,7 @@ impl Server {
                 }
             };
             log::debug!("got request {seqno}: {body:?}");
-            crate::rt::spawn(async move {
+            kernel::rt::spawn(async move {
                 unsafe {
                     self.handle(seqno, body);
                 }
@@ -52,6 +58,7 @@ impl Server {
     }
 
     fn reply(&self, seqno: usize, body: Response) {
+        log::debug!("replying to {seqno}: {body:?}");
         let mut tx = self.sender.lock();
         let _ = tx.send(MetaResponse { seqno, body });
     }
@@ -184,4 +191,20 @@ impl Server {
             }
         }
     }
+}
+
+#[kmain]
+async fn kmain(argv: &[usize]) {
+    let ring_buffer_data_ptr = argv[0];
+    let server = unsafe {
+        let raw_rb_data =
+            Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
+        let endpoint = Endpoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+        core::mem::forget(raw_rb_data);
+        Box::leak(Box::new(Server::new(endpoint)))
+    };
+    kernel::profile::begin();
+    server.run().await;
+    kernel::profile::end();
+    profile();
 }

@@ -3,25 +3,14 @@
 #![feature(future_join)]
 
 use std::num::NonZero;
-use std::sync::LazyLock;
 
-use kvm_ioctls::Kvm;
 use vmm::runtime::Mmap;
 use vmm::runtime::Runtime;
 
+const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
+
 // const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 
-static SMP: LazyLock<usize> = LazyLock::new(|| {
-    std::thread::available_parallelism()
-        .unwrap_or(NonZero::new(1).unwrap())
-        .into()
-});
-
-static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    let kvm = Box::leak(Kvm::new().unwrap().into());
-    let mmap = Box::leak(Mmap::new(1 << 32).into());
-    Runtime::new(kvm, mmap, *SMP)
-});
 // static CLIENT: LazyLock<&Client> = LazyLock::new(|| RUNTIME.client());
 
 /*
@@ -49,7 +38,12 @@ async fn test(end: Instant) -> usize {
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let runtime = &*RUNTIME;
+    let smp = std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(1).unwrap())
+        .get();
+    let mmap = Box::leak(Mmap::new(1 << 32).into());
+    let mut runtime = Runtime::new(smp, mmap);
+    runtime.run(KERNEL_ELF, &[]);
 
     /*
     let cores = *SMP;
@@ -80,6 +74,5 @@ async fn main() -> anyhow::Result<()> {
     */
 
     log::info!("shutting down");
-    runtime.shutdown();
     Ok(())
 }

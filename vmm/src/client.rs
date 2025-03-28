@@ -479,3 +479,53 @@ impl<T> Drop for Handle<'_, T> {
             .send_and_ignore_blocking(Request::Drop { src: self.index });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use common::ringbuffer;
+
+    use crate::runtime::{Mmap, Runtime};
+
+    use super::*;
+
+    const SERVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_server"));
+    const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+
+    #[test]
+    pub fn test_client() {
+        let mut mmap = Mmap::new(1 << 32);
+        let mut runtime = Runtime::new(1, &mut mmap);
+        let allocator = runtime.allocator();
+        let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
+        let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
+        let endpoint_raw = Box::into_raw(Box::new_in(
+            endpoint2.into_raw_parts(&allocator),
+            &*allocator,
+        ));
+        let endpoint_raw_offset = allocator.to_offset(endpoint_raw);
+
+        let client = Client::new(endpoint1);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                runtime.run(SERVER_ELF, &[endpoint_raw_offset]);
+            });
+
+            async_std::task::block_on(async {
+                let add = client.blob(ADD_ELF).await;
+                let add = add.create_thunk().await;
+                let x = client.word(1).await;
+                let y = client.word(2).await;
+                let arg = client.tree([x.into(), y.into()]).await;
+                let Ok(add) = add.run().await.as_lambda().await else {
+                    panic!("running add returned something other than a lambda");
+                };
+                let Ok(sum) = add.apply(arg.into()).await.run().await.as_word().await else {
+                    panic!("running add(1, 2) returned something other than a word");
+                };
+                assert_eq!(sum.read().await, 3);
+            });
+            client.shutdown();
+        });
+    }
+}
