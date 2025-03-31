@@ -1,13 +1,13 @@
 use core::{
     arch::asm,
-    ptr::{addr_of, addr_of_mut},
+    ptr::{addr_of, addr_of_mut, NonNull},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use alloc::boxed::Box;
 use log::LevelFilter;
 
 use crate::{
-    client::MESSENGER,
     debugcon::DEBUG,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
@@ -15,15 +15,13 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
-    spinlock::SpinLock,
     vm,
 };
 
-use common::message::Messenger;
-use common::ringbuffer::{RingBufferEndPoint, RingBufferEndPointRawData};
+use common::buddy::BuddyAllocatorRawData;
 
 extern "C" {
-    fn kmain();
+    fn kmain(argc: usize, argv: *const usize);
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
@@ -59,23 +57,25 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         pdpt.into()
     });
 
-static SYNC: SpinLock<()> = SpinLock::new(());
+static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 unsafe extern "C" fn _start(
-    inner_offset: usize,
-    inner_size: usize,
-    refcnt_offset: usize,
-    refcnt_size: usize,
-    ring_buffer_data_ptr: usize,
+    cores: usize,
+    allocator_data_ptr: usize,
+    argc: usize,
+    argv_offset: usize,
 ) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
     let id = id as usize;
 
-    let sync = if id == 0 {
+    if id == 0 {
         // one-time init
         init_bss();
+
+        crate::NCORES.store(cores, Ordering::SeqCst);
+
         if cfg!(feature = "debugcon") {
             let _ = log::set_logger(&DEBUG);
         } else {
@@ -96,36 +96,21 @@ unsafe extern "C" fn _start(
         } else {
             log::set_max_level(LevelFilter::Info);
         }
-        let raw = common::buddy::BuddyAllocatorRawData {
-            base: vm::pa2ka(0),
-            inner_offset,
-            inner_size,
-            refcnt_offset,
-            refcnt_size,
-        };
+        let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr);
+        let mut raw = *ptr;
+        raw.base = vm::pa2ka(0);
         let allocator = common::BuddyAllocator::from_raw_parts(raw);
 
-        let sync = SYNC.lock();
         PHYSICAL_ALLOCATOR.set(allocator).unwrap();
 
-        let raw_rb_data = Box::from_raw(
-            PHYSICAL_ALLOCATOR.from_offset::<RingBufferEndPointRawData>(ring_buffer_data_ptr),
-        );
-        let endpoint = RingBufferEndPoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
-        core::mem::forget(raw_rb_data);
-        let messenger = Messenger::new(endpoint);
-        let _ = MESSENGER.set(SpinLock::new(messenger));
-        sync
+        init_cpu_tls();
     } else {
         PHYSICAL_ALLOCATOR.wait();
-        SYNC.lock()
+        init_cpu_tls();
     };
-    core::mem::drop(sync);
-
-    // PHYSICAL_ALLOCATOR.wait();
 
     // per-cpu init
-    init_cpu_tls();
+    crate::tsc::init();
     crate::kvmclock::init();
     crate::profile::init();
 
@@ -147,7 +132,17 @@ unsafe extern "C" fn _start(
 
     core::arch::asm!("sti");
 
-    kmain();
+    if id == 0 {
+        let argv: *mut usize = PHYSICAL_ALLOCATOR.from_offset(argv_offset);
+        let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
+        kmain(argc, argv.as_ptr());
+        START_RUNTIME.store(true, Ordering::Release);
+    } else {
+        while !START_RUNTIME.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+    crate::rt::run();
 
     crate::shutdown();
 }

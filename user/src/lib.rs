@@ -16,7 +16,7 @@ pub mod syscall {
     "
     );
 
-    use defs::syscall::*;
+    use defs::{error, syscall, syscall::*, types};
 
     unsafe extern "C" {
         fn syscall(num: u64, ...) -> i64;
@@ -38,12 +38,51 @@ pub mod syscall {
         unreachable!();
     }
 
-    pub fn read_blob(src: u64, buffer: &mut [u8]) -> i64 {
+    /// # Safety
+    /// The operand must be of type word.
+    pub unsafe fn read_word_unchecked(src: u64, result: &mut u64) -> i64 {
+        unsafe { syscall(READ, src, result) }
+    }
+
+    /// # Safety
+    /// The operand must be of type blob.
+    pub unsafe fn read_blob_unchecked(src: u64, buffer: &mut [u8]) -> i64 {
         unsafe { syscall(READ, src, buffer.as_ptr(), buffer.len()) }
     }
 
-    pub fn read_tree(src: u64, keys: &[u64]) -> i64 {
+    /// # Safety
+    /// The operand must be of type tree.
+    pub unsafe fn read_tree_unchecked(src: u64, keys: &[u64]) -> i64 {
         unsafe { syscall(READ, src, keys.as_ptr(), keys.len()) }
+    }
+
+    pub fn get_type(arg: u64) -> i64 {
+        unsafe { syscall(TYPE, arg) }
+    }
+
+    pub fn read_word(src: u64, result: &mut u64) -> i64 {
+        unsafe {
+            assert_eq!(get_type(src) as u64, types::WORD);
+            read_word_unchecked(src, result)
+        }
+    }
+
+    pub fn read_blob(src: u64, buffer: &mut [u8]) -> i64 {
+        unsafe {
+            assert_eq!(get_type(src) as u64, types::BLOB);
+            read_blob_unchecked(src, buffer)
+        }
+    }
+
+    pub fn read_tree(src: u64, keys: &[u64]) -> i64 {
+        unsafe {
+            assert_eq!(get_type(src) as u64, types::TREE);
+            read_tree_unchecked(src, keys)
+        }
+    }
+
+    pub fn create_word(dst: u64, word: u64) -> i64 {
+        unsafe { syscall(CREATE_WORD, dst, word) }
     }
 
     pub fn create_blob(dst: u64, buffer: &[u8]) -> i64 {

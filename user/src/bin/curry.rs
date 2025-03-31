@@ -5,15 +5,16 @@ use core::arch::asm;
 
 extern crate user;
 
-/// Add 1 to a 64-bit integer.
+/// Takes a function which requires an n-tuple and the number n, and returns an n-ary function
+/// which evaluates to the same thing.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     user::syscall::resize(5);
     user::syscall::prompt(0);
     user::syscall::prompt(1);
-    let mut count = [0; 8];
-    user::syscall::read_blob(1, &mut count);
-    let count = u64::from_ne_bytes(count) as usize;
+    let mut count: u64 = 0;
+    user::syscall::read_word(1, &mut count);
+    let count = count as usize;
 
     if count > 4 {
         unsafe { asm!("int3") }
