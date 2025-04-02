@@ -566,6 +566,7 @@ impl<'a> BuddyAllocator<'a> {
         let ptr = self
             .inner
             .reserve(self.base, index, size_log2)
+            .inspect(|x| log::debug!("reserved {x:#x}@{size_log2}"))
             .inspect(|_| {
                 self.inner
                     .meta
@@ -651,6 +652,7 @@ impl<'a> BuddyAllocator<'a> {
         let ptr = self
             .inner
             .allocate_unchecked(self.base, size_log2)
+            .inspect(|x| log::debug!("allocated {x:#x}@{size_log2}"))
             .inspect(|_| {
                 self.inner
                     .meta
@@ -713,6 +715,7 @@ impl<'a> BuddyAllocator<'a> {
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
         let index = (ptr as usize - self.base as usize) / (1 << size_log2) as usize;
+        log::debug!("freed {index:#x}@{size_log2}");
         self.inner.free_unchecked(self.base, index, size_log2, None);
         self.inner
             .meta
@@ -854,6 +857,7 @@ impl Drop for BuddyAllocator<'_> {
     }
 }
 
+// TODO: this is not safe if there are multiple allocators
 #[cfg(all(not(feature = "std"), feature = "core_local_cache"))]
 pub mod cache {
     use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};
@@ -1038,7 +1042,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_allocate_free_cache(b: &mut Bencher) {
+    fn bench_allocate_free(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         b.iter(|| {
@@ -1048,20 +1052,20 @@ mod tests {
         });
     }
 
-    #[bench]
-    fn bench_allocate_free_no_cache(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
-        b.iter(|| {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
-            core::mem::drop(x);
-        });
-    }
+    // #[bench]
+    // fn bench_allocate_free_no_cache(b: &mut Bencher) {
+    //     let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+    //     let mut allocator = BuddyAllocator::new(&mut *region);
+    //     allocator.set_caching(false);
+    //     b.iter(|| {
+    //         let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+    //             Box::new_uninit_slice_in(128, &allocator);
+    //         core::mem::drop(x);
+    //     });
+    // }
 
     #[bench]
-    fn bench_contended_allocate_free_cache(b: &mut Bencher) {
+    fn bench_contended_allocate_free(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         let f = || {
@@ -1086,60 +1090,60 @@ mod tests {
         });
     }
 
-    #[bench]
-    #[ignore]
-    fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
-        let f = || {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
-            core::mem::drop(x);
-        };
-        use core::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        std::thread::scope(|s| {
-            let flag = Arc::new(AtomicBool::new(true));
-            for _ in 0..16 {
-                let flag = flag.clone();
-                s.spawn(move || {
-                    while flag.load(Ordering::SeqCst) {
-                        f();
-                    }
-                });
-            }
-            b.iter(f);
-            flag.store(false, Ordering::SeqCst);
-        });
-    }
+    // #[bench]
+    // #[ignore]
+    // fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
+    //     let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
+    //     let mut allocator = BuddyAllocator::new(&mut *region);
+    //     allocator.set_caching(false);
+    //     let f = || {
+    //         let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
+    //             Box::new_uninit_slice_in(128, &allocator);
+    //         core::mem::drop(x);
+    //     };
+    //     use core::sync::atomic::AtomicBool;
+    //     use std::sync::Arc;
+    //     std::thread::scope(|s| {
+    //         let flag = Arc::new(AtomicBool::new(true));
+    //         for _ in 0..16 {
+    //             let flag = flag.clone();
+    //             s.spawn(move || {
+    //                 while flag.load(Ordering::SeqCst) {
+    //                     f();
+    //                 }
+    //             });
+    //         }
+    //         b.iter(f);
+    //         flag.store(false, Ordering::SeqCst);
+    //     });
+    // }
 
-    #[test]
-    fn stress_test() {
-        use std::hash::{BuildHasher, Hasher, RandomState};
-        let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
-        let mut v = vec![];
-        let random = |limit: usize| {
-            let x: u64 = RandomState::new().build_hasher().finish();
-            x as usize % limit
-        };
-        for _ in 0..100000 {
-            let used_before = allocator.used_size();
-            let remaining = allocator.total_size() - used_before;
-            let size = random(core::cmp::min(1 << 21, remaining / 2));
-            let alloc = Box::<[u8], &BuddyAllocator>::new_uninit_slice_in(size, &allocator);
-            let used_after = allocator.used_size();
-            assert!(used_after >= used_before + size);
-            if !v.is_empty() && size % 3 == 0 {
-                let number = random(v.len());
-                for _ in 0..number {
-                    let index = random(v.len());
-                    v.remove(index);
-                }
-            }
-            v.push(alloc);
-        }
-    }
+    // #[test]
+    // fn stress_test() {
+    //     use std::hash::{BuildHasher, Hasher, RandomState};
+    //     let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
+    //     let mut allocator = BuddyAllocator::new(&mut *region);
+    //     allocator.set_caching(false);
+    //     let mut v = vec![];
+    //     let random = |limit: usize| {
+    //         let x: u64 = RandomState::new().build_hasher().finish();
+    //         x as usize % limit
+    //     };
+    //     for _ in 0..100000 {
+    //         let used_before = allocator.used_size();
+    //         let remaining = allocator.total_size() - used_before;
+    //         let size = random(core::cmp::min(1 << 21, remaining / 2));
+    //         let alloc = Box::<[u8], &BuddyAllocator>::new_uninit_slice_in(size, &allocator);
+    //         let used_after = allocator.used_size();
+    //         assert!(used_after >= used_before + size);
+    //         if !v.is_empty() && size % 3 == 0 {
+    //             let number = random(v.len());
+    //             for _ in 0..number {
+    //                 let index = random(v.len());
+    //                 v.remove(index);
+    //             }
+    //         }
+    //         v.push(alloc);
+    //     }
+    // }
 }

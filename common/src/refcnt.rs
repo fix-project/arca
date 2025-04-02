@@ -156,7 +156,7 @@ mod tests {
     fn test_from_box() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -171,7 +171,7 @@ mod tests {
     fn test_clone_drop() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -197,7 +197,7 @@ mod tests {
     fn test_make_mut() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let check_allocations = |x: usize| {
             assert_eq!(
@@ -234,7 +234,7 @@ mod tests {
     fn bench_clone_drop(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
 
@@ -258,7 +258,7 @@ mod tests {
     fn bench_make_mut(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         let check_allocations = |x: usize| {
