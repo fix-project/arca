@@ -494,7 +494,7 @@ mod tests {
     #[test]
     pub fn test_client() {
         let mut mmap = Mmap::new(1 << 32);
-        let mut runtime = Runtime::new(1, &mut mmap);
+        let runtime = Runtime::new(1, &mut mmap, SERVER_ELF.into());
         let allocator = runtime.allocator();
         let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
         let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
@@ -508,7 +508,7 @@ mod tests {
 
         std::thread::scope(|s| {
             s.spawn(|| {
-                runtime.run(SERVER_ELF, &[endpoint_raw_offset]);
+                runtime.run(&[endpoint_raw_offset]);
             });
 
             async_std::task::block_on(async {

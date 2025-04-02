@@ -35,6 +35,7 @@ impl Mmap {
         };
 
         assert!(!ptr.is_null());
+        log::debug!("mmapped {ptr:p}");
         Mmap { ptr, len }
     }
 }
@@ -43,6 +44,7 @@ impl Drop for Mmap {
     fn drop(&mut self) {
         unsafe {
             assert_eq!(libc::munmap(self.ptr as _, self.len), 0);
+            log::debug!("freed {:p}", self.ptr);
         }
     }
 }
@@ -343,10 +345,11 @@ pub struct Runtime<'a> {
     vm: VmFd,
     cores: usize,
     allocator: Box<BuddyAllocator<'a>>,
+    elf: Arc<[u8]>,
 }
 
 impl<'a> Runtime<'a> {
-    pub fn new(cores: usize, ram: &'a mut Mmap) -> Self {
+    pub fn new(cores: usize, ram: &'a mut Mmap, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
@@ -362,26 +365,17 @@ impl<'a> Runtime<'a> {
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-        // let allocator_raw = allocator.clone().into_raw_parts();
-        // let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, &*allocator));
-
-        // // This is okay because the allocator is in a fixed location on the heap, and will not be
-        // // freed until after everything holding this reference has been destroyed.
-        // let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
-        // let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
-        // let endpoint_raw = Box::into_raw(Box::new_in(
-        //     endpoint2.into_raw_parts(&allocator),
-        //     &*allocator,
-        // ));
-
-        // let client = Client::new(endpoint1);
-
-        Self {
+        let mut x = Self {
             kvm,
             vm,
             cores,
             allocator,
-        }
+            elf: elf.clone(),
+        };
+        let elf_bytes =
+            ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
+        x.load_elf(&elf_bytes);
+        x
     }
 
     fn load_elf(&mut self, elf: &ElfBytes<AnyEndian>) {
@@ -436,11 +430,9 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    pub fn run(&mut self, elf: &[u8], args: &[usize]) {
-        let elf =
-            ElfBytes::<AnyEndian>::minimal_parse(elf).expect("could not read kernel elf file");
-
-        self.load_elf(&elf);
+    pub fn run(&self, args: &[usize]) {
+        let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
+            .expect("could not read kernel elf file");
 
         let allocator_raw = self.allocator.clone().into_raw_parts();
         let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, &*self.allocator));
@@ -487,6 +479,9 @@ impl<'a> Runtime<'a> {
                     ],
                     &kvm_cpuid,
                 ));
+            }
+            for cpu in cpus {
+                cpu.join().unwrap();
             }
         });
     }
