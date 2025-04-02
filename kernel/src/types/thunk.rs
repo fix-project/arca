@@ -72,20 +72,24 @@ impl Thunk {
                         let page_start = page * 4096;
                         assert!(memi >= page_start);
                         let page_end = page_start + 4096;
-                        if memi >= page_start && memi < page_end && filei < filesz {
-                            let mem_left = page_end - memi;
-                            let file_left = filesz - filei;
+                        if memi >= page_start && memi < page_end {
+                            if filei < filesz {
+                                let mem_left = page_end - memi;
+                                let file_left = filesz - filei;
 
-                            let copy_size = core::cmp::min(mem_left, file_left);
-                            let file_end = filei + copy_size;
+                                let copy_size = core::cmp::min(mem_left, file_left);
+                                let file_end = filei + copy_size;
 
-                            let copy_end = memi + copy_size;
+                                let copy_end = memi + copy_size;
 
-                            assert!(copy_end - memi <= 4096);
-                            unique_page[(memi - page_start)..(copy_end - page_start)]
-                                .copy_from_slice(&data[filei..file_end]);
-                            memi = page_end;
-                            filei += copy_size;
+                                assert!(copy_end - memi <= 4096);
+                                unique_page[(memi - page_start)..(copy_end - page_start)]
+                                    .copy_from_slice(&data[filei..file_end]);
+                                memi = page_end;
+                                filei += copy_size;
+                            } else {
+                                memi = page_end;
+                            }
                         }
 
                         if segment.p_flags & elf::abi::PF_W != 0 {
