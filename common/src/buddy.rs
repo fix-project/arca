@@ -552,9 +552,10 @@ impl<'a> BuddyAllocator<'a> {
         allocator
     }
 
-    #[cfg(feature = "cache")]
     pub fn set_caching(&mut self, enable: bool) {
-        self.caching = enable;
+        if cfg!(feature = "cache") {
+            self.caching = enable;
+        }
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -566,6 +567,7 @@ impl<'a> BuddyAllocator<'a> {
         let ptr = self
             .inner
             .reserve(self.base, index, size_log2)
+            .inspect(|x| log::debug!("reserved {x:#x}@{size_log2}"))
             .inspect(|_| {
                 self.inner
                     .meta
@@ -651,6 +653,7 @@ impl<'a> BuddyAllocator<'a> {
         let ptr = self
             .inner
             .allocate_unchecked(self.base, size_log2)
+            .inspect(|x| log::debug!("allocated {x:#x}@{size_log2}"))
             .inspect(|_| {
                 self.inner
                     .meta
@@ -713,6 +716,7 @@ impl<'a> BuddyAllocator<'a> {
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
         let index = (ptr as usize - self.base as usize) / (1 << size_log2) as usize;
+        log::debug!("freed {index:#x}@{size_log2}");
         self.inner.free_unchecked(self.base, index, size_log2, None);
         self.inner
             .meta
@@ -854,6 +858,7 @@ impl Drop for BuddyAllocator<'_> {
     }
 }
 
+// TODO: this is not safe if there are multiple allocators
 #[cfg(all(not(feature = "std"), feature = "core_local_cache"))]
 pub mod cache {
     use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};
@@ -1038,7 +1043,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_allocate_free_cache(b: &mut Bencher) {
+    fn bench_allocate_free(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         b.iter(|| {
@@ -1061,7 +1066,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_contended_allocate_free_cache(b: &mut Bencher) {
+    fn bench_contended_allocate_free(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let allocator = BuddyAllocator::new(&mut *region);
         let f = || {
