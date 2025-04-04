@@ -134,7 +134,12 @@ impl Executor {
         WriteGuard::unlock(tasks);
         self.parallel.fetch_add(1, Ordering::SeqCst);
         TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
+        unsafe {
+            crate::tlb::set_sleeping(false);
+            crate::tlb::clear_pending();
+        }
         let result = task.poll();
+        unsafe { crate::tlb::set_sleeping(true) };
         TIME_WORKING.fetch_add(self.diff(), Ordering::SeqCst);
         self.parallel.fetch_sub(1, Ordering::SeqCst);
         if result.is_ready() {
@@ -145,11 +150,11 @@ impl Executor {
 
     #[inline(never)]
     fn inner_sleep(&self) {
-        crate::tlb::while_sleeping(|| unsafe {
-            crate::profile::muted(|| {
-                core::arch::asm!("hlt");
-            });
+        // crate::tlb::while_sleeping(|| {
+        crate::profile::muted(|| unsafe {
+            core::arch::asm!("hlt");
         });
+        // });
     }
 
     #[inline(never)]
@@ -162,6 +167,7 @@ impl Executor {
     }
 
     pub fn run(&self) {
+        unsafe { crate::tlb::set_sleeping(true) };
         self.diff();
         while self.active.load(Ordering::Acquire) != 0 {
             let mut anything = false;

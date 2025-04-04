@@ -57,7 +57,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         log::error!("{} got an NMI!!!", crate::coreid());
         let mut i = 0;
         crate::profile::backtrace_from(registers.registers[5] as *const _, |rip| {
-            if let Some((name, offset)) = crate::host::symname(rip as *const ()) {
+            if let Some((name, offset)) = crate::host::symname(rip) {
                 log::info!(
                     "CPU{} - {i}: {name}+{offset:#x} ({:p})!",
                     crate::coreid(),

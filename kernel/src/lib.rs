@@ -50,7 +50,18 @@ pub use common::util::spinlock;
 pub use lapic::LAPIC;
 pub use tlb::set_enabled as set_tlb_shootdowns_enabled;
 
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+pub(crate) static SERIALIZED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_serialization(serialization: bool) {
+    SERIALIZED.store(serialization, Ordering::SeqCst);
+}
+
+pub fn is_serialized() -> bool {
+    SERIALIZED.load(Ordering::SeqCst)
+}
 
 #[cfg(test)]
 mod testing;

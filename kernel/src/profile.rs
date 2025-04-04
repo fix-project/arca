@@ -155,16 +155,15 @@ pub fn backtrace(f: impl FnMut(*const ())) {
     }
 }
 
-pub fn backtrace_from(mut rbp: *const usize, mut f: impl FnMut(*const ())) {
-    unsafe {
-        let mut rip: *const ();
-        loop {
-            rip = rbp.add(1).read() as *const ();
-            f(rip);
-            rbp = rbp.read() as *const usize;
-            if rbp.is_null() {
-                break;
-            }
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn backtrace_from(mut rbp: *const usize, mut f: impl FnMut(*const ())) {
+    let mut rip: *const ();
+    loop {
+        rip = rbp.add(1).read() as *const ();
+        f(rip);
+        rbp = rbp.read() as *const usize;
+        if rbp.is_null() {
+            break;
         }
     }
 }

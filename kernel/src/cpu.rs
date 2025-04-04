@@ -255,7 +255,8 @@ impl Cpu {
         }
         unsafe {
             set_pt(ka2pa(Box::as_ptr(&self.pml4)));
-            crate::tlb::shootdown();
+            // crate::tlb::shootdown();
+            // crate::tlb::clear_pending();
             // crate::tlb::set_sleeping(false);
         }
     }

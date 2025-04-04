@@ -31,13 +31,17 @@ fn is_enabled() -> bool {
 }
 
 unsafe fn fire(core: u32) -> bool {
+    if core == crate::coreid() {
+        return false;
+    }
     if is_sleeping(core) {
         // set_pending(core, true);
         false
     } else {
-        if !get_and_set_pending(core, true) {
-            write64(0x30, 0b11 << 18 | 0x30 | 0b11 << 14);
-        }
+        set_pending(core, true);
+        // if !get_and_set_pending(core, true) {
+        write64(0x30, 0x30 | 0b11 << 14);
+        // }
         true
     }
 }
@@ -74,7 +78,7 @@ unsafe fn wait_for(core: u32) -> bool {
             return true;
         }
         let now = kvmclock::time_since_boot();
-        if now - last > Duration::from_micros(10) {
+        if now - last > Duration::from_micros(5) {
             // fire(core);
             last = now;
         }
@@ -124,11 +128,16 @@ extern "C" {
     fn get_pt() -> usize;
 }
 
+pub unsafe fn clear_pending() {
+    let this = crate::coreid();
+    set_pending(this, false);
+}
+
 pub unsafe fn flush_if_needed() {
     let this = crate::coreid();
     if is_pending(this) {
         set_pt(get_pt());
-        set_pending(this, false);
+        clear_pending();
     }
 }
 
@@ -161,11 +170,11 @@ pub unsafe fn set_pending(core: u32, pending: bool) {
     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
 }
 
-pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
-    let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
-    TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
-    old
-}
+// pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
+//     let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
+//     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
+//     old
+// }
 
 #[inline(always)]
 pub fn while_sleeping<T>(f: impl FnOnce() -> T) -> T {

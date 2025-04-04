@@ -19,9 +19,9 @@ impl Arca {
         let page_table = AddressSpace::new();
         let register_file = RegisterFile::new();
 
-        // unsafe {
-        //     crate::tlb::shootdown();
-        // }
+        unsafe {
+            crate::tlb::shootdown();
+        }
         Arca {
             valid: true,
             page_table: ManuallyDrop::new(page_table),
@@ -84,7 +84,7 @@ impl Drop for Arca {
                 ManuallyDrop::drop(&mut self.page_table);
                 ManuallyDrop::drop(&mut self.register_file);
                 ManuallyDrop::drop(&mut self.descriptors);
-                // crate::tlb::shootdown();
+                crate::tlb::shootdown();
             }
         }
     }
