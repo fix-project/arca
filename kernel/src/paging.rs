@@ -680,7 +680,7 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
 
 impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
     fn clone(&self) -> Self {
-        let lock = take_pt_lock(&PT_LOCK);
+        // let lock = take_pt_lock(&PT_LOCK);
         unsafe {
             let array: [ManuallyDrop<T::Entry>; 512] = MaybeUninit::zeroed().assume_init();
             let mut pt = AugmentedPageTable(array);
@@ -692,7 +692,7 @@ impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
             }
             pt.set_lower(lower);
             pt.set_upper(upper);
-            core::mem::drop(lock);
+            // core::mem::drop(lock);
             pt
         }
     }

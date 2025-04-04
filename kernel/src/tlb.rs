@@ -3,7 +3,7 @@ use common::util::initcell::LazyLock;
 use core::{
     cell::{LazyCell, RefCell},
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    // time::Duration,
 };
 
 use crate::{
@@ -38,10 +38,10 @@ unsafe fn fire(core: u32) -> bool {
         // set_pending(core, true);
         false
     } else {
-        set_pending(core, true);
-        // if !get_and_set_pending(core, true) {
-        write64(0x30, 0x30 | 0b11 << 14);
-        // }
+        // set_pending(core, true);
+        if !get_and_set_pending(core, true) {
+            write64(0x30, 0x30 | 0b11 << 14);
+        }
         true
     }
 }
@@ -69,7 +69,6 @@ unsafe fn fire_all(cores: &mut [bool]) -> usize {
 }
 
 unsafe fn wait_for(core: u32) -> bool {
-    let mut last = kvmclock::time_since_boot();
     loop {
         if is_sleeping(core) {
             return false;
@@ -77,15 +76,11 @@ unsafe fn wait_for(core: u32) -> bool {
         if !is_pending(core) {
             return true;
         }
-        let now = kvmclock::time_since_boot();
-        if now - last > Duration::from_micros(5) {
-            // fire(core);
-            last = now;
-        }
         core::hint::spin_loop();
     }
 }
 
+#[inline(never)]
 unsafe fn wait_for_all(cores: &mut [bool]) -> (usize, usize) {
     let mut interrupted = 0;
     let mut sleeping = 0;
@@ -106,21 +101,14 @@ pub unsafe fn shootdown() {
     if !is_enabled() {
         return;
     }
-    while_sleeping(|| {
-        let mut awaiting = AWAITING.borrow_mut();
-        let needed = fire_all(&mut awaiting);
-        if needed == 0 {
-            return;
-        }
-        // let start = kvmclock::time_since_boot();
-        // let (interrupted, sleeping) = wait_for_all(&mut awaiting);
-        wait_for_all(&mut awaiting);
-        // let end = kvmclock::time_since_boot();
-        // let time = end - start;
-        // if time > Duration::from_millis(1) {
-        //     log::info!("waiting for {needed} threads took {time:?} ({interrupted} interrupted, {sleeping} sleeping)");
-        // }
-    });
+    let mut awaiting = AWAITING.borrow_mut();
+    let needed = fire_all(&mut awaiting);
+    if needed == 0 {
+        return;
+    }
+    kvmclock::time_since_boot();
+    wait_for_all(&mut awaiting);
+    kvmclock::time_since_boot();
 }
 
 extern "C" {
@@ -159,35 +147,35 @@ pub unsafe fn set_sleeping(sleeping: bool) {
     ACTIVE_CORES[this as usize].store(!sleeping, Ordering::Release);
 }
 
-pub unsafe fn get_and_set_sleeping(sleeping: bool) -> bool {
-    let this = crate::coreid();
-    let old = !ACTIVE_CORES[this as usize].load(Ordering::Acquire);
-    ACTIVE_CORES[this as usize].store(!sleeping, Ordering::Release);
-    old
-}
+// pub unsafe fn get_and_set_sleeping(sleeping: bool) -> bool {
+//     let this = crate::coreid();
+//     let old = !ACTIVE_CORES[this as usize].load(Ordering::Acquire);
+//     ACTIVE_CORES[this as usize].store(!sleeping, Ordering::Release);
+//     old
+// }
 
 pub unsafe fn set_pending(core: u32, pending: bool) {
     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
 }
 
-// pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
-//     let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
-//     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
-//     old
-// }
-
-#[inline(always)]
-pub fn while_sleeping<T>(f: impl FnOnce() -> T) -> T {
-    if is_enabled() {
-        unsafe {
-            let old = get_and_set_sleeping(true);
-            let result = f();
-            flush_if_needed();
-            assert!(is_sleeping(crate::coreid()));
-            set_sleeping(old);
-            result
-        }
-    } else {
-        f()
-    }
+pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
+    let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
+    TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
+    old
 }
+
+// #[inline(always)]
+// pub fn while_sleeping<T>(f: impl FnOnce() -> T) -> T {
+//     if is_enabled() {
+//         unsafe {
+//             let old = get_and_set_sleeping(true);
+//             let result = f();
+//             flush_if_needed();
+//             assert!(is_sleeping(crate::coreid()));
+//             set_sleeping(old);
+//             result
+//         }
+//     } else {
+//         f()
+//     }
+// }

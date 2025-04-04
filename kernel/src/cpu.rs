@@ -256,8 +256,8 @@ impl Cpu {
         unsafe {
             set_pt(ka2pa(Box::as_ptr(&self.pml4)));
             // crate::tlb::shootdown();
-            // crate::tlb::clear_pending();
-            // crate::tlb::set_sleeping(false);
+            crate::tlb::clear_pending();
+            crate::tlb::set_sleeping(false);
         }
     }
 
@@ -271,9 +271,10 @@ impl Cpu {
     }
 
     pub fn deactivate_address_space(&mut self) -> AddressSpace {
-        // unsafe {
-        //     crate::tlb::set_sleeping(true);
-        // }
+        unsafe {
+            crate::tlb::set_sleeping(true);
+            crate::tlb::clear_pending();
+        }
         match self.size.take() {
             Some(12) => {
                 let offset = self.offset;
