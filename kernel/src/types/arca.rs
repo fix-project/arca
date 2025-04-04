@@ -1,3 +1,5 @@
+use core::mem::ManuallyDrop;
+
 use alloc::vec::Vec;
 
 use crate::{cpu::ExitReason, prelude::*};
@@ -6,9 +8,10 @@ use super::Value;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
-    page_table: AddressSpace,
-    register_file: RegisterFile,
-    descriptors: Vec<Value>,
+    valid: bool,
+    page_table: ManuallyDrop<AddressSpace>,
+    register_file: ManuallyDrop<RegisterFile>,
+    descriptors: ManuallyDrop<Vec<Value>>,
 }
 
 impl Arca {
@@ -16,19 +19,30 @@ impl Arca {
         let page_table = AddressSpace::new();
         let register_file = RegisterFile::new();
 
+        // unsafe {
+        //     crate::tlb::shootdown();
+        // }
         Arca {
-            page_table,
-            register_file,
-            descriptors: Vec::with_capacity(1024),
+            valid: true,
+            page_table: ManuallyDrop::new(page_table),
+            register_file: ManuallyDrop::new(register_file),
+            descriptors: ManuallyDrop::new(Vec::with_capacity(1024)),
         }
     }
 
-    pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
-        cpu.activate_address_space(self.page_table);
-        LoadedArca {
-            register_file: self.register_file,
-            descriptors: self.descriptors,
-            cpu,
+    pub fn load(mut self, cpu: &mut Cpu) -> LoadedArca<'_> {
+        unsafe {
+            self.valid = false;
+            let register_file = ManuallyDrop::take(&mut self.register_file);
+            let descriptors = ManuallyDrop::take(&mut self.descriptors);
+            let page_table = ManuallyDrop::take(&mut self.page_table);
+            cpu.activate_address_space(page_table);
+            LoadedArca {
+                valid: true,
+                register_file: ManuallyDrop::new(register_file),
+                descriptors: ManuallyDrop::new(descriptors),
+                cpu: ManuallyDrop::new(cpu),
+            }
         }
     }
 
@@ -63,11 +77,25 @@ impl Default for Arca {
     }
 }
 
+impl Drop for Arca {
+    fn drop(&mut self) {
+        if self.valid {
+            unsafe {
+                ManuallyDrop::drop(&mut self.page_table);
+                ManuallyDrop::drop(&mut self.register_file);
+                ManuallyDrop::drop(&mut self.descriptors);
+                // crate::tlb::shootdown();
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LoadedArca<'a> {
-    register_file: RegisterFile,
-    descriptors: Vec<Value>,
-    cpu: &'a mut Cpu,
+    valid: bool,
+    register_file: ManuallyDrop<RegisterFile>,
+    descriptors: ManuallyDrop<Vec<Value>>,
+    cpu: ManuallyDrop<&'a mut Cpu>,
 }
 
 impl<'a> LoadedArca<'a> {
@@ -101,17 +129,24 @@ impl<'a> LoadedArca<'a> {
         original
     }
 
-    pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
-        let page_table = self.cpu.deactivate_address_space();
+    pub fn unload_with_cpu(mut self) -> (Arca, &'a mut Cpu) {
+        unsafe {
+            self.valid = false;
+            let register_file = ManuallyDrop::take(&mut self.register_file);
+            let descriptors = ManuallyDrop::take(&mut self.descriptors);
+            let cpu = ManuallyDrop::take(&mut self.cpu);
+            let page_table = cpu.deactivate_address_space();
 
-        (
-            Arca {
-                register_file: self.register_file,
-                descriptors: self.descriptors,
-                page_table,
-            },
-            self.cpu,
-        )
+            (
+                Arca {
+                    valid: true,
+                    register_file: ManuallyDrop::new(register_file),
+                    descriptors: ManuallyDrop::new(descriptors),
+                    page_table: ManuallyDrop::new(page_table),
+                },
+                cpu,
+            )
+        }
     }
 
     pub fn swap(&mut self, other: &mut Arca) {
@@ -121,6 +156,20 @@ impl<'a> LoadedArca<'a> {
     }
 
     pub fn cpu(&mut self) -> &'_ mut Cpu {
-        self.cpu
+        *self.cpu
+    }
+}
+
+impl Drop for LoadedArca<'_> {
+    fn drop(&mut self) {
+        if self.valid {
+            todo!("dropping loaded arca");
+            // self.cpu.deactivate_address_space();
+            // unsafe {
+            //     ManuallyDrop::drop(&mut self.register_file);
+            //     ManuallyDrop::drop(&mut self.descriptors);
+            //     crate::tlb::shootdown();
+            // }
+        }
     }
 }

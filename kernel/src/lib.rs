@@ -42,11 +42,13 @@ mod lapic;
 mod msr;
 mod registers;
 mod rsstart;
+mod tlb;
 mod tss;
 
 pub use common::util::initcell;
 pub use common::util::spinlock;
 pub use lapic::LAPIC;
+pub use tlb::set_enabled as set_tlb_shootdowns_enabled;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -101,7 +103,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use spinlock::SpinLockGuard;
 
     let mut console = crate::debugcon::CONSOLE.lock();
-    let _ = writeln!(&mut *console, "KERNEL PANIC: {}", info);
+    let _ = writeln!(
+        &mut *console,
+        "KERNEL PANIC on {}: {}",
+        crate::coreid(),
+        info
+    );
     SpinLockGuard::unlock(console);
 
     loop {

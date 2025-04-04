@@ -55,5 +55,5 @@ copy_user_to_kernel_asm:
   clac
   mov qword ptr gs:[SEGFAULT_ESCAPE_ADDR], 0
 
-  // sti
+  sti
   ret

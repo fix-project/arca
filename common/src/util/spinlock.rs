@@ -27,7 +27,7 @@ impl<T> SpinLock<T> {
     pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
         if self
             .lock
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::SeqCst)
             .is_ok()
         {
             Some(SpinLockGuard {

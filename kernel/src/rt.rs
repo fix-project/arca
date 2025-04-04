@@ -17,9 +17,9 @@ use time::OffsetDateTime;
 
 use crate::{kvmclock, prelude::*};
 
-pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
+static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
-pub struct Executor {
+struct Executor {
     pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
     sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
     active: AtomicUsize,
@@ -144,14 +144,21 @@ impl Executor {
     }
 
     #[inline(never)]
-    fn sleep(&self) {
-        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
-        unsafe {
+    fn inner_sleep(&self) {
+        crate::tlb::while_sleeping(|| unsafe {
             crate::profile::muted(|| {
                 core::arch::asm!("hlt");
             });
-        }
-        TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
+        });
+    }
+
+    #[inline(never)]
+    fn sleep(&self) {
+        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::Relaxed);
+        // log::info!("{} is sleeping", crate::coreid());
+        self.inner_sleep();
+        // log::info!("{} is awake", crate::coreid());
+        TIME_SLEEPING.fetch_add(self.diff(), Ordering::Relaxed);
     }
 
     pub fn run(&self) {

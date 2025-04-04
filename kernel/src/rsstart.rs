@@ -1,7 +1,7 @@
 use core::{
     arch::asm,
     ptr::{addr_of, addr_of_mut, NonNull},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use alloc::boxed::Box;
@@ -57,7 +57,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         pdpt.into()
     });
 
-static START_RUNTIME: AtomicBool = AtomicBool::new(false);
+static READY: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
 unsafe extern "C" fn _start(
@@ -125,6 +125,11 @@ unsafe extern "C" fn _start(
 
     crate::lapic::init();
 
+    {
+        let lapic = crate::LAPIC.borrow();
+        assert_eq!(crate::coreid(), lapic.id());
+    }
+
     let mut pml4: UniquePage<AugmentedPageTable<PageTable256TB>> = AugmentedPageTable::new();
     pml4.entry_mut(256)
         .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
@@ -136,11 +141,10 @@ unsafe extern "C" fn _start(
         let argv: *mut usize = PHYSICAL_ALLOCATOR.from_offset(argv_offset);
         let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
         kmain(argc, argv.as_ptr());
-        START_RUNTIME.store(true, Ordering::Release);
-    } else {
-        while !START_RUNTIME.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
+    }
+    READY.fetch_add(1, Ordering::SeqCst);
+    while READY.load(Ordering::SeqCst) != cores {
+        core::hint::spin_loop();
     }
     crate::rt::run();
 

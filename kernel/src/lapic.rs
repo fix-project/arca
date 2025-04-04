@@ -57,20 +57,36 @@ impl TimerMode {
 
 pub struct LocalApic(PhantomData<()>);
 
+pub unsafe fn read(index: usize) -> u32 {
+    assert!(index <= 0x3FF);
+    (rdmsr(0x800 + index as u32)) as u32
+}
+
+pub unsafe fn write(index: usize, value: u32) {
+    assert!(index <= 0x3FF);
+    wrmsr(0x800 + index as u32, value as u64)
+}
+
+pub unsafe fn write64(index: usize, value: u64) {
+    assert!(index <= 0x3FF);
+    wrmsr(0x800 + index as u32, value)
+}
+
 impl LocalApic {
-    pub fn read(&self, index: usize) -> u32 {
-        assert!(index <= 0x3FF);
-        (unsafe { rdmsr(0x800 + index as u32) }) as u32
+    fn read(&self, index: usize) -> u32 {
+        unsafe { read(index) }
     }
 
-    pub fn write(&self, index: usize, value: u32) {
-        assert!(index <= 0x3FF);
-        unsafe { wrmsr(0x800 + index as u32, value as u64) }
+    fn write(&self, index: usize, value: u32) {
+        unsafe {
+            write(index, value);
+        }
     }
 
-    pub fn write64(&self, index: usize, value: u64) {
-        assert!(index <= 0x3FF);
-        unsafe { wrmsr(0x800 + index as u32, value) }
+    fn write64(&self, index: usize, value: u64) {
+        unsafe {
+            write64(index, value);
+        }
     }
 
     pub fn id(&self) -> u32 {

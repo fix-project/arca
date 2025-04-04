@@ -53,6 +53,40 @@ extern "C" {
 
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
+    if registers.isr == 2 {
+        log::error!("{} got an NMI!!!", crate::coreid());
+        let mut i = 0;
+        crate::profile::backtrace_from(registers.registers[5] as *const _, |rip| {
+            if let Some((name, offset)) = crate::host::symname(rip as *const ()) {
+                log::info!(
+                    "CPU{} - {i}: {name}+{offset:#x} ({:p})!",
+                    crate::coreid(),
+                    rip
+                );
+            } else {
+                log::info!("CPU{} - {i}: RIP={:p}!", crate::coreid(), rip);
+            }
+            i += 1;
+        });
+        if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {
+            panic!(
+                "NMI on {} @ RIP={name}+{offset:#x} ({:p})!",
+                crate::coreid(),
+                registers.rip as *mut (),
+            );
+        } else {
+            panic!(
+                "NMI on {} @ RIP={:p}!",
+                crate::coreid(),
+                registers.rip as *mut (),
+            );
+        }
+    }
+    if registers.isr == 0x30 {
+        // TLB Shootdown
+        crate::tlb::handle_shootdown();
+        return;
+    }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
             crate::profile::tick(registers);

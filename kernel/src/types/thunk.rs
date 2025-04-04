@@ -149,7 +149,7 @@ impl Thunk {
         let mut cpu = crate::cpu::CPU.borrow_mut();
         let loaded = self.load(&mut cpu);
         let result = loaded.run_for(duration);
-        result.into()
+        result.unload()
     }
 }
 
@@ -181,6 +181,9 @@ impl<'a> LoadedThunk<'a> {
         let LoadedThunk { mut arca } = self;
         loop {
             let result = arca.run();
+            unsafe {
+                crate::tlb::handle_shootdown();
+            }
             match result {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
@@ -222,7 +225,10 @@ impl<'a> LoadedThunk<'a> {
                 regs[Register::R8],
                 regs[Register::R9],
             ];
-            log::debug!("exited with syscall: {num:#x?}({args:?})");
+            log::debug!(
+                "{} exited with syscall: {num:#x?}({args:?})",
+                crate::coreid()
+            );
             let result = match num {
                 defs::syscall::NOP => Ok(0),
                 defs::syscall::NULL => sys_null(args, &mut arca),

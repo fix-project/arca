@@ -255,6 +255,8 @@ impl Cpu {
         }
         unsafe {
             set_pt(ka2pa(Box::as_ptr(&self.pml4)));
+            crate::tlb::shootdown();
+            // crate::tlb::set_sleeping(false);
         }
     }
 
@@ -268,6 +270,9 @@ impl Cpu {
     }
 
     pub fn deactivate_address_space(&mut self) -> AddressSpace {
+        // unsafe {
+        //     crate::tlb::set_sleeping(true);
+        // }
         match self.size.take() {
             Some(12) => {
                 let offset = self.offset;
@@ -338,6 +343,7 @@ impl Cpu {
     /// # Safety
     /// An appropriate page table must have been set before calling this function.
     pub unsafe fn run(&mut self, registers: &mut RegisterFile) -> ExitReason {
+        assert_eq!(registers.flags & 0x200, 0x200);
         let syscall_safe = registers[Register::RCX] == registers.rip
             && registers[Register::R11] == registers.flags
             && registers.mode == Mode::User;
