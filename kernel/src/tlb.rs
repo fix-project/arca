@@ -112,8 +112,7 @@ pub unsafe fn shootdown() {
 }
 
 extern "C" {
-    fn set_pt(page_map: usize);
-    fn get_pt() -> usize;
+    fn flush_tlb() -> usize;
 }
 
 pub unsafe fn clear_pending() {
@@ -124,7 +123,7 @@ pub unsafe fn clear_pending() {
 pub unsafe fn flush_if_needed() {
     let this = crate::coreid();
     if is_pending(this) {
-        set_pt(get_pt());
+        flush_tlb();
         clear_pending();
     }
 }

@@ -574,8 +574,14 @@ where
 }
 
 #[repr(transparent)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct AugmentedPageTable<T: HardwarePageTable>([ManuallyDrop<T::Entry>; 512]);
+
+impl<T: HardwarePageTable> core::fmt::Debug for AugmentedPageTable<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "AugmentedPageTable @ {:p}", self)
+    }
+}
 
 impl<T: HardwarePageTable> AugmentedPageTable<T> {
     pub fn new() -> UniquePage<Self> {

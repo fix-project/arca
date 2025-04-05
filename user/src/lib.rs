@@ -93,6 +93,10 @@ pub mod syscall {
         unsafe { syscall(CREATE_TREE, dst, buffer.as_ptr(), buffer.len()) }
     }
 
+    pub unsafe fn map_new_pages(ptr: *const (), count: usize) -> i64 {
+        unsafe { syscall(MAP_NEW_PAGES, ptr, count) }
+    }
+
     pub fn continuation(dst: u64) -> i64 {
         unsafe { syscall(CONTINUATION, dst) }
     }
@@ -125,6 +129,9 @@ pub mod syscall {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
+        unsafe {
+            core::arch::asm!("ud2");
+        }
         core::hint::spin_loop();
     }
 }

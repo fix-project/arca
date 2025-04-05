@@ -5,70 +5,20 @@
 extern crate alloc;
 extern crate kernel;
 
-use core::time::Duration;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
-use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
-
-use kernel::{
-    kvmclock, rt,
-    types::{Thunk, Value},
-};
+use kernel::{rt, types::Thunk};
 use macros::kmain;
 
-const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const MMAP_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_mmap"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
     kernel::profile::begin();
-    bench().await;
+    let thunk = Thunk::from_elf(MMAP_ELF);
+    log::info!("{:x?}", thunk.run());
     kernel::profile::end();
     profile();
-}
-
-async fn bench() {
-    let cores = kernel::ncores();
-    let lg_cores = cores.ilog2();
-    let duration = Duration::from_millis(1000);
-    let options = 0..(lg_cores + 3);
-    for lg_n in options {
-        let n = 1 << lg_n;
-        log::info!("");
-        log::info!("*** running on {n} threads ***");
-        let mut set = Vec::with_capacity(n);
-        let now = kvmclock::time_since_boot();
-        rt::reset_stats();
-        for _ in 0..n {
-            set.push(rt::spawn(test(now + duration)));
-        }
-        let mut results = vec![];
-        for x in set {
-            results.push(x.await);
-        }
-        rt::profile();
-        let elapsed = kvmclock::time_since_boot() - now;
-        let iters: usize = results.iter().sum();
-        let time = elapsed / iters as u32;
-        let iters_per_second = iters as f64 / elapsed.as_secs_f64();
-        log::info!("{n:4}/{cores:<3} threads: {time:?} per iteration ({iters_per_second:.2} iters/second) - ran for ({elapsed:?})",);
-    }
-}
-
-async fn test(end: Duration) -> usize {
-    let thunk = Thunk::from_elf(ADD_ELF);
-    let Value::Lambda(lambda) = thunk.run() else {
-        panic!();
-    };
-    let mut iters = 0;
-    while kvmclock::time_since_boot() < end {
-        let lambda = lambda.clone();
-        let thunk = lambda.apply(Value::Tree(vec![Value::Word(1), Value::Word(2)].into()));
-        let _ = thunk.run();
-        iters += 1;
-        if iters % 1000 == 0 {
-            rt::yield_now().await;
-        }
-    }
-    iters
 }
 
 fn profile() {

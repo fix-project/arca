@@ -267,6 +267,8 @@ impl<'a> LoadedThunk<'a> {
                 },
                 defs::syscall::TAILCALL => sys_tailcall(args, &mut arca),
 
+                defs::syscall::MAP_NEW_PAGES => sys_map_new_pages(args, &mut arca),
+
                 defs::syscall::SHOW => sys_show(args, &mut arca),
                 defs::syscall::LOG => sys_log(args, &mut arca),
 
@@ -580,6 +582,20 @@ fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     };
 
     arca.swap(&mut thunk.arca);
+    Ok(0)
+}
+
+fn sys_map_new_pages(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let address = args[0] as usize;
+    let count = args[1] as usize;
+
+    for i in 0..count {
+        let address = address + 4096 * i;
+        let page =
+            unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
+        arca.cpu().map_unique_4kb(address, page);
+    }
+
     Ok(0)
 }
 
