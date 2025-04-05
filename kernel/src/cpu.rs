@@ -187,6 +187,7 @@ impl From<ExitStatus> for ExitReason {
 
 extern "C" {
     fn set_pt(page_map: usize);
+    // fn flush_tlb() -> usize;
     fn syscall_call_user(registers: &mut RegisterFile) -> ExitStatus;
     fn isr_call_user(registers: &mut RegisterFile) -> ExitStatus;
 }
@@ -335,6 +336,43 @@ impl Cpu {
         }
     }
 
+    pub fn map_unique_4kb(&mut self, address: usize, page: UniquePage<Page4KB>) {
+        assert!(crate::vm::is_user(address));
+        let i_512gb = (address >> 39) & 0x1ff;
+        assert_eq!(i_512gb, 0);
+        let i_1gb = (address >> 30) & 0x1ff;
+        let i_2mb = (address >> 21) & 0x1ff;
+        let i_4kb = (address >> 12) & 0x1ff;
+
+        let pml4 = &mut self.pml4;
+        // TODO: check behavior when inserting unique into shared
+        let mut pdpt = match pml4.entry_mut(i_512gb).unmap() {
+            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
+            AugmentedUnmappedPage::UniqueTable(pt) => pt,
+            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
+            _ => todo!(),
+        };
+        let mut pd = match pdpt.entry_mut(i_1gb).unmap() {
+            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
+            AugmentedUnmappedPage::UniqueTable(pt) => pt,
+            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
+            _ => todo!(),
+        };
+        let mut pt = match pd.entry_mut(i_2mb).unmap() {
+            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
+            AugmentedUnmappedPage::UniqueTable(pt) => pt,
+            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
+            _ => todo!(),
+        };
+        pt.entry_mut(i_4kb).map_unique(page);
+        pd.entry_mut(i_2mb).chain_unique(pt);
+        pdpt.entry_mut(i_1gb).chain_unique(pd);
+        pml4.entry_mut(i_512gb).chain_unique(pdpt);
+        unsafe {
+            core::arch::asm!("invlpg [{pg}]", pg=in(reg)address);
+        }
+    }
+
     /// # Safety
     /// An appropriate page table must have been set before calling this function.
     pub unsafe fn run(&mut self, registers: &mut RegisterFile) -> ExitReason {
@@ -351,7 +389,7 @@ impl Cpu {
 
 impl From<ExitReason> for Value {
     fn from(value: ExitReason) -> Self {
-        let result = format!("{:?}", value);
+        let result = format!("{:x?}", value);
         Value::Atom(result)
     }
 }

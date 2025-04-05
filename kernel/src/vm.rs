@@ -1,3 +1,7 @@
+pub fn is_user(p: usize) -> bool {
+    p & 0xFFFF800000000000 == 0
+}
+
 pub fn pa2ka<T>(p: usize) -> *mut T {
     (p | 0xFFFF800000000000) as *mut T
 }

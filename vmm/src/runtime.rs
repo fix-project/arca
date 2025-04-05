@@ -390,9 +390,11 @@ impl<'a> Runtime<'a> {
         let mut reserved = HashMap::new();
         let mut reserve = |addr: usize| -> *mut () {
             let addr = align_down(4096, addr);
-            *reserved
-                .entry(addr)
-                .or_insert_with(|| self.allocator.reserve_raw(addr, 4096))
+            *reserved.entry(addr).or_insert_with(|| {
+                let result = self.allocator.reserve_raw(addr, 4096);
+                assert!(!result.is_null(), "could not reserve {addr:x}");
+                result
+            })
         };
         let mut reserve_range = |start: usize, end: usize| -> *mut [u8] {
             let mut current = (start / 4096) * 4096;

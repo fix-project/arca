@@ -29,6 +29,12 @@ get_pt:
   mov rax, cr3
   ret
 
+.globl flush_tlb
+flush_tlb:
+  mov rax, cr3
+  mov cr3, rax
+  ret
+
 .globl copy_kernel_to_user_asm
 .globl copy_user_to_kernel_asm
 copy_kernel_to_user_asm:

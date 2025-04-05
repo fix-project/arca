@@ -30,6 +30,8 @@ pub mod syscall {
     pub const PERFORM: u64 = 0x58;
     pub const TAILCALL: u64 = 0x59;
 
+    pub const MAP_NEW_PAGES: u64 = 0x80;
+
     pub const SHOW: u64 = 0xf0;
     pub const LOG: u64 = 0xf1;
 }

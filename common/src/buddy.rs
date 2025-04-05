@@ -507,6 +507,17 @@ impl<'a> BuddyAllocator<'a> {
 
         // prevent physical zero page from being allocated
         assert_eq!(temp.to_offset(temp.reserve_raw(0, 4096)), 0);
+        // reserve kernel pages
+        let mut pages = alloc::vec![];
+        for i in 0..8 {
+            let p = temp.reserve_raw(0x100000 * (i + 1), 0x100000);
+            assert!(!p.is_null());
+            pages.push(p);
+        }
+        // assert_eq!(
+        //     temp.to_offset(temp.reserve_raw(0x100000, 0x800000)),
+        //     0x100000
+        // );
 
         let new_inner = AllocatorInner::new_in(slice, &temp);
         let new_refcnt = unsafe {
@@ -547,6 +558,9 @@ impl<'a> BuddyAllocator<'a> {
             inner: Pin::static_ref(new_inner),
             refcnt: Pin::static_ref(new_refcnt),
         };
+        for page in pages {
+            allocator.free_raw(page, 0x100000);
+        }
         let _ = inner;
         let _ = refcnt;
         allocator
@@ -577,8 +591,10 @@ impl<'a> BuddyAllocator<'a> {
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
             });
-        unsafe {
-            (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+        if !ptr.is_null() {
+            unsafe {
+                (*self.refcnt(ptr)).store(0, Ordering::SeqCst);
+            }
         }
         ptr
     }
@@ -738,7 +754,9 @@ impl<'a> BuddyAllocator<'a> {
     }
 
     pub fn refcnt<T: ?Sized>(&self, allocation: *const T) -> *const AtomicUsize {
-        debug_assert!(!allocation.is_null());
+        if allocation.is_null() {
+            return core::ptr::null();
+        }
         let offset = self.to_offset(allocation) / Self::MIN_ALLOCATION;
         &raw const self.refcnt[offset]
     }
@@ -864,8 +882,8 @@ pub mod cache {
     use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};
     use macros::core_local;
 
-    pub static CAPACITY: usize = 1024;
-    pub static INCREMENT: usize = 64;
+    pub static CAPACITY: usize = 16384;
+    pub static INCREMENT: usize = 512;
     pub static WATERMARK_LOW: usize = CAPACITY / 4;
     pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
 
@@ -901,7 +919,7 @@ impl BuddyAllocator<'_> {
                 cache.push(*entry).unwrap();
             }
         }
-        let raw = cache.pop().unwrap();
+        let raw = cache.pop().ok_or(AllocError)?;
         let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
         NonNull::new(converted).ok_or(AllocError)
     }
