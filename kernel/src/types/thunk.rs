@@ -168,7 +168,7 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run(self) -> LoadedValue<'a> {
-        self.run_for(Duration::from_millis(10))
+        self.run_for(Duration::from_millis(60000))
     }
 
     pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {
@@ -180,17 +180,16 @@ impl<'a> LoadedThunk<'a> {
     pub fn run_until(self, alarm: OffsetDateTime) -> LoadedValue<'a> {
         let LoadedThunk { mut arca } = self;
         loop {
+            let now = kvmclock::now();
+            if now >= alarm {
+                return LoadedValue::Thunk(LoadedThunk { arca });
+            }
             let result = arca.run();
             match result {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
                     if x == 0x20 {
-                        let now = kvmclock::now();
-                        if now < alarm {
-                            continue;
-                        } else {
-                            return LoadedValue::Thunk(LoadedThunk { arca });
-                        }
+                        continue;
                     }
                     log::debug!("exited with interrupt: {x:?}");
                     let tree = vec![
@@ -244,7 +243,11 @@ impl<'a> LoadedThunk<'a> {
                 defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
 
                 defs::syscall::CONTINUATION => sys_continuation(args, &mut arca),
+                defs::syscall::RETURN_CONTINUATION => {
+                    return LoadedValue::Thunk(LoadedThunk { arca })
+                }
                 defs::syscall::APPLY => sys_apply(args, &mut arca),
+                defs::syscall::FORCE => sys_force(args, &mut arca),
                 defs::syscall::PROMPT => match sys_prompt(args, arca) {
                     Ok(result) => return result,
                     Err((a, e)) => {
@@ -260,6 +263,8 @@ impl<'a> LoadedThunk<'a> {
                     }
                 },
                 defs::syscall::TAILCALL => sys_tailcall(args, &mut arca),
+
+                defs::syscall::MAP_NEW_PAGES => sys_map_new_pages(args, &mut arca),
 
                 defs::syscall::SHOW => sys_show(args, &mut arca),
                 defs::syscall::LOG => sys_log(args, &mut arca),
@@ -534,6 +539,26 @@ fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     Ok(0)
 }
 
+fn sys_force(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let i = args[0] as usize;
+
+    let thunk = arca.descriptors_mut().get_mut(i).ok_or(error::BAD_INDEX)?;
+    let thunk = core::mem::take(thunk);
+
+    let Value::Thunk(thunk) = thunk else {
+        log::warn!("tried to force non-thunk");
+        return Err(error::BAD_TYPE);
+    };
+
+    replace_with(arca, |arca| {
+        let (mut arca, cpu) = arca.unload_with_cpu();
+        let result = thunk.run_on(cpu);
+        arca.descriptors_mut()[i] = result;
+        arca.load(cpu)
+    });
+    Ok(0)
+}
+
 #[allow(clippy::result_large_err)]
 fn sys_prompt(args: [u64; 5], mut arca: LoadedArca) -> Result<LoadedValue, (LoadedArca, u32)> {
     let idx = args[0] as usize;
@@ -574,6 +599,20 @@ fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     };
 
     arca.swap(&mut thunk.arca);
+    Ok(0)
+}
+
+fn sys_map_new_pages(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let address = args[0] as usize;
+    let count = args[1] as usize;
+
+    for i in 0..count {
+        let address = address + 4096 * i;
+        let page =
+            unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
+        arca.cpu().map_unique_4kb(address, page);
+    }
+
     Ok(0)
 }
 

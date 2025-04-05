@@ -62,21 +62,21 @@ pub mod syscall {
 
     pub fn read_word(src: u64, result: &mut u64) -> i64 {
         unsafe {
-            assert_eq!(get_type(src) as u64, types::WORD);
+            assert_eq!(get_type(src) as u32, types::WORD);
             read_word_unchecked(src, result)
         }
     }
 
     pub fn read_blob(src: u64, buffer: &mut [u8]) -> i64 {
         unsafe {
-            assert_eq!(get_type(src) as u64, types::BLOB);
+            assert_eq!(get_type(src) as u32, types::BLOB);
             read_blob_unchecked(src, buffer)
         }
     }
 
     pub fn read_tree(src: u64, keys: &[u64]) -> i64 {
         unsafe {
-            assert_eq!(get_type(src) as u64, types::TREE);
+            assert_eq!(get_type(src) as u32, types::TREE);
             read_tree_unchecked(src, keys)
         }
     }
@@ -93,8 +93,16 @@ pub mod syscall {
         unsafe { syscall(CREATE_TREE, dst, buffer.as_ptr(), buffer.len()) }
     }
 
+    pub unsafe fn map_new_pages(ptr: *const (), count: usize) -> i64 {
+        unsafe { syscall(MAP_NEW_PAGES, ptr, count) }
+    }
+
     pub fn continuation(dst: u64) -> i64 {
         unsafe { syscall(CONTINUATION, dst) }
+    }
+
+    pub fn return_continuation() -> i64 {
+        unsafe { syscall(RETURN_CONTINUATION) }
     }
 
     pub fn prompt(dst: u64) -> i64 {
@@ -107,6 +115,10 @@ pub mod syscall {
 
     pub fn apply(lambda: u64, arg: u64) -> i64 {
         unsafe { syscall(APPLY, lambda, arg) }
+    }
+
+    pub fn force(thunk: u64) -> i64 {
+        unsafe { syscall(FORCE, thunk) }
     }
 
     pub fn show(msg: &str, idx: u64) -> i64 {
@@ -125,6 +137,9 @@ pub mod syscall {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
+        unsafe {
+            core::arch::asm!("ud2");
+        }
         core::hint::spin_loop();
     }
 }

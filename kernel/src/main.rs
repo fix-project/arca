@@ -2,103 +2,94 @@
 #![no_std]
 #![feature(allocator_api)]
 
+use core::fmt::Write;
+use core::time::Duration;
+
+use kernel::debugcon::CONSOLE;
+use kernel::prelude::*;
+use kernel::rt;
+use macros::kmain;
+
 extern crate alloc;
 extern crate kernel;
 
-use core::time::Duration;
-
-use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
-
-use kernel::{
-    kvmclock, rt,
-    types::{Thunk, Value},
-};
-use macros::kmain;
-
-const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const FORCER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_forcer"));
+const FORCEE: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_forcee"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
-    kernel::profile::begin();
-    bench().await;
-    kernel::profile::end();
-    profile();
-}
-
-async fn bench() {
-    let cores = kernel::ncores();
-    let lg_cores = cores.ilog2();
-    let duration = Duration::from_millis(1000);
-    let options = 0..(lg_cores + 3);
-    for lg_n in options {
-        let n = 1 << lg_n;
-        log::info!("");
-        log::info!("*** running on {n} threads ***");
-        let mut set = Vec::with_capacity(n);
-        let now = kvmclock::time_since_boot();
-        rt::reset_stats();
-        for _ in 0..n {
-            set.push(rt::spawn(test(now + duration)));
+    log::info!("no clone");
+    let kib = 1024;
+    let mib = 1024 * kib;
+    // let gib = 1024 * mib;
+    let values = [
+        0,
+        4 * kib,
+        8 * kib,
+        16 * kib,
+        32 * kib,
+        64 * kib,
+        128 * kib,
+        256 * kib,
+        512 * kib,
+        mib,
+        2 * mib,
+        4 * mib,
+        8 * mib,
+        16 * mib,
+        32 * mib,
+        64 * mib,
+        128 * mib,
+        256 * mib,
+        512 * mib,
+    ];
+    let duration = Duration::from_secs(10);
+    let mut console = CONSOLE.lock();
+    writeln!(*console, "(optimized) bytes, iterations, duration",).unwrap();
+    for bytes in values {
+        let count = bytes / 4096;
+        let count = test(count, true);
+        if count != 0 {
+            log::info!(
+                "{count} ({bytes} bytes, {:?} per iteration)",
+                duration / count as u32
+            );
         }
-        let mut results = vec![];
-        for x in set {
-            results.push(x.await);
+        writeln!(*console, "{bytes},{count},{}", duration.as_secs_f64()).unwrap();
+    }
+    log::info!("with clone");
+    writeln!(*console, "(naive) bytes, iterations, duration",).unwrap();
+    for bytes in values {
+        let count = bytes / 4096;
+        let count = test(count, false);
+        if count != 0 {
+            log::info!(
+                "{count} ({bytes} bytes, {:?} per iteration)",
+                duration / count as u32
+            );
         }
-        rt::profile();
-        let elapsed = kvmclock::time_since_boot() - now;
-        let iters: usize = results.iter().sum();
-        let time = elapsed / iters as u32;
-        let iters_per_second = iters as f64 / elapsed.as_secs_f64();
-        log::info!("{n:4}/{cores:<3} threads: {time:?} per iteration ({iters_per_second:.2} iters/second) - ran for ({elapsed:?})",);
+        writeln!(*console, "{bytes},{count},{}", duration.as_secs_f64()).unwrap();
     }
 }
 
-async fn test(end: Duration) -> usize {
-    let thunk = Thunk::from_elf(ADD_ELF);
-    let Value::Lambda(lambda) = thunk.run() else {
+fn test(count: usize, unified: bool) -> usize {
+    let forcer = Thunk::from_elf(FORCER);
+    let Value::Lambda(forcer) = forcer.run() else {
         panic!();
     };
-    let mut iters = 0;
-    while kvmclock::time_since_boot() < end {
-        let lambda = lambda.clone();
-        let thunk = lambda.apply(Value::Tree(vec![Value::Word(1), Value::Word(2)].into()));
-        let _ = thunk.run();
-        iters += 1;
-        if iters % 1000 == 0 {
-            rt::yield_now().await;
-        }
-    }
-    iters
-}
+    let forcee = Thunk::from_elf(FORCEE);
+    let Value::Lambda(forcee) = forcee.run() else {
+        panic!();
+    };
+    let forcee = forcee.apply(Value::Word(count as u64));
+    let Value::Lambda(forcee) = forcee.run() else {
+        panic!();
+    };
+    let forcee = forcee.apply(Value::Word(unified as u64));
+    let forcer = forcer.apply(Value::Thunk(forcee));
 
-fn profile() {
-    log::info!("--- MOST FREQUENT FUNCTIONS ---");
-    let entries = kernel::profile::entries();
-    let entries = entries
-        .into_iter()
-        .map(|(p, x)| {
-            if p.is_null() {
-                (("USER CODE".into(), 0), x)
-            } else {
-                (
-                    kernel::host::symname(p).unwrap_or_else(|| ("???".into(), 0)),
-                    x,
-                )
-            }
-        })
-        .fold(BTreeMap::new(), |mut map, ((name, _offset), count)| {
-            map.entry(name).and_modify(|e| *e += count).or_insert(count);
-            map
-        });
-    let mut entries = Vec::from_iter(entries);
-    entries.sort_by_key(|(_name, count)| *count);
-    entries.reverse();
-    let total: usize = entries.iter().map(|(_, count)| count).sum();
-    for (i, &(ref name, count)) in entries.iter().take(8).enumerate() {
-        log::info!(
-            "\t{i}: {count:6} ({:3.2}%)- {name}",
-            count as f64 / total as f64 * 100.
-        );
-    }
-    log::info!("-------------------------------");
+    let Value::Word(count) = forcer.run() else {
+        panic!();
+    };
+    count as usize
 }

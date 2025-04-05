@@ -29,6 +29,9 @@ pub mod syscall {
     pub const PROMPT: u64 = 0x57;
     pub const PERFORM: u64 = 0x58;
     pub const TAILCALL: u64 = 0x59;
+    pub const RETURN_CONTINUATION: u64 = 0x5a;
+
+    pub const MAP_NEW_PAGES: u64 = 0x80;
 
     pub const SHOW: u64 = 0xf0;
     pub const LOG: u64 = 0xf1;
@@ -45,14 +48,14 @@ pub mod error {
 }
 
 pub mod types {
-    pub const NULL: u64 = 0x00;
-    pub const ERROR: u64 = 0x01;
-    pub const WORD: u64 = 0x09;
-    pub const ATOM: u64 = 0x02;
-    pub const BLOB: u64 = 0x03;
-    pub const TREE: u64 = 0x04;
-    pub const PAGE: u64 = 0x05;
-    pub const PAGETABLE: u64 = 0x06;
-    pub const LAMBDA: u64 = 0x07;
-    pub const THUNK: u64 = 0x08;
+    pub const NULL: u32 = 0x00;
+    pub const ERROR: u32 = 0x01;
+    pub const WORD: u32 = 0x09;
+    pub const ATOM: u32 = 0x02;
+    pub const BLOB: u32 = 0x03;
+    pub const TREE: u32 = 0x04;
+    pub const PAGE: u32 = 0x05;
+    pub const PAGETABLE: u32 = 0x06;
+    pub const LAMBDA: u32 = 0x07;
+    pub const THUNK: u32 = 0x08;
 }
