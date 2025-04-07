@@ -33,7 +33,7 @@ impl<T> RwLock<T> {
     pub fn try_write(&self) -> Option<WriteGuard<T>> {
         if self
             .count
-            .compare_exchange(0, usize::MAX, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             Some(WriteGuard {
@@ -56,13 +56,13 @@ impl<T> RwLock<T> {
 
     pub fn try_read(&self) -> Option<ReadGuard<T>> {
         loop {
-            let old = self.count.load(Ordering::SeqCst);
+            let old = self.count.load(Ordering::Acquire);
             if old == usize::MAX {
                 return None;
             }
             if self
                 .count
-                .compare_exchange(old, old + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(old, old + 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return Some(ReadGuard {
@@ -95,7 +95,7 @@ impl<'a, T> WriteGuard<'a, T> {
     pub fn unlock(_: Self) {}
 
     pub fn downgrade(this: Self) -> ReadGuard<'a, T> {
-        this.lock.count.store(1, Ordering::SeqCst);
+        this.lock.count.store(1, Ordering::Release);
         let guard = ReadGuard {
             lock: this.lock,
             data: unsafe { &*this.lock.get() },

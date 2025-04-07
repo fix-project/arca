@@ -377,6 +377,7 @@ impl Cpu {
         pml4.entry_mut(i_512gb).chain_unique(pdpt);
         unsafe {
             core::arch::asm!("invlpg [{pg}]", pg=in(reg)address);
+            crate::tlb::shootdown();
         }
     }
 

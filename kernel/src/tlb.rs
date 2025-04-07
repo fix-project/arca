@@ -40,7 +40,7 @@ unsafe fn fire(core: u32) -> bool {
     } else {
         // set_pending(core, true);
         if !get_and_set_pending(core, true) {
-            write64(0x30, 0x30 | 0b11 << 14);
+            write64(0x30, 0x30 | 0b11 << 14 | (core as u64) << 32);
         }
         true
     }
