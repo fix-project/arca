@@ -6,7 +6,7 @@ use core::{
     pin::Pin,
     ptr::NonNull,
     range::Range,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 extern crate alloc;
 use alloc::alloc::{AllocError, Allocator, Global};
@@ -456,7 +456,7 @@ impl AllocatorInner {
 pub struct BuddyAllocator<'a> {
     base: *mut (),
     size: usize,
-    caching: bool,
+    caching: AtomicBool,
     inner: Pin<&'a AllocatorInner>,
     refcnt: Pin<&'a [AtomicUsize]>,
 }
@@ -500,7 +500,7 @@ impl<'a> BuddyAllocator<'a> {
         let temp = BuddyAllocator {
             base,
             size: slice.len(),
-            caching: false,
+            caching: AtomicBool::new(false),
             inner: inner.as_ref(),
             refcnt: refcnt.as_ref(),
         };
@@ -554,7 +554,7 @@ impl<'a> BuddyAllocator<'a> {
         let allocator = BuddyAllocator {
             base,
             size: slice.len(),
-            caching: cfg!(feature = "cache"),
+            caching: AtomicBool::new(cfg!(feature = "cache")),
             inner: Pin::static_ref(new_inner),
             refcnt: Pin::static_ref(new_refcnt),
         };
@@ -567,8 +567,12 @@ impl<'a> BuddyAllocator<'a> {
     }
 
     #[cfg(feature = "cache")]
-    pub fn set_caching(&mut self, enable: bool) {
-        self.caching = enable;
+    pub fn set_caching(&self, enable: bool) {
+        self.caching.store(enable, Ordering::Release);
+    }
+
+    pub fn is_caching(&self) -> bool {
+        self.caching.load(Ordering::Acquire)
     }
 
     pub fn reserve_raw(&self, address: usize, size: usize) -> *mut () {
@@ -782,7 +786,7 @@ impl<'a> BuddyAllocator<'a> {
         let BuddyAllocator {
             base,
             size,
-            caching: _caching,
+            caching: _,
             inner,
             refcnt,
         } = self;
@@ -823,7 +827,7 @@ impl<'a> BuddyAllocator<'a> {
         BuddyAllocator {
             base,
             size,
-            caching: cfg!(feature = "cache"),
+            caching: AtomicBool::new(cfg!(feature = "cache")),
             inner: Pin::static_ref(&*inner),
             refcnt: Pin::static_ref(&*refcnt),
         }
@@ -862,7 +866,7 @@ impl Clone for BuddyAllocator<'_> {
         Self {
             base: self.base,
             size: self.size,
-            caching: self.caching,
+            caching: AtomicBool::new(self.caching.load(Ordering::Acquire)),
             inner: self.inner,
             refcnt: self.refcnt,
         }
@@ -972,7 +976,7 @@ unsafe impl Allocator for BuddyAllocator<'_> {
 
         #[cfg(feature = "cache")]
         {
-            if self.caching && size <= 4096 && align <= 4096 {
+            if self.is_caching() && size <= 4096 && align <= 4096 {
                 return self.allocate_from_cache(size);
             }
         }
@@ -989,7 +993,7 @@ unsafe impl Allocator for BuddyAllocator<'_> {
 
         #[cfg(feature = "cache")]
         {
-            if self.caching && size <= 4096 && align <= 4096 {
+            if self.is_caching() && size <= 4096 && align <= 4096 {
                 self.free_to_cache(ptr.as_ptr() as *mut (), size);
                 return;
             }

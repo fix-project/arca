@@ -9,19 +9,8 @@ use crate::prelude::*;
 mod descriptor;
 mod impossible;
 
-use common::util::spinlock::SpinLockGuard;
 pub use descriptor::*;
 pub use impossible::Impossible;
-
-static PT_LOCK: SpinLock<()> = SpinLock::new(());
-
-pub fn take_pt_lock(lock: &SpinLock<()>) -> Option<SpinLockGuard<()>> {
-    if crate::is_serialized() {
-        Some(lock.lock())
-    } else {
-        None
-    }
-}
 
 pub trait HardwarePage: Sized + Clone {
     type Parent: HardwarePageTable;
@@ -585,9 +574,7 @@ impl<T: HardwarePageTable> core::fmt::Debug for AugmentedPageTable<T> {
 
 impl<T: HardwarePageTable> AugmentedPageTable<T> {
     pub fn new() -> UniquePage<Self> {
-        let lock = take_pt_lock(&PT_LOCK);
         let x = unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
-        core::mem::drop(lock);
         x
     }
 
@@ -686,7 +673,6 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
 
 impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
     fn clone(&self) -> Self {
-        // let lock = take_pt_lock(&PT_LOCK);
         unsafe {
             let array: [ManuallyDrop<T::Entry>; 512] = MaybeUninit::zeroed().assume_init();
             let mut pt = AugmentedPageTable(array);
@@ -698,7 +684,6 @@ impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
             }
             pt.set_lower(lower);
             pt.set_upper(upper);
-            // core::mem::drop(lock);
             pt
         }
     }
@@ -706,7 +691,6 @@ impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
 
 impl<T: HardwarePageTable> Drop for AugmentedPageTable<T> {
     fn drop(&mut self) {
-        let lock = take_pt_lock(&PT_LOCK);
         unsafe {
             let lower = self.get_lower();
             let upper = self.get_upper();
@@ -716,7 +700,6 @@ impl<T: HardwarePageTable> Drop for AugmentedPageTable<T> {
                 ManuallyDrop::drop(&mut entry);
             }
         }
-        core::mem::drop(lock);
     }
 }
 

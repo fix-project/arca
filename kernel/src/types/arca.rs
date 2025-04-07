@@ -1,12 +1,23 @@
 use core::mem::ManuallyDrop;
 
 use alloc::vec::Vec;
+use common::util::spinlock::SpinLockGuard;
 
 use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+static PT_LOCK: SpinLock<()> = SpinLock::new(());
+
+pub fn take_pt_lock(lock: &SpinLock<()>) -> Option<SpinLockGuard<()>> {
+    if crate::is_serialized() {
+        Some(lock.lock())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct Arca {
     valid: bool,
     page_table: ManuallyDrop<AddressSpace>,
@@ -19,12 +30,15 @@ impl Arca {
         let page_table = AddressSpace::new();
         let register_file = RegisterFile::new();
 
-        Arca {
+        let lock = take_pt_lock(&PT_LOCK);
+        let arca = Arca {
             valid: true,
             page_table: ManuallyDrop::new(page_table),
             register_file: ManuallyDrop::new(register_file),
             descriptors: ManuallyDrop::new(Vec::with_capacity(1024)),
-        }
+        };
+        core::mem::drop(lock);
+        arca
     }
 
     pub fn load(mut self, cpu: &mut Cpu) -> LoadedArca<'_> {
@@ -74,11 +88,32 @@ impl Default for Arca {
     }
 }
 
+impl Clone for Arca {
+    fn clone(&self) -> Self {
+        assert!(self.valid);
+        let lock = take_pt_lock(&PT_LOCK);
+        let page_table = self.page_table.clone();
+        core::mem::drop(lock);
+        let arca = Arca {
+            valid: true,
+            page_table,
+            register_file: self.register_file.clone(),
+            descriptors: self.descriptors.clone(),
+        };
+        unsafe {
+            crate::tlb::shootdown();
+        }
+        arca
+    }
+}
+
 impl Drop for Arca {
     fn drop(&mut self) {
         if self.valid {
             unsafe {
+                let lock = take_pt_lock(&PT_LOCK);
                 ManuallyDrop::drop(&mut self.page_table);
+                core::mem::drop(lock);
                 ManuallyDrop::drop(&mut self.register_file);
                 ManuallyDrop::drop(&mut self.descriptors);
                 crate::tlb::shootdown();
