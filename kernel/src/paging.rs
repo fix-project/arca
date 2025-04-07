@@ -599,6 +599,18 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         entry.get_metadata() as usize
     }
 
+    pub fn len(&self) -> usize {
+        self.get_upper() - self.get_lower()
+    }
+
+    pub fn offset(&self) -> usize {
+        self.get_lower()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn entry(&self, index: usize) -> Option<&AugmentedEntry<T::Entry>> {
         let lower = self.get_lower();
         let upper = self.get_upper();
@@ -615,11 +627,16 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
     pub fn entry_mut(&mut self, index: usize) -> &mut AugmentedEntry<T::Entry> {
         let lower = self.get_lower();
         let upper = self.get_upper();
-        if index < lower {
+        if self.is_empty() {
             self.set_lower(index);
-        }
-        if index >= upper {
             self.set_upper(index + 1);
+        } else {
+            if index < lower {
+                self.set_lower(index);
+            }
+            if index >= upper {
+                self.set_upper(index + 1);
+            }
         }
         // TODO: does this allow overwriting the metadata?
         unsafe {
@@ -649,7 +666,7 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
                     self.set_upper(index);
                     break;
                 }
-                if self.entry(index).is_some() {
+                if self.entry(index).unwrap().present() {
                     self.set_upper(index + 1);
                     break;
                 }
@@ -659,7 +676,11 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         if index == lower {
             let mut index = index;
             loop {
-                if index == upper || self.entry(index).is_some() {
+                if index == upper {
+                    self.set_lower(index);
+                    break;
+                }
+                if self.entry(index).unwrap().present() {
                     self.set_lower(index);
                     break;
                 }
@@ -717,6 +738,10 @@ pub enum AugmentedUnmappedPage<P: HardwarePage, T: HardwarePageTable> {
 pub struct AugmentedEntry<T: HardwarePageTableEntry>(T);
 
 impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
+    pub fn present(&self) -> bool {
+        self.0.present()
+    }
+
     pub fn map_unique(
         &mut self,
         page: UniquePage<T::Page>,

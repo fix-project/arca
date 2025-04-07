@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     let smp = std::thread::available_parallelism()
         .unwrap_or(NonZero::new(1).unwrap())
         .get();
-    let mmap = Box::leak(Mmap::new(1 << 32).into());
+    let mmap = Box::leak(Mmap::new(1 << 35).into());
     let runtime = Runtime::new(smp, mmap, KERNEL_ELF.into());
     runtime.run(&[]);
 

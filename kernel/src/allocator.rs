@@ -17,10 +17,12 @@ struct SystemAllocator;
 unsafe impl GlobalAlloc for SystemAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let allocator = PHYSICAL_ALLOCATOR.wait();
-        allocator
+        let result = allocator
             .allocate(layout)
             .map(|p| &raw mut (*p.as_ptr())[0])
-            .unwrap_or(core::ptr::null_mut())
+            .unwrap_or(core::ptr::null_mut());
+        debug_assert!(!result.is_null());
+        result
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
