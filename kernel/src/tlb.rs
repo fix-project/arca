@@ -129,6 +129,9 @@ pub unsafe fn flush_if_needed() {
 }
 
 pub unsafe fn handle_shootdown() {
+    if !is_enabled() {
+        return;
+    }
     flush_if_needed();
     write(0x0B, 0);
 }

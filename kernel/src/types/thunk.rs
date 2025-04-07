@@ -168,7 +168,7 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run(self) -> LoadedValue<'a> {
-        self.run_for(Duration::from_millis(10))
+        self.run_for(Duration::from_millis(10000))
     }
 
     pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {
@@ -250,7 +250,11 @@ impl<'a> LoadedThunk<'a> {
                 defs::syscall::CREATE_TREE => sys_create_tree(args, &mut arca),
 
                 defs::syscall::CONTINUATION => sys_continuation(args, &mut arca),
+                defs::syscall::RETURN_CONTINUATION => {
+                    return LoadedValue::Thunk(LoadedThunk { arca })
+                }
                 defs::syscall::APPLY => sys_apply(args, &mut arca),
+                defs::syscall::FORCE => sys_force(args, &mut arca),
                 defs::syscall::PROMPT => match sys_prompt(args, arca) {
                     Ok(result) => return result,
                     Err((a, e)) => {
@@ -539,6 +543,26 @@ fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
 
     let mut t = Value::Thunk(l.apply(x));
     core::mem::swap(&mut t, lambda);
+    Ok(0)
+}
+
+fn sys_force(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let i = args[0] as usize;
+
+    let thunk = arca.descriptors_mut().get_mut(i).ok_or(error::BAD_INDEX)?;
+    let thunk = core::mem::take(thunk);
+
+    let Value::Thunk(thunk) = thunk else {
+        log::warn!("tried to force non-thunk");
+        return Err(error::BAD_TYPE);
+    };
+
+    replace_with(arca, |arca| {
+        let (mut arca, cpu) = arca.unload_with_cpu();
+        let result = thunk.run_on(cpu);
+        arca.descriptors_mut()[i] = result;
+        arca.load(cpu)
+    });
     Ok(0)
 }
 

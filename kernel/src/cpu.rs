@@ -16,9 +16,9 @@ pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
         size: None,
         offset: 0,
         pml4,
-        pdpt: Some(AugmentedPageTable::new()),
-        pd: Some(AugmentedPageTable::new()),
-        pt: Some(AugmentedPageTable::new()),
+        pdpt: None,
+        pd: None,
+        pt: None,
     })
 });
 
@@ -200,9 +200,9 @@ impl Cpu {
                 self.size = Some(12);
                 self.offset = offset;
 
-                let mut pt = self.pt.take().unwrap();
-                let mut pd = self.pd.take().unwrap();
-                let mut pdpt = self.pdpt.take().unwrap();
+                let mut pt = self.pt.take().unwrap_or_else(AugmentedPageTable::new);
+                let mut pd = self.pd.take().unwrap_or_else(AugmentedPageTable::new);
+                let mut pdpt = self.pdpt.take().unwrap_or_else(AugmentedPageTable::new);
 
                 match entry {
                     Entry::UniquePage(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
@@ -221,8 +221,11 @@ impl Cpu {
                 self.size = Some(21);
                 self.offset = offset;
 
-                let mut pd = self.pd.take().unwrap();
-                let mut pdpt = self.pdpt.take().unwrap();
+                let mut pd = self.pd.take().unwrap_or_else(|| AugmentedPageTable::new());
+                let mut pdpt = self
+                    .pdpt
+                    .take()
+                    .unwrap_or_else(|| AugmentedPageTable::new());
 
                 match entry {
                     Entry::UniquePage(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
@@ -240,7 +243,10 @@ impl Cpu {
                 self.size = Some(30);
                 self.offset = offset;
 
-                let mut pdpt = self.pdpt.take().unwrap();
+                let mut pdpt = self
+                    .pdpt
+                    .take()
+                    .unwrap_or_else(|| AugmentedPageTable::new());
 
                 match entry {
                     Entry::UniquePage(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
@@ -276,71 +282,33 @@ impl Cpu {
             crate::tlb::set_sleeping(true);
             crate::tlb::clear_pending();
         }
-        match self.size.take() {
-            Some(12) => {
-                let offset = self.offset;
-                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.unmap((offset >> 27) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap((offset >> 18) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let AugmentedUnmappedPage::UniqueTable(mut pt) = pd.unmap((offset >> 9) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let entry = match pt.unmap(offset & 0x1ff) {
-                    AugmentedUnmappedPage::UniquePage(p) => Entry::UniquePage(p),
-                    AugmentedUnmappedPage::UniqueTable(t) => Entry::UniqueTable(t),
-                    _ => todo!(),
-                };
-                self.pt = Some(pt);
-                self.pd = Some(pd);
-                self.pdpt = Some(pdpt);
-                AddressSpace::AddressSpace4KB(offset, entry)
-            }
-            Some(21) => {
-                let offset = self.offset;
-                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.unmap((offset >> 18) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap((offset >> 9) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let entry = match pd.unmap(offset & 0x1ff) {
-                    AugmentedUnmappedPage::None => todo!(),
-                    AugmentedUnmappedPage::UniquePage(_) => todo!(),
-                    AugmentedUnmappedPage::SharedPage(_) => todo!(),
-                    AugmentedUnmappedPage::Global(_) => todo!(),
-                    AugmentedUnmappedPage::UniqueTable(t) => Entry::UniqueTable(t),
-                    AugmentedUnmappedPage::SharedTable(t) => Entry::SharedTable(t),
-                };
-                self.pdpt = Some(pdpt);
-                self.pd = Some(pd);
-                AddressSpace::AddressSpace2MB(offset, entry)
-            }
-            Some(30) => {
-                let offset = self.offset;
-                let AugmentedUnmappedPage::UniqueTable(mut pdpt) =
-                    self.pml4.unmap((offset >> 9) & 0x1ff)
-                else {
-                    panic!();
-                };
-                let AugmentedUnmappedPage::UniqueTable(pd) = pdpt.unmap(offset & 0x1ff) else {
-                    panic!();
-                };
-                self.pdpt = Some(pdpt);
-                AddressSpace::AddressSpace1GB(offset, Entry::UniqueTable(pd))
-            }
-            None => AddressSpace::new(),
-            _ => todo!(),
+        let AugmentedUnmappedPage::UniqueTable(mut pdpt) = self.pml4.unmap(0) else {
+            todo!();
+        };
+        if pdpt.len() > 1 {
+            todo!("pdpt with {} entries", pdpt.len());
         }
+        let offset = pdpt.offset();
+        let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap(offset) else {
+            todo!();
+        };
+        debug_assert!(pdpt.is_empty());
+        debug_assert!(self.pdpt.is_none());
+        self.pdpt = Some(pdpt);
+        if pd.len() > 1 {
+            return AddressSpace::AddressSpace1GB(offset, Entry::UniqueTable(pd));
+        }
+        let offset = pd.offset();
+        let AugmentedUnmappedPage::UniqueTable(pt) = pd.unmap(offset) else {
+            todo!();
+        };
+        debug_assert!(pd.is_empty());
+        debug_assert!(self.pd.is_none());
+        self.pd = Some(pd);
+        if pt.len() > 1 {
+            return AddressSpace::AddressSpace2MB(offset, Entry::UniqueTable(pt));
+        }
+        todo!();
     }
 
     pub fn map_unique_4kb(&mut self, address: usize, page: UniquePage<Page4KB>) {
@@ -354,13 +322,19 @@ impl Cpu {
         let pml4 = &mut self.pml4;
         // TODO: check behavior when inserting unique into shared
         let mut pdpt = match pml4.entry_mut(i_512gb).unmap() {
-            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
+            AugmentedUnmappedPage::None => {
+                todo!("inserting into larger-than-1GB address space");
+                // AugmentedPageTable::new()
+            }
             AugmentedUnmappedPage::UniqueTable(pt) => pt,
             AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
             _ => todo!(),
         };
         let mut pd = match pdpt.entry_mut(i_1gb).unmap() {
-            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
+            AugmentedUnmappedPage::None => {
+                todo!("inserting into larger-than-1GB address space");
+                // AugmentedPageTable::new()
+            }
             AugmentedUnmappedPage::UniqueTable(pt) => pt,
             AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
             _ => todo!(),
