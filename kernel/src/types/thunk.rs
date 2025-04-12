@@ -168,7 +168,7 @@ impl<'a> LoadedThunk<'a> {
     }
 
     pub fn run(self) -> LoadedValue<'a> {
-        self.run_for(Duration::from_millis(10000))
+        self.run_for(Duration::from_millis(60000))
     }
 
     pub fn run_for(self, timeout: Duration) -> LoadedValue<'a> {
