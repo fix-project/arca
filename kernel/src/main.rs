@@ -6,7 +6,6 @@ use core::fmt::Write;
 use core::time::Duration;
 
 use kernel::debugcon::CONSOLE;
-use kernel::kvmclock;
 use kernel::prelude::*;
 use kernel::rt;
 use macros::kmain;
@@ -22,17 +21,27 @@ async fn kmain(_: &[usize]) {
     log::info!("no clone");
     let kib = 1024;
     let mib = 1024 * kib;
+    // let gib = 1024 * mib;
     let values = [
         0,
         4 * kib,
+        8 * kib,
         16 * kib,
+        32 * kib,
         64 * kib,
+        128 * kib,
         256 * kib,
+        512 * kib,
         mib,
+        2 * mib,
         4 * mib,
+        8 * mib,
         16 * mib,
+        32 * mib,
         64 * mib,
+        128 * mib,
         256 * mib,
+        512 * mib,
     ];
     let duration = Duration::from_secs(10);
     let mut console = CONSOLE.lock();
@@ -40,10 +49,12 @@ async fn kmain(_: &[usize]) {
     for bytes in values {
         let count = bytes / 4096;
         let count = test(count, true);
-        log::info!(
-            "{count} ({bytes} bytes, {:?} per iteration)",
-            duration / count as u32
-        );
+        if count != 0 {
+            log::info!(
+                "{count} ({bytes} bytes, {:?} per iteration)",
+                duration / count as u32
+            );
+        }
         writeln!(*console, "{bytes},{count},{}", duration.as_secs_f64()).unwrap();
     }
     log::info!("with clone");
@@ -51,10 +62,12 @@ async fn kmain(_: &[usize]) {
     for bytes in values {
         let count = bytes / 4096;
         let count = test(count, false);
-        log::info!(
-            "{count} ({bytes} bytes, {:?} per iteration)",
-            duration / count as u32
-        );
+        if count != 0 {
+            log::info!(
+                "{count} ({bytes} bytes, {:?} per iteration)",
+                duration / count as u32
+            );
+        }
         writeln!(*console, "{bytes},{count},{}", duration.as_secs_f64()).unwrap();
     }
 }
@@ -75,13 +88,8 @@ fn test(count: usize, unified: bool) -> usize {
     let forcee = forcee.apply(Value::Word(unified as u64));
     let forcer = forcer.apply(Value::Thunk(forcee));
 
-    let start = kvmclock::now();
     let Value::Word(count) = forcer.run() else {
         panic!();
     };
-    let end = kvmclock::now();
-    let duration = end - start;
-    let duration: Duration = Duration::from_secs_f64(duration.as_seconds_f64());
-    log::info!("duration: {duration:?}");
     count as usize
 }

@@ -22,6 +22,7 @@ unsafe impl GlobalAlloc for SystemAllocator {
             .allocate(layout)
             .map(|p| &raw mut (*p.as_ptr())[0])
             .unwrap_or(core::ptr::null_mut());
+        debug_assert!(!result.is_null());
         result
     }
 
