@@ -180,17 +180,16 @@ impl<'a> LoadedThunk<'a> {
     pub fn run_until(self, alarm: OffsetDateTime) -> LoadedValue<'a> {
         let LoadedThunk { mut arca } = self;
         loop {
+            let now = kvmclock::now();
+            if now >= alarm {
+                return LoadedValue::Thunk(LoadedThunk { arca });
+            }
             let result = arca.run();
             match result {
                 ExitReason::SystemCall => {}
                 ExitReason::Interrupted(x) => {
                     if x == 0x20 {
-                        let now = kvmclock::now();
-                        if now < alarm {
-                            continue;
-                        } else {
-                            return LoadedValue::Thunk(LoadedThunk { arca });
-                        }
+                        continue;
                     }
                     log::debug!("exited with interrupt: {x:?}");
                     let tree = vec![
