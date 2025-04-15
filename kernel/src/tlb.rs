@@ -38,7 +38,10 @@ unsafe fn fire(core: u32) -> bool {
         // set_pending(core, true);
         false
     } else {
-        set_pending(core, true);
+        // set_pending(core, true);
+        if !get_and_set_pending(core, true) {
+            write64(0x30, 0x30 | 0b11 << 14 | (core as u64) << 32);
+        }
         true
     }
 }
@@ -61,9 +64,6 @@ unsafe fn fire_all(cores: &mut [bool]) -> usize {
             cores[core as usize] = true;
             count += 1;
         }
-    }
-    if count != 0 {
-        write64(0x30, 0x30 | 0b11 << 14 | 0b11 << 18);
     }
     count
 }
@@ -160,11 +160,11 @@ pub unsafe fn set_pending(core: u32, pending: bool) {
     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
 }
 
-// pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
-//     let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
-//     TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
-//     old
-// }
+pub unsafe fn get_and_set_pending(core: u32, pending: bool) -> bool {
+    let old = TLB_SHOOTDOWN[core as usize].load(Ordering::Acquire);
+    TLB_SHOOTDOWN[core as usize].store(pending, Ordering::Release);
+    old
+}
 
 // #[inline(always)]
 // pub fn while_sleeping<T>(f: impl FnOnce() -> T) -> T {
