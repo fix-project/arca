@@ -50,6 +50,9 @@ impl Thunk {
         for (i, segment) in segments.iter().enumerate() {
             log::debug!("processing segment: {:x?}", segment);
             match segment.p_type {
+                elf::abi::PT_NOTE => {
+                    // ignore for now
+                }
                 elf::abi::PT_LOAD => {
                     let start = segment.p_vaddr as usize;
                     let page_start_memory = (start / 4096) * 4096;

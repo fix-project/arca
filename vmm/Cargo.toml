@@ -29,3 +29,5 @@ anyhow = "1.0.97"
 rand_distr = "0.5.1"
 rand = "0.9.0"
 async-std = { version = "1.13.1", features = ["attributes"] }
+include_directory = "0.1.1"
+tempfile = "3.20.0"
