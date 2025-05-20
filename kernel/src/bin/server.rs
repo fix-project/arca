@@ -33,11 +33,9 @@ impl Server {
 
     #[inline(never)]
     pub async fn run(&'static self) {
+        let mut rx = self.receiver.lock();
         loop {
-            let attempt = {
-                let mut rx = self.receiver.lock();
-                rx.try_recv()
-            };
+            let attempt = rx.try_recv();
             let MetaRequest { seqno, body } = match attempt {
                 Ok(result) => result,
                 Err(Error::WouldBlock) => {
@@ -49,11 +47,11 @@ impl Server {
                 }
             };
             log::debug!("got request {seqno}: {body:?}");
-            kernel::rt::spawn(async move {
-                unsafe {
-                    self.handle(seqno, body);
-                }
-            });
+            // kernel::rt::spawn(async move {
+            unsafe {
+                self.handle(seqno, body);
+            }
+            // });
         }
     }
 
@@ -170,6 +168,7 @@ impl Server {
                 };
                 // crate::rt::spawn(async move {
                 let y = thunk.run_for(Duration::from_millis(1000));
+                log::info!("ran thunk, got {y:#x?}");
                 let dst = self.encode(y.into());
                 self.reply(seqno, Response::Handle(dst));
                 // });
