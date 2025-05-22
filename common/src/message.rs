@@ -4,49 +4,97 @@ extern crate alloc;
 
 #[derive(Debug)]
 #[repr(C)]
-pub enum Request {
-    Nop,
-    CreateNull,
-    CreateWord { value: u64 },
-    CreateAtom { ptr: usize, len: usize },
-    CreateBlob { ptr: usize, len: usize },
-    CreateTree { ptr: usize, len: usize },
-    CreateThunk { src: usize },
-    GetType { src: usize },
-    Read { src: usize },
-    Apply { src: usize, arg: usize },
-    Run { src: usize },
-    Clone { src: usize },
-    Drop { src: usize },
+pub struct Handle {
+    pub parts: [usize; 3],
+    pub datatype: Type,
 }
 
-unsafe impl Sendable for Request {}
+impl Handle {
+    /// # Safety
+    ///
+    /// The copied handle does not affect the reference count within the kernel, and therefore must
+    /// only be provided to RPC calls which leak the provided handle.
+    pub unsafe fn copy(&self) -> Handle {
+        Handle {
+            parts: self.parts,
+            datatype: self.datatype
+        }
+    }
 
-#[derive(Debug, Eq, PartialEq)]
+    pub fn null() -> Handle {
+        Handle {
+            parts: [0; 3],
+            datatype: Type::Null,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.datatype == Type::Null
+    }
+
+    pub fn word(value: u64) -> Handle {
+        Handle {
+            parts: [value as usize, 0, 0],
+            datatype: Type::Word,
+        }
+    }
+
+    pub fn get_word(&self) -> Option<u64> {
+        if self.datatype == Type::Word {
+            Some(self.parts[0] as u64)
+        } else {
+            None
+        }
+    }
+
+    /// # Safety
+    /// The pointer and length must be reconstructible as a Blob.
+    pub unsafe fn blob(ptr: usize, len: usize) -> Handle {
+        Handle {
+            parts: [ptr, len, 0],
+            datatype: Type::Blob,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(C)]
 pub enum Type {
     Null,
+    Error,
     Word,
     Atom,
     Blob,
     Tree,
-    Thunk,
+    Page,
+    PageTable,
     Lambda,
+    Thunk,
 }
 
-unsafe impl Sendable for Type {}
+#[derive(Debug)]
+#[repr(C)]
+pub enum Request {
+    Nop,
+    CreateBlob { ptr: usize, len: usize },
+    CreateTree { ptr: usize, len: usize },
+    ReadBlob(Handle),
+    ReadTree(Handle),
+    LoadElf(Handle),
+    Apply(Handle, Handle),
+    Run(Handle),
+    Clone(Handle),
+    Drop(Handle),
+}
+
+unsafe impl Sendable for Request {}
 
 #[derive(Debug)]
 #[repr(C)]
 pub enum Response {
     Ack,
-    Null,
-    Word(u64),
-    Atom { ptr: usize, len: usize },
-    Blob { ptr: usize, len: usize },
-    Tree { ptr: usize, len: usize },
-    Handle(usize),
-    Type(Type),
+    Handle(Handle),
+    Span {ptr: usize, len: usize},
 }
 
 unsafe impl Sendable for Response {}
@@ -54,7 +102,8 @@ unsafe impl Sendable for Response {}
 #[derive(Debug)]
 #[repr(C)]
 pub struct MetaRequest {
-    pub seqno: usize,
+    pub function: usize,
+    pub context: usize,
     pub body: Request,
 }
 
@@ -63,7 +112,8 @@ unsafe impl Sendable for MetaRequest {}
 #[derive(Debug)]
 #[repr(C)]
 pub struct MetaResponse {
-    pub seqno: usize,
+    pub function: usize,
+    pub context: usize,
     pub body: Response,
 }
 

@@ -9,6 +9,7 @@
 #![feature(box_into_inner)]
 #![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
+#![feature(vec_into_raw_parts)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

@@ -8,6 +8,8 @@ pub mod thunk;
 
 pub use arca::Arca;
 pub use arca::LoadedArca;
+use common::message::Handle;
+use common::message::Type;
 pub use page::Page;
 pub use pagetable::PageTable;
 pub type Blob = Arc<[u8]>;
@@ -57,5 +59,81 @@ impl LoadedValue<'_> {
 impl From<LoadedValue<'_>> for Value {
     fn from(value: LoadedValue) -> Self {
         value.unload()
+    }
+}
+
+impl From<Handle> for Value {
+    fn from(value: Handle) -> Self {
+        unsafe {
+            match value.datatype {
+                Type::Null => Value::Null,
+                Type::Error => Value::Error(Arc::from_raw(value.parts[0] as _)),
+                Type::Word => Value::Word(value.get_word().unwrap()),
+                Type::Atom => Value::Atom(String::from_raw_parts(
+                    value.parts[0] as _,
+                    value.parts[1],
+                    value.parts[2],
+                )),
+                Type::Blob => Value::Blob(Arc::from_raw(core::ptr::from_raw_parts(
+                    value.parts[0] as *const u8,
+                    value.parts[1],
+                ))),
+                Type::Tree => Value::Tree(Arc::from_raw(core::ptr::from_raw_parts(
+                    value.parts[0] as *const Value,
+                    value.parts[1],
+                ))),
+                Type::Page => Value::Page(Arc::from_raw(value.parts[0] as _)),
+                Type::PageTable => Value::PageTable(Arc::from_raw(value.parts[0] as _)),
+                Type::Lambda => Value::Lambda(*Box::from_raw(value.parts[0] as _)),
+                Type::Thunk => Value::Thunk(*Box::from_raw(value.parts[0] as _)),
+            }
+        }
+    }
+}
+
+impl From<Value> for Handle {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Null => Handle::null(),
+            Value::Error(value) => Handle {
+                parts: [Arc::into_raw(value) as usize, 0, 0],
+                datatype: Type::Error,
+            },
+            Value::Word(value) => Handle::word(value),
+            Value::Atom(value) => {
+                let parts = value.into_raw_parts();
+                Handle {
+                    parts: [parts.0 as usize, parts.1, parts.2],
+                    datatype: Type::Atom,
+                }
+            }
+            Value::Blob(value) => {
+                let parts = Arc::into_raw(value).to_raw_parts();
+                unsafe { Handle::blob(parts.0 as usize, parts.1) }
+            }
+            Value::Tree(value) => {
+                let parts = Arc::into_raw(value).to_raw_parts();
+                Handle {
+                    parts: [parts.0 as usize, parts.1, 0],
+                    datatype: Type::Tree,
+                }
+            }
+            Value::Page(value) => Handle {
+                parts: [Arc::into_raw(value) as usize, 0, 0],
+                datatype: Type::Page,
+            },
+            Value::PageTable(value) => Handle {
+                parts: [Arc::into_raw(value) as usize, 0, 0],
+                datatype: Type::PageTable,
+            },
+            Value::Lambda(value) => Handle {
+                parts: [Box::into_raw(value.into()) as usize, 0, 0],
+                datatype: Type::Lambda,
+            },
+            Value::Thunk(value) => Handle {
+                parts: [Box::into_raw(value.into()) as usize, 0, 0],
+                datatype: Type::Thunk,
+            },
+        }
     }
 }
