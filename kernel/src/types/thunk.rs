@@ -431,7 +431,6 @@ fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
         Value::Lambda(_) => Ok(defs::types::LAMBDA),
         Value::Thunk(_) => Ok(defs::types::THUNK),
     }
-    .map(|x| x.try_into().expect("type was too large"))
 }
 
 fn sys_create_word(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {

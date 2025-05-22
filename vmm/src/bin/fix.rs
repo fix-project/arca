@@ -7,7 +7,7 @@ use std::process::Command;
 use common::{ringbuffer, BuddyAllocator};
 use include_directory::{include_directory, Dir};
 use vmm::{
-    client::Client,
+    client::{Client, DynRef},
     runtime::{Mmap, Runtime},
 };
 
@@ -126,23 +126,30 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::new(endpoint1);
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> anyhow::Result<()> {
         s.spawn(|| {
             runtime.run(&[endpoint_raw_offset]);
         });
 
         async_std::task::block_on(async {
-            let elf = client.blob(elf).await;
-            let thunk = elf.create_thunk().await;
-            let result = thunk.run().await;
-            let Ok(lambda) = result.as_lambda().await else {
+            log::info!("create blob");
+            let elf = client.blob(elf).await?;
+            log::info!("create thunk");
+            let thunk = elf.create_thunk().await?;
+            log::info!("run thunk");
+            let result = thunk.run().await?;
+            let DynRef::Lambda(lambda) = result.into() else {
                 unreachable!();
             };
-            let thunk = lambda.apply(client.word(0xcafeb0ba).await.into()).await;
-            let result = thunk.run().await;
-            let _ = result;
-        });
+            let thunk = lambda.apply(client.word(0xcafeb0ba).await).await?;
+            let DynRef::Word(word) = thunk.run().await?.into() else {
+                unreachable!();
+            };
+            log::info!("{:?}", word.read().await);
+            Ok::<(), anyhow::Error>(())
+        })?;
         client.shutdown();
-    });
+        Ok(())
+    })?;
     Ok(())
 }

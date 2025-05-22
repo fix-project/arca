@@ -93,6 +93,9 @@ pub mod syscall {
         unsafe { syscall(CREATE_TREE, dst, buffer.as_ptr(), buffer.len()) }
     }
 
+    /// # Safety
+    /// The span of pages request must not be mapped currently, and there must be no Rust
+    /// references to it.
     pub unsafe fn map_new_pages(ptr: *const (), count: usize) -> i64 {
         unsafe { syscall(MAP_NEW_PAGES, ptr, count) }
     }

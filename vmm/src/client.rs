@@ -1,29 +1,19 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
-use common::message::{MetaRequest, MetaResponse, Request, Response, Type};
-use common::ringbuffer::{Endpoint, Error, Receiver, Result, Sender};
+use common::message::{self, *};
+use common::ringbuffer::{Endpoint, Error as RingBufferError, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
 
-#[derive(Debug)]
-enum BufferEntry {
-    Ignore,
-    Received(Response),
-    Waiting(Waker),
-}
-
 struct Synchronizer {
     exit: Arc<AtomicBool>,
-    channel: async_std::channel::Sender<MetaRequest>,
-    buffer: Arc<Mutex<HashMap<usize, BufferEntry>>>,
-    send_thread: Mutex<Option<JoinHandle<()>>>,
+    sender: Arc<Mutex<Sender<'static, MetaRequest>>>,
     receive_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -32,38 +22,16 @@ impl Synchronizer {
         sender: Sender<'static, MetaRequest>,
         receiver: Receiver<'static, MetaResponse>,
     ) -> Self {
-        let (tx, rx) = async_std::channel::unbounded();
         let exit = Arc::new(AtomicBool::new(false));
-        let exit2 = exit.clone();
-        let send_thread = Mutex::new(Some(std::thread::spawn(move || {
-            let mut sender = sender;
-            let exit = exit2;
-            while !exit.load(Ordering::SeqCst) {
-                let Ok(request) = rx.recv_blocking() else {
-                    break;
-                };
-                while sender.is_full() {
-                    std::thread::yield_now();
-                }
-                if sender.send(request).is_err() {
-                    exit.store(true, Ordering::SeqCst);
-                    return;
-                }
-            }
-            sender.hangup();
-        })));
-        let buffer = Arc::new(Mutex::new(HashMap::new()));
-        let buffer2 = buffer.clone();
         let exit2 = exit.clone();
         let receive_thread = Mutex::new(Some(std::thread::spawn(|| {
             let mut receiver = receiver;
-            let buffer = buffer2;
             let exit = exit2;
             while !exit.load(Ordering::SeqCst) {
                 let response = receiver.try_recv();
                 let response = match response {
                     Ok(response) => response,
-                    Err(Error::WouldBlock) => {
+                    Err(RingBufferError::WouldBlock) => {
                         std::thread::yield_now();
                         continue;
                     }
@@ -72,99 +40,71 @@ impl Synchronizer {
                         return;
                     }
                 };
-                let MetaResponse { seqno, body } = response;
-                let mut buffer = buffer.lock().unwrap();
-                match buffer.remove(&seqno) {
-                    Some(BufferEntry::Ignore) => {}
-                    Some(BufferEntry::Waiting(waker)) => {
-                        buffer.insert(seqno, BufferEntry::Received(body));
-                        core::mem::drop(buffer);
-                        waker.wake();
-                    }
-                    Some(BufferEntry::Received(_)) => {
-                        unreachable!("received same sequence number twice!");
-                    }
-                    None => {
-                        buffer.insert(seqno, BufferEntry::Received(body));
-                    }
-                }
+                let MetaResponse {
+                    function,
+                    context,
+                    body,
+                } = response;
+                let waker: Arc<Waker> = unsafe { Arc::from_raw(function as *const _) };
+                let result: Arc<Mutex<Option<Response>>> =
+                    unsafe { Arc::from_raw(context as *const _) };
+                let mut option = result.lock().unwrap();
+                *option = Some(body);
+                waker.wake_by_ref();
             }
             receiver.hangup();
         })));
+        let sender = Arc::new(Mutex::new(sender));
         Synchronizer {
             exit,
-            buffer,
-            channel: tx,
-            send_thread,
+            sender,
             receive_thread,
         }
     }
 
-    fn ignore(&self, seqno: usize) {
-        let mut buffer = self.buffer.lock().unwrap();
-        match buffer.remove(&seqno) {
-            Some(BufferEntry::Waiting(_)) => {
-                unreachable!("ignoring sequence number that already has a waiter");
-            }
-            Some(BufferEntry::Received(_)) => {}
-            Some(BufferEntry::Ignore) | None => {
-                buffer.insert(seqno, BufferEntry::Ignore);
-            }
-        }
-    }
-
-    fn get(&self, seqno: usize) -> impl Future<Output = Result<Response>> {
+    fn send(&self, body: Request) -> ClientFuture {
         ClientFuture {
-            exit: self.exit.clone(),
-            buffer: self.buffer.clone(),
-            seqno,
+            sender: self.sender.clone(),
+            body: Mutex::new(Some(body)),
+            result: Arc::new(Mutex::new(None)),
         }
-    }
-
-    async fn put(&self, seqno: usize, body: Request) {
-        self.channel
-            .send(MetaRequest { seqno, body })
-            .await
-            .unwrap();
-    }
-
-    fn put_blocking(&self, seqno: usize, body: Request) {
-        self.channel
-            .send_blocking(MetaRequest { seqno, body })
-            .unwrap();
     }
 
     fn shutdown(&self) {
-        self.channel.close();
         self.exit.store(true, Ordering::SeqCst);
+        let sender = self.sender.lock().unwrap();
+        sender.hangup();
     }
 }
 
 struct ClientFuture {
-    exit: Arc<AtomicBool>,
-    buffer: Arc<Mutex<HashMap<usize, BufferEntry>>>,
-    seqno: usize,
+    sender: Arc<Mutex<Sender<'static, MetaRequest>>>,
+    body: Mutex<Option<Request>>,
+    result: Arc<Mutex<Option<Response>>>,
 }
 
 impl Future for ClientFuture {
     type Output = Result<Response>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut buffer = self.buffer.lock().unwrap();
-        if self.exit.load(Ordering::SeqCst) {
-            return Poll::Ready(Err(Error::Disconnected));
-        }
-        match buffer.remove(&self.seqno) {
-            Some(BufferEntry::Ignore) => {
-                unreachable!(
-                    "tried to poll seqno {} which was previously ignored",
-                    self.seqno
-                );
-            }
-            Some(BufferEntry::Received(response)) => Poll::Ready(Ok(response)),
-            Some(BufferEntry::Waiting(_)) | None => {
-                let waker = cx.waker().clone();
-                buffer.insert(self.seqno, BufferEntry::Waiting(waker));
+        let mut result = self.result.lock().unwrap();
+        if let Some(result) = result.take() {
+            Poll::Ready(Ok(result))
+        } else {
+            let mut sender = self.sender.lock().unwrap();
+            let waker = cx.waker();
+            let waker = Arc::new(waker.clone());
+            let waker = Arc::into_raw(waker);
+            let result = self.result.clone();
+            let result = Arc::into_raw(result);
+            let mut body = self.body.lock().unwrap();
+            if let Err(e) = sender.send(MetaRequest {
+                function: waker as usize,
+                context: result as usize,
+                body: body.take().unwrap(),
+            }) {
+                Poll::Ready(Err(e))
+            } else {
                 Poll::Pending
             }
         }
@@ -174,8 +114,6 @@ impl Future for ClientFuture {
 impl Drop for Synchronizer {
     fn drop(&mut self) {
         self.exit.store(true, Ordering::SeqCst);
-        let handle = self.send_thread.lock().unwrap().take().unwrap();
-        handle.join().unwrap();
         let handle = self.receive_thread.lock().unwrap().take().unwrap();
         handle.join().unwrap();
     }
@@ -183,77 +121,43 @@ impl Drop for Synchronizer {
 
 pub struct Client<'a> {
     synchronizer: Synchronizer,
-    seqno: AtomicUsize,
     allocator: &'static BuddyAllocator<'static>,
     _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a> Client<'a> {
-    fn seqno(&self) -> usize {
-        self.seqno.fetch_add(1, Ordering::AcqRel)
-    }
-
     pub fn new(endpoint: Endpoint<'static, MetaRequest, MetaResponse>) -> Self {
         let allocator: &'static BuddyAllocator<'static> = endpoint.allocator();
         let (sender, receiver) = endpoint.into_sender_receiver();
         let synchronizer = Synchronizer::new(sender, receiver);
         Client {
             synchronizer,
-            seqno: AtomicUsize::new(0),
             allocator,
             _phantom: PhantomData,
         }
     }
 
-    async fn send(&self, message: Request) -> usize {
-        let seqno = self.seqno();
-        self.synchronizer.put(seqno, message).await;
-        seqno
+    async fn fullsend(&self, message: Request) -> Result<Response> {
+        self.synchronizer.send(message).await
     }
 
-    fn send_blocking(&self, message: Request) -> usize {
-        let seqno = self.seqno();
-        self.synchronizer.put_blocking(seqno, message);
-        seqno
-    }
-
-    async fn recv(&self, seqno: usize) -> Response {
-        self.synchronizer.get(seqno).await.unwrap()
-    }
-
-    async fn fullsend(&self, message: Request) -> Response {
-        let seqno = self.send(message).await;
-        self.recv(seqno).await
-    }
-
-    fn send_and_ignore_blocking(&self, message: Request) {
-        let seqno = self.send_blocking(message);
-        self.synchronizer.ignore(seqno);
-    }
-
-    pub async fn null(&self) -> Handle<Null> {
-        let Response::Handle(index) = self.fullsend(Request::CreateNull).await else {
-            unreachable!();
-        };
-        Handle {
-            index,
+    pub async fn null(&'a self) -> Ref<'a, Null> {
+        Ref {
             client: self,
+            handle: Some(Handle::null()),
             _phantom: PhantomData,
         }
     }
 
-    pub async fn word(&self, value: u64) -> Handle<Word> {
-        let Response::Handle(index) = self.fullsend(Request::CreateWord { value }).await else {
-            unreachable!();
-        };
-        Handle {
-            index,
+    pub async fn word(&'a self, value: u64) -> Ref<'a, Word> {
+        Ref {
             client: self,
+            handle: Some(Handle::word(value)),
             _phantom: PhantomData,
         }
     }
 
-    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Handle<Blob> {
+    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Result<Ref<Blob>> {
         let data = data.as_ref();
         let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
         blob.write_copy_of_slice(data);
@@ -262,39 +166,54 @@ impl<'a> Client<'a> {
         let ptr: *const [u8] = Arc::into_raw(blob);
         let (ptr, len) = ptr.to_raw_parts();
         let ptr = self.allocator.to_offset(ptr);
-        let Response::Handle(index) = self.fullsend(Request::CreateBlob { ptr, len }).await else {
+
+        let Response::Handle(
+            handle @ message::Handle {
+                datatype: Type::Blob,
+                parts: _,
+            },
+        ) = self.fullsend(Request::CreateBlob { ptr, len }).await?
+        else {
             unreachable!();
         };
-        Handle {
-            index,
+
+        Ok(Ref {
             client: self,
+            handle: Some(handle),
             _phantom: PhantomData,
-        }
+        })
     }
 
-    pub async fn tree<I: IntoIterator<Item = Handle<'a, Opaque>>>(
-        &self,
+    pub async fn tree<I: IntoIterator<Item = Ref<'a, Value>>>(
+        &'a self,
         elements: I,
-    ) -> Handle<Tree> {
-        let elements = elements.into_iter().map(|x| {
-            let index = x.index;
-            core::mem::forget(x);
-            index
-        });
+    ) -> Result<Ref<'a, Tree>> {
+        let elements = elements
+            .into_iter()
+            .inspect(|x| assert_eq!(self as *const _, x.client as *const _))
+            .map(|mut x| x.handle.take().unwrap());
         let mut v = Vec::new_in(self.allocator);
         v.extend(elements);
-        let data: Arc<[usize], &BuddyAllocator> = v.into();
-        let ptr: *const [usize] = Arc::into_raw(data);
+        let data: Box<[Handle], &BuddyAllocator> = v.into();
+        let ptr: *const [Handle] = Box::into_raw(data);
         let (ptr, len) = ptr.to_raw_parts();
         let ptr = self.allocator.to_offset(ptr);
-        let Response::Handle(index) = self.fullsend(Request::CreateTree { ptr, len }).await else {
+
+        let Response::Handle(
+            handle @ message::Handle {
+                datatype: Type::Tree,
+                parts: _,
+            },
+        ) = self.fullsend(Request::CreateTree { ptr, len }).await?
+        else {
             unreachable!();
         };
-        Handle {
-            index,
+
+        Ok(Ref {
             client: self,
+            handle: Some(handle),
             _phantom: PhantomData,
-        }
+        })
     }
 
     pub fn shutdown(&self) {
@@ -302,181 +221,211 @@ impl<'a> Client<'a> {
     }
 }
 
+pub trait ValueType {}
+
 pub struct Null;
+pub struct Error;
 pub struct Word;
+pub struct Atom;
 pub struct Blob;
 pub struct Tree;
+pub struct Page;
+pub struct PageTable;
 pub struct Lambda;
 pub struct Thunk;
-pub struct Opaque;
 
-pub struct Handle<'client, T> {
+impl ValueType for Null {}
+impl ValueType for Error {}
+impl ValueType for Word {}
+impl ValueType for Atom {}
+impl ValueType for Blob {}
+impl ValueType for Tree {}
+impl ValueType for Page {}
+impl ValueType for PageTable {}
+impl ValueType for Lambda {}
+impl ValueType for Thunk {}
+
+pub struct Value;
+
+pub struct Ref<'client, T> {
     client: &'client Client<'client>,
-    index: usize,
+    handle: Option<message::Handle>,
     _phantom: PhantomData<T>,
 }
 
-impl<T> Handle<'_, T> {
-    pub fn index(&self) -> usize {
-        self.index
-    }
+pub enum DynRef<'a> {
+    Null(Ref<'a, Null>),
+    Word(Ref<'a, Word>),
+    Error(Ref<'a, Error>),
+    Atom(Ref<'a, Atom>),
+    Blob(Ref<'a, Blob>),
+    Tree(Ref<'a, Tree>),
+    Page(Ref<'a, Page>),
+    PageTable(Ref<'a, PageTable>),
+    Lambda(Ref<'a, Lambda>),
+    Thunk(Ref<'a, Thunk>),
 }
 
-impl Handle<'_, Word> {
+impl Ref<'_, Word> {
     pub async fn read(&self) -> u64 {
-        let Response::Word(x) = self
-            .client
-            .fullsend(Request::Read { src: self.index })
-            .await
-        else {
-            panic!();
-        };
-        x
+        self.handle.as_ref().unwrap().get_word().unwrap()
     }
 }
 
-impl<'client> Handle<'client, Blob> {
-    pub async fn create_thunk(self) -> Handle<'client, Thunk> {
-        let Response::Handle(index) = self
+impl<'client> Ref<'client, Blob> {
+    pub async fn create_thunk(mut self) -> Result<Ref<'client, Thunk>> {
+        let Response::Handle(
+            handle @ message::Handle {
+                datatype: Type::Thunk,
+                parts: _,
+            },
+        ) = self
             .client
-            .fullsend(Request::CreateThunk { src: self.index })
-            .await
+            .fullsend(Request::LoadElf(self.handle.take().unwrap()))
+            .await?
         else {
             unreachable!();
         };
-        let new = Handle {
-            client: self.client,
-            index,
+        let client = self.client;
+        Ok(Ref {
+            client,
+            handle: Some(handle),
             _phantom: PhantomData,
-        };
-        core::mem::forget(self);
-        new
+        })
     }
 }
 
-impl<'client> Handle<'client, Lambda> {
-    pub async fn apply(self, arg: Handle<'client, Opaque>) -> Handle<'client, Thunk> {
-        let Response::Handle(index) = self
+impl<'client> Ref<'client, Lambda> {
+    pub async fn apply<T: Into<Ref<'client, Value>>>(
+        mut self,
+        other: T,
+    ) -> Result<Ref<'client, Thunk>> {
+        let mut other: Ref<'_, Value> = other.into();
+        assert_eq!(self.client as *const _, other.client as *const _);
+        let Response::Handle(
+            handle @ message::Handle {
+                datatype: Type::Thunk,
+                parts: _,
+            },
+        ) = self
             .client
-            .fullsend(Request::Apply {
-                src: self.index,
-                arg: arg.index,
-            })
-            .await
+            .fullsend(Request::Apply(
+                self.handle.take().unwrap(),
+                other.handle.take().unwrap(),
+            ))
+            .await?
         else {
             unreachable!();
         };
-        let new = Handle {
-            client: self.client,
-            index,
+        let client = self.client;
+        Ok(Ref {
+            client,
+            handle: Some(handle),
             _phantom: PhantomData,
-        };
-        core::mem::forget(self);
-        core::mem::forget(arg);
-        new
+        })
     }
 }
 
-impl<'client> Handle<'client, Thunk> {
-    pub async fn run(self) -> Handle<'client, Opaque> {
-        let Response::Handle(index) = self.client.fullsend(Request::Run { src: self.index }).await
-        else {
-            unreachable!();
-        };
-        let new = Handle {
-            client: self.client,
-            index,
-            _phantom: PhantomData,
-        };
-        core::mem::forget(self);
-        new
-    }
-}
-
-impl<T> Handle<'_, T> {
-    pub async fn duplicate(&self) -> Self {
-        let Response::Handle(index) = self
+impl<'client> Ref<'client, Thunk> {
+    pub async fn run(mut self) -> Result<Ref<'client, Value>> {
+        let Response::Handle(handle) = self
             .client
-            .fullsend(Request::Clone { src: self.index })
-            .await
+            .fullsend(Request::Run(self.handle.take().unwrap()))
+            .await?
         else {
             unreachable!();
         };
-        Handle {
-            client: self.client,
-            index,
+        let client = self.client;
+        Ok(Ref {
+            client,
+            handle: Some(handle),
             _phantom: PhantomData,
-        }
+        })
     }
 }
 
-impl<'a> From<Handle<'a, Word>> for Handle<'a, Opaque> {
-    fn from(value: Handle<'a, Word>) -> Handle<'a, Opaque> {
-        let handle = Handle {
+impl<'client, T: ValueType> From<Ref<'client, T>> for Ref<'client, Value> {
+    fn from(mut value: Ref<'client, T>) -> Self {
+        Ref {
             client: value.client,
-            index: value.index,
+            handle: value.handle.take(),
             _phantom: PhantomData,
-        };
-        core::mem::forget(value);
-        handle
-    }
-}
-
-impl<'a> From<Handle<'a, Tree>> for Handle<'a, Opaque> {
-    fn from(value: Handle<'a, Tree>) -> Handle<'a, Opaque> {
-        let handle = Handle {
-            client: value.client,
-            index: value.index,
-            _phantom: PhantomData,
-        };
-        core::mem::forget(value);
-        handle
-    }
-}
-
-impl<'a> Handle<'a, Opaque> {
-    pub async fn as_word(self) -> core::result::Result<Handle<'a, Word>, Handle<'a, Opaque>> {
-        let datatype = self
-            .client
-            .fullsend(Request::GetType { src: self.index })
-            .await;
-        if let Response::Type(Type::Word) = datatype {
-            let handle = Handle {
-                client: self.client,
-                index: self.index,
-                _phantom: PhantomData,
-            };
-            core::mem::forget(self);
-            Ok(handle)
-        } else {
-            log::error!("{datatype:?}");
-            Err(self)
-        }
-    }
-
-    pub async fn as_lambda(self) -> core::result::Result<Handle<'a, Lambda>, Handle<'a, Opaque>> {
-        let datatype = self
-            .client
-            .fullsend(Request::GetType { src: self.index })
-            .await;
-        if let Response::Type(Type::Lambda) = datatype {
-            let handle = Handle {
-                client: self.client,
-                index: self.index,
-                _phantom: PhantomData,
-            };
-            core::mem::forget(self);
-            Ok(handle)
-        } else {
-            Err(self)
         }
     }
 }
 
-impl<T> Drop for Handle<'_, T> {
+impl Ref<'_, Value> {
+    pub fn get_type(&self) -> Type {
+        self.handle.as_ref().unwrap().datatype
+    }
+}
+
+impl<'client> From<Ref<'client, Value>> for DynRef<'client> {
+    fn from(mut value: Ref<'client, Value>) -> Self {
+        let handle = value.handle.take().unwrap();
+        match handle.datatype {
+            Type::Null => DynRef::Null(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Error => DynRef::Error(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Word => DynRef::Word(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Atom => DynRef::Atom(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Blob => DynRef::Blob(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Tree => DynRef::Tree(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Page => DynRef::Page(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::PageTable => DynRef::PageTable(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Lambda => DynRef::Lambda(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+            Type::Thunk => DynRef::Thunk(Ref {
+                client: value.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }),
+        }
+    }
+}
+
+impl<T> Drop for Ref<'_, T> {
     fn drop(&mut self) {
-        self.client
-            .send_and_ignore_blocking(Request::Drop { src: self.index });
+        if let Some(handle) = self.handle.take() {
+            let future = self.client.fullsend(Request::Drop(handle));
+            let Response::Ack = async_std::task::block_on(future).unwrap() else {
+                unreachable!();
+            };
+        }
     }
 }
 
@@ -512,19 +461,21 @@ mod tests {
             });
 
             async_std::task::block_on(async {
-                let add = client.blob(ADD_ELF).await;
-                let add = add.create_thunk().await;
+                let add = client.blob(ADD_ELF).await?;
+                let add = add.create_thunk().await?;
                 let x = client.word(1).await;
                 let y = client.word(2).await;
-                let arg = client.tree([x.into(), y.into()]).await;
-                let Ok(add) = add.run().await.as_lambda().await else {
+                let arg = client.tree([x.into(), y.into()]).await?;
+                let DynRef::Lambda(add) = add.run().await?.into() else {
                     panic!("running add returned something other than a lambda");
                 };
-                let Ok(sum) = add.apply(arg.into()).await.run().await.as_word().await else {
+                let DynRef::Word(sum) = add.apply(arg).await?.run().await?.into() else {
                     panic!("running add(1, 2) returned something other than a word");
                 };
                 assert_eq!(sum.read().await, 3);
-            });
+                Ok::<(), anyhow::Error>(())
+            })
+            .unwrap();
             client.shutdown();
         });
     }
