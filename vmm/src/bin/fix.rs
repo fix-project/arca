@@ -126,30 +126,28 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::new(endpoint1);
 
-    std::thread::scope(|s| -> anyhow::Result<()> {
+    std::thread::scope(|s| {
         s.spawn(|| {
             runtime.run(&[endpoint_raw_offset]);
         });
 
         async_std::task::block_on(async {
             log::info!("create blob");
-            let elf = client.blob(elf).await?;
+            let elf = client.blob(elf).await;
             log::info!("create thunk");
-            let thunk = elf.create_thunk().await?;
+            let thunk = elf.create_thunk().await;
             log::info!("run thunk");
-            let result = thunk.run().await?;
+            let result = thunk.run().await;
             let DynRef::Lambda(lambda) = result.into() else {
                 unreachable!();
             };
-            let thunk = lambda.apply(client.word(0xcafeb0ba).await).await?;
-            let DynRef::Word(word) = thunk.run().await?.into() else {
+            let thunk = lambda.apply(client.word(0xcafeb0ba).await).await;
+            let DynRef::Word(word) = thunk.run().await.into() else {
                 unreachable!();
             };
             log::info!("{:?}", word.read().await);
-            Ok::<(), anyhow::Error>(())
-        })?;
+        });
         client.shutdown();
-        Ok(())
-    })?;
+    });
     Ok(())
 }

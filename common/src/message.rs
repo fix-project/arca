@@ -10,6 +10,17 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// # Safety
+    ///
+    /// The copied handle does not affect the reference count within the kernel, and therefore must
+    /// only be provided to RPC calls which leak the provided handle.
+    pub unsafe fn copy(&self) -> Handle {
+        Handle {
+            parts: self.parts,
+            datatype: self.datatype
+        }
+    }
+
     pub fn null() -> Handle {
         Handle {
             parts: [0; 3],
@@ -67,6 +78,8 @@ pub enum Request {
     Nop,
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
+    ReadBlob(Handle),
+    ReadTree(Handle),
     LoadElf(Handle),
     Apply(Handle, Handle),
     Run(Handle),
@@ -81,6 +94,7 @@ unsafe impl Sendable for Request {}
 pub enum Response {
     Ack,
     Handle(Handle),
+    Span {ptr: usize, len: usize},
 }
 
 unsafe impl Sendable for Response {}

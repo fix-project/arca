@@ -157,7 +157,7 @@ impl<'a> Client<'a> {
         }
     }
 
-    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Result<Ref<Blob>> {
+    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Ref<Blob> {
         let data = data.as_ref();
         let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
         blob.write_copy_of_slice(data);
@@ -172,22 +172,25 @@ impl<'a> Client<'a> {
                 datatype: Type::Blob,
                 parts: _,
             },
-        ) = self.fullsend(Request::CreateBlob { ptr, len }).await?
+        ) = self
+            .fullsend(Request::CreateBlob { ptr, len })
+            .await
+            .unwrap()
         else {
             unreachable!();
         };
 
-        Ok(Ref {
+        Ref {
             client: self,
             handle: Some(handle),
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub async fn tree<I: IntoIterator<Item = Ref<'a, Value>>>(
         &'a self,
         elements: I,
-    ) -> Result<Ref<'a, Tree>> {
+    ) -> Ref<'a, Tree> {
         let elements = elements
             .into_iter()
             .inspect(|x| assert_eq!(self as *const _, x.client as *const _))
@@ -204,16 +207,19 @@ impl<'a> Client<'a> {
                 datatype: Type::Tree,
                 parts: _,
             },
-        ) = self.fullsend(Request::CreateTree { ptr, len }).await?
+        ) = self
+            .fullsend(Request::CreateTree { ptr, len })
+            .await
+            .unwrap()
         else {
             unreachable!();
         };
 
-        Ok(Ref {
+        Ref {
             client: self,
             handle: Some(handle),
             _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn shutdown(&self) {
@@ -273,7 +279,7 @@ impl Ref<'_, Word> {
 }
 
 impl<'client> Ref<'client, Blob> {
-    pub async fn create_thunk(mut self) -> Result<Ref<'client, Thunk>> {
+    pub async fn create_thunk(mut self) -> Ref<'client, Thunk> {
         let Response::Handle(
             handle @ message::Handle {
                 datatype: Type::Thunk,
@@ -282,24 +288,65 @@ impl<'client> Ref<'client, Blob> {
         ) = self
             .client
             .fullsend(Request::LoadElf(self.handle.take().unwrap()))
-            .await?
+            .await
+            .unwrap()
         else {
             unreachable!();
         };
         let client = self.client;
-        Ok(Ref {
+        Ref {
             client,
             handle: Some(handle),
             _phantom: PhantomData,
-        })
+        }
+    }
+
+    pub async fn read(&self) -> &[u8] {
+        unsafe {
+            let Response::Span { ptr, len } = self
+                .client
+                .fullsend(Request::ReadBlob(self.handle.as_ref().unwrap().copy()))
+                .await
+                .unwrap()
+            else {
+                unreachable!();
+            };
+            let client = self.client;
+            let ptr = client.allocator.from_offset(ptr);
+            core::slice::from_raw_parts(ptr, len)
+        }
+    }
+}
+
+impl Ref<'_, Tree> {
+    pub async fn read(&self) -> Vec<Ref<'_, Value>> {
+        unsafe {
+            let Response::Span { ptr, len } = self
+                .client
+                .fullsend(Request::ReadTree(self.handle.as_ref().unwrap().copy()))
+                .await
+                .unwrap()
+            else {
+                unreachable!();
+            };
+            let client = self.client;
+            let ptr: *mut Handle = client.allocator.from_offset(ptr);
+            let ptr: *mut [Handle] = core::ptr::from_raw_parts_mut(ptr, len);
+            let b = Box::from_raw_in(ptr, client.allocator);
+            let b = Vec::from(b);
+            b.into_iter()
+                .map(|x| Ref {
+                    client: self.client,
+                    handle: Some(x),
+                    _phantom: PhantomData,
+                })
+                .collect()
+        }
     }
 }
 
 impl<'client> Ref<'client, Lambda> {
-    pub async fn apply<T: Into<Ref<'client, Value>>>(
-        mut self,
-        other: T,
-    ) -> Result<Ref<'client, Thunk>> {
+    pub async fn apply<T: Into<Ref<'client, Value>>>(mut self, other: T) -> Ref<'client, Thunk> {
         let mut other: Ref<'_, Value> = other.into();
         assert_eq!(self.client as *const _, other.client as *const _);
         let Response::Handle(
@@ -313,34 +360,36 @@ impl<'client> Ref<'client, Lambda> {
                 self.handle.take().unwrap(),
                 other.handle.take().unwrap(),
             ))
-            .await?
+            .await
+            .unwrap()
         else {
             unreachable!();
         };
         let client = self.client;
-        Ok(Ref {
+        Ref {
             client,
             handle: Some(handle),
             _phantom: PhantomData,
-        })
+        }
     }
 }
 
 impl<'client> Ref<'client, Thunk> {
-    pub async fn run(mut self) -> Result<Ref<'client, Value>> {
+    pub async fn run(mut self) -> Ref<'client, Value> {
         let Response::Handle(handle) = self
             .client
             .fullsend(Request::Run(self.handle.take().unwrap()))
-            .await?
+            .await
+            .unwrap()
         else {
             unreachable!();
         };
         let client = self.client;
-        Ok(Ref {
+        Ref {
             client,
             handle: Some(handle),
             _phantom: PhantomData,
-        })
+        }
     }
 }
 
@@ -418,6 +467,23 @@ impl<'client> From<Ref<'client, Value>> for DynRef<'client> {
     }
 }
 
+impl<T> Clone for Ref<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe {
+            let handle = self.handle.as_ref().unwrap().copy();
+            let future = self.client.fullsend(Request::Clone(handle));
+            let Response::Handle(handle) = async_std::task::block_on(future).unwrap() else {
+                unreachable!();
+            };
+            Ref {
+                client: self.client,
+                handle: Some(handle),
+                _phantom: PhantomData,
+            }
+        }
+    }
+}
+
 impl<T> Drop for Ref<'_, T> {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
@@ -461,21 +527,61 @@ mod tests {
             });
 
             async_std::task::block_on(async {
-                let add = client.blob(ADD_ELF).await?;
-                let add = add.create_thunk().await?;
+                let add = client.blob(ADD_ELF).await;
+                let add = add.create_thunk().await;
                 let x = client.word(1).await;
                 let y = client.word(2).await;
-                let arg = client.tree([x.into(), y.into()]).await?;
-                let DynRef::Lambda(add) = add.run().await?.into() else {
+                let arg = client.tree([x.into(), y.into()]).await;
+                let DynRef::Lambda(add) = add.run().await.into() else {
                     panic!("running add returned something other than a lambda");
                 };
-                let DynRef::Word(sum) = add.apply(arg).await?.run().await?.into() else {
+                let DynRef::Word(sum) = add.apply(arg).await.run().await.into() else {
                     panic!("running add(1, 2) returned something other than a word");
                 };
                 assert_eq!(sum.read().await, 3);
-                Ok::<(), anyhow::Error>(())
-            })
-            .unwrap();
+            });
+            client.shutdown();
+        });
+    }
+
+    #[test]
+    pub fn test_rw() {
+        let mut mmap = Mmap::new(1 << 32);
+        let runtime = Runtime::new(1, &mut mmap, SERVER_ELF.into());
+        let allocator = runtime.allocator();
+        let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
+        let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
+        let endpoint_raw = Box::into_raw(Box::new_in(
+            endpoint2.into_raw_parts(&allocator),
+            &*allocator,
+        ));
+        let endpoint_raw_offset = allocator.to_offset(endpoint_raw);
+
+        let client = Client::new(endpoint1);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                runtime.run(&[endpoint_raw_offset]);
+            });
+
+            async_std::task::block_on(async {
+                let blob = client.blob("hello").await;
+                assert_eq!(blob.read().await, b"hello");
+
+                let tree = client
+                    .tree([client.word(10).await.into(), client.word(20).await.into()])
+                    .await;
+                let contents = tree.read().await;
+                assert_eq!(contents.len(), 2);
+                let DynRef::Word(word) = contents[0].clone().into() else {
+                    panic!();
+                };
+                assert_eq!(word.read().await, 10);
+                let DynRef::Word(word) = contents[1].clone().into() else {
+                    panic!();
+                };
+                assert_eq!(word.read().await, 20);
+            });
             client.shutdown();
         });
     }

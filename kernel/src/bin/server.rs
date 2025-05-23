@@ -79,7 +79,6 @@ impl Server {
                 reply(Response::Handle(Value::Blob(blob).into()));
             }
             Request::CreateTree { ptr, len } => {
-                let allocator = &*PHYSICAL_ALLOCATOR;
                 let ptr: *mut usize = allocator.from_offset(ptr);
                 let elements: Box<[Handle]> =
                     Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
@@ -90,6 +89,26 @@ impl Server {
                 }
                 let value = Value::Tree(v.into());
                 reply(Response::Handle(value.into()));
+            }
+            Request::ReadBlob(handle) => {
+                let Value::Blob(blob) = handle.into() else {
+                    unreachable!();
+                };
+                let span = Arc::into_raw(blob);
+                let (ptr, len) = span.to_raw_parts();
+                let ptr = allocator.to_offset(ptr);
+                reply(Response::Span { ptr, len });
+            }
+            Request::ReadTree(handle) => {
+                let Value::Tree(tree) = handle.into() else {
+                    unreachable!();
+                };
+                let v: Vec<Handle> = tree.iter().cloned().map(Handle::from).collect();
+                let v: Box<[Handle]> = v.into_boxed_slice();
+                let ptr = Box::into_raw(v);
+                let (ptr, len) = ptr.to_raw_parts();
+                let ptr = allocator.to_offset(ptr);
+                reply(Response::Span { ptr, len });
             }
             Request::LoadElf(handle) => {
                 let Value::Blob(blob) = handle.into() else {
@@ -113,11 +132,16 @@ impl Server {
                 let thunk = lambda.apply(argument);
                 reply(Response::Handle(Value::Thunk(thunk).into()));
             }
+            Request::Clone(handle) => {
+                let value: Value = handle.into();
+                let clone = value.clone();
+                core::mem::forget(value);
+                reply(Response::Handle(clone.into()));
+            }
             Request::Drop(handle) => {
                 let _: Value = handle.into();
                 reply(Response::Ack);
             }
-            _ => todo!("handling {body:?}"),
         }
         // Request::CreateNull => {
         //     let dst = self.encode(Value::Null.into());
