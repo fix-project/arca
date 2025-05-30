@@ -31,6 +31,7 @@ common = { path = "../common", default-features = false, features = ["core_local
 defs = { path = "../defs" }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = { version = "0.7.4", default-features = false }
+blake3 = { version = "1.8.2", default-features = false }
 
 [build-dependencies]
 anyhow = "1.0.86"

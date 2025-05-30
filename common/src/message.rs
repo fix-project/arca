@@ -5,7 +5,7 @@ extern crate alloc;
 #[derive(Debug)]
 #[repr(C)]
 pub struct Handle {
-    pub parts: [usize; 3],
+    pub parts: [usize; 2],
     pub datatype: Type,
 }
 
@@ -23,7 +23,7 @@ impl Handle {
 
     pub fn null() -> Handle {
         Handle {
-            parts: [0; 3],
+            parts: [0; 2],
             datatype: Type::Null,
         }
     }
@@ -34,7 +34,7 @@ impl Handle {
 
     pub fn word(value: u64) -> Handle {
         Handle {
-            parts: [value as usize, 0, 0],
+            parts: [value as usize, 0],
             datatype: Type::Word,
         }
     }
@@ -51,7 +51,7 @@ impl Handle {
     /// The pointer and length must be reconstructible as a Blob.
     pub unsafe fn blob(ptr: usize, len: usize) -> Handle {
         Handle {
-            parts: [ptr, len, 0],
+            parts: [ptr, len],
             datatype: Type::Blob,
         }
     }
@@ -74,12 +74,32 @@ pub enum Type {
 
 #[derive(Debug)]
 #[repr(C)]
+pub struct PageTableEntry {
+    pub unique: bool,
+    pub handle: Option<Handle>,
+}
+
+#[derive(Debug)]
+#[repr(C)]
 pub enum Request {
     Nop,
+    CreateError(Handle),
+    CreateAtom { ptr: usize, len: usize },
     CreateBlob { ptr: usize, len: usize },
     CreateTree { ptr: usize, len: usize },
+    CreatePage { size: usize },
+    CreatePageTable { ptr: usize, size: usize },
+    CreateLambda { registers: Handle, memory: Handle, table: Handle, index: usize },
+    CreateThunk { registers: Handle, memory: Handle, table: Handle },
+    ReadError(Handle),
     ReadBlob(Handle),
     ReadTree(Handle),
+    ReadPage(Handle),
+    ReadPageTable(Handle),
+    ReadLambda(Handle),
+    ReadThunk(Handle),
+    WriteBlob(Handle),
+    WritePage(Handle),
     LoadElf(Handle),
     Apply(Handle, Handle),
     Run(Handle),

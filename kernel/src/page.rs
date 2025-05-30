@@ -19,3 +19,32 @@ pub enum Page<T> {
     Unique(UniquePage<T>),
     Shared(SharedPage<T>),
 }
+
+impl<T> Page<T> {
+    pub fn new() -> Self {
+        unsafe { Page::Unique(UniquePage::new_zeroed_in(&*PHYSICAL_ALLOCATOR).assume_init()) }
+    }
+
+    pub fn unique(self) -> UniquePage<T>
+    where
+        T: Clone,
+    {
+        match self {
+            Page::Unique(page) => page,
+            Page::Shared(page) => SharedPage::into_unique(page),
+        }
+    }
+
+    pub fn shared(self) -> SharedPage<T> {
+        match self {
+            Page::Unique(page) => page.into(),
+            Page::Shared(page) => page,
+        }
+    }
+}
+
+impl<T> Default for Page<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

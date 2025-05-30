@@ -196,7 +196,7 @@ impl<'a> LoadedThunk<'a> {
                     }
                     log::debug!("exited with interrupt: {x:?}");
                     let tree = vec![
-                        LoadedValue::Unloaded(Value::Atom("interrupt".into())),
+                        LoadedValue::Unloaded(Value::Atom(Atom::new("interrupt").into())),
                         LoadedValue::Unloaded(Value::Blob(x.to_ne_bytes().into())),
                         LoadedValue::Thunk(LoadedThunk { arca }),
                     ];
@@ -208,7 +208,7 @@ impl<'a> LoadedThunk<'a> {
                         arca.registers()[Register::RIP]
                     );
                     let tree = vec![
-                        LoadedValue::Unloaded(Value::Atom("exception".into())),
+                        LoadedValue::Unloaded(Value::Atom(Atom::new("exception").into())),
                         LoadedValue::Unloaded(x.into()),
                         LoadedValue::Thunk(LoadedThunk { arca }),
                     ];

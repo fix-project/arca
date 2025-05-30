@@ -364,6 +364,6 @@ impl Cpu {
 impl From<ExitReason> for Value {
     fn from(value: ExitReason) -> Self {
         let result = format!("{:x?}", value);
-        Value::Atom(result)
+        Value::Blob(result.into_bytes().into_boxed_slice().into())
     }
 }

@@ -157,6 +157,28 @@ impl<'a> Client<'a> {
         }
     }
 
+    pub async fn error<T: Into<Ref<'a, Value>>>(&'a self, data: T) -> Ref<'a, Error> {
+        let mut data: Ref<Value> = data.into();
+        let Response::Handle(
+            handle @ message::Handle {
+                datatype: Type::Error,
+                parts: _,
+            },
+        ) = self
+            .fullsend(Request::CreateError(data.handle.take().unwrap()))
+            .await
+            .unwrap()
+        else {
+            unreachable!();
+        };
+
+        Ref {
+            client: self,
+            handle: Some(handle),
+            _phantom: PhantomData,
+        }
+    }
+
     pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Ref<Blob> {
         let data = data.as_ref();
         let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
@@ -275,6 +297,25 @@ pub enum DynRef<'a> {
 impl Ref<'_, Word> {
     pub async fn read(&self) -> u64 {
         self.handle.as_ref().unwrap().get_word().unwrap()
+    }
+}
+
+impl<'client> Ref<'client, Error> {
+    pub async fn read(mut self) -> Ref<'client, Value> {
+        let Response::Handle(handle) = self
+            .client
+            .fullsend(Request::ReadError(self.handle.take().unwrap()))
+            .await
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let client = self.client;
+        Ref {
+            client,
+            handle: Some(handle),
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -403,9 +444,14 @@ impl<'client, T: ValueType> From<Ref<'client, T>> for Ref<'client, Value> {
     }
 }
 
-impl Ref<'_, Value> {
+impl<'client> Ref<'client, Value> {
     pub fn get_type(&self) -> Type {
         self.handle.as_ref().unwrap().datatype
+    }
+
+    pub async fn into_error(self) -> Ref<'client, Error> {
+        let client = self.client;
+        client.error(self).await
     }
 }
 
@@ -581,6 +627,13 @@ mod tests {
                     panic!();
                 };
                 assert_eq!(word.read().await, 20);
+
+                let error = client.error(client.blob("error").await).await;
+                let contents = error.read().await;
+                let DynRef::Blob(blob) = contents.into() else {
+                    panic!();
+                };
+                assert_eq!(blob.read().await, b"error");
             });
             client.shutdown();
         });
