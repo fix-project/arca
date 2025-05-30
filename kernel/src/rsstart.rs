@@ -18,7 +18,7 @@ use crate::{
     vm,
 };
 
-use common::buddy::BuddyAllocatorRawData;
+use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
 
 extern "C" {
     fn kmain(argc: usize, argv: *const usize);
@@ -99,13 +99,11 @@ unsafe extern "C" fn _start(
         let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr);
         let mut raw = *ptr;
         raw.base = vm::pa2ka(0);
-        let allocator = common::BuddyAllocator::from_raw_parts(raw);
-
-        PHYSICAL_ALLOCATOR.set(allocator).unwrap();
+        common::buddy::import(raw);
 
         init_cpu_tls();
     } else {
-        PHYSICAL_ALLOCATOR.wait();
+        common::buddy::wait();
         init_cpu_tls();
     };
 
@@ -133,7 +131,7 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
 
     if id == 0 {
-        let argv: *mut usize = PHYSICAL_ALLOCATOR.from_offset(argv_offset);
+        let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
         let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);
@@ -161,9 +159,8 @@ unsafe fn init_cpu_tls() {
     let load = vm::pa2ka::<u8>(addr_of!(_lcdata) as usize);
     let length = end - start;
 
-    let allocator = PHYSICAL_ALLOCATOR.wait();
     let src = core::slice::from_raw_parts(load, length);
-    let dst: &mut [u8] = Box::leak(src.to_vec_in(&allocator).into_boxed_slice());
+    let dst: &mut [u8] = Box::leak(src.to_vec_in(BuddyAllocator).into_boxed_slice());
 
     asm! {
         "wrgsbase {base}; mov gs:[0], {base}", base=in(reg) dst.as_mut_ptr()

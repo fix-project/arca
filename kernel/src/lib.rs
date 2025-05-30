@@ -10,6 +10,9 @@
 #![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
 #![feature(vec_into_raw_parts)]
+#![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_array_assume_init)]
+#![feature(maybe_uninit_uninit_array_transpose)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -103,6 +106,21 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     let mut console = crate::debugcon::CONSOLE.lock();
     let _ = writeln!(&mut *console, "KERNEL PANIC: {}", info);
+
+    let _ = writeln!(&mut *console, "----- BACKTRACE -----");
+    let mut i = 0;
+    crate::profile::backtrace_with(|addr, decoded| {
+        if i > 0 {
+            if let Some((symname, offset)) = decoded {
+                let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
+            } else {
+                let _ = writeln!(&mut *console, "{i}. {addr:#p}");
+            }
+        }
+        i += 1;
+    });
+    let _ = writeln!(&mut *console, "---------------------");
+
     SpinLockGuard::unlock(console);
 
     loop {

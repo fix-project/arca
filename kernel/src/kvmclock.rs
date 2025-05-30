@@ -40,9 +40,9 @@ pub(crate) unsafe fn init() {
     let x = core::arch::x86_64::__cpuid(0x40000001);
     assert!((x.eax >> 3) & 1 == 1, "KVM Clock is not supported!");
 
-    let allocator = PHYSICAL_ALLOCATOR.wait();
     if BOOT_TIME.load(Ordering::SeqCst).is_null() {
-        let boot_time: *mut WallClock = Box::into_raw(Box::new_in(Default::default(), &allocator));
+        let boot_time: *mut WallClock =
+            Box::into_raw(Box::new_in(Default::default(), BuddyAllocator));
         let value = vm::ka2pa(boot_time) as u64;
         asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d00);
         if BOOT_TIME
@@ -54,11 +54,11 @@ pub(crate) unsafe fn init() {
             )
             .is_err()
         {
-            let _ = Box::from_raw_in(boot_time, &allocator);
+            let _ = Box::from_raw_in(boot_time, BuddyAllocator);
         }
     }
 
-    let p: *mut CpuTimeInfo = Box::leak(Box::new_in(CpuTimeInfo::default(), &allocator));
+    let p: *mut CpuTimeInfo = Box::leak(Box::new_in(CpuTimeInfo::default(), BuddyAllocator));
     *CPU_TIME_INFO = p;
     let value = vm::ka2pa(p) as u64 | 1;
     asm!("wrmsr", in("edx") value >> 32, in("eax") value, in("ecx") 0x4b564d01);

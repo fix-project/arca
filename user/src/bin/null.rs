@@ -5,9 +5,8 @@ use user::prelude::*;
 
 extern crate user;
 
-/// Return the function's argument unmodified.
+/// Return a null value.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    let argument = os::prompt();
-    os::exit(argument);
+    os::exit(os::null());
 }

@@ -1,61 +1,41 @@
 #![no_std]
 
-pub mod syscall {
-    pub const NOP: u64 = 0x00;
-    pub const MOV: u64 = 0x01;
-    pub const DUP: u64 = 0x02;
-    pub const NULL: u64 = 0x03;
-    pub const RESIZE: u64 = 0x04;
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    pub const EXIT: u64 = 0x10;
-    pub const EQ: u64 = 0x11;
-    pub const FIND: u64 = 0x12;
-    pub const LEN: u64 = 0x13;
-    pub const READ: u64 = 0x14;
-    pub const TYPE: u64 = 0x15;
-
-    pub const CREATE_WORD: u64 = 0x60;
-    pub const CREATE_ATOM: u64 = 0x20;
-    pub const CREATE_BLOB: u64 = 0x30;
-    pub const CREATE_TREE: u64 = 0x40;
-
-    pub const CONTINUATION: u64 = 0x50;
-    pub const APPLY: u64 = 0x51;
-    pub const TRACE: u64 = 0x52;
-    pub const UNAPPLY: u64 = 0x53;
-    pub const EXPLODE: u64 = 0x54;
-    pub const IMPLODE: u64 = 0x55;
-    pub const FORCE: u64 = 0x56;
-    pub const PROMPT: u64 = 0x57;
-    pub const PERFORM: u64 = 0x58;
-    pub const TAILCALL: u64 = 0x59;
-    pub const RETURN_CONTINUATION: u64 = 0x5a;
-
-    pub const MAP_NEW_PAGES: u64 = 0x80;
-
-    pub const SHOW: u64 = 0xf0;
-    pub const LOG: u64 = 0xf1;
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SyscallError {
+    BadSyscall,
+    BadIndex,
+    BadType,
+    BadArgument,
+    OutOfMemory,
+    Continued,
+    Interrupted,
 }
 
-pub mod error {
-    pub const BAD_SYSCALL: u32 = 1;
-    pub const BAD_INDEX: u32 = 2;
-    pub const BAD_TYPE: u32 = 3;
-    pub const BAD_ARGUMENT: u32 = 4;
-    pub const OUT_OF_MEMORY: u32 = 5;
-    pub const INTERRUPTED: u32 = 6;
-    pub const CONTINUED: u32 = 7;
-}
+impl SyscallError {
+    pub fn code(&self) -> u32 {
+        match self {
+            SyscallError::BadSyscall => error::ERROR_BAD_SYSCALL,
+            SyscallError::BadIndex => error::ERROR_BAD_INDEX,
+            SyscallError::BadType => error::ERROR_BAD_TYPE,
+            SyscallError::BadArgument => error::ERROR_BAD_ARGUMENT,
+            SyscallError::OutOfMemory => error::ERROR_OUT_OF_MEMORY,
+            SyscallError::Continued => error::ERROR_CONTINUED,
+            SyscallError::Interrupted => error::ERROR_INTERRUPTED,
+        }
+    }
 
-pub mod types {
-    pub const NULL: u32 = 0x00;
-    pub const ERROR: u32 = 0x01;
-    pub const WORD: u32 = 0x09;
-    pub const ATOM: u32 = 0x02;
-    pub const BLOB: u32 = 0x03;
-    pub const TREE: u32 = 0x04;
-    pub const PAGE: u32 = 0x05;
-    pub const PAGETABLE: u32 = 0x06;
-    pub const LAMBDA: u32 = 0x07;
-    pub const THUNK: u32 = 0x08;
+    pub fn new(code: u32) -> Self {
+        match code {
+            error::ERROR_BAD_SYSCALL => SyscallError::BadSyscall,
+            error::ERROR_BAD_INDEX => SyscallError::BadIndex,
+            error::ERROR_BAD_TYPE => SyscallError::BadType,
+            error::ERROR_BAD_ARGUMENT => SyscallError::BadArgument,
+            error::ERROR_OUT_OF_MEMORY => SyscallError::OutOfMemory,
+            error::ERROR_CONTINUED => SyscallError::Continued,
+            error::ERROR_INTERRUPTED => SyscallError::Interrupted,
+            _ => unreachable!(),
+        }
+    }
 }

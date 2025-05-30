@@ -1,11 +1,13 @@
 #![no_main]
 #![no_std]
 #![feature(ptr_metadata)]
+#![feature(allocator_api)]
+#![allow(unused)]
 
 use alloc::vec::Vec;
 use alloc::{boxed::Box, sync::Arc};
-use common::message::{Handle, MetaRequest, MetaResponse, Request, Response};
-use common::ringbuffer::{Endpoint, EndpointRawData, Error, Receiver, Sender};
+use common::message::{Handle, MetaRequest, MetaResponse, PageTableEntry, Request, Response};
+use common::ringbuffer::{Endpoint, EndpointRawData, Error as RingbufferError, Receiver, Sender};
 use macros::kmain;
 
 use kernel::prelude::*;
@@ -15,12 +17,12 @@ use kernel::rt::profile;
 extern crate alloc;
 
 pub struct Server {
-    sender: SpinLock<Sender<'static, MetaResponse>>,
-    receiver: SpinLock<Receiver<'static, MetaRequest>>,
+    sender: SpinLock<Sender<MetaResponse>>,
+    receiver: SpinLock<Receiver<MetaRequest>>,
 }
 
 impl Server {
-    pub fn new(endpoint: Endpoint<'static, MetaResponse, MetaRequest>) -> Self {
+    pub fn new(endpoint: Endpoint<MetaResponse, MetaRequest>) -> Self {
         let (sender, receiver) = endpoint.into_sender_receiver();
         Server {
             sender: SpinLock::new(sender),
@@ -35,7 +37,7 @@ impl Server {
             let attempt = rx.try_recv();
             let request = match attempt {
                 Ok(result) => result,
-                Err(Error::WouldBlock) => {
+                Err(RingbufferError::WouldBlock) => {
                     kernel::rt::yield_now().await;
                     continue;
                 }
@@ -61,8 +63,6 @@ impl Server {
     }
 
     unsafe fn handle(&'static self, request: MetaRequest) {
-        // log::debug!("got message {message:?}");
-        let allocator = &*PHYSICAL_ALLOCATOR;
         let MetaRequest {
             function,
             context,
@@ -71,58 +71,64 @@ impl Server {
         let reply = |response| {
             self.reply(function, context, response);
         };
-        match body {
+        let allocator = BuddyAllocator;
+        reply(match body {
             Request::Nop => todo!(),
+            Request::CreateError(handle) => {
+                Response::Handle(Value::Error(Error::new(handle.into())).into())
+            }
+            Request::CreateAtom { ptr, len } => {
+                let ptr: *mut u8 = allocator.from_offset(ptr);
+                todo!();
+                // let blob: Box<[u8]> = Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
+                // Response::Handle(Value::Atom(Atom::new(blob).into()).into())
+            }
             Request::CreateBlob { ptr, len } => {
-                let ptr: *const u8 = allocator.from_offset(ptr);
-                let blob: Arc<[u8]> = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
-                reply(Response::Handle(Value::Blob(blob).into()));
+                let ptr: *mut u8 = allocator.from_offset(ptr);
+                let blob: Box<[u8]> = Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
+                Response::Handle(Value::Blob(Blob::new(blob)).into())
             }
-            Request::CreateTree { ptr, len } => {
-                let ptr: *mut usize = allocator.from_offset(ptr);
-                let elements: Box<[Handle]> =
-                    Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
-                let mut v = Vec::with_capacity(elements.len());
-                let elements = Vec::from(elements);
-                for handle in elements.into_iter() {
-                    v.push(handle.into());
+            Request::CreateTree { size } => {
+                Response::Handle(Value::Tree(Tree::new_with_len(size)).into())
+            }
+            Request::CreatePage { size } => Response::Handle(Value::Page(Page::new(size)).into()),
+            Request::CreateTable { size } => {
+                Response::Handle(Value::Table(Table::new(size)).into())
+            }
+            Request::CreateLambda { thunk, index } => {
+                todo!();
+            }
+            Request::CreateThunk {
+                registers,
+                memory,
+                descriptors,
+            } => {
+                let Value::Blob(registers) = registers.into() else {
+                    unreachable!();
+                };
+                let Value::Table(memory) = memory.into() else {
+                    unreachable!();
+                };
+                let Value::Tree(descriptors) = descriptors.into() else {
+                    unreachable!();
+                };
+                let registers: Vec<u64> = registers
+                    .chunks(8)
+                    .map(|x| u64::from_ne_bytes(x.try_into().unwrap()))
+                    .collect();
+                let mut register_file = RegisterFile::new();
+                for (i, x) in registers.iter().take(18).enumerate() {
+                    register_file[i] = *x;
                 }
-                let value = Value::Tree(v.into());
-                reply(Response::Handle(value.into()));
-            }
-            Request::ReadBlob(handle) => {
-                let Value::Blob(blob) = handle.into() else {
-                    unreachable!();
-                };
-                let span = Arc::into_raw(blob);
-                let (ptr, len) = span.to_raw_parts();
-                let ptr = allocator.to_offset(ptr);
-                reply(Response::Span { ptr, len });
-            }
-            Request::ReadTree(handle) => {
-                let Value::Tree(tree) = handle.into() else {
-                    unreachable!();
-                };
-                let v: Vec<Handle> = tree.iter().cloned().map(Handle::from).collect();
-                let v: Box<[Handle]> = v.into_boxed_slice();
-                let ptr = Box::into_raw(v);
-                let (ptr, len) = ptr.to_raw_parts();
-                let ptr = allocator.to_offset(ptr);
-                reply(Response::Span { ptr, len });
-            }
-            Request::LoadElf(handle) => {
-                let Value::Blob(blob) = handle.into() else {
-                    unreachable!();
-                };
-                let thunk = Thunk::from_elf(&blob);
-                reply(Response::Handle(Value::Thunk(thunk).into()));
+                let arca = Arca::new_with(register_file, memory, descriptors);
+                Response::Handle(Value::Thunk(Thunk::new(arca)).into())
             }
             Request::Run(handle) => {
                 let Value::Thunk(thunk) = handle.into() else {
                     unreachable!();
                 };
                 let result = thunk.run();
-                reply(Response::Handle(result.into()));
+                Response::Handle(result.into())
             }
             Request::Apply(lambda, argument) => {
                 let Value::Lambda(lambda) = lambda.into() else {
@@ -130,129 +136,151 @@ impl Server {
                 };
                 let argument: Value = argument.into();
                 let thunk = lambda.apply(argument);
-                reply(Response::Handle(Value::Thunk(thunk).into()));
+                Response::Handle(Value::Thunk(thunk).into())
             }
             Request::Clone(handle) => {
                 let value: Value = handle.into();
                 let clone = value.clone();
                 core::mem::forget(value);
-                reply(Response::Handle(clone.into()));
+                Response::Handle(clone.into())
             }
             Request::Drop(handle) => {
                 let _: Value = handle.into();
-                reply(Response::Ack);
+                Response::Ack
             }
-        }
-        // Request::CreateNull => {
-        //     let dst = self.encode(Value::Null.into());
-        //     self.reply(seqno, Response::Handle(dst));
-        // }
-        // Request::CreateWord { value } => {
-        //     let dst = self.encode(Value::Word(value).into());
-        //     self.reply(seqno, Response::Handle(dst));
-        // }
-        // Request::CreateAtom { ptr, len } => todo!(),
-        // Request::CreateBlob { ptr, len } => {
-        //     let allocator = &*PHYSICAL_ALLOCATOR;
-        //     let dst = unsafe {
-        //         let ptr: *const u8 = allocator.from_offset(ptr);
-        //         let blob = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
-        //         let value = Value::Blob(blob);
-        //         self.encode(value.into())
-        //     };
-        //     self.reply(seqno, Response::Handle(dst));
-        // }
-        // Request::CreateTree { ptr, len } => {
-        //     // crate::rt::spawn(async move {
-        //     let allocator = &*PHYSICAL_ALLOCATOR;
-        //     let dst = unsafe {
-        //         let ptr: *const usize = allocator.from_offset(ptr);
-        //         let elements: Arc<[usize]> = Arc::from_raw(core::ptr::from_raw_parts(ptr, len));
-        //         let mut v = Vec::with_capacity(elements.len());
-        //         for index in &*elements {
-        //             let element = *self.decode(*index);
-        //             v.push(element);
-        //         }
-        //         let value = Value::Tree(v.into());
-        //         self.encode(value.into())
-        //     };
-        //     self.reply(seqno, Response::Handle(dst));
-        //     // });
-        // }
-        // Request::CreateThunk { src } => {
-        //     let Value::Blob(blob) = *self.decode(src) else {
-        //         todo!();
-        //     };
-        //     // crate::rt::spawn(async move {
-        //     let thunk = Thunk::from_elf(&blob);
-        //     let src = self.encode(Value::Thunk(thunk).into());
-        //     self.reply(seqno, Response::Handle(src));
-        //     // });
-        // }
-        // Request::GetType { src } => self.reply(
-        //     seqno,
-        //     Response::Type(match &self.peek(src) {
-        //         Value::Null => Type::Null,
-        //         Value::Error(value) => todo!(),
-        //         Value::Word(_) => Type::Word,
-        //         Value::Atom(_) => todo!(),
-        //         Value::Blob(items) => Type::Blob,
-        //         Value::Tree(values) => Type::Tree,
-        //         Value::Page(page) => todo!(),
-        //         Value::PageTable(page_table) => todo!(),
-        //         Value::Lambda(lambda) => Type::Lambda,
-        //         Value::Thunk(thunk) => Type::Thunk,
-        //     }),
-        // ),
-        // Request::Read { src } => match &self.peek(src) {
-        //     Value::Null => self.reply(seqno, Response::Null),
-        //     Value::Error(value) => todo!(),
-        //     Value::Word(word) => self.reply(seqno, Response::Word(*word)),
-        //     Value::Atom(_) => todo!(),
-        //     Value::Blob(items) => todo!(),
-        //     Value::Tree(values) => todo!(),
-        //     Value::Page(page) => todo!(),
-        //     Value::PageTable(page_table) => todo!(),
-        //     Value::Lambda(lambda) => todo!(),
-        //     Value::Thunk(thunk) => todo!(),
-        // },
-        // Request::Apply { src, arg } => {
-        //     let f = *self.decode(src);
-        //     let Value::Lambda(lambda) = f else {
-        //         todo!("using {f:?} as a function");
-        //     };
-        //     let x = self.decode(arg);
-        //     let thunk = lambda.apply(*x);
-        //     let dst = self.encode(Value::Thunk(thunk).into());
-        //     self.reply(seqno, Response::Handle(dst));
-        // }
-        // Request::Run { src } => {
-        //     let Value::Thunk(thunk) = *self.decode(src) else {
-        //         todo!();
-        //     };
-        //     // crate::rt::spawn(async move {
-        //     let y = thunk.run_for(Duration::from_millis(1000));
-        //     log::info!("ran thunk, got {y:#x?}");
-        //     let dst = self.encode(y.into());
-        //     self.reply(seqno, Response::Handle(dst));
-        //     // });
-        // }
-        // Request::Clone { src } => {
-        //     // crate::rt::spawn(async move {
-        //     let original = self.peek(src);
-        //     let new = original.clone();
-        //     let dst = self.encode(new.into());
-        //     self.reply(seqno, Response::Handle(dst));
-        //     // });
-        // }
-        // Request::Drop { src } => {
-        //     let current = self.decode(src);
-        //     // crate::rt::spawn(async move {
-        //     core::mem::drop(current);
-        //     self.reply(seqno, Response::Ack);
-        //     // });
-        // }
-        // }
+            Request::Type(handle) => {
+                let value: Value = handle.into();
+                let dt = value.datatype();
+                core::mem::forget(value);
+                Response::Type(dt)
+            }
+            Request::TreePut(tree, index, argument) => {
+                let Value::Tree(mut tree) = tree.into() else {
+                    unreachable!();
+                };
+                let old = tree.put(index, argument.into());
+                core::mem::forget(tree);
+                Response::Handle(old.into())
+            }
+            Request::TablePut(table, index, entry) => {
+                let Value::Table(mut table) = table.into() else {
+                    unreachable!();
+                };
+                let old = match entry {
+                    Some((false, value)) if value.datatype() == DataType::Page => table
+                        .put(
+                            index,
+                            arca::Entry::ROPage(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((true, value)) if value.datatype() == DataType::Page => table
+                        .put(
+                            index,
+                            arca::Entry::RWPage(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((false, value)) if value.datatype() == DataType::Table => table
+                        .put(
+                            index,
+                            arca::Entry::ROTable(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((true, value)) if value.datatype() == DataType::Table => table
+                        .put(
+                            index,
+                            arca::Entry::RWTable(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    None => table
+                        .put(index, arca::Entry::Null(Null))
+                        .unwrap_or_else(|_| unreachable!()),
+                    _ => unreachable!(),
+                };
+                let old = match old {
+                    arca::Entry::Null(_) => None,
+                    arca::Entry::ROPage(page) => Some((false, page.into())),
+                    arca::Entry::RWPage(page) => Some((true, page.into())),
+                    arca::Entry::ROTable(table) => Some((false, table.into())),
+                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                };
+                core::mem::forget(table);
+                Response::Entry(old)
+            }
+            Request::TableTake(table, index) => {
+                let Value::Table(mut table) = table.into() else {
+                    unreachable!();
+                };
+                let old = table.take(index);
+                let old = match old {
+                    arca::Entry::Null(_) => None,
+                    arca::Entry::ROPage(page) => Some((false, page.into())),
+                    arca::Entry::RWPage(page) => Some((true, page.into())),
+                    arca::Entry::ROTable(table) => Some((false, table.into())),
+                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                };
+                core::mem::forget(table);
+                Response::Entry(old)
+            }
+            Request::ReadBlob(handle) => {
+                let Value::Blob(blob) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr = blob.as_ptr();
+                let len = blob.len();
+                let ptr = BuddyAllocator.to_offset(ptr);
+                core::mem::forget(blob);
+                Response::Span { ptr, len }
+            }
+            Request::ReadPage(handle) => {
+                let Value::Page(page) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr = page.as_ptr();
+                let len = page.len();
+                let ptr = BuddyAllocator.to_offset(ptr);
+                core::mem::forget(page);
+                Response::Span { ptr, len }
+            }
+            Request::WritePage {
+                handle,
+                offset,
+                ptr,
+                len,
+            } => {
+                let Value::Page(mut page) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr: *mut u8 = allocator.from_offset(ptr);
+                let blob: Box<[u8]> = Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
+                page.write(offset, &blob);
+                Response::Handle(page.into())
+            }
+            Request::Length(handle) => {
+                let value = Value::from(handle);
+                let size = match &value {
+                    Value::Null => unreachable!(),
+                    Value::Word(word) => unreachable!(),
+                    Value::Atom(atom) => unreachable!(),
+                    Value::Error(error) => unreachable!(),
+                    Value::Blob(blob) => blob.len(),
+                    Value::Tree(tree) => tree.len(),
+                    Value::Page(page) => page.size(),
+                    Value::Table(table) => table.size(),
+                    Value::Lambda(lambda) => unreachable!(),
+                    Value::Thunk(thunk) => unreachable!(),
+                };
+                core::mem::forget(value);
+                Response::Length(size)
+            }
+        })
     }
 }
 
@@ -261,8 +289,8 @@ async fn kmain(argv: &[usize]) {
     let ring_buffer_data_ptr = argv[0];
     let server = unsafe {
         let raw_rb_data =
-            Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
-        let endpoint = Endpoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+            Box::from_raw(BuddyAllocator.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
+        let endpoint = Endpoint::from_raw_parts(&raw_rb_data);
         core::mem::forget(raw_rb_data);
         Box::leak(Box::new(Server::new(endpoint)))
     };
