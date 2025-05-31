@@ -3,23 +3,24 @@
 
 extern crate user;
 
+use user::prelude::*;
+
 /// Add 1 to a 64-bit integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    unsafe {
-        user::syscall::resize(2);
+    let argument = os::prompt();
+    let DynValue::Tree(mut tree) = argument.into() else {
+        panic!("incorrect argument type to add");
+    };
+    assert_eq!(tree.len(), 2);
+    let DynValue::Word(x) = tree.take(0).into() else {
+        panic!("incorrect argument type to add");
+    };
+    let DynValue::Word(y) = tree.take(1).into() else {
+        panic!("incorrect argument type to add");
+    };
 
-        user::syscall::prompt(0);
-        user::syscall::read_tree_unchecked(0, &[0, 1]);
+    let z = x.read() + y.read();
 
-        let mut x: u64 = 0;
-        let mut y: u64 = 0;
-        user::syscall::read_word_unchecked(0, &mut x);
-        user::syscall::read_word_unchecked(1, &mut y);
-
-        let z = x + y;
-
-        user::syscall::create_word(0, z);
-        user::syscall::exit(0);
-    }
+    os::exit(os::word(z));
 }

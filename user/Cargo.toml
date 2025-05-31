@@ -8,3 +8,4 @@ forced-target = "x86_64-unknown-none"
 
 [dependencies]
 defs = { path = "../defs" }
+arca = { path = "../arca" }

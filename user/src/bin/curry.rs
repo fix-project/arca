@@ -5,31 +5,32 @@ use core::arch::asm;
 
 extern crate user;
 
+use user::prelude::*;
+
 /// Takes a function which requires an n-tuple and the number n, and returns an n-ary function
 /// which evaluates to the same thing.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    user::syscall::resize(5);
-    user::syscall::prompt(0);
-    user::syscall::prompt(1);
-    let mut count: u64 = 0;
-    user::syscall::read_word(1, &mut count);
-    let count = count as usize;
+    let DynValue::Lambda(f) = os::prompt().into() else {
+        panic!("first argument should be a function");
+    };
+    let DynValue::Word(n) = os::prompt().into() else {
+        panic!("second argument should be a word");
+    };
+    let n = n.read() as usize;
 
-    if count > 4 {
+    if n > 4 {
         unsafe { asm!("int3") }
     }
 
-    // read arguments
-    for i in 0..count {
-        user::syscall::prompt((i + 1) as u64);
-    }
-    let args = &[1, 2, 3, 4];
+    let mut args: [Ref<Value>; 4] = Default::default();
 
-    user::syscall::create_tree(1, &args[0..count]);
-    user::syscall::apply(0, 1);
-    user::syscall::tailcall(0);
-    loop {
-        core::hint::spin_loop();
+    // read arguments
+    for x in args.iter_mut().take(n) {
+        *x = os::prompt();
     }
+
+    let tree = os::tree(&mut args[..n]);
+    let y = f.apply(tree.into());
+    os::tailcall(y);
 }

@@ -2,6 +2,7 @@
 #![no_std]
 #![feature(ptr_metadata)]
 #![feature(allocator_api)]
+#![allow(unused)]
 
 use alloc::vec::Vec;
 use alloc::{boxed::Box, sync::Arc};
