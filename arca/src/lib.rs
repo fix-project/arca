@@ -1,7 +1,7 @@
 #![no_std]
 
 pub mod associated {
-    pub type Runtime<T> = <T as super::Value>::Runtime;
+    pub type Runtime<T> = <T as super::RuntimeType>::Runtime;
     pub type Null<T> = <Runtime<T> as super::Runtime>::Null;
     pub type Word<T> = <Runtime<T> as super::Runtime>::Word;
     pub type Error<T> = <Runtime<T> as super::Runtime>::Error;
@@ -12,8 +12,7 @@ pub mod associated {
     pub type Table<T> = <Runtime<T> as super::Runtime>::Table;
     pub type Lambda<T> = <Runtime<T> as super::Runtime>::Lambda;
     pub type Thunk<T> = <Runtime<T> as super::Runtime>::Thunk;
-    pub type AnyValue<T> = <Runtime<T> as super::Runtime>::AnyValue;
-    pub type DynValue<T> = super::DynValue<Runtime<T>>;
+    pub type Value<T> = <Runtime<T> as super::Runtime>::Value;
 }
 
 pub trait Runtime: Sized {
@@ -27,14 +26,14 @@ pub trait Runtime: Sized {
     type Table: Table<Runtime = Self>;
     type Lambda: Lambda<Runtime = Self>;
     type Thunk: Thunk<Runtime = Self>;
-    type AnyValue: AnyValue<Runtime = Self>;
+    type Value: Value<Runtime = Self>;
 
     fn create_null(&self) -> Self::Null;
     fn create_word(&self, value: u64) -> Self::Word;
-    fn create_error(&self, value: Self::AnyValue) -> Self::Error;
+    fn create_error(&self, value: Self::Value) -> Self::Error;
     fn create_atom(&self, data: &[u8]) -> Self::Atom;
     fn create_blob(&self, data: &[u8]) -> Self::Blob;
-    fn create_tree(&self, values: &mut [Self::AnyValue]) -> Self::Tree;
+    fn create_tree(&self, size: usize) -> Self::Tree;
     fn create_page(&self, size: usize) -> Self::Page;
     fn create_table(&self, size: usize) -> Self::Table;
     fn create_lambda(&self, thunk: Self::Thunk, index: usize) -> Self::Lambda;
@@ -46,23 +45,27 @@ pub trait Runtime: Sized {
     ) -> Self::Thunk;
 }
 
-pub trait Value: Sized + Clone + Into<associated::DynValue<Self>> {
+pub trait RuntimeType: Sized + Clone {
     type Runtime: Runtime;
 }
 
-pub trait Null: Value {}
+pub trait ValueType: RuntimeType {
+    const DATATYPE: DataType;
+}
 
-pub trait Word: Value {
+pub trait Null: ValueType {}
+
+pub trait Word: ValueType {
     fn read(&self) -> u64;
 }
 
-pub trait Error: Value {
-    fn read(self) -> associated::AnyValue<Self>;
+pub trait Error: ValueType {
+    fn read(self) -> associated::Value<Self>;
 }
 
-pub trait Atom: Value + Eq {}
+pub trait Atom: ValueType + Eq {}
 
-pub trait Blob: Value {
+pub trait Blob: ValueType {
     fn read(&self, buffer: &mut [u8]);
 
     fn len(&self) -> usize;
@@ -72,16 +75,10 @@ pub trait Blob: Value {
     }
 }
 
-pub trait Tree: Value {
-    fn read(&self, buffer: &mut [associated::AnyValue<Self>]);
+pub trait Tree: ValueType {
+    fn take(&mut self, index: usize) -> associated::Value<Self>;
 
-    fn take(&mut self, index: usize) -> associated::AnyValue<Self>;
-
-    fn put(
-        &mut self,
-        index: usize,
-        value: associated::AnyValue<Self>,
-    ) -> associated::AnyValue<Self>;
+    fn put(&mut self, index: usize, value: associated::Value<Self>) -> associated::Value<Self>;
 
     fn len(&self) -> usize;
 
@@ -90,27 +87,27 @@ pub trait Tree: Value {
     }
 }
 
-pub trait Page: Value {
+pub trait Page: ValueType {
     fn read(&self, offset: usize, buffer: &mut [u8]);
     fn write(&mut self, offset: usize, buffer: &[u8]);
 
     fn size(&self) -> usize;
 }
 
-pub trait Table: Value {
+pub trait Table: ValueType {
     fn take(&mut self, index: usize) -> Entry<Self>;
     fn put(&mut self, offset: usize, entry: Entry<Self>) -> Result<Entry<Self>, ()>;
 
     fn size(&self) -> usize;
 }
 
-pub trait Lambda: Value {
-    fn apply(self, argument: associated::AnyValue<Self>) -> associated::Thunk<Self>;
+pub trait Lambda: ValueType {
+    fn apply(self, argument: associated::Value<Self>) -> associated::Thunk<Self>;
     fn read(self) -> (associated::Thunk<Self>, usize);
 }
 
-pub trait Thunk: Value {
-    fn run(self) -> associated::AnyValue<Self>;
+pub trait Thunk: ValueType {
+    fn run(self) -> associated::Value<Self>;
     fn read(
         self,
     ) -> (
@@ -120,20 +117,44 @@ pub trait Thunk: Value {
     );
 }
 
-pub trait AnyValue: Value {}
+pub trait Value:
+    RuntimeType
+    + From<associated::Null<Self>>
+    + From<associated::Word<Self>>
+    + From<associated::Error<Self>>
+    + From<associated::Atom<Self>>
+    + From<associated::Blob<Self>>
+    + From<associated::Tree<Self>>
+    + From<associated::Page<Self>>
+    + From<associated::Table<Self>>
+    + From<associated::Lambda<Self>>
+    + From<associated::Thunk<Self>>
+    + TryInto<associated::Null<Self>>
+    + TryInto<associated::Word<Self>>
+    + TryInto<associated::Error<Self>>
+    + TryInto<associated::Atom<Self>>
+    + TryInto<associated::Blob<Self>>
+    + TryInto<associated::Tree<Self>>
+    + TryInto<associated::Page<Self>>
+    + TryInto<associated::Table<Self>>
+    + TryInto<associated::Lambda<Self>>
+    + TryInto<associated::Thunk<Self>>
+{
+    fn datatype(&self) -> DataType;
+}
 
-#[derive(Clone, Debug)]
-pub enum DynValue<R: Runtime> {
-    Null(R::Null),
-    Word(R::Word),
-    Error(R::Error),
-    Atom(R::Atom),
-    Blob(R::Blob),
-    Tree(R::Tree),
-    Page(R::Page),
-    Table(R::Table),
-    Lambda(R::Lambda),
-    Thunk(R::Thunk),
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DataType {
+    Null,
+    Word,
+    Error,
+    Atom,
+    Blob,
+    Tree,
+    Page,
+    Table,
+    Lambda,
+    Thunk,
 }
 
 #[derive(Clone)]

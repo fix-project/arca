@@ -227,6 +227,7 @@ impl<'a> LoadedThunk<'a> {
             log::debug!("exited with syscall: {num:#?}({args:?})");
             let result = match num as u32 {
                 defs::syscall::SYS_NOP => Ok(0),
+                defs::syscall::SYS_DROP => sys_drop(args, &mut arca),
                 defs::syscall::SYS_CLONE => sys_clone(args, &mut arca),
                 defs::syscall::SYS_RESIZE => sys_resize(args, &mut arca),
 
@@ -239,6 +240,7 @@ impl<'a> LoadedThunk<'a> {
                 },
                 defs::syscall::SYS_LENGTH => sys_len(args, &mut arca),
                 defs::syscall::SYS_TAKE => sys_take(args, &mut arca),
+                defs::syscall::SYS_PUT => sys_put(args, &mut arca),
                 defs::syscall::SYS_READ => sys_read(args, &mut arca),
                 defs::syscall::SYS_TYPE => sys_type(args, &mut arca),
 
@@ -302,6 +304,15 @@ fn sys_create_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     } else {
         Err(error::ERROR_BAD_INDEX)
     }
+}
+
+fn sys_drop(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let src = args[0] as usize;
+    *arca
+        .descriptors_mut()
+        .get_mut(src)
+        .ok_or(defs::error::ERROR_BAD_INDEX)? = Value::Null;
+    Ok(0)
 }
 
 fn sys_clone(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
@@ -382,6 +393,35 @@ fn sys_take(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     Ok(0)
 }
 
+fn sys_put(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let tree_idx = args[0] as usize;
+    let input = args[1] as usize;
+    let index = args[2] as usize;
+
+    let descriptors = arca.descriptors_mut();
+    let tree = core::mem::take(
+        descriptors
+            .get_mut(tree_idx)
+            .ok_or(error::ERROR_BAD_INDEX)?,
+    );
+    let Value::Tree(mut tree) = tree else {
+        return Err(error::ERROR_BAD_TYPE);
+    };
+    let input = descriptors.get_mut(input).ok_or(error::ERROR_BAD_INDEX)?;
+
+    core::mem::swap(
+        Arc::make_mut(&mut tree)
+            .get_mut(index)
+            .ok_or(error::ERROR_BAD_ARGUMENT)?,
+        input,
+    );
+    *descriptors
+        .get_mut(tree_idx)
+        .ok_or(error::ERROR_BAD_INDEX)? = Value::Tree(tree);
+
+    Ok(0)
+}
+
 fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     log::debug!("reading");
     let idx = args[0] as usize;
@@ -417,37 +457,6 @@ fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
                     Err(error::ERROR_BAD_ARGUMENT)
                 }
             }
-        }
-        Value::Tree(_) => {
-            log::debug!("reading tree");
-            let value = core::mem::take(val);
-            let Value::Tree(mut tree) = value else {
-                panic!();
-            };
-            log::debug!("making tree mutable");
-            let tree = Arc::make_mut(&mut tree);
-            let ptr = args[1] as usize;
-            let len = args[2] as usize;
-            let len = core::cmp::min(len, tree.len());
-            let mut buffer = vec![0u8; len * core::mem::size_of::<u64>()];
-            unsafe {
-                let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
-                if !success {
-                    return Err(error::ERROR_BAD_ARGUMENT);
-                }
-            }
-            let indices = buffer.chunks(core::mem::size_of::<u64>()).map(|x| {
-                let bytes: [u8; core::mem::size_of::<u64>()] = x.try_into().ok()?;
-                Some(u64::from_ne_bytes(bytes) as usize)
-            });
-            for (x, i) in tree.iter_mut().zip(indices) {
-                let Some(i) = i else {
-                    return Err(error::ERROR_BAD_INDEX);
-                };
-                let x = core::mem::take(x);
-                arca.descriptors_mut()[i] = x;
-            }
-            Ok(0)
         }
         _ => {
             log::warn!("READ called with invalid type: {val:?}");
@@ -505,31 +514,13 @@ fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
 
 fn sys_create_tree(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     let idx = args[0] as usize;
-    if idx >= arca.descriptors().len() {
-        return Err(error::ERROR_BAD_INDEX);
-    }
-    let ptr = args[1] as usize;
-    let len = args[2] as usize;
-    let mut buffer = vec![0u8; len * core::mem::size_of::<u64>()];
-    unsafe {
-        let success = crate::vm::copy_user_to_kernel(&mut buffer, ptr);
-        if !success {
-            return Err(error::ERROR_BAD_ARGUMENT);
-        }
-    }
-    let mut v = vec![];
-    let indices = buffer.chunks(core::mem::size_of::<u64>()).map(|x| {
-        let bytes: [u8; core::mem::size_of::<u64>()] = x.try_into().unwrap();
-        u64::from_ne_bytes(bytes) as usize
-    });
-    for i in indices {
-        let Some(x) = arca.descriptors_mut().get_mut(i) else {
-            return Err(error::ERROR_BAD_INDEX);
-        };
-        let x = core::mem::take(x);
-        v.push(x);
-    }
-    arca.descriptors_mut()[idx] = Value::Tree(v.into());
+    let len = args[1] as usize;
+    let buf = vec![Value::Null; len];
+    let val = Value::Tree(buf.into());
+    *arca
+        .descriptors_mut()
+        .get_mut(idx)
+        .ok_or(error::ERROR_BAD_INDEX)? = val;
     Ok(0)
 }
 

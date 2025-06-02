@@ -14,7 +14,7 @@ extern crate kernel;
 const IDENTITY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
 const ADD: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const CURRY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
-const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_maplist"));
+const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
@@ -46,6 +46,7 @@ async fn kmain(_: &[usize]) {
     assert_eq!(y, Value::Word(30));
 
     // curry add
+    log::warn!("curry");
     let x = add.clone();
     let n = Value::Word(2);
     let Value::Lambda(cadd) = curry.apply(Value::Lambda(x)).run() else {
@@ -62,29 +63,19 @@ async fn kmain(_: &[usize]) {
 
     // map
     log::warn!("start");
-    let list = Value::Tree(
+    let tuple = Value::Tree(
         vec![
             Value::Word(1),
-            Value::Tree(
-                vec![
-                    Value::Word(2),
-                    Value::Tree(
-                        vec![
-                            Value::Word(3),
-                            Value::Tree(vec![Value::Word(4), Value::Null].into()),
-                        ]
-                        .into(),
-                    ),
-                ]
-                .into(),
-            ),
+            Value::Word(2),
+            Value::Word(3),
+            Value::Word(4),
         ]
         .into(),
     );
     let Value::Lambda(map) = map.apply(Value::Lambda(cadd)).run() else {
         panic!();
     };
-    let result = map.apply(list).run();
+    let result = map.apply(tuple).run();
     log::info!("evaluating result");
     let result = eval(result);
     log::info!("{result:?}");

@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
-
 extern crate user;
 
 use user::prelude::*;
@@ -11,26 +9,21 @@ use user::prelude::*;
 /// which evaluates to the same thing.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    let DynValue::Lambda(f) = os::prompt().into() else {
-        panic!("first argument should be a function");
-    };
-    let DynValue::Word(n) = os::prompt().into() else {
-        panic!("second argument should be a word");
-    };
+    let f: Ref<Lambda> = os::prompt()
+        .try_into()
+        .expect("first argument should be a function");
+    let n: Ref<Word> = os::prompt()
+        .try_into()
+        .expect("second argument should be a word");
     let n = n.read() as usize;
 
-    if n > 4 {
-        unsafe { asm!("int3") }
-    }
-
-    let mut args: [Ref<Value>; 4] = Default::default();
+    let mut tree = os::tree(n);
 
     // read arguments
-    for x in args.iter_mut().take(n) {
-        *x = os::prompt();
+    for i in 0..n {
+        tree.put(i, os::prompt());
     }
 
-    let tree = os::tree(&mut args[..n]);
     let y = f.apply(tree.into());
     os::tailcall(y);
 }

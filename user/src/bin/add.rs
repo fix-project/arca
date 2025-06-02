@@ -9,16 +9,10 @@ use user::prelude::*;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     let argument = os::prompt();
-    let DynValue::Tree(mut tree) = argument.into() else {
-        panic!("incorrect argument type to add");
-    };
+    let mut tree: Ref<Tree> = argument.try_into().unwrap();
     assert_eq!(tree.len(), 2);
-    let DynValue::Word(x) = tree.take(0).into() else {
-        panic!("incorrect argument type to add");
-    };
-    let DynValue::Word(y) = tree.take(1).into() else {
-        panic!("incorrect argument type to add");
-    };
+    let x: Ref<Word> = tree.take(0).try_into().unwrap();
+    let y: Ref<Word> = tree.take(1).try_into().unwrap();
 
     let z = x.read() + y.read();
 
