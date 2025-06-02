@@ -3,6 +3,7 @@
 
 use core::{
     arch::{asm, global_asm},
+    fmt::Write,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -22,8 +23,57 @@ unsafe extern "C" {
     pub fn syscall(num: u32, ...) -> i64;
 }
 
+struct BufferedWriter {
+    buf: [u8; 1024],
+    index: usize,
+}
+
+impl BufferedWriter {
+    pub fn new() -> BufferedWriter {
+        BufferedWriter {
+            buf: [0; 1024],
+            index: 0,
+        }
+    }
+
+    pub unsafe fn as_str_unchecked(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.index]) }
+    }
+}
+
+impl core::fmt::Write for BufferedWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let mut src = s.as_bytes();
+        if src.len() > self.buf.len() - self.index {
+            src = &src[..self.buf.len() - self.index];
+        }
+        let dst = &mut self.buf[self.index..self.index + src.len()];
+        dst.copy_from_slice(src);
+        self.index += dst.len();
+        Ok(())
+    }
+}
+
+fn log(s: &str) {
+    unsafe {
+        syscall(defs::syscall::SYS_DEBUG_LOG, s.as_ptr(), s.len());
+    }
+}
+
+fn show(s: &str, x: usize) {
+    unsafe {
+        syscall(defs::syscall::SYS_DEBUG_SHOW, s.as_ptr(), s.len(), x);
+    }
+}
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    let mut b = BufferedWriter::new();
+    let _ = writeln!(b, "{}", info);
+    unsafe {
+        let s = b.as_str_unchecked();
+        log(s);
+    }
     loop {
         unsafe {
             core::arch::asm!("ud2");
@@ -429,11 +479,33 @@ impl arca::Tree for Ref<Tree> {
 
 impl arca::Page for Ref<Page> {
     fn read(&self, offset: usize, buffer: &mut [u8]) {
-        todo!()
+        unsafe {
+            assert_eq!(
+                syscall(
+                    defs::syscall::SYS_READ,
+                    self.index,
+                    offset,
+                    buffer.as_ptr(),
+                    buffer.len()
+                ),
+                0
+            );
+        }
     }
 
     fn write(&mut self, offset: usize, buffer: &[u8]) {
-        todo!()
+        unsafe {
+            assert_eq!(
+                syscall(
+                    defs::syscall::SYS_WRITE,
+                    self.index,
+                    offset,
+                    buffer.as_ptr(),
+                    buffer.len()
+                ),
+                0
+            );
+        }
     }
 
     fn size(&self) -> usize {
@@ -450,15 +522,60 @@ impl arca::Page for Ref<Page> {
 
 impl arca::Table for Ref<Table> {
     fn take(&mut self, index: usize) -> arca::Entry<Self> {
-        todo!()
+        let new = next_descriptor();
+        let mut mode: u64 = 0;
+        unsafe {
+            assert_eq!(
+                syscall(
+                    defs::syscall::SYS_TAKE,
+                    new,
+                    self.index,
+                    index,
+                    &raw mut mode
+                ),
+                0
+            );
+        }
+        match mode {
+            0 => arca::Entry::Null(Ref::new(new)),
+            1 => arca::Entry::ROPage(Ref::new(new)),
+            2 => arca::Entry::RWPage(Ref::new(new)),
+            3 => arca::Entry::ROTable(Ref::new(new)),
+            4 => arca::Entry::RWTable(Ref::new(new)),
+            _ => unreachable!(),
+        }
     }
 
-    fn put(
-        &mut self,
-        offset: usize,
-        entry: arca::Entry<Self>,
-    ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
-        todo!()
+    fn put(&mut self, offset: usize, entry: arca::Entry<Self>) -> Result<arca::Entry<Self>, ()> {
+        let (mut mode, index) = match entry {
+            arca::Entry::Null(x) => (0, x.index),
+            arca::Entry::ROPage(x) => (1, x.index),
+            arca::Entry::RWPage(x) => (2, x.index),
+            arca::Entry::ROTable(x) => (3, x.index),
+            arca::Entry::RWTable(x) => (4, x.index),
+        };
+        let result = unsafe {
+            syscall(
+                defs::syscall::SYS_PUT,
+                index,
+                self.index,
+                index,
+                offset,
+                &raw mut mode,
+            )
+        };
+        if result == 0 {
+            Ok(match mode {
+                0 => arca::Entry::Null(Ref::new(index)),
+                1 => arca::Entry::ROPage(Ref::new(index)),
+                2 => arca::Entry::RWPage(Ref::new(index)),
+                3 => arca::Entry::ROTable(Ref::new(index)),
+                4 => arca::Entry::RWTable(Ref::new(index)),
+                _ => unreachable!(),
+            })
+        } else {
+            Err(())
+        }
     }
 
     fn size(&self) -> usize {
@@ -524,6 +641,33 @@ impl Default for Ref<Value> {
     }
 }
 
+impl<T: FnOnce() -> Ref<Value>> From<T> for Ref<Thunk> {
+    fn from(value: T) -> Self {
+        let d = next_descriptor();
+        let result = unsafe { syscall(defs::syscall::SYS_CAPTURE_CONTINUATION_THUNK, d) };
+        if result == -(defs::error::ERROR_CONTINUED as i64) {
+            // in the resumed continuation
+            let result = value();
+            os::exit(result);
+        };
+        Ref::new(d)
+    }
+}
+
+impl<T: FnOnce(Ref<Value>) -> Ref<Value>> From<T> for Ref<Lambda> {
+    fn from(value: T) -> Self {
+        let d = next_descriptor();
+        let result = unsafe { syscall(defs::syscall::SYS_CAPTURE_CONTINUATION_LAMBDA, d) };
+        if result == -(defs::error::ERROR_CONTINUED as i64) {
+            // in the resumed continuation
+            let argument = Ref::new(d);
+            let result = value(argument);
+            os::exit(result);
+        };
+        Ref::new(d)
+    }
+}
+
 pub type DynValue = arca::DynValue<Runtime>;
 
 pub mod os {
@@ -547,6 +691,14 @@ pub mod os {
 
     pub fn tree(values: &mut [Ref<Value>]) -> Ref<Tree> {
         RUNTIME.create_tree(values)
+    }
+
+    pub fn log(s: &str) {
+        super::log(s);
+    }
+
+    pub fn show(s: &str, x: &Ref<Value>) {
+        super::show(s, x.index);
     }
 
     pub fn prompt() -> Ref<Value> {

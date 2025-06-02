@@ -227,6 +227,7 @@ impl<'a> LoadedThunk<'a> {
             log::debug!("exited with syscall: {num:#?}({args:?})");
             let result = match num as u32 {
                 defs::syscall::SYS_NOP => Ok(0),
+                defs::syscall::SYS_CLONE => sys_clone(args, &mut arca),
                 defs::syscall::SYS_RESIZE => sys_resize(args, &mut arca),
 
                 defs::syscall::SYS_EXIT => match sys_exit(args, arca) {
@@ -246,7 +247,10 @@ impl<'a> LoadedThunk<'a> {
                 defs::syscall::SYS_CREATE_BLOB => sys_create_blob(args, &mut arca),
                 defs::syscall::SYS_CREATE_TREE => sys_create_tree(args, &mut arca),
 
-                // defs::syscall::SYS_CONTINUATION => sys_continuation(args, &mut arca),
+                defs::syscall::SYS_CAPTURE_CONTINUATION_THUNK => sys_continuation(args, &mut arca),
+                defs::syscall::SYS_CAPTURE_CONTINUATION_LAMBDA => {
+                    sys_continuation_lambda(args, &mut arca)
+                }
                 // defs::syscall::SYS_RETURN_CONTINUATION => {
                 //     return LoadedValue::Thunk(LoadedThunk { arca })
                 // }
@@ -271,9 +275,8 @@ impl<'a> LoadedThunk<'a> {
                 defs::syscall::SYS_TAILCALL => sys_tailcall(args, &mut arca),
 
                 // defs::syscall::SYS_MAP_NEW_PAGES => sys_map_new_pages(args, &mut arca),
-
-                // defs::syscall::SYS_SHOW => sys_show(args, &mut arca),
-                // defs::syscall::SYS_LOG => sys_log(args, &mut arca),
+                defs::syscall::SYS_DEBUG_SHOW => sys_show(args, &mut arca),
+                defs::syscall::SYS_DEBUG_LOG => sys_log(args, &mut arca),
                 _ => {
                     log::error!("invalid syscall {num}");
                     Err(error::ERROR_BAD_SYSCALL)
@@ -299,6 +302,21 @@ fn sys_create_null(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
     } else {
         Err(error::ERROR_BAD_INDEX)
     }
+}
+
+fn sys_clone(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let dst = args[0] as usize;
+    let src = args[1] as usize;
+    let clone = arca
+        .descriptors()
+        .get(src)
+        .ok_or(defs::error::ERROR_BAD_INDEX)?
+        .clone();
+    *arca
+        .descriptors_mut()
+        .get_mut(dst)
+        .ok_or(defs::error::ERROR_BAD_INDEX)? = clone;
+    Ok(0)
 }
 
 fn sys_resize(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
@@ -531,8 +549,24 @@ fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
         replace_with(arca, |arca| {
             let (mut unloaded, cpu) = arca.unload_with_cpu();
             let mut copy = unloaded.clone();
-            copy.registers_mut()[Register::RAX] = error::ERROR_CONTINUED as u64;
+            copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
             unloaded.descriptors_mut()[idx] = Value::Thunk(Thunk { arca: copy });
+            unloaded.load(cpu)
+        });
+        Ok(0)
+    }
+}
+
+fn sys_continuation_lambda(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
+    let idx = args[0] as usize;
+    if idx >= arca.descriptors().len() {
+        Err(error::ERROR_BAD_INDEX)
+    } else {
+        replace_with(arca, |arca| {
+            let (mut unloaded, cpu) = arca.unload_with_cpu();
+            let mut copy = unloaded.clone();
+            copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
+            unloaded.descriptors_mut()[idx] = Value::Lambda(Lambda { arca: copy, idx });
             unloaded.load(cpu)
         });
         Ok(0)
@@ -563,6 +597,7 @@ fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u32> {
         .ok_or(error::ERROR_BAD_INDEX)?;
 
     let Value::Lambda(l) = l else {
+        log::info!("lambda: {l:?}");
         return Err(error::ERROR_BAD_TYPE);
     };
 

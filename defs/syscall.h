@@ -24,6 +24,7 @@ enum syscall {
 
   // object usage
   SYS_READ,
+  SYS_WRITE,
   SYS_EQUALS,
   SYS_LENGTH,
   SYS_TAKE,
@@ -34,6 +35,12 @@ enum syscall {
   SYS_RETURN_CONTINUATION_LAMBDA,
   SYS_PERFORM_EFFECT,
   SYS_TAILCALL,
+  SYS_CAPTURE_CONTINUATION_THUNK,
+  SYS_CAPTURE_CONTINUATION_LAMBDA,
+
+  // debug
+  SYS_DEBUG_LOG,
+  SYS_DEBUG_SHOW,
 };
 
 enum error {

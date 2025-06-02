@@ -99,7 +99,7 @@ pub trait Page: Value {
 
 pub trait Table: Value {
     fn take(&mut self, index: usize) -> Entry<Self>;
-    fn put(&mut self, offset: usize, entry: Entry<Self>) -> Result<Entry<Self>, Entry<Self>>;
+    fn put(&mut self, offset: usize, entry: Entry<Self>) -> Result<Entry<Self>, ()>;
 
     fn size(&self) -> usize;
 }
@@ -138,7 +138,7 @@ pub enum DynValue<R: Runtime> {
 
 #[derive(Clone)]
 pub enum Entry<T: Table> {
-    Null,
+    Null(associated::Null<T>),
     ROPage(associated::Page<T>),
     RWPage(associated::Page<T>),
     ROTable(associated::Table<T>),
