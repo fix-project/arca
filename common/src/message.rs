@@ -17,7 +17,7 @@ impl Handle {
     pub unsafe fn copy(&self) -> Handle {
         Handle {
             parts: self.parts,
-            datatype: self.datatype
+            datatype: self.datatype,
         }
     }
 
@@ -83,14 +83,39 @@ pub struct PageTableEntry {
 #[repr(C)]
 pub enum Request {
     Nop,
+    Clone(Handle),
+    Drop(Handle),
+    Type(Handle),
     CreateError(Handle),
-    CreateAtom { ptr: usize, len: usize },
-    CreateBlob { ptr: usize, len: usize },
-    CreateTree { ptr: usize, len: usize },
-    CreatePage { size: usize },
-    CreatePageTable { ptr: usize, size: usize },
-    CreateLambda { registers: Handle, memory: Handle, table: Handle, index: usize },
-    CreateThunk { registers: Handle, memory: Handle, table: Handle },
+    CreateAtom {
+        ptr: usize,
+        len: usize,
+    },
+    CreateBlob {
+        ptr: usize,
+        len: usize,
+    },
+    CreateTree {
+        ptr: usize,
+        len: usize,
+    },
+    CreatePage {
+        size: usize,
+    },
+    CreateTable {
+        size: usize,
+    },
+    CreateLambda {
+        registers: Handle,
+        memory: Handle,
+        table: Handle,
+        index: usize,
+    },
+    CreateThunk {
+        registers: Handle,
+        memory: Handle,
+        table: Handle,
+    },
     ReadError(Handle),
     ReadBlob(Handle),
     ReadTree(Handle),
@@ -103,8 +128,6 @@ pub enum Request {
     LoadElf(Handle),
     Apply(Handle, Handle),
     Run(Handle),
-    Clone(Handle),
-    Drop(Handle),
 }
 
 unsafe impl Sendable for Request {}
@@ -114,7 +137,7 @@ unsafe impl Sendable for Request {}
 pub enum Response {
     Ack,
     Handle(Handle),
-    Span {ptr: usize, len: usize},
+    Span { ptr: usize, len: usize },
 }
 
 unsafe impl Sendable for Response {}

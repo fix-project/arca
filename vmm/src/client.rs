@@ -249,295 +249,77 @@ impl<'a> Client<'a> {
     }
 }
 
-pub trait ValueType {}
-
-pub struct Null;
-pub struct Error;
-pub struct Word;
-pub struct Atom;
-pub struct Blob;
-pub struct Tree;
-pub struct Page;
-pub struct PageTable;
-pub struct Lambda;
-pub struct Thunk;
-
-impl ValueType for Null {}
-impl ValueType for Error {}
-impl ValueType for Word {}
-impl ValueType for Atom {}
-impl ValueType for Blob {}
-impl ValueType for Tree {}
-impl ValueType for Page {}
-impl ValueType for PageTable {}
-impl ValueType for Lambda {}
-impl ValueType for Thunk {}
-
-pub struct Value;
-
 pub struct Ref<'client, T> {
     client: &'client Client<'client>,
     handle: Option<message::Handle>,
     _phantom: PhantomData<T>,
 }
 
-pub enum DynRef<'a> {
-    Null(Ref<'a, Null>),
-    Word(Ref<'a, Word>),
-    Error(Ref<'a, Error>),
-    Atom(Ref<'a, Atom>),
-    Blob(Ref<'a, Blob>),
-    Tree(Ref<'a, Tree>),
-    Page(Ref<'a, Page>),
-    PageTable(Ref<'a, PageTable>),
-    Lambda(Ref<'a, Lambda>),
-    Thunk(Ref<'a, Thunk>),
+impl<T> arca::RuntimeType for Ref<T> {
+    type Runtime = Client;
 }
 
-impl Ref<'_, Word> {
-    pub async fn read(&self) -> u64 {
-        self.handle.as_ref().unwrap().get_word().unwrap()
-    }
+#[derive(Copy, Clone, Debug)]
+pub struct Null;
+#[derive(Copy, Clone, Debug)]
+pub struct Word;
+#[derive(Copy, Clone, Debug)]
+pub struct Error;
+#[derive(Copy, Clone, Debug)]
+pub struct Atom;
+#[derive(Copy, Clone, Debug)]
+pub struct Blob;
+#[derive(Copy, Clone, Debug)]
+pub struct Tree;
+#[derive(Copy, Clone, Debug)]
+pub struct Page;
+#[derive(Copy, Clone, Debug)]
+pub struct Table;
+#[derive(Copy, Clone, Debug)]
+pub struct Lambda;
+#[derive(Copy, Clone, Debug)]
+pub struct Thunk;
+#[derive(Copy, Clone, Debug)]
+pub struct Value;
+
+impl arca::ValueType for Ref<Null> {
+    const DATATYPE: DataType = DataType::Null;
+}
+impl arca::ValueType for Ref<Word> {
+    const DATATYPE: DataType = DataType::Word;
+}
+impl arca::ValueType for Ref<Error> {
+    const DATATYPE: DataType = DataType::Error;
+}
+impl arca::ValueType for Ref<Atom> {
+    const DATATYPE: DataType = DataType::Atom;
+}
+impl arca::ValueType for Ref<Blob> {
+    const DATATYPE: DataType = DataType::Blob;
+}
+impl arca::ValueType for Ref<Tree> {
+    const DATATYPE: DataType = DataType::Tree;
+}
+impl arca::ValueType for Ref<Page> {
+    const DATATYPE: DataType = DataType::Page;
+}
+impl arca::ValueType for Ref<Table> {
+    const DATATYPE: DataType = DataType::Table;
+}
+impl arca::ValueType for Ref<Lambda> {
+    const DATATYPE: DataType = DataType::Lambda;
+}
+impl arca::ValueType for Ref<Thunk> {
+    const DATATYPE: DataType = DataType::Thunk;
 }
 
-impl<'client> Ref<'client, Error> {
-    pub async fn read(mut self) -> Ref<'client, Value> {
-        let Response::Handle(handle) = self
-            .client
-            .fullsend(Request::ReadError(self.handle.take().unwrap()))
-            .await
-            .unwrap()
-        else {
-            unreachable!();
-        };
-        let client = self.client;
-        Ref {
-            client,
-            handle: Some(handle),
-            _phantom: PhantomData,
-        }
-    }
-}
+pub struct Value;
 
-impl<'client> Ref<'client, Blob> {
-    pub async fn create_thunk(mut self) -> Ref<'client, Thunk> {
-        let Response::Handle(
-            handle @ message::Handle {
-                datatype: Type::Thunk,
-                parts: _,
-            },
-        ) = self
-            .client
-            .fullsend(Request::LoadElf(self.handle.take().unwrap()))
-            .await
-            .unwrap()
-        else {
-            unreachable!();
-        };
-        let client = self.client;
-        Ref {
-            client,
-            handle: Some(handle),
-            _phantom: PhantomData,
-        }
-    }
+impl arca::Null for Ref<Null> {}
 
-    pub async fn read(&self) -> &[u8] {
-        unsafe {
-            let Response::Span { ptr, len } = self
-                .client
-                .fullsend(Request::ReadBlob(self.handle.as_ref().unwrap().copy()))
-                .await
-                .unwrap()
-            else {
-                unreachable!();
-            };
-            let client = self.client;
-            let ptr = client.allocator.from_offset(ptr);
-            core::slice::from_raw_parts(ptr, len)
-        }
-    }
-}
-
-impl Ref<'_, Tree> {
-    pub async fn read(&self) -> Vec<Ref<'_, Value>> {
-        unsafe {
-            let Response::Span { ptr, len } = self
-                .client
-                .fullsend(Request::ReadTree(self.handle.as_ref().unwrap().copy()))
-                .await
-                .unwrap()
-            else {
-                unreachable!();
-            };
-            let client = self.client;
-            let ptr: *mut Handle = client.allocator.from_offset(ptr);
-            let ptr: *mut [Handle] = core::ptr::from_raw_parts_mut(ptr, len);
-            let b = Box::from_raw_in(ptr, client.allocator);
-            let b = Vec::from(b);
-            b.into_iter()
-                .map(|x| Ref {
-                    client: self.client,
-                    handle: Some(x),
-                    _phantom: PhantomData,
-                })
-                .collect()
-        }
-    }
-}
-
-impl<'client> Ref<'client, Lambda> {
-    pub async fn apply<T: Into<Ref<'client, Value>>>(mut self, other: T) -> Ref<'client, Thunk> {
-        let mut other: Ref<'_, Value> = other.into();
-        assert_eq!(self.client as *const _, other.client as *const _);
-        let Response::Handle(
-            handle @ message::Handle {
-                datatype: Type::Thunk,
-                parts: _,
-            },
-        ) = self
-            .client
-            .fullsend(Request::Apply(
-                self.handle.take().unwrap(),
-                other.handle.take().unwrap(),
-            ))
-            .await
-            .unwrap()
-        else {
-            unreachable!();
-        };
-        let client = self.client;
-        Ref {
-            client,
-            handle: Some(handle),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'client> Ref<'client, Thunk> {
-    pub async fn run(mut self) -> Ref<'client, Value> {
-        let Response::Handle(handle) = self
-            .client
-            .fullsend(Request::Run(self.handle.take().unwrap()))
-            .await
-            .unwrap()
-        else {
-            unreachable!();
-        };
-        let client = self.client;
-        Ref {
-            client,
-            handle: Some(handle),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'client, T: ValueType> From<Ref<'client, T>> for Ref<'client, Value> {
-    fn from(mut value: Ref<'client, T>) -> Self {
-        Ref {
-            client: value.client,
-            handle: value.handle.take(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'client> Ref<'client, Value> {
-    pub fn get_type(&self) -> Type {
-        self.handle.as_ref().unwrap().datatype
-    }
-
-    pub async fn into_error(self) -> Ref<'client, Error> {
-        let client = self.client;
-        client.error(self).await
-    }
-}
-
-impl<'client> From<Ref<'client, Value>> for DynRef<'client> {
-    fn from(mut value: Ref<'client, Value>) -> Self {
-        let handle = value.handle.take().unwrap();
-        match handle.datatype {
-            Type::Null => DynRef::Null(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Error => DynRef::Error(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Word => DynRef::Word(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Atom => DynRef::Atom(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Blob => DynRef::Blob(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Tree => DynRef::Tree(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Page => DynRef::Page(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::PageTable => DynRef::PageTable(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Lambda => DynRef::Lambda(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-            Type::Thunk => DynRef::Thunk(Ref {
-                client: value.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }),
-        }
-    }
-}
-
-impl<T> Clone for Ref<'_, T> {
-    fn clone(&self) -> Self {
-        unsafe {
-            let handle = self.handle.as_ref().unwrap().copy();
-            let future = self.client.fullsend(Request::Clone(handle));
-            let Response::Handle(handle) = async_std::task::block_on(future).unwrap() else {
-                unreachable!();
-            };
-            Ref {
-                client: self.client,
-                handle: Some(handle),
-                _phantom: PhantomData,
-            }
-        }
-    }
-}
-
-impl<T> Drop for Ref<'_, T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            let future = self.client.fullsend(Request::Drop(handle));
-            let Response::Ack = async_std::task::block_on(future).unwrap() else {
-                unreachable!();
-            };
-        }
+impl arca::Word for Ref<Word> {
+    fn read(&self) -> u64 {
+        todo!()
     }
 }
 
