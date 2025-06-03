@@ -17,12 +17,12 @@ use kernel::rt::profile;
 extern crate alloc;
 
 pub struct Server {
-    sender: SpinLock<Sender<'static, MetaResponse>>,
-    receiver: SpinLock<Receiver<'static, MetaRequest>>,
+    sender: SpinLock<Sender<MetaResponse>>,
+    receiver: SpinLock<Receiver<MetaRequest>>,
 }
 
 impl Server {
-    pub fn new(endpoint: Endpoint<'static, MetaResponse, MetaRequest>) -> Self {
+    pub fn new(endpoint: Endpoint<MetaResponse, MetaRequest>) -> Self {
         let (sender, receiver) = endpoint.into_sender_receiver();
         Server {
             sender: SpinLock::new(sender),
@@ -310,8 +310,8 @@ async fn kmain(argv: &[usize]) {
     let ring_buffer_data_ptr = argv[0];
     let server = unsafe {
         let raw_rb_data =
-            Box::from_raw(PHYSICAL_ALLOCATOR.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
-        let endpoint = Endpoint::from_raw_parts(&raw_rb_data, &PHYSICAL_ALLOCATOR);
+            Box::from_raw(BuddyAllocator.from_offset::<EndpointRawData>(ring_buffer_data_ptr));
+        let endpoint = Endpoint::from_raw_parts(&raw_rb_data);
         core::mem::forget(raw_rb_data);
         Box::leak(Box::new(Server::new(endpoint)))
     };

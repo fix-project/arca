@@ -3,16 +3,51 @@ use core::{
     cell::UnsafeCell,
     marker::PhantomPinned,
     mem::MaybeUninit,
+    ops::Deref,
     pin::Pin,
     ptr::NonNull,
     range::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 extern crate alloc;
-use alloc::alloc::{AllocError, Allocator, Global};
-use alloc::boxed::Box;
+use alloc::alloc::{AllocError, Allocator};
+
+#[cfg(feature = "std")]
+use alloc::alloc::Global;
 
 use snafu::prelude::*;
+
+use crate::util::initcell::LazyLock;
+
+static BUDDY: LazyLock<BuddyAllocatorImpl> = LazyLock::new(|| {
+    #[cfg(feature = "std")]
+    {
+        BuddyAllocatorImpl::new(1 << 32)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        todo!()
+    }
+});
+
+#[cfg(feature = "std")]
+pub fn initialize(size: usize) {
+    LazyLock::set(&BUDDY, BuddyAllocatorImpl::new(size)).unwrap();
+}
+
+pub fn export() -> BuddyAllocatorRawData {
+    BUDDY.clone().into_raw_parts()
+}
+
+/// # Safety
+/// The argument to this function must have come from a call to export.
+pub unsafe fn import(raw: BuddyAllocatorRawData) {
+    LazyLock::set(&BUDDY, BuddyAllocatorImpl::from_raw_parts(raw)).unwrap();
+}
+
+pub fn wait() {
+    LazyLock::wait(&BUDDY);
+}
 
 #[derive(Snafu, Debug)]
 pub enum AllocationError {
@@ -224,10 +259,12 @@ struct AllocatorInner {
 }
 
 impl AllocatorInner {
+    #[cfg(feature = "std")]
     pub fn new(slice: &mut [u8]) -> Pin<Box<AllocatorInner>> {
         Self::new_in(slice, Global)
     }
 
+    #[cfg(feature = "std")]
     pub fn new_in<A: Allocator>(slice: &mut [u8], allocator: A) -> Pin<Box<AllocatorInner, A>> {
         let raw_size = core::mem::size_of_val(slice);
         let min_level = 12;
@@ -453,17 +490,17 @@ impl AllocatorInner {
 }
 
 #[repr(C)]
-pub struct BuddyAllocator<'a> {
+pub struct BuddyAllocatorImpl {
     base: *mut (),
     size: usize,
     caching: bool,
-    inner: Pin<&'a AllocatorInner>,
-    refcnt: Pin<&'a [AtomicUsize]>,
+    inner: Pin<&'static AllocatorInner>,
+    refcnt: Pin<&'static [AtomicUsize]>,
 }
 
-impl core::fmt::Debug for BuddyAllocator<'_> {
+impl core::fmt::Debug for BuddyAllocatorImpl {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "BuddyAllocator @ {:p}", self.inner)
+        write!(f, "BuddyAllocatorImpl @ {:p}", self.inner)
     }
 }
 
@@ -478,31 +515,38 @@ pub struct BuddyAllocatorRawData {
     pub refcnt_size: usize,
 }
 
-unsafe impl Send for BuddyAllocator<'_> {}
-unsafe impl Sync for BuddyAllocator<'_> {}
+unsafe impl Send for BuddyAllocatorImpl {}
+unsafe impl Sync for BuddyAllocatorImpl {}
 
-impl<'a> BuddyAllocator<'a> {
+impl BuddyAllocatorImpl {
     pub const MIN_ALLOCATION: usize = 1 << 12;
 
-    pub fn new(slice: &'a mut [u8]) -> BuddyAllocator<'a> {
-        let base = &raw mut slice[0] as *mut ();
+    #[cfg(feature = "std")]
+    pub fn new(size: usize) -> BuddyAllocatorImpl {
+        let mmap = crate::mmap::Mmap::new(size);
         // allocate on the normal heap
+
+        let ptr = mmap.into_raw();
+        let slice = unsafe { &mut *ptr };
+
         let inner = AllocatorInner::new(slice);
+        let (base, size) = ptr.to_raw_parts();
 
         let refcnt_size = slice.len() / Self::MIN_ALLOCATION;
 
         let refcnt = unsafe {
-            let data = Box::new_zeroed_slice(refcnt_size);
+            let data: Box<[MaybeUninit<AtomicUsize>]> = Box::new_zeroed_slice(refcnt_size);
             data.assume_init()
         };
         let refcnt = Box::into_pin(refcnt);
 
-        let temp = BuddyAllocator {
+        #[allow(clippy::missing_transmute_annotations)]
+        let temp = BuddyAllocatorImpl {
             base,
-            size: slice.len(),
+            size,
             caching: false,
-            inner: inner.as_ref(),
-            refcnt: refcnt.as_ref(),
+            inner: unsafe { core::mem::transmute(inner.as_ref()) },
+            refcnt: unsafe { core::mem::transmute(refcnt.as_ref()) },
         };
 
         // prevent physical zero page from being allocated
@@ -514,10 +558,6 @@ impl<'a> BuddyAllocator<'a> {
             assert!(!p.is_null());
             pages.push(p);
         }
-        // assert_eq!(
-        //     temp.to_offset(temp.reserve_raw(0x100000, 0x800000)),
-        //     0x100000
-        // );
 
         let new_inner = AllocatorInner::new_in(slice, &temp);
         let new_refcnt = unsafe {
@@ -551,7 +591,7 @@ impl<'a> BuddyAllocator<'a> {
             &*(new_refcnt as *mut [AtomicUsize])
         };
 
-        let allocator = BuddyAllocator {
+        let allocator = BuddyAllocatorImpl {
             base,
             size: slice.len(),
             caching: cfg!(feature = "cache"),
@@ -561,6 +601,7 @@ impl<'a> BuddyAllocator<'a> {
         for page in pages {
             allocator.free_raw(page, 0x100000);
         }
+        core::mem::forget(temp);
         let _ = inner;
         let _ = refcnt;
         allocator
@@ -780,7 +821,7 @@ impl<'a> BuddyAllocator<'a> {
     }
 
     pub fn into_raw_parts(self) -> BuddyAllocatorRawData {
-        let BuddyAllocator {
+        let BuddyAllocatorImpl {
             base,
             size,
             caching: _caching,
@@ -821,7 +862,7 @@ impl<'a> BuddyAllocator<'a> {
         let inner: *const AllocatorInner =
             core::ptr::from_raw_parts_mut(base.byte_add(inner_offset), inner_size);
         let refcnt = core::ptr::from_raw_parts_mut(base.byte_add(refcnt_offset), refcnt_size);
-        BuddyAllocator {
+        BuddyAllocatorImpl {
             base,
             size,
             caching: cfg!(feature = "cache"),
@@ -842,22 +883,9 @@ impl<'a> BuddyAllocator<'a> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-
-    pub fn destroy(&mut self) -> Option<&'a mut [u8]> {
-        if self.inner.meta.refcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
-            unsafe {
-                Some(core::slice::from_raw_parts_mut(
-                    self.base as *mut u8,
-                    self.inner.meta.raw_size,
-                ))
-            }
-        } else {
-            None
-        }
-    }
 }
 
-impl Clone for BuddyAllocator<'_> {
+impl Clone for BuddyAllocatorImpl {
     fn clone(&self) -> Self {
         self.inner.meta.refcnt.fetch_add(1, Ordering::SeqCst);
         Self {
@@ -870,9 +898,33 @@ impl Clone for BuddyAllocator<'_> {
     }
 }
 
-impl Drop for BuddyAllocator<'_> {
+impl Drop for BuddyAllocatorImpl {
     fn drop(&mut self) {
-        self.destroy();
+        let copies = self.inner.meta.refcnt.fetch_sub(1, Ordering::SeqCst);
+        if copies == 1 {
+            #[cfg(feature = "std")]
+            unsafe {
+                let ptr = core::ptr::from_raw_parts_mut(self.base, self.size);
+                let mmap = crate::mmap::Mmap::from_raw(ptr);
+                core::mem::forget(mmap);
+                // core::mem::drop(mmap);
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BuddyAllocator;
+
+impl BuddyAllocator {
+    pub const MIN_ALLOCATION: usize = BuddyAllocatorImpl::MIN_ALLOCATION;
+}
+
+impl Deref for BuddyAllocator {
+    type Target = BuddyAllocatorImpl;
+
+    fn deref(&self) -> &Self::Target {
+        &BUDDY
     }
 }
 
@@ -909,7 +961,7 @@ pub mod cache {
 }
 
 #[cfg(feature = "cache")]
-impl BuddyAllocator<'_> {
+impl BuddyAllocatorImpl {
     fn allocate_from_cache(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
         let mut cache = cache::ALLOCATION_CACHE.lock();
         if cache.is_empty() {
@@ -965,7 +1017,7 @@ impl BuddyAllocator<'_> {
     }
 }
 
-unsafe impl Allocator for BuddyAllocator<'_> {
+unsafe impl Allocator for BuddyAllocatorImpl {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let size = layout.size();
         let align = layout.align();
@@ -997,6 +1049,16 @@ unsafe impl Allocator for BuddyAllocator<'_> {
         }
 
         self.free_raw(ptr.as_ptr() as *mut (), size)
+    }
+}
+
+unsafe impl Allocator for BuddyAllocator {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        BUDDY.allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        BUDDY.deallocate(ptr, layout)
     }
 }
 
@@ -1048,13 +1110,12 @@ mod tests {
 
     #[test]
     fn test_buddy_allocator() {
-        let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let allocator = BuddyAllocatorImpl::new(0x10000000);
 
-        let test = Box::new_in(10, &allocator);
+        let test = Box::new_in(10, allocator.clone());
         assert_eq!(*test, 10);
 
-        let mut v = Vec::new_in(&allocator);
+        let mut v = Vec::new_in(allocator.clone());
         for i in 0..10000 {
             v.push(i);
         }
@@ -1062,34 +1123,31 @@ mod tests {
 
     #[bench]
     fn bench_allocate_free(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let allocator = BuddyAllocatorImpl::new(0x100000000);
         b.iter(|| {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
+            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
+                Box::new_uninit_slice_in(128, allocator.clone());
             core::mem::drop(x);
         });
     }
 
     #[bench]
     fn bench_allocate_free_no_cache(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
+        let mut allocator = BuddyAllocatorImpl::new(0x100000000);
         allocator.set_caching(false);
         b.iter(|| {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
+            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
+                Box::new_uninit_slice_in(128, allocator.clone());
             core::mem::drop(x);
         });
     }
 
     #[bench]
     fn bench_contended_allocate_free(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
+        let allocator = BuddyAllocatorImpl::new(0x100000000);
         let f = || {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
+            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
+                Box::new_uninit_slice_in(128, allocator.clone());
             core::mem::drop(x);
         };
         use core::sync::atomic::AtomicBool;
@@ -1112,12 +1170,11 @@ mod tests {
     #[bench]
     #[ignore]
     fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
+        let mut allocator = BuddyAllocatorImpl::new(0x100000000);
         allocator.set_caching(false);
         let f = || {
-            let x: Box<[MaybeUninit<u8>], &BuddyAllocator> =
-                Box::new_uninit_slice_in(128, &allocator);
+            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
+                Box::new_uninit_slice_in(128, allocator.clone());
             core::mem::drop(x);
         };
         use core::sync::atomic::AtomicBool;
@@ -1140,8 +1197,7 @@ mod tests {
     #[test]
     fn stress_test() {
         use std::hash::{BuildHasher, Hasher, RandomState};
-        let mut region: Box<[u8; 0x10000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let mut allocator = BuddyAllocator::new(&mut *region);
+        let mut allocator = BuddyAllocatorImpl::new(0x10000000);
         allocator.set_caching(false);
         let mut v = vec![];
         let random = |limit: usize| {
@@ -1152,7 +1208,8 @@ mod tests {
             let used_before = allocator.used_size();
             let remaining = allocator.total_size() - used_before;
             let size = random(core::cmp::min(1 << 21, remaining / 2));
-            let alloc = Box::<[u8], &BuddyAllocator>::new_uninit_slice_in(size, &allocator);
+            let alloc =
+                Box::<[u8], BuddyAllocatorImpl>::new_uninit_slice_in(size, allocator.clone());
             let used_after = allocator.used_size();
             assert!(used_after >= used_before + size);
             if !v.is_empty() && size % 3 == 0 {

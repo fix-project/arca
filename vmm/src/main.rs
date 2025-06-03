@@ -4,7 +4,6 @@
 
 use std::num::NonZero;
 
-use vmm::runtime::Mmap;
 use vmm::runtime::Runtime;
 
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
@@ -15,8 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let smp = std::thread::available_parallelism()
         .unwrap_or(NonZero::new(1).unwrap())
         .get();
-    let mmap = Box::leak(Mmap::new(1 << 32).into());
-    let runtime = Runtime::new(smp, mmap, KERNEL_ELF.into());
+    let runtime = Runtime::new(smp, 1 << 32, KERNEL_ELF.into());
     runtime.run(&[]);
 
     log::info!("shutting down");

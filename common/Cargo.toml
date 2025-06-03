@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["std"]
-std = ["alloc", "snafu/std"]
+std = ["alloc", "snafu/std", "libc"]
 alloc = []
 thread_local_cache = ["cache"]
 core_local_cache = ["macros", "cache"]
@@ -15,6 +15,5 @@ cache = []
 log = "0.4.22"
 snafu = { version="0.8.5", default-features=false }
 macros = { path = "../macros", optional=true }
-
-[dev-dependencies]
-libc = "0.2.164"
+arca = { path = "../arca" }
+libc = { version="0.2.164", optional=true }

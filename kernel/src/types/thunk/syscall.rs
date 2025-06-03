@@ -436,8 +436,7 @@ pub fn sys_map_new_pages(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u
 
     for i in 0..count {
         let address = address + 4096 * i;
-        let page =
-            unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
+        let page = unsafe { UniquePage::<Page4KB>::new_zeroed_in(BuddyAllocator).assume_init() };
         arca.cpu().map_unique_4kb(address, page);
     }
 

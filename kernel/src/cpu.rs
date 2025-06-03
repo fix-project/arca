@@ -190,21 +190,15 @@ impl Cpu {
     pub fn activate_address_space(&mut self, table: Table) {
         match table {
             Table::Table2MB(table) => {
-                let mut pd = self.pd.take().unwrap_or_else(|| AugmentedPageTable::new());
-                let mut pdpt = self
-                    .pdpt
-                    .take()
-                    .unwrap_or_else(|| AugmentedPageTable::new());
+                let mut pd = self.pd.take().unwrap_or_else(AugmentedPageTable::new);
+                let mut pdpt = self.pdpt.take().unwrap_or_else(AugmentedPageTable::new);
 
                 pd.entry_mut(0).chain_unique(table.unique());
                 pdpt.entry_mut(0).chain_unique(pd);
                 self.pml4.entry_mut(0).chain_unique(pdpt);
             }
             Table::Table1GB(table) => {
-                let mut pdpt = self
-                    .pdpt
-                    .take()
-                    .unwrap_or_else(|| AugmentedPageTable::new());
+                let mut pdpt = self.pdpt.take().unwrap_or_else(AugmentedPageTable::new);
 
                 pdpt.entry_mut(0).chain_unique(table.unique());
                 self.pml4.entry_mut(0).chain_unique(pdpt);

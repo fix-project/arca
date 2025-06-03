@@ -23,6 +23,9 @@ pub mod ringbuffer;
 pub mod sendable;
 pub mod util;
 
+#[cfg(feature = "std")]
+pub mod mmap;
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct LogRecord {

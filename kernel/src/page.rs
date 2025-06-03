@@ -13,8 +13,8 @@ pub type Page4KB = [u8; 1 << 12];
 pub type Page2MB = [u8; 1 << 21];
 pub type Page1GB = [u8; 1 << 30];
 
-pub type UniquePage<T> = Box<T, &'static BuddyAllocator<'static>>;
-pub type SharedPage<T> = RefCnt<'static, T>;
+pub type UniquePage<T> = Box<T, BuddyAllocator>;
+pub type SharedPage<T> = RefCnt<T>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CowPage<T> {
@@ -24,7 +24,7 @@ pub enum CowPage<T> {
 
 impl<T> CowPage<T> {
     pub fn new() -> Self {
-        unsafe { CowPage::Unique(UniquePage::new_zeroed_in(&*PHYSICAL_ALLOCATOR).assume_init()) }
+        unsafe { CowPage::Unique(UniquePage::new_zeroed_in(BuddyAllocator).assume_init()) }
     }
 
     pub fn unique(self) -> UniquePage<T>

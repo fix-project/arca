@@ -144,6 +144,7 @@ pub trait Value:
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(C)]
 pub enum DataType {
     Null,
     Word,

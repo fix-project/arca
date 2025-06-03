@@ -109,7 +109,7 @@ impl Thunk {
                     let data = elf.segment_data(segment).expect("could not find segment");
                     for page in 0..pages {
                         let mut unique_page = unsafe {
-                            UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init()
+                            UniquePage::<Page4KB>::new_zeroed_in(BuddyAllocator).assume_init()
                         };
                         let page_start = page * 4096;
                         assert!(memi >= page_start);
@@ -162,8 +162,7 @@ impl Thunk {
         }
 
         let addr = highest_addr + 4096;
-        let stack =
-            unsafe { UniquePage::<Page4KB>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() };
+        let stack = unsafe { UniquePage::<Page4KB>::new_zeroed_in(BuddyAllocator).assume_init() };
         arca.mappings_mut()
             .map(addr, arca::Entry::RWPage(CowPage::Unique(stack).into()));
         arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 12);

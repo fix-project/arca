@@ -4,14 +4,9 @@
 
 use std::process::Command;
 
-use common::{ringbuffer, BuddyAllocator};
 use include_directory::{include_directory, Dir};
-use vmm::{
-    client::{Client, DynRef},
-    runtime::{Mmap, Runtime},
-};
+use vmm::client::*;
 
-const SERVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_server"));
 const MODULE_WAT: &str = r#"
 (module
   (import "fixpoint" "create_blob_i32" (func $create_blob_i32 (param i32) (result externref)))
@@ -112,42 +107,17 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let elf = compile(MODULE_WAT.as_bytes())?;
-    // let smp = std::thread::available_parallelism()
-    //     .unwrap_or(NonZero::new(1).unwrap())
-    //     .get();
+    let client = ArcaRuntime::new(1 << 32);
 
-    let mut mmap = Mmap::new(1 << 35);
-    let runtime = Runtime::new(1, &mut mmap, SERVER_ELF.into());
-    let allocator = runtime.allocator();
-    let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(allocator) };
-    let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
-    let endpoint_raw = Box::into_raw(Box::new_in(endpoint2.into_raw_parts(allocator), allocator));
-    let endpoint_raw_offset = allocator.to_offset(endpoint_raw);
+    log::info!("create blob");
+    let _elf = client.create_blob(&elf);
+    log::info!("create thunk");
+    let _thunk: Ref<Thunk> = todo!();
+    // log::info!("run thunk");
+    // let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
+    // let thunk = lambda.apply(client.create_word(0xcafeb0ba).into());
+    // let word: Ref<Word> = thunk.run().try_into().unwrap();
+    // log::info!("{:?}", word.read());
 
-    let client = Client::new(endpoint1);
-
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            runtime.run(&[endpoint_raw_offset]);
-        });
-
-        async_std::task::block_on(async {
-            log::info!("create blob");
-            let elf = client.blob(elf).await;
-            log::info!("create thunk");
-            let thunk = elf.create_thunk().await;
-            log::info!("run thunk");
-            let result = thunk.run().await;
-            let DynRef::Lambda(lambda) = result.into() else {
-                unreachable!();
-            };
-            let thunk = lambda.apply(client.word(0xcafeb0ba).await).await;
-            let DynRef::Word(word) = thunk.run().await.into() else {
-                unreachable!();
-            };
-            log::info!("{:?}", word.read().await);
-        });
-        client.shutdown();
-    });
-    Ok(())
+    // Ok(())
 }

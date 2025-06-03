@@ -1,3 +1,5 @@
+use arca::DataType;
+
 use crate::sendable::Sendable;
 
 extern crate alloc;
@@ -6,7 +8,7 @@ extern crate alloc;
 #[repr(C)]
 pub struct Handle {
     pub parts: [usize; 2],
-    pub datatype: Type,
+    pub datatype: DataType,
 }
 
 impl Handle {
@@ -24,23 +26,23 @@ impl Handle {
     pub fn null() -> Handle {
         Handle {
             parts: [0; 2],
-            datatype: Type::Null,
+            datatype: DataType::Null,
         }
     }
 
     pub fn is_null(&self) -> bool {
-        self.datatype == Type::Null
+        self.datatype == DataType::Null
     }
 
     pub fn word(value: u64) -> Handle {
         Handle {
             parts: [value as usize, 0],
-            datatype: Type::Word,
+            datatype: DataType::Word,
         }
     }
 
     pub fn get_word(&self) -> Option<u64> {
-        if self.datatype == Type::Word {
+        if self.datatype == DataType::Word {
             Some(self.parts[0] as u64)
         } else {
             None
@@ -52,8 +54,12 @@ impl Handle {
     pub unsafe fn blob(ptr: usize, len: usize) -> Handle {
         Handle {
             parts: [ptr, len],
-            datatype: Type::Blob,
+            datatype: DataType::Blob,
         }
+    }
+
+    pub fn datatype(&self) -> DataType {
+        self.datatype
     }
 }
 
@@ -96,8 +102,7 @@ pub enum Request {
         len: usize,
     },
     CreateTree {
-        ptr: usize,
-        len: usize,
+        size: usize,
     },
     CreatePage {
         size: usize,
@@ -106,26 +111,14 @@ pub enum Request {
         size: usize,
     },
     CreateLambda {
-        registers: Handle,
-        memory: Handle,
-        table: Handle,
+        thunk: Handle,
         index: usize,
     },
     CreateThunk {
         registers: Handle,
         memory: Handle,
-        table: Handle,
+        descriptors: Handle,
     },
-    ReadError(Handle),
-    ReadBlob(Handle),
-    ReadTree(Handle),
-    ReadPage(Handle),
-    ReadPageTable(Handle),
-    ReadLambda(Handle),
-    ReadThunk(Handle),
-    WriteBlob(Handle),
-    WritePage(Handle),
-    LoadElf(Handle),
     Apply(Handle, Handle),
     Run(Handle),
 }
