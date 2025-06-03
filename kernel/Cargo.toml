@@ -30,6 +30,7 @@ macros = { path = "../macros" }
 common = { path = "../common", default-features = false, features = ["core_local_cache"] }
 defs = { path = "../defs" }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
+arca = { path = "../arca" }
 elf = { version = "0.7.4", default-features = false }
 blake3 = { version = "1.8.2", default-features = false }
 

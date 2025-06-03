@@ -1,0 +1,68 @@
+use core::ops::{Deref, DerefMut};
+
+use crate::prelude::*;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Tree {
+    contents: Box<[Value]>,
+}
+
+impl Tree {
+    pub fn new<T: Into<Box<[Value]>>>(x: T) -> Self {
+        Tree { contents: x.into() }
+    }
+
+    pub fn new_with_len(len: usize) -> Self {
+        let v = vec![Value::Null; len];
+        Tree { contents: v.into() }
+    }
+}
+
+impl arca::RuntimeType for Tree {
+    type Runtime = Runtime;
+}
+
+impl arca::ValueType for Tree {
+    const DATATYPE: DataType = DataType::Tree;
+}
+
+impl arca::Tree for Tree {
+    fn take(&mut self, index: usize) -> arca::associated::Value<Self> {
+        core::mem::take(&mut self.contents[index])
+    }
+
+    fn put(
+        &mut self,
+        index: usize,
+        value: arca::associated::Value<Self>,
+    ) -> arca::associated::Value<Self> {
+        let old = core::mem::take(&mut self.contents[index]);
+        self.contents[index] = value;
+        old
+    }
+
+    fn len(&self) -> usize {
+        self.contents.len()
+    }
+}
+
+impl Deref for Tree {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        &self.contents
+    }
+}
+
+impl DerefMut for Tree {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.contents
+    }
+}
+
+impl FromIterator<Value> for Tree {
+    fn from_iter<T: IntoIterator<Item = Value>>(iter: T) -> Self {
+        let v: Box<[Value]> = iter.into_iter().collect();
+        Tree::new(v)
+    }
+}

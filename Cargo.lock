@@ -615,6 +615,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arca",
  "bitfield-struct",
  "blake3",
  "cc",

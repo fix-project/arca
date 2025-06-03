@@ -573,6 +573,8 @@ impl<T: HardwarePageTable> core::fmt::Debug for AugmentedPageTable<T> {
 }
 
 impl<T: HardwarePageTable> AugmentedPageTable<T> {
+    pub const SIZE: usize = T::SIZE;
+
     pub fn new() -> UniquePage<Self> {
         unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
     }
@@ -844,6 +846,20 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
                     AugmentedUnmappedPage::SharedTable(table)
                 }
             }
+        }
+    }
+
+    pub fn replace(
+        &mut self,
+        entry: AugmentedUnmappedPage<T::Page, T::Table>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        match entry {
+            AugmentedUnmappedPage::None => self.unmap(),
+            AugmentedUnmappedPage::UniquePage(page) => self.map_unique(page),
+            AugmentedUnmappedPage::SharedPage(page) => self.map_shared(page),
+            AugmentedUnmappedPage::Global(_) => panic!(),
+            AugmentedUnmappedPage::UniqueTable(table) => self.chain_unique(table),
+            AugmentedUnmappedPage::SharedTable(table) => self.chain_shared(table),
         }
     }
 }

@@ -6,34 +6,23 @@ pub struct Lambda {
     pub idx: usize,
 }
 
-impl Lambda {
-    pub fn apply<T: Into<Value>>(self, x: T) -> Thunk {
-        Thunk::new(self, x)
-    }
-
-    pub fn load(self, cpu: &mut Cpu) -> LoadedLambda<'_> {
-        LoadedLambda {
-            arca: self.arca.load(cpu),
-            idx: self.idx,
-        }
-    }
+impl arca::RuntimeType for Lambda {
+    type Runtime = Runtime;
 }
 
-#[derive(Debug)]
-pub struct LoadedLambda<'a> {
-    pub arca: LoadedArca<'a>,
-    pub idx: usize,
+impl arca::ValueType for Lambda {
+    const DATATYPE: DataType = DataType::Lambda;
 }
 
-impl<'a> LoadedLambda<'a> {
-    pub fn apply<T: Into<Value>>(self, x: T) -> LoadedThunk<'a> {
-        LoadedThunk::new(self, x)
+impl arca::Lambda for Lambda {
+    fn apply(self, argument: arca::associated::Value<Self>) -> arca::associated::Thunk<Self> {
+        let mut arca = self.arca;
+        let idx = self.idx;
+        arca.descriptors_mut()[idx] = argument;
+        Thunk::new(arca)
     }
 
-    pub fn unload(self) -> Lambda {
-        Lambda {
-            arca: self.arca.unload(),
-            idx: self.idx,
-        }
+    fn read(self) -> (arca::associated::Thunk<Self>, usize) {
+        todo!()
     }
 }

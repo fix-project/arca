@@ -521,7 +521,7 @@ impl arca::Table for Ref<Table> {
         &mut self,
         offset: usize,
         mut entry: arca::Entry<Self>,
-    ) -> Result<arca::Entry<Self>, ()> {
+    ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
         let (mut mode, index) = match &mut entry {
             arca::Entry::Null(x) => (0, &mut x.index),
             arca::Entry::ROPage(x) => (1, &mut x.index),
@@ -550,7 +550,7 @@ impl arca::Table for Ref<Table> {
                 _ => unreachable!(),
             })
         } else {
-            Err(())
+            todo!();
         }
     }
 
@@ -720,8 +720,7 @@ pub mod os {
                 0
             );
         }
-        let r = Ref::new(idx);
-        r
+        Ref::new(idx)
     }
 
     pub fn perform<T: Into<Ref<Value>>>(effect: T) -> Ref<Value> {

@@ -96,7 +96,7 @@ pub trait Page: ValueType {
 
 pub trait Table: ValueType {
     fn take(&mut self, index: usize) -> Entry<Self>;
-    fn put(&mut self, offset: usize, entry: Entry<Self>) -> Result<Entry<Self>, ()>;
+    fn put(&mut self, index: usize, entry: Entry<Self>) -> Result<Entry<Self>, Entry<Self>>;
 
     fn size(&self) -> usize;
 }
@@ -164,4 +164,16 @@ pub enum Entry<T: Table> {
     RWPage(associated::Page<T>),
     ROTable(associated::Table<T>),
     RWTable(associated::Table<T>),
+}
+
+impl<T: Table> Entry<T> {
+    pub fn size(&self) -> usize {
+        match self {
+            Entry::Null(_) => 0,
+            Entry::ROPage(page) => page.size(),
+            Entry::RWPage(page) => page.size(),
+            Entry::ROTable(table) => table.size(),
+            Entry::RWTable(table) => table.size(),
+        }
+    }
 }

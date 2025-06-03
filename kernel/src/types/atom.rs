@@ -1,3 +1,5 @@
+use crate::prelude::*;
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct Atom {
     hash: [u8; 32],
@@ -16,3 +18,13 @@ impl<T: AsRef<[u8]>> From<T> for Atom {
         Self::new(value)
     }
 }
+
+impl arca::RuntimeType for Atom {
+    type Runtime = Runtime;
+}
+
+impl arca::ValueType for Atom {
+    const DATATYPE: DataType = DataType::Atom;
+}
+
+impl arca::Atom for Atom {}

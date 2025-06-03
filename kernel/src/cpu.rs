@@ -5,7 +5,7 @@ use core::{
 
 use alloc::format;
 
-use crate::{initcell::LazyLock, prelude::*, types::pagetable::Entry, vm::ka2pa};
+use crate::{initcell::LazyLock, prelude::*, vm::ka2pa};
 
 #[core_local]
 pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
@@ -13,23 +13,17 @@ pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
     pml4.entry_mut(256)
         .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
     RefCell::new(Cpu {
-        size: None,
-        offset: 0,
         pml4,
         pdpt: None,
         pd: None,
-        pt: None,
     })
 });
 
 #[derive(Debug)]
 pub struct Cpu {
-    size: Option<usize>,
-    offset: usize,
     pml4: UniquePage<AugmentedPageTable<PageTable256TB>>,
     pdpt: Option<UniquePage<AugmentedPageTable<PageTable512GB>>>,
     pd: Option<UniquePage<AugmentedPageTable<PageTable1GB>>>,
-    pt: Option<UniquePage<AugmentedPageTable<PageTable2MB>>>,
 }
 
 impl !Sync for Cpu {}
@@ -193,79 +187,36 @@ extern "C" {
 }
 
 impl Cpu {
-    pub fn activate_address_space(&mut self, address_space: AddressSpace) {
-        match address_space {
-            AddressSpace::AddressSpace0B => {}
-            AddressSpace::AddressSpace4KB(offset, entry) => {
-                self.size = Some(12);
-                self.offset = offset;
-
-                let mut pt = self.pt.take().unwrap_or_else(AugmentedPageTable::new);
-                let mut pd = self.pd.take().unwrap_or_else(AugmentedPageTable::new);
-                let mut pdpt = self.pdpt.take().unwrap_or_else(AugmentedPageTable::new);
-
-                match entry {
-                    Entry::UniquePage(p) => pt.entry_mut(offset & 0x1ff).map_unique(p),
-                    Entry::SharedPage(p) => pt.entry_mut(offset & 0x1ff).map_shared(p),
-                    Entry::UniqueTable(t) => pt.entry_mut(offset & 0x1ff).chain_unique(t),
-                    Entry::SharedTable(t) => pt.entry_mut(offset & 0x1ff).chain_shared(t),
-                };
-
-                pd.entry_mut((offset >> 9) & 0x1ff).chain_unique(pt);
-                pdpt.entry_mut((offset >> 18) & 0x1ff).chain_unique(pd);
-                self.pml4
-                    .entry_mut((offset >> 27) & 0x1ff)
-                    .chain_unique(pdpt);
-            }
-            AddressSpace::AddressSpace2MB(offset, entry) => {
-                self.size = Some(21);
-                self.offset = offset;
-
+    pub fn activate_address_space(&mut self, table: Table) {
+        match table {
+            Table::Table2MB(table) => {
                 let mut pd = self.pd.take().unwrap_or_else(|| AugmentedPageTable::new());
                 let mut pdpt = self
                     .pdpt
                     .take()
                     .unwrap_or_else(|| AugmentedPageTable::new());
 
-                match entry {
-                    Entry::UniquePage(p) => pd.entry_mut(offset & 0x1ff).map_unique(p),
-                    Entry::SharedPage(p) => pd.entry_mut(offset & 0x1ff).map_shared(p),
-                    Entry::UniqueTable(t) => pd.entry_mut(offset & 0x1ff).chain_unique(t),
-                    Entry::SharedTable(t) => pd.entry_mut(offset & 0x1ff).chain_shared(t),
-                };
-
-                pdpt.entry_mut((offset >> 9) & 0x1ff).chain_unique(pd);
-                self.pml4
-                    .entry_mut((offset >> 18) & 0x1ff)
-                    .chain_unique(pdpt);
+                pd.entry_mut(0).chain_unique(table.unique());
+                pdpt.entry_mut(0).chain_unique(pd);
+                self.pml4.entry_mut(0).chain_unique(pdpt);
             }
-            AddressSpace::AddressSpace1GB(offset, entry) => {
-                self.size = Some(30);
-                self.offset = offset;
-
+            Table::Table1GB(table) => {
                 let mut pdpt = self
                     .pdpt
                     .take()
                     .unwrap_or_else(|| AugmentedPageTable::new());
 
-                match entry {
-                    Entry::UniquePage(p) => pdpt.entry_mut(offset & 0x1ff).map_unique(p),
-                    Entry::SharedPage(p) => pdpt.entry_mut(offset & 0x1ff).map_shared(p),
-                    Entry::UniqueTable(t) => pdpt.entry_mut(offset & 0x1ff).chain_unique(t),
-                    Entry::SharedTable(t) => pdpt.entry_mut(offset & 0x1ff).chain_shared(t),
-                };
-
-                self.pml4
-                    .entry_mut((offset >> 9) & 0x1ff)
-                    .chain_unique(pdpt);
+                pdpt.entry_mut(0).chain_unique(table.unique());
+                self.pml4.entry_mut(0).chain_unique(pdpt);
             }
+            _ => todo!(),
         }
         unsafe {
             set_pt(ka2pa(Box::as_ptr(&self.pml4)));
         }
     }
 
-    pub fn swap_address_space(&mut self, new: &mut AddressSpace) {
+    pub fn swap_address_space(&mut self, new: &mut Table) {
         // TODO: unnecessary TLB invalidation
         unsafe {
             let replacement = core::ptr::read(new);
@@ -274,7 +225,7 @@ impl Cpu {
         }
     }
 
-    pub fn deactivate_address_space(&mut self) -> AddressSpace {
+    pub fn deactivate_address_space(&mut self) -> Table {
         let AugmentedUnmappedPage::UniqueTable(mut pdpt) = self.pml4.unmap(0) else {
             todo!();
         };
@@ -289,7 +240,7 @@ impl Cpu {
         debug_assert!(self.pdpt.is_none());
         self.pdpt = Some(pdpt);
         if pd.len() > 1 {
-            return AddressSpace::AddressSpace1GB(offset, Entry::UniqueTable(pd));
+            return Table::Table1GB(pd.into());
         }
         let offset = pd.offset();
         let AugmentedUnmappedPage::UniqueTable(pt) = pd.unmap(offset) else {
@@ -299,7 +250,7 @@ impl Cpu {
         debug_assert!(self.pd.is_none());
         self.pd = Some(pd);
         if pt.len() > 1 {
-            return AddressSpace::AddressSpace2MB(offset, Entry::UniqueTable(pt));
+            return Table::Table2MB(pt.into());
         }
         todo!();
     }
@@ -364,6 +315,6 @@ impl Cpu {
 impl From<ExitReason> for Value {
     fn from(value: ExitReason) -> Self {
         let result = format!("{:x?}", value);
-        Value::Blob(result.into_bytes().into_boxed_slice().into())
+        Value::Blob(result.into())
     }
 }

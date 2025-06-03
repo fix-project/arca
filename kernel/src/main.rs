@@ -2,8 +2,6 @@
 #![no_std]
 #![feature(allocator_api)]
 
-use alloc::sync::Arc;
-use alloc::vec;
 use kernel::prelude::*;
 use kernel::rt;
 use macros::kmain;
@@ -36,42 +34,32 @@ async fn kmain(_: &[usize]) {
     };
 
     // identity function
-    let x = Value::Atom(Atom::new("foo").into());
+    let x = Value::Atom(Atom::new("foo"));
     let y = id.apply(x.clone()).run();
     assert_eq!(x, y);
 
     // add
-    let x = Value::Tree(vec![Value::Word(10), Value::Word(20)].into());
-    let y = add.clone().apply(x).run();
-    assert_eq!(y, Value::Word(30));
+    let x = Tree::new([10.into(), 20.into()]);
+    let y = add.clone().apply(x.into()).run();
+    assert_eq!(y, 30.into());
 
     // curry add
-    log::warn!("curry");
     let x = add.clone();
-    let n = Value::Word(2);
-    let Value::Lambda(cadd) = curry.apply(Value::Lambda(x)).run() else {
+    let n = 2;
+    let Value::Lambda(cadd) = curry.apply(x.into()).run() else {
         panic!();
     };
-    let Value::Lambda(cadd) = cadd.apply(n).run() else {
+    let Value::Lambda(cadd) = cadd.apply(n.into()).run() else {
         panic!();
     };
-    let Value::Lambda(cadd) = cadd.apply(Value::Word(10)).run() else {
+    let Value::Lambda(cadd) = cadd.apply(10.into()).run() else {
         panic!();
     };
-    let y = cadd.clone().apply(Value::Word(20)).run();
-    assert_eq!(y, Value::Word(30));
+    let y = cadd.clone().apply(20.into()).run();
+    assert_eq!(y, 30.into());
 
     // map
-    log::warn!("start");
-    let tuple = Value::Tree(
-        vec![
-            Value::Word(1),
-            Value::Word(2),
-            Value::Word(3),
-            Value::Word(4),
-        ]
-        .into(),
-    );
+    let tuple = Tree::new([1.into(), 2.into(), 3.into(), 4.into()]).into();
     let Value::Lambda(map) = map.apply(Value::Lambda(cadd)).run() else {
         panic!();
     };
@@ -83,8 +71,8 @@ async fn kmain(_: &[usize]) {
 
 pub fn eval(x: Value) -> Value {
     match x {
-        Value::Error(value) => Value::Error(eval(Arc::unwrap_or_clone(value)).into()),
-        Value::Tree(values) => Value::Tree(values.into_iter().map(|x| eval(x.clone())).collect()),
+        Value::Error(value) => Error::new(eval(value.into())).into(),
+        Value::Tree(values) => Value::Tree(values.iter().map(|x| eval(x.clone())).collect()),
         Value::Thunk(thunk) => eval(thunk.run()),
         x => x,
     }

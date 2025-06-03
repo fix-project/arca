@@ -6,20 +6,21 @@ use super::Value;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
-    page_table: AddressSpace,
+    page_table: Table,
     register_file: RegisterFile,
     descriptors: Vec<Value>,
 }
 
 impl Arca {
     pub fn new() -> Arca {
-        let page_table = AddressSpace::new();
+        let page_table = Table::default();
         let register_file = RegisterFile::new();
+        let descriptors = Vec::new();
 
         Arca {
             page_table,
             register_file,
-            descriptors: Vec::with_capacity(1024),
+            descriptors,
         }
     }
 
@@ -40,11 +41,11 @@ impl Arca {
         &mut self.register_file
     }
 
-    pub fn mappings(&self) -> &AddressSpace {
+    pub fn mappings(&self) -> &Table {
         &self.page_table
     }
 
-    pub fn mappings_mut(&mut self) -> &mut AddressSpace {
+    pub fn mappings_mut(&mut self) -> &mut Table {
         &mut self.page_table
     }
 

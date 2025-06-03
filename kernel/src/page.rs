@@ -1,3 +1,5 @@
+use core::ops::{Deref, DerefMut};
+
 use crate::prelude::*;
 use common::BuddyAllocator;
 
@@ -15,14 +17,14 @@ pub type UniquePage<T> = Box<T, &'static BuddyAllocator<'static>>;
 pub type SharedPage<T> = RefCnt<'static, T>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Page<T> {
+pub enum CowPage<T> {
     Unique(UniquePage<T>),
     Shared(SharedPage<T>),
 }
 
-impl<T> Page<T> {
+impl<T> CowPage<T> {
     pub fn new() -> Self {
-        unsafe { Page::Unique(UniquePage::new_zeroed_in(&*PHYSICAL_ALLOCATOR).assume_init()) }
+        unsafe { CowPage::Unique(UniquePage::new_zeroed_in(&*PHYSICAL_ALLOCATOR).assume_init()) }
     }
 
     pub fn unique(self) -> UniquePage<T>
@@ -30,21 +32,66 @@ impl<T> Page<T> {
         T: Clone,
     {
         match self {
-            Page::Unique(page) => page,
-            Page::Shared(page) => SharedPage::into_unique(page),
+            CowPage::Unique(page) => page,
+            CowPage::Shared(page) => SharedPage::into_unique(page),
         }
     }
 
     pub fn shared(self) -> SharedPage<T> {
         match self {
-            Page::Unique(page) => page.into(),
-            Page::Shared(page) => page,
+            CowPage::Unique(page) => page.into(),
+            CowPage::Shared(page) => page,
+        }
+    }
+
+    pub fn make_unique(&mut self)
+    where
+        T: Clone,
+    {
+        common::util::replace_with(self, |mut this| {
+            if let CowPage::Shared(page) = this {
+                this = CowPage::Unique(SharedPage::into_unique(page))
+            }
+            this
+        });
+    }
+}
+
+impl<T> Default for CowPage<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Deref for CowPage<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            CowPage::Unique(page) => page,
+            CowPage::Shared(page) => page,
         }
     }
 }
 
-impl<T> Default for Page<T> {
-    fn default() -> Self {
-        Self::new()
+impl<T: Clone> DerefMut for CowPage<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.make_unique();
+        let CowPage::Unique(page) = self else {
+            unreachable!();
+        };
+        &mut *page
+    }
+}
+
+impl<T> From<UniquePage<T>> for CowPage<T> {
+    fn from(value: UniquePage<T>) -> Self {
+        CowPage::Unique(value)
+    }
+}
+
+impl<T> From<SharedPage<T>> for CowPage<T> {
+    fn from(value: SharedPage<T>) -> Self {
+        CowPage::Shared(value)
     }
 }
