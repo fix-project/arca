@@ -2,6 +2,7 @@ pub mod syscall;
 
 use core::ops::ControlFlow;
 
+use common::message::Handle;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use syscall::handle_syscall;
 
@@ -9,7 +10,7 @@ use crate::{cpu::ExitReason, prelude::*};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Thunk {
-    pub arca: Arca,
+    pub arca: Box<Arca>,
 }
 
 impl arca::RuntimeType for Thunk {
@@ -38,8 +39,8 @@ impl arca::Thunk for Thunk {
 }
 
 impl Thunk {
-    pub fn new(arca: Arca) -> Thunk {
-        Thunk { arca }
+    pub fn new<T: Into<Box<Arca>>>(arca: T) -> Thunk {
+        Thunk { arca: arca.into() }
     }
 
     fn run_on(self, cpu: &mut Cpu) -> arca::associated::Value<Self> {
@@ -166,6 +167,30 @@ impl Thunk {
         arca.mappings_mut()
             .map(addr, arca::Entry::RWPage(CowPage::Unique(stack).into()));
         arca.registers_mut()[Register::RSP] = addr as u64 + (1 << 12);
-        Thunk { arca }
+        Thunk { arca: arca.into() }
+    }
+}
+
+impl TryFrom<Handle> for Thunk {
+    type Error = Handle;
+
+    fn try_from(value: Handle) -> Result<Self, Self::Error> {
+        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
+            let (raw, _) = value.read();
+            unsafe {
+                Ok(Thunk {
+                    arca: Box::from_raw(raw as *mut _),
+                })
+            }
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<Thunk> for Handle {
+    fn from(value: Thunk) -> Self {
+        let ptr = Box::into_raw(value.arca);
+        Handle::new(DataType::Thunk, (ptr as usize, 0))
     }
 }

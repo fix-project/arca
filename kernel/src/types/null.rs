@@ -1,4 +1,5 @@
 use arca::DataType;
+use common::message::Handle;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Null;
@@ -24,3 +25,21 @@ impl arca::ValueType for Null {
 }
 
 impl arca::Null for Null {}
+
+impl TryFrom<Handle> for Null {
+    type Error = Handle;
+
+    fn try_from(value: Handle) -> Result<Self, Self::Error> {
+        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
+            Ok(Null)
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<Null> for Handle {
+    fn from(_: Null) -> Self {
+        Handle::new(DataType::Null, (0, 0))
+    }
+}

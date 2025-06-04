@@ -55,6 +55,21 @@ impl<T> CowPage<T> {
             this
         });
     }
+
+    pub fn into_raw(this: Self) -> (bool, *mut T) {
+        match this {
+            CowPage::Unique(page) => (true, Box::into_raw(page)),
+            CowPage::Shared(page) => (false, RefCnt::into_raw(page)),
+        }
+    }
+
+    pub unsafe fn from_raw(unique: bool, ptr: *mut T) -> Self {
+        if unique {
+            CowPage::Unique(Box::from_raw_in(ptr, BuddyAllocator))
+        } else {
+            CowPage::Shared(RefCnt::from_raw(ptr))
+        }
+    }
 }
 
 impl<T> Default for CowPage<T> {

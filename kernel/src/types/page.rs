@@ -1,3 +1,5 @@
+use common::message::Handle;
+
 use crate::paging::Impossible;
 use crate::prelude::*;
 
@@ -116,5 +118,57 @@ impl TryFrom<Page> for CowPage<Page1GB> {
             Page::Page1GB(page) => Ok(page),
             _ => Err(value),
         }
+    }
+}
+
+impl TryFrom<Handle> for Page {
+    type Error = Handle;
+
+    fn try_from(value: Handle) -> Result<Self, Self::Error> {
+        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
+            let (ptr, size) = value.read();
+            let unique = size & 1 == 1;
+            let size = size & !1;
+            unsafe {
+                Ok(match size {
+                    val if val == 1 << 12 => {
+                        Page::Page4KB(CowPage::from_raw(unique, ptr as *mut _))
+                    }
+                    val if val == 1 << 21 => {
+                        Page::Page2MB(CowPage::from_raw(unique, ptr as *mut _))
+                    }
+                    val if val == 1 << 30 => {
+                        Page::Page1GB(CowPage::from_raw(unique, ptr as *mut _))
+                    }
+                    _ => unreachable!(),
+                })
+            }
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<Page> for Handle {
+    fn from(value: Page) -> Self {
+        let mut size = value.size();
+        let (unique, ptr) = match value {
+            Page::Page4KB(page) => {
+                let (unique, ptr) = CowPage::into_raw(page);
+                (unique, ptr as usize)
+            }
+            Page::Page2MB(page) => {
+                let (unique, ptr) = CowPage::into_raw(page);
+                (unique, ptr as usize)
+            }
+            Page::Page1GB(page) => {
+                let (unique, ptr) = CowPage::into_raw(page);
+                (unique, ptr as usize)
+            }
+        };
+        if unique {
+            size |= 1;
+        }
+        Handle::new(DataType::Page, (ptr, size))
     }
 }

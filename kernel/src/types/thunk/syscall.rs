@@ -304,7 +304,7 @@ pub fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<u32, u3
             let (mut unloaded, cpu) = arca.unload_with_cpu();
             let mut copy = unloaded.clone();
             copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
-            unloaded.descriptors_mut()[idx] = Value::Thunk(Thunk { arca: copy });
+            unloaded.descriptors_mut()[idx] = Value::Thunk(Thunk::new(copy));
             unloaded.load(cpu)
         });
         Ok(0)
@@ -320,7 +320,7 @@ pub fn sys_continuation_lambda(args: [u64; 5], arca: &mut LoadedArca) -> Result<
             let (mut unloaded, cpu) = arca.unload_with_cpu();
             let mut copy = unloaded.clone();
             copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
-            unloaded.descriptors_mut()[idx] = Value::Lambda(Lambda { arca: copy, idx });
+            unloaded.descriptors_mut()[idx] = Value::Lambda(Lambda::new(copy, idx));
             unloaded.load(cpu)
         });
         Ok(0)
@@ -392,7 +392,7 @@ pub fn sys_return_continuation_lambda(
     } else {
         arca.registers_mut()[Register::RAX] = 0;
         ControlFlow::Break(Value::Lambda(Lambda {
-            arca: arca.take(),
+            arca: arca.take().into(),
             idx,
         }))
     }
@@ -409,7 +409,7 @@ pub fn sys_perform_effect(args: [u64; 5], arca: LoadedArca) -> Result<Value, (Lo
         arca.registers_mut()[Register::RAX] = 0;
         Ok(Value::Tree(Tree::new(vec![
             arca.descriptors().get(src_idx).cloned().unwrap(),
-            Value::Lambda(Lambda { arca, idx: dst_idx }),
+            Value::Lambda(Lambda::new(arca, dst_idx)),
         ])))
     }
 }

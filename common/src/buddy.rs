@@ -31,8 +31,9 @@ static BUDDY: LazyLock<BuddyAllocatorImpl> = LazyLock::new(|| {
 });
 
 #[cfg(feature = "std")]
-pub fn initialize(size: usize) {
-    LazyLock::set(&BUDDY, BuddyAllocatorImpl::new(size)).unwrap();
+pub fn init(size: usize) {
+    LazyLock::set(&BUDDY, BuddyAllocatorImpl::new(size))
+        .expect("buddy allocator was already initialized");
 }
 
 pub fn export() -> BuddyAllocatorRawData {
@@ -42,7 +43,8 @@ pub fn export() -> BuddyAllocatorRawData {
 /// # Safety
 /// The argument to this function must have come from a call to export.
 pub unsafe fn import(raw: BuddyAllocatorRawData) {
-    LazyLock::set(&BUDDY, BuddyAllocatorImpl::from_raw_parts(raw)).unwrap();
+    LazyLock::set(&BUDDY, BuddyAllocatorImpl::from_raw_parts(raw))
+        .expect("buddy allocator was already initialized");
 }
 
 pub fn wait() {

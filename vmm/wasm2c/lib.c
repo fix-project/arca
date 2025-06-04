@@ -27,16 +27,16 @@ void puts(char *s) {
 int64_t syscall(uint64_t num, ...);
 
 int64_t resize(size_t len) {
-  return syscall(0x04, len);
+  return syscall(4, len);
 }
 
 int64_t prompt(size_t dst) {
-  return syscall(0x57, dst);
+  return syscall(24, dst);
 }
 
 [[noreturn]] void arca_exit(size_t src) {
   while (true) {
-    syscall(0x10, src);
+    syscall(5, src);
     asm("ud2");
   }
 }
@@ -52,7 +52,7 @@ uint64_t next_fd() {
 
 wasm_rt_externref_t w2c_fixpoint_create_blob_i32(struct w2c_fixpoint *instance, uint32_t val) {
   uint64_t created = next_fd();
-  syscall(0x60, created, val);
+  syscall(8, created, val);
   return created;
 }
 

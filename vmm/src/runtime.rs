@@ -303,7 +303,7 @@ impl Runtime {
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
 
-        common::buddy::initialize(ram);
+        common::buddy::init(ram);
 
         let mem_region = kvm_userspace_memory_region {
             slot: 0,

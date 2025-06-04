@@ -1,5 +1,7 @@
 use core::ops::{Deref, DerefMut};
 
+use common::message::Handle;
+
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -64,5 +66,30 @@ impl FromIterator<Value> for Tree {
     fn from_iter<T: IntoIterator<Item = Value>>(iter: T) -> Self {
         let v: Box<[Value]> = iter.into_iter().collect();
         Tree::new(v)
+    }
+}
+
+impl TryFrom<Handle> for Tree {
+    type Error = Handle;
+
+    fn try_from(value: Handle) -> Result<Self, Self::Error> {
+        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
+            let raw = core::ptr::from_raw_parts_mut(value.read().0 as *mut (), value.read().1);
+            unsafe {
+                Ok(Tree {
+                    contents: Box::from_raw(raw),
+                })
+            }
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<Tree> for Handle {
+    fn from(value: Tree) -> Self {
+        let raw = Box::into_raw(value.contents);
+        let (ptr, len) = raw.to_raw_parts();
+        Handle::new(DataType::Tree, (ptr as usize, len))
     }
 }

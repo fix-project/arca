@@ -1,5 +1,7 @@
 use core::ops::{Deref, DerefMut};
 
+use common::message::Handle;
+
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -60,5 +62,30 @@ impl From<Vec<u8>> for Blob {
 impl From<String> for Blob {
     fn from(value: String) -> Self {
         Blob::new(value.into_bytes())
+    }
+}
+
+impl TryFrom<Handle> for Blob {
+    type Error = Handle;
+
+    fn try_from(value: Handle) -> Result<Self, Self::Error> {
+        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
+            let raw = core::ptr::from_raw_parts_mut(value.read().0 as *mut (), value.read().1);
+            unsafe {
+                Ok(Blob {
+                    contents: Box::from_raw(raw),
+                })
+            }
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<Blob> for Handle {
+    fn from(value: Blob) -> Self {
+        let raw = Box::into_raw(value.contents);
+        let (ptr, len) = raw.to_raw_parts();
+        Handle::new(DataType::Blob, (ptr as usize, len))
     }
 }

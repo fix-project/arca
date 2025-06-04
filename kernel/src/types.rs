@@ -251,72 +251,35 @@ impl TryFrom<Value> for Thunk {
 }
 
 impl From<Handle> for Value {
-    fn from(_value: Handle) -> Self {
-        todo!();
-        // unsafe {
-        //     match value.datatype {
-        //         Type::Null => Value::Null,
-        //         Type::Error => Value::Error(Arc::from_raw(value.parts[0] as _)),
-        //         Type::Word => Value::Word(value.get_word().unwrap()),
-        //         Type::Atom => Value::Atom(Arc::from_raw(value.parts[0] as _)),
-        //         Type::Blob => Value::Blob(Arc::from_raw(core::ptr::from_raw_parts(
-        //             value.parts[0] as *const u8,
-        //             value.parts[1],
-        //         ))),
-        //         Type::Tree => Value::Tree(Arc::from_raw(core::ptr::from_raw_parts(
-        //             value.parts[0] as *const Value,
-        //             value.parts[1],
-        //         ))),
-        //         Type::Page => Value::Page(Arc::from_raw(value.parts[0] as _)),
-        //         Type::PageTable => Value::PageTable(Arc::from_raw(value.parts[0] as _)),
-        //         Type::Lambda => Value::Lambda(*Box::from_raw(value.parts[0] as _)),
-        //         Type::Thunk => Value::Thunk(*Box::from_raw(value.parts[0] as _)),
-        //     }
-        // }
+    fn from(value: Handle) -> Self {
+        match value.datatype() {
+            DataType::Null => Value::Null,
+            DataType::Word => Value::Word(Word::try_from(value).unwrap()),
+            DataType::Error => Value::Error(Error::try_from(value).unwrap()),
+            DataType::Atom => Value::Atom(Atom::try_from(value).unwrap()),
+            DataType::Blob => Value::Blob(Blob::try_from(value).unwrap()),
+            DataType::Tree => Value::Tree(Tree::try_from(value).unwrap()),
+            DataType::Page => Value::Page(Page::try_from(value).unwrap()),
+            DataType::Table => Value::Table(Table::try_from(value).unwrap()),
+            DataType::Lambda => Value::Lambda(Lambda::try_from(value).unwrap()),
+            DataType::Thunk => Value::Thunk(Thunk::try_from(value).unwrap()),
+        }
     }
 }
 
 impl From<Value> for Handle {
-    fn from(_value: Value) -> Self {
-        todo!();
-        // match value {
-        //     Value::Null => Handle::null(),
-        //     Value::Error(value) => Handle {
-        //         parts: [Arc::into_raw(value) as usize, 0],
-        //         datatype: Type::Error,
-        //     },
-        //     Value::Word(value) => Handle::word(value),
-        //     Value::Atom(value) => Handle {
-        //         parts: [Arc::into_raw(value) as usize, 0],
-        //         datatype: Type::Atom,
-        //     },
-        //     Value::Blob(value) => {
-        //         let parts = Arc::into_raw(value).to_raw_parts();
-        //         unsafe { Handle::blob(parts.0 as usize, parts.1) }
-        //     }
-        //     Value::Tree(value) => {
-        //         let parts = Arc::into_raw(value).to_raw_parts();
-        //         Handle {
-        //             parts: [parts.0 as usize, parts.1],
-        //             datatype: Type::Tree,
-        //         }
-        //     }
-        //     Value::Page(value) => Handle {
-        //         parts: [Arc::into_raw(value) as usize, 0],
-        //         datatype: Type::Page,
-        //     },
-        //     Value::PageTable(value) => Handle {
-        //         parts: [Arc::into_raw(value) as usize, 0],
-        //         datatype: Type::PageTable,
-        //     },
-        //     Value::Lambda(value) => Handle {
-        //         parts: [Box::into_raw(value.into()) as usize, 0],
-        //         datatype: Type::Lambda,
-        //     },
-        //     Value::Thunk(value) => Handle {
-        //         parts: [Box::into_raw(value.into()) as usize, 0],
-        //         datatype: Type::Thunk,
-        //     },
-        // }
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Null => Null.into(),
+            Value::Word(value) => value.into(),
+            Value::Error(value) => value.into(),
+            Value::Atom(value) => value.into(),
+            Value::Blob(value) => value.into(),
+            Value::Tree(value) => value.into(),
+            Value::Page(value) => value.into(),
+            Value::Table(value) => value.into(),
+            Value::Lambda(value) => value.into(),
+            Value::Thunk(value) => value.into(),
+        }
     }
 }

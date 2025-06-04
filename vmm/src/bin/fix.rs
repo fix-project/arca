@@ -103,21 +103,20 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(o)
 }
 
-#[async_std::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let elf = compile(MODULE_WAT.as_bytes())?;
-    let client = ArcaRuntime::new(1 << 32);
+    let arca = vmm::client::runtime();
 
     log::info!("create blob");
-    let _elf = client.create_blob(&elf);
+    let elf = arca.create_blob(&elf);
     log::info!("create thunk");
-    let _thunk: Ref<Thunk> = todo!();
-    // log::info!("run thunk");
-    // let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
-    // let thunk = lambda.apply(client.create_word(0xcafeb0ba).into());
-    // let word: Ref<Word> = thunk.run().try_into().unwrap();
-    // log::info!("{:?}", word.read());
+    let thunk: Ref<Thunk> = elf.into_thunk();
+    log::info!("run thunk");
+    let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
+    let thunk = lambda.apply(arca.create_word(0xcafeb0ba).into());
+    let word: Ref<Word> = thunk.run().try_into().unwrap();
+    log::info!("{:?}", word.read());
 
-    // Ok(())
+    Ok(())
 }

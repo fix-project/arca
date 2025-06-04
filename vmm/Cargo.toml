@@ -26,7 +26,6 @@ env_logger = "0.11.6"
 log = "0.4.25"
 rustc-demangle = "0.1.24"
 anyhow = "1.0.97"
-async-std = { version = "1.13.1", features = ["attributes"] }
 include_directory = "0.1.1"
 tempfile = "3.20.0"
 ouroboros = "0.18.5"

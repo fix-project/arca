@@ -1,8 +1,11 @@
+use core::ptr::Pointee;
+
 use arca::DataType;
 
-use crate::sendable::Sendable;
+use crate::{sendable::Sendable, BuddyAllocator};
 
 extern crate alloc;
+use alloc::boxed::Box;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -21,6 +24,17 @@ impl Handle {
             parts: self.parts,
             datatype: self.datatype,
         }
+    }
+
+    pub fn new(datatype: DataType, data: (usize, usize)) -> Self {
+        Handle {
+            parts: [data.0, data.1],
+            datatype,
+        }
+    }
+
+    pub fn read(&self) -> (usize, usize) {
+        (self.parts[0], self.parts[1])
     }
 
     pub fn null() -> Handle {
@@ -56,6 +70,24 @@ impl Handle {
             parts: [ptr, len],
             datatype: DataType::Blob,
         }
+    }
+
+    pub fn from_value<T: arca::ValueType + Pointee<Metadata = ()>>(value: T) -> Handle {
+        let value = Box::new_in(value, BuddyAllocator);
+        let raw = Box::into_raw(value);
+        Handle {
+            parts: [raw as usize, 0],
+            datatype: T::DATATYPE,
+        }
+    }
+
+    pub fn to_value<T: arca::ValueType + Pointee<Metadata = ()>>(handle: Handle) -> T {
+        let raw = handle.parts[0] as *mut _;
+        let value = unsafe {
+            assert_eq!(handle.datatype(), T::DATATYPE);
+            Box::from_raw_in(raw, BuddyAllocator)
+        };
+        *value
     }
 
     pub fn datatype(&self) -> DataType {
@@ -119,8 +151,10 @@ pub enum Request {
         memory: Handle,
         descriptors: Handle,
     },
+    LoadElf(Handle),
     Apply(Handle, Handle),
     Run(Handle),
+    TreePut(Handle, usize, Handle),
 }
 
 unsafe impl Sendable for Request {}
@@ -130,6 +164,7 @@ unsafe impl Sendable for Request {}
 pub enum Response {
     Ack,
     Handle(Handle),
+    Type(DataType),
     Span { ptr: usize, len: usize },
 }
 

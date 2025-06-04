@@ -1,10 +1,7 @@
-use std::future::Future;
 use std::marker::PhantomData;
 use std::num::NonZero;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 pub use arca::{
@@ -14,12 +11,56 @@ pub use arca::{
 
 use common::message::{self, *};
 use common::ringbuffer::{self, Error as RingBufferError, Receiver, Result, Sender};
+use common::util::initcell::LazyLock;
 use common::BuddyAllocator;
 
 use crate::runtime::Runtime;
 extern crate alloc;
 
 const SERVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_server"));
+
+static RUNTIME: LazyLock<ArcaRuntime> = LazyLock::new(|| ArcaRuntime::new(1 << 32));
+
+pub fn init(size: usize) {
+    LazyLock::set(&RUNTIME, ArcaRuntime::new(size)).expect("runtime was already initialized");
+}
+
+pub fn wait() {
+    LazyLock::wait(&RUNTIME);
+}
+
+pub fn runtime() -> &'static ArcaRuntime {
+    &RUNTIME
+}
+
+struct SyncFlag<T> {
+    flag: Mutex<Option<T>>,
+    condvar: Condvar,
+}
+
+impl<T> SyncFlag<T> {
+    pub fn new() -> Self {
+        Self {
+            flag: Mutex::new(None),
+            condvar: Condvar::new(),
+        }
+    }
+
+    pub fn wait(&self) -> T {
+        let mutex = self.flag.lock().unwrap();
+        let mut mutex = self
+            .condvar
+            .wait_while(mutex, |flag: &mut Option<T>| flag.is_none())
+            .unwrap();
+        mutex.take().unwrap()
+    }
+
+    pub fn notify(&self, value: T) {
+        let mut mutex = self.flag.lock().unwrap();
+        *mutex = Some(value);
+        self.condvar.notify_one();
+    }
+}
 
 struct Synchronizer {
     exit: Arc<AtomicBool>,
@@ -49,15 +90,11 @@ impl Synchronizer {
                 };
                 let MetaResponse {
                     function,
-                    context,
+                    context: _,
                     body,
                 } = response;
-                let waker: Arc<Waker> = unsafe { Arc::from_raw(function as *const _) };
-                let result: Arc<Mutex<Option<Response>>> =
-                    unsafe { Arc::from_raw(context as *const _) };
-                let mut option = result.lock().unwrap();
-                *option = Some(body);
-                waker.wake_by_ref();
+                let sync: Arc<SyncFlag<Response>> = unsafe { Arc::from_raw(function as *const _) };
+                sync.notify(body);
             }
             receiver.hangup();
         })));
@@ -69,52 +106,23 @@ impl Synchronizer {
         }
     }
 
-    fn send(&self, body: Request) -> ClientFuture {
-        ClientFuture {
-            sender: self.sender.clone(),
-            body: Mutex::new(Some(body)),
-            result: Arc::new(Mutex::new(None)),
-        }
+    fn send(&self, body: Request) -> Response {
+        let sync: Arc<SyncFlag<Response>> = Arc::new(SyncFlag::new());
+        let mut sender = self.sender.lock().unwrap();
+        sender
+            .send(MetaRequest {
+                function: Arc::into_raw(sync.clone()) as usize,
+                context: 0,
+                body,
+            })
+            .unwrap();
+        sync.wait()
     }
 
     fn shutdown(&self) {
         self.exit.store(true, Ordering::SeqCst);
         let sender = self.sender.lock().unwrap();
         sender.hangup();
-    }
-}
-
-struct ClientFuture {
-    sender: Arc<Mutex<Sender<MetaRequest>>>,
-    body: Mutex<Option<Request>>,
-    result: Arc<Mutex<Option<Response>>>,
-}
-
-impl Future for ClientFuture {
-    type Output = Result<Response>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut result = self.result.lock().unwrap();
-        if let Some(result) = result.take() {
-            Poll::Ready(Ok(result))
-        } else {
-            let mut sender = self.sender.lock().unwrap();
-            let waker = cx.waker();
-            let waker = Arc::new(waker.clone());
-            let waker = Arc::into_raw(waker);
-            let result = self.result.clone();
-            let result = Arc::into_raw(result);
-            let mut body = self.body.lock().unwrap();
-            if let Err(e) = sender.send(MetaRequest {
-                function: waker as usize,
-                context: result as usize,
-                body: body.take().unwrap(),
-            }) {
-                Poll::Ready(Err(e))
-            } else {
-                Poll::Pending
-            }
-        }
     }
 }
 
@@ -150,16 +158,46 @@ impl Client {
     }
 
     fn fullsend(&self, message: Request) -> Result<Response> {
-        let f = self.synchronizer.send(message);
-        core::mem::drop(f);
-        todo!();
+        Ok(self.synchronizer.send(message))
+    }
+
+    fn request_handle(&self, message: Request) -> Handle {
+        let Response::Handle(h) = self.fullsend(message).unwrap() else {
+            panic!("expected handle");
+        };
+        h
+    }
+
+    fn request_ref<T>(self: &Arc<Self>, message: Request) -> Ref<T>
+    where
+        Ref<T>: arca::ValueType,
+    {
+        let handle = self.request_handle(message);
+        self.new_ref(handle)
+    }
+
+    fn request_value(self: &Arc<Self>, message: Request) -> Ref<Value> {
+        let handle = self.request_handle(message);
+        self.new_value_ref(handle)
     }
 
     pub fn shutdown(&self) {
         self.synchronizer.shutdown();
     }
 
-    fn new_ref<T>(self: &Arc<Self>, handle: Handle) -> Ref<T> {
+    fn new_ref<T>(self: &Arc<Self>, handle: Handle) -> Ref<T>
+    where
+        Ref<T>: arca::ValueType,
+    {
+        assert_eq!(handle.datatype(), Ref::<T>::DATATYPE);
+        Ref {
+            client: self.clone(),
+            handle: Some(handle),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn new_value_ref(self: &Arc<Self>, handle: Handle) -> Ref<Value> {
         Ref {
             client: self.clone(),
             handle: Some(handle),
@@ -168,12 +206,13 @@ impl Client {
     }
 }
 
+#[derive(Debug)]
 pub struct ArcaRuntime {
     client: Arc<Client>,
 }
 
 impl ArcaRuntime {
-    pub fn new(memory: usize) -> Self {
+    fn new(memory: usize) -> Self {
         let client = Client::new(memory);
         Self {
             client: Arc::new(client),
@@ -224,26 +263,27 @@ impl arca::Runtime for ArcaRuntime {
         }
     }
 
-    fn create_atom(&self, data: &[u8]) -> Self::Atom {
-        let ptr = BuddyAllocator.to_offset(data.as_ptr());
-        let len = data.len();
-        let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateAtom { ptr, len })
-        else {
-            panic!("could not create Atom");
-        };
-        Self::Atom {
-            client: self.client.clone(),
-            handle: Some(handle),
-            _phantom: PhantomData,
-        }
+    fn create_atom(&self, _data: &[u8]) -> Self::Atom {
+        todo!();
+        // let ptr = BuddyAllocator.to_offset(data.as_ptr());
+        // let len = data.len();
+        // let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateAtom { ptr, len })
+        // else {
+        //     panic!("could not create Atom");
+        // };
+        // Self::Atom {
+        //     client: self.client.clone(),
+        //     handle: Some(handle),
+        //     _phantom: PhantomData,
+        // }
     }
 
     fn create_blob(&self, data: &[u8]) -> Self::Blob {
         let mut v = Vec::new_in(BuddyAllocator);
         v.extend_from_slice(data);
         let data = v.into_boxed_slice();
-        let ptr = BuddyAllocator.to_offset(data.as_ptr());
-        let len = data.len();
+        let (ptr, len) = Box::into_raw(data).to_raw_parts();
+        let ptr = BuddyAllocator.to_offset(ptr);
         let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateBlob { ptr, len })
         else {
             panic!("could not create Blob");
@@ -410,7 +450,7 @@ impl arca::Null for Ref<Null> {}
 
 impl arca::Word for Ref<Word> {
     fn read(&self) -> u64 {
-        todo!()
+        self.handle.as_ref().unwrap().get_word().unwrap()
     }
 }
 
@@ -440,6 +480,13 @@ impl arca::Blob for Ref<Blob> {
     }
 }
 
+impl Ref<Blob> {
+    pub fn into_thunk(mut self) -> Ref<Thunk> {
+        self.client
+            .request_ref(Request::LoadElf(self.handle.take().unwrap()))
+    }
+}
+
 impl arca::Tree for Ref<Tree> {
     fn take(&mut self, _index: usize) -> arca::associated::Value<Self> {
         todo!()
@@ -447,10 +494,14 @@ impl arca::Tree for Ref<Tree> {
 
     fn put(
         &mut self,
-        _index: usize,
-        _value: arca::associated::Value<Self>,
+        index: usize,
+        mut value: arca::associated::Value<Self>,
     ) -> arca::associated::Value<Self> {
-        todo!()
+        self.client.request_value(Request::TreePut(
+            unsafe { self.handle.as_ref().unwrap().copy() },
+            index,
+            value.handle.take().unwrap(),
+        ))
     }
 
     fn len(&self) -> usize {
@@ -491,8 +542,14 @@ impl arca::Table for Ref<Table> {
 }
 
 impl arca::Lambda for Ref<Lambda> {
-    fn apply(self, _argument: arca::associated::Value<Self>) -> arca::associated::Thunk<Self> {
-        todo!()
+    fn apply(
+        mut self,
+        mut argument: arca::associated::Value<Self>,
+    ) -> arca::associated::Thunk<Self> {
+        self.client.request_ref(Request::Apply(
+            self.handle.take().unwrap(),
+            argument.handle.take().unwrap(),
+        ))
     }
 
     fn read(self) -> (arca::associated::Thunk<Self>, usize) {
@@ -501,8 +558,9 @@ impl arca::Lambda for Ref<Lambda> {
 }
 
 impl arca::Thunk for Ref<Thunk> {
-    fn run(self) -> arca::associated::Value<Self> {
-        todo!()
+    fn run(mut self) -> arca::associated::Value<Self> {
+        self.client
+            .request_value(Request::Run(self.handle.take().unwrap()))
     }
 
     fn read(
@@ -568,28 +626,43 @@ where
     Ref<T>: ValueType,
 {
     fn from(mut value: Ref<T>) -> Self {
-        value.client.new_ref(value.handle.take().unwrap())
+        value.client.new_value_ref(value.handle.take().unwrap())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate test;
+
     use super::*;
+    use test::Bencher;
 
     const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+    const NULL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_null"));
 
     #[test]
     pub fn test_client() {
-        let client = ArcaRuntime::new(1 << 32);
-        let _add = client.create_blob(ADD_ELF);
-        let _add: Ref<Thunk> = todo!();
-        // let x = client.create_word(1);
-        // let y = client.create_word(2);
-        // let mut arg = client.create_tree(2);
-        // arg.put(0, x.into());
-        // arg.put(1, x.into());
-        // let add: Ref<Lambda> = add.run().try_into().unwrap();
-        // let sum: Ref<Word> = add.apply(arg.into()).run().try_into().unwrap();
-        // assert_eq!(sum.read(), 3);
+        let arca = runtime();
+        let add = arca.create_blob(ADD_ELF);
+        let add = add.into_thunk();
+        let add: Ref<Lambda> = add.run().try_into().unwrap();
+        let x = arca.create_word(1);
+        let y = arca.create_word(2);
+        let mut arg = arca.create_tree(2);
+        arg.put(0, x.into());
+        arg.put(1, y.into());
+        let sum: Ref<Word> = add.apply(arg.into()).run().try_into().unwrap();
+        assert_eq!(sum.read(), 3);
+    }
+
+    #[bench]
+    pub fn bench_client(b: &mut Bencher) {
+        let arca = runtime();
+        let null = arca.create_blob(NULL_ELF);
+        let null = null.into_thunk();
+        b.iter(|| {
+            let null = null.clone();
+            let _: Ref<Null> = null.run().try_into().unwrap();
+        });
     }
 }
