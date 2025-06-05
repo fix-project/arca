@@ -18,10 +18,18 @@ impl Tree {
         let v = vec![Value::Null; len];
         Tree { contents: v.into() }
     }
+
+    pub fn into_inner(self) -> Box<[Value]> {
+        self.contents
+    }
 }
 
 impl arca::RuntimeType for Tree {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Tree {

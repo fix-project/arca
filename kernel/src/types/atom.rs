@@ -19,6 +19,10 @@ impl Atom {
 
 impl arca::RuntimeType for Atom {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Atom {

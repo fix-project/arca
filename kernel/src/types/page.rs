@@ -1,3 +1,5 @@
+use core::ops::{Deref, DerefMut};
+
 use common::message::Handle;
 
 use crate::paging::Impossible;
@@ -28,6 +30,10 @@ impl Page {
 
 impl arca::RuntimeType for Page {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Page {
@@ -37,22 +43,12 @@ impl arca::ValueType for Page {
 impl arca::Page for Page {
     fn read(&self, offset: usize, buffer: &mut [u8]) {
         let len = core::cmp::min(buffer.len(), self.size() - offset);
-        let src = match self {
-            Page::Page4KB(page) => &page[..],
-            Page::Page2MB(page) => &page[..],
-            Page::Page1GB(page) => &page[..],
-        };
-        buffer[..len].copy_from_slice(&src[offset..offset + len]);
+        buffer[..len].copy_from_slice(&self[offset..offset + len]);
     }
 
     fn write(&mut self, offset: usize, buffer: &[u8]) {
         let len = core::cmp::min(buffer.len(), self.size() - offset);
-        let dst = match self {
-            Page::Page4KB(page) => &mut page[..],
-            Page::Page2MB(page) => &mut page[..],
-            Page::Page1GB(page) => &mut page[..],
-        };
-        dst[offset..offset + len].copy_from_slice(buffer);
+        self[offset..offset + len].copy_from_slice(buffer);
     }
 
     fn size(&self) -> usize {
@@ -127,8 +123,8 @@ impl TryFrom<Handle> for Page {
     fn try_from(value: Handle) -> Result<Self, Self::Error> {
         if value.datatype() == <Self as arca::ValueType>::DATATYPE {
             let (ptr, size) = value.read();
-            let unique = size & 1 == 1;
-            let size = size & !1;
+            let unique = ptr & 1 == 1;
+            let ptr = ptr & !1;
             unsafe {
                 Ok(match size {
                     val if val == 1 << 12 => {
@@ -151,8 +147,8 @@ impl TryFrom<Handle> for Page {
 
 impl From<Page> for Handle {
     fn from(value: Page) -> Self {
-        let mut size = value.size();
-        let (unique, ptr) = match value {
+        let size = value.size();
+        let (unique, mut ptr) = match value {
             Page::Page4KB(page) => {
                 let (unique, ptr) = CowPage::into_raw(page);
                 (unique, ptr as usize)
@@ -167,8 +163,30 @@ impl From<Page> for Handle {
             }
         };
         if unique {
-            size |= 1;
+            ptr |= 1;
         }
         Handle::new(DataType::Page, (ptr, size))
+    }
+}
+
+impl Deref for Page {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Page::Page4KB(page) => &page[..],
+            Page::Page2MB(page) => &page[..],
+            Page::Page1GB(page) => &page[..],
+        }
+    }
+}
+
+impl DerefMut for Page {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Page::Page4KB(page) => &mut page[..],
+            Page::Page2MB(page) => &mut page[..],
+            Page::Page1GB(page) => &mut page[..],
+        }
     }
 }

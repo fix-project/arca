@@ -1,4 +1,4 @@
-use arca::DataType;
+use crate::prelude::*;
 use common::message::Handle;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -18,6 +18,10 @@ impl Default for Null {
 
 impl arca::RuntimeType for Null {
     type Runtime = super::Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Null {

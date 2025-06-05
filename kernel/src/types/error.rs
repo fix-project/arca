@@ -17,6 +17,10 @@ impl Error {
 
 impl arca::RuntimeType for Error {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Error {

@@ -17,6 +17,10 @@ impl Blob {
 
 impl arca::RuntimeType for Blob {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Blob {

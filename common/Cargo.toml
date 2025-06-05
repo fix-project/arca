@@ -17,3 +17,4 @@ snafu = { version="0.8.5", default-features=false }
 macros = { path = "../macros", optional=true }
 arca = { path = "../arca" }
 libc = { version="0.2.164", optional=true }
+elf = { version = "0.7.4", default-features = false }

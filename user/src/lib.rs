@@ -336,6 +336,10 @@ impl<T> Drop for Ref<T> {
 
 impl<T> arca::RuntimeType for Ref<T> {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::Null for Ref<Null> {}

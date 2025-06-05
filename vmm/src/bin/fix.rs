@@ -108,10 +108,8 @@ fn main() -> anyhow::Result<()> {
     let elf = compile(MODULE_WAT.as_bytes())?;
     let arca = vmm::client::runtime();
 
-    log::info!("create blob");
-    let elf = arca.create_blob(&elf);
     log::info!("create thunk");
-    let thunk: Ref<Thunk> = elf.into_thunk();
+    let thunk: Ref<Thunk> = arca.load_elf(&elf);
     log::info!("run thunk");
     let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
     let thunk = lambda.apply(arca.create_word(0xcafeb0ba).into());

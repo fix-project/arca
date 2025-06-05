@@ -93,7 +93,7 @@ impl Server {
             }
             Request::CreatePage { size } => Response::Handle(Value::Page(Page::new(size)).into()),
             Request::CreateTable { size } => {
-                todo!();
+                Response::Handle(Value::Table(Table::new(size)).into())
             }
             Request::CreateLambda { thunk, index } => {
                 todo!();
@@ -103,14 +103,25 @@ impl Server {
                 memory,
                 descriptors,
             } => {
-                todo!();
-            }
-            Request::LoadElf(handle) => {
-                let Value::Blob(blob) = handle.into() else {
+                let Value::Blob(registers) = registers.into() else {
                     unreachable!();
                 };
-                let thunk = Thunk::from_elf(&blob);
-                Response::Handle(Value::Thunk(thunk).into())
+                let Value::Table(memory) = memory.into() else {
+                    unreachable!();
+                };
+                let Value::Tree(descriptors) = descriptors.into() else {
+                    unreachable!();
+                };
+                let registers: Vec<u64> = registers
+                    .chunks(8)
+                    .map(|x| u64::from_ne_bytes(x.try_into().unwrap()))
+                    .collect();
+                let mut register_file = RegisterFile::new();
+                for (i, x) in registers.iter().take(18).enumerate() {
+                    register_file[i] = *x;
+                }
+                let arca = Arca::new_with(register_file, memory, descriptors);
+                Response::Handle(Value::Thunk(Thunk::new(arca)).into())
             }
             Request::Run(handle) => {
                 let Value::Thunk(thunk) = handle.into() else {
@@ -150,6 +161,125 @@ impl Server {
                 let old = tree.put(index, argument.into());
                 core::mem::forget(tree);
                 Response::Handle(old.into())
+            }
+            Request::TablePut(table, index, entry) => {
+                let Value::Table(mut table) = table.into() else {
+                    unreachable!();
+                };
+                let old = match entry {
+                    Some((false, value)) if value.datatype() == DataType::Page => table
+                        .put(
+                            index,
+                            arca::Entry::ROPage(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((true, value)) if value.datatype() == DataType::Page => table
+                        .put(
+                            index,
+                            arca::Entry::RWPage(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((false, value)) if value.datatype() == DataType::Table => table
+                        .put(
+                            index,
+                            arca::Entry::ROTable(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    Some((true, value)) if value.datatype() == DataType::Table => table
+                        .put(
+                            index,
+                            arca::Entry::RWTable(
+                                value.try_into().unwrap_or_else(|_| unreachable!()),
+                            ),
+                        )
+                        .unwrap_or_else(|_| unreachable!()),
+                    None => table
+                        .put(index, arca::Entry::Null(Null))
+                        .unwrap_or_else(|_| unreachable!()),
+                    _ => unreachable!(),
+                };
+                let old = match old {
+                    arca::Entry::Null(_) => None,
+                    arca::Entry::ROPage(page) => Some((false, page.into())),
+                    arca::Entry::RWPage(page) => Some((true, page.into())),
+                    arca::Entry::ROTable(table) => Some((false, table.into())),
+                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                };
+                core::mem::forget(table);
+                Response::Entry(old)
+            }
+            Request::TableTake(table, index) => {
+                let Value::Table(mut table) = table.into() else {
+                    unreachable!();
+                };
+                let old = table.take(index);
+                let old = match old {
+                    arca::Entry::Null(_) => None,
+                    arca::Entry::ROPage(page) => Some((false, page.into())),
+                    arca::Entry::RWPage(page) => Some((true, page.into())),
+                    arca::Entry::ROTable(table) => Some((false, table.into())),
+                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                };
+                core::mem::forget(table);
+                Response::Entry(old)
+            }
+            Request::ReadBlob(handle) => {
+                let Value::Blob(blob) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr = blob.as_ptr();
+                let len = blob.len();
+                let ptr = BuddyAllocator.to_offset(ptr);
+                core::mem::forget(blob);
+                Response::Span { ptr, len }
+            }
+            Request::ReadPage(handle) => {
+                let Value::Page(page) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr = page.as_ptr();
+                let len = page.len();
+                let ptr = BuddyAllocator.to_offset(ptr);
+                core::mem::forget(page);
+                Response::Span { ptr, len }
+            }
+            Request::WritePage {
+                handle,
+                offset,
+                ptr,
+                len,
+            } => {
+                let Value::Page(mut page) = handle.into() else {
+                    unreachable!();
+                };
+                let ptr: *mut u8 = allocator.from_offset(ptr);
+                let blob: Box<[u8]> = Box::from_raw(core::ptr::from_raw_parts_mut(ptr, len));
+                page.write(offset, &blob);
+                core::mem::forget(page);
+                Response::Ack
+            }
+            Request::Length(handle) => {
+                let value = Value::from(handle);
+                let size = match &value {
+                    Value::Null => unreachable!(),
+                    Value::Word(word) => unreachable!(),
+                    Value::Atom(atom) => unreachable!(),
+                    Value::Error(error) => unreachable!(),
+                    Value::Blob(blob) => blob.len(),
+                    Value::Tree(tree) => tree.len(),
+                    Value::Page(page) => page.size(),
+                    Value::Table(table) => table.size(),
+                    Value::Lambda(lambda) => unreachable!(),
+                    Value::Thunk(thunk) => unreachable!(),
+                };
+                core::mem::forget(value);
+                Response::Length(size)
             }
         })
     }

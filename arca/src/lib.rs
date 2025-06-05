@@ -47,25 +47,39 @@ pub trait Runtime: Sized {
 
 pub trait RuntimeType: Sized + Clone {
     type Runtime: Runtime;
+
+    fn runtime(&self) -> &Self::Runtime;
 }
 
 pub trait ValueType: RuntimeType {
     const DATATYPE: DataType;
 }
 
-pub trait Null: ValueType {}
+pub trait Null:
+    ValueType + From<<Self::Runtime as Runtime>::Null> + Into<<Self::Runtime as Runtime>::Null>
+{
+}
 
-pub trait Word: ValueType {
+pub trait Word:
+    ValueType + From<<Self::Runtime as Runtime>::Word> + Into<<Self::Runtime as Runtime>::Word>
+{
     fn read(&self) -> u64;
 }
 
-pub trait Error: ValueType {
+pub trait Error:
+    ValueType + From<<Self::Runtime as Runtime>::Error> + Into<<Self::Runtime as Runtime>::Error>
+{
     fn read(self) -> associated::Value<Self>;
 }
 
-pub trait Atom: ValueType + Eq {}
+pub trait Atom:
+    ValueType + Eq + From<<Self::Runtime as Runtime>::Atom> + Into<<Self::Runtime as Runtime>::Atom>
+{
+}
 
-pub trait Blob: ValueType {
+pub trait Blob:
+    ValueType + From<<Self::Runtime as Runtime>::Blob> + Into<<Self::Runtime as Runtime>::Blob>
+{
     fn read(&self, buffer: &mut [u8]);
 
     fn len(&self) -> usize;
@@ -75,7 +89,9 @@ pub trait Blob: ValueType {
     }
 }
 
-pub trait Tree: ValueType {
+pub trait Tree:
+    ValueType + From<<Self::Runtime as Runtime>::Tree> + Into<<Self::Runtime as Runtime>::Tree>
+{
     fn take(&mut self, index: usize) -> associated::Value<Self>;
 
     fn put(&mut self, index: usize, value: associated::Value<Self>) -> associated::Value<Self>;
@@ -87,26 +103,73 @@ pub trait Tree: ValueType {
     }
 }
 
-pub trait Page: ValueType {
+pub trait Page:
+    ValueType + From<<Self::Runtime as Runtime>::Page> + Into<<Self::Runtime as Runtime>::Page>
+{
     fn read(&self, offset: usize, buffer: &mut [u8]);
     fn write(&mut self, offset: usize, buffer: &[u8]);
 
     fn size(&self) -> usize;
 }
 
-pub trait Table: ValueType {
+#[derive(Copy, Clone, Debug)]
+pub struct MapError;
+
+pub trait Table:
+    ValueType + From<<Self::Runtime as Runtime>::Table> + Into<<Self::Runtime as Runtime>::Table>
+where
+    Entry<Self>: From<Entry<<Self::Runtime as Runtime>::Table>>,
+    Entry<Self>: Into<Entry<<Self::Runtime as Runtime>::Table>>,
+{
     fn take(&mut self, index: usize) -> Entry<Self>;
     fn put(&mut self, index: usize, entry: Entry<Self>) -> Result<Entry<Self>, Entry<Self>>;
 
     fn size(&self) -> usize;
+
+    fn map(&mut self, address: usize, entry: Entry<Self>) -> Result<(), MapError> {
+        if address + entry.size() > self.size() {
+            try_replace_with(self, |this| {
+                let rt = this.runtime();
+                let mut embiggened = rt.create_table(this.size() * 512);
+                embiggened
+                    .put(0, Entry::RWTable(this.into()).into())
+                    .map_err(|_| MapError)?;
+                Ok(Self::from(embiggened))
+            })?;
+            self.map(address, entry)?;
+        } else if entry.size() == self.size() / 512 {
+            let shift = entry.size().ilog2();
+            let index = address >> shift;
+            assert!(index < 512);
+            self.put(index, entry).map_err(|_| MapError)?;
+        } else {
+            let shift = (self.size() / 512).ilog2();
+            let index = (address >> shift) & 0x1ff;
+            let offset = address & !(0x1ff << shift);
+
+            let mut smaller = match self.take(index) {
+                Entry::ROTable(table) => table,
+                Entry::RWTable(table) => table,
+                _ => self.runtime().create_table(self.size() / 512),
+            };
+            smaller.map(offset, entry.into()).map_err(|_| MapError)?;
+            self.put(index, Entry::RWTable(smaller))
+                .map_err(|_| MapError)?;
+        }
+        Ok(())
+    }
 }
 
-pub trait Lambda: ValueType {
+pub trait Lambda:
+    ValueType + From<<Self::Runtime as Runtime>::Lambda> + Into<<Self::Runtime as Runtime>::Lambda>
+{
     fn apply(self, argument: associated::Value<Self>) -> associated::Thunk<Self>;
     fn read(self) -> (associated::Thunk<Self>, usize);
 }
 
-pub trait Thunk: ValueType {
+pub trait Thunk:
+    ValueType + From<<Self::Runtime as Runtime>::Thunk> + Into<<Self::Runtime as Runtime>::Thunk>
+{
     fn run(self) -> associated::Value<Self>;
     fn read(
         self,
@@ -139,6 +202,8 @@ pub trait Value:
     + TryInto<associated::Table<Self>>
     + TryInto<associated::Lambda<Self>>
     + TryInto<associated::Thunk<Self>>
+    + From<<Self::Runtime as Runtime>::Value>
+    + Into<<Self::Runtime as Runtime>::Value>
 {
     fn datatype(&self) -> DataType;
 }
@@ -159,7 +224,11 @@ pub enum DataType {
 }
 
 #[derive(Clone)]
-pub enum Entry<T: Table> {
+pub enum Entry<T: Table>
+where
+    Entry<T>: From<Entry<<T::Runtime as Runtime>::Table>>,
+    Entry<T>: Into<Entry<<T::Runtime as Runtime>::Table>>,
+{
     Null(associated::Null<T>),
     ROPage(associated::Page<T>),
     RWPage(associated::Page<T>),
@@ -167,7 +236,11 @@ pub enum Entry<T: Table> {
     RWTable(associated::Table<T>),
 }
 
-impl<T: Table> Entry<T> {
+impl<T: Table> Entry<T>
+where
+    Entry<T>: From<Entry<<T::Runtime as Runtime>::Table>>,
+    Entry<T>: Into<Entry<<T::Runtime as Runtime>::Table>>,
+{
     pub fn size(&self) -> usize {
         match self {
             Entry::Null(_) => 0,
@@ -177,4 +250,29 @@ impl<T: Table> Entry<T> {
             Entry::RWTable(table) => table.size(),
         }
     }
+}
+
+pub mod prelude {
+    pub use super::{
+        Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _,
+        Runtime as _, RuntimeType as _, Table as _, Thunk as _, Tree as _, Value as _, ValueType,
+        Word as _,
+    };
+}
+
+// fn replace_with<T>(x: &mut T, f: impl FnOnce(T) -> T) {
+//     unsafe {
+//         let old = core::ptr::read(x);
+//         let new = f(old);
+//         core::ptr::write(x, new);
+//     }
+// }
+
+fn try_replace_with<T, E>(x: &mut T, f: impl FnOnce(T) -> Result<T, E>) -> Result<(), E> {
+    unsafe {
+        let old = core::ptr::read(x);
+        let new = f(old)?;
+        core::ptr::write(x, new);
+    }
+    Ok(())
 }

@@ -151,10 +151,20 @@ pub enum Request {
         memory: Handle,
         descriptors: Handle,
     },
-    LoadElf(Handle),
+    ReadBlob(Handle),
+    ReadPage(Handle),
+    WritePage {
+        handle: Handle,
+        offset: usize,
+        ptr: usize,
+        len: usize,
+    },
     Apply(Handle, Handle),
     Run(Handle),
     TreePut(Handle, usize, Handle),
+    TablePut(Handle, usize, Option<(bool, Handle)>),
+    TableTake(Handle, usize),
+    Length(Handle),
 }
 
 unsafe impl Sendable for Request {}
@@ -165,7 +175,9 @@ pub enum Response {
     Ack,
     Handle(Handle),
     Type(DataType),
+    Length(usize),
     Span { ptr: usize, len: usize },
+    Entry(Option<(bool, Handle)>),
 }
 
 unsafe impl Sendable for Response {}

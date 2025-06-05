@@ -15,6 +15,10 @@ pub struct Thunk {
 
 impl arca::RuntimeType for Thunk {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Thunk {

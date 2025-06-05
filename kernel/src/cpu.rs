@@ -106,6 +106,36 @@ impl IndexMut<Register> for RegisterFile {
     }
 }
 
+impl Index<usize> for RegisterFile {
+    type Output = u64;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        if index < 16 {
+            &self.registers[index]
+        } else if index == 16 {
+            &self[Register::RIP]
+        } else if index == 17 {
+            &self[Register::RFLAGS]
+        } else {
+            panic!("invalid register");
+        }
+    }
+}
+
+impl IndexMut<usize> for RegisterFile {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        if index < 16 {
+            &mut self.registers[index]
+        } else if index == 16 {
+            &mut self[Register::RIP]
+        } else if index == 17 {
+            &mut self[Register::RFLAGS]
+        } else {
+            panic!("invalid register");
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct ExitStatus {

@@ -24,6 +24,16 @@ impl Arca {
         }
     }
 
+    pub fn new_with(register_file: RegisterFile, page_table: Table, descriptors: Tree) -> Arca {
+        let descriptors = Vec::from(descriptors.into_inner());
+
+        Arca {
+            page_table,
+            register_file,
+            descriptors,
+        }
+    }
+
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
         cpu.activate_address_space(self.page_table);
         LoadedArca {

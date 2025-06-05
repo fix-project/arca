@@ -93,6 +93,10 @@ impl Default for Table {
 
 impl arca::RuntimeType for Table {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Table {
@@ -258,8 +262,8 @@ impl TryFrom<Handle> for Table {
     fn try_from(value: Handle) -> Result<Self, Self::Error> {
         if value.datatype() == <Self as arca::ValueType>::DATATYPE {
             let (ptr, size) = value.read();
-            let unique = size & 1 == 1;
-            let size = size & !1;
+            let unique = ptr & 1 == 1;
+            let ptr = ptr & !1;
             unsafe {
                 Ok(match size {
                     val if val == 1 << 21 => {
@@ -282,8 +286,8 @@ impl TryFrom<Handle> for Table {
 
 impl From<Table> for Handle {
     fn from(value: Table) -> Self {
-        let mut size = value.size();
-        let (unique, ptr) = match value {
+        let size = value.size();
+        let (unique, mut ptr) = match value {
             Table::Table2MB(page) => {
                 let (unique, ptr) = CowPage::into_raw(page);
                 (unique, ptr as usize)
@@ -298,7 +302,7 @@ impl From<Table> for Handle {
             }
         };
         if unique {
-            size |= 1;
+            ptr |= 1;
         }
         Handle::new(DataType::Table, (ptr, size))
     }

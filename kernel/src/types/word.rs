@@ -15,6 +15,10 @@ impl Word {
 
 impl arca::RuntimeType for Word {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Word {

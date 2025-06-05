@@ -19,6 +19,10 @@ impl Lambda {
 
 impl arca::RuntimeType for Lambda {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl arca::ValueType for Lambda {

@@ -4,10 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-pub use arca::{
-    Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _, Runtime as _,
-    Table as _, Thunk as _, Tree as _, Value as _, ValueType, Word as _,
-};
+pub use arca::prelude::*;
 
 use common::message::{self, *};
 use common::ringbuffer::{self, Error as RingBufferError, Receiver, Result, Sender};
@@ -181,6 +178,26 @@ impl Client {
         self.new_value_ref(handle)
     }
 
+    fn request_span(self: &Arc<Self>, message: Request) -> *mut [u8] {
+        let Response::Span { ptr, len } = self.fullsend(message).unwrap() else {
+            panic!("expected span");
+        };
+        core::ptr::from_raw_parts_mut(BuddyAllocator.from_offset(ptr) as *mut u8, len)
+    }
+
+    fn request_length(&self, message: Request) -> usize {
+        let Response::Length(n) = self.fullsend(message).unwrap() else {
+            panic!("expected length");
+        };
+        n
+    }
+
+    fn request(self: &Arc<Self>, message: Request) {
+        let Response::Ack = self.fullsend(message).unwrap() else {
+            panic!("expected ack");
+        };
+    }
+
     pub fn shutdown(&self) {
         self.synchronizer.shutdown();
     }
@@ -218,6 +235,10 @@ impl ArcaRuntime {
             client: Arc::new(client),
         }
     }
+
+    pub fn load_elf(&self, elf: &[u8]) -> Ref<Thunk> {
+        common::elfloader::load_elf(self, elf)
+    }
 }
 
 impl arca::Runtime for ArcaRuntime {
@@ -252,7 +273,7 @@ impl arca::Runtime for ArcaRuntime {
     fn create_error(&self, mut value: Self::Value) -> Self::Error {
         let Ok(Response::Handle(handle)) = self
             .client
-            .fullsend(Request::CreateError(value.handle.take().unwrap()))
+            .fullsend(Request::CreateError(value.take_handle()))
         else {
             panic!("could not create Error");
         };
@@ -333,7 +354,7 @@ impl arca::Runtime for ArcaRuntime {
 
     fn create_lambda(&self, mut thunk: Self::Thunk, index: usize) -> Self::Lambda {
         let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateLambda {
-            thunk: thunk.handle.take().unwrap(),
+            thunk: thunk.take_handle(),
             index,
         }) else {
             panic!("could not create Lambda");
@@ -352,9 +373,9 @@ impl arca::Runtime for ArcaRuntime {
         mut descriptors: Self::Tree,
     ) -> Self::Thunk {
         let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateThunk {
-            registers: registers.handle.take().unwrap(),
-            memory: memory.handle.take().unwrap(),
-            descriptors: descriptors.handle.take().unwrap(),
+            registers: registers.take_handle(),
+            memory: memory.take_handle(),
+            descriptors: descriptors.take_handle(),
         }) else {
             panic!("could not create Lambda");
         };
@@ -379,8 +400,28 @@ pub struct Ref<T> {
     _phantom: PhantomData<T>,
 }
 
+impl<T> Ref<T> {
+    fn take_handle(&mut self) -> message::Handle {
+        self.handle.take().unwrap()
+    }
+
+    unsafe fn copy_handle(&self) -> message::Handle {
+        self.handle.as_ref().unwrap().copy()
+    }
+}
+
+impl<T> From<Ref<T>> for message::Handle {
+    fn from(mut value: Ref<T>) -> Self {
+        value.handle.take().unwrap()
+    }
+}
+
 impl<T> arca::RuntimeType for Ref<T> {
     type Runtime = ArcaRuntime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &RUNTIME
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -471,19 +512,22 @@ impl PartialEq for Ref<Atom> {
 impl Eq for Ref<Atom> {}
 
 impl arca::Blob for Ref<Blob> {
-    fn read(&self, _buffer: &mut [u8]) {
-        todo!()
+    fn read(&self, buffer: &mut [u8]) {
+        unsafe {
+            let span = self
+                .client
+                .request_span(Request::ReadBlob(self.copy_handle()));
+            buffer.copy_from_slice(&*span);
+        }
     }
 
     fn len(&self) -> usize {
-        todo!()
-    }
-}
-
-impl Ref<Blob> {
-    pub fn into_thunk(mut self) -> Ref<Thunk> {
-        self.client
-            .request_ref(Request::LoadElf(self.handle.take().unwrap()))
+        unsafe {
+            let span = self
+                .client
+                .request_span(Request::ReadBlob(self.copy_handle()));
+            span.len()
+        }
     }
 }
 
@@ -498,9 +542,9 @@ impl arca::Tree for Ref<Tree> {
         mut value: arca::associated::Value<Self>,
     ) -> arca::associated::Value<Self> {
         self.client.request_value(Request::TreePut(
-            unsafe { self.handle.as_ref().unwrap().copy() },
+            unsafe { self.copy_handle() },
             index,
-            value.handle.take().unwrap(),
+            value.take_handle(),
         ))
     }
 
@@ -510,34 +554,117 @@ impl arca::Tree for Ref<Tree> {
 }
 
 impl arca::Page for Ref<Page> {
-    fn read(&self, _offset: usize, _buffer: &mut [u8]) {
-        todo!()
+    fn read(&self, offset: usize, buffer: &mut [u8]) {
+        unsafe {
+            let span = self
+                .client
+                .request_span(Request::ReadPage(self.copy_handle()));
+            buffer.copy_from_slice(&(*span)[offset..]);
+        }
     }
 
-    fn write(&mut self, _offset: usize, _buffer: &[u8]) {
-        todo!()
+    fn write(&mut self, offset: usize, buffer: &[u8]) {
+        let mut v = Vec::new_in(BuddyAllocator);
+        v.extend_from_slice(buffer);
+        let data = v.into_boxed_slice();
+        let (ptr, len) = Box::into_raw(data).to_raw_parts();
+        let ptr = BuddyAllocator.to_offset(ptr);
+        unsafe {
+            self.client.request(Request::WritePage {
+                handle: self.copy_handle(),
+                offset,
+                ptr,
+                len,
+            });
+        }
     }
 
     fn size(&self) -> usize {
-        todo!()
+        unsafe {
+            let span = self
+                .client
+                .request_span(Request::ReadPage(self.copy_handle()));
+            span.len()
+        }
     }
 }
 
 impl arca::Table for Ref<Table> {
-    fn take(&mut self, _index: usize) -> arca::Entry<Self> {
-        todo!()
+    fn take(&mut self, index: usize) -> arca::Entry<Self> {
+        assert!(index < 512);
+        let Response::Entry(entry) = self
+            .client
+            .fullsend(Request::TableTake(unsafe { self.copy_handle() }, index))
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let entry = match entry {
+            Some((false, value)) if value.datatype() == DataType::Page => {
+                arca::Entry::ROPage(self.client.new_ref(value))
+            }
+            Some((true, value)) if value.datatype() == DataType::Page => {
+                arca::Entry::RWPage(self.client.new_ref(value))
+            }
+            Some((false, value)) if value.datatype() == DataType::Table => {
+                arca::Entry::ROTable(self.client.new_ref(value))
+            }
+            Some((true, value)) if value.datatype() == DataType::Table => {
+                arca::Entry::RWTable(self.client.new_ref(value))
+            }
+            None => arca::Entry::Null(self.runtime().create_null()),
+            _ => unreachable!(),
+        };
+        entry
     }
 
     fn put(
         &mut self,
-        _index: usize,
-        _entry: arca::Entry<Self>,
+        index: usize,
+        entry: arca::Entry<Self>,
     ) -> std::result::Result<arca::Entry<Self>, arca::Entry<Self>> {
-        todo!()
+        assert!(index < 512);
+        let Response::Entry(entry) = self
+            .client
+            .fullsend(Request::TablePut(
+                unsafe { self.copy_handle() },
+                index,
+                match entry {
+                    arca::Entry::Null(_) => None,
+                    arca::Entry::ROPage(page) => Some((false, page.into())),
+                    arca::Entry::RWPage(page) => Some((true, page.into())),
+                    arca::Entry::ROTable(table) => Some((false, table.into())),
+                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                },
+            ))
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let entry = match entry {
+            Some((false, value)) if value.datatype() == DataType::Page => {
+                arca::Entry::ROPage(self.client.new_ref(value))
+            }
+            Some((true, value)) if value.datatype() == DataType::Page => {
+                arca::Entry::RWPage(self.client.new_ref(value))
+            }
+            Some((false, value)) if value.datatype() == DataType::Table => {
+                arca::Entry::ROTable(self.client.new_ref(value))
+            }
+            Some((true, value)) if value.datatype() == DataType::Table => {
+                arca::Entry::RWTable(self.client.new_ref(value))
+            }
+            None => arca::Entry::Null(self.runtime().create_null()),
+            _ => unreachable!(),
+        };
+        Ok(entry)
     }
 
     fn size(&self) -> usize {
-        todo!()
+        unsafe {
+            self.client
+                .request_length(Request::Length(self.copy_handle()))
+        }
     }
 }
 
@@ -546,10 +673,9 @@ impl arca::Lambda for Ref<Lambda> {
         mut self,
         mut argument: arca::associated::Value<Self>,
     ) -> arca::associated::Thunk<Self> {
-        self.client.request_ref(Request::Apply(
-            self.handle.take().unwrap(),
-            argument.handle.take().unwrap(),
-        ))
+        let handle = self.take_handle();
+        self.client
+            .request_ref(Request::Apply(handle, argument.take_handle()))
     }
 
     fn read(self) -> (arca::associated::Thunk<Self>, usize) {
@@ -559,8 +685,8 @@ impl arca::Lambda for Ref<Lambda> {
 
 impl arca::Thunk for Ref<Thunk> {
     fn run(mut self) -> arca::associated::Value<Self> {
-        self.client
-            .request_value(Request::Run(self.handle.take().unwrap()))
+        let handle = self.take_handle();
+        self.client.request_value(Request::Run(handle))
     }
 
     fn read(
@@ -583,7 +709,7 @@ impl arca::Value for Ref<Value> {
 impl<T> Clone for Ref<T> {
     fn clone(&self) -> Self {
         unsafe {
-            let handle = self.handle.as_ref().unwrap().copy();
+            let handle = self.copy_handle();
             let Ok(Response::Handle(handle)) = self.client.fullsend(Request::Clone(handle)) else {
                 panic!("could not clone handle");
             };
@@ -614,7 +740,8 @@ where
 
     fn try_from(mut value: Ref<Value>) -> std::result::Result<Self, Self::Error> {
         if value.datatype() == Ref::<T>::DATATYPE {
-            Ok(value.client.new_ref(value.handle.take().unwrap()))
+            let handle = value.take_handle();
+            Ok(value.client.new_ref(handle))
         } else {
             Err(value)
         }
@@ -626,7 +753,8 @@ where
     Ref<T>: ValueType,
 {
     fn from(mut value: Ref<T>) -> Self {
-        value.client.new_value_ref(value.handle.take().unwrap())
+        let handle = value.take_handle();
+        value.client.new_value_ref(handle)
     }
 }
 
@@ -643,8 +771,7 @@ mod tests {
     #[test]
     pub fn test_client() {
         let arca = runtime();
-        let add = arca.create_blob(ADD_ELF);
-        let add = add.into_thunk();
+        let add = arca.load_elf(ADD_ELF);
         let add: Ref<Lambda> = add.run().try_into().unwrap();
         let x = arca.create_word(1);
         let y = arca.create_word(2);
@@ -658,8 +785,7 @@ mod tests {
     #[bench]
     pub fn bench_client(b: &mut Bencher) {
         let arca = runtime();
-        let null = arca.create_blob(NULL_ELF);
-        let null = null.into_thunk();
+        let null = arca.load_elf(NULL_ELF);
         b.iter(|| {
             let null = null.clone();
             let _: Ref<Null> = null.run().try_into().unwrap();

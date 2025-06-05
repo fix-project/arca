@@ -45,6 +45,10 @@ pub enum Value {
 
 impl ::arca::RuntimeType for Value {
     type Runtime = Runtime;
+
+    fn runtime(&self) -> &Self::Runtime {
+        &Runtime
+    }
 }
 
 impl ::arca::Value for Value {

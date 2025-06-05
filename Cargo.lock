@@ -75,6 +75,9 @@ checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
 [[package]]
 name = "arca"
 version = "0.1.0"
+dependencies = [
+ "log",
+]
 
 [[package]]
 name = "arrayref"
@@ -190,6 +193,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "arca",
+ "elf",
  "libc",
  "log",
  "macros",
@@ -429,9 +433,9 @@ checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
 name = "log"
-version = "0.4.25"
+version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
+checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "macros"
