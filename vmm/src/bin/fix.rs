@@ -15,6 +15,7 @@ const MODULE_WAT: &str = r#"
       (call $create_blob_i32 (i32.const 7)))
   (export "_fixpoint_apply" (func $apply)))"#;
 static WASM2C_RT: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/wasm2c");
+static SYSCALLS_H: &[u8] = include_bytes!("../../../defs/syscall.h");
 
 pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     let wasm = if &wat[..4] == b"\0asm" {
@@ -55,6 +56,10 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
         .status()?;
     assert!(wasm2c.success());
     WASM2C_RT.extract(&temp_dir)?;
+
+    let mut h_file = temp_dir.path().to_path_buf();
+    h_file.push("syscall.h");
+    std::fs::write(h_file, SYSCALLS_H)?;
 
     let mut o_file = temp_dir.path().to_path_buf();
     o_file.push("module.o");

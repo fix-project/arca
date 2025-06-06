@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 pub fn is_user(p: usize) -> bool {
     p & 0xFFFF800000000000 == 0
 }
@@ -17,22 +19,28 @@ extern "C" {
     fn copy_kernel_to_user_asm(dst: usize, src: *const (), len: usize) -> bool;
 }
 
-pub(crate) unsafe fn copy_kernel_to_user(dst: usize, src: &[u8]) -> bool {
+pub(crate) fn copy_kernel_to_user(dst: usize, src: &[u8]) -> bool {
     let len = core::mem::size_of_val(src);
     let src = src.as_ptr();
     if (len <= USER_MEMORY_LIMIT) && (dst <= (USER_MEMORY_LIMIT - len)) {
-        copy_kernel_to_user_asm(dst, src as *const (), len)
+        unsafe { copy_kernel_to_user_asm(dst, src as *const (), len) }
     } else {
         false
     }
 }
 
-pub(crate) unsafe fn copy_user_to_kernel(dst: &mut [u8], src: usize) -> bool {
-    let len = core::mem::size_of_val(dst);
-    let dst = dst.as_mut_ptr();
+pub(crate) fn copy_user_to_kernel(dst: &mut [MaybeUninit<u8>], src: usize) -> Option<&mut [u8]> {
+    let ptr = dst.as_ptr();
+    let len = dst.len();
     if (len <= USER_MEMORY_LIMIT) && (src <= (USER_MEMORY_LIMIT - len)) {
-        copy_user_to_kernel_asm(dst as *mut (), src, len)
+        unsafe {
+            if copy_user_to_kernel_asm(ptr as *mut (), src, len) {
+                Some(dst.assume_init_mut())
+            } else {
+                None
+            }
+        }
     } else {
-        false
+        None
     }
 }

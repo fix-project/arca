@@ -5,13 +5,35 @@ use common::message::Handle;
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Blob {
-    contents: Box<[u8]>,
+pub enum Blob {
+    Raw(Box<[u8]>),
+    String(String),
 }
 
 impl Blob {
     pub fn new<T: Into<Box<[u8]>>>(x: T) -> Self {
-        Blob { contents: x.into() }
+        Blob::Raw(x.into())
+    }
+
+    pub fn string(x: String) -> Self {
+        Blob::String(x)
+    }
+
+    fn make_blob(&mut self) -> &mut Box<[u8]> {
+        if let Blob::String(s) = self {
+            *self = Blob::Raw(s.as_bytes().into())
+        };
+        let Blob::Raw(items) = self else {
+            unreachable!();
+        };
+        items
+    }
+
+    fn into_inner(self) -> Box<[u8]> {
+        match self {
+            Blob::Raw(items) => items,
+            Blob::String(s) => s.as_bytes().into(),
+        }
     }
 }
 
@@ -29,11 +51,17 @@ impl arca::ValueType for Blob {
 
 impl arca::Blob for Blob {
     fn read(&self, buffer: &mut [u8]) {
-        buffer.copy_from_slice(&self.contents);
+        match self {
+            Blob::Raw(items) => buffer.copy_from_slice(&items),
+            Blob::String(s) => buffer.copy_from_slice(s.as_bytes()),
+        }
     }
 
     fn len(&self) -> usize {
-        self.contents.len()
+        match self {
+            Blob::Raw(items) => items.len(),
+            Blob::String(s) => s.len(),
+        }
     }
 }
 
@@ -41,13 +69,16 @@ impl Deref for Blob {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.contents
+        match self {
+            Blob::Raw(items) => items,
+            Blob::String(s) => s.as_bytes(),
+        }
     }
 }
 
 impl DerefMut for Blob {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.contents
+        self.make_blob()
     }
 }
 
@@ -75,11 +106,7 @@ impl TryFrom<Handle> for Blob {
     fn try_from(value: Handle) -> Result<Self, Self::Error> {
         if value.datatype() == <Self as arca::ValueType>::DATATYPE {
             let raw = core::ptr::from_raw_parts_mut(value.read().0 as *mut (), value.read().1);
-            unsafe {
-                Ok(Blob {
-                    contents: Box::from_raw(raw),
-                })
-            }
+            unsafe { Ok(Blob::Raw(Box::from_raw(raw))) }
         } else {
             Err(value)
         }
@@ -88,7 +115,8 @@ impl TryFrom<Handle> for Blob {
 
 impl From<Blob> for Handle {
     fn from(value: Blob) -> Self {
-        let raw = Box::into_raw(value.contents);
+        let value = value.into_inner();
+        let raw = Box::into_raw(value);
         let (ptr, len) = raw.to_raw_parts();
         Handle::new(DataType::Blob, (ptr as usize, len))
     }

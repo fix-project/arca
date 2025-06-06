@@ -10,6 +10,9 @@
 #![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
 #![feature(vec_into_raw_parts)]
+#![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_array_assume_init)]
+#![feature(maybe_uninit_uninit_array_transpose)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

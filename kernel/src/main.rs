@@ -16,34 +16,25 @@ const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
-    let id = Thunk::from_elf(IDENTITY);
-    let Value::Lambda(id) = id.run() else {
-        panic!();
-    };
-    let add = Thunk::from_elf(ADD);
-    let Value::Lambda(add) = add.run() else {
-        panic!();
-    };
-    let curry = Thunk::from_elf(CURRY);
-    let Value::Lambda(curry) = curry.run() else {
-        panic!();
-    };
-    let map = Thunk::from_elf(MAP);
-    let Value::Lambda(map) = map.run() else {
-        panic!();
-    };
+    let id: Lambda = Thunk::from_elf(IDENTITY).run().try_into().unwrap();
+    let add: Lambda = Thunk::from_elf(ADD).run().try_into().unwrap();
+    let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
+    let map: Lambda = Thunk::from_elf(MAP).run().try_into().unwrap();
 
     // identity function
+    log::info!("testing id");
     let x = Value::Atom(Atom::new("foo"));
     let y = id.apply(x.clone()).run();
     assert_eq!(x, y);
 
     // add
+    log::info!("testing add");
     let x = Tree::new([10.into(), 20.into()]);
     let y = add.clone().apply(x.into()).run();
     assert_eq!(y, 30.into());
 
     // curry add
+    log::info!("testing curry");
     let x = add.clone();
     let n = 2;
     let Value::Lambda(cadd) = curry.apply(x.into()).run() else {
@@ -59,6 +50,7 @@ async fn kmain(_: &[usize]) {
     assert_eq!(y, 30.into());
 
     // map
+    log::info!("testing map");
     let tuple = Tree::new([1.into(), 2.into(), 3.into(), 4.into()]).into();
     let Value::Lambda(map) = map.apply(Value::Lambda(cadd)).run() else {
         panic!();

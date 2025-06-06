@@ -1,6 +1,8 @@
 #include "module.h"
 #include "wasm-rt.h"
 
+#include "syscall.h"
+
 #include <stdbool.h>
 
 [[noreturn]] void abort(void) {
@@ -8,9 +10,6 @@
     asm("int3");
   }
 }
-
-static uint64_t capacity = 1;
-static uint64_t assigned = 0;
 
 void __assert_fail(const char * assertion, const char * file, unsigned int line, const char * function) {
   abort();
@@ -26,41 +25,25 @@ void puts(char *s) {
 
 int64_t syscall(uint64_t num, ...);
 
-int64_t resize(size_t len) {
-  return syscall(4, len);
-}
-
-int64_t prompt(size_t dst) {
-  return syscall(24, dst);
+int64_t prompt() {
+  return syscall(SYS_RETURN_CONTINUATION_LAMBDA);
 }
 
 [[noreturn]] void arca_exit(size_t src) {
   while (true) {
-    syscall(5, src);
+    syscall(SYS_EXIT, src);
     asm("ud2");
   }
 }
 
-uint64_t next_fd() {
-  ++assigned;
-  if (assigned >= capacity) {
-    capacity *= 2;
-    resize(capacity);
-  }
-  return assigned;
-}
-
 wasm_rt_externref_t w2c_fixpoint_create_blob_i32(struct w2c_fixpoint *instance, uint32_t val) {
-  uint64_t created = next_fd();
-  syscall(8, created, val);
-  return created;
+  return syscall(SYS_CREATE_WORD, val);
 }
 
 [[noreturn]] void fmain(void) {
   w2c_module module;
   wasm2c_module_instantiate(&module, (struct w2c_fixpoint *)&module);
-  wasm_rt_externref_t argument = next_fd();
-  prompt(argument);
+  wasm_rt_externref_t argument = prompt();
   wasm_rt_externref_t result = w2c_module_0x5Ffixpoint_apply(&module, argument);
   arca_exit(result);
   puts("fixpoint\n");

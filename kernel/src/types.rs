@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use ::arca::ValueType;
 use common::message::Handle;
 
 pub mod arca;
@@ -134,122 +135,159 @@ impl From<Thunk> for Value {
     }
 }
 
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct TypeError {
+    expected: DataType,
+    got: Value,
+}
+
 impl TryFrom<Value> for Null {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Null = value {
             Ok(Null::new())
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Word {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Word(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Atom {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Atom(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Error {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Error(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Blob {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Blob(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Tree {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Tree(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Page {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Page(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Table {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Table(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Lambda {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Lambda(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }
 
 impl TryFrom<Value> for Thunk {
-    type Error = Value;
+    type Error = TypeError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         if let Value::Thunk(x) = value {
             Ok(x)
         } else {
-            Err(value)
+            Err(TypeError {
+                expected: <Self as ValueType>::DATATYPE,
+                got: value,
+            })
         }
     }
 }

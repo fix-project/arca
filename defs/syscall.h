@@ -41,6 +41,9 @@ enum syscall {
   // debug
   SYS_DEBUG_LOG,
   SYS_DEBUG_SHOW,
+  SYS_ERROR_RESET,
+  SYS_ERROR_APPEND,
+  SYS_ERROR_RETURN,
 };
 
 enum error {
