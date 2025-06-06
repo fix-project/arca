@@ -6,7 +6,9 @@
 
 use alloc::vec::Vec;
 use alloc::{boxed::Box, sync::Arc};
-use common::message::{Handle, MetaRequest, MetaResponse, PageTableEntry, Request, Response};
+use common::message::{
+    Entry, Handle, MetaRequest, MetaResponse, PageTableEntry, Request, Response,
+};
 use common::ringbuffer::{Endpoint, EndpointRawData, Error as RingbufferError, Receiver, Sender};
 use macros::kmain;
 
@@ -121,7 +123,11 @@ impl Server {
                 let Value::Thunk(thunk) = handle.into() else {
                     unreachable!();
                 };
+                let start = kernel::kvmclock::now();
                 let result = thunk.run();
+                let end = kernel::kvmclock::now();
+                let duration = end - start;
+                let duration = duration.as_seconds_f64();
                 Response::Handle(result.into())
             }
             Request::Apply(lambda, argument) => {
@@ -161,7 +167,8 @@ impl Server {
                     unreachable!();
                 };
                 let old = match entry {
-                    Some((false, value)) if value.datatype() == DataType::Page => table
+                    Entry::Null(size) => arca::Entry::Null(size),
+                    Entry::ReadOnly(value) if value.datatype() == DataType::Page => table
                         .put(
                             index,
                             arca::Entry::ROPage(
@@ -169,7 +176,7 @@ impl Server {
                             ),
                         )
                         .unwrap_or_else(|_| unreachable!()),
-                    Some((true, value)) if value.datatype() == DataType::Page => table
+                    Entry::ReadWrite(value) if value.datatype() == DataType::Page => table
                         .put(
                             index,
                             arca::Entry::RWPage(
@@ -177,7 +184,7 @@ impl Server {
                             ),
                         )
                         .unwrap_or_else(|_| unreachable!()),
-                    Some((false, value)) if value.datatype() == DataType::Table => table
+                    Entry::ReadOnly(value) if value.datatype() == DataType::Table => table
                         .put(
                             index,
                             arca::Entry::ROTable(
@@ -185,7 +192,7 @@ impl Server {
                             ),
                         )
                         .unwrap_or_else(|_| unreachable!()),
-                    Some((true, value)) if value.datatype() == DataType::Table => table
+                    Entry::ReadWrite(value) if value.datatype() == DataType::Table => table
                         .put(
                             index,
                             arca::Entry::RWTable(
@@ -193,17 +200,14 @@ impl Server {
                             ),
                         )
                         .unwrap_or_else(|_| unreachable!()),
-                    None => table
-                        .put(index, arca::Entry::Null(Null))
-                        .unwrap_or_else(|_| unreachable!()),
                     _ => unreachable!(),
                 };
                 let old = match old {
-                    arca::Entry::Null(_) => None,
-                    arca::Entry::ROPage(page) => Some((false, page.into())),
-                    arca::Entry::RWPage(page) => Some((true, page.into())),
-                    arca::Entry::ROTable(table) => Some((false, table.into())),
-                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                    arca::Entry::Null(x) => Entry::Null(x),
+                    arca::Entry::ROPage(page) => Entry::ReadOnly(page.into()),
+                    arca::Entry::RWPage(page) => Entry::ReadWrite(page.into()),
+                    arca::Entry::ROTable(table) => Entry::ReadOnly(table.into()),
+                    arca::Entry::RWTable(table) => Entry::ReadWrite(table.into()),
                 };
                 core::mem::forget(table);
                 Response::Entry(old)
@@ -214,11 +218,11 @@ impl Server {
                 };
                 let old = table.take(index);
                 let old = match old {
-                    arca::Entry::Null(_) => None,
-                    arca::Entry::ROPage(page) => Some((false, page.into())),
-                    arca::Entry::RWPage(page) => Some((true, page.into())),
-                    arca::Entry::ROTable(table) => Some((false, table.into())),
-                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                    arca::Entry::Null(x) => Entry::Null(x),
+                    arca::Entry::ROPage(page) => Entry::ReadOnly(page.into()),
+                    arca::Entry::RWPage(page) => Entry::ReadWrite(page.into()),
+                    arca::Entry::ROTable(table) => Entry::ReadOnly(table.into()),
+                    arca::Entry::RWTable(table) => Entry::ReadWrite(table.into()),
                 };
                 core::mem::forget(table);
                 Response::Entry(old)

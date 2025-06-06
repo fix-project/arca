@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#define PAGE_SIZE 65536
+
 [[noreturn]] void abort(void);
 
 #ifdef __cplusplus
@@ -127,7 +129,7 @@ typedef struct {
 static const wasm_rt_funcref_t wasm_rt_funcref_null_value;
 
 /** The type of an external reference (opaque to WebAssembly). */
-typedef uint64_t wasm_rt_externref_t;
+typedef int64_t wasm_rt_externref_t;
 
 /** Default (null) value of an externref */
 static const wasm_rt_externref_t wasm_rt_externref_null_value = 0;

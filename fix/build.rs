@@ -1,26 +1,19 @@
-#![feature(allocator_api)]
-#![feature(thread_sleep_until)]
-#![feature(future_join)]
-
+use std::env;
+use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 
-use include_directory::{include_directory, Dir};
-use vmm::client::*;
+use anyhow::Result;
 
-const MODULE_WAT: &str = r#"
-(module
-  (import "fixpoint" "create_blob_i32" (func $create_blob_i32 (param i32) (result externref)))
-  (func $apply (param $arg externref) (result externref)
-      ;; (local.get $arg))
-      (call $create_blob_i32 (i32.const 7)))
-  (export "_fixpoint_apply" (func $apply)))"#;
+use include_directory::{Dir, include_directory};
+
 static FIX_SHELL: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/fix-shell");
 static INC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/arca");
 static SRC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/src");
 
-pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let wasm = if &wat[..4] == b"\0asm" {
-        wat
+fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
+    if &wat[..4] == b"\0asm" {
+        Ok(wat.into())
     } else {
         let temp_dir = tempfile::tempdir()?;
         let mut wat_file = temp_dir.path().to_path_buf();
@@ -33,17 +26,23 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
                 "-o",
                 wasm_file.to_str().unwrap(),
                 wat_file.to_str().unwrap(),
+                "--enable-multi-memory",
             ])
             .status()?;
         assert!(wat2wasm.success());
-        &std::fs::read(wasm_file)?
-    };
+        Ok(std::fs::read(wasm_file)?)
+    }
+}
+
+fn wasm2c(wasm: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let temp_dir = tempfile::tempdir()?;
     let mut wasm_file = temp_dir.path().to_path_buf();
     wasm_file.push("module.wasm");
     std::fs::write(&wasm_file, wasm)?;
     let mut c_file = temp_dir.path().to_path_buf();
     c_file.push("module.c");
+    let mut h_file = temp_dir.path().to_path_buf();
+    h_file.push("module.h");
 
     // Using wasm2c 1.0.34 from the Ubuntu repos
     let wasm2c = Command::new("wasm2c")
@@ -53,36 +52,46 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             "-n",
             "module",
             wasm_file.to_str().unwrap(),
+            "--enable-multi-memory",
         ])
         .status()?;
     assert!(wasm2c.success());
+    Ok((std::fs::read(c_file)?, std::fs::read(h_file)?))
+}
+
+fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
+    let temp_dir = tempfile::tempdir()?;
     FIX_SHELL.extract(&temp_dir)?;
     INC.extract(&temp_dir)?;
     SRC.extract(&temp_dir)?;
 
+    let mut c_file = temp_dir.path().to_path_buf();
+    c_file.push("module.c");
+
+    let mut h_file = temp_dir.path().to_path_buf();
+    h_file.push("module.h");
+
+    std::fs::write(c_file, c)?;
+    std::fs::write(h_file, h)?;
+
+    let mut src = vec![];
+    let exts = [OsStr::new("c"), OsStr::new("S")];
+    for f in std::fs::read_dir(&temp_dir)? {
+        let f = f?;
+        if let Some(ext) = f.path().extension() {
+            if exts.contains(&ext) {
+                src.push(f.path());
+            }
+        }
+    }
+
+    println!("{:?}", src);
+
     let mut o_file = temp_dir.path().to_path_buf();
     o_file.push("module.o");
 
-    let mut start = temp_dir.path().to_path_buf();
-    start.push("start.S");
-
-    let mut main = temp_dir.path().to_path_buf();
-    main.push("main.c");
-
-    let mut fix = temp_dir.path().to_path_buf();
-    fix.push("fix.c");
-
-    let mut syscall_c = temp_dir.path().to_path_buf();
-    syscall_c.push("syscall.c");
-
-    let mut syscall_s = temp_dir.path().to_path_buf();
-    syscall_s.push("syscall.S");
-
     let mut memmap = temp_dir.path().to_path_buf();
     memmap.push("memmap.ld");
-
-    let mut wasm_rt_impl = temp_dir.path().to_path_buf();
-    wasm_rt_impl.push("wasm-rt-impl.c");
 
     let cc = Command::new("clang")
         .args([
@@ -92,13 +101,6 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             o_file.to_str().unwrap(),
             "-I",
             temp_dir.path().to_str().unwrap(),
-            start.to_str().unwrap(),
-            c_file.to_str().unwrap(),
-            main.to_str().unwrap(),
-            fix.to_str().unwrap(),
-            wasm_rt_impl.to_str().unwrap(),
-            syscall_c.to_str().unwrap(),
-            syscall_s.to_str().unwrap(),
             "-T",
             memmap.to_str().unwrap(),
             // "-lm",
@@ -112,6 +114,7 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             "-mcmodel=large",
             "-Wl,-no-pie",
         ])
+        .args(src)
         .status()?;
     assert!(cc.success());
 
@@ -120,18 +123,22 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(o)
 }
 
-fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let elf = compile(MODULE_WAT.as_bytes())?;
-    let arca = vmm::client::runtime();
-
-    log::info!("create thunk");
-    let thunk: Ref<Thunk> = arca.load_elf(&elf);
-    log::info!("run thunk");
-    let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
-    let thunk = lambda.apply(arca.create_word(0xcafeb0ba).into());
-    let word: Ref<Word> = thunk.run().try_into().unwrap();
-    log::info!("{:?}", word.read());
-
+fn main() -> Result<()> {
+    let out_dir = env::var_os("OUT_DIR").unwrap();
+    for f in std::fs::read_dir("wasm")? {
+        let f = f?;
+        let path = f.path();
+        let base = path.file_stem().unwrap();
+        let dst = Path::new(&out_dir).join(base);
+        println!(
+            "cargo::rerun-if-changed=wasm/{}",
+            f.file_name().to_string_lossy()
+        );
+        let wat = std::fs::read(f.path())?;
+        let wasm = wat2wasm(&wat)?;
+        let (c, h) = wasm2c(&wasm)?;
+        let elf = c2elf(&c, &h)?;
+        std::fs::write(dst, elf)?;
+    }
     Ok(())
 }

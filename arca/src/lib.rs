@@ -126,8 +126,8 @@ where
 
     fn size(&self) -> usize;
 
-    fn map(&mut self, address: usize, entry: Entry<Self>) -> Result<(), MapError> {
-        if address + entry.size() > self.size() {
+    fn map(&mut self, address: usize, entry: Entry<Self>) -> Result<Entry<Self>, MapError> {
+        let result = if address + entry.size() >= self.size() {
             try_replace_with(self, |this| {
                 let rt = this.runtime();
                 let mut embiggened = rt.create_table(this.size() * 512);
@@ -136,12 +136,12 @@ where
                     .map_err(|_| MapError)?;
                 Ok(Self::from(embiggened))
             })?;
-            self.map(address, entry)?;
+            self.map(address, entry)?
         } else if entry.size() == self.size() / 512 {
             let shift = entry.size().ilog2();
             let index = address >> shift;
             assert!(index < 512);
-            self.put(index, entry).map_err(|_| MapError)?;
+            self.put(index, entry).map_err(|_| MapError)?
         } else {
             let shift = (self.size() / 512).ilog2();
             let index = (address >> shift) & 0x1ff;
@@ -152,11 +152,12 @@ where
                 Entry::RWTable(table) => table,
                 _ => self.runtime().create_table(self.size() / 512),
             };
+            assert!(self.size() > smaller.size());
             smaller.map(offset, entry.into()).map_err(|_| MapError)?;
             self.put(index, Entry::RWTable(smaller))
-                .map_err(|_| MapError)?;
-        }
-        Ok(())
+                .map_err(|_| MapError)?
+        };
+        Ok(result)
     }
 
     fn unmap(&mut self, address: usize) -> Option<Entry<Self>> {
@@ -254,7 +255,7 @@ where
     Entry<T>: From<Entry<<T::Runtime as Runtime>::Table>>,
     Entry<T>: Into<Entry<<T::Runtime as Runtime>::Table>>,
 {
-    Null(associated::Null<T>),
+    Null(usize),
     ROPage(associated::Page<T>),
     RWPage(associated::Page<T>),
     ROTable(associated::Table<T>),
@@ -268,7 +269,7 @@ where
 {
     pub fn size(&self) -> usize {
         match self {
-            Entry::Null(_) => 0,
+            Entry::Null(size) => *size,
             Entry::ROPage(page) => page.size(),
             Entry::RWPage(page) => page.size(),
             Entry::ROTable(table) => table.size(),

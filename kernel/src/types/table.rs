@@ -18,6 +18,8 @@ pub enum Table {
     Table512GB(CowPage<Table512GB>),
 }
 
+pub type Entry = arca::Entry<Table>;
+
 impl Table {
     pub fn new(size: usize) -> Table {
         if size <= Table2MB::SIZE {
@@ -87,7 +89,7 @@ where
 {
     fn from(value: AugmentedUnmappedPage<P, T>) -> Self {
         match value {
-            AugmentedUnmappedPage::None => arca::Entry::Null(Null::new()),
+            AugmentedUnmappedPage::None => arca::Entry::Null(core::cmp::max(P::SIZE, T::SIZE)),
             AugmentedUnmappedPage::UniquePage(page) => {
                 arca::Entry::RWPage(CowPage::Unique(page).into())
             }

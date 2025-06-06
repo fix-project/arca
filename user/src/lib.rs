@@ -371,29 +371,7 @@ impl arca::Table for Ref<Table> {
             );
             entry.assume_init()
         };
-        match entry {
-            entry {
-                mode: entry_mode::ENTRY_MODE_NULL,
-                descriptor,
-            } => arca::Entry::Null(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RO_PAGE,
-                descriptor,
-            } => arca::Entry::ROPage(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RW_PAGE,
-                descriptor,
-            } => arca::Entry::RWPage(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RO_TABLE,
-                descriptor,
-            } => arca::Entry::ROTable(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RW_TABLE,
-                descriptor,
-            } => arca::Entry::RWTable(Ref::new(descriptor)),
-            _ => unreachable!(),
-        }
+        read_entry(entry)
     }
 
     fn put(
@@ -401,52 +379,9 @@ impl arca::Table for Ref<Table> {
         offset: usize,
         mut entry: arca::Entry<Self>,
     ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
-        let mut entry = match &mut entry {
-            arca::Entry::Null(x) => entry {
-                mode: entry_mode::ENTRY_MODE_NULL,
-                descriptor: x.index.take().unwrap(),
-            },
-            arca::Entry::ROPage(x) => entry {
-                mode: entry_mode::ENTRY_MODE_RO_PAGE,
-                descriptor: x.index.take().unwrap(),
-            },
-            arca::Entry::RWPage(x) => entry {
-                mode: entry_mode::ENTRY_MODE_RW_PAGE,
-                descriptor: x.index.take().unwrap(),
-            },
-            arca::Entry::ROTable(x) => entry {
-                mode: entry_mode::ENTRY_MODE_RO_TABLE,
-                descriptor: x.index.take().unwrap(),
-            },
-            arca::Entry::RWTable(x) => entry {
-                mode: entry_mode::ENTRY_MODE_RW_TABLE,
-                descriptor: x.index.take().unwrap(),
-            },
-        };
+        let mut entry = write_entry(entry);
         let result = unsafe { arca_table_put(self.index.unwrap(), offset, &mut entry) };
-        let entry = match entry {
-            entry {
-                mode: entry_mode::ENTRY_MODE_NULL,
-                descriptor,
-            } => arca::Entry::Null(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RO_PAGE,
-                descriptor,
-            } => arca::Entry::ROPage(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RW_PAGE,
-                descriptor,
-            } => arca::Entry::RWPage(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RO_TABLE,
-                descriptor,
-            } => arca::Entry::ROTable(Ref::new(descriptor)),
-            entry {
-                mode: entry_mode::ENTRY_MODE_RW_TABLE,
-                descriptor,
-            } => arca::Entry::RWTable(Ref::new(descriptor)),
-            _ => unreachable!(),
-        };
+        let entry = read_entry(entry);
         if result == 0 { Ok(entry) } else { Err(entry) }
     }
 
@@ -458,6 +393,8 @@ impl arca::Table for Ref<Table> {
         n
     }
 }
+
+pub type Entry = arca::Entry<Ref<Table>>;
 
 impl arca::Lambda for Ref<Lambda> {
     fn apply(mut self, mut argument: associated::Value<Self>) -> associated::Thunk<Self> {
@@ -631,4 +568,65 @@ pub mod prelude {
         Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _, Table as _,
         Thunk as _, Tree as _, Value as _, Word as _,
     };
+}
+
+fn read_entry(entry: defs::entry) -> Entry {
+    match entry {
+        defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_NONE,
+            datatype: datatype::DATATYPE_NULL,
+            data,
+        } => arca::Entry::Null(data),
+        defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+            datatype: datatype::DATATYPE_PAGE,
+            data,
+        } => arca::Entry::ROPage(Ref::new(data as i64)),
+        defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+            datatype: datatype::DATATYPE_PAGE,
+            data,
+        } => arca::Entry::RWPage(Ref::new(data as i64)),
+        defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+            datatype: datatype::DATATYPE_TABLE,
+            data,
+        } => arca::Entry::ROTable(Ref::new(data as i64)),
+        defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+            datatype: datatype::DATATYPE_TABLE,
+            data,
+        } => arca::Entry::RWTable(Ref::new(data as i64)),
+        _ => unreachable!(),
+    }
+}
+
+fn write_entry(entry: Entry) -> defs::entry {
+    match entry {
+        arca::Entry::Null(size) => defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_NONE,
+            datatype: datatype::DATATYPE_NULL,
+            data: size,
+        },
+        arca::Entry::ROPage(mut value) => defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+            datatype: datatype::DATATYPE_PAGE,
+            data: value.index.take().unwrap() as usize,
+        },
+        arca::Entry::RWPage(mut value) => defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+            datatype: datatype::DATATYPE_PAGE,
+            data: value.index.take().unwrap() as usize,
+        },
+        arca::Entry::ROTable(mut value) => defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+            datatype: datatype::DATATYPE_TABLE,
+            data: value.index.take().unwrap() as usize,
+        },
+        arca::Entry::RWTable(mut value) => defs::entry {
+            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+            datatype: datatype::DATATYPE_TABLE,
+            data: value.index.take().unwrap() as usize,
+        },
+    }
 }

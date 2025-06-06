@@ -594,19 +594,19 @@ impl arca::Table for Ref<Table> {
             unreachable!();
         };
         let entry = match entry {
-            Some((false, value)) if value.datatype() == DataType::Page => {
+            Entry::Null(size) => arca::Entry::Null(size),
+            Entry::ReadOnly(value) if value.datatype() == DataType::Page => {
                 arca::Entry::ROPage(self.client.new_ref(value))
             }
-            Some((true, value)) if value.datatype() == DataType::Page => {
+            Entry::ReadWrite(value) if value.datatype() == DataType::Page => {
                 arca::Entry::RWPage(self.client.new_ref(value))
             }
-            Some((false, value)) if value.datatype() == DataType::Table => {
+            Entry::ReadOnly(value) if value.datatype() == DataType::Table => {
                 arca::Entry::ROTable(self.client.new_ref(value))
             }
-            Some((true, value)) if value.datatype() == DataType::Table => {
+            Entry::ReadWrite(value) if value.datatype() == DataType::Table => {
                 arca::Entry::RWTable(self.client.new_ref(value))
             }
-            None => arca::Entry::Null(self.runtime().create_null()),
             _ => unreachable!(),
         };
         entry
@@ -624,11 +624,11 @@ impl arca::Table for Ref<Table> {
                 unsafe { self.copy_handle() },
                 index,
                 match entry {
-                    arca::Entry::Null(_) => None,
-                    arca::Entry::ROPage(page) => Some((false, page.into())),
-                    arca::Entry::RWPage(page) => Some((true, page.into())),
-                    arca::Entry::ROTable(table) => Some((false, table.into())),
-                    arca::Entry::RWTable(table) => Some((true, table.into())),
+                    arca::Entry::Null(x) => Entry::Null(x),
+                    arca::Entry::ROPage(page) => Entry::ReadOnly(page.into()),
+                    arca::Entry::RWPage(page) => Entry::ReadWrite(page.into()),
+                    arca::Entry::ROTable(table) => Entry::ReadOnly(table.into()),
+                    arca::Entry::RWTable(table) => Entry::ReadWrite(table.into()),
                 },
             ))
             .unwrap()
@@ -636,19 +636,19 @@ impl arca::Table for Ref<Table> {
             unreachable!();
         };
         let entry = match entry {
-            Some((false, value)) if value.datatype() == DataType::Page => {
+            Entry::Null(size) => arca::Entry::Null(size),
+            Entry::ReadOnly(value) if value.datatype() == DataType::Page => {
                 arca::Entry::ROPage(self.client.new_ref(value))
             }
-            Some((true, value)) if value.datatype() == DataType::Page => {
+            Entry::ReadWrite(value) if value.datatype() == DataType::Page => {
                 arca::Entry::RWPage(self.client.new_ref(value))
             }
-            Some((false, value)) if value.datatype() == DataType::Table => {
+            Entry::ReadOnly(value) if value.datatype() == DataType::Table => {
                 arca::Entry::ROTable(self.client.new_ref(value))
             }
-            Some((true, value)) if value.datatype() == DataType::Table => {
+            Entry::ReadWrite(value) if value.datatype() == DataType::Table => {
                 arca::Entry::RWTable(self.client.new_ref(value))
             }
-            None => arca::Entry::Null(self.runtime().create_null()),
             _ => unreachable!(),
         };
         Ok(entry)

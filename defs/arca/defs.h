@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 enum arca_syscall {
@@ -29,6 +30,11 @@ enum arca_syscall {
   SYS_TAKE,
   SYS_PUT,
   SYS_APPLY,
+  SYS_MAP,
+
+  // current arca
+  SYS_MMAP,
+  SYS_MPROTECT,
 
   // continuations
   SYS_RETURN_CONTINUATION_LAMBDA,
@@ -70,14 +76,15 @@ enum arca_datatype {
 };
 
 enum arca_entry_mode {
-  ENTRY_MODE_NULL,
-  ENTRY_MODE_RO_PAGE,
-  ENTRY_MODE_RW_PAGE,
-  ENTRY_MODE_RO_TABLE,
-  ENTRY_MODE_RW_TABLE,
+  ENTRY_MODE_NONE,
+  ENTRY_MODE_READ_ONLY,
+  ENTRY_MODE_READ_WRITE,
 };
+
+typedef int64_t arcad;
 
 struct arca_entry {
   enum arca_entry_mode mode;
-  int64_t descriptor;
+  enum arca_datatype datatype;
+  size_t data;
 };

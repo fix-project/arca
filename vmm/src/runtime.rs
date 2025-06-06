@@ -45,7 +45,7 @@ fn new_cpu<'scope>(
         padding: [0; 3],
     };
     use common::controlreg::*;
-    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP;
+    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP | ControlReg0::WP;
     vcpu_sregs.cr0 &= !ControlReg0::EM;
     vcpu_sregs.cr3 = BuddyAllocator.to_offset(pml4) as u64;
     vcpu_sregs.cr4 = ControlReg4::PAE
@@ -281,9 +281,15 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                 let regs = vcpu_fd.get_regs().unwrap();
                 let rip = regs.rip as usize;
                 if let Some((name, _)) = lookup(rip) {
-                    panic!("Unexpected exit reason: {} (in {})", error, name);
+                    panic!(
+                        "Unexpected exit reason: {} (in {}) w/{regs:#x?}",
+                        error, name
+                    );
                 } else {
-                    panic!("Unexpected exit reason: {} (@ {:#x})", error, rip);
+                    panic!(
+                        "Unexpected exit reason: {} (@ {:#x}) w/{regs:#x?}",
+                        error, rip
+                    );
                 }
             }
         }

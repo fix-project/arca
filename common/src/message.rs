@@ -162,12 +162,20 @@ pub enum Request {
     Apply(Handle, Handle),
     Run(Handle),
     TreePut(Handle, usize, Handle),
-    TablePut(Handle, usize, Option<(bool, Handle)>),
+    TablePut(Handle, usize, Entry),
     TableTake(Handle, usize),
     Length(Handle),
 }
 
 unsafe impl Sendable for Request {}
+
+#[derive(Debug)]
+#[repr(C)]
+pub enum Entry {
+    Null(usize),
+    ReadOnly(Handle),
+    ReadWrite(Handle),
+}
 
 #[derive(Debug)]
 #[repr(C)]
@@ -177,7 +185,7 @@ pub enum Response {
     Type(DataType),
     Length(usize),
     Span { ptr: usize, len: usize },
-    Entry(Option<(bool, Handle)>),
+    Entry(Entry),
 }
 
 unsafe impl Sendable for Response {}

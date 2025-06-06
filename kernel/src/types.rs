@@ -24,7 +24,7 @@ pub use lambda::Lambda;
 pub use null::Null;
 pub use page::Page;
 pub use runtime::Runtime;
-pub use table::Table;
+pub use table::{Entry, Table};
 pub use thunk::Thunk;
 pub use tree::Tree;
 pub use word::Word;

@@ -1,6 +1,6 @@
 #include "syscall.h"
 
-extern int64_t syscall(enum arca_syscall num, ...);
+extern arcad syscall(enum arca_syscall num, ...);
 
 [[noreturn]] static void ud2() {
   for (;;) {
@@ -10,111 +10,116 @@ extern int64_t syscall(enum arca_syscall num, ...);
 
 void arca_nop(void) { syscall(SYS_NOP); }
 
-int64_t arca_clone(int64_t value) { return syscall(SYS_CLONE, value); }
+arcad arca_clone(arcad value) { return syscall(SYS_CLONE, value); }
 
-int64_t arca_drop(int64_t value) { return syscall(SYS_DROP, value); }
+int64_t arca_drop(arcad value) { return syscall(SYS_DROP, value); }
 
-[[noreturn]] void arca_exit(int64_t value) {
+[[noreturn]] void arca_exit(arcad value) {
   syscall(SYS_EXIT, value);
   ud2();
 }
 
-enum arca_datatype arca_type(int64_t value) { return syscall(SYS_TYPE, value); }
+enum arca_datatype arca_type(arcad value) { return syscall(SYS_TYPE, value); }
 
-int64_t arca_null_create(void) { return syscall(SYS_CREATE_NULL); }
+arcad arca_null_create(void) { return syscall(SYS_CREATE_NULL); }
 
-int64_t arca_word_create(uint64_t value) {
+arcad arca_word_create(uint64_t value) {
   return syscall(SYS_CREATE_WORD, value);
 }
 
-int64_t arca_atom_create(const uint8_t *data, size_t len) {
+arcad arca_atom_create(const uint8_t *data, size_t len) {
   return syscall(SYS_CREATE_ATOM, data, len);
 }
 
-int64_t arca_error_create(int64_t value) {
+arcad arca_error_create(arcad value) {
   return syscall(SYS_CREATE_ERROR, value);
 }
 
-int64_t arca_blob_create(const uint8_t *data, size_t len) {
+arcad arca_blob_create(const uint8_t *data, size_t len) {
   return syscall(SYS_CREATE_BLOB, data, len);
 }
 
-int64_t arca_tree_create(size_t len) { return syscall(SYS_CREATE_TREE, len); }
+arcad arca_tree_create(size_t len) { return syscall(SYS_CREATE_TREE, len); }
 
-int64_t arca_page_create(size_t size) { return syscall(SYS_CREATE_PAGE, size); }
+arcad arca_page_create(size_t size) { return syscall(SYS_CREATE_PAGE, size); }
 
-int64_t arca_table_create(size_t size) {
-  return syscall(SYS_CREATE_TABLE, size);
-}
+arcad arca_table_create(size_t size) { return syscall(SYS_CREATE_TABLE, size); }
 
-int64_t arca_lambda_create(int64_t thunk, size_t index) {
+arcad arca_lambda_create(arcad thunk, size_t index) {
   return syscall(SYS_CREATE_LAMBDA, thunk, index);
 }
 
-int64_t arca_thunk_create(int64_t registers, int64_t memory,
-                          int64_t descriptors);
+arcad arca_thunk_create(arcad registers, arcad memory, arcad descriptors);
 
-int64_t arca_word_read(int64_t word, uint64_t *output) {
+arcad arca_word_read(arcad word, uint64_t *output) {
   return syscall(SYS_READ, word, output);
 }
 
-int64_t arca_error_read(int64_t error) { return syscall(SYS_READ, error); }
+arcad arca_error_read(arcad error) { return syscall(SYS_READ, error); }
 
-int64_t arca_blob_read(int64_t blob, uint8_t *data, size_t len) {
+arcad arca_blob_read(arcad blob, uint8_t *data, size_t len) {
   return syscall(SYS_READ, blob, data, len);
 }
 
-int64_t arca_page_read(int64_t page, size_t offset, uint8_t *data, size_t len) {
+arcad arca_page_read(arcad page, size_t offset, uint8_t *data, size_t len) {
   return syscall(SYS_READ, page, offset, data, len);
 }
 
-int64_t arca_page_write(int64_t page, size_t offset, const uint8_t *data,
-                        size_t len);
+arcad arca_page_write(arcad page, size_t offset, const uint8_t *data,
+                      size_t len);
 
-int64_t arca_equals(int64_t x, int64_t y) { return syscall(SYS_EQUALS, x, y); }
+int64_t arca_equals(arcad x, arcad y) { return syscall(SYS_EQUALS, x, y); }
 
-int64_t arca_length(int64_t value, size_t *output) {
+int64_t arca_length(arcad value, size_t *output) {
   return syscall(SYS_LENGTH, value, output);
 }
 
-int64_t arca_tree_take(int64_t value, size_t index) {
+arcad arca_tree_take(arcad value, size_t index) {
   return syscall(SYS_TAKE, value, index);
 }
 
-int64_t arca_table_take(int64_t table, size_t index, struct arca_entry *entry) {
+arcad arca_table_take(arcad table, size_t index, struct arca_entry *entry) {
   return syscall(SYS_TAKE, table, index, entry);
 }
 
-int64_t arca_tree_put(int64_t tree, size_t index, int64_t value) {
+arcad arca_tree_put(arcad tree, size_t index, arcad value) {
   return syscall(SYS_PUT, tree, index, value);
 }
 
-int64_t arca_table_put(int64_t table, size_t index, struct arca_entry *entry) {
+arcad arca_table_put(arcad table, size_t index, struct arca_entry *entry) {
   return syscall(SYS_PUT, table, index, entry);
 }
 
-int64_t arca_apply(int64_t lambda, int64_t argument) {
+arcad arca_apply(arcad lambda, arcad argument) {
   return syscall(SYS_APPLY, lambda, argument);
 }
 
-int64_t arca_return_continuation_lambda(void) {
+int64_t arca_table_map(arcad table, void *address, struct arca_entry *entry) {
+  return syscall(SYS_MAP, table, address, entry);
+}
+
+int64_t arca_mmap(void *address, struct arca_entry *entry) {
+  return syscall(SYS_MMAP, address, entry);
+}
+
+arcad arca_return_continuation_lambda(void) {
   return syscall(SYS_RETURN_CONTINUATION_LAMBDA);
 }
 
-int64_t arca_perform_effect(int64_t value) {
+arcad arca_perform_effect(arcad value) {
   return syscall(SYS_PERFORM_EFFECT, value);
 }
 
-[[noreturn]] void arca_tailcall(int64_t thunk) {
+[[noreturn]] void arca_tailcall(arcad thunk) {
   syscall(SYS_TAILCALL, thunk);
   ud2();
 }
 
-int64_t arca_capture_continuation_thunk(bool *continued) {
+arcad arca_capture_continuation_thunk(bool *continued) {
   return syscall(SYS_CAPTURE_CONTINUATION_THUNK, continued);
 }
 
-int64_t arca_capture_continuation_lambda(bool *continued) {
+arcad arca_capture_continuation_lambda(bool *continued) {
   return syscall(SYS_CAPTURE_CONTINUATION_LAMBDA, continued);
 }
 
@@ -126,7 +131,7 @@ int64_t arca_debug_log_int(const uint8_t *message, size_t len, uint64_t value) {
   return syscall(SYS_DEBUG_LOG_INT, message, len, value);
 }
 
-int64_t arca_debug_show(const uint8_t *message, size_t len, int64_t value) {
+int64_t arca_debug_show(const uint8_t *message, size_t len, arcad value) {
   return syscall(SYS_DEBUG_SHOW, message, len, value);
 }
 
@@ -140,7 +145,7 @@ int64_t arca_error_append_int(uint64_t val) {
   return syscall(SYS_ERROR_APPEND_INT, val);
 }
 
-[[noreturn]] int64_t arca_error_return(void) {
+[[noreturn]] void arca_error_return(void) {
   syscall(SYS_ERROR_RETURN);
   ud2();
 }

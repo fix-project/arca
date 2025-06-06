@@ -16,6 +16,7 @@ const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
+    log::info!("setting up");
     let id: Lambda = Thunk::from_elf(IDENTITY).run().try_into().unwrap();
     let add: Lambda = Thunk::from_elf(ADD).run().try_into().unwrap();
     let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
