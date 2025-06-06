@@ -18,7 +18,6 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
     assert_eq!(elf.ehdr.e_type, elf::abi::ET_EXEC);
 
     let mut registers = [0; 20];
-
     registers[16] = start_address;
 
     let mut highest_addr = 0;
@@ -26,7 +25,7 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
     let mut table = runtime.create_table(0);
 
     for (i, segment) in segments.iter().enumerate() {
-        log::debug!("processing segment: {:x?}", segment);
+        log::info!("processing segment: {:x?}", segment);
         match segment.p_type {
             elf::abi::PT_NOTE => {
                 // ignore for now
@@ -47,8 +46,14 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
                 let mut filei = 0;
                 let data = elf.segment_data(segment).expect("could not find segment");
                 for page in 0..pages {
-                    let mut unique_page = runtime.create_page(1 << 12);
                     let page_start = page * 4096;
+                    let mut unique_page = table
+                        .unmap(page_start_memory + page_start)
+                        .and_then(|entry| match entry {
+                            Entry::ROPage(page) | Entry::RWPage(page) => Some(page),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| runtime.create_page(1 << 12));
                     assert!(memi >= page_start);
                     let page_end = page_start + 4096;
                     if memi >= page_start && memi < page_end {
@@ -94,11 +99,6 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
             x => unimplemented!("{i} - segment type {x:#x}"),
         }
     }
-
-    let addr = highest_addr + 4096;
-    let stack = runtime.create_page(4096);
-    table.map(addr, Entry::RWPage(stack)).unwrap();
-    registers[4] = addr as u64 + (1 << 12);
 
     let bytes: Vec<u8> = registers
         .into_iter()

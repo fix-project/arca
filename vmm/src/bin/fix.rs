@@ -14,7 +14,7 @@ const MODULE_WAT: &str = r#"
       ;; (local.get $arg))
       (call $create_blob_i32 (i32.const 7)))
   (export "_fixpoint_apply" (func $apply)))"#;
-static WASM2C_RT: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/wasm2c");
+static FIX_SHELL: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/fix-shell");
 static SYSCALLS_H: &[u8] = include_bytes!("../../../defs/syscall.h");
 
 pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -55,7 +55,7 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
         ])
         .status()?;
     assert!(wasm2c.success());
-    WASM2C_RT.extract(&temp_dir)?;
+    FIX_SHELL.extract(&temp_dir)?;
 
     let mut h_file = temp_dir.path().to_path_buf();
     h_file.push("syscall.h");
@@ -67,8 +67,14 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut start = temp_dir.path().to_path_buf();
     start.push("start.S");
 
-    let mut lib = temp_dir.path().to_path_buf();
-    lib.push("lib.c");
+    let mut main = temp_dir.path().to_path_buf();
+    main.push("main.c");
+
+    let mut fix = temp_dir.path().to_path_buf();
+    fix.push("fix.c");
+
+    let mut sys = temp_dir.path().to_path_buf();
+    sys.push("sys.c");
 
     let mut memmap = temp_dir.path().to_path_buf();
     memmap.push("memmap.ld");
@@ -86,7 +92,9 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             temp_dir.path().to_str().unwrap(),
             start.to_str().unwrap(),
             c_file.to_str().unwrap(),
-            lib.to_str().unwrap(),
+            main.to_str().unwrap(),
+            fix.to_str().unwrap(),
+            sys.to_str().unwrap(),
             wasm_rt_impl.to_str().unwrap(),
             "-T",
             memmap.to_str().unwrap(),
@@ -98,6 +106,7 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             "-ffreestanding",
             "-nostdlib",
             "-nostartfiles",
+            "-mcmodel=large",
             "-Wl,-no-pie",
         ])
         .status()?;

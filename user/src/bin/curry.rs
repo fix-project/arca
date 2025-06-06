@@ -8,7 +8,7 @@ use user::prelude::*;
 /// Takes a function which requires an n-tuple and the number n, and returns an n-ary function
 /// which evaluates to the same thing.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _rsstart() -> ! {
     let f: Ref<Lambda> = os::prompt()
         .try_into()
         .expect("first argument should be a function");

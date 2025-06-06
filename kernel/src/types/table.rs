@@ -30,59 +30,6 @@ impl Table {
             panic!();
         }
     }
-
-    pub fn map(&mut self, address: usize, entry: arca::Entry<Self>) {
-        while address + entry.size() > self.size() {
-            common::util::replace_with(self, |this| match this {
-                Table::Table2MB(table) => {
-                    let mut replacement = Table1GB::new();
-                    replacement.entry_mut(0).chain_unique(table.unique());
-                    Table::Table1GB(replacement.into())
-                }
-                Table::Table1GB(table) => {
-                    let mut replacement = Table512GB::new();
-                    replacement.entry_mut(0).chain_unique(table.unique());
-                    Table::Table512GB(replacement.into())
-                }
-                Table::Table512GB(_) => todo!(),
-            });
-        }
-        match self {
-            Table::Table2MB(table) => {
-                let index = address >> 12;
-                assert!(index < 512);
-                assert!(entry.size() <= (1 << 12));
-                let Ok(entry) = entry.try_into() else {
-                    unreachable!();
-                };
-                table.entry_mut(index).replace(entry);
-            }
-            Table::Table1GB(table) => {
-                let index = address >> 21;
-                assert!(index < 512);
-                if entry.size() <= (1 << 12) {
-                    let inner = table.entry_mut(index).unmap();
-                    let mut inner = match inner {
-                        AugmentedUnmappedPage::UniqueTable(table) => CowPage::Unique(table),
-                        AugmentedUnmappedPage::SharedTable(table) => CowPage::Shared(table),
-                        _ => CowPage::Unique(Table2MB::new()),
-                    };
-                    let inner_index = (address >> 12) & 0x1ff;
-                    let Ok(entry) = entry.try_into() else {
-                        unreachable!();
-                    };
-                    inner.entry_mut(inner_index).replace(entry);
-                    table.entry_mut(index).chain_unique(inner.unique());
-                } else {
-                    let Ok(entry) = entry.try_into() else {
-                        unreachable!();
-                    };
-                    table.entry_mut(index).replace(entry);
-                }
-            }
-            Table::Table512GB(_) => todo!(),
-        }
-    }
 }
 
 impl Default for Table {

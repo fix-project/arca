@@ -158,6 +158,31 @@ where
         }
         Ok(())
     }
+
+    fn unmap(&mut self, address: usize) -> Option<Entry<Self>> {
+        if address > self.size() {
+            None
+        } else {
+            let shift = (self.size() / 512).ilog2();
+            let index = (address >> shift) & 0x1ff;
+            let offset = address & !(0x1ff << shift);
+
+            let smaller = self.take(index);
+            match smaller {
+                Entry::ROTable(mut table) => {
+                    let nested = table.unmap(offset);
+                    assert!(self.put(index, Entry::ROTable(table)).is_ok());
+                    nested.map(|x| x.into())
+                }
+                Entry::RWTable(mut table) => {
+                    let nested = table.unmap(offset);
+                    assert!(self.put(index, Entry::RWTable(table)).is_ok());
+                    nested.map(|x| x.into())
+                }
+                x => Some(x),
+            }
+        }
+    }
 }
 
 pub trait Lambda:

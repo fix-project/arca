@@ -53,10 +53,19 @@ impl arca::Runtime for Runtime {
 
     fn create_thunk(
         &self,
-        _registers: Self::Blob,
-        _memory: Self::Table,
-        _descriptors: Self::Tree,
+        registers: Self::Blob,
+        memory: Self::Table,
+        descriptors: Self::Tree,
     ) -> Self::Thunk {
-        todo!()
+        let registers: Vec<u64> = registers
+            .chunks(8)
+            .map(|x| u64::from_ne_bytes(x.try_into().unwrap()))
+            .collect();
+        let mut register_file = RegisterFile::new();
+        for (i, x) in registers.iter().take(18).enumerate() {
+            register_file[i] = *x;
+        }
+        let arca = Arca::new_with(register_file, memory, descriptors);
+        Thunk::new(arca)
     }
 }

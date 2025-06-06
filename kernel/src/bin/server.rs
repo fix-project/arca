@@ -14,6 +14,8 @@ use kernel::prelude::*;
 use kernel::rt;
 use kernel::rt::profile;
 
+use arca::prelude::*;
+
 extern crate alloc;
 
 pub struct Server {
@@ -112,16 +114,8 @@ impl Server {
                 let Value::Tree(descriptors) = descriptors.into() else {
                     unreachable!();
                 };
-                let registers: Vec<u64> = registers
-                    .chunks(8)
-                    .map(|x| u64::from_ne_bytes(x.try_into().unwrap()))
-                    .collect();
-                let mut register_file = RegisterFile::new();
-                for (i, x) in registers.iter().take(18).enumerate() {
-                    register_file[i] = *x;
-                }
-                let arca = Arca::new_with(register_file, memory, descriptors);
-                Response::Handle(Value::Thunk(Thunk::new(arca)).into())
+                let thunk = Runtime.create_thunk(registers, memory, descriptors);
+                Response::Handle(Value::Thunk(thunk).into())
             }
             Request::Run(handle) => {
                 let Value::Thunk(thunk) = handle.into() else {

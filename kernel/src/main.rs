@@ -56,9 +56,9 @@ async fn kmain(_: &[usize]) {
         panic!();
     };
     let result = map.apply(tuple).run();
-    log::info!("evaluating result");
     let result = eval(result);
-    log::info!("{result:?}");
+    let expected = Tree::new([11.into(), 12.into(), 13.into(), 14.into()]).into();
+    assert_eq!(result, expected);
 }
 
 pub fn eval(x: Value) -> Value {

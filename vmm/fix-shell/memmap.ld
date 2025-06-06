@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 MEMORY {
-  memory (rwx) : ORIGIN = 0x0000000000000000, LENGTH = 2M
+  memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 2M /* instead of memory 128 */
 }
 
 SECTIONS {
@@ -50,9 +50,9 @@ SECTIONS {
   } > memory 
   .stack (NOLOAD) :
   {
-    . = ORIGIN(memory) + LENGTH(memory) - 16K;
+    . = ALIGN(16);
     __stack_bottom = .;
-    . = ORIGIN(memory) + LENGTH(memory);
+    . = . + 64K;
     __stack_top = .;
   } > memory 
   /DISCARD/ :

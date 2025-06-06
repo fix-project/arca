@@ -7,7 +7,7 @@ use user::prelude::*;
 
 /// Add 1 to a 64-bit integer.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _rsstart() -> ! {
     let argument = os::prompt();
     let mut tree: Ref<Tree> = argument.try_into().unwrap();
     assert_eq!(tree.len(), 2);

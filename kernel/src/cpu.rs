@@ -233,7 +233,9 @@ impl Cpu {
                 pdpt.entry_mut(0).chain_unique(table.unique());
                 self.pml4.entry_mut(0).chain_unique(pdpt);
             }
-            _ => todo!(),
+            Table::Table512GB(table) => {
+                self.pml4.entry_mut(0).chain_unique(table.unique());
+            }
         }
         unsafe {
             set_pt(ka2pa(Box::as_ptr(&self.pml4)));
@@ -254,7 +256,7 @@ impl Cpu {
             todo!();
         };
         if pdpt.len() > 1 {
-            todo!("pdpt with {} entries", pdpt.len());
+            return Table::Table512GB(pdpt.into());
         }
         let offset = pdpt.offset();
         let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap(offset) else {

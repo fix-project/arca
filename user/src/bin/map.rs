@@ -7,7 +7,7 @@ use user::prelude::*;
 
 /// Map a Lambda over a Tree.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _rsstart() -> ! {
     let function: Ref<Lambda> = os::prompt()
         .try_into()
         .expect("incorrect argument type to map");
