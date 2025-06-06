@@ -59,6 +59,9 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 
 static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
+#[core_local]
+static FOO: AtomicBool = AtomicBool::new(false);
+
 #[no_mangle]
 unsafe extern "C" fn _start(
     cores: usize,
@@ -113,7 +116,9 @@ unsafe extern "C" fn _start(
     crate::profile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
+
     set_gdt(addr_of!(gdtr));
+
     asm!("ltr {tss:x}", tss=in(reg) 0x30);
 
     let idtr: IdtDescriptor = (&*IDT).into();
@@ -124,15 +129,20 @@ unsafe extern "C" fn _start(
     crate::lapic::init();
 
     let mut pml4: UniquePage<AugmentedPageTable<PageTable256TB>> = AugmentedPageTable::new();
+    let mappings = crate::rsstart::KERNEL_MAPPINGS.clone();
+    let mappings = core::mem::transmute::<
+        *mut AugmentedPageTable<PageTable512GB>,
+        *const PageTable512GB,
+    >(SharedPage::into_raw(mappings));
     pml4.entry_mut(256)
-        .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
+        .chain_unchecked(mappings, Permissions::All);
     set_pt(vm::ka2pa(Box::leak(pml4)));
 
     core::arch::asm!("sti");
-
     if id == 0 {
         let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
         let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
+
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);
     } else {

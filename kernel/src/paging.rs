@@ -814,6 +814,19 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         original
     }
 
+    /// # Safety
+    ///
+    /// This function must not be used to produce a mapping which violates Rust's aliasing rules.
+    pub unsafe fn chain_unchecked(
+        &mut self,
+        table: *const T::Table,
+        prot: Permissions,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe { self.0.chain_unchecked(table, prot) };
+        original
+    }
+
     pub fn unmap(&mut self) -> AugmentedUnmappedPage<T::Page, T::Table> {
         if !self.0.present() {
             AugmentedUnmappedPage::None
@@ -913,5 +926,11 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                 AugmentedEntry(T::new(descriptor.into_bits()))
             }
         }
+    }
+}
+
+impl<T: HardwarePageTable> AsRef<T> for AugmentedPageTable<T> {
+    fn as_ref(&self) -> &T {
+        unsafe { core::mem::transmute(self) }
     }
 }

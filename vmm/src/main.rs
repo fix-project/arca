@@ -16,6 +16,5 @@ fn main() -> anyhow::Result<()> {
     let runtime = Runtime::new(smp, 1 << 32, KERNEL_ELF.into());
     runtime.run(&[]);
 
-    log::info!("shutting down");
     Ok(())
 }

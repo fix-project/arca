@@ -4,14 +4,22 @@ use core::{
 };
 
 use alloc::format;
+use arca::MapError;
 
 use crate::{initcell::LazyLock, prelude::*, vm::ka2pa};
 
 #[core_local]
 pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
     let mut pml4 = AugmentedPageTable::new();
-    pml4.entry_mut(256)
-        .chain_shared(crate::rsstart::KERNEL_MAPPINGS.clone());
+    let mappings = crate::rsstart::KERNEL_MAPPINGS.clone();
+    unsafe {
+        let mappings = core::mem::transmute::<
+            *mut AugmentedPageTable<PageTable512GB>,
+            *const PageTable512GB,
+        >(SharedPage::into_raw(mappings));
+        pml4.entry_mut(256)
+            .chain_unchecked(mappings, crate::paging::Permissions::All);
+    }
     RefCell::new(Cpu {
         pml4,
         pdpt: None,
@@ -281,17 +289,15 @@ impl Cpu {
         todo!();
     }
 
-    pub fn map_unique_4kb(&mut self, address: usize, page: UniquePage<Page4KB>) {
+    pub fn map(&mut self, address: usize, entry: Entry) -> Result<Entry, MapError> {
         assert!(crate::vm::is_user(address));
+
         let i_512gb = (address >> 39) & 0x1ff;
         assert_eq!(i_512gb, 0);
-        let i_1gb = (address >> 30) & 0x1ff;
-        let i_2mb = (address >> 21) & 0x1ff;
-        let i_4kb = (address >> 12) & 0x1ff;
 
         let pml4 = &mut self.pml4;
         // TODO: check behavior when inserting unique into shared
-        let mut pdpt = match pml4.entry_mut(i_512gb).unmap() {
+        let pdpt = match pml4.entry_mut(i_512gb).unmap() {
             AugmentedUnmappedPage::None => {
                 todo!("inserting into larger-than-1GB address space");
                 // AugmentedPageTable::new()
@@ -300,28 +306,16 @@ impl Cpu {
             AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
             _ => todo!(),
         };
-        let mut pd = match pdpt.entry_mut(i_1gb).unmap() {
-            AugmentedUnmappedPage::None => {
-                todo!("inserting into larger-than-1GB address space");
-                // AugmentedPageTable::new()
-            }
-            AugmentedUnmappedPage::UniqueTable(pt) => pt,
-            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
+        let mut table = Table::from(CowPage::Unique(pdpt));
+        let result = table.map(address, entry)?;
+        match table {
+            Table::Table512GB(page) => pml4.entry_mut(i_512gb).chain_unique(page.unique()),
             _ => todo!(),
         };
-        let mut pt = match pd.entry_mut(i_2mb).unmap() {
-            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
-            AugmentedUnmappedPage::UniqueTable(pt) => pt,
-            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
-            _ => todo!(),
-        };
-        pt.entry_mut(i_4kb).map_unique(page);
-        pd.entry_mut(i_2mb).chain_unique(pt);
-        pdpt.entry_mut(i_1gb).chain_unique(pd);
-        pml4.entry_mut(i_512gb).chain_unique(pdpt);
         unsafe {
             core::arch::asm!("invlpg [{pg}]", pg=in(reg)address);
         }
+        Ok(result)
     }
 
     /// # Safety

@@ -15,8 +15,8 @@ pub use crate::{
         PageTable512GBEntry,
     },
     types::{
-        Arca, Atom, Blob, Error, Lambda, LoadedArca, Null, Page, Runtime, Table, Thunk, Tree,
-        Value, Word,
+        Arca, Atom, Blob, Entry, Error, Lambda, LoadedArca, Null, Page, Runtime, Table, Thunk,
+        Tree, Value, Word,
     },
 };
 pub use arca::{

@@ -8,6 +8,12 @@ set_gdt:
   mov ax, 0x23
   mov ds, ax
   mov es, ax
+
+  mov fs, ax
+  rdgsbase rdx
+  mov gs, ax
+  wrgsbase rdx
+
   mov ax, 0x10
   mov ss, ax
   // reload code selector
@@ -47,6 +53,7 @@ copy_user_to_kernel_asm:
   cli
 
   lea rax, 1f[rip]
+  mov rcx, gs:[0]
   mov gs:[SEGFAULT_ESCAPE_ADDR], rax
 
   mov rax, 0
@@ -61,5 +68,5 @@ copy_user_to_kernel_asm:
   clac
   mov qword ptr gs:[SEGFAULT_ESCAPE_ADDR], 0
 
-  // sti
+  sti
   ret
