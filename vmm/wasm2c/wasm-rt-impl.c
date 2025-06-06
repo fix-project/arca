@@ -23,6 +23,9 @@
 
 #define PAGE_SIZE 65536
 
+void map_rw_page(uint64_t, void *);
+uint64_t create_page();
+
 void wasm_rt_trap(wasm_rt_trap_t code) {
   assert(code != WASM_RT_TRAP_NONE);
   abort();
@@ -40,13 +43,17 @@ void wasm_rt_allocate_memory(wasm_rt_memory_t* memory,
                              uint64_t initial_pages,
                              uint64_t max_pages,
                              bool is64) {
+  memory->data = 0;
   uint64_t byte_length = initial_pages * PAGE_SIZE;
   memory->size = byte_length;
   memory->pages = initial_pages;
   memory->max_pages = max_pages;
   memory->is64 = is64;
 
-  abort();
+  for (uint64_t i = 0; i < byte_length >> 12; i++) {
+    map_rw_page(create_page(), memory->data + i * 4096);
+  }
+  return;
 }
 
 uint64_t wasm_rt_grow_memory(wasm_rt_memory_t* memory, uint64_t delta) {
@@ -61,35 +68,17 @@ uint64_t wasm_rt_grow_memory(wasm_rt_memory_t* memory, uint64_t delta) {
   uint64_t old_size = old_pages * PAGE_SIZE;
   uint64_t new_size = new_pages * PAGE_SIZE;
   uint64_t delta_size = delta * PAGE_SIZE;
-  abort();
-/* #if WASM_RT_USE_MMAP */
-/*   uint8_t* new_data = memory->data; */
-/*   int ret = os_mprotect(new_data + old_size, delta_size); */
-/*   if (ret != 0) { */
-/*     return (uint64_t)-1; */
-/*   } */
-/* #else */
-/*   uint8_t* new_data = realloc(memory->data, new_size); */
-/*   if (new_data == NULL) { */
-/*     return (uint64_t)-1; */
-/*   } */
-/* #if !WABT_BIG_ENDIAN */
-/*   memset(new_data + old_size, 0, delta_size); */
-/* #endif */
-/* #endif */
-/* #if WABT_BIG_ENDIAN */
-/*   memmove(new_data + new_size - old_size, new_data, old_size); */
-/*   memset(new_data, 0, delta_size); */
-/* #endif */
-  /* memory->pages = new_pages; */
-  /* memory->size = new_size; */
-  /* memory->data = new_data; */
+
+  for (uint64_t i = 0; i < delta_size >> 12; i++) {
+    map_rw_page(create_page(), memory->data + memory->size + i * 4096);
+  }
+
+  memory->pages = new_pages;
+  memory->size = new_size;
   return old_pages;
 }
 
-void wasm_rt_free_memory(wasm_rt_memory_t* memory) {
-  abort();
-}
+void wasm_rt_free_memory(wasm_rt_memory_t *memory) { return; }
 
 #define DEFINE_TABLE_OPS(type)                                          \
   void wasm_rt_allocate_##type##_table(wasm_rt_##type##_table_t* table, \

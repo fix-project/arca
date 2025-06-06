@@ -9,11 +9,17 @@ use vmm::client::*;
 
 const MODULE_WAT: &str = r#"
 (module
-  (import "fixpoint" "create_blob_i32" (func $create_blob_i32 (param i32) (result externref)))
-  (func $apply (param $arg externref) (result externref)
-      ;; (local.get $arg))
-      (call $create_blob_i32 (i32.const 7)))
-  (export "_fixpoint_apply" (func $apply)))"#;
+ (import "fixpoint" "create_blob_i32"       (func $create_blob_i32 (param i32)(result externref)))
+ (import "fixpoint" "attach_blob"           (func $attach_blob (param externref)(param i32)))
+ (import "fixpoint" "get_tree_entry"        (func $get_tree_entry (param externref)(param i32)(result externref)))
+ (memory (;0;) 2)
+ (export "memory" (memory 0))
+ (func (export "_fixpoint_apply") (param $encode externref) (result externref)
+       (call $attach_blob (call $get_tree_entry (local.get $encode)(i32.const 2)) (i32.const 0))
+       (call $attach_blob (call $get_tree_entry (local.get $encode)(i32.const 3)) (i32.const 4096))
+       (i32.add (i32.load (i32.const 0)) (i32.load (i32.const 4096)))
+       call $create_blob_i32
+ ))"#;
 static WASM2C_RT: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/wasm2c");
 static SYSCALLS_H: &[u8] = include_bytes!("../../../defs/syscall.h");
 
@@ -117,7 +123,15 @@ fn main() -> anyhow::Result<()> {
     let thunk: Ref<Thunk> = arca.load_elf(&elf);
     log::info!("run thunk");
     let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
-    let thunk = lambda.apply(arca.create_word(0xcafeb0ba).into());
+
+    let mut tree = arca.create_tree(4);
+    let dummy = arca.create_word(0xcafeb0ba);
+    tree.put(0, dummy.clone().into());
+    tree.put(1, dummy.into());
+    tree.put(2, arca.create_word(7).into());
+    tree.put(3, arca.create_word(1024).into());
+
+    let thunk = lambda.apply(tree.into());
     let word: Ref<Word> = thunk.run().try_into().unwrap();
     log::info!("{:?}", word.read());
 

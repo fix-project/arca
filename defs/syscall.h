@@ -30,6 +30,11 @@ enum syscall {
   SYS_TAKE,
   SYS_PUT,
   SYS_APPLY,
+  SYS_MAP,
+  SYS_MAP_RO,
+  SYS_MAP_RW,
+  SYS_PUT_RO,
+  SYS_PUT_RW,
 
   // continuations
   SYS_RETURN_CONTINUATION_LAMBDA,
