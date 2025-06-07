@@ -1,6 +1,7 @@
 use core::{mem::MaybeUninit, ops::ControlFlow};
 
-use defs::{error, SyscallError};
+use alloc::format;
+use defs::SyscallError;
 
 use crate::{
     prelude::*,
@@ -77,12 +78,14 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
 
         defs::syscall::SYS_DEBUG_SHOW => sys_show(args, arca),
         defs::syscall::SYS_DEBUG_LOG => sys_log(args, arca),
+        defs::syscall::SYS_DEBUG_LOG_INT => sys_log_int(args, arca),
 
         defs::syscall::SYS_ERROR_RESET => {
             arca.reset_error();
             Ok(0)
         }
         defs::syscall::SYS_ERROR_APPEND => sys_error_append(args, arca),
+        defs::syscall::SYS_ERROR_APPEND_INT => sys_error_append_int(args, arca),
         defs::syscall::SYS_ERROR_RETURN => sys_error_return(args, arca)?,
         _ => {
             log::error!("invalid syscall {num}");
@@ -145,18 +148,24 @@ pub fn sys_take(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
             Ok(arca.descriptors_mut().insert(value))
         }
         Value::Table(table) => {
-            let permissions = args[2] as usize;
+            let ptr = args[2] as usize;
             let entry = table.take(inner_idx);
-            let (value, mode): (Value, u64) = match entry {
-                arca::Entry::Null(x) => (x.into(), 0),
-                arca::Entry::ROPage(x) => (x.into(), 1),
-                arca::Entry::RWPage(x) => (x.into(), 2),
-                arca::Entry::ROTable(x) => (x.into(), 3),
-                arca::Entry::RWTable(x) => (x.into(), 4),
+            let (mode, value) = match entry {
+                arca::Entry::Null(x) => (defs::entry_mode::ENTRY_MODE_NULL, x.into()),
+                arca::Entry::ROPage(x) => (defs::entry_mode::ENTRY_MODE_RO_PAGE, x.into()),
+                arca::Entry::RWPage(x) => (defs::entry_mode::ENTRY_MODE_RW_PAGE, x.into()),
+                arca::Entry::ROTable(x) => (defs::entry_mode::ENTRY_MODE_RO_TABLE, x.into()),
+                arca::Entry::RWTable(x) => (defs::entry_mode::ENTRY_MODE_RW_TABLE, x.into()),
             };
             let index = arca.descriptors_mut().insert(value);
-            copy_kernel_to_user(permissions, &mode.to_ne_bytes())?;
-            Ok(index)
+            let entry = defs::entry {
+                mode,
+                descriptor: index as i64,
+            };
+            copy_kernel_to_user(ptr, unsafe {
+                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+            })?;
+            Ok(0)
         }
         _ => Err(SyscallError::BadType),
     }
@@ -165,40 +174,90 @@ pub fn sys_take(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_put(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let target_idx = args[0] as usize;
     let inner_idx = args[1] as usize;
-    let value_idx = args[2] as usize;
-    let value = arca.descriptors_mut().take(value_idx)?;
-    let target = arca.descriptors_mut().get_mut(target_idx)?;
-    match target {
-        Value::Tree(tree) => {
+    let target = arca.descriptors().get(target_idx)?;
+    let datatype = target.datatype();
+    match datatype {
+        DataType::Tree => {
+            let value_idx = args[2] as usize;
+            let value = arca.descriptors_mut().take(value_idx)?;
+            let Value::Tree(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
+                unreachable!();
+            };
             let value = tree.put(inner_idx, value);
             Ok(arca.descriptors_mut().insert(value))
         }
-        Value::Table(table) => {
-            let mode_ptr = args[3] as usize;
-            let mut mode: [MaybeUninit<u8>; 8] = MaybeUninit::uninit().transpose();
-            copy_user_to_kernel(&mut mode, mode_ptr)?;
-            let mode = unsafe { u64::from_ne_bytes(MaybeUninit::array_assume_init(mode)) };
-            let entry = match mode {
-                0 => arca::Entry::Null(Null),
-                1 => arca::Entry::ROPage(value.try_into()?),
-                2 => arca::Entry::RWPage(value.try_into()?),
-                3 => arca::Entry::ROTable(value.try_into()?),
-                4 => arca::Entry::RWTable(value.try_into()?),
-                _ => unreachable!(),
+        DataType::Table => {
+            let ptr = args[3] as usize;
+            let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
+            copy_user_to_kernel(
+                unsafe {
+                    &mut *(entry.as_mut_ptr()
+                        as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
+                },
+                ptr,
+            )?;
+            let entry = unsafe { MaybeUninit::assume_init(entry) };
+            let entry = match entry {
+                defs::entry {
+                    mode: defs::entry_mode::ENTRY_MODE_NULL,
+                    descriptor: _,
+                } => arca::Entry::Null(Null),
+                defs::entry {
+                    mode: defs::entry_mode::ENTRY_MODE_RO_PAGE,
+                    descriptor,
+                } => arca::Entry::ROPage(
+                    arca.descriptors_mut()
+                        .take(descriptor as usize)?
+                        .try_into()?,
+                ),
+                defs::entry {
+                    mode: defs::entry_mode::ENTRY_MODE_RW_PAGE,
+                    descriptor,
+                } => arca::Entry::RWPage(
+                    arca.descriptors_mut()
+                        .take(descriptor as usize)?
+                        .try_into()?,
+                ),
+                defs::entry {
+                    mode: defs::entry_mode::ENTRY_MODE_RO_TABLE,
+                    descriptor,
+                } => arca::Entry::ROTable(
+                    arca.descriptors_mut()
+                        .take(descriptor as usize)?
+                        .try_into()?,
+                ),
+                defs::entry {
+                    mode: defs::entry_mode::ENTRY_MODE_RW_TABLE,
+                    descriptor,
+                } => arca::Entry::RWTable(
+                    arca.descriptors_mut()
+                        .take(descriptor as usize)?
+                        .try_into()?,
+                ),
+                _ => return Err(SyscallError::BadArgument),
+            };
+            let Value::Table(ref mut table) = arca.descriptors_mut().get_mut(target_idx)? else {
+                unreachable!();
             };
             let Ok(entry) = table.put(inner_idx, entry) else {
                 todo!();
             };
-            let (value, mode): (Value, u64) = match entry {
-                arca::Entry::Null(x) => (x.into(), 0),
-                arca::Entry::ROPage(x) => (x.into(), 1),
-                arca::Entry::RWPage(x) => (x.into(), 2),
-                arca::Entry::ROTable(x) => (x.into(), 3),
-                arca::Entry::RWTable(x) => (x.into(), 4),
+            let (mode, value) = match entry {
+                arca::Entry::Null(x) => (defs::entry_mode::ENTRY_MODE_NULL, x.into()),
+                arca::Entry::ROPage(x) => (defs::entry_mode::ENTRY_MODE_RO_PAGE, x.into()),
+                arca::Entry::RWPage(x) => (defs::entry_mode::ENTRY_MODE_RW_PAGE, x.into()),
+                arca::Entry::ROTable(x) => (defs::entry_mode::ENTRY_MODE_RO_TABLE, x.into()),
+                arca::Entry::RWTable(x) => (defs::entry_mode::ENTRY_MODE_RW_TABLE, x.into()),
             };
             let index = arca.descriptors_mut().insert(value);
-            copy_kernel_to_user(mode_ptr, &mode.to_ne_bytes())?;
-            Ok(index)
+            let entry = defs::entry {
+                mode,
+                descriptor: index as i64,
+            };
+            copy_kernel_to_user(ptr, unsafe {
+                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+            })?;
+            Ok(0)
         }
         _ => Err(SyscallError::BadType),
     }
@@ -228,7 +287,7 @@ pub fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
         Value::Page(_) => todo!(),
         Value::Lambda(_) => todo!(),
         Value::Thunk(_) => todo!(),
-        _ => return Err(SyscallError::BadType),
+        _ => Err(SyscallError::BadType),
     }
 }
 
@@ -273,31 +332,39 @@ pub fn sys_create_tree(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(arca.descriptors_mut().insert(val))
 }
 
-pub fn sys_continuation(_: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let ptr = args[0] as usize;
     let mut idx = 0;
+    let mut continued: i32 = 1;
+    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
     common::util::replace_with(arca, |arca| {
         let (mut unloaded, cpu) = arca.unload_with_cpu();
-        let mut copy = unloaded.clone();
-        copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
+        let copy = unloaded.clone();
         idx = unloaded
             .descriptors_mut()
             .insert(Value::Thunk(Thunk::new(copy)));
         unloaded.load(cpu)
     });
+    continued = 0;
+    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
     Ok(idx)
 }
 
-pub fn sys_continuation_lambda(_: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_continuation_lambda(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let ptr = args[0] as usize;
     let mut idx = 0;
+    let mut continued: i32 = 1;
+    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
     common::util::replace_with(arca, |arca| {
         let (mut unloaded, cpu) = arca.unload_with_cpu();
-        let mut copy = unloaded.clone();
-        copy.registers_mut()[Register::RAX] = -(error::ERROR_CONTINUED as i64) as u64;
+        let copy = unloaded.clone();
         idx = unloaded
             .descriptors_mut()
             .insert(Value::Lambda(Lambda::new(copy)));
         unloaded.load(cpu)
     });
+    continued = 0;
+    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
     Ok(idx)
 }
 
@@ -309,7 +376,8 @@ pub fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let arg = arca.descriptors_mut().take(arg)?;
 
     let thunk = lambda.apply(arg);
-    Ok(arca.descriptors_mut().insert(thunk.into()))
+    let idx = arca.descriptors_mut().insert(thunk.into());
+    Ok(idx)
 }
 
 pub fn sys_force(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
@@ -330,7 +398,6 @@ pub fn sys_return_continuation_lambda(
     _: [u64; 5],
     arca: &mut LoadedArca,
 ) -> ControlFlow<Value, Result<usize>> {
-    arca.registers_mut()[Register::RAX] = 0;
     ControlFlow::Break(Value::Lambda(Lambda::new(arca.take())))
 }
 
@@ -338,7 +405,12 @@ pub fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let thunk = args[0] as usize;
     let mut thunk: Thunk = arca.descriptors_mut().take(thunk)?.try_into()?;
     arca.swap(&mut thunk.arca);
-    Ok(0)
+    let result = arca.registers()[Register::RAX] as i64;
+    if result >= 0 {
+        Ok(result as usize)
+    } else {
+        Err(SyscallError::new(-result as u32))
+    }
 }
 
 pub fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
@@ -369,6 +441,20 @@ pub fn sys_log(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
+pub fn sys_log_int(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
+    let ptr = args[0] as usize;
+    let len = args[1] as usize;
+    let val = args[2];
+
+    let mut buffer = Box::new_uninit_slice(len);
+    copy_user_to_kernel(&mut buffer, ptr)?;
+    let msg = String::from_utf8(unsafe { buffer.assume_init().into() })
+        .map_err(|_| SyscallError::BadArgument)?;
+
+    log::info!("user message - \"{msg}\": {val} ({val:#x})");
+    Ok(0)
+}
+
 pub fn sys_error_append(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
@@ -376,6 +462,13 @@ pub fn sys_error_append(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> 
     let buf = copy_user_to_kernel(&mut buf, ptr)?;
     let s = core::str::from_utf8(buf).map_err(|_| SyscallError::BadArgument)?;
     arca.error_buffer_mut().push_str(s);
+    Ok(0)
+}
+
+pub fn sys_error_append_int(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let int = args[0];
+    let s = format!("{int}");
+    arca.error_buffer_mut().push_str(&s);
     Ok(0)
 }
 

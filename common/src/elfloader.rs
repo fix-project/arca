@@ -25,7 +25,6 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
     let mut table = runtime.create_table(0);
 
     for (i, segment) in segments.iter().enumerate() {
-        log::info!("processing segment: {:x?}", segment);
         match segment.p_type {
             elf::abi::PT_NOTE => {
                 // ignore for now

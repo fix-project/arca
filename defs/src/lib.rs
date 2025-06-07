@@ -1,6 +1,13 @@
 #![no_std]
-
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+pub use arca_datatype as datatype;
+pub use arca_entry as entry;
+pub use arca_entry_mode as entry_mode;
+pub use arca_error as error;
+pub use arca_syscall as syscall;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SyscallError {
@@ -9,7 +16,6 @@ pub enum SyscallError {
     BadType,
     BadArgument,
     OutOfMemory,
-    Continued,
     Interrupted,
 }
 
@@ -21,7 +27,6 @@ impl SyscallError {
             SyscallError::BadType => error::ERROR_BAD_TYPE,
             SyscallError::BadArgument => error::ERROR_BAD_ARGUMENT,
             SyscallError::OutOfMemory => error::ERROR_OUT_OF_MEMORY,
-            SyscallError::Continued => error::ERROR_CONTINUED,
             SyscallError::Interrupted => error::ERROR_INTERRUPTED,
         }
     }
@@ -33,7 +38,6 @@ impl SyscallError {
             error::ERROR_BAD_TYPE => SyscallError::BadType,
             error::ERROR_BAD_ARGUMENT => SyscallError::BadArgument,
             error::ERROR_OUT_OF_MEMORY => SyscallError::OutOfMemory,
-            error::ERROR_CONTINUED => SyscallError::Continued,
             error::ERROR_INTERRUPTED => SyscallError::Interrupted,
             _ => unreachable!(),
         }

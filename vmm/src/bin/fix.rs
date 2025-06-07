@@ -15,7 +15,8 @@ const MODULE_WAT: &str = r#"
       (call $create_blob_i32 (i32.const 7)))
   (export "_fixpoint_apply" (func $apply)))"#;
 static FIX_SHELL: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/fix-shell");
-static SYSCALLS_H: &[u8] = include_bytes!("../../../defs/syscall.h");
+static INC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/arca");
+static SRC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/src");
 
 pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     let wasm = if &wat[..4] == b"\0asm" {
@@ -56,10 +57,8 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
         .status()?;
     assert!(wasm2c.success());
     FIX_SHELL.extract(&temp_dir)?;
-
-    let mut h_file = temp_dir.path().to_path_buf();
-    h_file.push("syscall.h");
-    std::fs::write(h_file, SYSCALLS_H)?;
+    INC.extract(&temp_dir)?;
+    SRC.extract(&temp_dir)?;
 
     let mut o_file = temp_dir.path().to_path_buf();
     o_file.push("module.o");
@@ -73,8 +72,11 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut fix = temp_dir.path().to_path_buf();
     fix.push("fix.c");
 
-    let mut sys = temp_dir.path().to_path_buf();
-    sys.push("sys.c");
+    let mut syscall_c = temp_dir.path().to_path_buf();
+    syscall_c.push("syscall.c");
+
+    let mut syscall_s = temp_dir.path().to_path_buf();
+    syscall_s.push("syscall.S");
 
     let mut memmap = temp_dir.path().to_path_buf();
     memmap.push("memmap.ld");
@@ -94,8 +96,9 @@ pub fn compile(wat: &[u8]) -> anyhow::Result<Vec<u8>> {
             c_file.to_str().unwrap(),
             main.to_str().unwrap(),
             fix.to_str().unwrap(),
-            sys.to_str().unwrap(),
             wasm_rt_impl.to_str().unwrap(),
+            syscall_c.to_str().unwrap(),
+            syscall_s.to_str().unwrap(),
             "-T",
             memmap.to_str().unwrap(),
             // "-lm",

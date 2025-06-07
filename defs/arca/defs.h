@@ -1,12 +1,11 @@
 #pragma once
+#include <stdint.h>
 
-enum syscall {
+enum arca_syscall {
   // general operational system calls
   SYS_NOP,
-  SYS_MOV,
   SYS_CLONE,
   SYS_DROP,
-  SYS_RESIZE,
   SYS_EXIT,
   SYS_TYPE,
 
@@ -40,23 +39,24 @@ enum syscall {
 
   // debug
   SYS_DEBUG_LOG,
+  SYS_DEBUG_LOG_INT,
   SYS_DEBUG_SHOW,
   SYS_ERROR_RESET,
   SYS_ERROR_APPEND,
+  SYS_ERROR_APPEND_INT,
   SYS_ERROR_RETURN,
 };
 
-enum error {
+enum arca_error {
   ERROR_BAD_SYSCALL,
   ERROR_BAD_INDEX,
   ERROR_BAD_TYPE,
   ERROR_BAD_ARGUMENT,
   ERROR_OUT_OF_MEMORY,
-  ERROR_CONTINUED,
   ERROR_INTERRUPTED,
 };
 
-enum datatype {
+enum arca_datatype {
   DATATYPE_NULL,
   DATATYPE_WORD,
   DATATYPE_ATOM,
@@ -67,4 +67,17 @@ enum datatype {
   DATATYPE_TABLE,
   DATATYPE_LAMBDA,
   DATATYPE_THUNK,
+};
+
+enum arca_entry_mode {
+  ENTRY_MODE_NULL,
+  ENTRY_MODE_RO_PAGE,
+  ENTRY_MODE_RW_PAGE,
+  ENTRY_MODE_RO_TABLE,
+  ENTRY_MODE_RW_TABLE,
+};
+
+struct arca_entry {
+  enum arca_entry_mode mode;
+  int64_t descriptor;
 };

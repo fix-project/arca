@@ -13,46 +13,27 @@ use arca::{DataType, Runtime as _, Value as _, ValueType, associated};
 use defs::SyscallError;
 
 extern crate defs;
-
-#[repr(C)]
-pub struct SyscallReturnTuple {
-    rax: i64,
-    rdx: i64,
-}
-
-global_asm!(
-    "
-.globl syscall
-.globl syscall_tuple
-syscall:
-syscall_tuple:
-    mov r10, rcx
-    syscall
-    ret
-"
-);
-
-unsafe extern "C" {
-    pub fn syscall(num: u32, ...) -> i64;
-    pub fn syscall_tuple(num: u32, ...) -> SyscallReturnTuple;
-}
+use defs::*;
 
 struct ErrorWriter;
 
 impl ErrorWriter {
     pub fn reset(&self) {
-        unsafe { syscall(defs::syscall::SYS_ERROR_RESET) };
+        unsafe {
+            arca_error_reset();
+        }
     }
 
     pub fn exit(&self) {
-        unsafe { syscall(defs::syscall::SYS_ERROR_RETURN) };
+        unsafe {
+            arca_error_return();
+        }
     }
 }
 
 impl core::fmt::Write for ErrorWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let mut src = s.as_bytes();
-        let result = unsafe { syscall(defs::syscall::SYS_ERROR_APPEND, src.as_ptr(), src.len()) };
+        let result = unsafe { arca_error_append(s.as_ptr(), s.len()) };
         if result == 0 {
             Ok(())
         } else {
@@ -63,13 +44,19 @@ impl core::fmt::Write for ErrorWriter {
 
 fn log(s: &str) {
     unsafe {
-        syscall(defs::syscall::SYS_DEBUG_LOG, s.as_ptr(), s.len());
+        arca_debug_log(s.as_ptr(), s.len());
     }
 }
 
-fn show(s: &str, x: usize) {
+fn log_int(s: &str, x: u64) {
     unsafe {
-        syscall(defs::syscall::SYS_DEBUG_SHOW, s.as_ptr(), s.len(), x);
+        arca_debug_log_int(s.as_ptr(), s.len(), x);
+    }
+}
+
+fn show(s: &str, x: i64) {
+    unsafe {
+        arca_debug_show(s.as_ptr(), s.len(), x);
     }
 }
 
@@ -108,44 +95,44 @@ impl arca::Runtime for Runtime {
     }
 
     fn create_word(&self, value: u64) -> Self::Word {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_WORD, value) };
+        let index = unsafe { arca_word_create(value) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_error(&self, mut value: Self::Value) -> Self::Error {
         let index = value.index.take().unwrap();
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_ERROR, index) };
+        let index = unsafe { arca_error_create(index) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_atom(&self, data: &[u8]) -> Self::Atom {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_ATOM, data.as_ptr(), data.len()) };
+        let index = unsafe { arca_atom_create(data.as_ptr(), data.len()) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_blob(&self, data: &[u8]) -> Self::Blob {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_BLOB, data.as_ptr(), data.len()) };
+        let index = unsafe { arca_blob_create(data.as_ptr(), data.len()) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_tree(&self, size: usize) -> Self::Tree {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_TREE, size) };
+        let index = unsafe { arca_tree_create(size) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_page(&self, size: usize) -> Self::Page {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_PAGE, size) };
+        let index = unsafe { arca_page_create(size) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_table(&self, size: usize) -> Self::Table {
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_TABLE, size) };
+        let index = unsafe { arca_table_create(size) };
         Ref::try_new(index).unwrap()
     }
 
     fn create_lambda(&self, mut thunk: Self::Thunk, index: usize) -> Self::Lambda {
         let thunk = thunk.index.take().unwrap();
-        let index = unsafe { syscall(defs::syscall::SYS_CREATE_LAMBDA, thunk, index) };
+        let index = unsafe { arca_lambda_create(thunk, index) };
         Ref::try_new(index).unwrap()
     }
 
@@ -158,14 +145,7 @@ impl arca::Runtime for Runtime {
         let registers = registers.index.take().unwrap();
         let memory = memory.index.take().unwrap();
         let descriptors = descriptors.index.take().unwrap();
-        let index = unsafe {
-            syscall(
-                defs::syscall::SYS_CREATE_THUNK,
-                registers,
-                memory,
-                descriptors,
-            )
-        };
+        let index = unsafe { arca_thunk_create(registers, memory, descriptors) };
         Ref::try_new(index).unwrap()
     }
 }
@@ -227,12 +207,12 @@ impl arca::ValueType for Ref<Thunk> {
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Ref<T> {
-    index: Option<usize>,
+    index: Option<i64>,
     _phantom: PhantomData<T>,
 }
 
 impl<T> Ref<T> {
-    fn new(index: usize) -> Self {
+    fn new(index: i64) -> Self {
         Ref {
             index: Some(index),
             _phantom: PhantomData,
@@ -242,7 +222,7 @@ impl<T> Ref<T> {
     fn try_new(index: i64) -> Result<Self, SyscallError> {
         if index >= 0 {
             Ok(Ref {
-                index: Some(index as usize),
+                index: Some(index),
                 _phantom: PhantomData,
             })
         } else {
@@ -253,7 +233,7 @@ impl<T> Ref<T> {
 
 impl<T> Clone for Ref<T> {
     fn clone(&self) -> Self {
-        let index = unsafe { syscall(defs::syscall::SYS_CLONE, self.index.unwrap()) };
+        let index = unsafe { arca_clone(self.index.unwrap()) };
         Ref::try_new(index).unwrap()
     }
 }
@@ -262,7 +242,7 @@ impl<T> Drop for Ref<T> {
     fn drop(&mut self) {
         if let Some(index) = self.index {
             unsafe {
-                assert_eq!(syscall(defs::syscall::SYS_DROP, index), 0);
+                assert_eq!(arca_drop(index), 0);
             }
         }
     }
@@ -283,7 +263,7 @@ impl arca::Word for Ref<Word> {
         let mut x: u64 = 0;
         let p = &raw mut x;
         unsafe {
-            assert_eq!(syscall(defs::syscall::SYS_READ, self.index.unwrap(), p), 0);
+            assert_eq!(arca_word_read(self.index.unwrap(), p), 0);
         }
         x
     }
@@ -292,7 +272,7 @@ impl arca::Word for Ref<Word> {
 impl arca::Error for Ref<Error> {
     fn read(mut self) -> associated::Value<Self> {
         let idx = self.index.take().unwrap();
-        let idx = unsafe { syscall(defs::syscall::SYS_READ, idx) };
+        let idx = unsafe { arca_error_read(idx) };
         Ref::try_new(idx).unwrap()
     }
 }
@@ -301,8 +281,7 @@ impl arca::Atom for Ref<Atom> {}
 
 impl PartialEq for Ref<Atom> {
     fn eq(&self, other: &Self) -> bool {
-        let result =
-            unsafe { syscall(defs::syscall::SYS_EQUALS, self.index.unwrap(), other.index) };
+        let result = unsafe { arca_equals(self.index.unwrap(), other.index.unwrap()) };
         assert!(result >= 0);
         result != 0
     }
@@ -314,12 +293,7 @@ impl arca::Blob for Ref<Blob> {
     fn read(&self, buffer: &mut [u8]) {
         unsafe {
             assert_eq!(
-                syscall(
-                    defs::syscall::SYS_READ,
-                    self.index.unwrap(),
-                    buffer.as_ptr(),
-                    buffer.len()
-                ),
+                arca_blob_read(self.index.unwrap(), buffer.as_mut_ptr(), buffer.len()),
                 0
             );
         }
@@ -328,14 +302,7 @@ impl arca::Blob for Ref<Blob> {
     fn len(&self) -> usize {
         let mut n: usize = 0;
         unsafe {
-            assert_eq!(
-                syscall(
-                    defs::syscall::SYS_LENGTH,
-                    self.index.unwrap(),
-                    &raw mut n as u64
-                ),
-                0
-            );
+            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
         }
         n
     }
@@ -343,33 +310,19 @@ impl arca::Blob for Ref<Blob> {
 
 impl arca::Tree for Ref<Tree> {
     fn take(&mut self, index: usize) -> associated::Value<Self> {
-        let index = unsafe { syscall(defs::syscall::SYS_TAKE, self.index.unwrap(), index) };
+        let index = unsafe { arca_tree_take(self.index.unwrap(), index) };
         Ref::try_new(index).unwrap()
     }
 
     fn put(&mut self, index: usize, mut value: associated::Value<Self>) -> associated::Value<Self> {
-        let index = unsafe {
-            syscall(
-                defs::syscall::SYS_PUT,
-                self.index.unwrap(),
-                index,
-                value.index.unwrap(),
-            )
-        };
+        let index = unsafe { arca_tree_put(self.index.unwrap(), index, value.index.unwrap()) };
         Ref::try_new(index).unwrap()
     }
 
     fn len(&self) -> usize {
         let mut n: usize = 0;
         unsafe {
-            assert_eq!(
-                syscall(
-                    defs::syscall::SYS_LENGTH,
-                    self.index.unwrap(),
-                    &raw mut n as u64
-                ),
-                0
-            );
+            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
         }
         n
     }
@@ -379,11 +332,10 @@ impl arca::Page for Ref<Page> {
     fn read(&self, offset: usize, buffer: &mut [u8]) {
         unsafe {
             assert_eq!(
-                syscall(
-                    defs::syscall::SYS_READ,
+                arca_page_read(
                     self.index.unwrap(),
                     offset,
-                    buffer.as_ptr(),
+                    buffer.as_mut_ptr(),
                     buffer.len()
                 ),
                 0
@@ -394,13 +346,7 @@ impl arca::Page for Ref<Page> {
     fn write(&mut self, offset: usize, buffer: &[u8]) {
         unsafe {
             assert_eq!(
-                syscall(
-                    defs::syscall::SYS_WRITE,
-                    self.index.unwrap(),
-                    offset,
-                    buffer.as_ptr(),
-                    buffer.len()
-                ),
+                arca_page_write(self.index.unwrap(), offset, buffer.as_ptr(), buffer.len()),
                 0
             );
         }
@@ -409,14 +355,7 @@ impl arca::Page for Ref<Page> {
     fn size(&self) -> usize {
         let mut n: usize = 0;
         unsafe {
-            assert_eq!(
-                syscall(
-                    defs::syscall::SYS_LENGTH,
-                    self.index.unwrap(),
-                    &raw mut n as u64
-                ),
-                0
-            );
+            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
         }
         n
     }
@@ -424,21 +363,35 @@ impl arca::Page for Ref<Page> {
 
 impl arca::Table for Ref<Table> {
     fn take(&mut self, index: usize) -> arca::Entry<Self> {
-        let mut mode: u64 = 0;
-        let index = unsafe {
-            syscall(
-                defs::syscall::SYS_TAKE,
-                self.index.unwrap(),
-                index,
-                &raw mut mode,
-            )
+        let mut entry = core::mem::MaybeUninit::uninit();
+        let entry = unsafe {
+            assert_eq!(
+                arca_table_take(self.index.unwrap(), index, entry.as_mut_ptr()),
+                0
+            );
+            entry.assume_init()
         };
-        match mode {
-            0 => arca::Entry::Null(Ref::try_new(index).unwrap()),
-            1 => arca::Entry::ROPage(Ref::try_new(index).unwrap()),
-            2 => arca::Entry::RWPage(Ref::try_new(index).unwrap()),
-            3 => arca::Entry::ROTable(Ref::try_new(index).unwrap()),
-            4 => arca::Entry::RWTable(Ref::try_new(index).unwrap()),
+        match entry {
+            entry {
+                mode: entry_mode::ENTRY_MODE_NULL,
+                descriptor,
+            } => arca::Entry::Null(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RO_PAGE,
+                descriptor,
+            } => arca::Entry::ROPage(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RW_PAGE,
+                descriptor,
+            } => arca::Entry::RWPage(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RO_TABLE,
+                descriptor,
+            } => arca::Entry::ROTable(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RW_TABLE,
+                descriptor,
+            } => arca::Entry::RWTable(Ref::new(descriptor)),
             _ => unreachable!(),
         }
     }
@@ -448,48 +401,59 @@ impl arca::Table for Ref<Table> {
         offset: usize,
         mut entry: arca::Entry<Self>,
     ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
-        let (mut mode, index) = match &mut entry {
-            arca::Entry::Null(x) => (0, &mut x.index),
-            arca::Entry::ROPage(x) => (1, &mut x.index),
-            arca::Entry::RWPage(x) => (2, &mut x.index),
-            arca::Entry::ROTable(x) => (3, &mut x.index),
-            arca::Entry::RWTable(x) => (4, &mut x.index),
+        let mut entry = match &mut entry {
+            arca::Entry::Null(x) => entry {
+                mode: entry_mode::ENTRY_MODE_NULL,
+                descriptor: x.index.take().unwrap(),
+            },
+            arca::Entry::ROPage(x) => entry {
+                mode: entry_mode::ENTRY_MODE_RO_PAGE,
+                descriptor: x.index.take().unwrap(),
+            },
+            arca::Entry::RWPage(x) => entry {
+                mode: entry_mode::ENTRY_MODE_RW_PAGE,
+                descriptor: x.index.take().unwrap(),
+            },
+            arca::Entry::ROTable(x) => entry {
+                mode: entry_mode::ENTRY_MODE_RO_TABLE,
+                descriptor: x.index.take().unwrap(),
+            },
+            arca::Entry::RWTable(x) => entry {
+                mode: entry_mode::ENTRY_MODE_RW_TABLE,
+                descriptor: x.index.take().unwrap(),
+            },
         };
-        let index = index.take().unwrap();
-        let result = unsafe {
-            syscall(
-                defs::syscall::SYS_PUT,
-                self.index.unwrap(),
-                index,
-                offset,
-                &raw mut mode,
-            )
+        let result = unsafe { arca_table_put(self.index.unwrap(), offset, &mut entry) };
+        let entry = match entry {
+            entry {
+                mode: entry_mode::ENTRY_MODE_NULL,
+                descriptor,
+            } => arca::Entry::Null(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RO_PAGE,
+                descriptor,
+            } => arca::Entry::ROPage(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RW_PAGE,
+                descriptor,
+            } => arca::Entry::RWPage(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RO_TABLE,
+                descriptor,
+            } => arca::Entry::ROTable(Ref::new(descriptor)),
+            entry {
+                mode: entry_mode::ENTRY_MODE_RW_TABLE,
+                descriptor,
+            } => arca::Entry::RWTable(Ref::new(descriptor)),
+            _ => unreachable!(),
         };
-        if result == 0 {
-            Ok(match mode {
-                0 => arca::Entry::Null(Ref::new(index)),
-                1 => arca::Entry::ROPage(Ref::new(index)),
-                2 => arca::Entry::RWPage(Ref::new(index)),
-                3 => arca::Entry::ROTable(Ref::new(index)),
-                4 => arca::Entry::RWTable(Ref::new(index)),
-                _ => unreachable!(),
-            })
-        } else {
-            todo!();
-        }
+        if result == 0 { Ok(entry) } else { Err(entry) }
     }
 
     fn size(&self) -> usize {
         let mut n: usize = 0;
         unsafe {
-            assert_eq!(
-                syscall(
-                    defs::syscall::SYS_LENGTH,
-                    self.index.unwrap(),
-                    &raw mut n as u64
-                ),
-                0
-            );
+            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
         }
         n
     }
@@ -499,7 +463,7 @@ impl arca::Lambda for Ref<Lambda> {
     fn apply(mut self, mut argument: associated::Value<Self>) -> associated::Thunk<Self> {
         let index = self.index.take().unwrap();
         let argument = argument.index.take().unwrap();
-        let index = unsafe { syscall(defs::syscall::SYS_APPLY, index, argument) };
+        let index = unsafe { arca_apply(index, argument) };
         Ref::try_new(index).unwrap()
     }
 
@@ -526,12 +490,7 @@ impl arca::Thunk for Ref<Thunk> {
 
 impl arca::Value for Ref<Value> {
     fn datatype(&self) -> DataType {
-        let typ: defs::datatype::Type = unsafe {
-            let result = syscall(defs::syscall::SYS_TYPE, self.index.unwrap());
-            result
-                .try_into()
-                .expect("got error trying to get value's datatype")
-        };
+        let typ: defs::datatype::Type = unsafe { arca_type(self.index.unwrap()) };
         match typ {
             defs::datatype::DATATYPE_NULL => DataType::Null,
             defs::datatype::DATATYPE_WORD => DataType::Word,
@@ -579,8 +538,9 @@ impl Default for Ref<Value> {
 
 impl<T: FnOnce() -> Ref<Value>> From<T> for Ref<Thunk> {
     fn from(value: T) -> Self {
-        let result = unsafe { syscall(defs::syscall::SYS_CAPTURE_CONTINUATION_THUNK) };
-        if result == -(defs::error::ERROR_CONTINUED as i64) {
+        let mut continued: bool = false;
+        let result = unsafe { arca_capture_continuation_thunk(&mut continued) };
+        if continued {
             // in the resumed continuation
             let result = value();
             os::exit(result);
@@ -591,15 +551,15 @@ impl<T: FnOnce() -> Ref<Value>> From<T> for Ref<Thunk> {
 
 impl<T: FnOnce(Ref<Value>) -> Ref<Value>> From<T> for Ref<Lambda> {
     fn from(value: T) -> Self {
-        let SyscallReturnTuple { rdx, rax } =
-            unsafe { syscall_tuple(defs::syscall::SYS_CAPTURE_CONTINUATION_LAMBDA) };
-        if rax == -(defs::error::ERROR_CONTINUED as i64) {
+        let mut continued: bool = false;
+        let result = unsafe { arca_capture_continuation_lambda(&mut continued) };
+        if continued {
             // in the resumed continuation
-            let argument = Ref::try_new(rdx).unwrap();
+            let argument = Ref::try_new(result).unwrap();
             let result = value(argument);
             os::exit(result);
         };
-        Ref::try_new(rax).unwrap()
+        Ref::try_new(result).unwrap()
     }
 }
 
@@ -635,15 +595,14 @@ pub mod os {
     }
 
     pub fn prompt() -> Ref<Value> {
-        let SyscallReturnTuple { rdx, rax } =
-            unsafe { syscall_tuple(defs::syscall::SYS_RETURN_CONTINUATION_LAMBDA) };
-        Ref::try_new(rdx).unwrap()
+        let result = unsafe { arca_return_continuation_lambda() };
+        Ref::try_new(result).unwrap()
     }
 
     pub fn perform<T: Into<Ref<Value>>>(effect: T) -> Ref<Value> {
         let mut val: Ref<Value> = effect.into();
         let idx = val.index.take().unwrap();
-        let idx = unsafe { syscall(defs::syscall::SYS_PERFORM_EFFECT, idx) };
+        let idx = unsafe { arca_perform_effect(idx) };
         Ref::try_new(idx).unwrap()
     }
 
@@ -651,7 +610,7 @@ pub mod os {
         let mut val: Ref<Value> = value.into();
         let idx = val.index.take().unwrap();
         unsafe {
-            syscall(defs::syscall::SYS_EXIT, idx);
+            arca_exit(idx);
             asm!("ud2");
         }
         unreachable!();
@@ -659,7 +618,7 @@ pub mod os {
 
     pub fn tailcall(mut value: Ref<Thunk>) -> ! {
         unsafe {
-            syscall(defs::syscall::SYS_TAILCALL, value.index.take().unwrap());
+            arca_tailcall(value.index.take().unwrap());
             asm!("ud2");
         }
         unreachable!();

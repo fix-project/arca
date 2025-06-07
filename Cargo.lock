@@ -211,6 +211,7 @@ name = "defs"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "cc",
 ]
 
 [[package]]
