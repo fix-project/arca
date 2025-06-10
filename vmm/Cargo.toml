@@ -25,3 +25,7 @@ elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"
 rustc-demangle = "0.1.24"
+anyhow = "1.0.97"
+rand_distr = "0.5.1"
+rand = "0.9.0"
+async-std = { version = "1.13.1", features = ["attributes"] }

@@ -14,6 +14,7 @@ pub mod syscall {
     pub const READ: u64 = 0x14;
     pub const TYPE: u64 = 0x15;
 
+    pub const CREATE_WORD: u64 = 0x60;
     pub const CREATE_ATOM: u64 = 0x20;
     pub const CREATE_BLOB: u64 = 0x30;
     pub const CREATE_TREE: u64 = 0x40;
@@ -46,6 +47,7 @@ pub mod error {
 pub mod types {
     pub const NULL: u64 = 0x00;
     pub const ERROR: u64 = 0x01;
+    pub const WORD: u64 = 0x09;
     pub const ATOM: u64 = 0x02;
     pub const BLOB: u64 = 0x03;
     pub const TREE: u64 = 0x04;

@@ -1,343 +1,531 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::future::Future;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread::JoinHandle;
 
-use common::message::{
-    ArcaHandle, BlobHandle, Handle, LambdaHandle, Message, Messenger, NullHandle, ThunkHandle,
-    TreeHandle,
-};
-use common::ringbuffer::RingBufferError;
+use common::message::{MetaRequest, MetaResponse, Request, Response, Type};
+use common::ringbuffer::{Endpoint, Error, Receiver, Result, Sender};
 use common::BuddyAllocator;
 extern crate alloc;
-use common::util::spinlock::SpinLock;
 
-pub struct Client<'a> {
-    messenger: SpinLock<Messenger<'a>>,
-    allocator: &'a BuddyAllocator<'a>,
+#[derive(Debug)]
+enum BufferEntry {
+    Ignore,
+    Received(Response),
+    Waiting(Waker),
 }
 
-impl<'a> Client<'a> {
-    pub fn new(messenger: Messenger<'a>) -> Self {
-        let allocator: &'a BuddyAllocator<'a> = messenger.allocator();
-        Client {
-            messenger: SpinLock::new(messenger),
-            allocator,
+struct Synchronizer {
+    exit: Arc<AtomicBool>,
+    channel: async_std::channel::Sender<MetaRequest>,
+    buffer: Arc<Mutex<HashMap<usize, BufferEntry>>>,
+    send_thread: Mutex<Option<JoinHandle<()>>>,
+    receive_thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Synchronizer {
+    fn new(
+        sender: Sender<'static, MetaRequest>,
+        receiver: Receiver<'static, MetaResponse>,
+    ) -> Self {
+        let (tx, rx) = async_std::channel::unbounded();
+        let exit = Arc::new(AtomicBool::new(false));
+        let exit2 = exit.clone();
+        let send_thread = Mutex::new(Some(std::thread::spawn(move || {
+            let mut sender = sender;
+            let exit = exit2;
+            while !exit.load(Ordering::SeqCst) {
+                let Ok(request) = rx.recv_blocking() else {
+                    break;
+                };
+                while sender.is_full() {
+                    std::thread::yield_now();
+                }
+                if sender.send(request).is_err() {
+                    exit.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+            sender.hangup();
+        })));
+        let buffer = Arc::new(Mutex::new(HashMap::new()));
+        let buffer2 = buffer.clone();
+        let exit2 = exit.clone();
+        let receive_thread = Mutex::new(Some(std::thread::spawn(|| {
+            let mut receiver = receiver;
+            let buffer = buffer2;
+            let exit = exit2;
+            while !exit.load(Ordering::SeqCst) {
+                let response = receiver.try_recv();
+                let response = match response {
+                    Ok(response) => response,
+                    Err(Error::WouldBlock) => {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    Err(_) => {
+                        exit.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                };
+                let MetaResponse { seqno, body } = response;
+                let mut buffer = buffer.lock().unwrap();
+                match buffer.remove(&seqno) {
+                    Some(BufferEntry::Ignore) => {}
+                    Some(BufferEntry::Waiting(waker)) => {
+                        buffer.insert(seqno, BufferEntry::Received(body));
+                        core::mem::drop(buffer);
+                        waker.wake();
+                    }
+                    Some(BufferEntry::Received(_)) => {
+                        unreachable!("received same sequence number twice!");
+                    }
+                    None => {
+                        buffer.insert(seqno, BufferEntry::Received(body));
+                    }
+                }
+            }
+            receiver.hangup();
+        })));
+        Synchronizer {
+            exit,
+            buffer,
+            channel: tx,
+            send_thread,
+            receive_thread,
         }
     }
-}
 
-impl Drop for Client<'_> {
-    fn drop(&mut self) {
-        let mut m = self.messenger.lock();
-        m.send(Message::Exit).unwrap();
-    }
-}
-
-pub struct Ref<'a, 'b, T: ArcaHandle>
-where
-    'b: 'a,
-{
-    handle: T,
-    client: &'a Client<'b>,
-}
-
-impl<T: ArcaHandle> Drop for Ref<'_, '_, T> {
-    fn drop(&mut self) {
-        let msg = Message::Drop(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
-        messenger.send(msg).unwrap();
-    }
-}
-
-pub type NullRef<'a, 'b> = Ref<'a, 'b, NullHandle>;
-pub type BlobRef<'a, 'b> = Ref<'a, 'b, BlobHandle>;
-pub type TreeRef<'a, 'b> = Ref<'a, 'b, TreeHandle>;
-pub type LambdaRef<'a, 'b> = Ref<'a, 'b, LambdaHandle>;
-pub type ThunkRef<'a, 'b> = Ref<'a, 'b, ThunkHandle>;
-
-pub enum ArcaRef<'a, 'b>
-where
-    'b: 'a,
-{
-    Null(NullRef<'a, 'b>),
-    Blob(BlobRef<'a, 'b>),
-    Tree(TreeRef<'a, 'b>),
-    Lambda(LambdaRef<'a, 'b>),
-    Thunk(ThunkRef<'a, 'b>),
-}
-
-impl ArcaRef<'_, '_> {
-    pub fn handle(&self) -> Handle {
-        match self {
-            ArcaRef::Null(_) => Handle::Null,
-            ArcaRef::Blob(h) => Handle::Blob(h.handle),
-            ArcaRef::Tree(h) => Handle::Tree(h.handle),
-            ArcaRef::Lambda(h) => Handle::Lambda(h.handle),
-            ArcaRef::Thunk(h) => Handle::Thunk(h.handle),
+    fn ignore(&self, seqno: usize) {
+        let mut buffer = self.buffer.lock().unwrap();
+        match buffer.remove(&seqno) {
+            Some(BufferEntry::Waiting(_)) => {
+                unreachable!("ignoring sequence number that already has a waiter");
+            }
+            Some(BufferEntry::Received(_)) => {}
+            Some(BufferEntry::Ignore) | None => {
+                buffer.insert(seqno, BufferEntry::Ignore);
+            }
         }
     }
-}
 
-impl<'a, 'b> From<ArcaRef<'a, 'b>> for Handle
-where
-    'b: 'a,
-{
-    fn from(value: ArcaRef<'a, 'b>) -> Self {
-        value.handle()
+    fn get(&self, seqno: usize) -> impl Future<Output = Result<Response>> {
+        ClientFuture {
+            exit: self.exit.clone(),
+            buffer: self.buffer.clone(),
+            seqno,
+        }
     }
-}
-impl<'a, 'b> From<BlobRef<'a, 'b>> for ArcaRef<'a, 'b>
-where
-    'b: 'a,
-{
-    fn from(value: BlobRef<'a, 'b>) -> ArcaRef<'a, 'b> {
-        ArcaRef::Blob(value)
-    }
-}
 
-impl<'a, 'b> From<TreeRef<'a, 'b>> for ArcaRef<'a, 'b>
-where
-    'b: 'a,
-{
-    fn from(value: TreeRef<'a, 'b>) -> ArcaRef<'a, 'b> {
-        ArcaRef::Tree(value)
+    async fn put(&self, seqno: usize, body: Request) {
+        self.channel
+            .send(MetaRequest { seqno, body })
+            .await
+            .unwrap();
     }
-}
 
-impl<'a, 'b> From<LambdaRef<'a, 'b>> for ArcaRef<'a, 'b>
-where
-    'b: 'a,
-{
-    fn from(value: LambdaRef<'a, 'b>) -> ArcaRef<'a, 'b> {
-        ArcaRef::Lambda(value)
+    fn put_blocking(&self, seqno: usize, body: Request) {
+        self.channel
+            .send_blocking(MetaRequest { seqno, body })
+            .unwrap();
+    }
+
+    fn shutdown(&self) {
+        self.channel.close();
+        self.exit.store(true, Ordering::SeqCst);
     }
 }
 
-impl<'a, 'b> From<ThunkRef<'a, 'b>> for ArcaRef<'a, 'b>
-where
-    'b: 'a,
-{
-    fn from(value: ThunkRef<'a, 'b>) -> ArcaRef<'a, 'b> {
-        ArcaRef::Thunk(value)
-    }
+struct ClientFuture {
+    exit: Arc<AtomicBool>,
+    buffer: Arc<Mutex<HashMap<usize, BufferEntry>>>,
+    seqno: usize,
 }
 
-impl Clone for BlobRef<'_, '_> {
-    fn clone(&self) -> Self {
-        unsafe {
-            let BlobHandle { ptr, len } = self.handle;
-            let this: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(
-                core::ptr::from_raw_parts(self.client.allocator.from_offset::<u8>(ptr), len),
-                self.client.allocator,
-            );
-            let new = this.clone();
-            core::mem::forget(this);
-            let (slice, a) = Arc::into_raw_with_allocator(new);
-            let (ptr, len) = slice.to_raw_parts();
-            let ptr = a.to_offset(ptr);
-            let handle = BlobHandle { ptr, len };
-            BlobRef {
-                handle,
-                client: self.client,
+impl Future for ClientFuture {
+    type Output = Result<Response>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut buffer = self.buffer.lock().unwrap();
+        if self.exit.load(Ordering::SeqCst) {
+            return Poll::Ready(Err(Error::Disconnected));
+        }
+        match buffer.remove(&self.seqno) {
+            Some(BufferEntry::Ignore) => {
+                unreachable!(
+                    "tried to poll seqno {} which was previously ignored",
+                    self.seqno
+                );
+            }
+            Some(BufferEntry::Received(response)) => Poll::Ready(Ok(response)),
+            Some(BufferEntry::Waiting(_)) | None => {
+                let waker = cx.waker().clone();
+                buffer.insert(self.seqno, BufferEntry::Waiting(waker));
+                Poll::Pending
             }
         }
     }
 }
 
-impl Clone for TreeRef<'_, '_> {
-    fn clone(&self) -> Self {
-        let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
-        let Handle::Tree(t) = messenger.send_and_receive_handle(msg).unwrap() else {
-            panic!();
-        };
-        Self {
-            handle: t,
-            client: self.client,
-        }
+impl Drop for Synchronizer {
+    fn drop(&mut self) {
+        self.exit.store(true, Ordering::SeqCst);
+        let handle = self.send_thread.lock().unwrap().take().unwrap();
+        handle.join().unwrap();
+        let handle = self.receive_thread.lock().unwrap().take().unwrap();
+        handle.join().unwrap();
     }
 }
 
-impl Clone for LambdaRef<'_, '_> {
-    fn clone(&self) -> Self {
-        let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
-        let Handle::Lambda(l) = messenger.send_and_receive_handle(msg).unwrap() else {
-            panic!();
-        };
-        Self {
-            handle: l,
-            client: self.client,
-        }
-    }
+pub struct Client<'a> {
+    synchronizer: Synchronizer,
+    seqno: AtomicUsize,
+    allocator: &'static BuddyAllocator<'static>,
+    _phantom: PhantomData<&'a ()>,
 }
 
-impl Clone for ThunkRef<'_, '_> {
-    fn clone(&self) -> Self {
-        let msg = Message::Clone(self.handle.into());
-        let mut messenger = self.client.messenger.lock();
-        let Handle::Thunk(t) = messenger.send_and_receive_handle(msg).unwrap() else {
-            panic!();
+impl<'a> Client<'a> {
+    fn seqno(&self) -> usize {
+        self.seqno.fetch_add(1, Ordering::AcqRel)
+    }
+
+    pub fn new(endpoint: Endpoint<'static, MetaRequest, MetaResponse>) -> Self {
+        let allocator: &'static BuddyAllocator<'static> = endpoint.allocator();
+        let (sender, receiver) = endpoint.into_sender_receiver();
+        let synchronizer = Synchronizer::new(sender, receiver);
+        Client {
+            synchronizer,
+            seqno: AtomicUsize::new(0),
+            allocator,
+            _phantom: PhantomData,
+        }
+    }
+
+    async fn send(&self, message: Request) -> usize {
+        let seqno = self.seqno();
+        self.synchronizer.put(seqno, message).await;
+        seqno
+    }
+
+    fn send_blocking(&self, message: Request) -> usize {
+        let seqno = self.seqno();
+        self.synchronizer.put_blocking(seqno, message);
+        seqno
+    }
+
+    async fn recv(&self, seqno: usize) -> Response {
+        self.synchronizer.get(seqno).await.unwrap()
+    }
+
+    async fn fullsend(&self, message: Request) -> Response {
+        let seqno = self.send(message).await;
+        self.recv(seqno).await
+    }
+
+    fn send_and_ignore_blocking(&self, message: Request) {
+        let seqno = self.send_blocking(message);
+        self.synchronizer.ignore(seqno);
+    }
+
+    pub async fn null(&self) -> Handle<Null> {
+        let Response::Handle(index) = self.fullsend(Request::CreateNull).await else {
+            unreachable!();
         };
-        Self {
-            handle: t,
-            client: self.client,
-        }
-    }
-}
-
-impl<'b> Client<'b> {
-    fn make_ref<'a>(&'a self, handle: Handle) -> ArcaRef<'a, 'b>
-    where
-        'b: 'a,
-    {
-        match handle {
-            Handle::Null => ArcaRef::Null(NullRef {
-                handle: NullHandle,
-                client: self,
-            }),
-            Handle::Blob(handle) => ArcaRef::Blob(BlobRef {
-                handle,
-                client: self,
-            }),
-            Handle::Tree(handle) => ArcaRef::Tree(TreeRef {
-                handle,
-                client: self,
-            }),
-            Handle::Lambda(handle) => ArcaRef::Lambda(LambdaRef {
-                handle,
-                client: self,
-            }),
-            Handle::Thunk(handle) => ArcaRef::Thunk(ThunkRef {
-                handle,
-                client: self,
-            }),
-        }
-    }
-
-    pub fn null<'a>(&'a self) -> Result<NullRef<'a, 'b>, RingBufferError>
-    where
-        'b: 'a,
-    {
-        Ok(NullRef {
-            handle: NullHandle,
+        Handle {
+            index,
             client: self,
-        })
+            _phantom: PhantomData,
+        }
     }
 
-    pub fn create_blob<'a>(&'a self, blob: &[u8]) -> Result<BlobRef<'a, 'b>, RingBufferError>
-    where
-        'b: 'a,
-    {
-        let allocator = self.allocator;
-        let mut buf = Arc::new_uninit_slice_in(blob.len(), allocator);
-        Arc::make_mut(&mut buf).write_copy_of_slice(blob);
-        let buf = unsafe { buf.assume_init() };
-        let (slice, a) = Arc::into_raw_with_allocator(buf);
-        let (ptr, len) = slice.to_raw_parts();
-        let ptr = a.to_offset(ptr);
-        let handle = BlobHandle { ptr, len };
-        Ok(BlobRef {
-            handle,
+    pub async fn word(&self, value: u64) -> Handle<Word> {
+        let Response::Handle(index) = self.fullsend(Request::CreateWord { value }).await else {
+            unreachable!();
+        };
+        Handle {
+            index,
             client: self,
-        })
+            _phantom: PhantomData,
+        }
     }
 
-    pub fn create_tree<'a>(&'a self, tree: Vec<ArcaRef>) -> Result<TreeRef<'a, 'b>, RingBufferError>
-    where
-        'b: 'a,
-    {
-        let mut new: Vec<Handle, &BuddyAllocator> =
-            Vec::with_capacity_in(tree.len(), self.allocator);
-        for r in tree {
-            new.push(r.handle());
-            core::mem::forget(r);
+    pub async fn blob<T: AsRef<[u8]>>(&self, data: T) -> Handle<Blob> {
+        let data = data.as_ref();
+        let mut blob = Box::new_uninit_slice_in(data.len(), self.allocator);
+        blob.write_copy_of_slice(data);
+        let blob = unsafe { blob.assume_init() };
+        let blob = Arc::from(blob);
+        let ptr: *const [u8] = Arc::into_raw(blob);
+        let (ptr, len) = ptr.to_raw_parts();
+        let ptr = self.allocator.to_offset(ptr);
+        let Response::Handle(index) = self.fullsend(Request::CreateBlob { ptr, len }).await else {
+            unreachable!();
+        };
+        Handle {
+            index,
+            client: self,
+            _phantom: PhantomData,
         }
-        let tree = new.into_boxed_slice();
+    }
 
-        let (slice, a) = Box::into_raw_with_allocator(tree);
-        let (ptr, len) = slice.to_raw_parts();
-
-        let ptr = a.to_offset(ptr);
-        let mut m = self.messenger.lock();
-        if let ArcaRef::Tree(t) =
-            self.make_ref(m.send_and_receive_handle(Message::CreateTree { ptr, len })?)
-        {
-            Ok(t)
-        } else {
-            Err(RingBufferError::TypeError)
+    pub async fn tree<I: IntoIterator<Item = Handle<'a, Opaque>>>(
+        &self,
+        elements: I,
+    ) -> Handle<Tree> {
+        let elements = elements.into_iter().map(|x| {
+            let index = x.index;
+            core::mem::forget(x);
+            index
+        });
+        let mut v = Vec::new_in(self.allocator);
+        v.extend(elements);
+        let data: Arc<[usize], &BuddyAllocator> = v.into();
+        let ptr: *const [usize] = Arc::into_raw(data);
+        let (ptr, len) = ptr.to_raw_parts();
+        let ptr = self.allocator.to_offset(ptr);
+        let Response::Handle(index) = self.fullsend(Request::CreateTree { ptr, len }).await else {
+            unreachable!();
+        };
+        Handle {
+            index,
+            client: self,
+            _phantom: PhantomData,
         }
+    }
+
+    pub fn shutdown(&self) {
+        self.synchronizer.shutdown();
     }
 }
 
-impl<'a, 'b> Ref<'a, 'b, BlobHandle>
-where
-    'b: 'a,
-{
-    pub fn read(&self) -> Result<Arc<[u8], &BuddyAllocator>, RingBufferError> {
-        let BlobHandle { ptr, len } = self.handle;
-        unsafe {
-            let this: Arc<[u8], &BuddyAllocator> = Arc::from_raw_in(
-                core::ptr::from_raw_parts(self.client.allocator.from_offset::<u8>(ptr), len),
-                self.client.allocator,
-            );
-            let new = this.clone();
-            core::mem::forget(this);
-            Ok(new)
-        }
+pub struct Null;
+pub struct Word;
+pub struct Blob;
+pub struct Tree;
+pub struct Lambda;
+pub struct Thunk;
+pub struct Opaque;
+
+pub struct Handle<'client, T> {
+    client: &'client Client<'client>,
+    index: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Handle<'_, T> {
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
-impl<'a, 'b> Ref<'a, 'b, ThunkHandle>
-where
-    'b: 'a,
-{
-    pub fn new(blob: BlobRef<'a, 'b>) -> Result<Self, RingBufferError> {
-        let BlobRef { client, handle } = blob;
-        core::mem::forget(blob);
-        let mut m = client.messenger.lock();
-        if let ArcaRef::Thunk(t) =
-            client.make_ref(m.send_and_receive_handle(Message::CreateThunk(handle))?)
-        {
-            Ok(t)
-        } else {
-            Err(RingBufferError::TypeError)
-        }
+impl Handle<'_, Word> {
+    pub async fn read(&self) -> u64 {
+        let Response::Word(x) = self
+            .client
+            .fullsend(Request::Read { src: self.index })
+            .await
+        else {
+            panic!();
+        };
+        x
     }
+}
 
-    pub fn run(self) -> Result<ArcaRef<'a, 'b>, RingBufferError> {
-        let ThunkRef { client, handle } = self;
+impl<'client> Handle<'client, Blob> {
+    pub async fn create_thunk(self) -> Handle<'client, Thunk> {
+        let Response::Handle(index) = self
+            .client
+            .fullsend(Request::CreateThunk { src: self.index })
+            .await
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
         core::mem::forget(self);
-        let mut m = client.messenger.lock();
-        Ok(client.make_ref(m.send_and_receive_handle(Message::Run(handle))?))
+        new
     }
 }
 
-impl<'a, 'b> Ref<'a, 'b, LambdaHandle>
-where
-    'b: 'a,
-{
-    pub fn apply(self, value: ArcaRef<'a, 'b>) -> Result<ThunkRef<'a, 'b>, RingBufferError> {
-        // assert_eq!(self.client as *const _, value.client as *const _);
-        let LambdaRef { client, handle } = self;
+impl<'client> Handle<'client, Lambda> {
+    pub async fn apply(self, arg: Handle<'client, Opaque>) -> Handle<'client, Thunk> {
+        let Response::Handle(index) = self
+            .client
+            .fullsend(Request::Apply {
+                src: self.index,
+                arg: arg.index,
+            })
+            .await
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
         core::mem::forget(self);
-        let arg_handle = value.handle();
+        core::mem::forget(arg);
+        new
+    }
+}
+
+impl<'client> Handle<'client, Thunk> {
+    pub async fn run(self) -> Handle<'client, Opaque> {
+        let Response::Handle(index) = self.client.fullsend(Request::Run { src: self.index }).await
+        else {
+            unreachable!();
+        };
+        let new = Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(self);
+        new
+    }
+}
+
+impl<T> Handle<'_, T> {
+    pub async fn duplicate(&self) -> Self {
+        let Response::Handle(index) = self
+            .client
+            .fullsend(Request::Clone { src: self.index })
+            .await
+        else {
+            unreachable!();
+        };
+        Handle {
+            client: self.client,
+            index,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a> From<Handle<'a, Word>> for Handle<'a, Opaque> {
+    fn from(value: Handle<'a, Word>) -> Handle<'a, Opaque> {
+        let handle = Handle {
+            client: value.client,
+            index: value.index,
+            _phantom: PhantomData,
+        };
         core::mem::forget(value);
-        let mut m = client.messenger.lock();
-        if let ArcaRef::Thunk(t) =
-            client.make_ref(m.send_and_receive_handle(Message::Apply(handle, arg_handle))?)
-        {
-            Ok(t)
+        handle
+    }
+}
+
+impl<'a> From<Handle<'a, Tree>> for Handle<'a, Opaque> {
+    fn from(value: Handle<'a, Tree>) -> Handle<'a, Opaque> {
+        let handle = Handle {
+            client: value.client,
+            index: value.index,
+            _phantom: PhantomData,
+        };
+        core::mem::forget(value);
+        handle
+    }
+}
+
+impl<'a> Handle<'a, Opaque> {
+    pub async fn as_word(self) -> core::result::Result<Handle<'a, Word>, Handle<'a, Opaque>> {
+        let datatype = self
+            .client
+            .fullsend(Request::GetType { src: self.index })
+            .await;
+        if let Response::Type(Type::Word) = datatype {
+            let handle = Handle {
+                client: self.client,
+                index: self.index,
+                _phantom: PhantomData,
+            };
+            core::mem::forget(self);
+            Ok(handle)
         } else {
-            Err(RingBufferError::TypeError)
+            log::error!("{datatype:?}");
+            Err(self)
         }
     }
 
-    pub fn apply_and_run(self, value: ArcaRef<'a, 'b>) -> Result<ArcaRef<'a, 'b>, RingBufferError> {
-        // assert_eq!(self.client as *const _, value.client as *const _);
-        let LambdaRef { client, handle } = self;
-        core::mem::forget(self);
-        let arg_handle = value.handle();
-        core::mem::forget(value);
-        let mut m = client.messenger.lock();
-        Ok(client.make_ref(m.send_and_receive_handle(Message::ApplyAndRun(handle, arg_handle))?))
+    pub async fn as_lambda(self) -> core::result::Result<Handle<'a, Lambda>, Handle<'a, Opaque>> {
+        let datatype = self
+            .client
+            .fullsend(Request::GetType { src: self.index })
+            .await;
+        if let Response::Type(Type::Lambda) = datatype {
+            let handle = Handle {
+                client: self.client,
+                index: self.index,
+                _phantom: PhantomData,
+            };
+            core::mem::forget(self);
+            Ok(handle)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl<T> Drop for Handle<'_, T> {
+    fn drop(&mut self) {
+        self.client
+            .send_and_ignore_blocking(Request::Drop { src: self.index });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::ringbuffer;
+
+    use crate::runtime::{Mmap, Runtime};
+
+    use super::*;
+
+    const SERVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_server"));
+    const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+
+    #[test]
+    pub fn test_client() {
+        let mut mmap = Mmap::new(1 << 32);
+        let mut runtime = Runtime::new(1, &mut mmap);
+        let allocator = runtime.allocator();
+        let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
+        let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
+        let endpoint_raw = Box::into_raw(Box::new_in(
+            endpoint2.into_raw_parts(&allocator),
+            &*allocator,
+        ));
+        let endpoint_raw_offset = allocator.to_offset(endpoint_raw);
+
+        let client = Client::new(endpoint1);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                runtime.run(SERVER_ELF, &[endpoint_raw_offset]);
+            });
+
+            async_std::task::block_on(async {
+                let add = client.blob(ADD_ELF).await;
+                let add = add.create_thunk().await;
+                let x = client.word(1).await;
+                let y = client.word(2).await;
+                let arg = client.tree([x.into(), y.into()]).await;
+                let Ok(add) = add.run().await.as_lambda().await else {
+                    panic!("running add returned something other than a lambda");
+                };
+                let Ok(sum) = add.apply(arg.into()).await.run().await.as_word().await else {
+                    panic!("running add(1, 2) returned something other than a word");
+                };
+                assert_eq!(sum.read().await, 3);
+            });
+            client.shutdown();
+        });
     }
 }

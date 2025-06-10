@@ -18,6 +18,7 @@ unsafe impl<T: Sync + Send + ?Sized> Sync for RefCnt<'_, T> {}
 
 impl<'a, T: ?Sized> RefCnt<'a, T> {
     pub fn refcnt(this: &Self) -> &AtomicUsize {
+        debug_assert!(!this.ptr.is_null());
         unsafe { &*this.allocator.refcnt(this.ptr) }
     }
 
@@ -36,9 +37,28 @@ impl<'a, T: ?Sized> RefCnt<'a, T> {
     /// This raw pointer and allocator pair must have been previously returned by a call to
     /// [into_raw_with_allocator].
     pub unsafe fn from_raw_in(ptr: *mut T, allocator: &'a BuddyAllocator<'a>) -> RefCnt<'a, T> {
+        debug_assert!(!ptr.is_null());
         let rc = RefCnt { ptr, allocator };
         assert_ne!((*allocator.refcnt(ptr)).load(Ordering::SeqCst), 0);
         rc
+    }
+
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        let refcnt = Self::refcnt(this);
+        if refcnt.load(Ordering::SeqCst) == 1 {
+            unsafe { Some(Self::get_mut_unchecked(this)) }
+        } else {
+            None
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Gets a mutable reference to the contents of this RefCnt. The caller is responsible for
+    /// ensuring there are no other references to these contents which would violate Rust's
+    /// aliasing model.
+    pub unsafe fn get_mut_unchecked(this: &mut Self) -> &mut T {
+        unsafe { &mut *this.ptr }
     }
 }
 
@@ -136,7 +156,7 @@ mod tests {
     fn test_from_box() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -151,7 +171,7 @@ mod tests {
     fn test_clone_drop() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         assert_eq!(
@@ -177,7 +197,7 @@ mod tests {
     fn test_make_mut() {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let check_allocations = |x: usize| {
             assert_eq!(
@@ -214,7 +234,7 @@ mod tests {
     fn bench_clone_drop(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
 
@@ -238,7 +258,7 @@ mod tests {
     fn bench_make_mut(b: &mut Bencher) {
         let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
         let mut allocator = BuddyAllocator::new(&mut *region);
-        allocator.set_caching(false);
+        // allocator.set_caching(false);
         let original = allocator.used_size();
         let x = Box::new_in(10, &allocator);
         let check_allocations = |x: usize| {
