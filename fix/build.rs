@@ -78,14 +78,13 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     let exts = [OsStr::new("c"), OsStr::new("S")];
     for f in std::fs::read_dir(&temp_dir)? {
         let f = f?;
-        if let Some(ext) = f.path().extension() {
-            if exts.contains(&ext) {
+        if let Some(ext) = f.path().extension()
+            && exts.contains(&ext) {
                 src.push(f.path());
             }
-        }
     }
 
-    println!("{:?}", src);
+    println!("{src:?}");
 
     let mut o_file = temp_dir.path().to_path_buf();
     o_file.push("module.o");

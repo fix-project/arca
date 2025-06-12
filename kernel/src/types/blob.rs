@@ -52,7 +52,7 @@ impl arca::ValueType for Blob {
 impl arca::Blob for Blob {
     fn read(&self, buffer: &mut [u8]) {
         match self {
-            Blob::Raw(items) => buffer.copy_from_slice(&items),
+            Blob::Raw(items) => buffer.copy_from_slice(items),
             Blob::String(s) => buffer.copy_from_slice(s.as_bytes()),
         }
     }

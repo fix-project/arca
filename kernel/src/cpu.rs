@@ -334,7 +334,7 @@ impl Cpu {
 
 impl From<ExitReason> for Value {
     fn from(value: ExitReason) -> Self {
-        let result = format!("{:x?}", value);
+        let result = format!("{value:x?}");
         Value::Blob(result.into())
     }
 }

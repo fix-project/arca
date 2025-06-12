@@ -568,7 +568,7 @@ pub struct AugmentedPageTable<T: HardwarePageTable>([ManuallyDrop<T::Entry>; 512
 
 impl<T: HardwarePageTable> core::fmt::Debug for AugmentedPageTable<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "AugmentedPageTable @ {:p}", self)
+        write!(f, "AugmentedPageTable @ {self:p}")
     }
 }
 

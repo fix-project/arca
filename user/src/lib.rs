@@ -63,7 +63,7 @@ fn show(s: &str, x: i64) {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     ErrorWriter.reset();
-    let _ = writeln!(ErrorWriter, "{}", info);
+    let _ = writeln!(ErrorWriter, "{info}");
     ErrorWriter.exit();
     loop {
         unsafe {
