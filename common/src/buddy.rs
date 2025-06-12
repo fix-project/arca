@@ -318,7 +318,7 @@ impl AllocatorInner {
                 max_level,
                 1,
                 &mut (*(*p).free.get())[max_level as usize],
-                &mut (*(*p).data.get())[0..1],
+                &mut (&mut (*(*p).data.get()))[0..1],
             );
             top.free(0);
             Pin::new_unchecked(Box::from_raw_in(p, allocator))
