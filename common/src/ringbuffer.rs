@@ -115,7 +115,7 @@ impl RingBuffer {
 
         end = min(end, read_count + len);
 
-        let readable = unsafe { &(*self.buf.get())[read_count..end] };
+        let readable = unsafe { &(&(*self.buf.get()))[read_count..end] };
         buf[..readable.len()].write_copy_of_slice(readable);
         self.read_counter
             .store(end % self.buf.get().len(), Ordering::Release);
@@ -147,7 +147,7 @@ impl RingBuffer {
 
         end = min(end, write_count + len);
 
-        let writable: &mut [u8] = unsafe { &mut (*self.buf.get())[write_count..end] };
+        let writable: &mut [u8] = unsafe { &mut (&mut (*self.buf.get()))[write_count..end] };
         writable.copy_from_slice(&buf[..writable.len()]);
 
         self.write_counter

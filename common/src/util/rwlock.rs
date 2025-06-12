@@ -30,7 +30,7 @@ impl<T> RwLock<T> {
         }
     }
 
-    pub fn try_write(&self) -> Option<WriteGuard<T>> {
+    pub fn try_write(&self) -> Option<WriteGuard<'_, T>> {
         if self
             .count
             .compare_exchange(0, usize::MAX, Ordering::SeqCst, Ordering::SeqCst)
@@ -45,7 +45,7 @@ impl<T> RwLock<T> {
         }
     }
 
-    pub fn write(&self) -> WriteGuard<T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_write() {
                 return guard;
@@ -54,7 +54,7 @@ impl<T> RwLock<T> {
         }
     }
 
-    pub fn try_read(&self) -> Option<ReadGuard<T>> {
+    pub fn try_read(&self) -> Option<ReadGuard<'_, T>> {
         loop {
             let old = self.count.load(Ordering::SeqCst);
             if old == usize::MAX {
@@ -74,7 +74,7 @@ impl<T> RwLock<T> {
         }
     }
 
-    pub fn read(&self) -> ReadGuard<T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_read() {
                 return guard;

@@ -553,7 +553,7 @@ impl arca::Page for Ref<Page> {
             let span = self
                 .client
                 .request_span(Request::ReadPage(self.copy_handle()));
-            buffer.copy_from_slice(&(*span)[offset..]);
+            buffer.copy_from_slice(&(&*span)[offset..]);
         }
     }
 

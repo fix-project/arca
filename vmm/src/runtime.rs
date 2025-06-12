@@ -375,7 +375,7 @@ impl Runtime {
                     // let offset = segment.p_offset as usize;
                     let source = &elf.segment_data(&segment).unwrap()[..filesz];
                     unsafe {
-                        (*ptr)[..filesz].copy_from_slice(source);
+                        (&mut (*ptr))[..filesz].copy_from_slice(source);
                     }
                 }
                 0x60000000.. => {

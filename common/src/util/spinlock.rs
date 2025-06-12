@@ -24,7 +24,7 @@ impl<T> SpinLock<T> {
         }
     }
 
-    pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
         if self
             .lock
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -39,7 +39,7 @@ impl<T> SpinLock<T> {
         }
     }
 
-    pub fn lock(&self) -> SpinLockGuard<T> {
+    pub fn lock(&self) -> SpinLockGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_lock() {
                 return guard;
