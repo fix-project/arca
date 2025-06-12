@@ -105,7 +105,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use spinlock::SpinLockGuard;
 
     let mut console = crate::debugcon::CONSOLE.lock();
-    let _ = writeln!(&mut *console, "KERNEL PANIC: {}", info);
+    let _ = writeln!(&mut *console, "KERNEL PANIC: {info}");
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");
     let mut i = 0;

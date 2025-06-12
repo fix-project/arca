@@ -182,7 +182,7 @@ impl Client {
         let Response::Span { ptr, len } = self.fullsend(message).unwrap() else {
             panic!("expected span");
         };
-        core::ptr::from_raw_parts_mut(BuddyAllocator.from_offset(ptr) as *mut u8, len)
+        core::ptr::from_raw_parts_mut(BuddyAllocator.from_offset::<u8>(ptr), len)
     }
 
     fn request_length(&self, message: Request) -> usize {
@@ -593,7 +593,8 @@ impl arca::Table for Ref<Table> {
         else {
             unreachable!();
         };
-        let entry = match entry {
+
+        match entry {
             Entry::Null(size) => arca::Entry::Null(size),
             Entry::ReadOnly(value) if value.datatype() == DataType::Page => {
                 arca::Entry::ROPage(self.client.new_ref(value))
@@ -608,8 +609,7 @@ impl arca::Table for Ref<Table> {
                 arca::Entry::RWTable(self.client.new_ref(value))
             }
             _ => unreachable!(),
-        };
-        entry
+        }
     }
 
     fn put(

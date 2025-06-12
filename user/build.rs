@@ -4,5 +4,5 @@ fn main() {
     println!("cargo::rustc-link-arg=-no-pie");
     println!("cargo::rerun-if-changed=etc/memmap.ld");
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo::rustc-link-arg=-T{}/etc/memmap.ld", dir);
+    println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
 }

@@ -223,7 +223,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 .file(file)
                                 .line(line)
                                 .module_path(module_path)
-                                .args(format_args!("{}", message))
+                                .args(format_args!("{message}"))
                                 .build(),
                         );
                     }
@@ -268,7 +268,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                 }
             },
             VcpuExit::MmioRead(addr, _) => {
-                println!("Received an MMIO Read Request for the address {:#x}.", addr,);
+                println!("Received an MMIO Read Request for the address {addr:#x}.",);
             }
             VcpuExit::MmioWrite(addr, data) => {
                 println!(
@@ -277,18 +277,16 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                 );
             }
             r => {
-                let error = format!("{:?}", r);
+                let error = format!("{r:?}");
                 let regs = vcpu_fd.get_regs().unwrap();
                 let rip = regs.rip as usize;
                 if let Some((name, _)) = lookup(rip) {
                     panic!(
-                        "Unexpected exit reason: {} (in {}) w/{regs:#x?}",
-                        error, name
+                        "Unexpected exit reason: {error} (in {name}) w/{regs:#x?}"
                     );
                 } else {
                     panic!(
-                        "Unexpected exit reason: {} (@ {:#x}) w/{regs:#x?}",
-                        error, rip
+                        "Unexpected exit reason: {error} (@ {rip:#x}) w/{regs:#x?}"
                     );
                 }
             }
