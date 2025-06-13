@@ -71,6 +71,29 @@ impl<T: HardwarePageTable> Entry<T> {
             },
         })
     }
+
+    pub fn unmap(&mut self, index: usize) -> Option<Entry<GetTable<T>>> {
+        match self {
+            Entry::UniquePage(_) => todo!(),
+            Entry::SharedPage(_) => todo!(),
+            Entry::UniqueTable(t1) => match t1.entry_mut(index).unmap() {
+                AugmentedUnmappedPage::None => None,
+                AugmentedUnmappedPage::UniquePage(_) => todo!(),
+                AugmentedUnmappedPage::SharedPage(_) => todo!(),
+                AugmentedUnmappedPage::Global(_) => todo!(),
+                AugmentedUnmappedPage::UniqueTable(pt) => Some(Entry::UniqueTable(pt)),
+                AugmentedUnmappedPage::SharedTable(pt) => Some(Entry::SharedTable(pt)),
+            },
+            Entry::SharedTable(t1) => match RefCnt::make_mut(t1).entry_mut(index).unmap() {
+                AugmentedUnmappedPage::None => None,
+                AugmentedUnmappedPage::UniquePage(_) => todo!(),
+                AugmentedUnmappedPage::SharedPage(_) => todo!(),
+                AugmentedUnmappedPage::Global(_) => todo!(),
+                AugmentedUnmappedPage::UniqueTable(pt) => Some(Entry::UniqueTable(pt)),
+                AugmentedUnmappedPage::SharedTable(pt) => Some(Entry::SharedTable(pt)),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,12 +223,45 @@ impl AddressSpace {
                     this
                 }
             }
-            (AddressSpace::AddressSpace1GB(offset, entry), AnyEntry::Entry4KB(x)) => {
-                let index = (address >> 12) & 0x1ff;
-                let x = PageTable2MB::from_entry(index, x).into();
-                let mut this = AddressSpace::AddressSpace1GB(offset, entry);
-                this.map(address, AnyEntry::Entry2MB(x));
-                this
+            (AddressSpace::AddressSpace1GB(offset, mut entry), AnyEntry::Entry4KB(x)) => {
+                let index_2mb = (address >> 12) & 0x1ff;
+                let index_1gb = (address >> 21) & 0x1ff;
+                if let Some(child) = entry.unmap(index_1gb) {
+                    let child = match child {
+                        Entry::UniquePage(_) => todo!(),
+                        Entry::SharedPage(_) => todo!(),
+                        Entry::UniqueTable(mut pt) => match x {
+                            Entry::UniquePage(p) => {
+                                pt.entry_mut(index_2mb).map_unique(p);
+                                Entry::UniqueTable(pt)
+                            }
+                            Entry::SharedPage(_) => todo!(),
+                            Entry::UniqueTable(_) => todo!(),
+                            Entry::SharedTable(_) => todo!(),
+                        },
+                        Entry::SharedTable(mut pt) => match x {
+                            Entry::UniquePage(p) => {
+                                // TODO: is this right? some children might become read-write
+                                let mut pt = RefCnt::into_unique(pt);
+                                pt.entry_mut(index_2mb).map_unique(p);
+                                Entry::UniqueTable(pt)
+                            }
+                            Entry::SharedPage(p) => {
+                                RefCnt::make_mut(&mut pt).entry_mut(index_2mb).map_shared(p);
+                                Entry::SharedTable(pt)
+                            }
+                            Entry::UniqueTable(_) => todo!(),
+                            Entry::SharedTable(_) => todo!(),
+                        },
+                    };
+                    entry.insert(index_1gb, child);
+                    AddressSpace::AddressSpace1GB(offset, entry)
+                } else {
+                    let x = PageTable2MB::from_entry(index_2mb, x).into();
+                    let mut this = AddressSpace::AddressSpace1GB(offset, entry);
+                    this.map((address >> 12) << 12, AnyEntry::Entry2MB(x));
+                    this
+                }
             }
             (AddressSpace::AddressSpace1GB(offset, mut entry), AnyEntry::Entry2MB(x)) => {
                 let page_num = address >> 30;

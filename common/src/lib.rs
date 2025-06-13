@@ -18,10 +18,14 @@ pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod arrayvec;
 pub mod controlreg;
+pub mod elfloader;
 pub mod message;
 pub mod ringbuffer;
 pub mod sendable;
 pub mod util;
+
+#[cfg(feature = "std")]
+pub mod mmap;
 
 #[repr(C)]
 #[derive(Debug)]

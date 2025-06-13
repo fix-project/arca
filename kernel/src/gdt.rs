@@ -152,7 +152,7 @@ pub struct Access {
 impl Access {
     const fn code(readable: bool, privileged: bool) -> Access {
         Access::new()
-            .with_a_accessed(false)
+            .with_a_accessed(true)
             .with_rw_readable_writeable(readable)
             .with_dc_direction_conforming(false)
             .with_e_executable(true)
@@ -163,7 +163,7 @@ impl Access {
 
     const fn data(writeable: bool, privileged: bool) -> Access {
         Access::new()
-            .with_a_accessed(false)
+            .with_a_accessed(true)
             .with_rw_readable_writeable(writeable)
             .with_dc_direction_conforming(false)
             .with_e_executable(false)
@@ -173,7 +173,9 @@ impl Access {
     }
 
     const fn tss() -> Access {
-        Access::from_bits(0x9).with_p_present(true)
+        Access::from_bits(0x9)
+            .with_p_present(true)
+            .with_a_accessed(true)
     }
 }
 
