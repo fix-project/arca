@@ -96,6 +96,10 @@ pub trait Tree:
 
     fn put(&mut self, index: usize, value: associated::Value<Self>) -> associated::Value<Self>;
 
+    fn get(&self, index: usize) -> associated::Value<Self>;
+
+    fn set(&mut self, index: usize, value: associated::Value<Self>);
+
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
@@ -123,6 +127,9 @@ where
 {
     fn take(&mut self, index: usize) -> Entry<Self>;
     fn put(&mut self, index: usize, entry: Entry<Self>) -> Result<Entry<Self>, Entry<Self>>;
+
+    fn get(&mut self, index: usize) -> Entry<Self>;
+    fn set(&mut self, index: usize, entry: Entry<Self>) -> Result<(), Entry<Self>>;
 
     fn size(&self) -> usize;
 

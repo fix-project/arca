@@ -51,6 +51,14 @@ impl arca::Tree for Tree {
         old
     }
 
+    fn get(&self, index: usize) -> arca::associated::Value<Self> {
+        self.contents[index].clone()
+    }
+
+    fn set(&mut self, index: usize, value: arca::associated::Value<Self>) {
+        self.contents[index] = value;
+    }
+
     fn len(&self) -> usize {
         self.contents.len()
     }

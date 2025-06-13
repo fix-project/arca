@@ -542,6 +542,14 @@ impl arca::Tree for Ref<Tree> {
         ))
     }
 
+    fn get(&self, _index: usize) -> arca::associated::Value<Self> {
+        todo!()
+    }
+
+    fn set(&mut self, _index: usize, _value: arca::associated::Value<Self>) {
+        todo!()
+    }
+
     fn len(&self) -> usize {
         todo!()
     }
@@ -652,6 +660,18 @@ impl arca::Table for Ref<Table> {
             _ => unreachable!(),
         };
         Ok(entry)
+    }
+
+    fn get(&mut self, _index: usize) -> arca::Entry<Self> {
+        todo!()
+    }
+
+    fn set(
+        &mut self,
+        _index: usize,
+        _entry: arca::Entry<Self>,
+    ) -> std::result::Result<(), arca::Entry<Self>> {
+        todo!()
     }
 
     fn size(&self) -> usize {

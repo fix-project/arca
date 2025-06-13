@@ -36,6 +36,11 @@ arcad arca_tree_take(arcad value, size_t index);
 arcad arca_table_take(arcad table, size_t index, struct arca_entry *entry);
 arcad arca_tree_put(arcad tree, size_t index, arcad value);
 arcad arca_table_put(arcad table, size_t index, struct arca_entry *entry);
+arcad arca_tree_get(arcad value, size_t index);
+arcad arca_table_get(arcad table, size_t index, struct arca_entry *entry);
+int64_t arca_tree_set(arcad tree, size_t index, arcad value);
+int64_t arca_table_set(arcad table, size_t index,
+                       const struct arca_entry *entry);
 arcad arca_apply(arcad lambda, arcad argument);
 int64_t arca_table_map(arcad table, void *address, struct arca_entry *entry);
 

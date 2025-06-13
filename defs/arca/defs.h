@@ -29,6 +29,8 @@ enum arca_syscall {
   SYS_LENGTH,
   SYS_TAKE,
   SYS_PUT,
+  SYS_GET,
+  SYS_SET,
   SYS_APPLY,
   SYS_MAP,
 
