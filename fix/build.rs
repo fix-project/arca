@@ -1,9 +1,10 @@
 use std::env;
 use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use include_directory::{Dir, include_directory};
 
@@ -28,7 +29,14 @@ fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
                 wat_file.to_str().unwrap(),
                 "--enable-multi-memory",
             ])
-            .status()?;
+            .status()
+            .map_err(|e| {
+                if let ErrorKind::NotFound = e.kind() {
+                    anyhow!("Could not find wat2wasm. Did you install wabt?")
+                } else {
+                    e.into()
+                }
+            })?;
         assert!(wat2wasm.success());
         Ok(std::fs::read(wasm_file)?)
     }
@@ -79,9 +87,10 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     for f in std::fs::read_dir(&temp_dir)? {
         let f = f?;
         if let Some(ext) = f.path().extension()
-            && exts.contains(&ext) {
-                src.push(f.path());
-            }
+            && exts.contains(&ext)
+        {
+            src.push(f.path());
+        }
     }
 
     println!("{src:?}");
@@ -95,7 +104,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     let cc = Command::new("clang")
         .args([
             "-target",
-            "x86_64-unknown-none",
+            "x86_64-unknown-none", // TODO: modify wasm2c to not require non-freestanding libraries (e.g., <math.h>)
             "-o",
             o_file.to_str().unwrap(),
             "-I",
@@ -112,9 +121,10 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-nostartfiles",
             "-mcmodel=large",
             "-Wl,-no-pie",
+            "-Imath.h",
         ])
         .args(src)
-        .status()?;
+        .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
     assert!(cc.success());
 
     let o = std::fs::read(o_file)?;
@@ -131,7 +141,7 @@ fn main() -> Result<()> {
         let dst = Path::new(&out_dir).join(base);
         println!(
             "cargo::rerun-if-changed=wasm/{}",
-            f.file_name().to_string_lossy()
+            f.file_name().to_str().unwrap()
         );
         let wat = std::fs::read(f.path())?;
         let wasm = wat2wasm(&wat)?;

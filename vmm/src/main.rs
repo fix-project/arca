@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     let smp = std::thread::available_parallelism()
         .unwrap_or(NonZero::new(1).unwrap())
         .get();
-    let runtime = Runtime::new(smp, 1 << 32, KERNEL_ELF.into());
+    let runtime = Runtime::new(smp, 1 << 30, KERNEL_ELF.into());
     runtime.run(&[]);
 
     Ok(())

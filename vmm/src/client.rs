@@ -16,7 +16,7 @@ extern crate alloc;
 
 const SERVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_server"));
 
-static RUNTIME: LazyLock<ArcaRuntime> = LazyLock::new(|| ArcaRuntime::new(1 << 32));
+static RUNTIME: LazyLock<ArcaRuntime> = LazyLock::new(|| ArcaRuntime::new(1 << 30));
 
 pub fn init(size: usize) {
     LazyLock::set(&RUNTIME, ArcaRuntime::new(size)).expect("runtime was already initialized");

@@ -281,13 +281,9 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                 let regs = vcpu_fd.get_regs().unwrap();
                 let rip = regs.rip as usize;
                 if let Some((name, _)) = lookup(rip) {
-                    panic!(
-                        "Unexpected exit reason: {error} (in {name}) w/{regs:#x?}"
-                    );
+                    panic!("Unexpected exit reason: {error} (in {name}) w/{regs:#x?}");
                 } else {
-                    panic!(
-                        "Unexpected exit reason: {error} (@ {rip:#x}) w/{regs:#x?}"
-                    );
+                    panic!("Unexpected exit reason: {error} (@ {rip:#x}) w/{regs:#x?}");
                 }
             }
         }
