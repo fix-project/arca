@@ -90,6 +90,23 @@ arcad arca_table_put(arcad table, size_t index, struct arca_entry *entry) {
   return syscall(SYS_PUT, table, index, entry);
 }
 
+arcad arca_tree_get(arcad value, size_t index) {
+  return syscall(SYS_GET, value, index);
+}
+
+arcad arca_table_get(arcad table, size_t index, struct arca_entry *entry) {
+  return syscall(SYS_GET, table, index, entry);
+}
+
+int64_t arca_tree_set(arcad tree, size_t index, arcad value) {
+  return syscall(SYS_SET, tree, index, value);
+}
+
+int64_t arca_table_set(arcad table, size_t index,
+                       const struct arca_entry *entry) {
+  return syscall(SYS_SET, table, index, entry);
+}
+
 arcad arca_apply(arcad lambda, arcad argument) {
   return syscall(SYS_APPLY, lambda, argument);
 }

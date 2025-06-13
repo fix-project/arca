@@ -33,6 +33,8 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
         defs::syscall::SYS_LENGTH => sys_len(args, arca),
         defs::syscall::SYS_TAKE => sys_take(args, arca),
         defs::syscall::SYS_PUT => sys_put(args, arca),
+        defs::syscall::SYS_GET => sys_get(args, arca),
+        defs::syscall::SYS_SET => sys_set(args, arca),
         defs::syscall::SYS_READ => sys_read(args, arca),
         defs::syscall::SYS_TYPE => sys_type(args, arca),
 
@@ -142,6 +144,71 @@ pub fn sys_take(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
 }
 
 pub fn sys_put(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let target_idx = args[0] as usize;
+    let inner_idx = args[1] as usize;
+    let target = arca.descriptors().get(target_idx)?;
+    let datatype = target.datatype();
+    match datatype {
+        DataType::Tree => {
+            let value_idx = args[2] as usize;
+            let value = arca.descriptors_mut().take(value_idx)?;
+            let Value::Tree(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
+                unreachable!();
+            };
+            let value = tree.put(inner_idx, value);
+            Ok(arca.descriptors_mut().insert(value))
+        }
+        DataType::Table => {
+            let ptr = args[3] as usize;
+            let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
+            copy_user_to_kernel(
+                unsafe {
+                    &mut *(entry.as_mut_ptr()
+                        as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
+                },
+                ptr,
+            )?;
+            let entry = unsafe { MaybeUninit::assume_init(entry) };
+            let entry = read_entry(arca, entry)?;
+            let Value::Table(ref mut table) = arca.descriptors_mut().get_mut(target_idx)? else {
+                unreachable!();
+            };
+            let Ok(entry) = table.put(inner_idx, entry) else {
+                todo!();
+            };
+            let entry = write_entry(arca, entry);
+            copy_kernel_to_user(ptr, unsafe {
+                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+            })?;
+            Ok(0)
+        }
+        _ => Err(SyscallError::BadType),
+    }
+}
+
+pub fn sys_get(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let target_idx = args[0] as usize;
+    let inner_idx = args[1] as usize;
+    let target = arca.descriptors_mut().get_mut(target_idx)?;
+    match target {
+        Value::Tree(tree) => {
+            let value = tree.get(inner_idx);
+            Ok(arca.descriptors_mut().insert(value))
+        }
+        Value::Table(table) => {
+            let ptr = args[2] as usize;
+            let entry = table.get(inner_idx);
+            let entry = write_entry(arca, entry);
+            copy_kernel_to_user(ptr, unsafe {
+                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+            })?;
+            Ok(0)
+        }
+        _ => Err(SyscallError::BadType),
+    }
+}
+
+pub fn sys_set(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let target_idx = args[0] as usize;
     let inner_idx = args[1] as usize;
     let target = arca.descriptors().get(target_idx)?;

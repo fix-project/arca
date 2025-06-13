@@ -73,6 +73,38 @@ impl arca::Table for Table {
         })
     }
 
+    fn get(&mut self, index: usize) -> arca::Entry<Self> {
+        match self {
+            Table::Table2MB(table) => table
+                .entry(index)
+                .map(|x| x.clone().unmap().into())
+                .unwrap_or_else(|| arca::Entry::Null(1 << 12)),
+            Table::Table1GB(table) => table
+                .entry(index)
+                .map(|x| x.clone().unmap().into())
+                .unwrap_or_else(|| arca::Entry::Null(1 << 21)),
+            Table::Table512GB(table) => table
+                .entry(index)
+                .map(|x| x.clone().unmap().into())
+                .unwrap_or_else(|| arca::Entry::Null(1 << 30)),
+        }
+    }
+
+    fn set(&mut self, index: usize, entry: arca::Entry<Self>) -> Result<(), arca::Entry<Self>> {
+        match self {
+            Table::Table2MB(table) => {
+                table.entry_mut(index).replace(entry.try_into()?);
+            }
+            Table::Table1GB(table) => {
+                table.entry_mut(index).replace(entry.try_into()?);
+            }
+            Table::Table512GB(table) => {
+                table.entry_mut(index).replace(entry.try_into()?);
+            }
+        };
+        Ok(())
+    }
+
     fn size(&self) -> usize {
         match self {
             Table::Table2MB(_) => 1 << 21,

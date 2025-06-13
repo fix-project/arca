@@ -319,6 +319,16 @@ impl arca::Tree for Ref<Tree> {
         Ref::try_new(index).unwrap()
     }
 
+    fn get(&self, index: usize) -> associated::Value<Self> {
+        let index = unsafe { arca_tree_get(self.index.unwrap(), index) };
+        Ref::try_new(index).unwrap()
+    }
+
+    fn set(&mut self, index: usize, mut value: associated::Value<Self>) {
+        let result = unsafe { arca_tree_set(self.index.unwrap(), index, value.index.unwrap()) };
+        assert_eq!(result, 0);
+    }
+
     fn len(&self) -> usize {
         let mut n: usize = 0;
         unsafe {
@@ -383,6 +393,28 @@ impl arca::Table for Ref<Table> {
         let result = unsafe { arca_table_put(self.index.unwrap(), offset, &mut entry) };
         let entry = read_entry(entry);
         if result == 0 { Ok(entry) } else { Err(entry) }
+    }
+
+    fn get(&mut self, index: usize) -> arca::Entry<Self> {
+        let mut entry = core::mem::MaybeUninit::uninit();
+        let entry = unsafe {
+            assert_eq!(
+                arca_table_get(self.index.unwrap(), index, entry.as_mut_ptr()),
+                0
+            );
+            entry.assume_init()
+        };
+        read_entry(entry)
+    }
+
+    fn set(&mut self, offset: usize, entry: arca::Entry<Self>) -> Result<(), arca::Entry<Self>> {
+        let raw_entry = write_entry(entry);
+        let result = unsafe { arca_table_set(self.index.unwrap(), offset, &raw_entry) };
+        if result == 0 {
+            Ok(())
+        } else {
+            todo!("handle error case of Ref<Table>.set")
+        }
     }
 
     fn size(&self) -> usize {
