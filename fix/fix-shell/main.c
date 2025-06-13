@@ -62,7 +62,9 @@ wasm_rt_externref_t w2c_fixpoint_create_blob_i64(struct w2c_fixpoint *instance,
 wasm_rt_externref_t w2c_fixpoint_get_tree_entry(struct w2c_fixpoint *instance,
                                                 wasm_rt_externref_t handle,
                                                 uint32_t index) {
-  return check(arca_tree_take(handle, index));
+  arcad entry = check(arca_tree_take(handle, index));
+  check(arca_tree_put(handle, index, arca_clone(entry)));
+  return entry;
 }
 
 static size_t bytes_to_wasm_pages(size_t bytes) {
