@@ -58,6 +58,33 @@ impl<T, F: FnOnce() -> T> LazyLock<T, F> {
             None
         }
     }
+
+    pub fn set(this: &Self, value: T) -> Result<(), T> {
+        if this
+            .stat
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // this thread can initialize
+            let _ = unsafe { ManuallyDrop::take(&mut (*this.data.get()).thunk) };
+            unsafe {
+                (*this.data.get()).value = ManuallyDrop::new(value);
+            }
+            this.stat.store(2, Ordering::Release);
+            Ok(())
+        } else {
+            Err(value)
+        }
+    }
+
+    pub fn wait(this: &Self) -> &T {
+        loop {
+            if let Some(x) = Self::get(this) {
+                return x;
+            }
+            core::hint::spin_loop();
+        }
+    }
 }
 
 impl<T, F: FnOnce() -> T> Deref for LazyLock<T, F> {

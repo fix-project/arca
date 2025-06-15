@@ -44,6 +44,8 @@ pub trait Descriptor: Default + core::fmt::Debug {
         match perm {
             Permissions::None => {
                 self.set_user(false);
+                self.set_writeable(true);
+                self.set_execute_disable(false);
             }
             Permissions::ReadOnly => {
                 self.set_user(true);

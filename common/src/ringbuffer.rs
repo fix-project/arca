@@ -13,27 +13,26 @@ use alloc::boxed::Box;
 use snafu::Snafu;
 
 #[repr(C)]
-struct RingBuffer<'a> {
+struct RingBuffer {
     read_hangup: AtomicBool,
     write_hangup: AtomicBool,
     read_counter: AtomicUsize,
     write_counter: AtomicUsize,
-    allocator: &'a BuddyAllocator<'a>,
     buf: SyncUnsafeCell<[u8]>,
 }
 
 #[repr(C)]
-pub struct Sender<'a, T: Sendable> {
+pub struct Sender<T: Sendable> {
     datatype: PhantomData<T>,
     valid: bool,
-    rb: ManuallyDrop<RefCnt<'a, RingBuffer<'a>>>,
+    rb: ManuallyDrop<RefCnt<RingBuffer>>,
 }
 
 #[repr(C)]
-pub struct Receiver<'a, T: Sendable> {
+pub struct Receiver<T: Sendable> {
     datatype: PhantomData<T>,
     valid: bool,
-    rb: ManuallyDrop<RefCnt<'a, RingBuffer<'a>>>,
+    rb: ManuallyDrop<RefCnt<RingBuffer>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Snafu)]
@@ -44,11 +43,8 @@ pub enum Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-impl<'a> RingBuffer<'a> {
-    fn new_in(
-        capacity: usize,
-        allocator: &'a BuddyAllocator<'a>,
-    ) -> Box<RingBuffer<'a>, &'a BuddyAllocator<'a>> {
+impl RingBuffer {
+    fn new(capacity: usize) -> Box<RingBuffer, BuddyAllocator> {
         unsafe {
             let layout = Layout::new::<AtomicBool>()
                 .extend(Layout::new::<AtomicBool>())
@@ -60,15 +56,12 @@ impl<'a> RingBuffer<'a> {
                 .extend(Layout::new::<AtomicUsize>())
                 .unwrap()
                 .0
-                .extend(Layout::new::<&'a BuddyAllocator<'a>>())
-                .unwrap()
-                .0
                 .extend(Layout::new::<u8>().repeat(capacity).unwrap().0)
                 .unwrap()
                 .0
                 .pad_to_align();
 
-            let p = allocator
+            let p = BuddyAllocator
                 .allocate_zeroed(layout)
                 .expect("failed to allocate");
             let p: *mut RingBuffer =
@@ -78,8 +71,7 @@ impl<'a> RingBuffer<'a> {
             (*p).write_hangup = AtomicBool::new(false);
             (*p).read_counter = AtomicUsize::new(0);
             (*p).write_counter = AtomicUsize::new(0);
-            (*p).allocator = allocator;
-            Box::from_raw_in(p, allocator)
+            Box::from_raw_in(p, BuddyAllocator)
         }
     }
 
@@ -123,7 +115,7 @@ impl<'a> RingBuffer<'a> {
 
         end = min(end, read_count + len);
 
-        let readable = unsafe { &(*self.buf.get())[read_count..end] };
+        let readable = unsafe { &(&(*self.buf.get()))[read_count..end] };
         buf[..readable.len()].write_copy_of_slice(readable);
         self.read_counter
             .store(end % self.buf.get().len(), Ordering::Release);
@@ -155,7 +147,7 @@ impl<'a> RingBuffer<'a> {
 
         end = min(end, write_count + len);
 
-        let writable: &mut [u8] = unsafe { &mut (*self.buf.get())[write_count..end] };
+        let writable: &mut [u8] = unsafe { &mut (&mut (*self.buf.get()))[write_count..end] };
         writable.copy_from_slice(&buf[..writable.len()]);
 
         self.write_counter
@@ -200,17 +192,10 @@ impl<'a> RingBuffer<'a> {
         }
         Ok(())
     }
-
-    pub fn allocator<'b>(&self) -> &'b BuddyAllocator<'a>
-    where
-        'a: 'b,
-    {
-        self.allocator
-    }
 }
 
-impl<'a, T: Sendable> Sender<'a, T> {
-    fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
+impl<T: Sendable> Sender<T> {
+    fn new(rb: RefCnt<RingBuffer>) -> Self {
         Self {
             rb: ManuallyDrop::new(rb),
             valid: true,
@@ -246,10 +231,6 @@ impl<'a, T: Sendable> Sender<'a, T> {
         }
     }
 
-    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
-        self.rb.allocator()
-    }
-
     pub fn into_raw_parts(mut self) -> (*mut (), usize) {
         unsafe {
             let inner = ManuallyDrop::take(&mut self.rb);
@@ -263,7 +244,7 @@ impl<'a, T: Sendable> Sender<'a, T> {
     }
 }
 
-impl<T: Sendable> Drop for Sender<'_, T> {
+impl<T: Sendable> Drop for Sender<T> {
     fn drop(&mut self) {
         if self.valid {
             self.hangup();
@@ -274,8 +255,8 @@ impl<T: Sendable> Drop for Sender<'_, T> {
     }
 }
 
-impl<'a, T: Sendable> Receiver<'a, T> {
-    fn new(rb: RefCnt<'a, RingBuffer<'a>>) -> Self {
+impl<T: Sendable> Receiver<T> {
+    fn new(rb: RefCnt<RingBuffer>) -> Self {
         Self {
             rb: ManuallyDrop::new(rb),
             valid: true,
@@ -310,10 +291,6 @@ impl<'a, T: Sendable> Receiver<'a, T> {
         }
     }
 
-    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
-        self.rb.allocator()
-    }
-
     pub fn into_raw_parts(mut self) -> (*mut (), usize) {
         unsafe {
             let inner = ManuallyDrop::take(&mut self.rb);
@@ -327,7 +304,7 @@ impl<'a, T: Sendable> Receiver<'a, T> {
     }
 }
 
-impl<T: Sendable> Drop for Receiver<'_, T> {
+impl<T: Sendable> Drop for Receiver<T> {
     fn drop(&mut self) {
         if self.valid {
             self.hangup();
@@ -338,23 +315,23 @@ impl<T: Sendable> Drop for Receiver<'_, T> {
     }
 }
 
-pub struct Endpoint<'a, S: Sendable, R: Sendable> {
-    sender: Sender<'a, S>,
-    receiver: Receiver<'a, R>,
+pub struct Endpoint<S: Sendable, R: Sendable> {
+    sender: Sender<S>,
+    receiver: Receiver<R>,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub struct EndpointRawData(usize, usize, usize, usize);
 
-impl<'a, S: Sendable, R: Sendable> Endpoint<'a, S, R> {
-    pub fn into_raw_parts(self, allocator: &BuddyAllocator) -> EndpointRawData {
+impl<S: Sendable, R: Sendable> Endpoint<S, R> {
+    pub fn into_raw_parts(self) -> EndpointRawData {
         let sender_raw = self.sender.into_raw_parts();
         let receiver_raw = self.receiver.into_raw_parts();
         EndpointRawData(
-            allocator.to_offset(sender_raw.0),
+            BuddyAllocator.to_offset(sender_raw.0),
             sender_raw.1,
-            allocator.to_offset(receiver_raw.0),
+            BuddyAllocator.to_offset(receiver_raw.0),
             receiver_raw.1,
         )
     }
@@ -362,52 +339,40 @@ impl<'a, S: Sendable, R: Sendable> Endpoint<'a, S, R> {
     /// # Safety
     /// This function's inputs must describe a valid RingBufferEndPoint in the current address
     /// space, managed by the provided allocator.
-    pub unsafe fn from_raw_parts(raw: &EndpointRawData, allocator: &'a BuddyAllocator) -> Self {
-        let sender_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.0), raw.1);
-        let receiver_ptr = core::ptr::from_raw_parts_mut(allocator.from_offset::<()>(raw.2), raw.3);
+    pub unsafe fn from_raw_parts(raw: &EndpointRawData) -> Self {
+        let sender_ptr =
+            core::ptr::from_raw_parts_mut(BuddyAllocator.from_offset::<()>(raw.0), raw.1);
+        let receiver_ptr =
+            core::ptr::from_raw_parts_mut(BuddyAllocator.from_offset::<()>(raw.2), raw.3);
         Self {
-            sender: Sender::new(RefCnt::from_raw_in(sender_ptr, allocator)),
-            receiver: Receiver::new(RefCnt::from_raw_in(receiver_ptr, allocator)),
+            sender: Sender::new(RefCnt::from_raw(sender_ptr)),
+            receiver: Receiver::new(RefCnt::from_raw(receiver_ptr)),
         }
     }
 
-    pub fn into_sender_receiver(self) -> (Sender<'a, S>, Receiver<'a, R>) {
+    pub fn into_sender_receiver(self) -> (Sender<S>, Receiver<R>) {
         (self.sender, self.receiver)
     }
 
-    pub fn allocator(&self) -> &'a BuddyAllocator<'a> {
-        assert_eq!(
-            self.sender.allocator() as *const _,
-            self.receiver.allocator() as *const _
-        );
-        self.sender.allocator()
-    }
-
-    pub fn receiver_mut(&mut self) -> &mut Receiver<'a, R> {
+    pub fn receiver_mut(&mut self) -> &mut Receiver<R> {
         &mut self.receiver
     }
 
-    pub fn sender_mut(&mut self) -> &mut Sender<'a, S> {
+    pub fn sender_mut(&mut self) -> &mut Sender<S> {
         &mut self.sender
     }
 }
 
-pub type RingBufferPair<'a, A, B> = (Endpoint<'a, A, B>, Endpoint<'a, B, A>);
+pub type RingBufferPair<A, B> = (Endpoint<A, B>, Endpoint<B, A>);
 
-fn channel<'a, T: Sendable>(
-    capacity: usize,
-    allocator: &'a BuddyAllocator<'a>,
-) -> (Sender<'a, T>, Receiver<'a, T>) {
-    let rb: RefCnt<'a, RingBuffer> = RingBuffer::new_in(capacity, allocator).into();
+fn channel<T: Sendable>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+    let rb: RefCnt<RingBuffer> = RingBuffer::new(capacity).into();
     (Sender::new(rb.clone()), Receiver::new(rb))
 }
 
-pub fn pair<'a, A: Sendable, B: Sendable>(
-    capacity: usize,
-    allocator: &'a BuddyAllocator<'a>,
-) -> RingBufferPair<'a, A, B> {
-    let (sender1, receiver1) = channel(capacity, allocator);
-    let (sender2, receiver2) = channel(capacity, allocator);
+pub fn pair<A: Sendable, B: Sendable>(capacity: usize) -> RingBufferPair<A, B> {
+    let (sender1, receiver1) = channel(capacity);
+    let (sender2, receiver2) = channel(capacity);
 
     let endpoint1: Endpoint<A, B> = Endpoint {
         sender: sender1,
@@ -429,9 +394,7 @@ mod tests {
 
     #[test]
     pub fn test_channel() {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
-        let (mut tx, mut rx) = channel(1024, &allocator);
+        let (mut tx, mut rx) = channel(1024);
         let txbuf = 10u64;
         tx.send(txbuf).unwrap();
         let rxbuf = rx.recv().unwrap();
@@ -440,10 +403,8 @@ mod tests {
 
     #[bench]
     pub fn bench_channel(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
         std::thread::scope(|s| {
-            let (mut tx, mut rx) = channel(1024, &allocator);
+            let (mut tx, mut rx) = channel(1024);
             s.spawn(move || {
                 let mut i = 0u64;
                 loop {
@@ -464,10 +425,8 @@ mod tests {
 
     #[bench]
     pub fn bench_ping_pong(b: &mut Bencher) {
-        let mut region: Box<[u8; 0x100000000]> = unsafe { Box::new_zeroed().assume_init() };
-        let allocator = BuddyAllocator::new(&mut *region);
         std::thread::scope(|s| {
-            let (mut ep1, mut ep2) = pair(1024, &allocator);
+            let (mut ep1, mut ep2) = pair(1024);
             s.spawn(move || {
                 let x = 0u64;
                 let mut last: u64 = 0;

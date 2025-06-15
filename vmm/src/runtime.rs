@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    ops::{Deref, DerefMut},
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,56 +15,12 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 
-pub struct Mmap {
-    ptr: *mut u8,
-    len: usize,
-}
-
-impl Mmap {
-    pub fn new(len: usize) -> Self {
-        let ptr: *mut u8 = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED,
-                -1,
-                0,
-            ) as *mut u8
-        };
-
-        assert!(!ptr.is_null());
-        Mmap { ptr, len }
-    }
-}
-
-impl Drop for Mmap {
-    fn drop(&mut self) {
-        unsafe {
-            assert_eq!(libc::munmap(self.ptr as _, self.len), 0);
-        }
-    }
-}
-
-impl Deref for Mmap {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
-    }
-}
-
-impl DerefMut for Mmap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-}
+pub use common::mmap::Mmap;
 
 fn new_cpu<'scope>(
     i: usize,
     scope: &'scope Scope<'scope, '_>,
     vcpu_fd: VcpuFd,
-    allocator: &'scope BuddyAllocator,
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
@@ -73,15 +28,15 @@ fn new_cpu<'scope>(
     // set up the CPU in long mode
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
 
-    let mut pdpt: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
+    let mut pdpt: Box<[u64; 0x200], BuddyAllocator> =
+        unsafe { Box::new_zeroed_in(BuddyAllocator).assume_init() };
     for (i, entry) in pdpt.iter_mut().enumerate() {
         *entry = ((i << 30) | 0x183) as u64;
     }
 
-    let mut pml4: Box<[u64; 0x200], &BuddyAllocator> =
-        unsafe { Box::new_zeroed_in(allocator).assume_init() };
-    pml4[256] = allocator.to_offset(Box::leak(pdpt)) as u64 | 3;
+    let mut pml4: Box<[u64; 0x200], BuddyAllocator> =
+        unsafe { Box::new_zeroed_in(BuddyAllocator).assume_init() };
+    pml4[256] = BuddyAllocator.to_offset(Box::leak(pdpt)) as u64 | 3;
     let pml4 = Box::leak(pml4);
 
     vcpu_sregs.idt = kvm_bindings::kvm_dtable {
@@ -90,9 +45,9 @@ fn new_cpu<'scope>(
         padding: [0; 3],
     };
     use common::controlreg::*;
-    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP;
+    vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP | ControlReg0::WP;
     vcpu_sregs.cr0 &= !ControlReg0::EM;
-    vcpu_sregs.cr3 = allocator.to_offset(pml4) as u64;
+    vcpu_sregs.cr3 = BuddyAllocator.to_offset(pml4) as u64;
     vcpu_sregs.cr4 = ControlReg4::PAE
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
@@ -157,9 +112,10 @@ fn new_cpu<'scope>(
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = elf.ehdr.e_entry;
     const STACK_SIZE: usize = 2 * 0x400 * 0x400;
-    let initial_stack =
-        unsafe { Box::<[u8; STACK_SIZE], &BuddyAllocator>::new_uninit_in(allocator).assume_init() };
-    let stack_start = allocator.to_offset(&*initial_stack);
+    let initial_stack = unsafe {
+        Box::<[u8; STACK_SIZE], BuddyAllocator>::new_uninit_in(BuddyAllocator).assume_init()
+    };
+    let stack_start = BuddyAllocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
     let pa2ka = |p: usize| (p | 0xFFFF800000000000);
@@ -181,17 +137,12 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            run_cpu(vcpu_fd, allocator.clone(), elf, flag);
+            run_cpu(vcpu_fd, elf, flag);
         })
         .unwrap()
 }
 
-fn run_cpu(
-    mut vcpu_fd: VcpuFd,
-    allocator: BuddyAllocator<'_>,
-    elf: &ElfBytes<AnyEndian>,
-    exit: Arc<AtomicBool>,
-) {
+fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
     let mut log_record: usize = 0;
     let mut symtab_record: usize = 0;
 
@@ -239,7 +190,7 @@ fn run_cpu(
                 }
                 2 => {
                     log_record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                    let record: *const common::LogRecord = allocator.from_offset(log_record);
+                    let record: *const common::LogRecord = BuddyAllocator.from_offset(log_record);
                     unsafe {
                         let common::LogRecord {
                             level,
@@ -251,17 +202,17 @@ fn run_cpu(
                         } = *record;
                         let level = log::Level::iter().nth(level as usize - 1).unwrap();
                         let target = std::str::from_raw_parts(
-                            allocator.from_offset::<u8>(target.0),
+                            BuddyAllocator.from_offset::<u8>(target.0),
                             target.1,
                         );
                         let file = file.map(|x| {
-                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                            std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
                         });
                         let module_path = module_path.map(|x| {
-                            std::str::from_raw_parts(allocator.from_offset::<u8>(x.0), x.1)
+                            std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
                         });
                         let message = std::str::from_raw_parts(
-                            allocator.from_offset::<u8>(message.0),
+                            BuddyAllocator.from_offset::<u8>(message.0),
                             message.1,
                         );
 
@@ -272,7 +223,7 @@ fn run_cpu(
                                 .file(file)
                                 .line(line)
                                 .module_path(module_path)
-                                .args(format_args!("{}", message))
+                                .args(format_args!("{message}"))
                                 .build(),
                         );
                     }
@@ -282,14 +233,15 @@ fn run_cpu(
                 }
                 4 => {
                     symtab_record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                    let record: *mut common::SymtabRecord = allocator.from_offset(symtab_record);
+                    let record: *mut common::SymtabRecord =
+                        BuddyAllocator.from_offset(symtab_record);
                     let record: &mut common::SymtabRecord = unsafe { &mut *record };
                     let target = record.addr;
                     if let Some((name, addr)) = lookup(target) {
                         record.file_len = name.len();
                         let (ptr, cap) = record.file_buffer;
                         let buffer: &mut [u8] = unsafe {
-                            core::slice::from_raw_parts_mut(allocator.from_offset(ptr), cap)
+                            core::slice::from_raw_parts_mut(BuddyAllocator.from_offset(ptr), cap)
                         };
                         if name.len() > cap {
                             buffer.copy_from_slice(&name.as_bytes()[..cap]);
@@ -316,7 +268,7 @@ fn run_cpu(
                 }
             },
             VcpuExit::MmioRead(addr, _) => {
-                println!("Received an MMIO Read Request for the address {:#x}.", addr,);
+                println!("Received an MMIO Read Request for the address {addr:#x}.",);
             }
             VcpuExit::MmioWrite(addr, data) => {
                 println!(
@@ -325,63 +277,53 @@ fn run_cpu(
                 );
             }
             r => {
-                let error = format!("{:?}", r);
+                let error = format!("{r:?}");
                 let regs = vcpu_fd.get_regs().unwrap();
                 let rip = regs.rip as usize;
                 if let Some((name, _)) = lookup(rip) {
-                    panic!("Unexpected exit reason: {} (in {})", error, name);
+                    panic!("Unexpected exit reason: {error} (in {name}) w/{regs:#x?}");
                 } else {
-                    panic!("Unexpected exit reason: {} (@ {:#x})", error, rip);
+                    panic!("Unexpected exit reason: {error} (@ {rip:#x}) w/{regs:#x?}");
                 }
             }
         }
     }
 }
 
-pub struct Runtime<'a> {
+pub struct Runtime {
     kvm: Kvm,
     vm: VmFd,
     cores: usize,
-    allocator: Box<BuddyAllocator<'a>>,
+    elf: Arc<[u8]>,
 }
 
-impl<'a> Runtime<'a> {
-    pub fn new(cores: usize, ram: &'a mut Mmap) -> Self {
+impl Runtime {
+    pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
 
-        let allocator = Box::new(BuddyAllocator::new(&mut *ram));
+        common::buddy::init(ram);
 
         let mem_region = kvm_userspace_memory_region {
             slot: 0,
             guest_phys_addr: 0,
-            memory_size: allocator.len() as u64,
-            userspace_addr: allocator.base() as u64,
+            memory_size: BuddyAllocator.len() as u64,
+            userspace_addr: BuddyAllocator.base() as u64,
             flags: KVM_MEM_LOG_DIRTY_PAGES,
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-        // let allocator_raw = allocator.clone().into_raw_parts();
-        // let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, &*allocator));
-
-        // // This is okay because the allocator is in a fixed location on the heap, and will not be
-        // // freed until after everything holding this reference has been destroyed.
-        // let a: &'static BuddyAllocator<'static> = unsafe { core::mem::transmute(&*allocator) };
-        // let (endpoint1, endpoint2) = ringbuffer::pair(1024, a);
-        // let endpoint_raw = Box::into_raw(Box::new_in(
-        //     endpoint2.into_raw_parts(&allocator),
-        //     &*allocator,
-        // ));
-
-        // let client = Client::new(endpoint1);
-
-        Self {
+        let mut x = Self {
             kvm,
             vm,
             cores,
-            allocator,
-        }
+            elf: elf.clone(),
+        };
+        let elf_bytes =
+            ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
+        x.load_elf(&elf_bytes);
+        x
     }
 
     fn load_elf(&mut self, elf: &ElfBytes<AnyEndian>) {
@@ -396,9 +338,11 @@ impl<'a> Runtime<'a> {
         let mut reserved = HashMap::new();
         let mut reserve = |addr: usize| -> *mut () {
             let addr = align_down(4096, addr);
-            *reserved
-                .entry(addr)
-                .or_insert_with(|| self.allocator.reserve_raw(addr, 4096))
+            *reserved.entry(addr).or_insert_with(|| {
+                let result = BuddyAllocator.reserve_raw(addr, 4096);
+                assert!(!result.is_null(), "could not reserve {addr:x}");
+                result
+            })
         };
         let mut reserve_range = |start: usize, end: usize| -> *mut [u8] {
             let mut current = (start / 4096) * 4096;
@@ -425,7 +369,7 @@ impl<'a> Runtime<'a> {
                     // let offset = segment.p_offset as usize;
                     let source = &elf.segment_data(&segment).unwrap()[..filesz];
                     unsafe {
-                        (*ptr)[..filesz].copy_from_slice(source);
+                        (&mut (*ptr))[..filesz].copy_from_slice(source);
                     }
                 }
                 0x60000000.. => {
@@ -436,16 +380,14 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    pub fn run(&mut self, elf: &[u8], args: &[usize]) {
-        let elf =
-            ElfBytes::<AnyEndian>::minimal_parse(elf).expect("could not read kernel elf file");
+    pub fn run(&self, args: &[usize]) {
+        let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
+            .expect("could not read kernel elf file");
 
-        self.load_elf(&elf);
+        let allocator_raw = common::buddy::export();
+        let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, BuddyAllocator));
 
-        let allocator_raw = self.allocator.clone().into_raw_parts();
-        let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, &*self.allocator));
-
-        let args = args.to_vec_in(&*self.allocator);
+        let args = args.to_vec_in(BuddyAllocator);
 
         std::thread::scope(|s| {
             let mut cpus = vec![];
@@ -465,17 +407,16 @@ impl<'a> Runtime<'a> {
                 x.data = i as u64;
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
-                let allocator_raw_offset = self.allocator.to_offset(allocator_raw);
+                let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
                 let args_offset = if args.is_empty() {
                     0
                 } else {
-                    self.allocator.to_offset(args.as_ptr())
+                    BuddyAllocator.to_offset(args.as_ptr())
                 };
                 cpus.push(new_cpu(
                     i,
                     s,
                     vcpu_fd,
-                    &self.allocator,
                     &elf,
                     &[
                         self.cores as u64,
@@ -488,10 +429,9 @@ impl<'a> Runtime<'a> {
                     &kvm_cpuid,
                 ));
             }
+            for cpu in cpus {
+                cpu.join().unwrap();
+            }
         });
-    }
-
-    pub fn allocator(&self) -> &BuddyAllocator {
-        &self.allocator
     }
 }

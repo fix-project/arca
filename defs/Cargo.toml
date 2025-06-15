@@ -3,4 +3,12 @@ name = "defs"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["syscalls"]
+syscalls = []
+
 [dependencies]
+
+[build-dependencies]
+bindgen = "0.71.1"
+cc = "1.2.26"
