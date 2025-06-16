@@ -27,10 +27,12 @@ bitfield-struct = "0.7.0"
 log = "0.4.21"
 time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 macros = { path = "../macros" }
-common = { path = "../common", default-features = false, features = ["core_local_cache"] }
-defs = { path = "../defs" }
+# common = { path = "../common", default-features = false, features = ["core_local_cache"] }
+common = { path = "../common", default-features = false }
+defs = { path = "../defs", default-features = false }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
-elf = { version = "0.7.4", default-features = false }
+arca = { path = "../arca" }
+blake3 = { version = "1.8.2", default-features = false }
 
 [build-dependencies]
 anyhow = "1.0.86"

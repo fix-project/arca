@@ -244,10 +244,10 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                 if descriptor.global() {
                     HardwareUnmappedPage::Global(addr)
                 } else if descriptor.writeable() {
-                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     HardwareUnmappedPage::UniquePage(page)
                 } else {
-                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     HardwareUnmappedPage::SharedPage(page)
                 }
             }
@@ -257,11 +257,11 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                 self.clear_unchecked();
                 if descriptor.writeable() {
                     let addr = descriptor.address();
-                    let table = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     HardwareUnmappedPage::UniqueTable(table)
                 } else {
                     let addr = descriptor.address();
-                    let table = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     HardwareUnmappedPage::SharedTable(table)
                 }
             }
@@ -280,13 +280,13 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                     let addr = descriptor.address();
                     if descriptor.writeable() {
                         let page: UniquePage<Self::Page> =
-                            UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                            UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
                         descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
                         core::mem::forget(page);
                     } else {
                         let page: SharedPage<Self::Page> =
-                            SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                            SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
@@ -300,14 +300,14 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                 if descriptor.writeable() {
                     let addr = descriptor.address();
                     let table: UniquePage<Self::Table> =
-                        UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let new = table.clone();
                     descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
                     core::mem::forget(table);
                 } else {
                     let addr = descriptor.address();
                     let table: SharedPage<Self::Table> =
-                        SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let table = table.clone();
                     let new = table.clone();
                     core::mem::forget(table);
@@ -401,7 +401,7 @@ pub unsafe trait HardwarePageTable:
     const SIZE: usize;
 
     fn new() -> UniquePage<Self> {
-        unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
+        unsafe { UniquePage::<Self>::new_zeroed_in(BuddyAllocator).assume_init() }
     }
 }
 
@@ -563,12 +563,20 @@ where
 }
 
 #[repr(transparent)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct AugmentedPageTable<T: HardwarePageTable>([ManuallyDrop<T::Entry>; 512]);
 
+impl<T: HardwarePageTable> core::fmt::Debug for AugmentedPageTable<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "AugmentedPageTable @ {self:p}")
+    }
+}
+
 impl<T: HardwarePageTable> AugmentedPageTable<T> {
+    pub const SIZE: usize = T::SIZE;
+
     pub fn new() -> UniquePage<Self> {
-        unsafe { UniquePage::<Self>::new_zeroed_in(&PHYSICAL_ALLOCATOR).assume_init() }
+        unsafe { UniquePage::<Self>::new_zeroed_in(BuddyAllocator).assume_init() }
     }
 
     fn set_lower(&mut self, lower: usize) {
@@ -593,6 +601,18 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         entry.get_metadata() as usize
     }
 
+    pub fn len(&self) -> usize {
+        self.get_upper() - self.get_lower()
+    }
+
+    pub fn offset(&self) -> usize {
+        self.get_lower()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn entry(&self, index: usize) -> Option<&AugmentedEntry<T::Entry>> {
         let lower = self.get_lower();
         let upper = self.get_upper();
@@ -609,11 +629,16 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
     pub fn entry_mut(&mut self, index: usize) -> &mut AugmentedEntry<T::Entry> {
         let lower = self.get_lower();
         let upper = self.get_upper();
-        if index < lower {
+        if self.is_empty() {
             self.set_lower(index);
-        }
-        if index >= upper {
             self.set_upper(index + 1);
+        } else {
+            if index < lower {
+                self.set_lower(index);
+            }
+            if index >= upper {
+                self.set_upper(index + 1);
+            }
         }
         // TODO: does this allow overwriting the metadata?
         unsafe {
@@ -643,7 +668,7 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
                     self.set_upper(index);
                     break;
                 }
-                if self.entry(index).is_some() {
+                if self.entry(index).unwrap().present() {
                     self.set_upper(index + 1);
                     break;
                 }
@@ -653,7 +678,11 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         if index == lower {
             let mut index = index;
             loop {
-                if index == upper || self.entry(index).is_some() {
+                if index == upper {
+                    self.set_lower(index);
+                    break;
+                }
+                if self.entry(index).unwrap().present() {
                     self.set_lower(index);
                     break;
                 }
@@ -711,6 +740,10 @@ pub enum AugmentedUnmappedPage<P: HardwarePage, T: HardwarePageTable> {
 pub struct AugmentedEntry<T: HardwarePageTableEntry>(T);
 
 impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
+    pub fn present(&self) -> bool {
+        self.0.present()
+    }
+
     pub fn map_unique(
         &mut self,
         page: UniquePage<T::Page>,
@@ -781,6 +814,19 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         original
     }
 
+    /// # Safety
+    ///
+    /// This function must not be used to produce a mapping which violates Rust's aliasing rules.
+    pub unsafe fn chain_unchecked(
+        &mut self,
+        table: *const T::Table,
+        prot: Permissions,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        let original = self.unmap();
+        unsafe { self.0.chain_unchecked(table, prot) };
+        original
+    }
+
     pub fn unmap(&mut self) -> AugmentedUnmappedPage<T::Page, T::Table> {
         if !self.0.present() {
             AugmentedUnmappedPage::None
@@ -792,10 +838,10 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
                 if descriptor.global() {
                     AugmentedUnmappedPage::Global(addr)
                 } else if descriptor.writeable() {
-                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let page = UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     AugmentedUnmappedPage::UniquePage(page)
                 } else {
-                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let page = SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     AugmentedUnmappedPage::SharedPage(page)
                 }
             }
@@ -805,14 +851,28 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
                 self.0.clear_unchecked();
                 if descriptor.writeable() {
                     let addr = descriptor.address();
-                    let table = UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     AugmentedUnmappedPage::UniqueTable(table)
                 } else {
                     let addr = descriptor.address();
-                    let table = SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                    let table = SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     AugmentedUnmappedPage::SharedTable(table)
                 }
             }
+        }
+    }
+
+    pub fn replace(
+        &mut self,
+        entry: AugmentedUnmappedPage<T::Page, T::Table>,
+    ) -> AugmentedUnmappedPage<T::Page, T::Table> {
+        match entry {
+            AugmentedUnmappedPage::None => self.unmap(),
+            AugmentedUnmappedPage::UniquePage(page) => self.map_unique(page),
+            AugmentedUnmappedPage::SharedPage(page) => self.map_shared(page),
+            AugmentedUnmappedPage::Global(_) => panic!(),
+            AugmentedUnmappedPage::UniqueTable(table) => self.chain_unique(table),
+            AugmentedUnmappedPage::SharedTable(table) => self.chain_shared(table),
         }
     }
 }
@@ -830,13 +890,13 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                     let addr = descriptor.address();
                     if descriptor.writeable() {
                         let page: UniquePage<T::Page> =
-                            UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                            UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
                         descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
                         core::mem::forget(page);
                     } else {
                         let page: SharedPage<T::Page> =
-                            SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                            SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
                         core::mem::forget(page);
                         core::mem::forget(new);
@@ -850,14 +910,14 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                 if descriptor.writeable() {
                     let addr = descriptor.address();
                     let table: UniquePage<AugmentedPageTable<T::Table>> =
-                        UniquePage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let new = table.clone();
                     descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
                     core::mem::forget(table);
                 } else {
                     let addr = descriptor.address();
                     let table: SharedPage<AugmentedPageTable<T::Table>> =
-                        SharedPage::from_raw_in(vm::pa2ka(addr), &PHYSICAL_ALLOCATOR);
+                        SharedPage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let table = table.clone();
                     let new = table.clone();
                     core::mem::forget(table);
@@ -866,5 +926,11 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                 AugmentedEntry(T::new(descriptor.into_bits()))
             }
         }
+    }
+}
+
+impl<T: HardwarePageTable> AsRef<T> for AugmentedPageTable<T> {
+    fn as_ref(&self) -> &T {
+        unsafe { core::mem::transmute(self) }
     }
 }

@@ -2,103 +2,71 @@
 #![no_std]
 #![feature(allocator_api)]
 
+use kernel::prelude::*;
+use kernel::rt;
+use macros::kmain;
+
 extern crate alloc;
 extern crate kernel;
 
-use core::time::Duration;
-
-use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
-
-use kernel::{
-    kvmclock, rt,
-    types::{Thunk, Value},
-};
-use macros::kmain;
-
-const ADD_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const IDENTITY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_identity"));
+const ADD: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
+const CURRY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
+const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 
 #[kmain]
 async fn kmain(_: &[usize]) {
-    kernel::profile::begin();
-    bench().await;
-    kernel::profile::end();
-    profile();
-}
+    log::info!("setting up");
+    let id: Lambda = Thunk::from_elf(IDENTITY).run().try_into().unwrap();
+    let add: Lambda = Thunk::from_elf(ADD).run().try_into().unwrap();
+    let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
+    let map: Lambda = Thunk::from_elf(MAP).run().try_into().unwrap();
 
-async fn bench() {
-    let cores = kernel::ncores();
-    let lg_cores = cores.ilog2();
-    let duration = Duration::from_millis(1000);
-    let options = 0..(lg_cores + 3);
-    for lg_n in options {
-        let n = 1 << lg_n;
-        log::info!("");
-        log::info!("*** running on {n} threads ***");
-        let mut set = Vec::with_capacity(n);
-        let now = kvmclock::time_since_boot();
-        rt::reset_stats();
-        for _ in 0..n {
-            set.push(rt::spawn(test(now + duration)));
-        }
-        let mut results = vec![];
-        for x in set {
-            results.push(x.await);
-        }
-        rt::profile();
-        let elapsed = kvmclock::time_since_boot() - now;
-        let iters: usize = results.iter().sum();
-        let time = elapsed / iters as u32;
-        let iters_per_second = iters as f64 / elapsed.as_secs_f64();
-        log::info!("{n:4}/{cores:<3} threads: {time:?} per iteration ({iters_per_second:.2} iters/second) - ran for ({elapsed:?})",);
-    }
-}
+    // identity function
+    log::info!("testing id");
+    let x = Value::Atom(Atom::new("foo"));
+    let y = id.apply(x.clone()).run();
+    assert_eq!(x, y);
 
-async fn test(end: Duration) -> usize {
-    let thunk = Thunk::from_elf(ADD_ELF);
-    let Value::Lambda(lambda) = thunk.run() else {
+    // add
+    log::info!("testing add");
+    let x = Tree::new([10.into(), 20.into()]);
+    let y = add.clone().apply(x.into()).run();
+    assert_eq!(y, 30.into());
+
+    // curry add
+    log::info!("testing curry");
+    let x = add.clone();
+    let n = 2;
+    let Value::Lambda(cadd) = curry.apply(x.into()).run() else {
         panic!();
     };
-    let mut iters = 0;
-    while kvmclock::time_since_boot() < end {
-        let lambda = lambda.clone();
-        let thunk = lambda.apply(Value::Tree(vec![Value::Word(1), Value::Word(2)].into()));
-        let _ = thunk.run();
-        iters += 1;
-        if iters % 1000 == 0 {
-            rt::yield_now().await;
-        }
-    }
-    iters
+    let Value::Lambda(cadd) = cadd.apply(n.into()).run() else {
+        panic!();
+    };
+    let Value::Lambda(cadd) = cadd.apply(10.into()).run() else {
+        panic!();
+    };
+    let y = cadd.clone().apply(20.into()).run();
+    assert_eq!(y, 30.into());
+
+    // map
+    log::info!("testing map");
+    let tuple = Tree::new([1.into(), 2.into(), 3.into(), 4.into()]).into();
+    let Value::Lambda(map) = map.apply(Value::Lambda(cadd)).run() else {
+        panic!();
+    };
+    let result = map.apply(tuple).run();
+    let result = eval(result);
+    let expected = Tree::new([11.into(), 12.into(), 13.into(), 14.into()]).into();
+    assert_eq!(result, expected);
 }
 
-fn profile() {
-    log::info!("--- MOST FREQUENT FUNCTIONS ---");
-    let entries = kernel::profile::entries();
-    let entries = entries
-        .into_iter()
-        .map(|(p, x)| {
-            if p.is_null() {
-                (("USER CODE".into(), 0), x)
-            } else {
-                (
-                    kernel::host::symname(p).unwrap_or_else(|| ("???".into(), 0)),
-                    x,
-                )
-            }
-        })
-        .fold(BTreeMap::new(), |mut map, ((name, _offset), count)| {
-            map.entry(name).and_modify(|e| *e += count).or_insert(count);
-            map
-        });
-    let mut entries = Vec::from_iter(entries);
-    entries.sort_by_key(|(_name, count)| *count);
-    entries.reverse();
-    let total: usize = entries.iter().map(|(_, count)| count).sum();
-    for (i, &(ref name, count)) in entries.iter().take(8).enumerate() {
-        log::info!(
-            "\t{i}: {count:6} ({:3.2}%)- {name}",
-            count as f64 / total as f64 * 100.
-        );
+pub fn eval(x: Value) -> Value {
+    match x {
+        Value::Error(value) => Error::new(eval(value.into())).into(),
+        Value::Tree(values) => Value::Tree(values.iter().map(|x| eval(x.clone())).collect()),
+        Value::Thunk(thunk) => eval(thunk.run()),
+        x => x,
     }
-    log::info!("-------------------------------");
 }
