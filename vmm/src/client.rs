@@ -140,10 +140,9 @@ impl Client {
         let cores = std::thread::available_parallelism().unwrap_or(NonZero::new(1).unwrap());
         let runtime = Runtime::new(cores.into(), ram, SERVER_ELF.into());
         let (ep1, ep2) = ringbuffer::pair(1024);
-        let ep2 = BuddyAllocator.to_offset(Box::into_raw(Box::new_in(
-            ep2.into_raw_parts(),
-            BuddyAllocator,
-        )));
+        let ep2 = BuddyAllocator.to_offset(
+            Box::into_raw_with_allocator(Box::new_in(ep2.into_raw_parts(), BuddyAllocator)).0,
+        );
 
         std::thread::spawn(move || {
             runtime.run(&[ep2]);
@@ -297,7 +296,7 @@ impl arca::Runtime for ArcaRuntime {
         let mut v = Vec::new_in(BuddyAllocator);
         v.extend_from_slice(data);
         let data = v.into_boxed_slice();
-        let (ptr, len) = Box::into_raw(data).to_raw_parts();
+        let (ptr, len) = Box::into_raw_with_allocator(data).0.to_raw_parts();
         let ptr = BuddyAllocator.to_offset(ptr);
         let Ok(Response::Handle(handle)) = self.client.fullsend(Request::CreateBlob { ptr, len })
         else {
@@ -569,7 +568,7 @@ impl arca::Page for Ref<Page> {
         let mut v = Vec::new_in(BuddyAllocator);
         v.extend_from_slice(buffer);
         let data = v.into_boxed_slice();
-        let (ptr, len) = Box::into_raw(data).to_raw_parts();
+        let (ptr, len) = Box::into_raw_with_allocator(data).0.to_raw_parts();
         let ptr = BuddyAllocator.to_offset(ptr);
         let handle = self.take_handle();
         let handle = self.client.request_handle(Request::WritePage {

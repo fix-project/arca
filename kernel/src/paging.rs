@@ -190,7 +190,12 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         page: UniquePage<Self::Page>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe { self.map_unchecked(UniquePage::into_raw(page), Permissions::All) };
+        unsafe {
+            self.map_unchecked(
+                UniquePage::into_raw_with_allocator(page).0,
+                Permissions::All,
+            )
+        };
         original
     }
 
@@ -229,7 +234,12 @@ pub trait HardwarePageTableEntry: Sized + Clone {
         table: UniquePage<Self::Table>,
     ) -> HardwareUnmappedPage<Self::Page, Self::Table> {
         let original = self.unmap();
-        unsafe { self.chain_unchecked(UniquePage::into_raw(table), Permissions::All) };
+        unsafe {
+            self.chain_unchecked(
+                UniquePage::into_raw_with_allocator(table).0,
+                Permissions::All,
+            )
+        };
         original
     }
 
@@ -282,7 +292,8 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                         let page: UniquePage<Self::Page> =
                             UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
-                        descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                        descriptor
+                            .set_address(vm::ka2pa(UniquePage::into_raw_with_allocator(new).0));
                         core::mem::forget(page);
                     } else {
                         let page: SharedPage<Self::Page> =
@@ -302,7 +313,7 @@ pub trait HardwarePageTableEntry: Sized + Clone {
                     let table: UniquePage<Self::Table> =
                         UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let new = table.clone();
-                    descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                    descriptor.set_address(vm::ka2pa(UniquePage::into_raw_with_allocator(new).0));
                     core::mem::forget(table);
                 } else {
                     let addr = descriptor.address();
@@ -750,8 +761,10 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
     ) -> AugmentedUnmappedPage<T::Page, T::Table> {
         let original = self.unmap();
         unsafe {
-            self.0
-                .map_unchecked(UniquePage::into_raw(page), Permissions::All)
+            self.0.map_unchecked(
+                UniquePage::into_raw_with_allocator(page).0,
+                Permissions::All,
+            )
         };
         original
     }
@@ -790,7 +803,7 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
                 core::mem::transmute::<
                     *mut AugmentedPageTable<<T as HardwarePageTableEntry>::Table>,
                     *const <T as HardwarePageTableEntry>::Table,
-                >(UniquePage::into_raw(table)),
+                >(UniquePage::into_raw_with_allocator(table).0),
                 Permissions::All,
             )
         };
@@ -892,7 +905,8 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                         let page: UniquePage<T::Page> =
                             UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                         let new = page.clone();
-                        descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                        descriptor
+                            .set_address(vm::ka2pa(UniquePage::into_raw_with_allocator(new).0));
                         core::mem::forget(page);
                     } else {
                         let page: SharedPage<T::Page> =
@@ -912,7 +926,7 @@ impl<T: HardwarePageTableEntry> Clone for AugmentedEntry<T> {
                     let table: UniquePage<AugmentedPageTable<T::Table>> =
                         UniquePage::from_raw_in(vm::pa2ka(addr), BuddyAllocator);
                     let new = table.clone();
-                    descriptor.set_address(vm::ka2pa(UniquePage::into_raw(new)));
+                    descriptor.set_address(vm::ka2pa(UniquePage::into_raw_with_allocator(new).0));
                     core::mem::forget(table);
                 } else {
                     let addr = descriptor.address();

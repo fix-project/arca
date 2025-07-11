@@ -1,0 +1,56 @@
+name: Build Rust
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        target: x86_64-unknown-none
+        components: rustfmt
+    - name: Check Formatting
+      run: cargo fmt --check
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        target: x86_64-unknown-none
+        components: clippy
+    - name: Setup
+      run: sudo apt update && sudo apt install gcc-multilib
+    - name: Clippy
+      run: cargo clippy --all-features
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        target: x86_64-unknown-none
+    - name: Setup
+      run: |
+        sudo apt update && sudo apt install gcc-multilib
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+    - name: Build
+      run: cargo build --verbose
+    - name: Test
+      run: cargo test --verbose

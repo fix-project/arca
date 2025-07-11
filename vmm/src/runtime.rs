@@ -118,7 +118,7 @@ fn new_cpu<'scope>(
     let stack_start = BuddyAllocator.to_offset(&*initial_stack);
     Box::leak(initial_stack);
 
-    let pa2ka = |p: usize| (p | 0xFFFF800000000000);
+    let pa2ka = |p: usize| p | 0xFFFF800000000000;
     vcpu_regs.rsp = pa2ka(stack_start + STACK_SIZE) as u64;
     vcpu_regs.rbp = 0;
     vcpu_regs.rdi = args[0];
@@ -385,7 +385,8 @@ impl Runtime {
             .expect("could not read kernel elf file");
 
         let allocator_raw = common::buddy::export();
-        let allocator_raw = Box::into_raw(Box::new_in(allocator_raw, BuddyAllocator));
+        let allocator_raw =
+            Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
         let args = args.to_vec_in(BuddyAllocator);
 
