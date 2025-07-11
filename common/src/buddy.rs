@@ -908,8 +908,7 @@ impl Drop for BuddyAllocatorImpl {
             unsafe {
                 let ptr = core::ptr::from_raw_parts_mut(self.base, self.size);
                 let mmap = crate::mmap::Mmap::from_raw(ptr);
-                core::mem::forget(mmap);
-                // core::mem::drop(mmap);
+                core::mem::drop(mmap);
             }
         }
     }
