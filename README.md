@@ -28,12 +28,11 @@ rustup update
 
 ## Fix Compilation
 
-Building Fix-on-Arca additionally requires installing the [WebAssembly Binary
-Toolkit (`wabt`)][wabt], and on Debian-based distributions [the GCC multilib
-package (`gcc-multilib`)][gcc-multilib].
+Building Fix-on-Arca additionally requires installing [the GCC multilib package
+(`gcc-multilib`)][gcc-multilib] on Debian-based distributions.
 
-[wabt]: https://github.com/WebAssembly/wabt
 [gcc-multilib]: https://packages.debian.org/bookworm/gcc-multilib
+
 ## Running
 
 Arca can be run using the standard Cargo build commands.

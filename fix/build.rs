@@ -1,16 +1,21 @@
 use std::env;
 use std::ffi::OsStr;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
+use cmake::Config;
 
 use include_directory::{Dir, include_directory};
 
 static FIX_SHELL: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/fix-shell");
 static INC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/arca");
 static SRC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/../defs/src");
+
+static WASM2C: OnceLock<PathBuf> = OnceLock::new();
+static WAT2WASM: OnceLock<PathBuf> = OnceLock::new();
 
 fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
     if &wat[..4] == b"\0asm" {
@@ -22,7 +27,7 @@ fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
         std::fs::write(&wat_file, wat)?;
         let mut wasm_file = temp_dir.path().to_path_buf();
         wasm_file.push("module.wasm");
-        let wat2wasm = Command::new("wat2wasm")
+        let wat2wasm = Command::new(WAT2WASM.get().unwrap())
             .args([
                 "-o",
                 wasm_file.to_str().unwrap(),
@@ -53,7 +58,7 @@ fn wasm2c(wasm: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     h_file.push("module.h");
 
     // Using wasm2c 1.0.34 from the Ubuntu repos
-    let wasm2c = Command::new("wasm2c")
+    let wasm2c = Command::new(WASM2C.get().unwrap())
         .args([
             "-o",
             c_file.to_str().unwrap(),
@@ -133,6 +138,15 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
+    let dst = Config::new("wabt")
+        .define("BUILD_TESTS", "OFF")
+        .define("BUILD_LIBWASM", "OFF")
+        .define("BUILD_TOOLS", "ON")
+        .build();
+
+    WASM2C.set(dst.join("bin/wasm2c")).unwrap();
+    WAT2WASM.set(dst.join("bin/wat2wasm")).unwrap();
+
     let out_dir = env::var_os("OUT_DIR").unwrap();
     for f in std::fs::read_dir("wasm")? {
         let f = f?;
