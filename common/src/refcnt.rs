@@ -119,7 +119,7 @@ impl<T: ?Sized> Deref for RefCnt<T> {
 
 impl<T: ?Sized> From<Box<T, BuddyAllocator>> for RefCnt<T> {
     fn from(value: Box<T, BuddyAllocator>) -> Self {
-        let ptr = Box::into_raw(value);
+        let (ptr, _) = Box::into_raw_with_allocator(value);
         let rc = RefCnt { ptr };
         assert_eq!(Self::refcnt(&rc).swap(1, Ordering::SeqCst), 0);
         rc

@@ -74,7 +74,7 @@ impl Handle {
 
     pub fn from_value<T: arca::ValueType + Pointee<Metadata = ()>>(value: T) -> Handle {
         let value = Box::new_in(value, BuddyAllocator);
-        let raw = Box::into_raw(value);
+        let (raw, _) = Box::into_raw_with_allocator(value);
         Handle {
             parts: [raw as usize, 0],
             datatype: T::DATATYPE,

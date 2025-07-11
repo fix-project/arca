@@ -58,7 +58,7 @@ impl<T> CowPage<T> {
 
     pub fn into_raw(this: Self) -> (bool, *mut T) {
         match this {
-            CowPage::Unique(page) => (true, Box::into_raw(page)),
+            CowPage::Unique(page) => (true, Box::into_raw_with_allocator(page).0),
             CowPage::Shared(page) => (false, RefCnt::into_raw(page)),
         }
     }
