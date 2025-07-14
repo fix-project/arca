@@ -69,9 +69,6 @@ checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 [[package]]
 name = "arca"
 version = "0.1.0"
-dependencies = [
- "log",
-]
 
 [[package]]
 name = "arrayref"
@@ -412,7 +409,6 @@ dependencies = [
  "glob",
  "log",
  "macros",
- "nasm-rs",
  "time",
  "user",
 ]
@@ -493,12 +489,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "nasm-rs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12fcfa1bd49e0342ec1d07ed2be83b59963e7acbeb9310e1bb2c07b69dadd959"
 
 [[package]]
 name = "new_mime_guess"
@@ -790,7 +780,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arca",
- "cc",
  "common",
  "elf",
  "env_logger",
@@ -798,7 +787,6 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "log",
- "nasm-rs",
  "rustc-demangle",
  "user",
 ]

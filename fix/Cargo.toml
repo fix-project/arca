@@ -6,8 +6,6 @@ edition = "2024"
 [dependencies]
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
 vmm = { path = "../vmm" }
-include_directory = "0.1.1"
-tempfile = "3.20.0"
 anyhow = "1.0.98"
 env_logger = "0.11.8"
 log = "0.4.27"
