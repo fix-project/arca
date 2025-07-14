@@ -24,6 +24,6 @@ pub extern "C" fn _rsstart() -> ! {
         tree.put(i, os::prompt());
     }
 
-    let y = f.apply(tree.into());
-    os::tailcall(y);
+    let y = f.apply(tree);
+    os::exit(y);
 }

@@ -66,6 +66,6 @@ impl arca::Runtime for Runtime {
             register_file[i] = *x;
         }
         let arca = Arca::new_with(register_file, memory, descriptors);
-        Thunk::new(arca)
+        Thunk::from(arca)
     }
 }

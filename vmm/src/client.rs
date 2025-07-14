@@ -682,15 +682,6 @@ impl arca::Table for Ref<Table> {
 }
 
 impl arca::Lambda for Ref<Lambda> {
-    fn apply(
-        mut self,
-        mut argument: arca::associated::Value<Self>,
-    ) -> arca::associated::Thunk<Self> {
-        let handle = self.take_handle();
-        self.client
-            .request_ref(Request::Apply(handle, argument.take_handle()))
-    }
-
     fn read(self) -> (arca::associated::Thunk<Self>, usize) {
         todo!()
     }
@@ -716,6 +707,15 @@ impl arca::Thunk for Ref<Thunk> {
 impl arca::Value for Ref<Value> {
     fn datatype(&self) -> DataType {
         self.handle.as_ref().unwrap().datatype()
+    }
+
+    fn apply(
+        mut self,
+        mut argument: arca::associated::Value<Self>,
+    ) -> arca::associated::Thunk<Self> {
+        let handle = self.take_handle();
+        self.client
+            .request_ref(Request::Apply(handle, argument.take_handle()))
     }
 }
 
@@ -791,7 +791,7 @@ mod tests {
         let mut arg = arca.create_tree(2);
         arg.put(0, x.into());
         arg.put(1, y.into());
-        let sum: Ref<Word> = add.apply(arg.into()).run().try_into().unwrap();
+        let sum: Ref<Word> = add.apply(arg).run().try_into().unwrap();
         assert_eq!(sum.read(), 3);
     }
 

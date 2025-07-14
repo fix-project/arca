@@ -1,15 +1,15 @@
+pub mod concrete;
 pub mod syscall;
 
-use core::ops::ControlFlow;
-
 use common::message::Handle;
-use syscall::handle_syscall;
+use concrete::Application as Concrete;
 
-use crate::{cpu::ExitReason, prelude::*};
+use crate::prelude::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Thunk {
-    pub arca: Box<Arca>,
+pub enum Thunk {
+    Symbolic(Box<Value>, Box<Value>),
+    Concrete(Concrete),
 }
 
 impl arca::RuntimeType for Thunk {
@@ -42,39 +42,46 @@ impl arca::Thunk for Thunk {
 }
 
 impl Thunk {
-    pub fn new<T: Into<Box<Arca>>>(arca: T) -> Thunk {
-        Thunk { arca: arca.into() }
-    }
-
-    fn run_on(self, cpu: &mut Cpu) -> arca::associated::Value<Self> {
-        let Thunk { arca } = self;
-        let mut arca = arca.load(cpu);
-
-        loop {
-            let result = arca.run();
-            match result {
-                ExitReason::SystemCall => {}
-                ExitReason::Interrupted(x) => {
-                    if x == 0x20 {
-                        continue;
-                    }
-                    panic!("exited with interrupt: {x:?}");
-                }
-                x => {
-                    panic!(
-                        "exited with exception: {x:x?} @ rip={:#x}",
-                        arca.registers()[Register::RIP]
-                    );
-                }
-            }
-            if let ControlFlow::Break(result) = handle_syscall(&mut arca) {
-                return result;
-            }
+    pub fn new(f: Value, x: Value) -> Thunk {
+        if let Value::Lambda(l) = f {
+            let mut arca = l.arca;
+            let idx = arca.descriptors_mut().insert(x);
+            arca.registers_mut()[Register::RAX] = idx as u64;
+            Thunk::Concrete(Concrete::new(arca))
+        } else {
+            Thunk::Symbolic(f.into(), x.into())
         }
     }
 
     pub fn from_elf(elf: &[u8]) -> Thunk {
         common::elfloader::load_elf(&Runtime, elf)
+    }
+
+    pub fn run_on(self, cpu: &mut Cpu) -> Value {
+        match self {
+            Thunk::Symbolic(f, x) => {
+                if let Value::Lambda(l) = *f {
+                    l.apply(*x).run_on(cpu)
+                } else {
+                    Tree::new([*f, *x]).into()
+                }
+            }
+            Thunk::Concrete(application) => application.run_on(cpu),
+        }
+    }
+
+    pub fn symbolic(&self) -> Option<(&Value, Vec<&Value>)> {
+        match self {
+            Thunk::Symbolic(car, cdr) => match &**car {
+                Value::Thunk(thunk) => {
+                    let (symbol, mut args) = thunk.symbolic()?;
+                    args.push(cdr);
+                    Some((symbol, args))
+                }
+                car => Some((car, vec![cdr])),
+            },
+            Thunk::Concrete(_) => None,
+        }
     }
 }
 
@@ -83,12 +90,13 @@ impl TryFrom<Handle> for Thunk {
 
     fn try_from(value: Handle) -> Result<Self, Self::Error> {
         if value.datatype() == <Self as arca::ValueType>::DATATYPE {
-            let (raw, _) = value.read();
-            unsafe {
-                Ok(Thunk {
-                    arca: Box::from_raw(raw as *mut _),
-                })
-            }
+            let (x, y) = value.read();
+            Ok(if y == 0 {
+                // application
+                unsafe { Thunk::Concrete(Concrete::from_raw(x as *mut _)) }
+            } else {
+                unsafe { Thunk::Symbolic(Box::from_raw(x as *mut _), Box::from_raw(y as *mut _)) }
+            })
         } else {
             Err(value)
         }
@@ -97,7 +105,24 @@ impl TryFrom<Handle> for Thunk {
 
 impl From<Thunk> for Handle {
     fn from(value: Thunk) -> Self {
-        let ptr = Box::into_raw(value.arca);
-        Handle::new(DataType::Thunk, (ptr as usize, 0))
+        match value {
+            Thunk::Symbolic(_, _) => todo!("handle to symbolic Thunk"),
+            Thunk::Concrete(application) => {
+                let ptr = application.into_raw();
+                Handle::new(DataType::Thunk, (ptr as usize, 0))
+            }
+        }
+    }
+}
+
+impl From<Concrete> for Thunk {
+    fn from(value: Concrete) -> Self {
+        Thunk::Concrete(value)
+    }
+}
+
+impl From<Arca> for Thunk {
+    fn from(value: Arca) -> Self {
+        Concrete::new(value).into()
     }
 }

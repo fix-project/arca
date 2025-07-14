@@ -1,5 +1,6 @@
 use core::ops::{Deref, DerefMut};
 
+use alloc::string::ToString as _;
 use common::message::Handle;
 
 use crate::prelude::*;
@@ -29,7 +30,7 @@ impl Blob {
         items
     }
 
-    fn into_inner(self) -> Box<[u8]> {
+    pub fn into_inner(self) -> Box<[u8]> {
         match self {
             Blob::Raw(items) => items,
             Blob::String(s) => s.as_bytes().into(),
@@ -97,6 +98,12 @@ impl From<Vec<u8>> for Blob {
 impl From<String> for Blob {
     fn from(value: String) -> Self {
         Blob::new(value.into_bytes())
+    }
+}
+
+impl From<&str> for Blob {
+    fn from(value: &str) -> Self {
+        Blob::from(value.to_string())
     }
 }
 

@@ -107,8 +107,8 @@ int64_t arca_table_set(arcad table, size_t index,
   return syscall(SYS_SET, table, index, entry);
 }
 
-arcad arca_apply(arcad lambda, arcad argument) {
-  return syscall(SYS_APPLY, lambda, argument);
+arcad arca_apply(arcad target, arcad argument) {
+  return syscall(SYS_APPLY, target, argument);
 }
 
 int64_t arca_table_map(arcad table, void *address, struct arca_entry *entry) {
@@ -123,13 +123,8 @@ arcad arca_return_continuation_lambda(void) {
   return syscall(SYS_RETURN_CONTINUATION_LAMBDA);
 }
 
-arcad arca_perform_effect(arcad value) {
-  return syscall(SYS_PERFORM_EFFECT, value);
-}
-
-[[noreturn]] void arca_tailcall(arcad thunk) {
-  syscall(SYS_TAILCALL, thunk);
-  ud2();
+arcad arca_call_with_current_continuation(arcad value) {
+  return syscall(SYS_CALL_WITH_CURRENT_CONTINUATION, value);
 }
 
 arcad arca_capture_continuation_thunk(bool *continued) {

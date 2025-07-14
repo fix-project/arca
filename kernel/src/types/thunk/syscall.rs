@@ -1,3 +1,4 @@
+use super::*;
 use core::{mem::MaybeUninit, ops::ControlFlow};
 
 use alloc::format;
@@ -39,6 +40,7 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
         defs::syscall::SYS_TYPE => sys_type(args, arca),
 
         defs::syscall::SYS_CREATE_WORD => sys_create_word(args, arca),
+        defs::syscall::SYS_CREATE_ATOM => sys_create_atom(args, arca),
         defs::syscall::SYS_CREATE_BLOB => sys_create_blob(args, arca),
         defs::syscall::SYS_CREATE_TREE => sys_create_tree(args, arca),
         defs::syscall::SYS_CREATE_PAGE => sys_create_page(args, arca),
@@ -53,7 +55,9 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
         defs::syscall::SYS_RETURN_CONTINUATION_LAMBDA => {
             sys_return_continuation_lambda(args, arca)?
         }
-        defs::syscall::SYS_TAILCALL => sys_tailcall(args, arca),
+        defs::syscall::SYS_CALL_WITH_CURRENT_CONTINUATION => {
+            sys_call_with_current_continuation(args, arca)?
+        }
 
         defs::syscall::SYS_DEBUG_SHOW => sys_show(args, arca),
         defs::syscall::SYS_DEBUG_LOG => sys_log(args, arca),
@@ -302,6 +306,19 @@ pub fn sys_create_word(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(arca.descriptors_mut().insert(Word::new(val).into()))
 }
 
+pub fn sys_create_atom(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let ptr = args[0] as usize;
+    let len = args[1] as usize;
+    unsafe {
+        let mut buffer = Box::new_uninit_slice(len);
+        copy_user_to_kernel(&mut buffer, ptr)?;
+        let buffer = buffer.assume_init();
+        Ok(arca
+            .descriptors_mut()
+            .insert(Value::Atom(Atom::new(buffer))))
+    }
+}
+
 pub fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
@@ -342,7 +359,7 @@ pub fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> 
         let copy = unloaded.clone();
         idx = unloaded
             .descriptors_mut()
-            .insert(Value::Thunk(Thunk::new(copy)));
+            .insert(Value::Thunk(Concrete::new(copy).into()));
         unloaded.load(cpu)
     });
     continued = 0;
@@ -372,10 +389,10 @@ pub fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let lambda = args[0] as usize;
     let arg = args[1] as usize;
 
-    let lambda: Lambda = arca.descriptors_mut().take(lambda)?.try_into()?;
-    let arg = arca.descriptors_mut().take(arg)?;
+    let f = arca.descriptors_mut().take(lambda)?;
+    let x = arca.descriptors_mut().take(arg)?;
 
-    let thunk = lambda.apply(arg);
+    let thunk = Thunk::new(f, x);
     let idx = arca.descriptors_mut().insert(thunk.into());
     Ok(idx)
 }
@@ -399,7 +416,7 @@ pub fn sys_map(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let table = match arca.descriptors_mut().get_mut(table)? {
         Value::Table(table) => table,
         Value::Lambda(lambda) => lambda.arca.mappings_mut(),
-        Value::Thunk(thunk) => thunk.arca.mappings_mut(),
+        Value::Thunk(_) => todo!("mapping into Thunk"), //thunk.arca.mappings_mut(),
         _ => return Err(SyscallError::BadType),
     };
     let entry = table
@@ -461,16 +478,18 @@ pub fn sys_return_continuation_lambda(
     ControlFlow::Break(Value::Lambda(Lambda::new(arca.take())))
 }
 
-pub fn sys_tailcall(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let thunk = args[0] as usize;
-    let mut thunk: Thunk = arca.descriptors_mut().take(thunk)?.try_into()?;
-    arca.swap(&mut thunk.arca);
-    let result = arca.registers()[Register::RAX] as i64;
-    if result >= 0 {
-        Ok(result as usize)
-    } else {
-        Err(SyscallError::new(-result as u32))
-    }
+pub fn sys_call_with_current_continuation(
+    args: [u64; 5],
+    arca: &mut LoadedArca,
+) -> ControlFlow<Value, Result<usize>> {
+    let func = args[0] as usize;
+    let func = match arca.descriptors_mut().take(func) {
+        Ok(x) => x,
+        Err(e) => return ControlFlow::Continue(Err(e.into())),
+    };
+    let k: Value = Lambda::new(arca.take()).into();
+    let result = Thunk::new(func, k);
+    ControlFlow::Break(result.into())
 }
 
 pub fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {

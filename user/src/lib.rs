@@ -429,13 +429,6 @@ impl arca::Table for Ref<Table> {
 pub type Entry = arca::Entry<Ref<Table>>;
 
 impl arca::Lambda for Ref<Lambda> {
-    fn apply(mut self, mut argument: associated::Value<Self>) -> associated::Thunk<Self> {
-        let index = self.index.take().unwrap();
-        let argument = argument.index.take().unwrap();
-        let index = unsafe { arca_apply(index, argument) };
-        Ref::try_new(index).unwrap()
-    }
-
     fn read(self) -> (associated::Thunk<Self>, usize) {
         todo!()
     }
@@ -472,6 +465,13 @@ impl arca::Value for Ref<Value> {
             defs::datatype::DATATYPE_THUNK => DataType::Thunk,
             _ => panic!("unrecognized type"),
         }
+    }
+
+    fn apply(mut self, mut argument: associated::Value<Self>) -> associated::Thunk<Self> {
+        let index = self.index.take().unwrap();
+        let argument = argument.index.take().unwrap();
+        let index = unsafe { arca_apply(index, argument) };
+        Ref::try_new(index).unwrap()
     }
 }
 
@@ -543,8 +543,8 @@ pub mod os {
         RUNTIME.create_word(value)
     }
 
-    pub fn atom(bytes: &[u8]) -> Ref<Atom> {
-        RUNTIME.create_atom(bytes)
+    pub fn atom<T: AsRef<[u8]> + ?Sized>(bytes: &T) -> Ref<Atom> {
+        RUNTIME.create_atom(bytes.as_ref())
     }
 
     pub fn blob(data: &[u8]) -> Ref<Blob> {
@@ -568,10 +568,10 @@ pub mod os {
         Ref::try_new(result).unwrap()
     }
 
-    pub fn perform<T: Into<Ref<Value>>>(effect: T) -> Ref<Value> {
+    pub fn call_with_current_continuation<T: Into<Ref<Value>>>(effect: T) -> Ref<Value> {
         let mut val: Ref<Value> = effect.into();
         let idx = val.index.take().unwrap();
-        let idx = unsafe { arca_perform_effect(idx) };
+        let idx = unsafe { arca_call_with_current_continuation(idx) };
         Ref::try_new(idx).unwrap()
     }
 
@@ -584,21 +584,13 @@ pub mod os {
         }
         unreachable!();
     }
-
-    pub fn tailcall(mut value: Ref<Thunk>) -> ! {
-        unsafe {
-            arca_tailcall(value.index.take().unwrap());
-            asm!("ud2");
-        }
-        unreachable!();
-    }
 }
 
 pub mod prelude {
     pub use super::*;
     pub use arca::{
         Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _, Table as _,
-        Thunk as _, Tree as _, Value as _, Word as _,
+        Thunk as _, Tree as _, Value as _, ValueType as _, Word as _,
     };
 }
 

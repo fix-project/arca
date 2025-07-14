@@ -67,6 +67,10 @@ impl ::arca::Value for Value {
             Value::Thunk(_) => DataType::Thunk,
         }
     }
+
+    fn apply(self, argument: ::arca::associated::Value<Self>) -> ::arca::associated::Thunk<Self> {
+        Thunk::new(self, argument)
+    }
 }
 
 impl From<Null> for Value {

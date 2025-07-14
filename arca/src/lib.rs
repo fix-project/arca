@@ -43,6 +43,13 @@ pub trait Runtime: Sized {
         memory: Self::Table,
         descriptors: Self::Tree,
     ) -> Self::Thunk;
+
+    fn cons<A: Into<Self::Value>, D: Into<Self::Value>>(&self, car: A, cdr: D) -> Self::Tree {
+        let mut tree = self.create_tree(2);
+        tree.put(0, car.into());
+        tree.put(1, cdr.into());
+        tree
+    }
 }
 
 pub trait RuntimeType: Sized + Clone {
@@ -53,6 +60,13 @@ pub trait RuntimeType: Sized + Clone {
 
 pub trait ValueType: RuntimeType {
     const DATATYPE: DataType;
+
+    fn apply<T: Into<associated::Value<Self>>>(self, argument: T) -> associated::Thunk<Self>
+    where
+        associated::Value<Self>: From<Self>,
+    {
+        associated::Value::<Self>::from(self).apply(argument.into())
+    }
 }
 
 pub trait Null:
@@ -196,7 +210,6 @@ where
 pub trait Lambda:
     ValueType + From<<Self::Runtime as Runtime>::Lambda> + Into<<Self::Runtime as Runtime>::Lambda>
 {
-    fn apply(self, argument: associated::Value<Self>) -> associated::Thunk<Self>;
     fn read(self) -> (associated::Thunk<Self>, usize);
 }
 
@@ -204,6 +217,7 @@ pub trait Thunk:
     ValueType + From<<Self::Runtime as Runtime>::Thunk> + Into<<Self::Runtime as Runtime>::Thunk>
 {
     fn run(self) -> associated::Value<Self>;
+
     fn read(
         self,
     ) -> (
@@ -239,6 +253,7 @@ pub trait Value:
     + Into<<Self::Runtime as Runtime>::Value>
 {
     fn datatype(&self) -> DataType;
+    fn apply(self, argument: associated::Value<Self>) -> associated::Thunk<Self>;
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

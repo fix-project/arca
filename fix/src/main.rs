@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     tree.put(2, arca.create_word(7).into());
     tree.put(3, arca.create_word(1024).into());
 
-    let thunk = lambda.apply(tree.into());
+    let thunk = lambda.apply(tree);
     let word: Ref<Word> = thunk.run().try_into().unwrap();
     log::info!("{:?}", word.read());
     assert_eq!(word.read(), 1031);
@@ -48,7 +48,7 @@ mod test {
         tree.put(2, arca.create_word(7).into());
         tree.put(3, arca.create_word(1024).into());
 
-        let thunk = lambda.apply(tree.into());
+        let thunk = lambda.apply(tree);
         let word: Ref<Word> = thunk.run().try_into().unwrap();
         assert_eq!(word.read(), 1031);
     }

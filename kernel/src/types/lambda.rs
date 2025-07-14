@@ -26,13 +26,6 @@ impl arca::ValueType for Lambda {
 }
 
 impl arca::Lambda for Lambda {
-    fn apply(self, argument: arca::associated::Value<Self>) -> arca::associated::Thunk<Self> {
-        let mut arca = self.arca;
-        let idx = arca.descriptors_mut().insert(argument);
-        arca.registers_mut()[Register::RAX] = idx as u64;
-        Thunk::new(arca)
-    }
-
     fn read(self) -> (arca::associated::Thunk<Self>, usize) {
         todo!()
     }
