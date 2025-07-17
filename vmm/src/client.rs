@@ -138,7 +138,7 @@ pub struct Client {
 impl Client {
     pub fn new(ram: usize) -> Self {
         let cores = std::thread::available_parallelism().unwrap_or(NonZero::new(1).unwrap());
-        let runtime = Runtime::new(cores.into(), ram, SERVER_ELF.into());
+        let mut runtime = Runtime::new(cores.into(), ram, SERVER_ELF.into());
         let (ep1, ep2) = ringbuffer::pair(1024);
         let ep2 = BuddyAllocator.to_offset(
             Box::into_raw_with_allocator(Box::new_in(ep2.into_raw_parts(), BuddyAllocator)).0,

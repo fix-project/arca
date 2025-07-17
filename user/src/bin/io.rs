@@ -6,12 +6,13 @@ extern crate user;
 use user::prelude::*;
 
 /// Runs an effectful program. Expects two arguments:
-/// 1. input file
-/// 2. output file
+///   1. input file
+///   2. output file
+///
 /// and three effect handlers:
-/// 1. read(key) -> value
-/// 2. write(key, value)
-/// 3. exit(value) -> !
+///   1. read(key) -> value
+///   2. write(key, value)
+///   3. exit(value) -> !
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
     let read = os::atom("read");

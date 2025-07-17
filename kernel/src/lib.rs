@@ -37,6 +37,7 @@ pub mod profile;
 pub mod rt;
 pub mod tsc;
 pub mod types;
+pub mod virtio;
 pub mod vm;
 
 mod gdt;

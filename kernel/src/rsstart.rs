@@ -15,10 +15,11 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
+    virtio::VSockDriver,
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
+use common::{buddy::BuddyAllocatorRawData, vhost::VSockMetadata, BuddyAllocator};
 
 extern "C" {
     fn kmain(argc: usize, argv: *const usize);
@@ -141,7 +142,14 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
     if id == 0 {
         let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
-        let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
+        let argv = NonNull::new(argv).unwrap();
+
+        let vsock_info = argv.as_ptr().read();
+        let vsock_info: *const VSockMetadata = BuddyAllocator.from_offset(vsock_info);
+        let vsock = crate::virtio::VSOCK_DRIVER.lock();
+        vsock.set(VSockDriver::new(vsock_info.read())).unwrap();
+        let argv = argv.add(1);
+        let argc = argc - 1;
 
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);

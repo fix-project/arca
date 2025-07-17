@@ -1,12 +1,15 @@
 #![no_main]
 #![no_std]
 #![feature(allocator_api)]
+#![feature(new_zeroed_alloc)]
 
+use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString as _;
 use kernel::prelude::*;
 use kernel::rt;
+use kernel::virtio::VSock;
 use macros::kmain;
 
 extern crate alloc;
@@ -19,8 +22,8 @@ const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 const IO: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_io"));
 
 #[kmain]
-async fn kmain(_: &[usize]) {
-    log::info!("setting up");
+async fn kmain(args: &[usize]) {
+    log::info!("setting up (have {} args)", args.len());
     let id: Lambda = Thunk::from_elf(IDENTITY).run().try_into().unwrap();
     let add: Lambda = Thunk::from_elf(ADD).run().try_into().unwrap();
     let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
@@ -78,6 +81,87 @@ async fn kmain(_: &[usize]) {
     assert_eq!(result, Value::Null);
     let value = data.get("out").unwrap();
     assert_eq!(*value, Value::Blob(Blob::from("hello, world!")));
+
+    'main: loop {
+        let packet = VSock.read().await;
+        let header: *mut Header = packet.as_ptr() as *mut Header;
+        let header = unsafe { header.read() };
+        log::info!("header: {header:?}");
+        if header.op != 1 {
+            continue 'main;
+        }
+        // assert_eq!(header.ptype, 1); // stream
+        // assert_eq!(header.op, 1); // request
+        // assert_eq!(header.dst_port, 80); // HTTP?
+
+        let packet = Box::new(Header {
+            src_cid: 3,
+            dst_cid: 2,
+            src_port: 80,
+            dst_port: header.src_port,
+            len: 0,
+            ptype: 1,
+            op: 2,
+            flags: 0,
+            buf_alloc: 1024,
+            fwd_cnt: 0,
+        });
+        let packet: Box<[u8; core::mem::size_of::<Header>()]> =
+            unsafe { core::mem::transmute(packet) };
+        VSock.write(packet).await;
+        log::info!("sent reply");
+        loop {
+            let packet = VSock.read().await;
+            let header: *mut Header = packet.as_ptr() as *mut Header;
+            let header = unsafe { header.read() };
+            log::info!("header: {header:?}");
+            if header.op == 5 {
+                let port = header.src_port;
+                let payload = &packet[core::mem::size_of::<Header>()..];
+                log::info!("payload: {payload:?}");
+
+                let payload = b"hello, world!\n";
+                let header = Header {
+                    src_cid: 3,
+                    dst_cid: 2,
+                    src_port: 80,
+                    dst_port: port,
+                    len: payload.len() as u32,
+                    ptype: 1,
+                    op: 5,
+                    flags: 0,
+                    buf_alloc: 1024,
+                    fwd_cnt: 0,
+                };
+                let mut buf = unsafe {
+                    Box::new_zeroed_slice(core::mem::size_of::<Header>() + payload.len())
+                        .assume_init()
+                };
+                let header: Box<[u8; core::mem::size_of::<Header>()]> =
+                    unsafe { core::mem::transmute(Box::new(header)) };
+                buf[0..header.len()].copy_from_slice(&header[..]);
+                buf[header.len()..].copy_from_slice(payload);
+                VSock.write(buf).await;
+
+                let packet = Box::new(Header {
+                    src_cid: 3,
+                    dst_cid: 2,
+                    src_port: 80,
+                    dst_port: port,
+                    len: 0,
+                    ptype: 1,
+                    op: 4,
+                    flags: 3,
+                    buf_alloc: 1024,
+                    fwd_cnt: 0,
+                });
+                let packet: Box<[u8; core::mem::size_of::<Header>()]> =
+                    unsafe { core::mem::transmute(packet) };
+                VSock.write(packet).await;
+                continue 'main;
+            }
+        }
+    }
 }
 
 pub fn eval(x: Value) -> Value {
@@ -117,3 +201,22 @@ pub fn interpret(mut thunk: Thunk, data: &mut BTreeMap<String, Value>) -> Value 
         }
     }
 }
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C, packed)]
+struct Header {
+    src_cid: u64,
+    dst_cid: u64,
+    src_port: u32,
+    dst_port: u32,
+    len: u32,
+    ptype: u16,
+    op: u16,
+    flags: u32,
+    buf_alloc: u32,
+    fwd_cnt: u32,
+}
+
+const _: () = const {
+    assert!(core::mem::size_of::<Header>() == 44);
+};

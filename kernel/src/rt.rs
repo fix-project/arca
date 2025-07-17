@@ -116,7 +116,7 @@ impl Executor {
     fn diff(&self) -> usize {
         let mut time = LAST_TIME.lock();
         let now = kvmclock::time_since_boot().as_nanos();
-        let diff = now - *time;
+        let diff = now.wrapping_sub(*time);
         *time = now;
         diff as usize
     }
