@@ -33,6 +33,7 @@ defs = { path = "../defs", default-features = false }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 arca = { path = "../arca" }
 blake3 = { version = "1.8.2", default-features = false }
+hashbrown = { version = "0.15.4", features = ["alloc", "core"] }
 
 [build-dependencies]
 anyhow = "1.0.86"

@@ -1,71 +1,10 @@
-use core::cell::OnceCell;
-
 use crate::prelude::*;
 
-pub static VSOCK_DRIVER: SpinLock<OnceCell<VSockDriver>> = SpinLock::new(OnceCell::new());
-// pub static VSOCK: VSock = VSock;
-
-#[derive(Debug)]
-pub struct VSock;
-
-impl VSock {
-    pub fn try_read(&self) -> Option<Box<[u8]>> {
-        let mut lock = VSOCK_DRIVER.lock();
-        let driver = lock.get_mut().unwrap();
-        driver.read()
-    }
-
-    pub async fn read(&self) -> Box<[u8]> {
-        loop {
-            if let Some(result) = self.try_read() {
-                return result;
-            }
-            crate::rt::yield_now().await;
-        }
-    }
-
-    pub fn try_write(&self, data: Box<[u8]>) -> bool {
-        let mut lock = VSOCK_DRIVER.lock();
-        let driver = lock.get_mut().unwrap();
-        driver.write(data)
-    }
-
-    pub async fn write(&self, data: Box<[u8]>) {
-        loop {
-            if self.try_write(data) {
-                return;
-            }
-            crate::rt::yield_now().await;
-            todo!("deal with multiple write attempts");
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct VSockDriver {
-    rx: ReceiveQueue,
-    tx: TransmitQueue,
-}
-
-impl VSockDriver {
-    pub unsafe fn new(value: common::vhost::VSockMetadata) -> Self {
-        let rx = ReceiveQueue::new(VirtQueue::new(value.rx));
-        let tx = TransmitQueue::new(VirtQueue::new(value.tx));
-        Self { rx, tx }
-    }
-
-    pub fn read(&mut self) -> Option<Box<[u8]>> {
-        self.rx.read()
-    }
-
-    pub fn write(&mut self, data: Box<[u8]>) -> bool {
-        self.tx.write(data)
-    }
-}
+pub mod vsock;
 
 #[derive(Debug)]
 struct ReceiveQueue {
-    q: VirtQueue,
+    q: SpinLock<VirtQueue>,
 }
 
 impl ReceiveQueue {
@@ -83,77 +22,86 @@ impl ReceiveQueue {
             }
         }
         q.notify();
-        Self { q }
-    }
-
-    pub fn read(&mut self) -> Option<Box<[u8]>> {
-        unsafe {
-            let used = self.q.get_used()?;
-            let i = used.id as usize;
-            let p = self.q.get_descriptor(i);
-            self.q.set_descriptor_mut(i, Box::into_raw(Self::new_buf()));
-            let b = Box::from_raw(p);
-            let mut v: Vec<u8> = b.into();
-            v.truncate(used.len as usize); // TODO: modify allocator to avoid reallocating here
-            Some(v.into())
+        Self {
+            q: SpinLock::new(q),
         }
     }
 
-    pub fn len(&self) -> usize {
-        unsafe { self.q.used_len() }
-    }
-
-    #[allow(unused)]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn try_recv(&self) -> Option<Box<[u8]>> {
+        let mut q = self.q.lock();
+        unsafe {
+            let Some(used) = q.get_used() else {
+                return None;
+            };
+            let i = used.id as usize;
+            let p = q.get_descriptor(i);
+            let buf = Box::from_raw(p as *mut [u8]);
+            q.set_descriptor(i, Box::into_raw(Self::new_buf()));
+            q.mark_available(i);
+            q.notify();
+            let mut v: Vec<u8> = buf.into();
+            v.truncate(used.len as usize);
+            Some(v.into())
+        }
     }
 }
 
 #[derive(Debug)]
 struct TransmitQueue {
-    q: VirtQueue,
+    add_free_descriptor: channel::Sender<usize>,
+    get_free_descriptor: channel::Receiver<usize>,
+    q: SpinLock<VirtQueue>,
 }
+
+unsafe impl Send for TransmitQueue {}
 
 impl TransmitQueue {
     pub fn new(q: VirtQueue) -> Self {
-        Self { q }
-    }
-
-    pub fn write(&mut self, data: Box<[u8]>) -> bool {
-        self.discard_used();
-        unsafe {
-            let Some(i) = self.find_next_free_descriptor() else {
-                return false;
-            };
-            log::info!("using descriptor {i} for write");
-            self.q.set_descriptor(i, Box::into_raw(data));
-            self.q.mark_available(i);
-            self.q.notify();
+        let (tx, rx) = channel::unbounded();
+        for i in 0..q.descriptors {
+            tx.send_blocking(i).unwrap();
         }
-        true
+        Self {
+            add_free_descriptor: tx,
+            get_free_descriptor: rx,
+            q: SpinLock::new(q),
+        }
     }
 
-    fn find_next_free_descriptor(&self) -> Option<usize> {
-        for i in 0..self.q.descriptors {
+    pub fn send(&self, bufs: &[*const [u8]]) {
+        let mut q = self.q.lock();
+        let mut descs = [0; 16];
+        assert!(bufs.len() <= descs.len());
+        for (i, buf) in bufs.iter().enumerate() {
+            let d = self.get_free_descriptor.try_recv().unwrap().unwrap();
             unsafe {
-                let desc = &*self.q.desc;
-                if desc.0[i].addr == 0 {
-                    return Some(i);
+                q.set_descriptor(d, *buf);
+                if i >= 1 {
+                    q.link_descriptor(descs[i - 1], d);
                 }
             }
+            descs[i] = d;
         }
-        None
+        unsafe {
+            for i in 0..bufs.len() {
+                q.mark_available(descs[i]);
+            }
+            q.notify();
+        }
     }
 
-    fn discard_used(&mut self) {
+    pub fn get_used(&self, mut callback: impl FnMut(*const [u8])) {
+        let mut q = self.q.lock();
         unsafe {
-            while let Some(used) = self.q.get_used() {
-                let i = used.id;
-                log::info!("{i} was used");
-                let p = self.q.get_descriptor(i as usize);
-                let _ = Box::from_raw(p);
-                self.q.clear_descriptor(i as usize);
+            while let Some(used) = q.get_used() {
+                let mut idx = Some(used.id as usize);
+                while let Some(i) = idx {
+                    let p = q.get_descriptor(i as usize);
+                    callback(p);
+                    idx = q.get_next(i as usize);
+                    q.clear_descriptor(i as usize);
+                    self.add_free_descriptor.send_blocking(i as usize).unwrap();
+                }
             }
         }
     }
@@ -163,6 +111,8 @@ impl TransmitQueue {
 struct VirtQueue {
     descriptors: usize,
     last_used: u16,
+    buf_alloc: usize,
+    fwd_cnt: usize,
     desc: *mut DescriptorTable,
     used: *mut UsedRing,
     avail: *mut AvailableRing,
@@ -180,15 +130,16 @@ impl VirtQueue {
         Self {
             descriptors: value.descriptors,
             last_used,
+            buf_alloc: 0,
+            fwd_cnt: 0,
             desc: core::ptr::from_raw_parts_mut(desc.0, desc.1),
             used,
             avail: core::ptr::from_raw_parts_mut(avail.0, avail.1),
         }
     }
-}
 
-impl VirtQueue {
     pub unsafe fn set_descriptor(&mut self, i: usize, slice: *const [u8]) {
+        self.clear_descriptor(i);
         let (addr, len) = slice.to_raw_parts();
         let addr = vm::ka2pa(addr);
         let desc = &mut *self.desc;
@@ -198,19 +149,29 @@ impl VirtQueue {
             flags: 0,
             next: 0,
         };
+        self.buf_alloc += len as usize;
+    }
+
+    pub unsafe fn link_descriptor(&mut self, i: usize, j: usize) {
+        let desc = &mut *self.desc;
+        desc.0[i].flags |= 1;
+        desc.0[i].next = j as u16;
     }
 
     pub unsafe fn clear_descriptor(&mut self, i: usize) {
         let desc = &mut *self.desc;
+        let len = desc.0[i].len;
         desc.0[i] = Descriptor {
             addr: 0,
             len: 0,
             flags: 0,
             next: 0,
         };
+        self.buf_alloc -= len as usize;
     }
 
     pub unsafe fn set_descriptor_mut(&mut self, i: usize, slice: *mut [u8]) {
+        self.clear_descriptor(i);
         let (addr, len) = slice.to_raw_parts();
         let addr = vm::ka2pa(addr);
         let desc = &mut *self.desc;
@@ -220,9 +181,10 @@ impl VirtQueue {
             flags: 1 << 1, // write-only
             next: 0,
         };
+        self.buf_alloc += len as usize;
     }
 
-    pub unsafe fn get_descriptor(&self, i: usize) -> *mut [u8] {
+    pub unsafe fn get_descriptor(&self, i: usize) -> *const [u8] {
         let desc = &mut *self.desc;
         let Descriptor {
             addr,
@@ -232,6 +194,15 @@ impl VirtQueue {
         } = desc.0[i];
         let addr = vm::pa2ka(addr as usize);
         unsafe { core::slice::from_raw_parts_mut(addr, len as usize) }
+    }
+
+    pub unsafe fn get_next(&self, i: usize) -> Option<usize> {
+        let desc = &mut *self.desc;
+        if desc.0[i].flags & 1 == 1 {
+            Some(desc.0[i].next as usize)
+        } else {
+            None
+        }
     }
 
     pub unsafe fn mark_available(&mut self, i: usize) {
@@ -248,18 +219,30 @@ impl VirtQueue {
         let idx = self.last_used;
         let read = used.ring[idx as usize];
         self.last_used = idx.wrapping_add(1);
+        // self.fwd_cnt = self.fwd_cnt.wrapping_add(read.len as usize);
+        self.fwd_cnt = 0;
         Some(read)
     }
 
     pub unsafe fn used_len(&self) -> usize {
         let used = &mut *self.used;
-        used.idx.wrapping_sub(self.last_used) as usize
+        let idx = &raw const used.idx;
+        let idx = idx.read_volatile();
+        idx.wrapping_sub(self.last_used) as usize
     }
 
     pub fn notify(&mut self) {
         unsafe {
             crate::io::outb(0xf4, 0);
         }
+    }
+
+    pub fn buf_alloc(&self) -> u32 {
+        self.buf_alloc as u32
+    }
+
+    pub fn fwd_cnt(&self) -> u32 {
+        self.fwd_cnt as u32
     }
 }
 

@@ -53,6 +53,7 @@ extern "C" {
 
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
+    crate::virtio::vsock::tick();
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
             crate::profile::tick(registers);

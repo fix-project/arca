@@ -51,6 +51,11 @@ impl<T> SpinLock<T> {
     pub fn get(&self) -> *mut T {
         self.data.get()
     }
+
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let mut guard = self.lock();
+        f(&mut guard)
+    }
 }
 
 impl<T> SpinLockGuard<'_, T> {
