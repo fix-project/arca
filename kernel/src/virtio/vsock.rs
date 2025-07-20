@@ -70,9 +70,14 @@ async fn send(flow: Flow, msg: Outgoing<'_>) {
     driver.send(flow, msg).await
 }
 
-async fn bind(flow: Flow) -> Receiver {
+async fn bind(addr: SocketAddr) -> Listener {
     let driver = &VSOCK_DRIVER;
-    driver.bind(flow).await
+    driver.bind(addr).await
+}
+
+async fn connect(flow: Flow) -> Receiver {
+    let driver = &VSOCK_DRIVER;
+    driver.connect(flow).await
 }
 
 pub(crate) fn tick() {
@@ -85,7 +90,8 @@ pub(crate) fn tick() {
 pub(crate) struct VSockDriver {
     outbound_tx: channel::Sender<(*mut Header, *const [u8])>,
     outbound_rx: channel::Receiver<(*mut Header, *const [u8])>,
-    inbound_sorter: Sorter<Flow, Incoming>,
+    inbound_connections: Sorter<SocketAddr, (SocketAddr, Receiver)>,
+    inbound_packets: Sorter<Flow, Incoming>,
     outbound_waker: SpinLock<HashMap<usize, oneshot::Sender<()>>>,
     rx: ReceiveQueue,
     tx: TransmitQueue,
@@ -102,7 +108,8 @@ impl VSockDriver {
         Self {
             outbound_tx,
             outbound_rx,
-            inbound_sorter: Sorter::new(),
+            inbound_connections: Sorter::new(),
+            inbound_packets: Sorter::new(),
             outbound_waker: SpinLock::new(HashMap::new()),
             rx,
             tx,
@@ -152,9 +159,16 @@ impl VSockDriver {
         }
     }
 
-    async fn bind(&self, flow: Flow) -> Receiver {
+    async fn bind(&self, addr: SocketAddr) -> Listener {
+        log::debug!("listening on {addr:?}");
+        Listener {
+            rx: self.inbound_connections.receiver(addr),
+        }
+    }
+
+    async fn connect(&self, flow: Flow) -> Receiver {
         Receiver {
-            rx: self.inbound_sorter.receiver(flow),
+            rx: self.inbound_packets.receiver(flow),
         }
     }
 
@@ -238,12 +252,34 @@ impl VSockDriver {
     }
 
     fn handle_incoming(&self) {
+        // TODO: reject bad packets with RST
         while let Some((flow, incoming)) = self.handle_one() {
-            self.inbound_sorter
-                .sender()
-                .send_blocking(flow, incoming)
-                .unwrap();
+            log::debug!("handling {incoming:?} for {flow:?}");
+            match incoming {
+                Incoming::Request => {
+                    let rx = self.inbound_packets.receiver(flow);
+                    let rx = Receiver { rx };
+                    self.inbound_connections
+                        .sender()
+                        .send_blocking(flow.dst, (flow.src, rx))
+                        .unwrap();
+                }
+                _ => {
+                    let _ = self.inbound_packets.sender().send_blocking(flow, incoming);
+                }
+            }
         }
+    }
+}
+
+#[derive(Debug)]
+struct Listener {
+    rx: sorter::Receiver<SocketAddr, (SocketAddr, Receiver)>,
+}
+
+impl Listener {
+    pub async fn listen(&mut self) -> Result<(SocketAddr, Receiver)> {
+        Ok(self.rx.recv().await?)
     }
 }
 
@@ -286,31 +322,35 @@ impl SocketAddr {
     }
 }
 
-// pub struct StreamListener {
-//     addr: SocketAddr,
-//     rx: Receiver,
-// }
+pub struct StreamListener {
+    addr: SocketAddr,
+    rx: Listener,
+}
 
-// impl StreamListener {
-//     pub async fn bind(addr: SocketAddr) -> Result<StreamListener> {
-//         todo!();
-//     }
+impl StreamListener {
+    pub async fn bind(addr: SocketAddr) -> Result<StreamListener> {
+        let rx = bind(addr).await;
+        Ok(StreamListener { addr, rx })
+    }
 
-//     pub async fn accept(&self) -> Result<(Stream, SocketAddr)> {
-//         todo!();
-//     }
-
-//     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-//         todo!();
-//     }
-
-//     pub async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
-//         todo!();
-//     }
-// }
+    pub async fn accept(&mut self) -> Result<Stream> {
+        let local = self.addr;
+        let (peer, rx) = self.rx.listen().await?;
+        let outbound = Flow {
+            src: local,
+            dst: peer,
+        };
+        send(outbound, Outgoing::Response).await;
+        Ok(Stream {
+            outbound,
+            local,
+            peer,
+            rx,
+        })
+    }
+}
 
 pub struct Stream {
-    inbound: Flow,
     outbound: Flow,
     local: SocketAddr,
     peer: SocketAddr,
@@ -327,7 +367,7 @@ impl Stream {
             src: local,
             dst: peer,
         };
-        let mut rx = bind(inbound).await;
+        let mut rx = connect(inbound).await;
 
         send(outbound, Outgoing::Request).await;
         let result = rx.recv().await?;
@@ -335,7 +375,6 @@ impl Stream {
             panic!("connection failed!");
         };
         Ok(Stream {
-            inbound,
             outbound,
             local,
             peer,
@@ -371,6 +410,14 @@ impl Stream {
 
     pub async fn close(self) {
         send(self.outbound, Outgoing::Shutdown { rx: true, tx: true }).await
+    }
+
+    pub fn peer(&self) -> SocketAddr {
+        self.peer
+    }
+
+    pub fn local(&self) -> SocketAddr {
+        self.local
     }
 }
 

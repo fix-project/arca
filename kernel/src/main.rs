@@ -6,10 +6,11 @@
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString as _;
+use alloc::sync::Arc;
 use kernel::prelude::*;
 use kernel::rt;
 use kernel::virtio::vsock::SocketAddr;
-use kernel::virtio::vsock::Stream;
+use kernel::virtio::vsock::StreamListener;
 use macros::kmain;
 
 extern crate alloc;
@@ -82,20 +83,36 @@ async fn kmain(args: &[usize]) {
     let value = data.get("out").unwrap();
     assert_eq!(*value, Value::Blob(Blob::from("hello, world!")));
 
-    let mut stream = Stream::connect(SocketAddr::new(3, 1234), SocketAddr::new(2, 4321))
-        .await
-        .unwrap();
-    stream.write(b"hello, world!\r\n").await;
+    let mut listener = StreamListener::bind(SocketAddr::new(3, 80)).await.unwrap();
 
-    while let Ok(result) = stream.read().await {
-        if let Ok(s) = core::str::from_utf8(&result) {
-            log::info!("got: \"{s}\"")
-        } else {
-            log::info!("got: {result:?}")
-        }
-        stream.write(&result).await;
+    let html = Arc::new(
+        r#"
+HTTP/1.1 200 OK
+Content-Type: text/html
+
+<!doctype html>
+<html>
+<head>
+    <title>Hello from Arca!</title>
+    <meta charset="utf-8"/>
+</head>
+<body>
+    <h1>Hello from the Arca kernel!</h1>
+</body>
+</html>
+    "#
+        .trim()
+        .replace("\n", "\r\n"),
+    );
+
+    loop {
+        let mut stream = listener.accept().await.unwrap();
+        let html = html.clone();
+        rt::spawn(async move {
+            stream.write(html.as_bytes()).await;
+            stream.close().await;
+        });
     }
-    stream.close().await;
 }
 
 pub fn eval(x: Value) -> Value {
