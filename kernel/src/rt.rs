@@ -157,6 +157,7 @@ impl Executor {
     pub fn run(&self) {
         self.diff();
         while self.active.load(Ordering::Acquire) != 0 {
+            crate::interrupts::must_be_enabled();
             let mut anything = false;
             anything |= self.wake_sleeping();
             anything |= self.run_pending();

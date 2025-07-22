@@ -13,8 +13,8 @@ klog-off = ["kernel/klog-off"]
 debugcon = ["kernel/debugcon"]
 
 [dependencies]
-kvm-bindings = "0.10.0"
-kvm-ioctls = "0.19.0"
+kvm-bindings = { version = "0.13.0" }
+kvm-ioctls = "0.23.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
@@ -26,7 +26,8 @@ rustc-demangle = "0.1.24"
 anyhow = "1.0.97"
 libc = "0.2.174"
 vsock = "0.5.1"
-vmm-sys-util = "0.12.1"
+vmm-sys-util = "0.14.0"
+ctrlc = "3.4.7"
 
 [build-dependencies]
 anyhow = "1.0.97"

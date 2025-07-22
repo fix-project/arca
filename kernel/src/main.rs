@@ -100,19 +100,31 @@ Content-Type: text/html
     <h1>Hello from the Arca kernel!</h1>
 </body>
 </html>
-    "#
+        "#
         .trim()
         .replace("\n", "\r\n"),
     );
 
-    loop {
-        let mut stream = listener.accept().await.unwrap();
-        let html = html.clone();
-        rt::spawn(async move {
-            stream.write(html.as_bytes()).await;
-            stream.close().await;
-        });
-    }
+    rt::spawn(async move {
+        loop {
+            let mut stream = listener.accept().await.unwrap();
+            let html = html.clone();
+            rt::spawn(async move {
+                if stream.read().await.is_err() {
+                    log::error!("connection reset: read");
+                    return;
+                }
+                if stream.write(html.as_bytes()).await.is_err() {
+                    log::error!("connection reset: write");
+                    return;
+                }
+                if stream.close().await.is_err() {
+                    log::error!("connection reset: close");
+                    return;
+                }
+            });
+        }
+    });
 }
 
 pub fn eval(x: Value) -> Value {

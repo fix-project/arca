@@ -9,7 +9,7 @@ pub struct VSockMetadata {
 #[derive(Copy, Clone)]
 pub struct VirtQueueMetadata {
     pub descriptors: usize,
-    pub desc: (usize, usize),
-    pub used: (usize, usize),
-    pub avail: (usize, usize),
+    pub desc: usize,
+    pub used: usize,
+    pub avail: usize,
 }

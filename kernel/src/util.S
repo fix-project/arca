@@ -70,3 +70,11 @@ copy_user_to_kernel_asm:
 
   sti
   ret
+
+.globl get_if
+get_if:
+  pushfq
+  pop rax
+  shr rax, 9
+  and eax, 1
+  ret

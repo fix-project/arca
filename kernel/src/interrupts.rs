@@ -49,11 +49,63 @@ pub(crate) struct IsrRegisterFile {
 
 extern "C" {
     fn isr_save_state_and_exit(isr: u64, error: u64, registers: &RegisterFile) -> !;
+    fn get_if() -> bool;
+}
+
+pub fn enabled() -> bool {
+    unsafe { get_if() }
+}
+
+pub unsafe fn disable() {
+    core::arch::asm!("cli");
+}
+
+pub unsafe fn enable() {
+    core::arch::asm!("sti");
+}
+
+pub fn critical<T>(f: impl FnOnce() -> T) -> T {
+    let old = enabled();
+    unsafe {
+        disable();
+    }
+    let y = f();
+    if old {
+        unsafe {
+            enable();
+        }
+    }
+    y
+}
+
+pub fn must_be_enabled() {
+    assert!(enabled());
+}
+
+pub fn must_be_disabled() {
+    assert!(!enabled());
 }
 
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
-    crate::virtio::vsock::tick();
+    must_be_disabled();
+    if registers.isr == 0x30 {
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        return;
+    } else if registers.isr == 0x31 {
+        log::error!("got external interrupt!");
+        let mut i = 0;
+        crate::profile::backtrace(|rip: *const (), symname: Option<(String, usize)>| {
+            if let Some((name, off)) = symname {
+                log::error!("{i}. {rip:p} - {name}+{off:#x}");
+            } else {
+                log::error!("{i}. {rip:p}");
+            }
+            i += 1;
+        });
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        crate::exit(130);
+    }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
             crate::profile::tick(registers);
@@ -68,7 +120,6 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         };
         isr_save_state_and_exit(registers.isr, registers.code, &regs);
     }
-    // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
             if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {

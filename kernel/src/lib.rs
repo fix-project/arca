@@ -111,7 +111,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");
     let mut i = 0;
-    crate::profile::backtrace_with(|addr, decoded| {
+    crate::profile::backtrace(|addr, decoded| {
         if i > 0 {
             if let Some((symname, offset)) = decoded {
                 let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");

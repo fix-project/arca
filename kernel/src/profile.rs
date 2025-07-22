@@ -146,39 +146,30 @@ pub fn report(entries: &mut [(*const (), usize)]) {
 }
 
 #[inline(never)]
-pub fn backtrace() {
+pub fn backtrace(f: impl FnMut(*const (), Option<(String, usize)>)) {
     use core::arch::asm;
+    let mut rbp: *const usize;
     unsafe {
-        let mut rbp: *const usize;
-        let mut rip: *const ();
         asm!("mov {rbp}, rbp", rbp=out(reg)rbp);
-        log::warn!("rbp: {rbp:p}");
-        loop {
-            rip = rbp.add(1).read() as *const ();
-            rbp = rbp.read() as *const usize;
-            if rbp.is_null() {
-                break;
-            }
-
-            log::warn!("rbp: {rbp:p}; rip: {rip:p}");
-        }
+        backtrace_from(rbp, f);
     }
 }
 
 #[inline(never)]
-pub fn backtrace_with(mut f: impl FnMut(*const (), Option<(String, usize)>)) {
-    use core::arch::asm;
-    unsafe {
-        let mut rbp: *const usize;
-        let mut rip: *const ();
-        asm!("mov {rbp}, rbp", rbp=out(reg)rbp);
-        loop {
-            rip = rbp.add(1).read() as *const ();
-            rbp = rbp.read() as *const usize;
-            if rbp.is_null() {
-                break;
-            }
-            f(rip, crate::host::symname(rip));
+pub unsafe fn backtrace_from(
+    mut rbp: *const usize,
+    mut f: impl FnMut(*const (), Option<(String, usize)>),
+) {
+    if rbp.is_null() {
+        return;
+    }
+    let mut rip: *const ();
+    loop {
+        rip = rbp.add(1).read() as *const ();
+        rbp = rbp.read() as *const usize;
+        if rbp.is_null() {
+            break;
         }
+        f(rip, crate::host::symname(rip));
     }
 }

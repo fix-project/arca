@@ -6,7 +6,6 @@ use std::num::NonZero;
 
 use vmm::runtime::Runtime;
 
-
 const KERNEL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_KERNEL_kernel"));
 
 fn main() -> anyhow::Result<()> {

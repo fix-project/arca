@@ -9,11 +9,11 @@ use crate::util::channel::{self, ChannelClosed};
 use crate::util::spinlock::SpinLock;
 
 #[derive(Debug)]
-pub struct Sorter<K: Hash + Eq + Clone, V> {
+pub struct Sorter<K: Hash + Eq + Clone + core::fmt::Debug, V> {
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone, V> Sorter<K, V> {
+impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
     pub fn new() -> Self {
         Self {
             channels: Arc::new(SpinLock::new(Default::default())),
@@ -36,22 +36,35 @@ impl<K: Hash + Eq + Clone, V> Sorter<K, V> {
             channels: self.channels.clone(),
         }
     }
+
+    pub fn clear(&self, port: K) {
+        let mut channels = self.channels.lock();
+        channels.remove(&port);
+    }
+
+    pub fn len(&self) -> usize {
+        self.channels.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug)]
-pub struct Receiver<K: Hash + Eq + Clone, V> {
+pub struct Receiver<K: Hash + Eq + Clone + core::fmt::Debug, V> {
     port: K,
     rx: channel::Receiver<V>,
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone, V> Receiver<K, V> {
+impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Receiver<K, V> {
     pub async fn recv(&mut self) -> Result<V, ChannelClosed> {
         self.rx.recv().await
     }
 }
 
-impl<K: Hash + Eq + Clone, V> Drop for Receiver<K, V> {
+impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Drop for Receiver<K, V> {
     fn drop(&mut self) {
         let mut channels = self.channels.lock();
         channels.remove(&self.port);
@@ -59,18 +72,26 @@ impl<K: Hash + Eq + Clone, V> Drop for Receiver<K, V> {
 }
 
 #[derive(Clone)]
-pub struct Sender<K: Hash + Eq + Clone, V> {
+pub struct Sender<K: Hash + Eq + Clone + core::fmt::Debug, V> {
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone, V> Sender<K, V> {
+impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sender<K, V> {
     pub fn send_blocking(&mut self, port: K, value: V) -> Result<(), ChannelClosed> {
         let mut channels = self.channels.lock();
         let channel = channels.get_mut(&port).ok_or(ChannelClosed)?;
         let result = channel.send_blocking(value);
         if result.is_err() {
+            log::warn!("{port:?} was closed");
             channels.remove(&port);
         }
         result
+    }
+
+    pub fn close(&mut self, port: K) {
+        let mut channels = self.channels.lock();
+        if let Some(channel) = channels.remove(&port) {
+            channel.close();
+        }
     }
 }

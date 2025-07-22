@@ -56,6 +56,10 @@ impl<T> SpinLock<T> {
         let mut guard = self.lock();
         f(&mut guard)
     }
+
+    pub fn unlock(guard: SpinLockGuard<'_, T>) {
+        SpinLockGuard::unlock(guard);
+    }
 }
 
 impl<T> SpinLockGuard<'_, T> {

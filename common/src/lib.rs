@@ -15,6 +15,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(test)]
 #![feature(unboxed_closures)]
+#![cfg_attr(feature = "std", feature(thread_id_value))]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
 pub mod buddy;

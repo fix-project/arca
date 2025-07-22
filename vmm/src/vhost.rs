@@ -46,10 +46,11 @@ pub struct VSockBackend {
     rx: VirtQueue,
     tx: VirtQueue,
     _kick: EventFd,
+    // _call: EventFd,
 }
 
 impl VSockBackend {
-    pub fn new(cid: u64, descriptors: usize, kick: EventFd) -> Result<Self> {
+    pub fn new(cid: u64, descriptors: usize, kick: EventFd, call: EventFd) -> Result<Self> {
         let file = File::options()
             .read(true)
             .write(true)
@@ -124,8 +125,8 @@ impl VSockBackend {
         let mut rx = VirtQueue::new(descriptors);
         let mut tx = VirtQueue::new(descriptors);
 
-        rx.attach(owned.as_fd(), VirtQueueType::Receive, &kick)?;
-        tx.attach(owned.as_fd(), VirtQueueType::Transmit, &kick)?;
+        rx.attach(owned.as_fd(), VirtQueueType::Receive, &kick, &call)?;
+        tx.attach(owned.as_fd(), VirtQueueType::Transmit, &kick, &call)?;
 
         Ok(Self {
             fd: owned,
@@ -133,6 +134,7 @@ impl VSockBackend {
             rx,
             tx,
             _kick: kick,
+            // _call: call,
         })
     }
 
@@ -204,9 +206,9 @@ impl VirtQueue {
         let used = (&raw const *self.used).to_raw_parts();
         let avail = (&raw const *self.avail).to_raw_parts();
 
-        let desc = (BuddyAllocator.to_offset(desc.0), desc.1);
-        let used = (BuddyAllocator.to_offset(used.0), used.1);
-        let avail = (BuddyAllocator.to_offset(avail.0), avail.1);
+        let desc = BuddyAllocator.to_offset(desc.0);
+        let used = BuddyAllocator.to_offset(used.0);
+        let avail = BuddyAllocator.to_offset(avail.0);
 
         VirtQueueMetadata {
             descriptors: self.descriptors,
@@ -216,7 +218,13 @@ impl VirtQueue {
         }
     }
 
-    pub fn attach(&mut self, fd: BorrowedFd, qtype: VirtQueueType, kick: &EventFd) -> Result<()> {
+    pub fn attach(
+        &mut self,
+        fd: BorrowedFd,
+        qtype: VirtQueueType,
+        kick: &EventFd,
+        call: &EventFd,
+    ) -> Result<()> {
         unsafe {
             let vring_addr = bindings::vhost_vring_addr {
                 index: qtype as u32,
@@ -250,6 +258,16 @@ impl VirtQueue {
             check_syscall!(libc::ioctl(
                 fd.as_raw_fd(),
                 bindings::VHOST_SET_VRING_KICK as u64,
+                &vring_file
+            ))?;
+
+            let vring_file = bindings::vhost_vring_file {
+                index: qtype as u32,
+                fd: call.as_raw_fd(),
+            };
+            check_syscall!(libc::ioctl(
+                fd.as_raw_fd(),
+                bindings::VHOST_SET_VRING_CALL as u64,
                 &vring_file
             ))?;
         }

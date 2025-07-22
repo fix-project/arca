@@ -48,6 +48,8 @@ impl<T> Sender<T> {
         }
         Ok(())
     }
+
+    pub fn close(self) {}
 }
 
 impl<T> Drop for Sender<T> {
@@ -80,6 +82,8 @@ impl<T> Receiver<T> {
             None
         }
     }
+
+    pub fn close(self) {}
 }
 
 impl<T> Drop for Receiver<T> {

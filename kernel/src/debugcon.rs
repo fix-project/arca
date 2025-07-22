@@ -27,19 +27,21 @@ impl log::Log for DebugLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        let mut con = CONSOLE.lock();
+        crate::interrupts::critical(|| {
+            let mut con = CONSOLE.lock();
 
-        if self.enabled(record.metadata()) {
-            let _ = writeln!(
-                con,
-                "[{:>5}({:02}) {}:{}] {}",
-                record.level(),
-                crate::coreid(),
-                record.file().unwrap_or("<unknown>"),
-                record.line().unwrap_or(0),
-                record.args(),
-            );
-        }
+            if self.enabled(record.metadata()) {
+                let _ = writeln!(
+                    con,
+                    "[{:>5}({:02}) {}:{}] {}",
+                    record.level(),
+                    crate::coreid(),
+                    record.file().unwrap_or("<unknown>"),
+                    record.line().unwrap_or(0),
+                    record.args(),
+                );
+            }
+        });
     }
 
     fn flush(&self) {

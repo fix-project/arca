@@ -7,10 +7,12 @@ use core::task::{Poll, Waker};
 
 use crate::util::spinlock::SpinLock;
 
+#[derive(Debug)]
 pub struct Semaphore {
     inner: Arc<SpinLock<Inner>>,
 }
 
+#[derive(Debug)]
 struct Inner {
     current: usize,
     wakers: Vec<Waker>,
@@ -32,6 +34,16 @@ impl Semaphore {
             inner: self.inner.clone(),
         }
         .await
+    }
+
+    pub fn try_acquire(&self, count: usize) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.current >= count {
+            inner.current -= count;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn release(&self, count: usize) {

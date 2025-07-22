@@ -15,7 +15,6 @@ use crate::{
     msr,
     paging::Permissions,
     prelude::*,
-    virtio::vsock::VSockDriver,
     vm,
 };
 
@@ -146,8 +145,10 @@ unsafe extern "C" fn _start(
 
         let vsock_info = argv.as_ptr().read();
         let vsock_info: *const VSockMetadata = BuddyAllocator.from_offset(vsock_info);
-        let vsock = &crate::virtio::vsock::VSOCK_DRIVER;
-        vsock.set(VSockDriver::new(vsock_info.read())).unwrap();
+        let vsock = &crate::virtio::vsock::DRIVER;
+        vsock
+            .set(crate::virtio::vsock::Driver::new(vsock_info.read()))
+            .unwrap();
         let argv = argv.add(1);
         let argc = argc - 1;
 

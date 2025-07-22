@@ -6,6 +6,7 @@ use std::{
         Arc,
     },
     thread::{Scope, ScopedJoinHandle},
+    time::{Duration, Instant},
 };
 
 use common::BuddyAllocator;
@@ -320,10 +321,36 @@ impl Runtime {
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
         let kick = EventFd::new(EFD_NONBLOCK).unwrap();
+        let call = EventFd::new(EFD_NONBLOCK).unwrap();
 
-        vm.register_ioevent(&kick, &IoEventAddress::Pio(0xf4), NoDatamatch).unwrap();
+        let int = EventFd::new(EFD_NONBLOCK).unwrap();
 
-        let vsock = VSockBackend::new(3, 1024, kick).unwrap();
+        vm.register_ioevent(&kick, &IoEventAddress::Pio(0xf4), NoDatamatch)
+            .unwrap();
+        vm.register_irqfd(&call, 0).unwrap();
+        vm.register_irqfd(&int, 1).unwrap();
+
+        let mut last_time = None;
+        ctrlc::set_handler(move || {
+            let now = Instant::now();
+            let diff = if let Some(last_time) = last_time {
+                Some(now.duration_since(last_time))
+            } else {
+                None
+            };
+            if let Some(diff) = diff {
+                if diff < Duration::from_secs(1) {
+                    log::warn!("got ^C^C; forcing immediate shutdown");
+                    ExitCode::from(130).exit_process();
+                }
+            }
+            log::info!("got ^C; sending soft shutdown");
+            int.write(1).unwrap();
+            last_time = Some(now);
+        })
+        .unwrap();
+
+        let vsock = VSockBackend::new(3, 1024, kick, call).unwrap();
 
         let mut x = Self {
             kvm,
