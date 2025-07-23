@@ -455,6 +455,7 @@ impl arca::Value for Ref<Value> {
         let typ: defs::datatype::Type = unsafe { arca_type(self.index.unwrap()) };
         match typ {
             defs::datatype::DATATYPE_NULL => DataType::Null,
+            defs::datatype::DATATYPE_ERROR => DataType::Error,
             defs::datatype::DATATYPE_WORD => DataType::Word,
             defs::datatype::DATATYPE_ATOM => DataType::Atom,
             defs::datatype::DATATYPE_BLOB => DataType::Blob,

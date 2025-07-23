@@ -7,9 +7,11 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString as _;
 use alloc::sync::Arc;
+use common::util::rwlock::RwLock;
 use kernel::prelude::*;
 use kernel::rt;
 use kernel::virtio::vsock::SocketAddr;
+use kernel::virtio::vsock::Stream;
 use kernel::virtio::vsock::StreamListener;
 use macros::kmain;
 
@@ -21,6 +23,7 @@ const ADD: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_add"));
 const CURRY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_curry"));
 const MAP: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_map"));
 const IO: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_io"));
+const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_server"));
 
 #[kmain]
 async fn kmain(args: &[usize]) {
@@ -30,6 +33,7 @@ async fn kmain(args: &[usize]) {
     let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
     let map: Lambda = Thunk::from_elf(MAP).run().try_into().unwrap();
     let io: Lambda = Thunk::from_elf(IO).run().try_into().unwrap();
+    let server: Thunk = Thunk::from_elf(SERVER);
 
     // identity function
     log::info!("testing id");
@@ -85,44 +89,14 @@ async fn kmain(args: &[usize]) {
 
     let mut listener = StreamListener::bind(SocketAddr::new(3, 80)).await.unwrap();
 
-    let html = Arc::new(
-        r#"
-HTTP/1.1 200 OK
-Content-Type: text/html
-
-<!doctype html>
-<html>
-<head>
-    <title>Hello from Arca!</title>
-    <meta charset="utf-8"/>
-</head>
-<body>
-    <h1>Hello from the Arca kernel!</h1>
-</body>
-</html>
-        "#
-        .trim()
-        .replace("\n", "\r\n"),
-    );
+    let mut kv = BTreeMap::new();
+    kv.insert("count".to_string(), Value::Word(0.into()));
+    let kv = Arc::new(RwLock::new(kv));
 
     rt::spawn(async move {
         loop {
-            let mut stream = listener.accept().await.unwrap();
-            let html = html.clone();
-            rt::spawn(async move {
-                if stream.read().await.is_err() {
-                    log::error!("connection reset: read");
-                    return;
-                }
-                if stream.write(html.as_bytes()).await.is_err() {
-                    log::error!("connection reset: write");
-                    return;
-                }
-                if stream.close().await.is_err() {
-                    log::error!("connection reset: close");
-                    return;
-                }
-            });
+            let stream = listener.accept().await.unwrap();
+            rt::spawn(interpret_server(server.clone(), kv.clone(), stream));
         }
     });
 }
@@ -161,6 +135,68 @@ pub fn interpret(mut thunk: Thunk, data: &mut BTreeMap<String, Value>) -> Value 
             return args[0].clone();
         } else {
             panic!("invalid effect")
+        }
+    }
+}
+
+pub async fn interpret_server(
+    mut thunk: Thunk,
+    kv: Arc<RwLock<BTreeMap<String, Value>>>,
+    mut stream: Stream,
+) {
+    loop {
+        let result: Thunk = thunk.run().try_into().unwrap();
+        let get = Atom::new("get");
+        let set = Atom::new("set");
+        let cas = Atom::new("compare-and-swap");
+        let recv = Atom::new("recv");
+        let send = Atom::new("send");
+        let close = Atom::new("close");
+        let (symbol, args) = result.symbolic().unwrap();
+        let symbol: Atom = symbol.clone().try_into().unwrap();
+        if symbol == get {
+            let file: Blob = args[0].clone().try_into().unwrap();
+            let key = String::from_utf8(file.into_inner().into()).unwrap();
+            let kv = kv.read();
+            let value = kv.get(&key).cloned().unwrap_or(Value::Null);
+            let k: Lambda = args[1].clone().try_into().unwrap();
+            thunk = k.apply(value);
+        } else if symbol == set {
+            let file: Blob = args[0].clone().try_into().unwrap();
+            let key = String::from_utf8(file.into_inner().into()).unwrap();
+            let value = args[1].clone();
+            let mut kv = kv.write();
+            let old = kv.insert(key, value).unwrap_or(Value::Null);
+            let k: Lambda = args[2].clone().try_into().unwrap();
+            thunk = k.apply(old);
+        } else if symbol == recv {
+            let x = stream.read().await.unwrap();
+            let k: Lambda = args[0].clone().try_into().unwrap();
+            thunk = k.apply(Value::Blob(Blob::new(x)));
+        } else if symbol == send {
+            let data: Blob = args[0].clone().try_into().unwrap();
+            stream.write(&data).await.unwrap();
+            let k: Lambda = args[1].clone().try_into().unwrap();
+            thunk = k.apply(Value::Null);
+        } else if symbol == cas {
+            let key: Blob = args[0].clone().try_into().unwrap();
+            let key = String::from_utf8(key.into_inner().into()).unwrap();
+            let expected = args[1].clone();
+            let replacement = args[2].clone();
+            let k: Lambda = args[3].clone().try_into().unwrap();
+            let mut kv = kv.write();
+            let old = kv.get(&key).unwrap_or(&Value::Null);
+            if old == &expected {
+                let old = kv.insert(key, replacement).unwrap_or(Value::Null);
+                thunk = k.apply(old);
+            } else {
+                thunk = k.apply(Value::Error(Error::new(replacement)));
+            }
+        } else if symbol == close {
+            stream.close().await.unwrap();
+            return;
+        } else {
+            panic!("invalid effect: {symbol:?}");
         }
     }
 }
