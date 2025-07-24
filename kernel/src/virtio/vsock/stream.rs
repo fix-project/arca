@@ -64,32 +64,13 @@ impl Stream {
 
     pub async fn close(mut self) -> Result<()> {
         shutdown(self.outbound, true, true).await;
-        let mut peer_closed = false;
-        let mut acknowledged = false;
-        while !peer_closed || !acknowledged {
+
+        loop {
             let result = self.rx.recv().await?;
-            match result {
-                StreamEvent::Reset => {
-                    acknowledged = true;
-                }
-                StreamEvent::Connect => {
-                    rst(self.outbound).await;
-                    return Err(SocketError::ConnectionReset);
-                }
-                StreamEvent::Shutdown { rx, tx } => {
-                    self.peer_rx_closed |= rx;
-                    self.peer_tx_closed |= tx;
-                    if self.peer_rx_closed && self.peer_tx_closed {
-                        rst(self.outbound).await;
-                        peer_closed = true;
-                    }
-                }
-                StreamEvent::Data(_) => {
-                    rst(self.outbound).await;
-                }
+            if result == StreamEvent::Reset {
+                return Ok(());
             };
         }
-        Ok(())
     }
 
     pub fn peer(&self) -> SocketAddr {

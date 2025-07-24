@@ -3,6 +3,8 @@
 #![feature(allocator_api)]
 #![feature(new_zeroed_alloc)]
 
+use core::time::Duration;
+
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString as _;
@@ -97,6 +99,17 @@ async fn kmain(args: &[usize]) {
         loop {
             let stream = listener.accept().await.unwrap();
             rt::spawn(interpret_server(server.clone(), kv.clone(), stream));
+        }
+    });
+
+    rt::spawn(async move {
+        loop {
+            log::info!(
+                "used: {} bytes ({:.2} %)",
+                BuddyAllocator.used_size(),
+                BuddyAllocator.usage() * 100.
+            );
+            rt::delay_for(Duration::from_millis(500)).await;
         }
     });
 }

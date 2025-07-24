@@ -220,7 +220,7 @@ impl Driver {
                             .send_blocking(flow, StreamEvent::Shutdown { rx, tx })
                             .is_err()
                         {
-                            log::error!("got shutdown {:?}, but no stream", flow);
+                            // TODO: why are we receiving these?
                             self.rst(flow.reverse()).await;
                         }
                     }
@@ -277,7 +277,7 @@ impl Receiver {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum StreamEvent {
     Reset,
     Connect,
