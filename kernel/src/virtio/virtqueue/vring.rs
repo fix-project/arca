@@ -6,36 +6,90 @@ pub struct Ring<T: Copy> {
 }
 
 impl<T: Copy> Ring<T> {
-    pub fn index(&self) -> u16 {
+    pub fn raw_index(&self) -> u16 {
         unsafe { (&raw const self.idx).read_volatile() }
     }
 
-    pub fn good_index(&self) -> usize {
-        self.index() as usize % self.ring.len()
+    pub fn len(&self) -> usize {
+        return self.ring.len();
+    }
+
+    pub fn get(&self, idx: u16) -> T {
+        unsafe { (&raw const self.ring[idx as usize % self.len()]).read_volatile() }
+    }
+
+    pub fn set(&mut self, idx: u16, value: T) {
+        unsafe {
+            (&raw mut self.ring[idx as usize % self.len()]).write_volatile(value);
+        }
+    }
+
+    pub fn inc(&mut self) {
+        unsafe {
+            (&raw mut self.idx).write_volatile(self.raw_index().wrapping_add(1));
+        }
     }
 }
 
-#[repr(transparent)]
-pub struct DeviceRing<T: Copy>(Ring<T>);
+#[derive(Debug)]
+pub struct DeviceRing<T: Copy> {
+    name: &'static str,
+    next_read: u16,
+    ring: *mut Ring<T>,
+}
 
 impl<T: Copy> DeviceRing<T> {
-    pub fn next_write_index(&self) -> u16 {
-        self.0.index()
+    pub unsafe fn new(name: &'static str, ring: *mut Ring<T>) -> Self {
+        Self {
+            name,
+            next_read: 0,
+            ring,
+        }
     }
 
-    pub fn get(&self, index: u16) -> T {
-        let index = index as usize % self.0.ring.len();
-        unsafe { (&raw const self.0.ring[index]).read_volatile() }
+    fn ring(&self) -> &Ring<T> {
+        unsafe { &*self.ring }
+    }
+
+    pub unsafe fn recv(&mut self) -> Option<T> {
+        if self.next_read != self.ring().raw_index() {
+            log::debug!("{} is receiving", self.name);
+            let value = self.ring().get(self.next_read);
+            self.next_read = self.next_read.wrapping_add(1);
+            Some(value)
+        } else {
+            None
+        }
     }
 }
 
-#[repr(transparent)]
-pub struct DriverRing<T: Copy>(Ring<T>);
+#[derive(Debug)]
+pub struct DriverRing<T: Copy> {
+    name: &'static str,
+    ring: *mut Ring<T>,
+}
 
 impl<T: Copy> DriverRing<T> {
-    pub unsafe fn push(&mut self, value: T) {
-        (&raw mut self.0.ring[self.0.good_index()]).write_volatile(value);
-        let new_index = self.0.index().wrapping_add(1);
-        (&raw mut self.0.idx).write_volatile(new_index);
+    pub unsafe fn new(name: &'static str, ring: *mut Ring<T>) -> Self {
+        Self { name, ring }
+    }
+
+    fn ring(&self) -> &Ring<T> {
+        unsafe { &*self.ring }
+    }
+
+    fn ring_mut(&mut self) -> &mut Ring<T> {
+        unsafe { &mut *self.ring }
+    }
+
+    pub unsafe fn send(&mut self, value: T) {
+        log::debug!("{} is sending", self.name);
+        let idx = self.ring().raw_index();
+        self.ring_mut().set(idx, value);
+        self.ring_mut().inc();
+        crate::io::outl(0xf4, 0);
     }
 }
+
+unsafe impl<T: Copy> Send for DeviceRing<T> {}
+unsafe impl<T: Copy> Send for DriverRing<T> {}

@@ -65,7 +65,7 @@ impl Driver {
         unsafe {
             log::debug!("-> {msg:?}");
             let mut header: Header = msg.into();
-            let len = buffers.map(|x| x.len()).unwrap_or(0);
+            let len = buffers.map(|x| x.size()).unwrap_or(0);
             loop {
                 let mut status = self.status.lock();
 

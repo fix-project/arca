@@ -1,25 +1,28 @@
 use crate::prelude::*;
 
-mod avail;
 mod desc;
 mod idx;
-mod used;
 mod vring;
 
-use avail::*;
 use common::{util::sorter::Sorter, vhost::VirtQueueMetadata};
 use desc::*;
 use idx::*;
-use used::*;
 use vring::*;
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct UsedElement {
+    id: u32,
+    len: u32,
+}
 
 #[derive(Debug)]
 pub struct VirtQueue {
     name: &'static str,
     response_sorter: Sorter<DescriptorIndex, usize>,
     desc: SpinLock<DescTable>,
-    used: SpinLock<UsedRing>,
-    avail: SpinLock<AvailRing>,
+    used: SpinLock<DeviceRing<UsedElement>>,
+    avail: SpinLock<DriverRing<DescriptorIndex>>,
 }
 
 impl VirtQueue {
@@ -31,9 +34,9 @@ impl VirtQueue {
         VirtQueue {
             name,
             response_sorter: Sorter::new(),
-            desc: SpinLock::new(DescTable::new(desc)),
-            used: SpinLock::new(UsedRing::new(used)),
-            avail: SpinLock::new(AvailRing::new(avail)),
+            desc: SpinLock::new(DescTable::new(name, desc)),
+            used: SpinLock::new(DeviceRing::new(name, used)),
+            avail: SpinLock::new(DriverRing::new(name, avail)),
         }
     }
 }
@@ -80,9 +83,16 @@ impl<'a> BufferChain<'a> {
     }
 
     pub fn len(&self) -> usize {
+        1 + match self.cdr {
+            Some(x) => x.len(),
+            None => 0,
+        }
+    }
+
+    pub fn size(&self) -> usize {
         self.car.len()
             + match self.cdr {
-                Some(x) => x.len(),
+                Some(x) => x.size(),
                 None => 0,
             }
     }
@@ -104,30 +114,65 @@ impl Buffer<'_> {
 }
 
 impl VirtQueue {
-    fn load(desc: &mut DescTable, bufs: &BufferChain<'_>) -> DescriptorIndex {
-        // TODO: handle descriptor unavailability
-        let current = desc.try_allocate().expect("no descriptors available");
-        let rest = bufs.cdr.map(|x| Self::load(desc, x));
-        desc.get_mut(current).modify(|d| {
-            let (p, w) = match &bufs.car {
-                Buffer::Immutable(x) => (*x as *const [u8], false),
-                Buffer::Mutable(x) => (*x as *const [u8], true),
+    async fn load(&self, bufs: &BufferChain<'_>) -> DescriptorIndex {
+        let mut buf = Box::new_uninit_slice(bufs.len());
+        let descs = loop {
+            let descs = {
+                let mut desc = self.desc.lock();
+                desc.try_allocate_many(&mut buf)
             };
-            let (addr, len) = p.to_raw_parts();
-            d.addr = addr as *mut ();
-            d.len = len;
-            d.next = rest;
-            d.device_writeable = w;
-        });
-        current
+            if let Some(descs) = descs {
+                break descs;
+            }
+            // TODO: handle descriptor unavailability better
+            crate::rt::yield_now().await;
+        };
+        let mut head = None;
+        let mut previous = None;
+        let mut current = Some(bufs);
+        let mut i = 0;
+        let mut desc = self.desc.lock();
+        while let Some(x) = current {
+            let idx = descs[i];
+            desc.get_mut(idx).modify(|d| {
+                let (p, w) = match &x.car {
+                    Buffer::Immutable(x) => (*x as *const [u8], false),
+                    Buffer::Mutable(x) => (*x as *const [u8], true),
+                };
+                let (addr, len) = p.to_raw_parts();
+                d.addr = addr as *mut ();
+                d.len = len;
+                d.next = None;
+                d.device_writeable = w;
+            });
+            if let Some(previous) = previous {
+                desc.get_mut(previous).modify(|d| {
+                    d.next = Some(idx);
+                });
+            }
+            previous = Some(idx);
+
+            if head.is_none() {
+                head = Some(idx);
+            }
+            current = x.cdr;
+            i += 1;
+        }
+        head.unwrap()
     }
 
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
-            let head = Self::load(&mut self.desc.lock(), bufs);
+            let head = self.load(bufs).await;
             let mut rx = self.response_sorter.receiver(head);
-            self.avail.lock().push(head);
-            let result = rx.recv().await.unwrap();
+            self.avail.lock().send(head);
+            let result = rx.recv().await;
+            let result = match result {
+                Ok(result) => result,
+                Err(e) => {
+                    panic!("error while waiting for {head:?}: {e:?}");
+                }
+            };
             self.response_sorter.clear(head);
             let _ = rx;
             self.desc.lock().liberate(head);
@@ -137,16 +182,18 @@ impl VirtQueue {
 
     pub fn try_poll(&self) -> Option<()> {
         let mut used = self.used.try_lock()?;
-        while let Some(used) = used.pop() {
-            let x = self
-                .response_sorter
-                .sender()
-                .send_blocking(used.id().into(), used.len() as usize);
-            if x.is_err() {
-                panic!(
-                    "{} had error while waking up descriptor {used:?}: {x:?}",
-                    self.name
-                );
+        unsafe {
+            while let Some(used) = used.recv() {
+                let x = self
+                    .response_sorter
+                    .sender()
+                    .send_blocking(used.id.into(), used.len as usize);
+                if x.is_err() {
+                    panic!(
+                        "{} had error while waking up descriptor {used:?}: {x:?}",
+                        self.name
+                    );
+                }
             }
         }
         Some(())
