@@ -173,8 +173,7 @@ impl VirtQueue {
                     panic!("error while waiting for {head:?}: {e:?}");
                 }
             };
-            self.response_sorter.clear(head);
-            let _ = rx;
+            core::mem::drop(rx);
             self.desc.lock().liberate(head);
             result
         }

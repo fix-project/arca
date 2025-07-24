@@ -15,8 +15,7 @@ pub extern "C" fn _rsstart() -> ! {
 
     let _: Ref<Blob> = os::call_with_current_continuation(recv).try_into().unwrap();
 
-    let header =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
 
     let prefix = r#"
 <!doctype html>
@@ -27,13 +26,21 @@ pub extern "C" fn _rsstart() -> ! {
 </head>
 <body>
     <h1>Hello from the Arca kernel!</h1>
-    <p>You are user #"#.trim();
+    <p>You are user #"#
+        .trim();
     let key = os::blob("count".as_bytes());
     let value = loop {
-        let old: Ref<Word> = os::call_with_current_continuation(get.clone().apply(key.clone())).try_into().unwrap();
+        let old: Ref<Word> = os::call_with_current_continuation(get.clone().apply(key.clone()))
+            .try_into()
+            .unwrap();
         let value = old.read() + 1;
         let new = os::word(value);
-        let result = os::call_with_current_continuation(cas.clone().apply(key.clone()).apply(old.clone()).apply(new.clone()));
+        let result = os::call_with_current_continuation(
+            cas.clone()
+                .apply(key.clone())
+                .apply(old.clone())
+                .apply(new.clone()),
+        );
         if result.datatype() != DataType::Error {
             break value;
         }
@@ -46,7 +53,7 @@ pub extern "C" fn _rsstart() -> ! {
 </body>
 </html>
         "#
-        .trim();
+    .trim();
 
     os::call_with_current_continuation(send.clone().apply(os::blob(header.as_bytes())));
     os::call_with_current_continuation(send.clone().apply(os::blob(prefix.as_bytes())));

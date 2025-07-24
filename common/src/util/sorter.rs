@@ -29,17 +29,13 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
     pub fn receiver(&self, port: K) -> Receiver<K, V> {
         let mut channels = self.channels.lock();
         let (tx, rx) = channel::unbounded();
-        channels.insert(port.clone(), tx);
+        let old = channels.insert(port.clone(), tx);
+        assert!(old.is_none());
         Receiver {
             port,
             rx,
             channels: self.channels.clone(),
         }
-    }
-
-    pub fn clear(&self, port: K) {
-        let mut channels = self.channels.lock();
-        channels.remove(&port);
     }
 
     pub fn len(&self) -> usize {
@@ -83,7 +79,6 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sender<K, V> {
         let result = channel.send_blocking(value);
         if result.is_err() {
             log::warn!("{port:?} was closed");
-            channels.remove(&port);
         }
         result
     }
