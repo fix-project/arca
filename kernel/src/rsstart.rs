@@ -59,9 +59,6 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 
 static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
-#[core_local]
-static FOO: AtomicBool = AtomicBool::new(false);
-
 #[no_mangle]
 unsafe extern "C" fn _start(
     cores: usize,

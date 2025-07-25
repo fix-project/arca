@@ -1,7 +1,5 @@
 use core::ops::{Deref, DerefMut};
 
-use common::message::Handle;
-
 use crate::paging::Impossible;
 use crate::prelude::*;
 
@@ -26,32 +24,8 @@ impl Page {
             panic!();
         }
     }
-}
 
-impl arca::RuntimeType for Page {
-    type Runtime = Runtime;
-
-    fn runtime(&self) -> &Self::Runtime {
-        &Runtime
-    }
-}
-
-impl arca::ValueType for Page {
-    const DATATYPE: DataType = DataType::Page;
-}
-
-impl arca::Page for Page {
-    fn read(&self, offset: usize, buffer: &mut [u8]) {
-        let len = core::cmp::min(buffer.len(), self.size() - offset);
-        buffer[..len].copy_from_slice(&self[offset..offset + len]);
-    }
-
-    fn write(&mut self, offset: usize, buffer: &[u8]) {
-        let len = core::cmp::min(buffer.len(), self.size() - offset);
-        self[offset..offset + len].copy_from_slice(buffer);
-    }
-
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         match self {
             Page::Page4KB(_) => 1 << 12,
             Page::Page2MB(_) => 1 << 21,
@@ -114,58 +88,6 @@ impl TryFrom<Page> for CowPage<Page1GB> {
             Page::Page1GB(page) => Ok(page),
             _ => Err(value),
         }
-    }
-}
-
-impl TryFrom<Handle> for Page {
-    type Error = Handle;
-
-    fn try_from(value: Handle) -> Result<Self, Self::Error> {
-        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
-            let (ptr, size) = value.read();
-            let unique = ptr & 1 == 1;
-            let ptr = ptr & !1;
-            unsafe {
-                Ok(match size {
-                    val if val == 1 << 12 => {
-                        Page::Page4KB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    val if val == 1 << 21 => {
-                        Page::Page2MB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    val if val == 1 << 30 => {
-                        Page::Page1GB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    _ => unreachable!(),
-                })
-            }
-        } else {
-            Err(value)
-        }
-    }
-}
-
-impl From<Page> for Handle {
-    fn from(value: Page) -> Self {
-        let size = value.size();
-        let (unique, mut ptr) = match value {
-            Page::Page4KB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-            Page::Page2MB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-            Page::Page1GB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-        };
-        if unique {
-            ptr |= 1;
-        }
-        Handle::new(DataType::Page, (ptr, size))
     }
 }
 

@@ -24,6 +24,10 @@ struct Status {
 }
 
 impl Driver {
+    /// # Safety
+    ///
+    /// `info` must describe a valid VSock, which has an attached device but no driver.  Feature
+    /// negotiation must have completed and match the features available in this driver.
     pub unsafe fn new(info: VSockMetadata) -> Arc<Self> {
         let len = info.rx.descriptors;
         let rx = VirtQueue::new("rx", info.rx);
@@ -208,7 +212,7 @@ impl Driver {
                     }
                     Incoming::Response => {
                         if streams.send_blocking(flow, StreamEvent::Connect).is_err() {
-                            log::error!("got response {:?}, but no stream", flow);
+                            log::error!("got response {flow:?}, but no stream");
                             self.rst(flow.reverse()).await
                         }
                     }

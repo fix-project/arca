@@ -1,7 +1,7 @@
-use common::message::Handle;
-
 use crate::paging::Impossible;
 use crate::prelude::*;
+
+use crate::types::page::Page;
 
 use crate::page::CowPage;
 
@@ -18,7 +18,7 @@ pub enum Table {
     Table512GB(CowPage<Table512GB>),
 }
 
-pub type Entry = arca::Entry<Table>;
+pub type Entry = arca::Entry<Runtime>;
 
 impl Table {
     pub fn new(size: usize) -> Table {
@@ -40,32 +40,8 @@ impl Default for Table {
     }
 }
 
-impl arca::RuntimeType for Table {
-    type Runtime = Runtime;
-
-    fn runtime(&self) -> &Self::Runtime {
-        &Runtime
-    }
-}
-
-impl arca::ValueType for Table {
-    const DATATYPE: DataType = DataType::Table;
-}
-
-impl arca::Table for Table {
-    fn take(&mut self, index: usize) -> arca::Entry<Self> {
-        match self {
-            Table::Table2MB(table) => table.entry_mut(index).unmap().into(),
-            Table::Table1GB(table) => table.entry_mut(index).unmap().into(),
-            Table::Table512GB(table) => table.entry_mut(index).unmap().into(),
-        }
-    }
-
-    fn put(
-        &mut self,
-        index: usize,
-        entry: arca::Entry<Self>,
-    ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
+impl Table {
+    pub fn set(&mut self, index: usize, entry: Entry) -> Result<Entry, Entry> {
         Ok(match self {
             Table::Table2MB(table) => table.entry_mut(index).replace(entry.try_into()?).into(),
             Table::Table1GB(table) => table.entry_mut(index).replace(entry.try_into()?).into(),
@@ -73,7 +49,7 @@ impl arca::Table for Table {
         })
     }
 
-    fn get(&mut self, index: usize) -> arca::Entry<Self> {
+    pub fn get(&self, index: usize) -> Entry {
         match self {
             Table::Table2MB(table) => table
                 .entry(index)
@@ -90,22 +66,7 @@ impl arca::Table for Table {
         }
     }
 
-    fn set(&mut self, index: usize, entry: arca::Entry<Self>) -> Result<(), arca::Entry<Self>> {
-        match self {
-            Table::Table2MB(table) => {
-                table.entry_mut(index).replace(entry.try_into()?);
-            }
-            Table::Table1GB(table) => {
-                table.entry_mut(index).replace(entry.try_into()?);
-            }
-            Table::Table512GB(table) => {
-                table.entry_mut(index).replace(entry.try_into()?);
-            }
-        };
-        Ok(())
-    }
-
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         match self {
             Table::Table2MB(_) => 1 << 21,
             Table::Table1GB(_) => 1 << 30,
@@ -114,7 +75,7 @@ impl arca::Table for Table {
     }
 }
 
-impl<P: HardwarePage, T: HardwarePageTable> From<AugmentedUnmappedPage<P, T>> for arca::Entry<Table>
+impl<P: HardwarePage, T: HardwarePageTable> From<AugmentedUnmappedPage<P, T>> for Entry
 where
     Page: From<CowPage<P>>,
     Table: From<CowPage<AugmentedPageTable<T>>>,
@@ -123,49 +84,58 @@ where
         match value {
             AugmentedUnmappedPage::None => arca::Entry::Null(core::cmp::max(P::SIZE, T::SIZE)),
             AugmentedUnmappedPage::UniquePage(page) => {
-                arca::Entry::RWPage(CowPage::Unique(page).into())
+                arca::Entry::RWPage(arca::Page::from_inner(CowPage::Unique(page).into()))
             }
             AugmentedUnmappedPage::SharedPage(page) => {
-                arca::Entry::ROPage(CowPage::Shared(page).into())
+                arca::Entry::ROPage(arca::Page::from_inner(CowPage::Shared(page).into()))
             }
             AugmentedUnmappedPage::Global(_) => todo!(),
             AugmentedUnmappedPage::UniqueTable(page) => {
-                arca::Entry::RWTable(CowPage::Unique(page).into())
+                arca::Entry::RWTable(arca::Table::from_inner(CowPage::Unique(page).into()))
             }
             AugmentedUnmappedPage::SharedTable(page) => {
-                arca::Entry::RWTable(CowPage::Shared(page).into())
+                arca::Entry::RWTable(arca::Table::from_inner(CowPage::Shared(page).into()))
             }
         }
     }
 }
 
-impl<P: HardwarePage, T: HardwarePageTable> TryFrom<arca::Entry<Table>>
-    for AugmentedUnmappedPage<P, T>
+impl<P: HardwarePage, T: HardwarePageTable> TryFrom<Entry> for AugmentedUnmappedPage<P, T>
 where
     CowPage<P>: TryFrom<Page, Error = Page>,
     CowPage<AugmentedPageTable<T>>: TryFrom<Table, Error = Table>,
 {
-    type Error = arca::Entry<Table>;
+    type Error = Entry;
 
-    fn try_from(value: arca::Entry<Table>) -> Result<Self, Self::Error> {
+    fn try_from(value: Entry) -> Result<Self, Self::Error> {
         Ok(match value {
             arca::Entry::Null(_) => AugmentedUnmappedPage::None,
             arca::Entry::ROPage(page) => AugmentedUnmappedPage::SharedPage({
-                let page: CowPage<P> = page.try_into().map_err(arca::Entry::ROPage)?;
+                let page: CowPage<P> = page
+                    .into_inner()
+                    .try_into()
+                    .map_err(|x| arca::Entry::ROPage(arca::Page::from_inner(x)))?;
                 page.shared()
             }),
             arca::Entry::RWPage(page) => AugmentedUnmappedPage::UniquePage({
-                let page: CowPage<P> = page.try_into().map_err(arca::Entry::RWPage)?;
+                let page: CowPage<P> = page
+                    .into_inner()
+                    .try_into()
+                    .map_err(|x| arca::Entry::RWPage(arca::Page::from_inner(x)))?;
                 page.unique()
             }),
             arca::Entry::ROTable(table) => AugmentedUnmappedPage::SharedTable({
-                let table: CowPage<AugmentedPageTable<T>> =
-                    table.try_into().map_err(arca::Entry::ROTable)?;
+                let table: CowPage<AugmentedPageTable<T>> = table
+                    .into_inner()
+                    .try_into()
+                    .map_err(|x| arca::Entry::ROTable(arca::Table::from_inner(x)))?;
                 table.shared()
             }),
             arca::Entry::RWTable(table) => AugmentedUnmappedPage::UniqueTable({
-                let table: CowPage<AugmentedPageTable<T>> =
-                    table.try_into().map_err(arca::Entry::RWTable)?;
+                let table: CowPage<AugmentedPageTable<T>> = table
+                    .into_inner()
+                    .try_into()
+                    .map_err(|x| arca::Entry::RWTable(arca::Table::from_inner(x)))?;
                 table.unique()
             }),
         })
@@ -234,57 +204,5 @@ impl TryFrom<Table> for CowPage<Table512GB> {
             Table::Table512GB(page) => Ok(page),
             _ => Err(value),
         }
-    }
-}
-
-impl TryFrom<Handle> for Table {
-    type Error = Handle;
-
-    fn try_from(value: Handle) -> Result<Self, Self::Error> {
-        if value.datatype() == <Self as arca::ValueType>::DATATYPE {
-            let (ptr, size) = value.read();
-            let unique = ptr & 1 == 1;
-            let ptr = ptr & !1;
-            unsafe {
-                Ok(match size {
-                    val if val == 1 << 21 => {
-                        Table::Table2MB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    val if val == 1 << 30 => {
-                        Table::Table1GB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    val if val == 1 << 39 => {
-                        Table::Table512GB(CowPage::from_raw(unique, ptr as *mut _))
-                    }
-                    _ => unreachable!(),
-                })
-            }
-        } else {
-            Err(value)
-        }
-    }
-}
-
-impl From<Table> for Handle {
-    fn from(value: Table) -> Self {
-        let size = value.size();
-        let (unique, mut ptr) = match value {
-            Table::Table2MB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-            Table::Table1GB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-            Table::Table512GB(page) => {
-                let (unique, ptr) = CowPage::into_raw(page);
-                (unique, ptr as usize)
-            }
-        };
-        if unique {
-            ptr |= 1;
-        }
-        Handle::new(DataType::Table, (ptr, size))
     }
 }

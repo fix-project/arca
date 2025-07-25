@@ -24,8 +24,6 @@ pub use buddy::BuddyAllocator;
 pub mod arrayvec;
 pub mod controlreg;
 pub mod elfloader;
-pub mod message;
-pub mod ringbuffer;
 pub mod sendable;
 pub mod util;
 pub mod vhost;

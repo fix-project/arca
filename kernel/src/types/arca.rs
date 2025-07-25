@@ -4,10 +4,13 @@ use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
+use crate::types::internal::Table;
+use crate::types::internal::Tuple;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: Table,
-    register_file: RegisterFile,
+    register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     error_buffer: Option<String>,
 }
@@ -15,7 +18,7 @@ pub struct Arca {
 impl Arca {
     pub fn new() -> Arca {
         let page_table = Table::default();
-        let register_file = RegisterFile::new();
+        let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
 
         Arca {
@@ -26,12 +29,16 @@ impl Arca {
         }
     }
 
-    pub fn new_with(register_file: RegisterFile, page_table: Table, descriptors: Tree) -> Arca {
+    pub fn new_with(
+        register_file: impl Into<Box<RegisterFile>>,
+        page_table: Table,
+        descriptors: Tuple,
+    ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner()).into();
 
         Arca {
             page_table,
-            register_file,
+            register_file: register_file.into(),
             descriptors,
             error_buffer: None,
         }
@@ -80,7 +87,7 @@ impl Default for Arca {
 
 #[derive(Debug)]
 pub struct LoadedArca<'a> {
-    register_file: RegisterFile,
+    register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
     error_buffer: Option<String>,
@@ -171,7 +178,7 @@ pub type Result<T> = core::result::Result<T, DescriptorError>;
 impl Descriptors {
     pub fn new() -> Descriptors {
         Descriptors {
-            descriptors: vec![Value::Null],
+            descriptors: vec![Value::default()],
         }
     }
 
@@ -192,7 +199,7 @@ impl Descriptors {
 
     pub fn take(&mut self, index: usize) -> Result<Value> {
         if index == 0 {
-            return Ok(Value::Null);
+            return Ok(Value::default());
         }
         Ok(core::mem::take(
             self.descriptors
@@ -226,9 +233,9 @@ impl Default for Descriptors {
 impl From<Vec<Value>> for Descriptors {
     fn from(mut value: Vec<Value>) -> Self {
         if value.is_empty() {
-            value.push(Value::Null);
+            value.push(Default::default());
         } else {
-            value[0] = Value::Null;
+            value[0] = Default::default();
         }
         Descriptors { descriptors: value }
     }

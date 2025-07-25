@@ -5,628 +5,340 @@ use core::{
     arch::{asm, global_asm},
     fmt::Write,
     marker::PhantomData,
+    num::NonZero,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+pub mod error;
+pub mod os;
+pub mod prelude;
 pub use arca;
-use arca::{DataType, Runtime as _, Value as _, ValueType, associated};
-use defs::SyscallError;
 
 extern crate defs;
+use arca::Function;
+use defs::SyscallError;
 use defs::*;
 
-struct ErrorWriter;
+use prelude::*;
 
-impl ErrorWriter {
-    pub fn reset(&self) {
-        unsafe {
-            arca_error_reset();
-        }
-    }
-
-    pub fn exit(&self) {
-        unsafe {
-            arca_error_return();
-        }
-    }
-}
-
-impl core::fmt::Write for ErrorWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let result = unsafe { arca_error_append(s.as_ptr(), s.len()) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(core::fmt::Error)
-        }
-    }
-}
-
-fn log(s: &str) {
-    unsafe {
-        arca_debug_log(s.as_ptr(), s.len());
-    }
-}
-
-fn log_int(s: &str, x: u64) {
-    unsafe {
-        arca_debug_log_int(s.as_ptr(), s.len(), x);
-    }
-}
-
-fn show(s: &str, x: i64) {
-    unsafe {
-        arca_debug_show(s.as_ptr(), s.len(), x);
-    }
-}
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    ErrorWriter.reset();
-    let _ = writeln!(ErrorWriter, "{info}");
-    ErrorWriter.exit();
-    loop {
-        unsafe {
-            core::arch::asm!("ud2");
-        }
-        core::hint::spin_loop();
-    }
-}
-
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Runtime;
 
 static RUNTIME: Runtime = Runtime;
 
-impl arca::Runtime for Runtime {
-    type Null = Ref<Null>;
-    type Word = Ref<Word>;
-    type Error = Ref<Error>;
-    type Atom = Ref<Atom>;
-    type Blob = Ref<Blob>;
-    type Tree = Ref<Tree>;
-    type Page = Ref<Page>;
-    type Table = Ref<Table>;
-    type Lambda = Ref<Lambda>;
-    type Thunk = Ref<Thunk>;
-    type Value = Ref<Value>;
-
-    fn create_null(&self) -> Self::Null {
-        Ref::new(0)
-    }
-
-    fn create_word(&self, value: u64) -> Self::Word {
-        let index = unsafe { arca_word_create(value) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_error(&self, mut value: Self::Value) -> Self::Error {
-        let index = value.index.take().unwrap();
-        let index = unsafe { arca_error_create(index) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_atom(&self, data: &[u8]) -> Self::Atom {
-        let index = unsafe { arca_atom_create(data.as_ptr(), data.len()) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_blob(&self, data: &[u8]) -> Self::Blob {
-        let index = unsafe { arca_blob_create(data.as_ptr(), data.len()) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_tree(&self, size: usize) -> Self::Tree {
-        let index = unsafe { arca_tree_create(size) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_page(&self, size: usize) -> Self::Page {
-        let index = unsafe { arca_page_create(size) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_table(&self, size: usize) -> Self::Table {
-        let index = unsafe { arca_table_create(size) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_lambda(&self, mut thunk: Self::Thunk, index: usize) -> Self::Lambda {
-        let thunk = thunk.index.take().unwrap();
-        let index = unsafe { arca_lambda_create(thunk, index) };
-        Ref::try_new(index).unwrap()
-    }
-
-    fn create_thunk(
-        &self,
-        mut registers: Self::Blob,
-        mut memory: Self::Table,
-        mut descriptors: Self::Tree,
-    ) -> Self::Thunk {
-        let registers = registers.index.take().unwrap();
-        let memory = memory.index.take().unwrap();
-        let descriptors = descriptors.index.take().unwrap();
-        let index = unsafe { arca_thunk_create(registers, memory, descriptors) };
-        Ref::try_new(index).unwrap()
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
-pub struct Null;
-#[derive(Copy, Clone, Debug)]
-pub struct Word;
-#[derive(Copy, Clone, Debug)]
-pub struct Error;
-#[derive(Copy, Clone, Debug)]
-pub struct Atom;
-#[derive(Copy, Clone, Debug)]
-pub struct Blob;
-#[derive(Copy, Clone, Debug)]
-pub struct Tree;
-#[derive(Copy, Clone, Debug)]
-pub struct Page;
-#[derive(Copy, Clone, Debug)]
-pub struct Table;
-#[derive(Copy, Clone, Debug)]
-pub struct Lambda;
-#[derive(Copy, Clone, Debug)]
-pub struct Thunk;
-#[derive(Copy, Clone, Debug)]
-pub struct Value;
-
-impl arca::ValueType for Ref<Null> {
-    const DATATYPE: DataType = DataType::Null;
-}
-impl arca::ValueType for Ref<Word> {
-    const DATATYPE: DataType = DataType::Word;
-}
-impl arca::ValueType for Ref<Error> {
-    const DATATYPE: DataType = DataType::Error;
-}
-impl arca::ValueType for Ref<Atom> {
-    const DATATYPE: DataType = DataType::Atom;
-}
-impl arca::ValueType for Ref<Blob> {
-    const DATATYPE: DataType = DataType::Blob;
-}
-impl arca::ValueType for Ref<Tree> {
-    const DATATYPE: DataType = DataType::Tree;
-}
-impl arca::ValueType for Ref<Page> {
-    const DATATYPE: DataType = DataType::Page;
-}
-impl arca::ValueType for Ref<Table> {
-    const DATATYPE: DataType = DataType::Table;
-}
-impl arca::ValueType for Ref<Lambda> {
-    const DATATYPE: DataType = DataType::Lambda;
-}
-impl arca::ValueType for Ref<Thunk> {
-    const DATATYPE: DataType = DataType::Thunk;
+pub enum ArcaError {
+    BadSyscall,
+    BadIndex,
+    BadType,
+    BadArgument,
+    OutOfMemory,
+    Interrupted,
+    Unknown(u32),
 }
 
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Ref<T> {
-    index: Option<i64>,
-    _phantom: PhantomData<T>,
-}
-
-impl<T> Ref<T> {
-    fn new(index: i64) -> Self {
-        Ref {
-            index: Some(index),
-            _phantom: PhantomData,
-        }
-    }
-
-    fn try_new(index: i64) -> Result<Self, SyscallError> {
-        if index >= 0 {
-            Ok(Ref {
-                index: Some(index),
-                _phantom: PhantomData,
-            })
-        } else {
-            Err(SyscallError::new(-index as u32))
-        }
+fn syscall_result_raw(value: i64) -> Result<u32, ArcaError> {
+    if value >= 0 {
+        Ok(value as u32)
+    } else {
+        let err = -value as u32;
+        Err(match err {
+            defs::error::ERROR_BAD_SYSCALL => ArcaError::BadSyscall,
+            defs::error::ERROR_BAD_INDEX => ArcaError::BadIndex,
+            defs::error::ERROR_BAD_TYPE => ArcaError::BadType,
+            defs::error::ERROR_BAD_ARGUMENT => ArcaError::BadArgument,
+            defs::error::ERROR_OUT_OF_MEMORY => ArcaError::OutOfMemory,
+            defs::error::ERROR_INTERRUPTED => ArcaError::Interrupted,
+            x => ArcaError::Unknown(x),
+        })
     }
 }
 
-impl<T> Clone for Ref<T> {
+fn syscall_result(value: i64) -> Result<Ref, ArcaError> {
+    syscall_result_raw(value).map(Ref::from_raw)
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct Ref {
+    idx: Option<u32>,
+}
+
+impl Clone for Ref {
     fn clone(&self) -> Self {
-        let index = unsafe { arca_clone(self.index.unwrap()) };
-        Ref::try_new(index).unwrap()
+        let idx = self.as_raw();
+        unsafe { syscall_result(arca_clone(idx as i64)).unwrap() }
     }
 }
 
-impl<T> Drop for Ref<T> {
+impl Drop for Ref {
     fn drop(&mut self) {
-        if let Some(index) = self.index {
+        if let Some(idx) = self.idx.take() {
             unsafe {
-                assert_eq!(arca_drop(index), 0);
+                syscall_result_raw(arca_drop(idx as i64)).unwrap();
             }
         }
     }
 }
 
-impl<T> arca::RuntimeType for Ref<T> {
-    type Runtime = Runtime;
+impl Ref {
+    fn from_raw(idx: u32) -> Self {
+        Ref { idx: Some(idx) }
+    }
 
-    fn runtime(&self) -> &Self::Runtime {
-        &Runtime
+    fn into_raw(mut self) -> u32 {
+        self.idx.take().unwrap()
+    }
+
+    fn as_raw(&self) -> u32 {
+        self.idx.unwrap()
     }
 }
 
-impl arca::Null for Ref<Null> {}
+impl arca::Runtime for Runtime {
+    type Null = Ref;
+    type Word = Ref;
+    type Exception = Ref;
+    type Atom = Ref;
+    type Blob = Ref;
+    type Tuple = Ref;
+    type Page = Ref;
+    type Table = Ref;
+    type Function = Ref;
 
-impl arca::Word for Ref<Word> {
-    fn read(&self) -> u64 {
-        let mut x: u64 = 0;
-        let p = &raw mut x;
+    type Error = ArcaError;
+
+    fn create_null() -> arca::Null<Self> {
+        unsafe { arca::Null::from_inner(Ref::from_raw(0)) }
+    }
+
+    fn create_word(word: u64) -> arca::Word<Self> {
+        unsafe { arca::Word::from_inner(syscall_result(defs::arca_word_create(word)).unwrap()) }
+    }
+
+    fn create_exception(value: arca::Value<Self>) -> arca::Exception<Self> {
         unsafe {
-            assert_eq!(arca_word_read(self.index.unwrap(), p), 0);
+            arca::Exception::from_inner(
+                syscall_result(defs::arca_exception_create(
+                    Self::get_raw(value).into_raw().into(),
+                ))
+                .unwrap(),
+            )
         }
-        x
     }
-}
 
-impl arca::Error for Ref<Error> {
-    fn read(mut self) -> associated::Value<Self> {
-        let idx = self.index.take().unwrap();
-        let idx = unsafe { arca_error_read(idx) };
-        Ref::try_new(idx).unwrap()
-    }
-}
-
-impl arca::Atom for Ref<Atom> {}
-
-impl PartialEq for Ref<Atom> {
-    fn eq(&self, other: &Self) -> bool {
-        let result = unsafe { arca_equals(self.index.unwrap(), other.index.unwrap()) };
-        assert!(result >= 0);
-        result != 0
-    }
-}
-
-impl Eq for Ref<Atom> {}
-
-impl arca::Blob for Ref<Blob> {
-    fn read(&self, buffer: &mut [u8]) {
+    fn create_atom(bytes: &[u8]) -> arca::Atom<Self> {
         unsafe {
-            assert_eq!(
-                arca_blob_read(self.index.unwrap(), buffer.as_mut_ptr(), buffer.len()),
-                0
-            );
+            arca::Atom::from_inner(
+                syscall_result(defs::arca_atom_create(bytes.as_ptr(), bytes.len())).unwrap(),
+            )
         }
     }
 
-    fn len(&self) -> usize {
-        let mut n: usize = 0;
+    fn create_blob(bytes: &[u8]) -> arca::Blob<Self> {
         unsafe {
-            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
+            arca::Blob::from_inner(
+                syscall_result(defs::arca_blob_create(bytes.as_ptr(), bytes.len())).unwrap(),
+            )
         }
-        n
-    }
-}
-
-impl arca::Tree for Ref<Tree> {
-    fn take(&mut self, index: usize) -> associated::Value<Self> {
-        let index = unsafe { arca_tree_take(self.index.unwrap(), index) };
-        Ref::try_new(index).unwrap()
     }
 
-    fn put(&mut self, index: usize, mut value: associated::Value<Self>) -> associated::Value<Self> {
-        let index = unsafe { arca_tree_put(self.index.unwrap(), index, value.index.unwrap()) };
-        Ref::try_new(index).unwrap()
+    fn create_tuple(len: usize) -> arca::Tuple<Self> {
+        unsafe { arca::Tuple::from_inner(syscall_result(defs::arca_tuple_create(len)).unwrap()) }
     }
 
-    fn get(&self, index: usize) -> associated::Value<Self> {
-        let index = unsafe { arca_tree_get(self.index.unwrap(), index) };
-        Ref::try_new(index).unwrap()
+    fn create_page(len: usize) -> arca::Page<Self> {
+        unsafe { arca::Page::from_inner(syscall_result(defs::arca_page_create(len)).unwrap()) }
     }
 
-    fn set(&mut self, index: usize, mut value: associated::Value<Self>) {
-        let result = unsafe { arca_tree_set(self.index.unwrap(), index, value.index.unwrap()) };
-        assert_eq!(result, 0);
+    fn create_table(len: usize) -> arca::Table<Self> {
+        unsafe { arca::Table::from_inner(syscall_result(defs::arca_table_create(len)).unwrap()) }
     }
 
-    fn len(&self) -> usize {
-        let mut n: usize = 0;
+    fn create_function(
+        arca: bool,
+        data: arca::Value<Self>,
+    ) -> Result<arca::Function<Self>, Self::Error> {
         unsafe {
-            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
+            Ok(arca::Function::from_inner(syscall_result(
+                defs::arca_function_create(arca, Self::get_raw(data).into_raw().into()),
+            )?))
         }
-        n
     }
-}
 
-impl arca::Page for Ref<Page> {
-    fn read(&self, offset: usize, buffer: &mut [u8]) {
+    fn value_len(value: arca::ValueRef<Self>) -> usize {
         unsafe {
-            assert_eq!(
-                arca_page_read(
-                    self.index.unwrap(),
-                    offset,
-                    buffer.as_mut_ptr(),
-                    buffer.len()
-                ),
-                0
-            );
+            let idx: i64 = Self::get_raw_ref_idx(value).into();
+            let mut length: usize = 0;
+            let result = arca_length(idx, &mut length);
+            syscall_result(result).unwrap();
+            length
         }
     }
 
-    fn write(&mut self, offset: usize, buffer: &[u8]) {
+    fn read_word(word: &arca::Word<Self>) -> u64 {
         unsafe {
-            assert_eq!(
-                arca_page_write(self.index.unwrap(), offset, buffer.as_ptr(), buffer.len()),
-                0
-            );
+            let mut result = 0;
+            syscall_result(defs::arca_word_read(
+                word.inner().as_raw() as i64,
+                &mut result,
+            ))
+            .unwrap();
+            result
         }
     }
 
-    fn size(&self) -> usize {
-        let mut n: usize = 0;
+    fn read_exception(exception: arca::Exception<Self>) -> arca::Value<Self> {
         unsafe {
-            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
-        }
-        n
-    }
-}
-
-impl arca::Table for Ref<Table> {
-    fn take(&mut self, index: usize) -> arca::Entry<Self> {
-        let mut entry = core::mem::MaybeUninit::uninit();
-        let entry = unsafe {
-            assert_eq!(
-                arca_table_take(self.index.unwrap(), index, entry.as_mut_ptr()),
-                0
-            );
-            entry.assume_init()
-        };
-        read_entry(entry)
-    }
-
-    fn put(
-        &mut self,
-        offset: usize,
-        mut entry: arca::Entry<Self>,
-    ) -> Result<arca::Entry<Self>, arca::Entry<Self>> {
-        let mut entry = write_entry(entry);
-        let result = unsafe { arca_table_put(self.index.unwrap(), offset, &mut entry) };
-        let entry = read_entry(entry);
-        if result == 0 { Ok(entry) } else { Err(entry) }
-    }
-
-    fn get(&mut self, index: usize) -> arca::Entry<Self> {
-        let mut entry = core::mem::MaybeUninit::uninit();
-        let entry = unsafe {
-            assert_eq!(
-                arca_table_get(self.index.unwrap(), index, entry.as_mut_ptr()),
-                0
-            );
-            entry.assume_init()
-        };
-        read_entry(entry)
-    }
-
-    fn set(&mut self, offset: usize, entry: arca::Entry<Self>) -> Result<(), arca::Entry<Self>> {
-        let raw_entry = write_entry(entry);
-        let result = unsafe { arca_table_set(self.index.unwrap(), offset, &raw_entry) };
-        if result == 0 {
-            Ok(())
-        } else {
-            todo!("handle error case of Ref<Table>.set")
+            let data = syscall_result(defs::arca_exception_read(
+                exception.into_inner().into_raw().into(),
+            ))
+            .unwrap();
+            Self::raw_convert(data)
         }
     }
 
-    fn size(&self) -> usize {
-        let mut n: usize = 0;
+    fn read_blob(blob: &arca::Blob<Self>, offset: usize, buf: &mut [u8]) -> usize {
         unsafe {
-            assert_eq!(arca_length(self.index.unwrap(), &raw mut n), 0);
+            syscall_result_raw(defs::arca_blob_read(
+                blob.inner().as_raw() as i64,
+                offset,
+                buf.as_mut_ptr(),
+                buf.len(),
+            ))
+            .unwrap() as usize
         }
-        n
     }
-}
 
-pub type Entry = arca::Entry<Ref<Table>>;
-
-impl arca::Lambda for Ref<Lambda> {
-    fn read(self) -> (associated::Thunk<Self>, usize) {
-        todo!()
+    fn read_page(page: &arca::Page<Self>, offset: usize, buf: &mut [u8]) -> usize {
+        unsafe {
+            syscall_result_raw(defs::arca_page_read(
+                page.inner().as_raw() as i64,
+                offset,
+                buf.as_mut_ptr(),
+                buf.len(),
+            ))
+            .unwrap() as usize
+        }
     }
-}
 
-impl arca::Thunk for Ref<Thunk> {
-    fn run(self) -> associated::Value<Self> {
+    fn get_tuple(
+        tuple: &arca::Tuple<Self>,
+        index: usize,
+    ) -> Result<arca::Value<Self>, Self::Error> {
+        unsafe {
+            Ok(Self::raw_convert(syscall_result(defs::arca_tuple_get(
+                tuple.inner().as_raw() as i64,
+                index,
+            ))?))
+        }
+    }
+
+    fn set_tuple(
+        tuple: &mut arca::Tuple<Self>,
+        index: usize,
+        value: arca::Value<Self>,
+    ) -> Result<arca::Value<Self>, Self::Error> {
+        unsafe {
+            Ok(Self::raw_convert(syscall_result(defs::arca_tuple_set(
+                tuple.inner().as_raw() as i64,
+                index,
+                Self::get_raw(value).into_raw().into(),
+            ))?))
+        }
+    }
+
+    fn get_table(
+        tuple: &arca::Table<Self>,
+        index: usize,
+    ) -> Result<arca::Entry<Self>, Self::Error> {
         todo!()
     }
 
-    fn read(
-        self,
-    ) -> (
-        associated::Blob<Self>,
-        associated::Table<Self>,
-        associated::Tree<Self>,
-    ) {
+    fn set_table(
+        tuple: &mut arca::Table<Self>,
+        index: usize,
+        entry: arca::Entry<Self>,
+    ) -> Result<arca::Entry<Self>, Self::Error> {
         todo!()
     }
-}
 
-impl arca::Value for Ref<Value> {
-    fn datatype(&self) -> DataType {
-        let typ: defs::datatype::Type = unsafe { arca_type(self.index.unwrap()) };
-        match typ {
-            defs::datatype::DATATYPE_NULL => DataType::Null,
-            defs::datatype::DATATYPE_ERROR => DataType::Error,
-            defs::datatype::DATATYPE_WORD => DataType::Word,
-            defs::datatype::DATATYPE_ATOM => DataType::Atom,
-            defs::datatype::DATATYPE_BLOB => DataType::Blob,
-            defs::datatype::DATATYPE_TREE => DataType::Tree,
-            defs::datatype::DATATYPE_PAGE => DataType::Page,
-            defs::datatype::DATATYPE_TABLE => DataType::Table,
-            defs::datatype::DATATYPE_LAMBDA => DataType::Lambda,
-            defs::datatype::DATATYPE_THUNK => DataType::Thunk,
-            _ => panic!("unrecognized type"),
-        }
+    fn write_blob(blob: &mut arca::Blob<Self>, offset: usize, buf: &[u8]) -> usize {
+        todo!()
     }
 
-    fn apply(mut self, mut argument: associated::Value<Self>) -> associated::Thunk<Self> {
-        let index = self.index.take().unwrap();
-        let argument = argument.index.take().unwrap();
-        let index = unsafe { arca_apply(index, argument) };
-        Ref::try_new(index).unwrap()
-    }
-}
-
-impl<T> TryFrom<Ref<Value>> for Ref<T>
-where
-    Ref<T>: ValueType,
-{
-    type Error = Ref<Value>;
-
-    fn try_from(mut value: Ref<Value>) -> Result<Self, Self::Error> {
-        if value.datatype() == Ref::<T>::DATATYPE {
-            Ok(Ref::new(value.index.take().unwrap()))
-        } else {
-            Err(value)
-        }
-    }
-}
-
-impl<T> From<Ref<T>> for Ref<Value>
-where
-    Ref<T>: ValueType,
-{
-    fn from(mut value: Ref<T>) -> Self {
-        Ref::new(value.index.take().unwrap())
-    }
-}
-
-impl Default for Ref<Value> {
-    fn default() -> Self {
-        os::null().into()
-    }
-}
-
-impl<T: FnOnce() -> Ref<Value>> From<T> for Ref<Thunk> {
-    fn from(value: T) -> Self {
-        let mut continued: bool = false;
-        let result = unsafe { arca_capture_continuation_thunk(&mut continued) };
-        if continued {
-            // in the resumed continuation
-            let result = value();
-            os::exit(result);
-        };
-        Ref::try_new(result).unwrap()
-    }
-}
-
-impl<T: FnOnce(Ref<Value>) -> Ref<Value>> From<T> for Ref<Lambda> {
-    fn from(value: T) -> Self {
-        let mut continued: bool = false;
-        let result = unsafe { arca_capture_continuation_lambda(&mut continued) };
-        if continued {
-            // in the resumed continuation
-            let argument = Ref::try_new(result).unwrap();
-            let result = value(argument);
-            os::exit(result);
-        };
-        Ref::try_new(result).unwrap()
-    }
-}
-
-pub mod os {
-    pub use super::*;
-
-    pub fn null() -> Ref<Null> {
-        RUNTIME.create_null()
+    fn write_page(page: &mut arca::Page<Self>, offset: usize, buf: &[u8]) -> usize {
+        todo!()
     }
 
-    pub fn word(value: u64) -> Ref<Word> {
-        RUNTIME.create_word(value)
-    }
-
-    pub fn atom<T: AsRef<[u8]> + ?Sized>(bytes: &T) -> Ref<Atom> {
-        RUNTIME.create_atom(bytes.as_ref())
-    }
-
-    pub fn blob(data: &[u8]) -> Ref<Blob> {
-        RUNTIME.create_blob(data)
-    }
-
-    pub fn tree(size: usize) -> Ref<Tree> {
-        RUNTIME.create_tree(size)
-    }
-
-    pub fn log(s: &str) {
-        super::log(s);
-    }
-
-    pub fn show(s: &str, x: &Ref<Value>) {
-        super::show(s, x.index.unwrap());
-    }
-
-    pub fn prompt() -> Ref<Value> {
-        let result = unsafe { arca_return_continuation_lambda() };
-        Ref::try_new(result).unwrap()
-    }
-
-    pub fn call_with_current_continuation<T: Into<Ref<Value>>>(effect: T) -> Ref<Value> {
-        let mut val: Ref<Value> = effect.into();
-        let idx = val.index.take().unwrap();
-        let idx = unsafe { arca_call_with_current_continuation(idx) };
-        Ref::try_new(idx).unwrap()
-    }
-
-    pub fn exit<T: Into<Ref<Value>>>(value: T) -> ! {
-        let mut val: Ref<Value> = value.into();
-        let idx = val.index.take().unwrap();
+    fn apply_function(
+        function: arca::Function<Self>,
+        argument: arca::Value<Self>,
+    ) -> arca::Function<Self> {
         unsafe {
-            arca_exit(idx);
-            asm!("ud2");
+            Function::from_inner(
+                syscall_result(defs::arca_function_apply(
+                    Self::get_raw(function.into()).into_raw().into(),
+                    Self::get_raw(argument).into_raw().into(),
+                ))
+                .unwrap(),
+            )
         }
-        unreachable!();
+    }
+
+    fn force_function(function: arca::Function<Self>) -> arca::Value<Self> {
+        unsafe {
+            Self::raw_convert(
+                syscall_result(defs::arca_function_force(
+                    Self::get_raw(function.into()).into_raw().into(),
+                ))
+                .unwrap(),
+            )
+        }
+    }
+
+    fn is_function_arcane(function: &arca::Function<Self>) -> bool {
+        todo!()
+    }
+
+    fn call_with_current_continuation(function: arca::Function<Self>) -> arca::Value<Self> {
+        os::call_with_current_continuation(function)
     }
 }
 
-pub mod prelude {
-    pub use super::*;
-    pub use arca::{
-        Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _, Table as _,
-        Thunk as _, Tree as _, Value as _, ValueType as _, Word as _,
-    };
-}
-
-fn read_entry(entry: defs::entry) -> Entry {
-    match entry {
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_NONE,
-            datatype: datatype::DATATYPE_NULL,
-            data,
-        } => arca::Entry::Null(data),
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            datatype: datatype::DATATYPE_PAGE,
-            data,
-        } => arca::Entry::ROPage(Ref::new(data as i64)),
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            datatype: datatype::DATATYPE_PAGE,
-            data,
-        } => arca::Entry::RWPage(Ref::new(data as i64)),
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            datatype: datatype::DATATYPE_TABLE,
-            data,
-        } => arca::Entry::ROTable(Ref::new(data as i64)),
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            datatype: datatype::DATATYPE_TABLE,
-            data,
-        } => arca::Entry::RWTable(Ref::new(data as i64)),
-        _ => unreachable!(),
+fn read_entry(entry: defs::entry) -> arca::Entry<Runtime> {
+    unsafe {
+        match entry {
+            defs::entry {
+                mode: defs::entry_mode::ENTRY_MODE_NONE,
+                datatype: datatype::DATATYPE_NULL,
+                data,
+            } => arca::Entry::Null(data),
+            defs::entry {
+                mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+                datatype: datatype::DATATYPE_PAGE,
+                data,
+            } => arca::Entry::ROPage(arca::Page::from_inner(Ref::from_raw(data as u32))),
+            defs::entry {
+                mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+                datatype: datatype::DATATYPE_PAGE,
+                data,
+            } => arca::Entry::RWPage(arca::Page::from_inner(Ref::from_raw(data as u32))),
+            defs::entry {
+                mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+                datatype: datatype::DATATYPE_TABLE,
+                data,
+            } => arca::Entry::ROTable(arca::Table::from_inner(Ref::from_raw(data as u32))),
+            defs::entry {
+                mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+                datatype: datatype::DATATYPE_TABLE,
+                data,
+            } => arca::Entry::RWTable(arca::Table::from_inner(Ref::from_raw(data as u32))),
+            _ => unreachable!(),
+        }
     }
 }
 
-fn write_entry(entry: Entry) -> defs::entry {
+fn write_entry(entry: arca::Entry<Runtime>) -> defs::entry {
     match entry {
         arca::Entry::Null(size) => defs::entry {
             mode: defs::entry_mode::ENTRY_MODE_NONE,
@@ -636,22 +348,88 @@ fn write_entry(entry: Entry) -> defs::entry {
         arca::Entry::ROPage(mut value) => defs::entry {
             mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
             datatype: datatype::DATATYPE_PAGE,
-            data: value.index.take().unwrap() as usize,
+            data: value.into_inner().into_raw() as usize,
         },
         arca::Entry::RWPage(mut value) => defs::entry {
             mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
             datatype: datatype::DATATYPE_PAGE,
-            data: value.index.take().unwrap() as usize,
+            data: value.into_inner().into_raw() as usize,
         },
         arca::Entry::ROTable(mut value) => defs::entry {
             mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
             datatype: datatype::DATATYPE_TABLE,
-            data: value.index.take().unwrap() as usize,
+            data: value.into_inner().into_raw() as usize,
         },
         arca::Entry::RWTable(mut value) => defs::entry {
             mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
             datatype: datatype::DATATYPE_TABLE,
-            data: value.index.take().unwrap() as usize,
+            data: value.into_inner().into_raw() as usize,
         },
+    }
+}
+
+impl Runtime {
+    unsafe fn raw_datatype(data: Ref) -> arca::DataType {
+        unsafe {
+            match arca_type(data.as_raw() as i64) {
+                defs::datatype::DATATYPE_NULL => arca::DataType::Null,
+                defs::datatype::DATATYPE_WORD => arca::DataType::Word,
+                defs::datatype::DATATYPE_ATOM => arca::DataType::Atom,
+                defs::datatype::DATATYPE_EXCEPTION => arca::DataType::Exception,
+                defs::datatype::DATATYPE_BLOB => arca::DataType::Blob,
+                defs::datatype::DATATYPE_TUPLE => arca::DataType::Tuple,
+                defs::datatype::DATATYPE_PAGE => arca::DataType::Page,
+                defs::datatype::DATATYPE_TABLE => arca::DataType::Table,
+                defs::datatype::DATATYPE_FUNCTION => arca::DataType::Function,
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    unsafe fn raw_convert(data: Ref) -> arca::Value<Self> {
+        unsafe {
+            match arca_type(data.as_raw() as i64) {
+                defs::datatype::DATATYPE_NULL => Null::from_inner(data).into(),
+                defs::datatype::DATATYPE_WORD => Word::from_inner(data).into(),
+                defs::datatype::DATATYPE_ATOM => Atom::from_inner(data).into(),
+                defs::datatype::DATATYPE_EXCEPTION => Exception::from_inner(data).into(),
+                defs::datatype::DATATYPE_BLOB => Blob::from_inner(data).into(),
+                defs::datatype::DATATYPE_TUPLE => Tuple::from_inner(data).into(),
+                defs::datatype::DATATYPE_PAGE => Page::from_inner(data).into(),
+                defs::datatype::DATATYPE_TABLE => Table::from_inner(data).into(),
+                defs::datatype::DATATYPE_FUNCTION => Function::from_inner(data).into(),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    unsafe fn get_raw(value: arca::Value<Self>) -> Ref {
+        match value.into_inner() {
+            arca::RawValue::Null(x) => x,
+            arca::RawValue::Word(x) => x,
+            arca::RawValue::Exception(x) => x,
+            arca::RawValue::Atom(x) => x,
+            arca::RawValue::Blob(x) => x,
+            arca::RawValue::Tuple(x) => x,
+            arca::RawValue::Page(x) => x,
+            arca::RawValue::Table(x) => x,
+            arca::RawValue::Function(x) => x,
+        }
+    }
+
+    unsafe fn get_raw_ref_idx(value: arca::ValueRef<'_, Self>) -> u32 {
+        match value.inner() {
+            arca::RawValueRef::Null(x) => x,
+            arca::RawValueRef::Word(x) => x,
+            arca::RawValueRef::Exception(x) => x,
+            arca::RawValueRef::Atom(x) => x,
+            arca::RawValueRef::Blob(x) => x,
+            arca::RawValueRef::Tuple(x) => x,
+            arca::RawValueRef::Page(x) => x,
+            arca::RawValueRef::Table(x) => x,
+            arca::RawValueRef::Function(x) => x,
+        }
+        .idx
+        .unwrap()
     }
 }

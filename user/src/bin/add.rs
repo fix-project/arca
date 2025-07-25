@@ -8,13 +8,13 @@ use user::prelude::*;
 /// Add 1 to a 64-bit integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    let argument = os::prompt();
-    let mut tree: Ref<Tree> = argument.try_into().unwrap();
+    let argument = os::argument();
+    let tree: Tuple = argument.try_into().unwrap();
     assert_eq!(tree.len(), 2);
-    let x: Ref<Word> = tree.take(0).try_into().unwrap();
-    let y: Ref<Word> = tree.take(1).try_into().unwrap();
+    let x: Word = tree.get(0).try_into().unwrap();
+    let y: Word = tree.get(1).try_into().unwrap();
 
     let z = x.read() + y.read();
 
-    os::exit(os::word(z));
+    os::exit(Word::new(z));
 }

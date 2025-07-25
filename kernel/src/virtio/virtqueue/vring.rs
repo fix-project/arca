@@ -11,7 +11,7 @@ impl<T: Copy> Ring<T> {
     }
 
     pub fn len(&self) -> usize {
-        return self.ring.len();
+        self.ring.len()
     }
 
     pub fn get(&self, idx: u16) -> T {

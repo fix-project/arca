@@ -333,11 +333,7 @@ impl Runtime {
         let mut last_time = None;
         ctrlc::set_handler(move || {
             let now = Instant::now();
-            let diff = if let Some(last_time) = last_time {
-                Some(now.duration_since(last_time))
-            } else {
-                None
-            };
+            let diff = last_time.map(|last_time| now.duration_since(last_time));
             if let Some(diff) = diff {
                 if diff < Duration::from_secs(1) {
                     log::warn!("got ^C^C; forcing immediate shutdown");

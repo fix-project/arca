@@ -15,15 +15,16 @@ use user::prelude::*;
 ///   3. exit(value) -> !
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    let read = os::atom("read");
-    let write = os::atom("write");
-    let exit = os::atom("exit");
-    let input = os::prompt();
-    let input: Ref<Blob> = input.try_into().unwrap();
-    let output = os::prompt();
-    let output: Ref<Blob> = output.try_into().unwrap();
+    let eff = Function::symbolic("effect");
+    let effect = |s| eff.clone()(s);
+    let input = os::argument();
+    let input: Blob = input.try_into().unwrap();
+    let output = os::argument();
+    let output: Blob = output.try_into().unwrap();
 
-    let data = os::call_with_current_continuation(read.apply(input));
-    let _ = os::call_with_current_continuation(write.apply(output).apply(data));
-    os::exit(exit.apply(os::null()));
+    let data = effect("read")(input)(Continuation);
+    let _ = effect("write")(output, data)(Continuation);
+    effect("exit")(Continuation);
+
+    unreachable!("exit effect should have exited!");
 }

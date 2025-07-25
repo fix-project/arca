@@ -1,17 +1,19 @@
-use super::*;
 use core::{mem::MaybeUninit, ops::ControlFlow};
 
-use alloc::format;
+use alloc::{collections::vec_deque::VecDeque, format};
 use defs::SyscallError;
 
 use crate::{
     prelude::*,
-    types::{arca::DescriptorError, TypeError},
+    types::{
+        arca::{DescriptorError, LoadedArca},
+        internal,
+    },
 };
 
 pub type Result<T> = core::result::Result<T, SyscallError>;
 
-pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
+pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> ControlFlow<Value> {
     let regs = arca.registers();
     let num = regs[Register::RDI];
     let args = [
@@ -31,9 +33,21 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
         defs::syscall::SYS_CLONE => sys_clone(args, arca),
 
         defs::syscall::SYS_EXIT => sys_exit(args, arca)?,
+        defs::syscall::SYS_GET_ARGUMENT => {
+            if let Some(front) = argv.pop_front() {
+                let idx = arca.descriptors_mut().insert(front);
+                Ok(idx)
+            } else {
+                arca.registers_mut()[Register::RAX] =
+                    (-(defs::error::ERROR_INTERRUPTED as i32)) as u64;
+                let arca = arca.take();
+                let argv = core::mem::take(argv);
+                return ControlFlow::Break(Value::Function(Function::from_inner(
+                    internal::Function::arcane_with_args(arca, argv),
+                )));
+            }
+        }
         defs::syscall::SYS_LENGTH => sys_len(args, arca),
-        defs::syscall::SYS_TAKE => sys_take(args, arca),
-        defs::syscall::SYS_PUT => sys_put(args, arca),
         defs::syscall::SYS_GET => sys_get(args, arca),
         defs::syscall::SYS_SET => sys_set(args, arca),
         defs::syscall::SYS_READ => sys_read(args, arca),
@@ -42,19 +56,15 @@ pub fn handle_syscall(arca: &mut LoadedArca) -> ControlFlow<Value> {
         defs::syscall::SYS_CREATE_WORD => sys_create_word(args, arca),
         defs::syscall::SYS_CREATE_ATOM => sys_create_atom(args, arca),
         defs::syscall::SYS_CREATE_BLOB => sys_create_blob(args, arca),
-        defs::syscall::SYS_CREATE_TREE => sys_create_tree(args, arca),
+        defs::syscall::SYS_CREATE_TREE => sys_create_tuple(args, arca),
         defs::syscall::SYS_CREATE_PAGE => sys_create_page(args, arca),
         defs::syscall::SYS_CREATE_TABLE => sys_create_table(args, arca),
+        defs::syscall::SYS_CREATE_FUNCTION => sys_create_function(args, arca),
 
-        defs::syscall::SYS_CAPTURE_CONTINUATION_THUNK => sys_continuation(args, arca),
-        defs::syscall::SYS_CAPTURE_CONTINUATION_LAMBDA => sys_continuation_lambda(args, arca),
         defs::syscall::SYS_APPLY => sys_apply(args, arca),
         defs::syscall::SYS_MAP => sys_map(args, arca),
         defs::syscall::SYS_MMAP => sys_mmap(args, arca),
 
-        defs::syscall::SYS_RETURN_CONTINUATION_LAMBDA => {
-            sys_return_continuation_lambda(args, arca)?
-        }
         defs::syscall::SYS_CALL_WITH_CURRENT_CONTINUATION => {
             sys_call_with_current_continuation(args, arca)?
         }
@@ -116,50 +126,28 @@ pub fn sys_len(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let len = match arca.descriptors().get(idx)? {
         Value::Word(_) => core::mem::size_of::<u64>(),
         Value::Blob(blob) => blob.len(),
-        Value::Tree(tree) => tree.len(),
-        Value::Page(page) => page.size(),
-        Value::Table(table) => table.size(),
+        Value::Tuple(tree) => tree.len(),
+        Value::Page(page) => page.len(),
+        Value::Table(table) => table.len(),
         _ => return Err(SyscallError::BadType),
     };
     copy_kernel_to_user(ptr, &len.to_ne_bytes())?;
     Ok(0)
 }
 
-pub fn sys_take(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let target_idx = args[0] as usize;
-    let inner_idx = args[1] as usize;
-    let target = arca.descriptors_mut().get_mut(target_idx)?;
-    match target {
-        Value::Tree(tree) => {
-            let value = tree.take(inner_idx);
-            Ok(arca.descriptors_mut().insert(value))
-        }
-        Value::Table(table) => {
-            let ptr = args[2] as usize;
-            let entry = table.take(inner_idx);
-            let entry = write_entry(arca, entry);
-            copy_kernel_to_user(ptr, unsafe {
-                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
-            })?;
-            Ok(0)
-        }
-        _ => Err(SyscallError::BadType),
-    }
-}
-
-pub fn sys_put(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_set(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let target_idx = args[0] as usize;
     let inner_idx = args[1] as usize;
     let target = arca.descriptors().get(target_idx)?;
     let datatype = target.datatype();
     match datatype {
-        DataType::Tree => {
+        DataType::Tuple => {
             let value_idx = args[2] as usize;
             let value = arca.descriptors_mut().take(value_idx)?;
-            let Value::Tree(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
+            let Value::Tuple(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
                 unreachable!();
             };
-            let value = tree.put(inner_idx, value);
+            let value = tree.set(inner_idx, value);
             Ok(arca.descriptors_mut().insert(value))
         }
         DataType::Table => {
@@ -177,7 +165,7 @@ pub fn sys_put(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
             let Value::Table(ref mut table) = arca.descriptors_mut().get_mut(target_idx)? else {
                 unreachable!();
             };
-            let Ok(entry) = table.put(inner_idx, entry) else {
+            let Ok(entry) = table.set(inner_idx, entry) else {
                 todo!();
             };
             let entry = write_entry(arca, entry);
@@ -195,56 +183,13 @@ pub fn sys_get(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let inner_idx = args[1] as usize;
     let target = arca.descriptors_mut().get_mut(target_idx)?;
     match target {
-        Value::Tree(tree) => {
+        Value::Tuple(tree) => {
             let value = tree.get(inner_idx);
             Ok(arca.descriptors_mut().insert(value))
         }
         Value::Table(table) => {
             let ptr = args[2] as usize;
-            let entry = table.get(inner_idx);
-            let entry = write_entry(arca, entry);
-            copy_kernel_to_user(ptr, unsafe {
-                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
-            })?;
-            Ok(0)
-        }
-        _ => Err(SyscallError::BadType),
-    }
-}
-
-pub fn sys_set(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let target_idx = args[0] as usize;
-    let inner_idx = args[1] as usize;
-    let target = arca.descriptors().get(target_idx)?;
-    let datatype = target.datatype();
-    match datatype {
-        DataType::Tree => {
-            let value_idx = args[2] as usize;
-            let value = arca.descriptors_mut().take(value_idx)?;
-            let Value::Tree(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
-                unreachable!();
-            };
-            let value = tree.put(inner_idx, value);
-            Ok(arca.descriptors_mut().insert(value))
-        }
-        DataType::Table => {
-            let ptr = args[3] as usize;
-            let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
-            copy_user_to_kernel(
-                unsafe {
-                    &mut *(entry.as_mut_ptr()
-                        as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
-                },
-                ptr,
-            )?;
-            let entry = unsafe { MaybeUninit::assume_init(entry) };
-            let entry = read_entry(arca, entry)?;
-            let Value::Table(ref mut table) = arca.descriptors_mut().get_mut(target_idx)? else {
-                unreachable!();
-            };
-            let Ok(entry) = table.put(inner_idx, entry) else {
-                todo!();
-            };
+            let entry = table.get(inner_idx)?;
             let entry = write_entry(arca, entry);
             copy_kernel_to_user(ptr, unsafe {
                 &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
@@ -264,21 +209,21 @@ pub fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
             copy_kernel_to_user(ptr, &word.to_ne_bytes())?;
             Ok(0)
         }
-        Value::Error(error) => {
-            let error = core::mem::replace(error, Error::new(Value::Null));
+        Value::Exception(error) => {
+            let error = core::mem::replace(error, Exception::new(Value::default()));
             let idx = arca.descriptors_mut().insert(error.read());
             Ok(idx)
         }
         Value::Blob(blob) => {
-            let ptr = args[1] as usize;
-            let len = args[2] as usize;
-            let len = core::cmp::min(len, blob.len());
-            copy_kernel_to_user(ptr, &blob[..len])?;
+            let offset = args[1] as usize;
+            let ptr = args[2] as usize;
+            let len = args[3] as usize;
+            let len = core::cmp::min(len, blob.len() - offset);
+            copy_kernel_to_user(ptr, &blob.inner()[offset..offset + len])?;
             Ok(0)
         }
         Value::Page(_) => todo!(),
-        Value::Lambda(_) => todo!(),
-        Value::Thunk(_) => todo!(),
+        Value::Function(_) => todo!(),
         _ => Err(SyscallError::BadType),
     }
 }
@@ -287,16 +232,15 @@ pub fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
     let val = arca.descriptors().get(idx)?;
     let typ = match val {
-        Value::Null => defs::datatype::DATATYPE_NULL,
-        Value::Error(_) => defs::datatype::DATATYPE_ERROR,
+        Value::Null(_) => defs::datatype::DATATYPE_NULL,
+        Value::Exception(_) => defs::datatype::DATATYPE_EXCEPTION,
         Value::Word(_) => defs::datatype::DATATYPE_WORD,
         Value::Atom(_) => defs::datatype::DATATYPE_ATOM,
         Value::Blob(_) => defs::datatype::DATATYPE_BLOB,
-        Value::Tree(_) => defs::datatype::DATATYPE_TREE,
+        Value::Tuple(_) => defs::datatype::DATATYPE_TUPLE,
         Value::Page(_) => defs::datatype::DATATYPE_PAGE,
         Value::Table(_) => defs::datatype::DATATYPE_TABLE,
-        Value::Lambda(_) => defs::datatype::DATATYPE_LAMBDA,
-        Value::Thunk(_) => defs::datatype::DATATYPE_THUNK,
+        Value::Function(_) => defs::datatype::DATATYPE_FUNCTION,
     };
     Ok(typ as usize)
 }
@@ -322,18 +266,17 @@ pub fn sys_create_atom(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
-    unsafe {
-        let mut buffer = Box::new_uninit_slice(len);
-        copy_user_to_kernel(&mut buffer, ptr)?;
-        let buffer = buffer.assume_init();
-        Ok(arca.descriptors_mut().insert(Value::Blob(buffer.into())))
-    }
+    let mut buffer = Box::new_uninit_slice(len);
+    let buffer = copy_user_to_kernel(&mut buffer, ptr)?;
+    Ok(arca
+        .descriptors_mut()
+        .insert(Value::Blob(Blob::new(buffer))))
 }
 
-pub fn sys_create_tree(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_tuple(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
-    let buf = vec![Value::Null; len];
-    let val = Value::Tree(Tree::new(buf));
+    let buf = vec![Value::default(); len];
+    let val = Value::Tuple(Tuple::from_inner(internal::Tuple::new(buf)));
     Ok(arca.descriptors_mut().insert(val))
 }
 
@@ -349,50 +292,26 @@ pub fn sys_create_table(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> 
     Ok(arca.descriptors_mut().insert(val))
 }
 
-pub fn sys_continuation(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let ptr = args[0] as usize;
-    let mut idx = 0;
-    let mut continued: i32 = 1;
-    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
-    common::util::replace_with(arca, |arca| {
-        let (mut unloaded, cpu) = arca.unload_with_cpu();
-        let copy = unloaded.clone();
-        idx = unloaded
-            .descriptors_mut()
-            .insert(Value::Thunk(Concrete::new(copy).into()));
-        unloaded.load(cpu)
-    });
-    continued = 0;
-    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
-    Ok(idx)
-}
-
-pub fn sys_continuation_lambda(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let ptr = args[0] as usize;
-    let mut idx = 0;
-    let mut continued: i32 = 1;
-    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
-    common::util::replace_with(arca, |arca| {
-        let (mut unloaded, cpu) = arca.unload_with_cpu();
-        let copy = unloaded.clone();
-        idx = unloaded
-            .descriptors_mut()
-            .insert(Value::Lambda(Lambda::new(copy)));
-        unloaded.load(cpu)
-    });
-    continued = 0;
-    copy_kernel_to_user(ptr, &continued.to_ne_bytes())?;
-    Ok(idx)
+pub fn sys_create_function(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+    let arcane = args[0];
+    let data = args[1] as usize;
+    let data = arca.descriptors_mut().take(data)?;
+    let result = Function::new(arcane != 0, data)?;
+    Ok(arca.descriptors_mut().insert(result.into()))
 }
 
 pub fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     let lambda = args[0] as usize;
     let arg = args[1] as usize;
 
-    let f = arca.descriptors_mut().take(lambda)?;
+    let f: Function = arca
+        .descriptors_mut()
+        .take(lambda)?
+        .try_into()
+        .map_err(|_| SyscallError::BadType)?;
     let x = arca.descriptors_mut().take(arg)?;
 
-    let thunk = Thunk::new(f, x);
+    let thunk = f.apply(x);
     let idx = arca.descriptors_mut().insert(thunk.into());
     Ok(idx)
 }
@@ -415,8 +334,7 @@ pub fn sys_map(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
 
     let table = match arca.descriptors_mut().get_mut(table)? {
         Value::Table(table) => table,
-        Value::Lambda(lambda) => lambda.arca.mappings_mut(),
-        Value::Thunk(_) => todo!("mapping into Thunk"), //thunk.arca.mappings_mut(),
+        Value::Function(_) => todo!("mapping into Function"),
         _ => return Err(SyscallError::BadType),
     };
     let entry = table
@@ -457,27 +375,6 @@ pub fn sys_mmap(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
-pub fn sys_force(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
-    let thunk = args[0] as usize;
-    let thunk: Thunk = arca.descriptors_mut().take(thunk)?.try_into()?;
-
-    let mut idx = 0;
-    common::util::replace_with(arca, |arca| {
-        let (mut arca, cpu) = arca.unload_with_cpu();
-        let result = thunk.run_on(cpu);
-        idx = arca.descriptors_mut().insert(result);
-        arca.load(cpu)
-    });
-    Ok(idx)
-}
-
-pub fn sys_return_continuation_lambda(
-    _: [u64; 5],
-    arca: &mut LoadedArca,
-) -> ControlFlow<Value, Result<usize>> {
-    ControlFlow::Break(Value::Lambda(Lambda::new(arca.take())))
-}
-
 pub fn sys_call_with_current_continuation(
     args: [u64; 5],
     arca: &mut LoadedArca,
@@ -487,9 +384,11 @@ pub fn sys_call_with_current_continuation(
         Ok(x) => x,
         Err(e) => return ControlFlow::Continue(Err(e.into())),
     };
-    let k: Value = Lambda::new(arca.take()).into();
-    let result = Thunk::new(func, k);
-    ControlFlow::Break(result.into())
+    let Ok(func) = Function::try_from(func) else {
+        return ControlFlow::Continue(Err(SyscallError::BadType));
+    };
+    let k: Value = Function::from_inner(internal::Function::arcane(arca.take())).into();
+    ControlFlow::Break(func.apply(k).into())
 }
 
 pub fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
@@ -554,8 +453,8 @@ pub fn sys_error_append_int(args: [u64; 5], arca: &mut LoadedArca) -> Result<usi
 pub fn sys_error_return(_: [u64; 5], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
     let buffer = core::mem::take(arca.error_buffer_mut());
     log::error!("returning error: {buffer}");
-    let blob = Blob::string(buffer);
-    ControlFlow::Break(Error::new(blob.into()).into())
+    let blob = Blob::new(buffer);
+    ControlFlow::Break(Exception::new(blob).into())
 }
 
 fn copy_kernel_to_user(dst: usize, src: &[u8]) -> Result<()> {
@@ -652,8 +551,12 @@ impl From<DescriptorError> for SyscallError {
     }
 }
 
-impl From<TypeError> for SyscallError {
-    fn from(_: TypeError) -> Self {
-        SyscallError::BadType
+impl From<crate::types::Error> for SyscallError {
+    fn from(value: crate::types::Error) -> Self {
+        match value {
+            crate::types::Error::InvalidTableEntry(_) => SyscallError::BadArgument,
+            crate::types::Error::InvalidIndex(_) => SyscallError::BadIndex,
+            crate::types::Error::InvalidValue(_) => SyscallError::BadArgument,
+        }
     }
 }

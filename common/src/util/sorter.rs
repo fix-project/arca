@@ -13,6 +13,12 @@ pub struct Sorter<K: Hash + Eq + Clone + core::fmt::Debug, V> {
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
+impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Default for Sorter<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
     pub fn new() -> Self {
         Self {

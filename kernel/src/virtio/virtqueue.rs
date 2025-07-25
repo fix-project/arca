@@ -26,11 +26,15 @@ pub struct VirtQueue {
 }
 
 impl VirtQueue {
+    /// # Safety
+    ///
+    /// `info` must describe a valid VirtQueue with attached device, where the negotiated features
+    /// match those available in this driver. The VirtQueue must not be attached to any other
+    /// driver.
     pub unsafe fn new(name: &'static str, info: VirtQueueMetadata) -> Self {
-        let desc = core::ptr::from_raw_parts_mut(vm::pa2ka(info.desc) as *mut (), info.descriptors);
-        let used = core::ptr::from_raw_parts_mut(vm::pa2ka(info.used) as *mut (), info.descriptors);
-        let avail =
-            core::ptr::from_raw_parts_mut(vm::pa2ka(info.avail) as *mut (), info.descriptors);
+        let desc = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.desc), info.descriptors);
+        let used = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.used), info.descriptors);
+        let avail = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.avail), info.descriptors);
         VirtQueue {
             name,
             response_sorter: Sorter::new(),
@@ -89,6 +93,11 @@ impl<'a> BufferChain<'a> {
         }
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn size(&self) -> usize {
         self.car.len()
             + match self.cdr {
@@ -110,6 +119,11 @@ impl Buffer<'_> {
             Buffer::Immutable(items) => items.len(),
             Buffer::Mutable(items) => items.len(),
         }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

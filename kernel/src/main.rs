@@ -28,69 +28,57 @@ const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_server"));
 #[kmain]
 async fn kmain(args: &[usize]) {
     log::info!("setting up (have {} args)", args.len());
-    let id: Lambda = Thunk::from_elf(IDENTITY).run().try_into().unwrap();
-    let add: Lambda = Thunk::from_elf(ADD).run().try_into().unwrap();
-    let curry: Lambda = Thunk::from_elf(CURRY).run().try_into().unwrap();
-    let map: Lambda = Thunk::from_elf(MAP).run().try_into().unwrap();
-    let io: Lambda = Thunk::from_elf(IO).run().try_into().unwrap();
-    let server: Thunk = Thunk::from_elf(SERVER);
+    let id: Function = common::elfloader::load_elf(IDENTITY).unwrap();
+    let add: Function = common::elfloader::load_elf(ADD).unwrap();
+    let curry: Function = common::elfloader::load_elf(CURRY).unwrap();
+    let map: Function = common::elfloader::load_elf(MAP).unwrap();
+    let io: Function = common::elfloader::load_elf(IO).unwrap();
+    let server: Function = common::elfloader::load_elf(SERVER).unwrap();
 
     // identity function
     log::info!("testing id");
-    let x = Value::Atom(Atom::new("foo"));
-    let y = id.apply(x.clone()).run();
+    let x = Value::from(Atom::new("foo"));
+    let y = id(x.clone()).force();
     assert_eq!(x, y);
 
-    // add
     log::info!("testing add");
-    let x = Tree::new([10.into(), 20.into()]);
-    let y = add.clone().apply(x).run();
+    let mut x = Tuple::new(2);
+    x.set(0, 10);
+    x.set(1, 20);
+    let y = add.clone()(x).force();
     assert_eq!(y, 30.into());
 
     // curry add
     log::info!("testing curry");
-    let x = add.clone();
-    let n = 2;
-    let Value::Lambda(cadd) = curry.apply(x).run() else {
-        panic!();
-    };
-    let Value::Lambda(cadd) = cadd.apply(n).run() else {
-        panic!();
-    };
-    let Value::Lambda(cadd) = cadd.apply(10).run() else {
-        panic!();
-    };
-    let y = cadd.clone().apply(20).run();
-    let y: Thunk = y.try_into().unwrap();
-    let y = y.run();
+    let cadd = curry(add.clone(), 2);
+    let y = cadd.clone()(10, 20).force();
+    let y: Function = y.try_into().unwrap();
+    let y = y.force();
     assert_eq!(y, 30.into());
 
     // map
     log::info!("testing map");
-    let tuple = Tree::new([1.into(), 2.into(), 3.into(), 4.into()]);
-    let Value::Lambda(map) = map.apply(Value::Lambda(cadd)).run() else {
-        panic!();
-    };
-    let result = map.apply(tuple).run();
+    let tuple = Tuple::from((1, 2, 3, 4));
+    let result = map(cadd(10), tuple).force();
     let result = eval(result);
-    let expected = Tree::new([11.into(), 12.into(), 13.into(), 14.into()]).into();
+    let expected = Tuple::from((11, 12, 13, 14)).into();
     assert_eq!(result, expected);
 
     // I/O effects
     log::info!("testing I/O");
-    let f: Lambda = io.apply(Blob::from("in")).run().try_into().unwrap();
-    let f: Thunk = f.apply(Blob::from("out"));
+    let f = io("in", "out");
     let mut data = BTreeMap::new();
-    data.insert("in".to_string(), Blob::from("hello, world!").into());
-    let result = interpret(f, &mut data);
-    assert_eq!(result, Value::Null);
+    data.insert("in".to_string(), Blob::new("hello, world!").into());
+    interpret(f, &mut data);
     let value = data.get("out").unwrap();
-    assert_eq!(*value, Value::Blob(Blob::from("hello, world!")));
+    assert_eq!(*value, Value::Blob(Blob::new("hello, world!")));
+
+    log::info!("running HTTP server on (vsock) port 80");
 
     let mut listener = StreamListener::bind(SocketAddr::new(3, 80)).await.unwrap();
 
     let mut kv = BTreeMap::new();
-    kv.insert("count".to_string(), Value::Word(0.into()));
+    kv.insert("count".to_string(), Value::from(0));
     let kv = Arc::new(RwLock::new(kv));
 
     rt::spawn(async move {
@@ -103,101 +91,121 @@ async fn kmain(args: &[usize]) {
 
 pub fn eval(x: Value) -> Value {
     match x {
-        Value::Error(value) => Error::new(eval(value.into())).into(),
-        Value::Tree(values) => Value::Tree(values.iter().map(|x| eval(x.clone())).collect()),
-        Value::Thunk(thunk) => eval(thunk.run()),
+        Value::Exception(value) => Exception::new(eval(value.into())).into(),
+        Value::Tuple(mut values) => {
+            for i in 0..values.len() {
+                let x = values.take(i);
+                let y = eval(x);
+                values.set(i, y);
+            }
+            Value::Tuple(values)
+        }
+        Value::Function(f) => eval(f.force()),
         x => x,
     }
 }
 
-pub fn interpret(mut thunk: Thunk, data: &mut BTreeMap<String, Value>) -> Value {
+pub fn interpret(mut thunk: Function, data: &mut BTreeMap<String, Value>) -> Value {
+    let read = Blob::new("read");
+    let write = Blob::new("write");
+    let exit = Blob::new("exit");
     loop {
-        let result: Thunk = thunk.run().try_into().unwrap();
-        let read = Atom::new("read");
-        let write = Atom::new("write");
-        let exit = Atom::new("exit");
-        let (symbol, args) = result.symbolic().unwrap();
-        let symbol: Atom = symbol.clone().try_into().unwrap();
-        if symbol == read {
-            let file: Blob = args[0].clone().try_into().unwrap();
-            let s = String::from_utf8(file.into_inner().into()).unwrap();
+        let f: Function = thunk.force().try_into().unwrap();
+        assert!(f.is_symbolic());
+        let inner = f.into_inner();
+        let (symbol, mut args) = inner.read();
+        let symbol: Blob = symbol.try_into().unwrap();
+        assert_eq!(symbol, "effect".into());
+        let request: Blob = args.take(0).try_into().unwrap();
+
+        if request == read {
+            let file: Blob = args.take(1).try_into().unwrap();
+            let s = String::from_utf8(file.into_inner().into_inner().into()).unwrap();
             let value = data.get(&s).unwrap();
-            let k = args[1].clone();
-            thunk = k.apply(value.clone());
-        } else if symbol == write {
-            let file: Blob = args[0].clone().try_into().unwrap();
-            let s = String::from_utf8(file.into_inner().into()).unwrap();
-            let value = args[1].clone();
+            let k: Function = args.take(2).try_into().unwrap();
+            thunk = k(value.clone());
+        } else if request == write {
+            let file: Blob = args.take(1).try_into().unwrap();
+            let s = String::from_utf8(file.into_inner().into_inner().into()).unwrap();
+            let value = args.take(2);
             data.insert(s, value);
-            let k = args[2].clone();
-            thunk = k.apply(Value::Null);
-        } else if symbol == exit {
-            return args[0].clone();
+            let k: Function = args.take(3).try_into().unwrap();
+            thunk = k(Null::new());
+        } else if request == exit {
+            return args.take(1);
         } else {
-            panic!("invalid effect")
+            panic!("invalid effect: {request:?}")
         }
     }
 }
 
 pub async fn interpret_server(
-    mut thunk: Thunk,
+    mut f: Function,
     kv: Arc<RwLock<BTreeMap<String, Value>>>,
     mut stream: Stream,
 ) {
-    loop {
-        let result: Thunk = thunk.run().try_into().unwrap();
-        let get = Atom::new("get");
-        let set = Atom::new("set");
-        let cas = Atom::new("compare-and-swap");
-        let recv = Atom::new("recv");
-        let send = Atom::new("send");
-        let close = Atom::new("close");
+    let get = Blob::new("get");
+    let set = Blob::new("set");
+    let cas = Blob::new("compare-and-swap");
+    let recv = Blob::new("recv");
+    let send = Blob::new("send");
+    let close = Blob::new("close");
 
-        let (symbol, args) = result.symbolic().unwrap();
-        let symbol: Atom = symbol.clone().try_into().unwrap();
-        if symbol == get {
-            let file: Blob = args[0].clone().try_into().unwrap();
-            let key = String::from_utf8(file.into_inner().into()).unwrap();
+    loop {
+        let y: Function = f.force().try_into().unwrap();
+
+        assert!(y.is_symbolic());
+        let inner = y.into_inner();
+        let (symbol, mut args) = inner.read();
+        let symbol: Blob = symbol.try_into().unwrap();
+        assert_eq!(symbol, "effect".into());
+
+        let request: Blob = args.take(0).try_into().unwrap();
+
+        if request == get {
+            let file: Blob = args.take(1).try_into().unwrap();
+            let key = String::from_utf8(file.into_inner().into_inner().into()).unwrap();
             let kv = kv.read();
-            let value = kv.get(&key).cloned().unwrap_or(Value::Null);
-            let k: Lambda = args[1].clone().try_into().unwrap();
-            thunk = k.apply(value);
-        } else if symbol == set {
-            let file: Blob = args[0].clone().try_into().unwrap();
-            let key = String::from_utf8(file.into_inner().into()).unwrap();
-            let value = args[1].clone();
+            let value = kv.get(&key).cloned().unwrap_or_default();
+            let k: Function = args.take(2).try_into().unwrap();
+            f = k(value);
+        } else if request == set {
+            let file: Blob = args.take(1).try_into().unwrap();
+            let key = String::from_utf8(file.into_inner().into_inner().into()).unwrap();
+            let value = args.take(2);
             let mut kv = kv.write();
-            let old = kv.insert(key, value).unwrap_or(Value::Null);
-            let k: Lambda = args[2].clone().try_into().unwrap();
-            thunk = k.apply(old);
-        } else if symbol == recv {
+            let old = kv.insert(key, value).unwrap_or_default();
+            let k: Function = args.take(3).try_into().unwrap();
+            f = k(old);
+        } else if request == recv {
             let x = stream.read().await.unwrap();
-            let k: Lambda = args[0].clone().try_into().unwrap();
-            thunk = k.apply(Value::Blob(Blob::new(x)));
-        } else if symbol == send {
-            let data: Blob = args[0].clone().try_into().unwrap();
+            let k: Function = args.take(1).try_into().unwrap();
+            f = k(&*x);
+        } else if request == send {
+            let data: Blob = args.take(1).try_into().unwrap();
             stream.write(&data).await.unwrap();
-            let k: Lambda = args[1].clone().try_into().unwrap();
-            thunk = k.apply(Value::Null);
-        } else if symbol == cas {
-            let key: Blob = args[0].clone().try_into().unwrap();
-            let key = String::from_utf8(key.into_inner().into()).unwrap();
-            let expected = args[1].clone();
-            let replacement = args[2].clone();
-            let k: Lambda = args[3].clone().try_into().unwrap();
+            let k: Function = args.take(2).try_into().unwrap();
+            f = k(None);
+        } else if request == cas {
+            let key: Blob = args.take(1).try_into().unwrap();
+            let key = String::from_utf8(key.into_inner().into_inner().into()).unwrap();
+            let expected = args.take(2);
+            let replacement = args.take(3);
+            let k: Function = args.take(4).try_into().unwrap();
             let mut kv = kv.write();
-            let old = kv.get(&key).unwrap_or(&Value::Null);
+            let default = Value::default();
+            let old = kv.get(&key).unwrap_or(&default);
             if old == &expected {
-                let old = kv.insert(key, replacement).unwrap_or(Value::Null);
-                thunk = k.apply(old);
+                let old = kv.insert(key, replacement).unwrap_or_default();
+                f = k(old);
             } else {
-                thunk = k.apply(Value::Error(Error::new(replacement)));
+                f = k(Value::Exception(Exception::new(replacement)));
             }
-        } else if symbol == close {
+        } else if request == close {
             stream.close().await.unwrap();
             return;
         } else {
-            panic!("invalid effect: {symbol:?}");
+            panic!("invalid effect: {request:?}");
         }
     }
 }

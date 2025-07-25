@@ -156,6 +156,9 @@ pub fn backtrace(f: impl FnMut(*const (), Option<(String, usize)>)) {
 }
 
 #[inline(never)]
+/// # Safety
+///
+/// The value of `rbp` must be a valid base/frame pointer from which to backtrace.
 pub unsafe fn backtrace_from(
     mut rbp: *const usize,
     mut f: impl FnMut(*const (), Option<(String, usize)>),
