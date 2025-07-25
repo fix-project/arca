@@ -8,6 +8,5 @@
 #![feature(cstr_display)]
 #![feature(test)]
 
-pub mod client;
 pub mod runtime;
 pub mod vhost;
