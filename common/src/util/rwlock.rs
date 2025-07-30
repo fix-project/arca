@@ -5,25 +5,28 @@ use core::{
 };
 
 #[derive(Debug, Default)]
-pub struct RwLock<T> {
+pub struct RwLock<T: ?Sized> {
     count: AtomicUsize,
     data: UnsafeCell<T>,
 }
 
 #[derive(Debug)]
-pub struct ReadGuard<'a, T> {
+pub struct ReadGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
     data: &'a T,
 }
 
 #[derive(Debug)]
-pub struct WriteGuard<'a, T> {
+pub struct WriteGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
     data: &'a mut T,
 }
 
-impl<T> RwLock<T> {
-    pub const fn new(data: T) -> RwLock<T> {
+impl<T: ?Sized> RwLock<T> {
+    pub const fn new(data: T) -> RwLock<T>
+    where
+        T: Sized,
+    {
         RwLock {
             count: AtomicUsize::new(0),
             data: UnsafeCell::new(data),
@@ -83,6 +86,32 @@ impl<T> RwLock<T> {
         }
     }
 
+    pub fn upgrade(guard: ReadGuard<'_, T>) -> WriteGuard<'_, T>
+    where
+        T: Sized,
+    {
+        ReadGuard::upgrade(guard)
+    }
+
+    pub fn downgrade(guard: WriteGuard<'_, T>) -> ReadGuard<'_, T>
+    where
+        T: Sized,
+    {
+        WriteGuard::downgrade(guard)
+    }
+
+    pub fn unread(_: ReadGuard<'_, T>)
+    where
+        T: Sized,
+    {
+    }
+
+    pub fn unwrite(_: WriteGuard<'_, T>)
+    where
+        T: Sized,
+    {
+    }
+
     pub fn get(&self) -> *mut T {
         self.data.get()
     }
@@ -91,7 +120,7 @@ impl<T> RwLock<T> {
 unsafe impl<T: Send> Send for RwLock<T> {}
 unsafe impl<T: Send> Sync for RwLock<T> {}
 
-impl<'a, T> WriteGuard<'a, T> {
+impl<'a, T: ?Sized> WriteGuard<'a, T> {
     pub fn unlock(_: Self) {}
 
     pub fn downgrade(this: Self) -> ReadGuard<'a, T> {
@@ -105,13 +134,13 @@ impl<'a, T> WriteGuard<'a, T> {
     }
 }
 
-impl<T> Drop for WriteGuard<'_, T> {
+impl<T: ?Sized> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.count.store(0, Ordering::Release);
     }
 }
 
-impl<T> Deref for WriteGuard<'_, T> {
+impl<T: ?Sized> Deref for WriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -119,7 +148,7 @@ impl<T> Deref for WriteGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for WriteGuard<'_, T> {
+impl<T: ?Sized> DerefMut for WriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
     }
@@ -135,13 +164,13 @@ impl<'a, T> ReadGuard<'a, T> {
     }
 }
 
-impl<T> Drop for ReadGuard<'_, T> {
+impl<T: ?Sized> Drop for ReadGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.count.fetch_sub(1, Ordering::Release);
     }
 }
 
-impl<T> Deref for ReadGuard<'_, T> {
+impl<T: ?Sized> Deref for ReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {

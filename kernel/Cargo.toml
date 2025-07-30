@@ -17,11 +17,6 @@ klog-error = []
 klog-off = []
 debugcon = []
 
-[[bin]]
-name = "kernel"
-harness = false
-test = false
-
 [dependencies]
 bitfield-struct = "0.7.0"
 log = "0.4.21"

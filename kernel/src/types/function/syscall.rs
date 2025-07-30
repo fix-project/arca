@@ -15,8 +15,9 @@ pub type Result<T> = core::result::Result<T, SyscallError>;
 
 pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> ControlFlow<Value> {
     let regs = arca.registers();
-    let num = regs[Register::RDI];
+    let num = regs[Register::RAX];
     let args = [
+        regs[Register::RDI],
         regs[Register::RSI],
         regs[Register::RDX],
         regs[Register::R10],
@@ -64,6 +65,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         defs::syscall::SYS_APPLY => sys_apply(args, arca),
         defs::syscall::SYS_MAP => sys_map(args, arca),
         defs::syscall::SYS_MMAP => sys_mmap(args, arca),
+        defs::syscall::SYS_MPROTECT => sys_mprotect(args, arca),
 
         defs::syscall::SYS_CALL_WITH_CURRENT_CONTINUATION => {
             sys_call_with_current_continuation(args, arca)?
@@ -82,7 +84,8 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         defs::syscall::SYS_ERROR_RETURN => sys_error_return(args, arca)?,
         _ => {
             log::error!("invalid syscall {num}");
-            Err(SyscallError::BadSyscall)
+            panic!("invalid syscall @ {:#x}", regs[Register::RIP]);
+            // Err(SyscallError::BadSyscall)
         }
     };
     let regs = arca.registers_mut();
@@ -99,19 +102,19 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
     ControlFlow::Continue(())
 }
 
-pub fn sys_drop(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_drop(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let src = args[0] as usize;
     arca.descriptors_mut().take(src)?;
     Ok(0)
 }
 
-pub fn sys_clone(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_clone(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let src = args[0] as usize;
     let clone = arca.descriptors_mut().get(src)?.clone();
     Ok(arca.descriptors_mut().insert(clone))
 }
 
-pub fn sys_exit(args: [u64; 5], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
+pub fn sys_exit(args: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
     let idx = args[0] as usize;
     let value = match arca.descriptors_mut().take(idx) {
         Ok(value) => value,
@@ -120,7 +123,7 @@ pub fn sys_exit(args: [u64; 5], arca: &mut LoadedArca) -> ControlFlow<Value, Res
     ControlFlow::Break(value)
 }
 
-pub fn sys_len(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_len(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
     let ptr = args[1] as usize;
     let len = match arca.descriptors().get(idx)? {
@@ -135,7 +138,7 @@ pub fn sys_len(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
-pub fn sys_set(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let target_idx = args[0] as usize;
     let inner_idx = args[1] as usize;
     let target = arca.descriptors().get(target_idx)?;
@@ -178,7 +181,7 @@ pub fn sys_set(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     }
 }
 
-pub fn sys_get(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let target_idx = args[0] as usize;
     let inner_idx = args[1] as usize;
     let target = arca.descriptors_mut().get_mut(target_idx)?;
@@ -200,14 +203,14 @@ pub fn sys_get(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     }
 }
 
-pub fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
     match arca.descriptors_mut().get_mut(idx)? {
         Value::Word(word) => {
             let ptr = args[1] as usize;
             let word = word.read();
             copy_kernel_to_user(ptr, &word.to_ne_bytes())?;
-            Ok(0)
+            Ok(8)
         }
         Value::Exception(error) => {
             let error = core::mem::replace(error, Exception::new(Value::default()));
@@ -220,7 +223,7 @@ pub fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
             let len = args[3] as usize;
             let len = core::cmp::min(len, blob.len() - offset);
             copy_kernel_to_user(ptr, &blob.inner()[offset..offset + len])?;
-            Ok(0)
+            Ok(len)
         }
         Value::Page(_) => todo!(),
         Value::Function(_) => todo!(),
@@ -228,7 +231,7 @@ pub fn sys_read(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     }
 }
 
-pub fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_type(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
     let val = arca.descriptors().get(idx)?;
     let typ = match val {
@@ -245,12 +248,12 @@ pub fn sys_type(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(typ as usize)
 }
 
-pub fn sys_create_word(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_word(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let val = args[0];
     Ok(arca.descriptors_mut().insert(Word::new(val).into()))
 }
 
-pub fn sys_create_atom(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_atom(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
     unsafe {
@@ -263,7 +266,7 @@ pub fn sys_create_atom(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     }
 }
 
-pub fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
     let mut buffer = Box::new_uninit_slice(len);
@@ -273,26 +276,26 @@ pub fn sys_create_blob(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
         .insert(Value::Blob(Blob::new(buffer))))
 }
 
-pub fn sys_create_tuple(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_tuple(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let buf = vec![Value::default(); len];
     let val = Value::Tuple(Tuple::from_inner(internal::Tuple::new(buf)));
     Ok(arca.descriptors_mut().insert(val))
 }
 
-pub fn sys_create_page(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_page(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Page(Page::new(len));
     Ok(arca.descriptors_mut().insert(val))
 }
 
-pub fn sys_create_table(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_table(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Table(Table::new(len));
     Ok(arca.descriptors_mut().insert(val))
 }
 
-pub fn sys_create_function(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_create_function(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let arcane = args[0];
     let data = args[1] as usize;
     let data = arca.descriptors_mut().take(data)?;
@@ -300,7 +303,7 @@ pub fn sys_create_function(args: [u64; 5], arca: &mut LoadedArca) -> Result<usiz
     Ok(arca.descriptors_mut().insert(result.into()))
 }
 
-pub fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let lambda = args[0] as usize;
     let arg = args[1] as usize;
 
@@ -316,7 +319,7 @@ pub fn sys_apply(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(idx)
 }
 
-pub fn sys_map(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let table = args[0] as usize;
     let addr = args[1] as usize;
     let ptr = args[2] as usize;
@@ -348,7 +351,7 @@ pub fn sys_map(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
-pub fn sys_mmap(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let addr = args[0] as usize;
     let ptr = args[1] as usize;
 
@@ -375,8 +378,49 @@ pub fn sys_mmap(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
+pub fn sys_mprotect(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let addr = args[0] as usize;
+    let mode = args[1] as u32;
+
+    match mode {
+        defs::entry_mode::ENTRY_MODE_NONE => {
+            let _ = arca.cpu().map(addr, Entry::Null(4096));
+        }
+        defs::entry_mode::ENTRY_MODE_READ_ONLY => {
+            let old = arca
+                .cpu()
+                .map(addr, Entry::Null(4096))
+                .unwrap_or(Entry::Null(4096));
+            let new = match old {
+                arca::Entry::Null(_) => arca::Entry::ROPage(Page::new(4096)),
+                arca::Entry::ROPage(_) => old,
+                arca::Entry::RWPage(page) => arca::Entry::ROPage(page),
+                arca::Entry::ROTable(_) => old,
+                arca::Entry::RWTable(table) => arca::Entry::ROTable(table),
+            };
+            let _ = arca.cpu().map(addr, new);
+        }
+        defs::entry_mode::ENTRY_MODE_READ_WRITE => {
+            let old = arca
+                .cpu()
+                .map(addr, Entry::Null(4096))
+                .unwrap_or(Entry::Null(4096));
+            let new = match old {
+                arca::Entry::Null(_) => arca::Entry::RWPage(Page::new(4096)),
+                arca::Entry::ROPage(page) => arca::Entry::RWPage(page),
+                arca::Entry::RWPage(_) => old,
+                arca::Entry::ROTable(table) => arca::Entry::RWTable(table),
+                arca::Entry::RWTable(_) => old,
+            };
+            let _ = arca.cpu().map(addr, new);
+        }
+        _ => return Err(SyscallError::BadArgument),
+    }
+    Ok(0)
+}
+
 pub fn sys_call_with_current_continuation(
-    args: [u64; 5],
+    args: [u64; 6],
     arca: &mut LoadedArca,
 ) -> ControlFlow<Value, Result<usize>> {
     let func = args[0] as usize;
@@ -391,7 +435,7 @@ pub fn sys_call_with_current_continuation(
     ControlFlow::Break(func.apply(k).into())
 }
 
-pub fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_show(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
     let idx = args[2] as usize;
@@ -402,11 +446,11 @@ pub fn sys_show(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
         .map_err(|_| SyscallError::BadArgument)?;
 
     let val = &arca.descriptors().get(idx)?;
-    log::warn!("user message - \"{msg}\": {val:?}");
+    log::warn!("\"{msg}\": {val:?}");
     Ok(0)
 }
 
-pub fn sys_log(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
+pub fn sys_log(args: [u64; 6], _: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
 
@@ -415,11 +459,11 @@ pub fn sys_log(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
     let msg = String::from_utf8(unsafe { buffer.assume_init().into() })
         .map_err(|_| SyscallError::BadArgument)?;
 
-    log::warn!("user message - \"{msg}\"");
+    log::warn!("\"{msg}\"");
     Ok(0)
 }
 
-pub fn sys_log_int(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
+pub fn sys_log_int(args: [u64; 6], _: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
     let val = args[2];
@@ -429,11 +473,11 @@ pub fn sys_log_int(args: [u64; 5], _: &mut LoadedArca) -> Result<usize> {
     let msg = String::from_utf8(unsafe { buffer.assume_init().into() })
         .map_err(|_| SyscallError::BadArgument)?;
 
-    log::warn!("user message - \"{msg}\": {val} ({val:#x})");
+    log::warn!("\"{msg}\": {val} ({val:#x})");
     Ok(0)
 }
 
-pub fn sys_error_append(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_error_append(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
     let mut buf = Box::new_uninit_slice(len);
@@ -443,14 +487,14 @@ pub fn sys_error_append(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> 
     Ok(0)
 }
 
-pub fn sys_error_append_int(args: [u64; 5], arca: &mut LoadedArca) -> Result<usize> {
+pub fn sys_error_append_int(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let int = args[0];
     let s = format!("{int}");
     arca.error_buffer_mut().push_str(&s);
     Ok(0)
 }
 
-pub fn sys_error_return(_: [u64; 5], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
+pub fn sys_error_return(_: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
     let buffer = core::mem::take(arca.error_buffer_mut());
     log::error!("returning error: {buffer}");
     let blob = Blob::new(buffer);

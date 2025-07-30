@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct Flow {
     pub src: SocketAddr,
     pub dst: SocketAddr,

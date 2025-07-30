@@ -178,7 +178,7 @@ impl arca::Runtime for Runtime {
     fn read_word(word: &arca::Word<Self>) -> u64 {
         unsafe {
             let mut result = 0;
-            syscall_result(defs::arca_word_read(
+            syscall_result_raw(defs::arca_word_read(
                 word.inner().as_raw() as i64,
                 &mut result,
             ))

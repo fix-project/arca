@@ -4,20 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-klog-trace = ["kernel/klog-trace"]
-klog-debug = ["kernel/klog-debug"]
-klog-info = ["kernel/klog-info"]
-klog-warn = ["kernel/klog-warn"]
-klog-error = ["kernel/klog-error"]
-klog-off = ["kernel/klog-off"]
-debugcon = ["kernel/debugcon"]
+klog-trace = ["arcade/klog-trace"]
+klog-debug = ["arcade/klog-debug"]
+klog-info = ["arcade/klog-info"]
+klog-warn = ["arcade/klog-warn"]
+klog-error = ["arcade/klog-error"]
+klog-off = ["arcade/klog-off"]
+debugcon = ["arcade/debugcon"]
 
 [dependencies]
 kvm-bindings = { version = "0.13.0" }
 kvm-ioctls = "0.23.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
-kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none" }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"

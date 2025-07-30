@@ -1,7 +1,5 @@
 use core::ops::{Deref, DerefMut};
 
-use alloc::string::ToString as _;
-
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]

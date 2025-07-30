@@ -20,8 +20,6 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
     let mut registers = [0; 20];
     registers[16] = start_address;
 
-    let mut highest_addr = 0;
-
     let mut table = R::create_table(0);
 
     for (i, segment) in segments.iter().enumerate() {
@@ -37,7 +35,7 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
                 let memsz = segment.p_memsz as usize;
 
                 let mut pages = (offset + memsz) / 4096;
-                if (offset + memsz % 4096) > 0 {
+                if ((offset + memsz) % 4096) > 0 {
                     pages += 1;
                 }
 
@@ -88,9 +86,9 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
                             .map(page_start_memory + page_start, Entry::ROPage(unique_page))
                             .unwrap();
                     }
-                    highest_addr = core::cmp::max(highest_addr, page_start_memory + page_start);
                 }
             }
+            elf::abi::PT_TLS => {}
             elf::abi::PT_PHDR => {
                 // program header
             }

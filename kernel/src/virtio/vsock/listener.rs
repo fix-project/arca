@@ -30,6 +30,7 @@ impl StreamListener {
             rx,
             peer_rx_closed: false,
             peer_tx_closed: false,
+            closed: false,
         })
     }
 }

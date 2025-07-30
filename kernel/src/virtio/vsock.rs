@@ -10,7 +10,6 @@ pub mod message;
 pub mod stream;
 
 pub use addr::*;
-use alloc::sync::Arc;
 pub use driver::*;
 pub use flow::*;
 pub use header::*;

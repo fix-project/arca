@@ -42,8 +42,8 @@ impl Driver {
         for _ in 0..len / 2 {
             crate::rt::spawn(this.clone().recv_task());
         }
-
         crate::rt::spawn(this.clone().poll_task());
+
         this
     }
 

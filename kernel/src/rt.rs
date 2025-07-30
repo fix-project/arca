@@ -19,6 +19,8 @@ use crate::{kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
+pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
 pub struct Executor {
     pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
     sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
@@ -54,8 +56,8 @@ impl Executor {
     #[inline(never)]
     async fn resolve<F, T>(future: F, entry: Arc<RwLock<Entry<T>>>)
     where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
+        F: Future<Output = T> + Send,
+        T: Send,
     {
         let result = future.await;
         let mut entry = entry.write();
@@ -86,6 +88,29 @@ impl Executor {
         let mut tasks = self.pending.write();
         tasks.push_back(task);
         handle
+    }
+
+    pub fn spawn_blocking<'a, F, T>(&self, future: F) -> T
+    where
+        F: Future<Output = T> + Send + 'a,
+        T: Send + 'a,
+    {
+        let entry = Arc::new(RwLock::new(Entry::Nothing));
+        let future = Self::resolve(future, entry.clone());
+        unsafe {
+            let pin: Pin<Box<dyn Future<Output = ()> + Send + 'a>> = Box::pin(future);
+            let pin: BoxFuture = core::mem::transmute(pin);
+            let task = Arc::new(Task {
+                future: SpinLock::new(pin),
+                pending: self.pending.clone(),
+            });
+            let handle = JoinHandle { entry };
+            self.active.fetch_add(1, Ordering::AcqRel);
+            let mut tasks = self.pending.write();
+            tasks.push_back(task);
+            core::mem::drop(tasks);
+            handle.join()
+        }
     }
 
     #[inline(never)]
@@ -154,22 +179,39 @@ impl Executor {
         TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
     }
 
+    pub fn tick(&self) {
+        crate::interrupts::must_be_enabled();
+        let mut anything = false;
+        anything |= self.wake_sleeping();
+        anything |= self.run_pending();
+        if !anything {
+            self.sleep();
+        }
+    }
+
     pub fn run(&self) {
         self.diff();
         while self.active.load(Ordering::Acquire) != 0 {
-            crate::interrupts::must_be_enabled();
-            let mut anything = false;
-            anything |= self.wake_sleeping();
-            anything |= self.run_pending();
-            if !anything {
-                self.sleep();
-            }
+            self.tick();
         }
     }
 }
 
 pub struct JoinHandle<T> {
     entry: Arc<RwLock<Entry<T>>>,
+}
+
+impl<T> JoinHandle<T> {
+    fn join(self) -> T {
+        loop {
+            if let Some(mut entry) = self.entry.try_write() {
+                if let Entry::Finished(value) = &mut *entry {
+                    return value.take().unwrap();
+                }
+            }
+            EXECUTOR.tick();
+        }
+    }
 }
 
 impl<T> Future for JoinHandle<T> {
@@ -193,6 +235,14 @@ where
     T: Send + 'static,
 {
     EXECUTOR.spawn(future)
+}
+
+pub fn spawn_blocking<F, T>(future: F) -> T
+where
+    F: Future<Output = T> + Send,
+    T: Send,
+{
+    EXECUTOR.spawn_blocking(future)
 }
 
 pub fn run() {

@@ -138,6 +138,24 @@ impl<R: Runtime> From<u64> for Value<R> {
     }
 }
 
+impl<R: Runtime> From<usize> for Value<R> {
+    fn from(value: usize) -> Self {
+        Value::Word((value as u64).into())
+    }
+}
+
+impl<R: Runtime> From<i32> for Value<R> {
+    fn from(value: i32) -> Self {
+        Value::Word((value as u64).into())
+    }
+}
+
+impl<R: Runtime> From<u32> for Value<R> {
+    fn from(value: u32) -> Self {
+        Value::Word((value as u64).into())
+    }
+}
+
 impl<R: Runtime> From<&[u8]> for Value<R> {
     fn from(value: &[u8]) -> Self {
         Value::Blob(value.into())
@@ -442,7 +460,7 @@ impl<R: Runtime> Table<R> {
     }
 
     pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, R::Error> {
-        let result = if address + entry.len() >= self.len() {
+        let result = if address + entry.len() > self.len() {
             try_replace_with(self, |this: Self| -> Result<Self, R::Error> {
                 let mut embiggened = R::create_table(this.len() * 512);
                 embiggened.set(0, Entry::RWTable(this))?;

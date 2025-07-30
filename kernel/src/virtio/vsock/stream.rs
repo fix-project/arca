@@ -7,6 +7,7 @@ pub struct Stream {
     pub(crate) rx: Receiver,
     pub(crate) peer_rx_closed: bool,
     pub(crate) peer_tx_closed: bool,
+    pub(crate) closed: bool,
 }
 
 impl Stream {
@@ -28,6 +29,7 @@ impl Stream {
             rx,
             peer_rx_closed: false,
             peer_tx_closed: false,
+            closed: false,
         })
     }
 
@@ -62,15 +64,23 @@ impl Stream {
         }
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    async fn close_internal(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
         shutdown(self.outbound, true, true).await;
 
         loop {
             let result = self.rx.recv().await?;
             if result == StreamEvent::Reset {
+                self.closed = true;
                 return Ok(());
             };
         }
+    }
+
+    pub async fn close(mut self) -> Result<()> {
+        self.close_internal().await
     }
 
     pub fn peer(&self) -> SocketAddr {
@@ -79,5 +89,13 @@ impl Stream {
 
     pub fn local(&self) -> SocketAddr {
         self.local
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if !self.closed {
+            let _ = crate::rt::spawn_blocking(self.close_internal());
+        }
     }
 }

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io::{self, Read},
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -179,15 +180,17 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
             .unwrap();
         let vcpu_exit = vcpu_fd.run().expect("run failed");
         match vcpu_exit {
-            VcpuExit::IoIn(addr, data) => println!(
-                "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
-                addr, data[0],
-            ),
+            VcpuExit::IoIn(addr, data) => match addr {
+                0xe9 => {
+                    io::stdin().read_exact(data).unwrap();
+                }
+                addr => println!(
+                    "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
+                    addr, data[0],
+                ),
+            },
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
-                    if data[0] == 0 {
-                        return;
-                    }
                     ExitCode::from(data[0]).exit_process();
                 }
                 1 => {
