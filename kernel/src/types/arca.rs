@@ -13,6 +13,7 @@ pub struct Arca {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     error_buffer: Option<String>,
+    fsbase: u64,
 }
 
 impl Arca {
@@ -26,6 +27,7 @@ impl Arca {
             register_file,
             descriptors,
             error_buffer: None,
+            fsbase: 0,
         }
     }
 
@@ -41,11 +43,17 @@ impl Arca {
             register_file: register_file.into(),
             descriptors,
             error_buffer: None,
+            fsbase: 0,
         }
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
         cpu.activate_address_space(self.page_table);
+        unsafe {
+            core::arch::asm! {
+                "wrfsbase {base}", base=in(reg) self.fsbase
+            };
+        }
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
@@ -126,6 +134,12 @@ impl<'a> LoadedArca<'a> {
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
         let page_table = self.cpu.deactivate_address_space();
+        let mut fsbase: u64;
+        unsafe {
+            core::arch::asm! {
+                "rdfsbase {base}", base=out(reg) fsbase
+            };
+        }
 
         (
             Arca {
@@ -133,6 +147,7 @@ impl<'a> LoadedArca<'a> {
                 descriptors: self.descriptors,
                 page_table,
                 error_buffer: self.error_buffer,
+                fsbase,
             },
             self.cpu,
         )
@@ -142,6 +157,11 @@ impl<'a> LoadedArca<'a> {
         core::mem::swap(&mut self.register_file, &mut other.register_file);
         core::mem::swap(&mut self.descriptors, &mut other.descriptors);
         core::mem::swap(&mut self.error_buffer, &mut other.error_buffer);
+        let mut fsbase: u64;
+        unsafe {
+            core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
+        }
+        other.fsbase = fsbase;
         self.cpu.swap_address_space(&mut other.page_table);
     }
 

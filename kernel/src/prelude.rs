@@ -22,9 +22,7 @@ pub use crate::{
         PageTable512GBEntry,
     },
     shutdown,
-    types::{
-        Atom, Blob, Entry, Exception, Function, Null, Page, Runtime, Table, Tuple, Value, Word,
-    },
+    types::{Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
 };
 pub use arca::DataType;
 pub use common::buddy::BuddyAllocator;

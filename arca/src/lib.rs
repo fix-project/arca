@@ -6,16 +6,14 @@ use core::ops::{Deref, DerefMut};
 
 pub mod prelude {
     pub use super::{
-        Atom, Blob, DataType, Entry, Exception, Function, Null, Page, Runtime as _, Table, Tuple,
-        Value, ValueRef, Word,
+        Blob, DataType, Entry, Function, Null, Page, Runtime as _, Table, Tuple, Value, ValueRef,
+        Word,
     };
 }
 
 pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
     type Null: Clone + core::fmt::Debug + Eq + PartialEq;
     type Word: Clone + core::fmt::Debug + Eq + PartialEq;
-    type Exception: Clone + core::fmt::Debug + Eq + PartialEq;
-    type Atom: Clone + core::fmt::Debug + Eq + PartialEq;
     type Blob: Clone + core::fmt::Debug + Eq + PartialEq;
     type Tuple: Clone + core::fmt::Debug + Eq + PartialEq;
     type Page: Clone + core::fmt::Debug + Eq + PartialEq;
@@ -26,8 +24,6 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
 
     fn create_null() -> Null<Self>;
     fn create_word(word: u64) -> Word<Self>;
-    fn create_exception(value: Value<Self>) -> Exception<Self>;
-    fn create_atom(bytes: &[u8]) -> Atom<Self>;
     fn create_blob(bytes: &[u8]) -> Blob<Self>;
     fn create_tuple(len: usize) -> Tuple<Self>;
     fn create_page(len: usize) -> Page<Self>;
@@ -37,7 +33,6 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
     fn value_len(value: ValueRef<Self>) -> usize;
 
     fn read_word(word: &Word<Self>) -> u64;
-    fn read_exception(exception: Exception<Self>) -> Value<Self>;
     fn read_blob(blob: &Blob<Self>, offset: usize, buf: &mut [u8]) -> usize;
     fn read_page(page: &Page<Self>, offset: usize, buf: &mut [u8]) -> usize;
 
@@ -68,8 +63,6 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
 pub enum Value<R: Runtime> {
     Null(Null<R>),
     Word(Word<R>),
-    Exception(Exception<R>),
-    Atom(Atom<R>),
     Blob(Blob<R>),
     Tuple(Tuple<R>),
     Page(Page<R>),
@@ -87,8 +80,6 @@ impl<R: Runtime> Default for Value<R> {
 pub enum RawValue<R: Runtime> {
     Null(R::Null),
     Word(R::Word),
-    Exception(R::Exception),
-    Atom(R::Atom),
     Blob(R::Blob),
     Tuple(R::Tuple),
     Page(R::Page),
@@ -101,8 +92,6 @@ impl<R: Runtime> Value<R> {
         match self {
             Value::Null(x) => RawValue::Null(x.into_inner()),
             Value::Word(x) => RawValue::Word(x.into_inner()),
-            Value::Exception(x) => RawValue::Exception(x.into_inner()),
-            Value::Atom(x) => RawValue::Atom(x.into_inner()),
             Value::Blob(x) => RawValue::Blob(x.into_inner()),
             Value::Tuple(x) => RawValue::Tuple(x.into_inner()),
             Value::Page(x) => RawValue::Page(x.into_inner()),
@@ -115,8 +104,6 @@ impl<R: Runtime> Value<R> {
         match self {
             Value::Null(_) => DataType::Null,
             Value::Word(_) => DataType::Word,
-            Value::Exception(_) => DataType::Exception,
-            Value::Atom(_) => DataType::Atom,
             Value::Blob(_) => DataType::Blob,
             Value::Tuple(_) => DataType::Tuple,
             Value::Page(_) => DataType::Page,
@@ -172,8 +159,6 @@ macro_rules! foreach_type_item {
     ($e:ident) => {
         $e! {Null}
         $e! {Word}
-        $e! {Atom}
-        $e! {Exception}
         $e! {Blob}
         $e! {Tuple}
         $e! {Page}
@@ -186,8 +171,6 @@ macro_rules! foreach_type_item {
 pub enum ValueRef<'a, R: Runtime> {
     Null(&'a Null<R>),
     Word(&'a Word<R>),
-    Exception(&'a Exception<R>),
-    Atom(&'a Atom<R>),
     Blob(&'a Blob<R>),
     Tuple(&'a Tuple<R>),
     Page(&'a Page<R>),
@@ -200,8 +183,6 @@ impl<'a, R: Runtime> ValueRef<'a, R> {
         match self {
             ValueRef::Null(x) => RawValueRef::Null(x.inner()),
             ValueRef::Word(x) => RawValueRef::Word(x.inner()),
-            ValueRef::Exception(x) => RawValueRef::Exception(x.inner()),
-            ValueRef::Atom(x) => RawValueRef::Atom(x.inner()),
             ValueRef::Blob(x) => RawValueRef::Blob(x.inner()),
             ValueRef::Tuple(x) => RawValueRef::Tuple(x.inner()),
             ValueRef::Page(x) => RawValueRef::Page(x.inner()),
@@ -215,8 +196,6 @@ impl<'a, R: Runtime> ValueRef<'a, R> {
 pub enum RawValueRef<'a, R: Runtime> {
     Null(&'a R::Null),
     Word(&'a R::Word),
-    Exception(&'a R::Exception),
-    Atom(&'a R::Atom),
     Blob(&'a R::Blob),
     Tuple(&'a R::Tuple),
     Page(&'a R::Page),
@@ -228,8 +207,6 @@ pub enum RawValueRef<'a, R: Runtime> {
 pub enum DataType {
     Null,
     Word,
-    Exception,
-    Atom,
     Blob,
     Tuple,
     Page,
@@ -324,22 +301,6 @@ impl<R: Runtime> Word<R> {
 impl<R: Runtime> From<u64> for Word<R> {
     fn from(value: u64) -> Self {
         Self::new(value)
-    }
-}
-
-impl<R: Runtime> Exception<R> {
-    pub fn new(value: impl Into<Value<R>>) -> Self {
-        R::create_exception(value.into())
-    }
-
-    pub fn read(self) -> Value<R> {
-        R::read_exception(self)
-    }
-}
-
-impl<R: Runtime> Atom<R> {
-    pub fn new(data: impl AsRef<[u8]>) -> Self {
-        R::create_atom(data.as_ref())
     }
 }
 

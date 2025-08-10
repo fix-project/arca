@@ -14,8 +14,6 @@ pub enum Error {
 impl arca::Runtime for Runtime {
     type Null = super::internal::Null;
     type Word = super::internal::Word;
-    type Exception = super::internal::Exception;
-    type Atom = super::internal::Atom;
     type Blob = super::internal::Blob;
     type Tuple = super::internal::Tuple;
     type Page = super::internal::Page;
@@ -30,14 +28,6 @@ impl arca::Runtime for Runtime {
 
     fn create_word(word: u64) -> arca::Word<Self> {
         arca::Word::from_inner(internal::Word::new(word))
-    }
-
-    fn create_exception(value: arca::Value<Self>) -> arca::Exception<Self> {
-        arca::Exception::from_inner(internal::Exception::new(value))
-    }
-
-    fn create_atom(bytes: &[u8]) -> arca::Atom<Self> {
-        arca::Atom::from_inner(internal::Atom::new(bytes))
     }
 
     fn create_blob(bytes: &[u8]) -> arca::Blob<Self> {
@@ -90,8 +80,6 @@ impl arca::Runtime for Runtime {
         match value.inner() {
             arca::RawValueRef::Null(_) => 0,
             arca::RawValueRef::Word(x) => core::mem::size_of_val(x),
-            arca::RawValueRef::Exception(_) => todo!(),
-            arca::RawValueRef::Atom(_) => todo!(),
             arca::RawValueRef::Blob(x) => x.len(),
             arca::RawValueRef::Tuple(x) => x.len(),
             arca::RawValueRef::Page(x) => x.size(),
@@ -102,10 +90,6 @@ impl arca::Runtime for Runtime {
 
     fn read_word(word: &arca::Word<Self>) -> u64 {
         word.inner().read()
-    }
-
-    fn read_exception(exception: arca::Exception<Self>) -> arca::Value<Self> {
-        exception.into_inner().read()
     }
 
     fn read_blob(blob: &arca::Blob<Self>, offset: usize, buf: &mut [u8]) -> usize {

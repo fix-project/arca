@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::cmp::Eq;
 use core::hash::Hash;
 use hashbrown::HashMap;
@@ -44,12 +45,30 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
         }
     }
 
+    pub fn try_receiver(&self, port: K) -> Option<Receiver<K, V>> {
+        let mut channels = self.channels.lock();
+        let (tx, rx) = channel::unbounded();
+        if channels.contains_key(&port) {
+            return None;
+        }
+        channels.insert(port.clone(), tx);
+        Some(Receiver {
+            port,
+            rx,
+            channels: self.channels.clone(),
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.channels.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn keys(&self) -> Vec<K> {
+        self.channels.lock().keys().cloned().collect()
     }
 }
 
@@ -61,8 +80,12 @@ pub struct Receiver<K: Hash + Eq + Clone + core::fmt::Debug, V> {
 }
 
 impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Receiver<K, V> {
-    pub async fn recv(&mut self) -> Result<V, ChannelClosed> {
+    pub async fn recv(&self) -> Result<V, ChannelClosed> {
         self.rx.recv().await
+    }
+
+    pub fn key(&self) -> &K {
+        &self.port
     }
 }
 

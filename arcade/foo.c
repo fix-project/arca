@@ -1,18 +1,17 @@
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
   printf("hello, world!\n");
-  FILE *f = fopen("output.txt", "w");
-  fprintf(f, "hello from userspace");
+  FILE *f = fopen("/mnt/output.txt", "w");
+  int result = fprintf(f, "hello from Arca\n");
   fclose(f);
+  FILE *g = fopen("/mnt/input.txt", "r");
   char buf[1024];
-  printf("enter some text: ");
+  fgets(buf, sizeof(buf), g);
+  fclose(g);
+  printf("input said: %s\n", buf);
   fflush(stdout);
-  fgets(buf, sizeof(buf), stdin);
-  printf("kernel said: %s\n", buf);
-  exit(0);
 }

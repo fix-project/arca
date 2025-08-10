@@ -1,4 +1,5 @@
 use kernel::prelude::*;
+use ninep::*;
 
 use super::*;
 
@@ -17,19 +18,20 @@ struct UnionData {
     entries: Arc<RwLock<Vec<Mount>>>,
 }
 
+#[derive(Clone)]
 struct Union {
     data: UnionData,
     access: Option<Access>,
 }
 
 struct Mount {
-    object: Object,
+    object: ClosedNode,
     access: Option<Access>,
     create: bool,
 }
 
 impl Mount {
-    pub fn new(object: Object, create: bool) -> Self {
+    pub fn new(object: ClosedNode, create: bool) -> Self {
         Mount {
             object,
             access: None,
@@ -39,7 +41,7 @@ impl Mount {
 }
 
 enum MountEnt {
-    Object(Object),
+    Node(ClosedNode),
     Union(UnionData),
 }
 
@@ -51,11 +53,11 @@ pub enum MountType {
 }
 
 impl Filesystem {
-    pub fn new(base: Dir) -> Self {
+    pub fn new(base: ClosedDir) -> Self {
         let mut mounts = BTreeMap::new();
         mounts.insert(
             PathBuf::from("".to_owned()),
-            MountEnt::Object(Object::Dir(base)),
+            MountEnt::Node(ClosedNode::Dir(base)),
         );
         let data = FilesystemData {
             mounts: Arc::new(RwLock::new(mounts)),
@@ -80,7 +82,7 @@ impl Filesystem {
 
     pub async fn attach(
         &mut self,
-        object: Object,
+        object: ClosedNode,
         mtpt: &Path,
         mtype: MountType,
         create: bool,
@@ -91,7 +93,7 @@ impl Filesystem {
         let mut mounts = self.data.mounts.write();
         match mtype {
             MountType::Replace => {
-                mounts.insert(mtpt.to_owned(), MountEnt::Object(object));
+                mounts.insert(mtpt.to_owned(), MountEnt::Node(object));
             }
             MountType::Before => {
                 if orig.is_file() || object.is_file() {
@@ -103,7 +105,7 @@ impl Filesystem {
                     .entry(mtpt.to_owned())
                     .and_modify(|x| {
                         common::util::replace_with(x, |x| match x {
-                            MountEnt::Object(object) => MountEnt::Union(UnionData {
+                            MountEnt::Node(object) => MountEnt::Union(UnionData {
                                 entries: Arc::new(RwLock::new(vec![
                                     Mount::new(repl.take().unwrap(), create),
                                     Mount::new(object, true),
@@ -137,7 +139,7 @@ impl Filesystem {
                     .entry(mtpt.to_owned())
                     .and_modify(|x| {
                         common::util::replace_with(x, |x| match x {
-                            MountEnt::Object(object) => MountEnt::Union(UnionData {
+                            MountEnt::Node(object) => MountEnt::Union(UnionData {
                                 entries: Arc::new(RwLock::new(vec![
                                     Mount::new(object, true),
                                     Mount::new(repl.take().unwrap(), create),
@@ -167,51 +169,55 @@ impl Filesystem {
 
     pub async fn mount(
         &mut self,
-        root: Dir,
+        root: ClosedDir,
         old: &Path,
         mtype: MountType,
         create: bool,
     ) -> Result<()> {
-        self.attach(Object::Dir(root), old, mtype, create).await
+        self.attach(ClosedNode::Dir(root), old, mtype, create).await
     }
 }
 
 #[async_trait]
-#[allow(unused_variables)]
-impl DirLike for Filesystem {
-    async fn open(&mut self, config: Flags) -> Result<()> {
-        self.access = Some(config.access);
-        Ok(())
+impl NodeLike for Filesystem {
+    async fn stat(&self) -> Result<Stat> {
+        todo!()
     }
 
-    async fn create(&mut self, name: &str, config: Mode) -> Result<Object> {
-        let mut mounts = self.data.mounts.write();
-        if mounts.contains_key(name) {
-            return Err(Error::FileExists);
-        }
-        let mount = mounts.get_mut("").unwrap();
-        match mount {
-            MountEnt::Object(Object::Dir(d)) => d.create(name, config).await,
-            MountEnt::Object(Object::File(_)) => return Err(Error::NotADirectory),
-            MountEnt::Union(u) => {
-                Union {
-                    data: u.clone(),
-                    access: self.access,
-                }
-                .create(name, config)
-                .await
-            }
-        }
+    async fn wstat(&mut self, _: &Stat) -> Result<()> {
+        todo!()
     }
 
-    async fn read(&self, offset: usize, count: usize) -> Result<Vec<DirEnt>> {
-        todo!();
+    async fn clunk(self: Box<Self>) -> Result<()> {
+        todo!()
     }
 
-    async fn walk(&self, path: &Path) -> Result<Object> {
-        if !self.access.ok_or(Error::BadFileDescriptor)?.read() {
-            return Err(Error::PermissionDenied);
-        }
+    async fn remove(self: Box<Self>) -> Result<()> {
+        todo!()
+    }
+
+    fn qid(&self) -> Qid {
+        todo!()
+    }
+}
+
+#[async_trait]
+impl ClosedNodeLike for Filesystem {}
+
+#[async_trait]
+impl OpenNodeLike for Filesystem {}
+
+#[async_trait]
+impl DirLike for Filesystem {}
+
+#[async_trait]
+impl ClosedDirLike for Filesystem {
+    async fn open(mut self: Box<Self>, access: Access) -> Result<OpenDir> {
+        self.access = Some(access);
+        Ok((*self).into())
+    }
+
+    async fn walk(&self, path: &Path) -> Result<ClosedNode> {
         let path = path.relative();
 
         let mounts = self.data.mounts.read();
@@ -221,63 +227,55 @@ impl DirLike for Filesystem {
                 if x.len() > a.len() { x } else { a }
             },
         );
-
         let rest = path.strip_prefix(best).unwrap();
         let mount = mounts.get(best).unwrap();
         match &mount {
-            MountEnt::Object(object) => object.walk(rest).await,
-            MountEnt::Union(union) => {
-                Union {
-                    data: union.clone(),
-                    access: None,
-                }
-                .walk(rest)
-                .await
+            MountEnt::Node(object) => object.walk(rest).await,
+            MountEnt::Union(_) => {
+                todo!();
             }
         }
     }
 
-    async fn close(self) -> Result<()> {
-        Ok(())
+    async fn create(
+        self: Box<Self>,
+        name: &str,
+        perm: BitFlags<Perm>,
+        flags: BitFlags<Flag>,
+        access: Access,
+    ) -> Result<OpenNode> {
+        Filesystem::create(&self, name, perm, flags, access).await
     }
+}
 
-    async fn remove(self) -> Result<()> {
-        Err(Error::OperationNotPermitted)
-    }
-
-    async fn stat(&self) -> Result<Stat> {
-        todo!();
+impl Filesystem {
+    pub async fn create(
+        &self,
+        name: &str,
+        perm: BitFlags<Perm>,
+        flags: BitFlags<Flag>,
+        access: Access,
+    ) -> Result<OpenNode> {
+        let mut mounts = self.data.mounts.write();
+        if mounts.contains_key(name) {
+            return Err(Error::FileExists);
+        }
+        let mount = mounts.get_mut("").unwrap();
+        match mount {
+            MountEnt::Node(ClosedNode::Dir(d)) => {
+                d.dup().await?.create(name, perm, flags, access).await
+            }
+            MountEnt::Node(ClosedNode::File(_)) => return Err(Error::NotADirectory),
+            MountEnt::Union(_) => {
+                todo!();
+            }
+        }
     }
 }
 
 #[async_trait]
-#[allow(unused_variables)]
-impl DirLike for Union {
-    async fn open(&mut self, config: Flags) -> Result<()> {
-        Ok(())
-    }
-
-    async fn create(&mut self, name: &str, config: Mode) -> Result<Object> {
-        todo!()
-    }
-
-    async fn read(&self, offset: usize, count: usize) -> Result<Vec<DirEnt>> {
-        todo!()
-    }
-
-    async fn walk(&self, path: &Path) -> Result<Object> {
-        todo!()
-    }
-
-    async fn close(self) -> Result<()> {
-        todo!()
-    }
-
-    async fn remove(self) -> Result<()> {
-        todo!()
-    }
-
-    async fn stat(&self) -> Result<Stat> {
-        todo!()
+impl OpenDirLike for Filesystem {
+    async fn read(&self, _offset: usize, _count: usize) -> Result<Vec<Stat>> {
+        todo!();
     }
 }

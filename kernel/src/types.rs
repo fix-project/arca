@@ -1,7 +1,5 @@
 mod arca;
-mod atom;
 mod blob;
-mod exception;
 mod function;
 mod null;
 pub(crate) mod page;
@@ -13,9 +11,7 @@ mod word;
 
 pub mod internal {
     pub use super::arca::LoadedArca;
-    pub use super::atom::Atom;
     pub use super::blob::Blob;
-    pub use super::exception::Exception;
     pub use super::function::Function;
     pub use super::null::Null;
     pub use super::page::Page;
@@ -31,8 +27,6 @@ pub use runtime::Runtime;
 
 pub type Null = ::arca::Null<Runtime>;
 pub type Word = ::arca::Word<Runtime>;
-pub type Atom = ::arca::Atom<Runtime>;
-pub type Exception = ::arca::Exception<Runtime>;
 pub type Blob = ::arca::Blob<Runtime>;
 pub type Tuple = ::arca::Tuple<Runtime>;
 pub type Page = ::arca::Page<Runtime>;

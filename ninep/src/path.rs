@@ -147,7 +147,7 @@ impl Path {
     }
 
     pub fn parent(&self) -> Option<&Path> {
-        let Some((parent, child)) = self.path.rsplit_once("/") else {
+        let Some((parent, _)) = self.path.rsplit_once("/") else {
             if &self.path == "" {
                 return None;
             } else {
@@ -157,8 +157,15 @@ impl Path {
         if parent == "" {
             None
         } else {
-            Some(child.as_ref())
+            Some(parent.as_ref())
         }
+    }
+
+    pub fn file_name(&self) -> Option<&str> {
+        let Some((_, child)) = self.path.rsplit_once("/") else {
+            return Some(self.as_ref());
+        };
+        Some(child)
     }
 
     pub fn strip_prefix(&self, base: impl AsRef<Path>) -> Result<&Path, ()> {
@@ -197,6 +204,18 @@ impl Path {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn split(&self) -> (&str, &Path) {
+        let mut c = self.components();
+        let head = c.next();
+        match head {
+            Some(Component::CurDir) => (".", c.as_path()),
+            Some(Component::ParentDir) => ("..", c.as_path()),
+            Some(Component::RootDir) => ("/", c.as_path()),
+            Some(Component::Normal(x)) => (x.as_ref(), c.as_path()),
+            None => ("", c.as_path()),
+        }
     }
 }
 

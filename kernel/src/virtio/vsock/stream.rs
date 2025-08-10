@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 
 pub struct Stream {
@@ -5,9 +7,9 @@ pub struct Stream {
     pub(crate) local: SocketAddr,
     pub(crate) peer: SocketAddr,
     pub(crate) rx: Receiver,
-    pub(crate) peer_rx_closed: bool,
-    pub(crate) peer_tx_closed: bool,
-    pub(crate) closed: bool,
+    pub(crate) peer_rx_closed: AtomicBool,
+    pub(crate) peer_tx_closed: AtomicBool,
+    pub(crate) closed: AtomicBool,
 }
 
 impl Stream {
@@ -16,7 +18,8 @@ impl Stream {
             src: local,
             dst: peer,
         };
-        let mut rx = connect(outbound).await;
+        let rx = connect(outbound).await;
+        let outbound = rx.inbound().reverse();
 
         let result = rx.recv().await?;
         let StreamEvent::Connect = result else {
@@ -27,25 +30,35 @@ impl Stream {
             local,
             peer,
             rx,
-            peer_rx_closed: false,
-            peer_tx_closed: false,
-            closed: false,
+            peer_rx_closed: false.into(),
+            peer_tx_closed: false.into(),
+            closed: false.into(),
         })
     }
 
-    pub async fn read(&mut self) -> Result<Box<[u8]>> {
+    pub async fn recv(&self) -> Result<Box<[u8]>> {
         loop {
             let result = self.rx.recv().await?;
             return match result {
                 StreamEvent::Reset => Err(SocketError::ConnectionReset),
                 StreamEvent::Connect => Err(SocketError::ConnectionReset),
                 StreamEvent::Shutdown { rx, tx } => {
-                    self.peer_rx_closed |= rx;
-                    self.peer_tx_closed |= tx;
-                    if self.peer_rx_closed && self.peer_tx_closed {
+                    let rx = if rx {
+                        self.peer_rx_closed.store(true, Ordering::SeqCst);
+                        true
+                    } else {
+                        self.peer_rx_closed.load(Ordering::SeqCst)
+                    };
+                    let tx = if tx {
+                        self.peer_tx_closed.store(true, Ordering::SeqCst);
+                        true
+                    } else {
+                        self.peer_tx_closed.load(Ordering::SeqCst)
+                    };
+                    if rx && tx {
                         rst(self.outbound).await;
                     }
-                    if self.peer_tx_closed {
+                    if tx {
                         Err(SocketError::ConnectionClosed)
                     } else {
                         continue;
@@ -56,16 +69,17 @@ impl Stream {
         }
     }
 
-    pub async fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        if self.peer_rx_closed {
+    pub async fn send(&self, buf: &[u8]) -> Result<usize> {
+        if self.peer_rx_closed.load(Ordering::SeqCst) {
             Err(SocketError::ConnectionClosed)
         } else {
-            Ok(send(self.outbound, buf).await)
+            send(self.outbound, buf).await;
+            Ok(buf.len())
         }
     }
 
     async fn close_internal(&mut self) -> Result<()> {
-        if self.closed {
+        if self.closed.fetch_or(true, Ordering::SeqCst) {
             return Ok(());
         }
         shutdown(self.outbound, true, true).await;
@@ -73,7 +87,6 @@ impl Stream {
         loop {
             let result = self.rx.recv().await?;
             if result == StreamEvent::Reset {
-                self.closed = true;
                 return Ok(());
             };
         }
@@ -94,7 +107,7 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        if !self.closed {
+        if !self.closed.load(Ordering::SeqCst) {
             let _ = crate::rt::spawn_blocking(self.close_internal());
         }
     }

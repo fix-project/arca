@@ -1,7 +1,7 @@
 use core::{mem::MaybeUninit, ops::ControlFlow};
 
-use alloc::{collections::vec_deque::VecDeque, format};
-use defs::SyscallError;
+use alloc::collections::vec_deque::VecDeque;
+use arcane::SyscallError;
 
 use crate::{
     prelude::*,
@@ -25,22 +25,18 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         regs[Register::R9],
     ];
 
-    if (num as u32) < defs::syscall::SYS_DEBUG_LOG {
-        log::debug!("exited with syscall: {num:#?}({args:?})");
-    }
     let result = match num as u32 {
-        defs::syscall::SYS_NOP => Ok(0),
-        defs::syscall::SYS_DROP => sys_drop(args, arca),
-        defs::syscall::SYS_CLONE => sys_clone(args, arca),
+        arcane::__NR_nop => Ok(0),
+        arcane::__NR_drop => sys_drop(args, arca),
+        arcane::__NR_clone => sys_clone(args, arca),
 
-        defs::syscall::SYS_EXIT => sys_exit(args, arca)?,
-        defs::syscall::SYS_GET_ARGUMENT => {
+        arcane::__NR_exit => sys_exit(args, arca)?,
+        arcane::__NR_get_argument => {
             if let Some(front) = argv.pop_front() {
                 let idx = arca.descriptors_mut().insert(front);
                 Ok(idx)
             } else {
-                arca.registers_mut()[Register::RAX] =
-                    (-(defs::error::ERROR_INTERRUPTED as i32)) as u64;
+                arca.registers_mut()[Register::RAX] = (-(arcane::__ERR_interrupted as i32)) as u64;
                 let arca = arca.take();
                 let argv = core::mem::take(argv);
                 return ControlFlow::Break(Value::Function(Function::from_inner(
@@ -48,40 +44,32 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
                 )));
             }
         }
-        defs::syscall::SYS_LENGTH => sys_len(args, arca),
-        defs::syscall::SYS_GET => sys_get(args, arca),
-        defs::syscall::SYS_SET => sys_set(args, arca),
-        defs::syscall::SYS_READ => sys_read(args, arca),
-        defs::syscall::SYS_TYPE => sys_type(args, arca),
+        arcane::__NR_length => sys_len(args, arca),
+        arcane::__NR_get => sys_get(args, arca),
+        arcane::__NR_set => sys_set(args, arca),
+        arcane::__NR_read => sys_read(args, arca),
+        arcane::__NR_type => sys_type(args, arca),
 
-        defs::syscall::SYS_CREATE_WORD => sys_create_word(args, arca),
-        defs::syscall::SYS_CREATE_ATOM => sys_create_atom(args, arca),
-        defs::syscall::SYS_CREATE_BLOB => sys_create_blob(args, arca),
-        defs::syscall::SYS_CREATE_TREE => sys_create_tuple(args, arca),
-        defs::syscall::SYS_CREATE_PAGE => sys_create_page(args, arca),
-        defs::syscall::SYS_CREATE_TABLE => sys_create_table(args, arca),
-        defs::syscall::SYS_CREATE_FUNCTION => sys_create_function(args, arca),
+        arcane::__NR_create_word => sys_create_word(args, arca),
+        arcane::__NR_create_blob => sys_create_blob(args, arca),
+        arcane::__NR_create_tree => sys_create_tuple(args, arca),
+        arcane::__NR_create_page => sys_create_page(args, arca),
+        arcane::__NR_create_table => sys_create_table(args, arca),
+        arcane::__NR_create_function => sys_create_function(args, arca),
 
-        defs::syscall::SYS_APPLY => sys_apply(args, arca),
-        defs::syscall::SYS_MAP => sys_map(args, arca),
-        defs::syscall::SYS_MMAP => sys_mmap(args, arca),
-        defs::syscall::SYS_MPROTECT => sys_mprotect(args, arca),
+        arcane::__NR_apply => sys_apply(args, arca),
+        arcane::__NR_map => sys_map(args, arca),
+        arcane::__NR_mmap => sys_mmap(args, arca),
+        arcane::__NR_mprotect => sys_mprotect(args, arca),
 
-        defs::syscall::SYS_CALL_WITH_CURRENT_CONTINUATION => {
+        arcane::__NR_call_with_current_continuation => {
             sys_call_with_current_continuation(args, arca)?
         }
 
-        defs::syscall::SYS_DEBUG_SHOW => sys_show(args, arca),
-        defs::syscall::SYS_DEBUG_LOG => sys_log(args, arca),
-        defs::syscall::SYS_DEBUG_LOG_INT => sys_log_int(args, arca),
+        arcane::__NR_debug_show => sys_show(args, arca),
+        arcane::__NR_debug_log => sys_log(args, arca),
+        arcane::__NR_debug_log_int => sys_log_int(args, arca),
 
-        defs::syscall::SYS_ERROR_RESET => {
-            arca.reset_error();
-            Ok(0)
-        }
-        defs::syscall::SYS_ERROR_APPEND => sys_error_append(args, arca),
-        defs::syscall::SYS_ERROR_APPEND_INT => sys_error_append_int(args, arca),
-        defs::syscall::SYS_ERROR_RETURN => sys_error_return(args, arca)?,
         _ => {
             log::error!("invalid syscall {num}");
             panic!("invalid syscall @ {:#x}", regs[Register::RIP]);
@@ -89,15 +77,12 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         }
     };
     let regs = arca.registers_mut();
-    if (num as u32) < defs::syscall::SYS_DEBUG_LOG {
-        log::debug!("returning {result:?}");
-    }
     if let Err(err) = result {
         log::warn!("system call {num} failed with {err:?}");
     }
     regs[Register::RAX] = match result {
         Ok(x) => x as u64,
-        Err(e) => -(e.code() as i64) as u64,
+        Err(e) => -(e as i64) as u64,
     };
     ControlFlow::Continue(())
 }
@@ -155,11 +140,11 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         }
         DataType::Table => {
             let ptr = args[3] as usize;
-            let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
+            let mut entry: MaybeUninit<arcane::arca_entry> = MaybeUninit::uninit();
             copy_user_to_kernel(
                 unsafe {
                     &mut *(entry.as_mut_ptr()
-                        as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
+                        as *mut [MaybeUninit<u8>; core::mem::size_of::<arcane::arca_entry>()])
                 },
                 ptr,
             )?;
@@ -173,7 +158,8 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             };
             let entry = write_entry(arca, entry);
             copy_kernel_to_user(ptr, unsafe {
-                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+                &*(&entry as *const arcane::arca_entry
+                    as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
             })?;
             Ok(0)
         }
@@ -195,7 +181,8 @@ pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             let entry = table.get(inner_idx)?;
             let entry = write_entry(arca, entry);
             copy_kernel_to_user(ptr, unsafe {
-                &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+                &*(&entry as *const arcane::arca_entry
+                    as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
             })?;
             Ok(0)
         }
@@ -211,11 +198,6 @@ pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             let word = word.read();
             copy_kernel_to_user(ptr, &word.to_ne_bytes())?;
             Ok(8)
-        }
-        Value::Exception(error) => {
-            let error = core::mem::replace(error, Exception::new(Value::default()));
-            let idx = arca.descriptors_mut().insert(error.read());
-            Ok(idx)
         }
         Value::Blob(blob) => {
             let offset = args[1] as usize;
@@ -235,15 +217,13 @@ pub fn sys_type(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
     let val = arca.descriptors().get(idx)?;
     let typ = match val {
-        Value::Null(_) => defs::datatype::DATATYPE_NULL,
-        Value::Exception(_) => defs::datatype::DATATYPE_EXCEPTION,
-        Value::Word(_) => defs::datatype::DATATYPE_WORD,
-        Value::Atom(_) => defs::datatype::DATATYPE_ATOM,
-        Value::Blob(_) => defs::datatype::DATATYPE_BLOB,
-        Value::Tuple(_) => defs::datatype::DATATYPE_TUPLE,
-        Value::Page(_) => defs::datatype::DATATYPE_PAGE,
-        Value::Table(_) => defs::datatype::DATATYPE_TABLE,
-        Value::Function(_) => defs::datatype::DATATYPE_FUNCTION,
+        Value::Null(_) => arcane::__TYPE_null,
+        Value::Word(_) => arcane::__TYPE_word,
+        Value::Blob(_) => arcane::__TYPE_blob,
+        Value::Tuple(_) => arcane::__TYPE_tuple,
+        Value::Page(_) => arcane::__TYPE_page,
+        Value::Table(_) => arcane::__TYPE_table,
+        Value::Function(_) => arcane::__TYPE_function,
     };
     Ok(typ as usize)
 }
@@ -251,19 +231,6 @@ pub fn sys_type(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_create_word(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let val = args[0];
     Ok(arca.descriptors_mut().insert(Word::new(val).into()))
-}
-
-pub fn sys_create_atom(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
-    let ptr = args[0] as usize;
-    let len = args[1] as usize;
-    unsafe {
-        let mut buffer = Box::new_uninit_slice(len);
-        copy_user_to_kernel(&mut buffer, ptr)?;
-        let buffer = buffer.assume_init();
-        Ok(arca
-            .descriptors_mut()
-            .insert(Value::Atom(Atom::new(buffer))))
-    }
 }
 
 pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -324,11 +291,11 @@ pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let addr = args[1] as usize;
     let ptr = args[2] as usize;
 
-    let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
+    let mut entry: MaybeUninit<arcane::arca_entry> = MaybeUninit::uninit();
     copy_user_to_kernel(
         unsafe {
             &mut *(entry.as_mut_ptr()
-                as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
+                as *mut [MaybeUninit<u8>; core::mem::size_of::<arcane::arca_entry>()])
         },
         ptr,
     )?;
@@ -345,7 +312,8 @@ pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         .map_err(|_| SyscallError::BadArgument)?;
     let entry = write_entry(arca, entry);
     copy_kernel_to_user(ptr, unsafe {
-        &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+        &*(&entry as *const arcane::arca_entry
+            as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
     })?;
 
     Ok(0)
@@ -355,11 +323,11 @@ pub fn sys_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let addr = args[0] as usize;
     let ptr = args[1] as usize;
 
-    let mut entry: MaybeUninit<defs::entry> = MaybeUninit::uninit();
+    let mut entry: MaybeUninit<arcane::arca_entry> = MaybeUninit::uninit();
     copy_user_to_kernel(
         unsafe {
             &mut *(entry.as_mut_ptr()
-                as *mut [MaybeUninit<u8>; core::mem::size_of::<defs::entry>()])
+                as *mut [MaybeUninit<u8>; core::mem::size_of::<arcane::arca_entry>()])
         },
         ptr,
     )?;
@@ -372,7 +340,8 @@ pub fn sys_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         .map_err(|_| SyscallError::BadArgument)?;
     let entry = write_entry(arca, entry);
     copy_kernel_to_user(ptr, unsafe {
-        &*(&entry as *const defs::entry as *const [u8; core::mem::size_of::<defs::entry>()])
+        &*(&entry as *const arcane::arca_entry
+            as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
     })?;
 
     Ok(0)
@@ -383,10 +352,10 @@ pub fn sys_mprotect(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let mode = args[1] as u32;
 
     match mode {
-        defs::entry_mode::ENTRY_MODE_NONE => {
+        arcane::__MODE_none => {
             let _ = arca.cpu().map(addr, Entry::Null(4096));
         }
-        defs::entry_mode::ENTRY_MODE_READ_ONLY => {
+        arcane::__MODE_read_only => {
             let old = arca
                 .cpu()
                 .map(addr, Entry::Null(4096))
@@ -400,7 +369,7 @@ pub fn sys_mprotect(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             };
             let _ = arca.cpu().map(addr, new);
         }
-        defs::entry_mode::ENTRY_MODE_READ_WRITE => {
+        arcane::__MODE_read_write => {
             let old = arca
                 .cpu()
                 .map(addr, Entry::Null(4096))
@@ -477,30 +446,6 @@ pub fn sys_log_int(args: [u64; 6], _: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
-pub fn sys_error_append(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
-    let ptr = args[0] as usize;
-    let len = args[1] as usize;
-    let mut buf = Box::new_uninit_slice(len);
-    let buf = copy_user_to_kernel(&mut buf, ptr)?;
-    let s = core::str::from_utf8(buf).map_err(|_| SyscallError::BadArgument)?;
-    arca.error_buffer_mut().push_str(s);
-    Ok(0)
-}
-
-pub fn sys_error_append_int(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
-    let int = args[0];
-    let s = format!("{int}");
-    arca.error_buffer_mut().push_str(&s);
-    Ok(0)
-}
-
-pub fn sys_error_return(_: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
-    let buffer = core::mem::take(arca.error_buffer_mut());
-    log::error!("returning error: {buffer}");
-    let blob = Blob::new(buffer);
-    ControlFlow::Break(Exception::new(blob).into())
-}
-
 fn copy_kernel_to_user(dst: usize, src: &[u8]) -> Result<()> {
     if crate::vm::copy_kernel_to_user(dst, src) {
         Ok(())
@@ -513,15 +458,15 @@ fn copy_user_to_kernel(dst: &mut [MaybeUninit<u8>], src: usize) -> Result<&mut [
     crate::vm::copy_user_to_kernel(dst, src).ok_or(SyscallError::BadArgument)
 }
 
-fn read_entry(arca: &mut LoadedArca, entry: defs::entry) -> Result<Entry> {
+fn read_entry(arca: &mut LoadedArca, entry: arcane::arca_entry) -> Result<Entry> {
     Ok(match entry {
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_NONE,
+        arcane::arca_entry {
+            mode: arcane::__MODE_none,
             datatype: _,
             data,
         } => arca::Entry::Null(data),
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
+        arcane::arca_entry {
+            mode: arcane::__MODE_read_only,
             datatype: _,
             data,
         } => {
@@ -532,8 +477,8 @@ fn read_entry(arca: &mut LoadedArca, entry: defs::entry) -> Result<Entry> {
                 _ => return Err(SyscallError::BadType),
             }
         }
-        defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
+        arcane::arca_entry {
+            mode: arcane::__MODE_read_write,
             datatype: _,
             data,
         } => {
@@ -548,38 +493,22 @@ fn read_entry(arca: &mut LoadedArca, entry: defs::entry) -> Result<Entry> {
     })
 }
 
-fn write_entry(arca: &mut LoadedArca, entry: Entry) -> defs::entry {
+fn write_entry(arca: &mut LoadedArca, entry: Entry) -> arcane::arca_entry {
     let (mode, datatype, value) = match entry {
         arca::Entry::Null(data) => {
-            return defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_NONE,
-                datatype: defs::datatype::DATATYPE_NULL,
+            return arcane::arca_entry {
+                mode: arcane::__MODE_none,
+                datatype: arcane::__TYPE_null,
                 data,
             }
         }
-        arca::Entry::ROPage(x) => (
-            defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            defs::datatype::DATATYPE_PAGE,
-            x.into(),
-        ),
-        arca::Entry::RWPage(x) => (
-            defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            defs::datatype::DATATYPE_PAGE,
-            x.into(),
-        ),
-        arca::Entry::ROTable(x) => (
-            defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            defs::datatype::DATATYPE_TABLE,
-            x.into(),
-        ),
-        arca::Entry::RWTable(x) => (
-            defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            defs::datatype::DATATYPE_TABLE,
-            x.into(),
-        ),
+        arca::Entry::ROPage(x) => (arcane::__MODE_read_only, arcane::__TYPE_page, x.into()),
+        arca::Entry::RWPage(x) => (arcane::__MODE_read_write, arcane::__TYPE_page, x.into()),
+        arca::Entry::ROTable(x) => (arcane::__MODE_read_only, arcane::__TYPE_table, x.into()),
+        arca::Entry::RWTable(x) => (arcane::__MODE_read_write, arcane::__TYPE_table, x.into()),
     };
     let index = arca.descriptors_mut().insert(value);
-    defs::entry {
+    arcane::arca_entry {
         mode,
         datatype,
         data: index,

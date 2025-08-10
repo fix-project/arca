@@ -1,11 +1,10 @@
 use super::Runtime;
 use arca::Runtime as _;
 
-pub type Atom = arca::Atom<Runtime>;
-pub type Blob = arca::Blob<Runtime>;
 pub use arca::DataType;
+
+pub type Blob = arca::Blob<Runtime>;
 pub type Entry = arca::Entry<Runtime>;
-pub type Exception = arca::Exception<Runtime>;
 pub type Function = arca::Function<Runtime>;
 pub type Null = arca::Null<Runtime>;
 pub type Page = arca::Page<Runtime>;

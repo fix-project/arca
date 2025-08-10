@@ -4,8 +4,6 @@ use super::internal::*;
 pub enum Value {
     Null(Null),
     Word(Word),
-    Atom(Atom),
-    Exception(Exception),
     Blob(Blob),
     Tuple(Tuple),
     Page(Page),
@@ -17,8 +15,6 @@ pub enum Value {
 pub enum ValueRef<'a> {
     Null(&'a Null),
     Word(&'a Word),
-    Atom(&'a Atom),
-    Exception(&'a Exception),
     Blob(&'a Blob),
     Tuple(&'a Tuple),
     Page(&'a Page),
@@ -30,8 +26,6 @@ macro_rules! foreach_type_item {
     ($e:ident) => {
         $e! {Null}
         $e! {Word}
-        $e! {Atom}
-        $e! {Exception}
         $e! {Blob}
         $e! {Tuple}
         $e! {Page}

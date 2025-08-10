@@ -1,5 +1,5 @@
 use crate::{ArcaError, Runtime, prelude::*, syscall_result, syscall_result_raw};
-use defs::*;
+use arcane::*;
 
 pub fn argument() -> Value {
     unsafe {

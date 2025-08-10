@@ -14,10 +14,9 @@ pub mod os;
 pub mod prelude;
 pub use arca;
 
-extern crate defs;
 use arca::Function;
-use defs::SyscallError;
-use defs::*;
+use arcane::SyscallError;
+use arcane::*;
 
 use prelude::*;
 
@@ -32,7 +31,6 @@ pub enum ArcaError {
     BadIndex,
     BadType,
     BadArgument,
-    OutOfMemory,
     Interrupted,
     Unknown(u32),
 }
@@ -43,12 +41,11 @@ fn syscall_result_raw(value: i64) -> Result<u32, ArcaError> {
     } else {
         let err = -value as u32;
         Err(match err {
-            defs::error::ERROR_BAD_SYSCALL => ArcaError::BadSyscall,
-            defs::error::ERROR_BAD_INDEX => ArcaError::BadIndex,
-            defs::error::ERROR_BAD_TYPE => ArcaError::BadType,
-            defs::error::ERROR_BAD_ARGUMENT => ArcaError::BadArgument,
-            defs::error::ERROR_OUT_OF_MEMORY => ArcaError::OutOfMemory,
-            defs::error::ERROR_INTERRUPTED => ArcaError::Interrupted,
+            arcane::__ERR_bad_syscall => ArcaError::BadSyscall,
+            arcane::__ERR_bad_index => ArcaError::BadIndex,
+            arcane::__ERR_bad_type => ArcaError::BadType,
+            arcane::__ERR_bad_argument => ArcaError::BadArgument,
+            arcane::__ERR_interrupted => ArcaError::Interrupted,
             x => ArcaError::Unknown(x),
         })
     }
@@ -97,8 +94,6 @@ impl Ref {
 impl arca::Runtime for Runtime {
     type Null = Ref;
     type Word = Ref;
-    type Exception = Ref;
-    type Atom = Ref;
     type Blob = Ref;
     type Tuple = Ref;
     type Page = Ref;
@@ -112,46 +107,27 @@ impl arca::Runtime for Runtime {
     }
 
     fn create_word(word: u64) -> arca::Word<Self> {
-        unsafe { arca::Word::from_inner(syscall_result(defs::arca_word_create(word)).unwrap()) }
-    }
-
-    fn create_exception(value: arca::Value<Self>) -> arca::Exception<Self> {
-        unsafe {
-            arca::Exception::from_inner(
-                syscall_result(defs::arca_exception_create(
-                    Self::get_raw(value).into_raw().into(),
-                ))
-                .unwrap(),
-            )
-        }
-    }
-
-    fn create_atom(bytes: &[u8]) -> arca::Atom<Self> {
-        unsafe {
-            arca::Atom::from_inner(
-                syscall_result(defs::arca_atom_create(bytes.as_ptr(), bytes.len())).unwrap(),
-            )
-        }
+        unsafe { arca::Word::from_inner(syscall_result(arcane::arca_word_create(word)).unwrap()) }
     }
 
     fn create_blob(bytes: &[u8]) -> arca::Blob<Self> {
         unsafe {
             arca::Blob::from_inner(
-                syscall_result(defs::arca_blob_create(bytes.as_ptr(), bytes.len())).unwrap(),
+                syscall_result(arcane::arca_blob_create(bytes.as_ptr(), bytes.len())).unwrap(),
             )
         }
     }
 
     fn create_tuple(len: usize) -> arca::Tuple<Self> {
-        unsafe { arca::Tuple::from_inner(syscall_result(defs::arca_tuple_create(len)).unwrap()) }
+        unsafe { arca::Tuple::from_inner(syscall_result(arcane::arca_tuple_create(len)).unwrap()) }
     }
 
     fn create_page(len: usize) -> arca::Page<Self> {
-        unsafe { arca::Page::from_inner(syscall_result(defs::arca_page_create(len)).unwrap()) }
+        unsafe { arca::Page::from_inner(syscall_result(arcane::arca_page_create(len)).unwrap()) }
     }
 
     fn create_table(len: usize) -> arca::Table<Self> {
-        unsafe { arca::Table::from_inner(syscall_result(defs::arca_table_create(len)).unwrap()) }
+        unsafe { arca::Table::from_inner(syscall_result(arcane::arca_table_create(len)).unwrap()) }
     }
 
     fn create_function(
@@ -160,7 +136,7 @@ impl arca::Runtime for Runtime {
     ) -> Result<arca::Function<Self>, Self::Error> {
         unsafe {
             Ok(arca::Function::from_inner(syscall_result(
-                defs::arca_function_create(arca, Self::get_raw(data).into_raw().into()),
+                arcane::arca_function_create(arca, Self::get_raw(data).into_raw().into()),
             )?))
         }
     }
@@ -178,7 +154,7 @@ impl arca::Runtime for Runtime {
     fn read_word(word: &arca::Word<Self>) -> u64 {
         unsafe {
             let mut result = 0;
-            syscall_result_raw(defs::arca_word_read(
+            syscall_result_raw(arcane::arca_word_read(
                 word.inner().as_raw() as i64,
                 &mut result,
             ))
@@ -187,19 +163,9 @@ impl arca::Runtime for Runtime {
         }
     }
 
-    fn read_exception(exception: arca::Exception<Self>) -> arca::Value<Self> {
-        unsafe {
-            let data = syscall_result(defs::arca_exception_read(
-                exception.into_inner().into_raw().into(),
-            ))
-            .unwrap();
-            Self::raw_convert(data)
-        }
-    }
-
     fn read_blob(blob: &arca::Blob<Self>, offset: usize, buf: &mut [u8]) -> usize {
         unsafe {
-            syscall_result_raw(defs::arca_blob_read(
+            syscall_result_raw(arcane::arca_blob_read(
                 blob.inner().as_raw() as i64,
                 offset,
                 buf.as_mut_ptr(),
@@ -211,7 +177,7 @@ impl arca::Runtime for Runtime {
 
     fn read_page(page: &arca::Page<Self>, offset: usize, buf: &mut [u8]) -> usize {
         unsafe {
-            syscall_result_raw(defs::arca_page_read(
+            syscall_result_raw(arcane::arca_page_read(
                 page.inner().as_raw() as i64,
                 offset,
                 buf.as_mut_ptr(),
@@ -226,7 +192,7 @@ impl arca::Runtime for Runtime {
         index: usize,
     ) -> Result<arca::Value<Self>, Self::Error> {
         unsafe {
-            Ok(Self::raw_convert(syscall_result(defs::arca_tuple_get(
+            Ok(Self::raw_convert(syscall_result(arcane::arca_tuple_get(
                 tuple.inner().as_raw() as i64,
                 index,
             ))?))
@@ -239,7 +205,7 @@ impl arca::Runtime for Runtime {
         value: arca::Value<Self>,
     ) -> Result<arca::Value<Self>, Self::Error> {
         unsafe {
-            Ok(Self::raw_convert(syscall_result(defs::arca_tuple_set(
+            Ok(Self::raw_convert(syscall_result(arcane::arca_tuple_set(
                 tuple.inner().as_raw() as i64,
                 index,
                 Self::get_raw(value).into_raw().into(),
@@ -276,7 +242,7 @@ impl arca::Runtime for Runtime {
     ) -> arca::Function<Self> {
         unsafe {
             Function::from_inner(
-                syscall_result(defs::arca_function_apply(
+                syscall_result(arcane::arca_function_apply(
                     Self::get_raw(function.into()).into_raw().into(),
                     Self::get_raw(argument).into_raw().into(),
                 ))
@@ -288,7 +254,7 @@ impl arca::Runtime for Runtime {
     fn force_function(function: arca::Function<Self>) -> arca::Value<Self> {
         unsafe {
             Self::raw_convert(
-                syscall_result(defs::arca_function_force(
+                syscall_result(arcane::arca_function_force(
                     Self::get_raw(function.into()).into_raw().into(),
                 ))
                 .unwrap(),
@@ -305,32 +271,32 @@ impl arca::Runtime for Runtime {
     }
 }
 
-fn read_entry(entry: defs::entry) -> arca::Entry<Runtime> {
+fn read_entry(entry: arcane::arca_entry) -> arca::Entry<Runtime> {
     unsafe {
         match entry {
-            defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_NONE,
-                datatype: datatype::DATATYPE_NULL,
+            arcane::arca_entry {
+                mode: arcane::__MODE_none,
+                datatype: arcane::__TYPE_null,
                 data,
             } => arca::Entry::Null(data),
-            defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-                datatype: datatype::DATATYPE_PAGE,
+            arcane::arca_entry {
+                mode: arcane::__MODE_read_only,
+                datatype: arcane::__TYPE_page,
                 data,
             } => arca::Entry::ROPage(arca::Page::from_inner(Ref::from_raw(data as u32))),
-            defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-                datatype: datatype::DATATYPE_PAGE,
+            arcane::arca_entry {
+                mode: arcane::__MODE_read_write,
+                datatype: arcane::__TYPE_page,
                 data,
             } => arca::Entry::RWPage(arca::Page::from_inner(Ref::from_raw(data as u32))),
-            defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-                datatype: datatype::DATATYPE_TABLE,
+            arcane::arca_entry {
+                mode: arcane::__MODE_read_only,
+                datatype: arcane::__TYPE_table,
                 data,
             } => arca::Entry::ROTable(arca::Table::from_inner(Ref::from_raw(data as u32))),
-            defs::entry {
-                mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-                datatype: datatype::DATATYPE_TABLE,
+            arcane::arca_entry {
+                mode: arcane::__MODE_read_write,
+                datatype: arcane::__TYPE_table,
                 data,
             } => arca::Entry::RWTable(arca::Table::from_inner(Ref::from_raw(data as u32))),
             _ => unreachable!(),
@@ -338,31 +304,31 @@ fn read_entry(entry: defs::entry) -> arca::Entry<Runtime> {
     }
 }
 
-fn write_entry(entry: arca::Entry<Runtime>) -> defs::entry {
+fn write_entry(entry: arca::Entry<Runtime>) -> arcane::arca_entry {
     match entry {
-        arca::Entry::Null(size) => defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_NONE,
-            datatype: datatype::DATATYPE_NULL,
+        arca::Entry::Null(size) => arcane::arca_entry {
+            mode: arcane::__MODE_none,
+            datatype: arcane::__TYPE_null,
             data: size,
         },
-        arca::Entry::ROPage(mut value) => defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            datatype: datatype::DATATYPE_PAGE,
+        arca::Entry::ROPage(mut value) => arcane::arca_entry {
+            mode: arcane::__MODE_read_only,
+            datatype: arcane::__TYPE_page,
             data: value.into_inner().into_raw() as usize,
         },
-        arca::Entry::RWPage(mut value) => defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            datatype: datatype::DATATYPE_PAGE,
+        arca::Entry::RWPage(mut value) => arcane::arca_entry {
+            mode: arcane::__MODE_read_write,
+            datatype: arcane::__TYPE_page,
             data: value.into_inner().into_raw() as usize,
         },
-        arca::Entry::ROTable(mut value) => defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_ONLY,
-            datatype: datatype::DATATYPE_TABLE,
+        arca::Entry::ROTable(mut value) => arcane::arca_entry {
+            mode: arcane::__MODE_read_only,
+            datatype: arcane::__TYPE_table,
             data: value.into_inner().into_raw() as usize,
         },
-        arca::Entry::RWTable(mut value) => defs::entry {
-            mode: defs::entry_mode::ENTRY_MODE_READ_WRITE,
-            datatype: datatype::DATATYPE_TABLE,
+        arca::Entry::RWTable(mut value) => arcane::arca_entry {
+            mode: arcane::__MODE_read_write,
+            datatype: arcane::__TYPE_table,
             data: value.into_inner().into_raw() as usize,
         },
     }
@@ -371,16 +337,14 @@ fn write_entry(entry: arca::Entry<Runtime>) -> defs::entry {
 impl Runtime {
     unsafe fn raw_datatype(data: Ref) -> arca::DataType {
         unsafe {
-            match arca_type(data.as_raw() as i64) {
-                defs::datatype::DATATYPE_NULL => arca::DataType::Null,
-                defs::datatype::DATATYPE_WORD => arca::DataType::Word,
-                defs::datatype::DATATYPE_ATOM => arca::DataType::Atom,
-                defs::datatype::DATATYPE_EXCEPTION => arca::DataType::Exception,
-                defs::datatype::DATATYPE_BLOB => arca::DataType::Blob,
-                defs::datatype::DATATYPE_TUPLE => arca::DataType::Tuple,
-                defs::datatype::DATATYPE_PAGE => arca::DataType::Page,
-                defs::datatype::DATATYPE_TABLE => arca::DataType::Table,
-                defs::datatype::DATATYPE_FUNCTION => arca::DataType::Function,
+            match arca_type(data.as_raw() as i64) as u32 {
+                arcane::__TYPE_null => arca::DataType::Null,
+                arcane::__TYPE_word => arca::DataType::Word,
+                arcane::__TYPE_blob => arca::DataType::Blob,
+                arcane::__TYPE_tuple => arca::DataType::Tuple,
+                arcane::__TYPE_page => arca::DataType::Page,
+                arcane::__TYPE_table => arca::DataType::Table,
+                arcane::__TYPE_function => arca::DataType::Function,
                 _ => unreachable!(),
             }
         }
@@ -388,16 +352,14 @@ impl Runtime {
 
     unsafe fn raw_convert(data: Ref) -> arca::Value<Self> {
         unsafe {
-            match arca_type(data.as_raw() as i64) {
-                defs::datatype::DATATYPE_NULL => Null::from_inner(data).into(),
-                defs::datatype::DATATYPE_WORD => Word::from_inner(data).into(),
-                defs::datatype::DATATYPE_ATOM => Atom::from_inner(data).into(),
-                defs::datatype::DATATYPE_EXCEPTION => Exception::from_inner(data).into(),
-                defs::datatype::DATATYPE_BLOB => Blob::from_inner(data).into(),
-                defs::datatype::DATATYPE_TUPLE => Tuple::from_inner(data).into(),
-                defs::datatype::DATATYPE_PAGE => Page::from_inner(data).into(),
-                defs::datatype::DATATYPE_TABLE => Table::from_inner(data).into(),
-                defs::datatype::DATATYPE_FUNCTION => Function::from_inner(data).into(),
+            match arca_type(data.as_raw() as i64) as u32 {
+                arcane::__TYPE_null => Null::from_inner(data).into(),
+                arcane::__TYPE_word => Word::from_inner(data).into(),
+                arcane::__TYPE_blob => Blob::from_inner(data).into(),
+                arcane::__TYPE_tuple => Tuple::from_inner(data).into(),
+                arcane::__TYPE_page => Page::from_inner(data).into(),
+                arcane::__TYPE_table => Table::from_inner(data).into(),
+                arcane::__TYPE_function => Function::from_inner(data).into(),
                 _ => unreachable!(),
             }
         }
@@ -407,8 +369,6 @@ impl Runtime {
         match value.into_inner() {
             arca::RawValue::Null(x) => x,
             arca::RawValue::Word(x) => x,
-            arca::RawValue::Exception(x) => x,
-            arca::RawValue::Atom(x) => x,
             arca::RawValue::Blob(x) => x,
             arca::RawValue::Tuple(x) => x,
             arca::RawValue::Page(x) => x,
@@ -421,8 +381,6 @@ impl Runtime {
         match value.inner() {
             arca::RawValueRef::Null(x) => x,
             arca::RawValueRef::Word(x) => x,
-            arca::RawValueRef::Exception(x) => x,
-            arca::RawValueRef::Atom(x) => x,
             arca::RawValueRef::Blob(x) => x,
             arca::RawValueRef::Tuple(x) => x,
             arca::RawValueRef::Page(x) => x,

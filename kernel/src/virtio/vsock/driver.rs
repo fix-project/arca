@@ -48,8 +48,21 @@ impl Driver {
     }
 
     pub async fn listen(&self, addr: SocketAddr) -> Listener {
-        Listener {
-            rx: self.listeners.receiver(addr),
+        if addr.port == 0 {
+            for port in 49152..=65535 {
+                let addr = SocketAddr {
+                    cid: addr.cid,
+                    port,
+                };
+                if let Some(rx) = self.listeners.try_receiver(addr) {
+                    return Listener { rx };
+                }
+            }
+            panic!("out of ports");
+        } else {
+            Listener {
+                rx: self.listeners.receiver(addr),
+            }
         }
     }
 
@@ -60,6 +73,20 @@ impl Driver {
     }
 
     pub async fn connect(&self, flow: Flow) -> Receiver {
+        if flow.src.port == 0 {
+            for port in 49152..=65535 {
+                let src = SocketAddr {
+                    cid: flow.src.cid,
+                    port,
+                };
+                let flow = Flow { src, dst: flow.dst };
+                if let Some(rx) = self.streams.try_receiver(flow.reverse()) {
+                    self.request(flow).await;
+                    return Receiver { rx };
+                }
+            }
+            panic!("out of ports");
+        }
         let rx = self.streams.receiver(flow.reverse());
         self.request(flow).await;
         Receiver { rx }
@@ -257,6 +284,14 @@ impl Driver {
         self.tx.try_poll();
         Some(())
     }
+
+    pub fn listeners(&self) -> Vec<SocketAddr> {
+        self.listeners.keys()
+    }
+
+    pub fn streams(&self) -> Vec<Flow> {
+        self.streams.keys()
+    }
 }
 
 #[derive(Debug)]
@@ -268,6 +303,10 @@ impl Listener {
     pub async fn listen(&mut self) -> Result<SocketAddr> {
         Ok(self.rx.recv().await?)
     }
+
+    pub fn addr(&self) -> SocketAddr {
+        *self.rx.key()
+    }
 }
 
 #[derive(Debug)]
@@ -276,8 +315,12 @@ pub struct Receiver {
 }
 
 impl Receiver {
-    pub async fn recv(&mut self) -> Result<StreamEvent> {
+    pub async fn recv(&self) -> Result<StreamEvent> {
         Ok(self.rx.recv().await?)
+    }
+
+    pub fn inbound(&self) -> Flow {
+        *self.rx.key()
     }
 }
 

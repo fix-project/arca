@@ -30,9 +30,11 @@ pub extern "C" fn _rsstart() -> ! {
         let old: Word = effect.clone()("get", "count")(Continuation)
             .try_into()
             .unwrap();
+        let x = old.read();
         let value = old.read() + 1;
         let result = effect.clone()("compare-and-swap", "count", old, value)(Continuation);
-        if result.datatype() != DataType::Exception {
+        let result: Word = result.try_into().unwrap();
+        if result.read() != x {
             break value;
         }
     };

@@ -178,7 +178,7 @@ impl VirtQueue {
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
             let head = self.load(bufs).await;
-            let mut rx = self.response_sorter.receiver(head);
+            let rx = self.response_sorter.receiver(head);
             self.avail.lock().send(head);
             let result = rx.recv().await;
             let result = match result {

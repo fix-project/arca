@@ -8,6 +8,7 @@ pub struct StreamListener {
 impl StreamListener {
     pub async fn bind(addr: SocketAddr) -> Result<StreamListener> {
         let rx = listen(addr).await;
+        let addr = rx.addr();
         Ok(StreamListener { addr, rx })
     }
 
@@ -28,9 +29,9 @@ impl StreamListener {
             local,
             peer,
             rx,
-            peer_rx_closed: false,
-            peer_tx_closed: false,
-            closed: false,
+            peer_rx_closed: false.into(),
+            peer_tx_closed: false.into(),
+            closed: false.into(),
         })
     }
 }
