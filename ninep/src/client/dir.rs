@@ -6,17 +6,39 @@ impl<T: DirType> DirLike for P9<T> {}
 #[async_trait]
 impl ClosedDirLike for P9<ClosedDir> {
     async fn open(self: Box<Self>, access: Access) -> Result<OpenDir> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
-        let RMessage::Open { qid, .. } = self
-            .connection
-            .send(TMessage::Open { tag, fid, access })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
+        let qid = if self.conn.linux() {
+            let lflags = match access {
+                Access::Read => 0,
+                Access::Write => 1,
+                Access::ReadWrite => 2,
+                Access::Execute => 010000000,
+            };
+            let RMessage::LOpen { qid, .. } = self
+                .conn
+                .send(TMessage::LOpen {
+                    tag,
+                    fid,
+                    flags: lflags,
+                })
+                .await??
+            else {
+                return Err(Error::InputOutputError);
+            };
+            qid
+        } else {
+            let RMessage::Open { qid, .. } = self
+                .conn
+                .send(TMessage::Open { tag, fid, access })
+                .await??
+            else {
+                return Err(Error::InputOutputError);
+            };
+            qid
         };
         Ok(P9 {
-            connection: self.connection,
+            conn: self.conn,
             fid,
             qid,
             _phantom: PhantomData,
@@ -25,9 +47,9 @@ impl ClosedDirLike for P9<ClosedDir> {
     }
 
     async fn walk(&self, path: &Path) -> Result<ClosedNode> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
-        let newfid = self.connection.fid();
+        let newfid = self.conn.fid();
         let name: Vec<String> = path
             .components()
             .map(|x| match x {
@@ -40,7 +62,7 @@ impl ClosedDirLike for P9<ClosedDir> {
             .ok_or(Error::PathTooLong)?;
         let n = name.len();
         let RMessage::Walk { qid, .. } = self
-            .connection
+            .conn
             .send(TMessage::Walk {
                 tag,
                 fid,
@@ -58,7 +80,7 @@ impl ClosedDirLike for P9<ClosedDir> {
         if qid.flags.contains(Flag::Directory) {
             Ok(ClosedNode::Dir(
                 P9 {
-                    connection: self.connection.clone(),
+                    conn: self.conn.clone(),
                     fid: newfid,
                     qid,
                     _phantom: PhantomData,
@@ -68,7 +90,7 @@ impl ClosedDirLike for P9<ClosedDir> {
         } else {
             Ok(ClosedNode::File(
                 P9 {
-                    connection: self.connection.clone(),
+                    conn: self.conn.clone(),
                     fid: newfid,
                     qid,
                     _phantom: PhantomData,
@@ -85,29 +107,71 @@ impl ClosedDirLike for P9<ClosedDir> {
         flags: BitFlags<Flag>,
         access: Access,
     ) -> Result<OpenNode> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
-        let RMessage::Create { qid, .. } = self
-            .connection
-            .send(TMessage::Create {
-                tag,
-                fid,
-                name: name.to_owned(),
-                mode: Mode {
-                    perm,
-                    _skip: 0,
-                    flags,
-                },
-                access,
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
+        let qid = if self.conn.linux() {
+            if flags.contains(Flag::Directory) {
+                let RMessage::LMkdir { qid, .. } = self
+                    .conn
+                    .send(TMessage::LMkdir {
+                        tag,
+                        fid,
+                        name: name.to_owned(),
+                        mode: perm.bits() as u32,
+                        gid: 0,
+                    })
+                    .await??
+                else {
+                    return Err(Error::InputOutputError);
+                };
+                qid
+            } else {
+                let lflags = match access {
+                    Access::Read => 0,
+                    Access::Write => 1,
+                    Access::ReadWrite => 2,
+                    Access::Execute => 010000000,
+                };
+                let RMessage::LCreate { qid, .. } = self
+                    .conn
+                    .send(TMessage::LCreate {
+                        tag,
+                        fid,
+                        name: name.to_owned(),
+                        flags: lflags,
+                        mode: perm.bits() as u32,
+                        gid: 0,
+                    })
+                    .await??
+                else {
+                    return Err(Error::InputOutputError);
+                };
+                qid
+            }
+        } else {
+            let RMessage::Create { qid, .. } = self
+                .conn
+                .send(TMessage::Create {
+                    tag,
+                    fid,
+                    name: name.to_owned(),
+                    mode: Mode {
+                        perm,
+                        _skip: 0,
+                        flags,
+                    },
+                    access,
+                })
+                .await??
+            else {
+                return Err(Error::InputOutputError);
+            };
+            qid
         };
         if qid.flags.contains(Flag::Directory) {
             Ok(OpenNode::Dir(
                 P9 {
-                    connection: self.connection.clone(),
+                    conn: self.conn.clone(),
                     fid,
                     qid,
                     _phantom: PhantomData,
@@ -117,7 +181,7 @@ impl ClosedDirLike for P9<ClosedDir> {
         } else {
             Ok(OpenNode::File(
                 P9 {
-                    connection: self.connection.clone(),
+                    conn: self.conn.clone(),
                     fid,
                     qid,
                     _phantom: PhantomData,
@@ -131,10 +195,10 @@ impl ClosedDirLike for P9<ClosedDir> {
 #[async_trait]
 impl OpenDirLike for P9<OpenDir> {
     async fn read(&self, offset: usize, count: usize) -> Result<Vec<Stat>> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
         let RMessage::Read { data, .. } = self
-            .connection
+            .conn
             .send(TMessage::Read {
                 tag,
                 fid,

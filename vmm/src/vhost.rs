@@ -46,7 +46,7 @@ pub struct VSockBackend {
     rx: VirtQueue,
     tx: VirtQueue,
     _kick: EventFd,
-    // _call: EventFd,
+    _call: EventFd,
 }
 
 impl VSockBackend {
@@ -134,7 +134,7 @@ impl VSockBackend {
             rx,
             tx,
             _kick: kick,
-            // _call: call,
+            _call: call,
         })
     }
 

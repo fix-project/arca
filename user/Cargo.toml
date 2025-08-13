@@ -6,6 +6,10 @@ version = "0.1.0"
 edition = "2024"
 forced-target = "x86_64-unknown-none"
 
+[features]
+default = ["allocator"]
+allocator = []
+
 [dependencies]
 arca = { path = "../arca" }
 arcane = { path = "../arcane" }

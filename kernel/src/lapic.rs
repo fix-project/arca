@@ -147,7 +147,7 @@ pub unsafe fn init() {
 
     // lapic.set_initial_count(0x400000); // 100ms
 
-    lapic.set_initial_count(0x80000); // 10ms
+    // lapic.set_initial_count(0x80000); // 10ms
 
     // lapic.set_initial_count(0x10000); // 1ms
 
@@ -155,7 +155,7 @@ pub unsafe fn init() {
 
     // lapic.set_initial_count(0x2000); // 100us
 
-    // lapic.set_initial_count(0x200); // 10us
+    lapic.set_initial_count(0x200); // 10us
 
     // lapic.set_initial_count(0x40); // 1us
 

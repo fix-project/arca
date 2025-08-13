@@ -3,10 +3,10 @@ use super::*;
 #[async_trait]
 impl<T: NodeType> NodeLike for P9<T> {
     async fn stat(&self) -> Result<Stat> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
         let RMessage::Stat { stat, .. } =
-            self.connection.send(TMessage::Stat { tag, fid }).await??
+            self.conn.send(TMessage::Stat { tag, fid }).await??
         else {
             return Err(Error::InputOutputError);
         };
@@ -14,10 +14,10 @@ impl<T: NodeType> NodeLike for P9<T> {
     }
 
     async fn wstat(&mut self, stat: &Stat) -> Result<()> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
         let RMessage::WStat { .. } = self
-            .connection
+            .conn
             .send(TMessage::WStat {
                 tag,
                 fid,
@@ -31,9 +31,9 @@ impl<T: NodeType> NodeLike for P9<T> {
     }
 
     async fn clunk(self: Box<Self>) -> Result<()> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
-        let RMessage::Clunk { .. } = self.connection.send(TMessage::Clunk { tag, fid }).await??
+        let RMessage::Clunk { .. } = self.conn.send(TMessage::Clunk { tag, fid }).await??
         else {
             return Err(Error::InputOutputError);
         };
@@ -41,9 +41,9 @@ impl<T: NodeType> NodeLike for P9<T> {
     }
 
     async fn remove(self: Box<Self>) -> Result<()> {
-        let tag = self.connection.tag();
+        let tag = self.conn.tag();
         let fid = self.fid;
-        let RMessage::Remove { .. } = self.connection.send(TMessage::Clunk { tag, fid }).await??
+        let RMessage::Remove { .. } = self.conn.send(TMessage::Clunk { tag, fid }).await??
         else {
             return Err(Error::InputOutputError);
         };

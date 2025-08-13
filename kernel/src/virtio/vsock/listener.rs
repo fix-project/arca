@@ -24,14 +24,6 @@ impl StreamListener {
             src: local,
             dst: peer,
         };
-        Ok(Stream {
-            outbound,
-            local,
-            peer,
-            rx,
-            peer_rx_closed: false.into(),
-            peer_tx_closed: false.into(),
-            closed: false.into(),
-        })
+        Ok(Stream::new(outbound, rx))
     }
 }

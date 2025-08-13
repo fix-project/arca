@@ -27,6 +27,7 @@ pub enum TMessage {
         afid: Fid,
         uname: String,
         aname: String,
+        n_uname: Option<u32>,
     },
     // 106 would be TError, but it doesn't exist
     #[serde(rename = "108")]
@@ -71,6 +72,25 @@ pub enum TMessage {
     Stat { tag: Tag, fid: Fid },
     #[serde(rename = "126")]
     WStat { tag: Tag, fid: Fid, stat: Stat },
+    #[serde(rename = "12")]
+    LOpen { tag: Tag, fid: Fid, flags: u32 },
+    #[serde(rename = "14")]
+    LCreate {
+        tag: Tag,
+        fid: Fid,
+        name: String,
+        flags: u32,
+        mode: u32,
+        gid: u32,
+    },
+    #[serde(rename = "72")]
+    LMkdir {
+        tag: Tag,
+        fid: Fid,
+        name: String,
+        mode: u32,
+        gid: u32,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
@@ -111,6 +131,14 @@ pub enum RMessage {
     Stat { tag: Tag, stat: Stat },
     #[serde(rename = "127")]
     WStat { tag: Tag },
+    #[serde(rename = "7")]
+    LError { tag: Tag, ecode: u32 },
+    #[serde(rename = "13")]
+    LOpen { tag: Tag, qid: Qid, iounit: u32 },
+    #[serde(rename = "15")]
+    LCreate { tag: Tag, qid: Qid, iounit: u32 },
+    #[serde(rename = "73")]
+    LMkdir { tag: Tag, qid: Qid },
 }
 
 impl TMessage {
@@ -129,6 +157,9 @@ impl TMessage {
             TMessage::Remove { tag, .. } => tag,
             TMessage::Stat { tag, .. } => tag,
             TMessage::WStat { tag, .. } => tag,
+            TMessage::LOpen { tag, .. } => tag,
+            TMessage::LCreate { tag, .. } => tag,
+            TMessage::LMkdir { tag, .. } => tag,
         }
     }
 }
@@ -150,6 +181,10 @@ impl RMessage {
             RMessage::Remove(tag) => tag,
             RMessage::Stat { tag, .. } => tag,
             RMessage::WStat { tag, .. } => tag,
+            RMessage::LError { tag, .. } => tag,
+            RMessage::LOpen { tag, .. } => tag,
+            RMessage::LCreate { tag, .. } => tag,
+            RMessage::LMkdir { tag, .. } => tag,
         }
     }
 }
@@ -166,6 +201,9 @@ impl Try for RMessage {
     fn branch(self) -> core::ops::ControlFlow<Self::Residual, Self::Output> {
         match self {
             RMessage::Error { tag: _, ename } => ControlFlow::Break(Err(Error::Message(ename))),
+            RMessage::LError { tag: _, ecode } => {
+                ControlFlow::Break(Err(Error::Message(alloc::format!("Linux Error {ecode}"))))
+            }
             x => ControlFlow::Continue(x),
         }
     }

@@ -93,18 +93,8 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     } else if registers.isr == 0x31 {
-        log::error!("got external interrupt!");
-        let mut i = 0;
-        crate::profile::backtrace(|rip: *const (), symname: Option<(String, usize)>| {
-            if let Some((name, off)) = symname {
-                log::error!("{i}. {rip:p} - {name}+{off:#x}");
-            } else {
-                log::error!("{i}. {rip:p}");
-            }
-            i += 1;
-        });
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-        crate::exit(130);
+        return;
     }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {

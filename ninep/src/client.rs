@@ -1,6 +1,7 @@
 use core::{
     marker::PhantomData,
-    sync::atomic::{AtomicU16, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering},
+    u32,
 };
 
 use alloc::collections::btree_map::BTreeMap;
@@ -22,6 +23,8 @@ struct Connection {
     inbox: Demultiplexer,
     next_tag: AtomicU16,
     next_fid: AtomicU32,
+    msize: AtomicUsize,
+    linux: AtomicBool,
 }
 
 impl Connection {
@@ -33,13 +36,23 @@ impl Connection {
         Fid(self.next_fid.fetch_add(1, Ordering::Relaxed))
     }
 
+    fn msize(&self) -> usize {
+        self.msize.load(Ordering::Relaxed)
+    }
+
+    fn linux(&self) -> bool {
+        self.linux.load(Ordering::Relaxed)
+    }
+
     async fn send(&self, message: TMessage) -> Result<RMessage> {
         let mut f = self.inbox.conn.lock();
         let tag = message.tag();
+        log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
         f.write(&msg).await?;
         SpinLock::unlock(f);
         let result = self.inbox.read(tag).await?;
+        log::debug!("<- {result:?}");
         Ok(result)
     }
 }
@@ -51,21 +64,30 @@ impl Client {
             inbox,
             next_tag: AtomicU16::new(0),
             next_fid: AtomicU32::new(0),
+            msize: AtomicUsize::new(1024),
+            linux: AtomicBool::new(false),
         });
+        let max_msize = 1024 * 64;
         let msg = TMessage::Version {
             tag: conn.tag(),
-            msize: 4096,
-            version: "9P2000".into(),
+            msize: max_msize,
+            version: "9P2000.L".into(),
         };
         let RMessage::Version { msize, version, .. } = conn.send(msg).await? else {
             return Err(Error::InputOutputError);
         };
-        if msize != 4096 {
+        if msize > max_msize {
             return Err(Error::InputOutputError);
         }
-        if version != "9P2000" {
+        if version == "9P2000" {
+            conn.linux.store(false, Ordering::Relaxed);
+        } else if version == "9P2000.L" {
+            conn.linux.store(true, Ordering::Relaxed);
+        } else {
+            log::error!("server only supports {version}");
             return Err(Error::InputOutputError);
         }
+        conn.msize.store(msize as usize, Ordering::Relaxed);
         Ok(Client { conn })
     }
 
@@ -85,7 +107,7 @@ impl Client {
             return Err(Error::InputOutputError);
         };
         Ok(P9 {
-            connection: self.conn.clone(),
+            conn: self.conn.clone(),
             fid: afid,
             qid: aqid,
             _phantom: PhantomData,
@@ -110,13 +132,14 @@ impl Client {
                 afid,
                 uname: uname.to_owned(),
                 aname: aname.to_owned(),
+                n_uname: if self.conn.linux() { Some(!0) } else { None },
             })
             .await??
         else {
             return Err(Error::InputOutputError);
         };
         Ok(P9 {
-            connection: self.conn.clone(),
+            conn: self.conn.clone(),
             fid,
             qid,
             _phantom: PhantomData,
@@ -145,7 +168,6 @@ impl Demultiplexer {
     }
 
     pub async fn read(&self, tag: Tag) -> Result<RMessage> {
-        let mut buf = vec![0; 4096];
         self.sem.acquire(1).await;
         let mut storage = self.storage.write();
         if let Some(result) = storage.remove(&tag) {
@@ -154,8 +176,12 @@ impl Demultiplexer {
         }
         // TODO: fix head-of-line blocking here
         loop {
+            let mut size = [0u8; 4];
+            self.conn.lock().read(&mut size).await?;
+            let size = u32::from_le_bytes(size);
+            let mut buf = vec![0; size as usize - 4];
             let n = self.conn.lock().read(&mut buf).await?;
-            let rmsg: RMessage = wire::from_bytes_with_len(&buf[..n])?;
+            let rmsg: RMessage = wire::from_bytes(&buf[..n])?;
             if rmsg.tag() == tag {
                 self.sem.release(1);
                 return Ok(rmsg);
@@ -167,7 +193,7 @@ impl Demultiplexer {
 }
 
 pub struct P9<T: NodeType> {
-    connection: Arc<Connection>,
+    conn: Arc<Connection>,
     fid: Fid,
     qid: Qid,
     _phantom: PhantomData<T>,

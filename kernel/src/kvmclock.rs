@@ -133,16 +133,28 @@ pub fn now() -> OffsetDateTime {
 }
 
 #[inline]
-pub fn time(f: impl FnOnce()) -> Duration {
+pub fn time<T>(f: impl FnOnce() -> T) -> (Duration, T) {
     unsafe {
         core::arch::x86_64::_mm_lfence();
     };
     let (start_info, start_tsc) = read_current();
-    f();
+    let result = f();
     unsafe {
         core::arch::x86_64::_mm_mfence();
         core::arch::x86_64::_mm_lfence();
     };
     let (end_info, end_tsc) = read_current();
-    info_and_tsc_to_duration(end_info, end_tsc) - info_and_tsc_to_duration(start_info, start_tsc)
+    (
+        info_and_tsc_to_duration(end_info, end_tsc)
+            - info_and_tsc_to_duration(start_info, start_tsc),
+        result,
+    )
+}
+
+#[inline]
+pub async fn time_async<T>(f: impl core::future::Future<Output = T>) -> (Duration, T) {
+    let start = time_since_boot();
+    let result = f.await;
+    let end = time_since_boot();
+    (end - start, result)
 }

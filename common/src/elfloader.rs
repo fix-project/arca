@@ -17,9 +17,6 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
 
     assert_eq!(elf.ehdr.e_type, elf::abi::ET_EXEC);
 
-    let mut registers = [0; 20];
-    registers[16] = start_address;
-
     let mut table = R::create_table(0);
 
     for (i, segment) in segments.iter().enumerate() {
@@ -102,17 +99,16 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
         }
     }
 
-    let bytes: Vec<u8> = registers
-        .into_iter()
-        .flat_map(|x| x.to_ne_bytes())
-        .collect();
+    let mut registers = R::create_tuple(20);
+    registers.set(16, Word::from(start_address));
 
-    let registers = R::create_blob(&bytes);
     let descriptors = R::create_tuple(0);
 
     let mut data = R::create_tuple(3);
-    data.set(0, Value::Blob(registers));
+    data.set(0, Value::Tuple(registers));
     data.set(1, Value::Table(table));
     data.set(2, Value::Tuple(descriptors));
-    R::create_function(true, Value::Tuple(data))
+
+    let args = R::create_tuple(0);
+    R::create_function(Tuple::from(("Arcane", data, args)).into())
 }

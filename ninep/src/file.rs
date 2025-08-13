@@ -36,6 +36,10 @@ impl OpenFile {
         self.offset += len;
         Ok(len)
     }
+
+    pub async fn stat(&self) -> Result<Stat> {
+        self.file.stat().await
+    }
 }
 
 impl ClosedFile {

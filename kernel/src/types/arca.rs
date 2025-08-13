@@ -4,15 +4,13 @@ use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
-use crate::types::internal::Table;
-use crate::types::internal::Tuple;
+use crate::types::internal::{Table, Tuple};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: Table,
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
-    error_buffer: Option<String>,
     fsbase: u64,
 }
 
@@ -26,7 +24,6 @@ impl Arca {
             page_table,
             register_file,
             descriptors,
-            error_buffer: None,
             fsbase: 0,
         }
     }
@@ -42,7 +39,6 @@ impl Arca {
             page_table,
             register_file: register_file.into(),
             descriptors,
-            error_buffer: None,
             fsbase: 0,
         }
     }
@@ -58,7 +54,6 @@ impl Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
-            error_buffer: self.error_buffer,
         }
     }
 
@@ -85,6 +80,14 @@ impl Arca {
     pub fn descriptors_mut(&mut self) -> &mut Descriptors {
         &mut self.descriptors
     }
+
+    pub fn read(self) -> (RegisterFile, Table, Tuple) {
+        (
+            *self.register_file,
+            self.page_table,
+            Tuple::new(Vec::from(self.descriptors)),
+        )
+    }
 }
 
 impl Default for Arca {
@@ -98,7 +101,6 @@ pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
-    error_buffer: Option<String>,
 }
 
 impl<'a> LoadedArca<'a> {
@@ -146,7 +148,6 @@ impl<'a> LoadedArca<'a> {
                 register_file: self.register_file,
                 descriptors: self.descriptors,
                 page_table,
-                error_buffer: self.error_buffer,
                 fsbase,
             },
             self.cpu,
@@ -156,7 +157,6 @@ impl<'a> LoadedArca<'a> {
     pub fn swap(&mut self, other: &mut Arca) {
         core::mem::swap(&mut self.register_file, &mut other.register_file);
         core::mem::swap(&mut self.descriptors, &mut other.descriptors);
-        core::mem::swap(&mut self.error_buffer, &mut other.error_buffer);
         let mut fsbase: u64;
         unsafe {
             core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
@@ -167,18 +167,6 @@ impl<'a> LoadedArca<'a> {
 
     pub fn cpu(&mut self) -> &'_ mut Cpu {
         self.cpu
-    }
-
-    pub fn error_buffer(&self) -> Option<&String> {
-        self.error_buffer.as_ref()
-    }
-
-    pub fn error_buffer_mut(&mut self) -> &mut String {
-        self.error_buffer.get_or_insert_with(String::new)
-    }
-
-    pub fn reset_error(&mut self) {
-        self.error_buffer = None;
     }
 }
 

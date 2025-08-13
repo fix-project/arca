@@ -130,15 +130,15 @@ struct OpenConnection {
 #[async_trait]
 impl VirtualOpenFile for OpenConnection {
     async fn read(&self, _: usize, buf: &mut [u8]) -> Result<usize> {
-        let v = self
-            .stream
-            .recv()
-            .await
-            .map_err(|_| Error::InputOutputError)?;
-        let n = v.len();
-        let len = core::cmp::min(buf.len(), n);
-        buf[..len].copy_from_slice(&v[..len]);
-        Ok(n)
+        let mut read = 0;
+        while read < buf.len() {
+            read += self
+                .stream
+                .recv(&mut buf[read..])
+                .await
+                .map_err(|_| Error::InputOutputError)?;
+        }
+        Ok(read)
     }
 
     async fn write(&mut self, _: usize, buf: &[u8]) -> Result<usize> {

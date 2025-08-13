@@ -139,7 +139,8 @@ impl VirtQueue {
                 break descs;
             }
             // TODO: handle descriptor unavailability better
-            crate::rt::yield_now().await;
+            log::warn!("out of descriptors");
+            crate::rt::wfi().await;
         };
         let mut head = None;
         let mut previous = None;
@@ -193,8 +194,8 @@ impl VirtQueue {
         }
     }
 
-    pub fn try_poll(&self) -> Option<()> {
-        let mut used = self.used.try_lock()?;
+    pub fn poll(&self) {
+        let mut used = self.used.lock();
         unsafe {
             while let Some(used) = used.recv() {
                 let x = self
@@ -209,6 +210,5 @@ impl VirtQueue {
                 }
             }
         }
-        Some(())
     }
 }

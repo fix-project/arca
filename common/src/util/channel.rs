@@ -3,7 +3,7 @@ use core::task::{Poll, Waker};
 
 extern crate alloc;
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use crate::util::spinlock::SpinLock;
 
@@ -12,54 +12,49 @@ pub struct ChannelClosed;
 
 #[derive(Debug)]
 struct Channel<T> {
-    closed: bool,
     data: VecDeque<T>,
-    wake_on_tx: Option<Waker>,
+    wake_on_tx: VecDeque<Waker>,
 }
 
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     let channel = Arc::new(SpinLock::new(Channel {
-        closed: false,
         data: VecDeque::new(),
-        wake_on_tx: None,
+        wake_on_tx: VecDeque::new(),
     }));
     (
         Sender {
-            channel: channel.clone(),
+            channel: Arc::downgrade(&channel),
         },
         Receiver { channel },
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sender<T> {
-    channel: Arc<SpinLock<Channel<T>>>,
+    channel: Weak<SpinLock<Channel<T>>>,
 }
 
 impl<T> Sender<T> {
     pub fn send_blocking(&self, value: T) -> Result<(), ChannelClosed> {
-        let mut channel = self.channel.lock();
-        if channel.closed {
-            return Err(ChannelClosed);
-        }
+        let channel = self.channel.upgrade().ok_or(ChannelClosed)?;
+        let mut channel = channel.lock();
         channel.data.push_back(value);
-        if let Some(waker) = channel.wake_on_tx.take() {
+        if let Some(waker) = channel.wake_on_tx.pop_front() {
             waker.wake()
         }
         Ok(())
     }
 
+    pub fn receiver(&self) -> Result<Receiver<T>, ChannelClosed> {
+        Ok(Receiver {
+            channel: self.channel.upgrade().ok_or(ChannelClosed)?,
+        })
+    }
+
     pub fn close(self) {}
 }
 
-impl<T> Drop for Sender<T> {
-    fn drop(&mut self) {
-        let mut channel = self.channel.lock();
-        channel.closed = true;
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Receiver<T> {
     channel: Arc<SpinLock<Channel<T>>>,
 }
@@ -76,21 +71,18 @@ impl<T> Receiver<T> {
         let mut channel = self.channel.lock();
         if let Some(result) = channel.data.pop_front() {
             Some(Ok(result))
-        } else if channel.closed {
-            Some(Err(ChannelClosed))
         } else {
             None
         }
     }
 
-    pub fn close(self) {}
-}
-
-impl<T> Drop for Receiver<T> {
-    fn drop(&mut self) {
-        let mut channel = self.channel.lock();
-        channel.closed = true;
+    pub fn sender(&self) -> Sender<T> {
+        Sender {
+            channel: Arc::downgrade(&self.channel),
+        }
     }
+
+    pub fn close(self) {}
 }
 
 struct ReceiveFuture<T> {
@@ -108,10 +100,7 @@ impl<T> Future for ReceiveFuture<T> {
         if let Some(result) = channel.data.pop_front() {
             return Poll::Ready(Ok(result));
         }
-        if channel.closed {
-            return Poll::Ready(Err(ChannelClosed));
-        }
-        channel.wake_on_tx = Some(cx.waker().clone());
+        channel.wake_on_tx.push_back(cx.waker().clone());
         Poll::Pending
     }
 }

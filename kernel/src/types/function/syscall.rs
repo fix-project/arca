@@ -263,10 +263,9 @@ pub fn sys_create_table(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> 
 }
 
 pub fn sys_create_function(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
-    let arcane = args[0];
-    let data = args[1] as usize;
+    let data = args[0] as usize;
     let data = arca.descriptors_mut().take(data)?;
-    let result = Function::new(arcane != 0, data)?;
+    let result = Function::new(data)?;
     Ok(arca.descriptors_mut().insert(result.into()))
 }
 
@@ -400,7 +399,11 @@ pub fn sys_call_with_current_continuation(
     let Ok(func) = Function::try_from(func) else {
         return ControlFlow::Continue(Err(SyscallError::BadType));
     };
-    let k: Value = Function::from_inner(internal::Function::arcane(arca.take())).into();
+    let k: Value = Function::from_inner(internal::Function::arcane_with_args(
+        arca.take(),
+        Default::default(),
+    ))
+    .into();
     ControlFlow::Break(func.apply(k).into())
 }
 
@@ -529,7 +532,7 @@ impl From<crate::types::Error> for SyscallError {
         match value {
             crate::types::Error::InvalidTableEntry(_) => SyscallError::BadArgument,
             crate::types::Error::InvalidIndex(_) => SyscallError::BadIndex,
-            crate::types::Error::InvalidValue(_) => SyscallError::BadArgument,
+            crate::types::Error::InvalidValue => SyscallError::BadArgument,
         }
     }
 }

@@ -10,6 +10,7 @@ pub struct Driver {
     rx: VirtQueue,
     tx: VirtQueue,
     status: SpinLock<Status>,
+    used_buffers: channel::Sender<Vec<u8>>,
     listeners: sorter::Sorter<SocketAddr, SocketAddr>,
     streams: sorter::Sorter<Flow, StreamEvent>,
 }
@@ -32,15 +33,18 @@ impl Driver {
         let len = info.rx.descriptors;
         let rx = VirtQueue::new("rx", info.rx);
         let tx = VirtQueue::new("tx", info.tx);
+        let (buffers_tx, buffers_rx) = channel::unbounded();
         let this = Arc::new(Self {
             rx,
             tx,
+            used_buffers: buffers_tx,
             status: SpinLock::new(Status::default()),
             listeners: Sorter::new(),
             streams: Sorter::new(),
         });
         for _ in 0..len / 2 {
-            crate::rt::spawn(this.clone().recv_task());
+            this.used_buffers.send_blocking(Vec::new()).unwrap();
+            crate::rt::spawn(this.clone().recv_task(buffers_rx.clone()));
         }
         crate::rt::spawn(this.clone().poll_task());
 
@@ -112,17 +116,14 @@ impl Driver {
                 // }
                 if len > 0 && status.rx_buf_alloc == 0 {
                     SpinLock::unlock(status);
-                    crate::rt::yield_now().await;
+                    log::warn!("no rx capacity");
+                    crate::rt::wfi().await;
                     continue;
                 }
 
                 header.buf_alloc = status.rx_buf_alloc as u32;
                 header.fwd_cnt = status.rx_fwd_cnt as u32;
                 status.tx_cnt = status.tx_cnt.wrapping_add(len);
-
-                // TODO: this is definitely wrong
-                header.buf_alloc = 4096;
-                header.fwd_cnt = 0;
 
                 let header_buf: &mut [u8; 44] = core::mem::transmute(&mut header);
                 let buffers = BufferChain::cons(header_buf, buffers);
@@ -199,12 +200,13 @@ impl Driver {
         .await;
     }
 
-    async fn recv_task(self: Arc<Self>) {
+    async fn recv_task(self: Arc<Self>, buffers: channel::Receiver<Vec<u8>>) {
         let mut listeners = self.listeners.sender();
         let mut streams = self.streams.sender();
         unsafe {
-            let mut payload_buf: Box<[u8]> = Box::new_zeroed_slice(4096).assume_init();
             loop {
+                let mut payload_buf = buffers.recv().await.unwrap();
+                payload_buf.resize(65536, 0);
                 let mut header = Header::default();
                 let mut status = self.status.lock();
                 let len = payload_buf.len();
@@ -256,12 +258,17 @@ impl Driver {
                         }
                     }
                     Incoming::Read(len) => {
-                        let mut buf = Box::new_uninit_slice(4096).assume_init();
-                        core::mem::swap(&mut buf, &mut payload_buf);
-                        let mut v = buf.into_vec();
-                        v.truncate(len);
-                        let b = v.into_boxed_slice();
-                        if streams.send_blocking(flow, StreamEvent::Data(b)).is_err() {
+                        payload_buf.truncate(len);
+                        if streams
+                            .send_blocking(
+                                flow,
+                                StreamEvent::Data {
+                                    data: payload_buf,
+                                    release: self.used_buffers.clone(),
+                                },
+                            )
+                            .is_err()
+                        {
                             self.rst(flow.reverse()).await
                         }
                     }
@@ -274,15 +281,14 @@ impl Driver {
 
     async fn poll_task(self: Arc<Self>) {
         loop {
-            let _ = self.try_poll();
-            crate::rt::yield_now().await;
+            self.poll();
+            crate::rt::wfi().await;
         }
     }
 
-    pub fn try_poll(&self) -> Option<()> {
-        self.rx.try_poll();
-        self.tx.try_poll();
-        Some(())
+    pub fn poll(&self) {
+        self.rx.poll();
+        self.tx.poll();
     }
 
     pub fn listeners(&self) -> Vec<SocketAddr> {
@@ -324,10 +330,16 @@ impl Receiver {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum StreamEvent {
     Reset,
     Connect,
-    Shutdown { rx: bool, tx: bool },
-    Data(Box<[u8]>),
+    Shutdown {
+        rx: bool,
+        tx: bool,
+    },
+    Data {
+        data: Vec<u8>,
+        release: channel::Sender<Vec<u8>>,
+    },
 }

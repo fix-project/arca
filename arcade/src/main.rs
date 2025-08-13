@@ -85,6 +85,9 @@ async fn main(_: &[usize]) {
             Access::ReadWrite,
         )
         .await?;
+        fs.create("tmp", Perm::default(), Flag::Directory.into(), Access::Read)
+            .await?;
+        log::info!("connecting");
         let conn: OpenFile = connect
             .create(
                 "2:564",
@@ -95,7 +98,12 @@ async fn main(_: &[usize]) {
             .await?
             .try_into()
             .unwrap();
-        let hostfs = Client::new(conn).await?.attach(None, "akshay", "").await?;
+        log::info!("connected");
+        let hostfs = Client::new(conn)
+            .await?
+            .attach(None, "akshay", "/home/akshay/test")
+            .await?;
+        log::info!("attached");
 
         fs.mount(hostfs.into(), "/mnt".as_ref(), MountType::Replace, true)
             .await?;
@@ -110,22 +118,42 @@ async fn main(_: &[usize]) {
             .await?;
         let mut input: OpenFile = input.try_into().unwrap();
         input.write(b"hello from the kernel!").await?;
-        let mut fs: ClosedDir = fs.into();
 
-        let result = run(f, &mut fs).await?;
+        for i in 0..10 {
+            kernel::rt::reset_stats();
+            let (serialize, v) = kernel::kvmclock::time(|| postcard::to_allocvec(&f).unwrap());
+            let (walk, mnt) = kernel::kvmclock::time_async(async {
+                ClosedDir::try_from(fs.walk("/mnt".as_ref()).await.unwrap()).unwrap()
+            })
+            .await;
+            let (create, save) = kernel::kvmclock::time_async(async {
+                mnt.create(
+                    "save.arca",
+                    Perm::default(),
+                    BitFlags::default(),
+                    Access::Write,
+                )
+                .await
+                .unwrap()
+            })
+            .await;
+            // kernel::profile::end();
+            kernel::rt::profile();
+            kernel::profile::log(10);
+            let (write, _) = kernel::kvmclock::time_async(async {
+                let mut save: OpenFile = save.try_into().unwrap();
+                save.write(&v).await.unwrap();
+            })
+            .await;
+            let size = v.len();
+            let serialize = serialize.as_nanos();
+            let walk = walk.as_nanos();
+            let create = create.as_nanos();
+            let write = write.as_nanos();
+            log::info!("{i}. {size}, {serialize}, {walk}, {create}, {write}");
+        }
 
-        log::info!("result: {result:?}");
-        let output: ClosedFile = fs
-            .walk(Path::new("/mnt/output.txt"))
-            .await?
-            .try_into()
-            .unwrap();
-        let mut output = output.open(Access::Read).await?;
-        let mut buf = vec![0; 1024];
-        let n = output.read(&mut buf).await?;
-        buf.truncate(n);
-        let output = String::from_utf8_lossy(&buf);
-        log::info!("output: {output}");
+        return;
     };
     x.unwrap();
 }
@@ -150,8 +178,16 @@ async fn run(mut f: Function, fs: &mut ClosedDir) -> Result<Value> {
             f = g;
             continue;
         }
-        let (effect, args) = g.into_inner().read();
-        let effect: Blob = effect.try_into().unwrap();
+        let data = g.into_inner().read();
+        let Value::Tuple(mut data) = data else {
+            unreachable!();
+        };
+        let t: Blob = data.take(0).try_into().unwrap();
+        if &*t != b"Symbolic" {
+            panic!("not an effect");
+        }
+        let effect: Blob = data.take(1).try_into().unwrap();
+        let args: Tuple = data.take(2).try_into().unwrap();
         let args: Vec<Value> = args.into_iter().collect();
         f = match (&*effect, &*args) {
             (
@@ -183,12 +219,7 @@ async fn run(mut f: Function, fs: &mut ClosedDir) -> Result<Value> {
                             if !open.create() {
                                 Err(e)?;
                             }
-                            match dir
-                                .dup()
-                                .await?
-                                .create(name, perm, flags, access)
-                                .await
-                            {
+                            match dir.dup().await?.create(name, perm, flags, access).await {
                                 Ok(file) => file,
                                 Err(_) => {
                                     let file = dir.walk(path.file_name().unwrap()).await?;
@@ -217,7 +248,8 @@ async fn run(mut f: Function, fs: &mut ClosedDir) -> Result<Value> {
                 let file: &mut OpenFile = (&mut fds[fd.read() as usize]).try_into().unwrap();
                 let count = file.write(data).await;
                 let count = count
-                    .map(|x| Value::Word((x as u64).into())).expect("cannot handle bad syscall result");
+                    .map(|x| Value::Word((x as u64).into()))
+                    .expect("cannot handle bad syscall result");
                 k.clone()(count)
             }
             (b"read", &[Value::Word(fd), Value::Word(count), Value::Function(ref k)]) => {
@@ -228,7 +260,8 @@ async fn run(mut f: Function, fs: &mut ClosedDir) -> Result<Value> {
                     .map(|x| {
                         buf.truncate(x);
                         Value::Blob(Blob::from_inner(buf.into_boxed_slice().into()))
-                    }).expect("cannot handle bad syscall result");
+                    })
+                    .expect("cannot handle bad syscall result");
                 k.clone()(result)
             }
             // (

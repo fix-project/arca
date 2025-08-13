@@ -3,5 +3,11 @@ name = "arca"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+serde = ["alloc"]
+alloc = []
+
 [dependencies]
 log = "0.4.27"
+serde = { version = "1.0.219", default-features = false, features = ["derive"] }

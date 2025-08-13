@@ -130,13 +130,10 @@ impl arca::Runtime for Runtime {
         unsafe { arca::Table::from_inner(syscall_result(arcane::arca_table_create(len)).unwrap()) }
     }
 
-    fn create_function(
-        arca: bool,
-        data: arca::Value<Self>,
-    ) -> Result<arca::Function<Self>, Self::Error> {
+    fn create_function(data: arca::Value<Self>) -> Result<arca::Function<Self>, Self::Error> {
         unsafe {
             Ok(arca::Function::from_inner(syscall_result(
-                arcane::arca_function_create(arca, Self::get_raw(data).into_raw().into()),
+                arcane::arca_function_create(Self::get_raw(data).into_raw().into()),
             )?))
         }
     }
@@ -184,6 +181,15 @@ impl arca::Runtime for Runtime {
                 buf.len(),
             ))
             .unwrap() as usize
+        }
+    }
+
+    fn read_function(function: Function<Self>) -> arca::Value<Self> {
+        unsafe {
+            Self::raw_convert(
+                syscall_result(arcane::arca_function_read(function.inner().as_raw() as i64))
+                    .unwrap(),
+            )
         }
     }
 
@@ -390,4 +396,22 @@ impl Runtime {
         .idx
         .unwrap()
     }
+}
+
+#[cfg(feature = "allocator")]
+mod allocator {
+
+    use core::alloc::GlobalAlloc;
+    struct FakeAllocator;
+
+    unsafe impl GlobalAlloc for FakeAllocator {
+        unsafe fn alloc(&self, _: core::alloc::Layout) -> *mut u8 {
+            core::ptr::null_mut()
+        }
+
+        unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {}
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: FakeAllocator = FakeAllocator;
 }

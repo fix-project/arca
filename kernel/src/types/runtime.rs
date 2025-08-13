@@ -1,5 +1,4 @@
 use super::internal;
-use crate::{prelude::*, types::arca::Arca};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct Runtime;
@@ -8,7 +7,7 @@ pub struct Runtime;
 pub enum Error {
     InvalidTableEntry(super::Entry),
     InvalidIndex(usize),
-    InvalidValue(arca::Value<Runtime>),
+    InvalidValue,
 }
 
 impl arca::Runtime for Runtime {
@@ -46,34 +45,10 @@ impl arca::Runtime for Runtime {
         arca::Table::from_inner(internal::Table::new(len))
     }
 
-    fn create_function(
-        arca: bool,
-        data: arca::Value<Self>,
-    ) -> Result<arca::Function<Self>, Self::Error> {
-        Ok(arca::Function::from_inner(if arca {
-            let data: arca::Tuple<Self> = data.try_into().map_err(Error::InvalidValue)?;
-            let registers: arca::Blob<Self> =
-                data.get(0).try_into().map_err(Error::InvalidValue)?;
-            let memory: arca::Table<Self> = data.get(1).try_into().map_err(Error::InvalidValue)?;
-            let descriptors: arca::Tuple<Self> =
-                data.get(2).try_into().map_err(Error::InvalidValue)?;
-
-            let registers = registers.into_inner();
-            let registers: Vec<u64> = registers
-                .chunks(8)
-                .map(|x| u64::from_ne_bytes(x.try_into().unwrap()))
-                .collect();
-            let mut register_file = RegisterFile::new();
-            for (i, x) in registers.iter().take(18).enumerate() {
-                register_file[i] = *x;
-            }
-            let memory = memory.into_inner();
-            let descriptors = descriptors.into_inner();
-            let arca = Arca::new_with(register_file, memory, descriptors);
-            internal::Function::arcane(arca)
-        } else {
-            internal::Function::symbolic(data)
-        }))
+    fn create_function(data: arca::Value<Self>) -> Result<arca::Function<Self>, Self::Error> {
+        Ok(arca::Function::from_inner(
+            internal::Function::new(data).ok_or(Error::InvalidValue)?,
+        ))
     }
 
     fn value_len(value: arca::ValueRef<Self>) -> usize {
@@ -102,6 +77,10 @@ impl arca::Runtime for Runtime {
         let len = core::cmp::min(buf.len(), page.len() - offset);
         buf[..len].copy_from_slice(&page[offset..offset + len]);
         len
+    }
+
+    fn read_function(function: arca::Function<Self>) -> arca::Value<Self> {
+        function.into_inner().read()
     }
 
     fn write_blob(blob: &mut arca::Blob<Self>, offset: usize, buf: &[u8]) -> usize {
@@ -179,5 +158,20 @@ impl arca::Runtime for Runtime {
 
     fn call_with_current_continuation(_: arca::Function<Self>) -> arca::Value<Self> {
         panic!("call/cc is not supported on the in-kernel runtime!");
+    }
+
+    fn with_blob_as_ref<T>(blob: &arca::Blob<Self>, f: impl FnOnce(&[u8]) -> T) -> T {
+        f(&blob.inner())
+    }
+
+    fn with_tuple_as_ref<T>(
+        tuple: &arca::Tuple<Self>,
+        f: impl FnOnce(&[arca::Value<Self>]) -> T,
+    ) -> T {
+        f(&tuple.inner())
+    }
+
+    fn with_page_as_ref<T>(page: &arca::Page<Self>, f: impl FnOnce(&[u8]) -> T) -> T {
+        f(&page.inner())
     }
 }

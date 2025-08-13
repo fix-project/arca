@@ -21,9 +21,11 @@ pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Default)]
 pub struct Executor {
     pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
     sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
+    wfi: Arc<RwLock<VecDeque<Waker>>>,
     active: AtomicUsize,
     parallel: AtomicUsize,
 }
@@ -46,8 +48,9 @@ enum Entry<T> {
 impl Executor {
     fn new() -> Executor {
         Executor {
-            pending: Arc::new(RwLock::new(VecDeque::new())),
-            sleeping: RwLock::new(BTreeMap::new()),
+            pending: Arc::default(),
+            sleeping: RwLock::default(),
+            wfi: Arc::default(),
             active: AtomicUsize::new(0),
             parallel: AtomicUsize::new(0),
         }
@@ -177,6 +180,10 @@ impl Executor {
             });
         }
         TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
+        let mut wfi = self.wfi.write();
+        while let Some(waker) = wfi.pop_front() {
+            waker.wake();
+        }
     }
 
     pub fn tick(&self) {
@@ -247,12 +254,6 @@ where
 
 pub fn run() {
     EXECUTOR.run();
-}
-
-impl Default for Executor {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 struct Task {
@@ -347,4 +348,33 @@ pub fn profile() {
         "time spent scheduling: {scheduling:12} ({:3.2}%)",
         scheduling * 100. / total
     );
+}
+
+struct WaitForInterrupt {
+    done: AtomicBool,
+    wfi: Arc<RwLock<VecDeque<Waker>>>,
+}
+
+impl Future for WaitForInterrupt {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let done = self.done.load(Ordering::Acquire);
+        match done {
+            true => Poll::Ready(()),
+            false => {
+                self.done.store(true, Ordering::Release);
+                let mut wfi = self.wfi.write();
+                wfi.push_back(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+pub fn wfi() -> impl Future<Output = ()> {
+    WaitForInterrupt {
+        done: AtomicBool::new(false),
+        wfi: EXECUTOR.wfi.clone(),
+    }
 }

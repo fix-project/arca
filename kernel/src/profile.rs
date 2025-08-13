@@ -5,7 +5,7 @@ use core::{
 
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::{interrupts::IsrRegisterFile, prelude::*};
+use crate::{host, interrupts::IsrRegisterFile, prelude::*};
 
 static PROFILING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -143,6 +143,20 @@ pub fn report(entries: &mut [(*const (), usize)]) {
     entries.reverse();
 
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
+pub fn log(count: usize) {
+    let mut entries = vec![(core::ptr::null(), count)];
+    report(&mut entries);
+    for (i, (p, n)) in entries.iter().enumerate() {
+        if *n == 0 {
+            break;
+        }
+        let symname = host::symname(*p)
+            .map(|(s, i)| alloc::format!("{s}+{i:#x}"))
+            .unwrap_or(alloc::format!("{p:p}"));
+        log::info!("{i}. {symname} - {n}");
+    }
 }
 
 #[inline(never)]
