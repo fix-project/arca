@@ -1,17 +1,14 @@
 [package]
-name = "ninep"
+name = "vfs"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bitflags = { version = "2.9.2", features = ["serde"] }
-chrono = { version = "0.4.41", default-features = false, features = ["alloc", "serde"] }
+async-trait = "0.1.89"
+bitflags = "2.9.2"
 common = { version = "0.1.0", path = "../common", default-features = false, features = ["alloc"] }
 derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
 either = { version = "1.15.0", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
 log = "0.4.27"
-serde = { version = "1.0.219", default-features = false, features = ["derive", "alloc"] }
-serde_bytes = { version = "0.11.17", default-features = false, features = ["alloc"] }
-trait-variant = "0.1.2"
-vfs = { version = "0.1.0", path = "../vfs" }
+trait-variant = { version = "0.1.2", default-features = false }

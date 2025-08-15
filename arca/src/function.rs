@@ -5,11 +5,12 @@ impl<R: Runtime> Function<R> {
         R::create_function(data.into())
     }
 
-    pub fn arcane(data: impl Into<Value<R>>) -> Result<Self, R::Error> {
+    pub fn arcane(data: impl Into<Value<R>>) -> Self {
         Self::new(Tuple::from((
             Value::Blob(Blob::from("Arcane")),
             data.into(),
         )))
+        .unwrap()
     }
 
     pub fn symbolic(value: impl Into<Value<R>>) -> Self {
@@ -46,6 +47,12 @@ impl<R: Runtime> Function<R> {
 
     pub fn read_cloned(&self) -> Value<R> {
         R::read_function(self.clone())
+    }
+}
+
+impl<R: Runtime> Default for Function<R> {
+    fn default() -> Self {
+        Self::symbolic(Value::default())
     }
 }
 

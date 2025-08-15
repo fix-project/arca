@@ -5,15 +5,18 @@ use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 extern crate alloc;
 use alloc::vec::Vec;
 
-pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
+#[derive(derive_more::From, Debug)]
+pub enum Error {
+    Parse(elf::ParseError),
+    Runtime,
+    InvalidElf,
+}
+
+pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
     log::debug!("loading: {} byte ELF file", elf.len());
-    let elf = ElfBytes::<AnyEndian>::minimal_parse(elf).expect("could not parse elf");
+    let elf = ElfBytes::<AnyEndian>::minimal_parse(elf)?;
     let start_address = elf.ehdr.e_entry;
-    let segments: Vec<ProgramHeader> = elf
-        .segments()
-        .expect("could not find ELF segments")
-        .iter()
-        .collect();
+    let segments: Vec<ProgramHeader> = elf.segments().ok_or(Error::InvalidElf)?.iter().collect();
 
     assert_eq!(elf.ehdr.e_type, elf::abi::ET_EXEC);
 
@@ -32,13 +35,13 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
                 let memsz = segment.p_memsz as usize;
 
                 let mut pages = (offset + memsz) / 4096;
-                if ((offset + memsz) % 4096) > 0 {
+                if !(offset + memsz).is_multiple_of(4096) {
                     pages += 1;
                 }
 
                 let mut memi = offset;
                 let mut filei = 0;
-                let data = elf.segment_data(segment).expect("could not find segment");
+                let data = elf.segment_data(segment)?;
                 for page in 0..pages {
                     let page_start = page * 4096;
                     let unique_page =
@@ -77,11 +80,11 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
                     if segment.p_flags & elf::abi::PF_W != 0 {
                         table
                             .map(page_start_memory + page_start, Entry::RWPage(unique_page))
-                            .unwrap();
+                            .map_err(|_| Error::Runtime)?;
                     } else {
                         table
                             .map(page_start_memory + page_start, Entry::ROPage(unique_page))
-                            .unwrap();
+                            .map_err(|_| Error::Runtime)?;
                     }
                 }
             }
@@ -110,5 +113,5 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, R::Error> {
     data.set(2, Value::Tuple(descriptors));
 
     let args = R::create_tuple(0);
-    R::create_function(Tuple::from(("Arcane", data, args)).into())
+    R::create_function(Tuple::from(("Arcane", data, args)).into()).map_err(|_| Error::Runtime)
 }

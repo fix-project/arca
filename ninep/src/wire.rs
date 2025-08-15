@@ -21,6 +21,14 @@ pub enum Error {
     InvalidString(Utf8Error),
 }
 
+impl core::error::Error for Error {}
+
+impl From<wire::Error> for vfs::Error {
+    fn from(value: wire::Error) -> Self {
+        vfs::Error::other(value)
+    }
+}
+
 pub fn to_bytes(value: impl ser::Serialize) -> Result<Vec<u8>> {
     let mut serializer = Serializer { output: Vec::new() };
     value.serialize(&mut serializer)?;
@@ -88,7 +96,7 @@ pub struct Serializer {
     output: Vec<u8>,
 }
 
-impl<'a> ser::Serializer for &'a mut Serializer {
+impl ser::Serializer for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -301,7 +309,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeSeq for &'a mut Serializer {
+impl ser::SerializeSeq for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -318,7 +326,7 @@ impl<'a> ser::SerializeSeq for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeTuple for &'a mut Serializer {
+impl ser::SerializeTuple for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -335,7 +343,7 @@ impl<'a> ser::SerializeTuple for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeTupleStruct for &'a mut Serializer {
+impl ser::SerializeTupleStruct for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -352,7 +360,7 @@ impl<'a> ser::SerializeTupleStruct for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeTupleVariant for &'a mut Serializer {
+impl ser::SerializeTupleVariant for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -368,7 +376,7 @@ impl<'a> ser::SerializeTupleVariant for &'a mut Serializer {
         todo!()
     }
 }
-impl<'a> ser::SerializeMap for &'a mut Serializer {
+impl ser::SerializeMap for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -392,7 +400,7 @@ impl<'a> ser::SerializeMap for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeStruct for &'a mut Serializer {
+impl ser::SerializeStruct for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -414,7 +422,7 @@ impl<'a> ser::SerializeStruct for &'a mut Serializer {
     }
 }
 
-impl<'a> ser::SerializeStructVariant for &'a mut Serializer {
+impl ser::SerializeStructVariant for &mut Serializer {
     type Ok = ();
 
     type Error = Error;
@@ -446,7 +454,7 @@ impl<'de> Deserializer<'de> {
     }
 }
 
-impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn deserialize_any<V>(self, _: V) -> core::result::Result<V::Value, Self::Error>
@@ -460,7 +468,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let head = self.input.get(0).ok_or(Error::UnexpectedEndOfData)?;
+        let head = self.input.first().ok_or(Error::UnexpectedEndOfData)?;
         self.input = &self.input[1..];
         visitor.visit_bool(*head != 0)
     }
@@ -497,7 +505,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let head = self.input.get(0).ok_or(Error::UnexpectedEndOfData)?;
+        let head = self.input.first().ok_or(Error::UnexpectedEndOfData)?;
         self.input = &self.input[1..];
         visitor.visit_u8(*head)
     }
@@ -625,11 +633,15 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         visitor.visit_byte_buf(s.to_vec())
     }
 
-    fn deserialize_option<V>(self, _: V) -> core::result::Result<V::Value, Self::Error>
+    fn deserialize_option<V>(self, visitor: V) -> core::result::Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        if !self.input.is_empty() {
+            todo!();
+        } else {
+            visitor.visit_none()
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> core::result::Result<V::Value, Self::Error>
@@ -688,7 +700,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 T: de::DeserializeSeed<'de>,
             {
                 if self.len == 0 {
-                    return Ok(None);
+                    Ok(None)
                 } else {
                     self.len -= 1;
                     let value = seed.deserialize(&mut *self.deserializer)?;
@@ -727,7 +739,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 T: de::DeserializeSeed<'de>,
             {
                 if self.len == 0 {
-                    return Ok(None);
+                    Ok(None)
                 } else {
                     self.len -= 1;
                     let value = seed.deserialize(&mut *self.deserializer)?;
@@ -800,7 +812,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     }
 }
 
-impl<'de, 'a> de::EnumAccess<'de> for &'a mut Deserializer<'de> {
+impl<'de> de::EnumAccess<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     type Variant = Self;
@@ -812,7 +824,7 @@ impl<'de, 'a> de::EnumAccess<'de> for &'a mut Deserializer<'de> {
     where
         V: de::DeserializeSeed<'de>,
     {
-        let head = self.input.get(0).ok_or(Error::UnexpectedEndOfData)?;
+        let head = self.input.first().ok_or(Error::UnexpectedEndOfData)?;
         self.input = &self.input[1..];
         let name = head.to_string();
         let val = seed.deserialize(name.into_deserializer())?;
@@ -820,7 +832,7 @@ impl<'de, 'a> de::EnumAccess<'de> for &'a mut Deserializer<'de> {
     }
 }
 
-impl<'de, 'a> de::VariantAccess<'de> for &'a mut Deserializer<'de> {
+impl<'de> de::VariantAccess<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> core::result::Result<(), Self::Error> {
@@ -850,11 +862,5 @@ impl<'de, 'a> de::VariantAccess<'de> for &'a mut Deserializer<'de> {
         V: de::Visitor<'de>,
     {
         self.deserialize_tuple(fields.len(), visitor)
-    }
-}
-
-impl From<Error> for crate::Error {
-    fn from(value: Error) -> Self {
-        crate::Error::Message(value.to_string())
     }
 }

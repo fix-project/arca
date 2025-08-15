@@ -27,10 +27,7 @@ impl<R: Runtime> Entry<R> {
     }
 
     pub fn is_null(&self) -> bool {
-        match self {
-            Entry::Null(_) => true,
-            _ => false,
-        }
+        matches!(self, Entry::Null(_))
     }
 
     #[must_use]

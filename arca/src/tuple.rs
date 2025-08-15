@@ -175,7 +175,7 @@ impl<R: Runtime, V: Into<Value<R>>> FromIterator<V> for Tuple<R> {
                 tuple = new_tuple;
             }
         }
-        if max_i < (n - 1) {
+        if n > 0 && max_i < (n - 1) {
             let mut final_tuple = Tuple::new(max_i + 1);
             for (i, x) in tuple.into_iter().enumerate().take(max_i) {
                 final_tuple.set(i, x);

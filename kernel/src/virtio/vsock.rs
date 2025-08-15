@@ -19,7 +19,7 @@ pub use stream::*;
 
 #[derive(Debug)]
 pub enum SocketError {
-    InvalidAddress(SocketAddr),
+    InvalidAddress,
     AddressInUse(SocketAddr),
     ConnectionReset,
     ConnectionClosed,
@@ -64,4 +64,16 @@ pub(crate) async fn shutdown(flow: Flow, rx: bool, tx: bool) {
 pub(crate) async fn rst(flow: Flow) {
     let driver = &DRIVER;
     driver.rst(flow).await
+}
+
+#[allow(unused)]
+pub(crate) fn listeners() -> Vec<SocketAddr> {
+    let driver = &DRIVER;
+    driver.listeners()
+}
+
+#[allow(unused)]
+pub(crate) fn streams() -> Vec<Flow> {
+    let driver = &DRIVER;
+    driver.streams()
 }

@@ -1,7 +1,7 @@
 use super::*;
+use ::bitflags::bitflags;
 use alloc::fmt;
 use chrono::{DateTime, Utc};
-use enumflags2::bitflags;
 use serde::{
     de::{self, SeqAccess, Visitor},
     ser::SerializeStruct,
@@ -13,97 +13,106 @@ pub struct Fid(pub u32);
 #[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Debug, Ord, PartialOrd, Hash)]
 pub struct Tag(pub u16);
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Debug, Ord, PartialOrd, Hash, Default)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Debug, Ord, PartialOrd, Hash, Default,
+)]
 pub struct Qid {
-    pub flags: BitFlags<Flag>,
+    pub flags: Flags,
     pub version: u32,
     pub path: u64,
 }
 
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Serialize, Deserialize)]
-pub enum Access {
-    #[serde(rename = "0")]
-    Read = 0,
-    #[serde(rename = "1")]
-    Write = 1,
-    #[serde(rename = "2")]
-    ReadWrite = 2,
-    #[serde(rename = "3")]
-    Execute = 3,
+bitflags! {
+    #[derive(Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+    pub struct Access: u8 {
+        const Read = 0;
+        const Write = 1;
+        const ReadWrite = 2;
+        const Execute = 3;
+        const Truncate = 0x10;
+        const RemoveOnClose = 0x40;
+        const _ = !0;
+    }
 }
 
 impl Access {
     pub fn read(&self) -> bool {
-        *self == Access::Read || *self == Access::ReadWrite
+        let access = self.bits() & 0xf;
+        access == 0x0 || access == 0x2
     }
 
     pub fn write(&self) -> bool {
-        *self == Access::Write || *self == Access::ReadWrite
+        let access = self.bits() & 0xf;
+        access == 0x1 || access == 0x2
+    }
+
+    pub fn execute(&self) -> bool {
+        let access = self.bits() & 0xf;
+        access == 0x3
+    }
+
+    pub fn truncate(&self) -> bool {
+        self.contains(Access::Truncate)
+    }
+
+    pub fn rclose(&self) -> bool {
+        self.contains(Access::RemoveOnClose)
     }
 }
 
-#[bitflags(default = OtherRead | GroupRead | OwnerWrite | OwnerRead)]
-#[repr(u16)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub enum Perm {
-    OtherExecute = 1 << 0,
-    OtherWrite = 1 << 1,
-    OtherRead = 1 << 2,
-    GroupExecute = 1 << 3,
-    GroupWrite = 1 << 4,
-    GroupRead = 1 << 5,
-    OwnerExecute = 1 << 6,
-    OwnerWrite = 1 << 7,
-    OwnerRead = 1 << 8,
+bitflags! {
+    #[derive(Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Default, Hash, Ord, PartialOrd)]
+    pub struct Perm: u16 {
+        const OtherExecute = 1 << 0;
+        const OtherWrite = 1 << 1;
+        const OtherRead = 1 << 2;
+        const GroupExecute = 1 << 3;
+        const GroupWrite = 1 << 4;
+        const GroupRead = 1 << 5;
+        const OwnerExecute = 1 << 6;
+        const OwnerWrite = 1 << 7;
+        const OwnerRead = 1 << 8;
+    }
 }
+
+pub type Perms = Perm;
 
 impl Perm {
-    pub fn all() -> BitFlags<Perm> {
-        Perm::OtherExecute
-            | Perm::OtherWrite
-            | Perm::OtherRead
-            | Perm::GroupExecute
-            | Perm::GroupWrite
-            | Perm::GroupRead
-            | Perm::OwnerExecute
-            | Perm::OwnerWrite
-            | Perm::OwnerRead
+    pub fn dir() -> Perm {
+        Perm::all() & !(Perm::GroupWrite | Perm::GroupExecute)
     }
 
-    pub fn default() -> BitFlags<Perm> {
-        Default::default()
-    }
-
-    pub fn other() -> BitFlags<Perm> {
+    pub fn other() -> Perm {
         Perm::OtherExecute | Perm::OtherWrite | Perm::OtherRead
     }
 
-    pub fn group() -> BitFlags<Perm> {
+    pub fn group() -> Perm {
         Perm::GroupExecute | Perm::GroupWrite | Perm::GroupRead
     }
 
-    pub fn owner() -> BitFlags<Perm> {
+    pub fn owner() -> Perm {
         Perm::OwnerExecute | Perm::OwnerWrite | Perm::OwnerRead
     }
 }
 
-#[bitflags]
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub enum Flag {
-    Temporary = 1 << 2,
-    Authentication = 1 << 3,
-    Exclusive = 1 << 5,
-    Append = 1 << 6,
-    Directory = 1 << 7,
+bitflags! {
+    #[derive(Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Default, Hash, Ord, PartialOrd)]
+    pub struct Flag: u8 {
+        const Temporary = 1 << 2;
+        const Authentication = 1 << 3;
+        const Exclusive = 1 << 5;
+        const Append = 1 << 6;
+        const Directory = 1 << 7;
+    }
 }
+
+pub type Flags = Flag;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Default, Serialize, Deserialize)]
 pub struct Mode {
-    pub perm: BitFlags<Perm>,
+    pub perm: Perms,
     pub _skip: u8,
-    pub flags: BitFlags<Flag>,
+    pub flags: Flags,
 }
 
 #[derive(Clone, Eq, PartialEq, Debug, Hash, Serialize, Deserialize, Default)]
@@ -176,5 +185,73 @@ impl<'de> Deserialize<'de> for WireStat {
         }
 
         deserializer.deserialize_struct("WireStat", &["len", "stat"], StatVisitor)
+    }
+}
+
+impl From<vfs::Open> for Access {
+    fn from(value: vfs::Open) -> Self {
+        if value.contains(vfs::Open::ReadWrite) {
+            Access::ReadWrite
+        } else if value.contains(vfs::Open::Write) {
+            Access::Write
+        } else {
+            Access::Read
+        }
+    }
+}
+
+impl TryFrom<Access> for vfs::Open {
+    type Error = Error;
+
+    fn try_from(value: Access) -> Result<Self> {
+        let mut out = vfs::Open::empty();
+        if value.read() {
+            out |= vfs::Open::Read;
+        }
+        if value.write() {
+            out |= vfs::Open::Write;
+        }
+        if value.truncate() {
+            out |= vfs::Open::Truncate;
+        }
+        if value.rclose() {
+            return Err(ErrorKind::Unsupported.into());
+        }
+        Ok(out)
+    }
+}
+
+impl From<vfs::Create> for Mode {
+    fn from(value: vfs::Create) -> Self {
+        let perm = Perm::from_bits_truncate(value.perm() as u16);
+        let flags = if value.dir() {
+            Flag::Directory
+        } else {
+            Flag::empty()
+        };
+        Mode {
+            perm,
+            _skip: 0,
+            flags,
+        }
+    }
+}
+
+impl TryFrom<Mode> for vfs::Create {
+    type Error = Error;
+
+    fn try_from(value: Mode) -> Result<Self> {
+        let Mode {
+            perm,
+            _skip: _,
+            flags,
+        } = value;
+        let mut value = vfs::Create::from_bits_truncate(perm.bits() as u64);
+        if flags == Flag::Directory {
+            value |= vfs::Create::Directory;
+        } else if flags != Flag::empty() {
+            return Err(ErrorKind::Unsupported.into());
+        }
+        Ok(value)
     }
 }

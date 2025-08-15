@@ -78,7 +78,8 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
     };
     let regs = arca.registers_mut();
     if let Err(err) = result {
-        log::warn!("system call {num} failed with {err:?}");
+        // log::warn!("system call {num} failed with {err:?}");
+        panic!("system call {num} failed with {err:?}");
     }
     regs[Register::RAX] = match result {
         Ok(x) => x as u64,

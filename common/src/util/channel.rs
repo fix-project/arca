@@ -1,3 +1,4 @@
+use core::fmt::Debug;
 use core::future::Future;
 use core::task::{Poll, Waker};
 
@@ -10,13 +11,21 @@ use crate::util::spinlock::SpinLock;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ChannelClosed;
 
+impl core::fmt::Display for ChannelClosed {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "channel closed")
+    }
+}
+
+impl core::error::Error for ChannelClosed {}
+
 #[derive(Debug)]
-struct Channel<T> {
+struct Channel<T: Debug> {
     data: VecDeque<T>,
     wake_on_tx: VecDeque<Waker>,
 }
 
-pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
+pub fn unbounded<T: Debug>() -> (Sender<T>, Receiver<T>) {
     let channel = Arc::new(SpinLock::new(Channel {
         data: VecDeque::new(),
         wake_on_tx: VecDeque::new(),
@@ -30,16 +39,16 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 }
 
 #[derive(Debug, Clone)]
-pub struct Sender<T> {
+pub struct Sender<T: Debug> {
     channel: Weak<SpinLock<Channel<T>>>,
 }
 
-impl<T> Sender<T> {
+impl<T: Debug> Sender<T> {
     pub fn send_blocking(&self, value: T) -> Result<(), ChannelClosed> {
         let channel = self.channel.upgrade().ok_or(ChannelClosed)?;
         let mut channel = channel.lock();
         channel.data.push_back(value);
-        if let Some(waker) = channel.wake_on_tx.pop_front() {
+        while let Some(waker) = channel.wake_on_tx.pop_front() {
             waker.wake()
         }
         Ok(())
@@ -55,11 +64,11 @@ impl<T> Sender<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Receiver<T> {
+pub struct Receiver<T: Debug> {
     channel: Arc<SpinLock<Channel<T>>>,
 }
 
-impl<T> Receiver<T> {
+impl<T: Debug> Receiver<T> {
     pub async fn recv(&self) -> Result<T, ChannelClosed> {
         ReceiveFuture {
             channel: self.channel.clone(),
@@ -69,11 +78,7 @@ impl<T> Receiver<T> {
 
     pub fn try_recv(&self) -> Option<Result<T, ChannelClosed>> {
         let mut channel = self.channel.lock();
-        if let Some(result) = channel.data.pop_front() {
-            Some(Ok(result))
-        } else {
-            None
-        }
+        channel.data.pop_front().map(Ok)
     }
 
     pub fn sender(&self) -> Sender<T> {
@@ -85,11 +90,11 @@ impl<T> Receiver<T> {
     pub fn close(self) {}
 }
 
-struct ReceiveFuture<T> {
+struct ReceiveFuture<T: Debug> {
     channel: Arc<SpinLock<Channel<T>>>,
 }
 
-impl<T> Future for ReceiveFuture<T> {
+impl<T: Debug> Future for ReceiveFuture<T> {
     type Output = Result<T, ChannelClosed>;
 
     fn poll(

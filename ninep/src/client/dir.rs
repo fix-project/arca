@@ -1,56 +1,100 @@
+use core::{
+    future::Future,
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+
+use crate::client::file::File9P;
+use futures::stream::BoxStream;
+use vfs::path::Component;
+
 use super::*;
 
-#[async_trait]
-impl<T: DirType> DirLike for P9<T> {}
+pub struct Dir9P {
+    pub(super) conn: Arc<Connection>,
+    pub(super) fid: Fid,
+    pub(super) qid: Qid,
+}
 
-#[async_trait]
-impl ClosedDirLike for P9<ClosedDir> {
-    async fn open(self: Box<Self>, access: Access) -> Result<OpenDir> {
-        let tag = self.conn.tag();
-        let fid = self.fid;
-        let qid = if self.conn.linux() {
-            let lflags = match access {
-                Access::Read => 0,
-                Access::Write => 1,
-                Access::ReadWrite => 2,
-                Access::Execute => 010000000,
-            };
-            let RMessage::LOpen { qid, .. } = self
-                .conn
-                .send(TMessage::LOpen {
-                    tag,
-                    fid,
-                    flags: lflags,
-                })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
-            qid
-        } else {
-            let RMessage::Open { qid, .. } = self
-                .conn
-                .send(TMessage::Open { tag, fid, access })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
-            qid
-        };
-        Ok(P9 {
-            conn: self.conn,
-            fid,
-            qid,
-            _phantom: PhantomData,
-        }
-        .into())
+impl Dir9P {
+    pub fn qid(&self) -> Qid {
+        self.qid
+    }
+}
+
+impl Dir for Dir9P {
+    async fn open(&self, name: &str, open: Open) -> Result<Object> {
+        self.walk(name, open).await
     }
 
-    async fn walk(&self, path: &Path) -> Result<ClosedNode> {
+    async fn readdir(&self) -> Result<BoxStream<'_, Result<DirEnt>>> {
+        todo!()
+    }
+
+    async fn create(&self, name: &str, create: Create, open: Open) -> Result<Object> {
+        let mut new = self.dup().await?;
+        let tag = new.conn.tag();
+        let fid = new.fid;
+
+        let mode = create.into();
+        let access = open.into();
+
+        send!(new.conn; {qid, ..} <- Create {
+            tag,
+            fid,
+            name: name.to_owned(),
+            mode,
+            access
+        });
+
+        if qid.flags.contains(Flag::Directory) {
+            new.qid = qid;
+            Ok(Object::Dir(new.boxed()))
+        } else {
+            let file = File9P {
+                conn: new.conn.clone(),
+                fid: new.fid,
+                qid,
+                cursor: 0,
+            };
+            new.fid = Fid(!0);
+            Ok(Object::File(file.boxed()))
+        }
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let tag = self.conn.tag();
+        let fid = self.fid;
+        let newfid = self.conn.fid();
+        let name = vec![name.to_owned()];
+        send!(self.conn; { qid, .. } <- Walk { tag, fid, newfid, name });
+        if qid.len() != 1 {
+            return Err(Error::from(ErrorKind::NotFound));
+        }
+        let tag = self.conn.tag();
+        send!(self.conn; (_) <- Remove { tag, fid: newfid });
+        Ok(())
+    }
+
+    async fn dup(&self) -> Result<Self> {
+        let tag = self.conn.tag();
+        let fid = self.fid;
+        let newfid = self.conn.fid();
+        send!(self.conn; {qid, ..} <- Walk {tag, fid, newfid, name: vec![]});
+        let qid = *qid.last().ok_or(Error::from(ErrorKind::Other))?;
+        Ok(Dir9P {
+            conn: self.conn.clone(),
+            fid: newfid,
+            qid,
+        })
+    }
+
+    async fn walk<T: AsRef<Path> + Send>(&self, path: T, flags: Open) -> Result<Object> {
         let tag = self.conn.tag();
         let fid = self.fid;
         let newfid = self.conn.fid();
         let name: Vec<String> = path
+            .as_ref()
             .components()
             .map(|x| match x {
                 Component::RootDir => Some("/".to_owned()),
@@ -59,157 +103,57 @@ impl ClosedDirLike for P9<ClosedDir> {
                 Component::Normal(x) => Some(x.to_owned()),
             })
             .try_collect()
-            .ok_or(Error::PathTooLong)?;
+            .ok_or(Error::from(ErrorKind::InvalidFilename))?;
         let n = name.len();
-        let RMessage::Walk { qid, .. } = self
-            .conn
-            .send(TMessage::Walk {
-                tag,
-                fid,
-                newfid,
-                name,
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
-        };
-        if qid.len() != n {
-            return Err(Error::NoSuchFileOrDirectory);
+        send!(self.conn; {qid, ..} <- Walk {tag, fid, newfid, name});
+        if n > 0 && qid.len() != n {
+            return Err(Error::from(ErrorKind::NotFound));
         }
         let qid = *qid.last().unwrap_or(&self.qid);
-        if qid.flags.contains(Flag::Directory) {
-            Ok(ClosedNode::Dir(
-                P9 {
-                    conn: self.conn.clone(),
-                    fid: newfid,
-                    qid,
-                    _phantom: PhantomData,
-                }
-                .into(),
-            ))
-        } else {
-            Ok(ClosedNode::File(
-                P9 {
-                    conn: self.conn.clone(),
-                    fid: newfid,
-                    qid,
-                    _phantom: PhantomData,
-                }
-                .into(),
-            ))
-        }
-    }
 
-    async fn create(
-        self: Box<Self>,
-        name: &str,
-        perm: BitFlags<Perm>,
-        flags: BitFlags<Flag>,
-        access: Access,
-    ) -> Result<OpenNode> {
-        let tag = self.conn.tag();
-        let fid = self.fid;
-        let qid = if self.conn.linux() {
-            if flags.contains(Flag::Directory) {
-                let RMessage::LMkdir { qid, .. } = self
-                    .conn
-                    .send(TMessage::LMkdir {
-                        tag,
-                        fid,
-                        name: name.to_owned(),
-                        mode: perm.bits() as u32,
-                        gid: 0,
-                    })
-                    .await??
-                else {
-                    return Err(Error::InputOutputError);
-                };
-                qid
-            } else {
-                let lflags = match access {
-                    Access::Read => 0,
-                    Access::Write => 1,
-                    Access::ReadWrite => 2,
-                    Access::Execute => 010000000,
-                };
-                let RMessage::LCreate { qid, .. } = self
-                    .conn
-                    .send(TMessage::LCreate {
-                        tag,
-                        fid,
-                        name: name.to_owned(),
-                        flags: lflags,
-                        mode: perm.bits() as u32,
-                        gid: 0,
-                    })
-                    .await??
-                else {
-                    return Err(Error::InputOutputError);
-                };
-                qid
-            }
-        } else {
-            let RMessage::Create { qid, .. } = self
-                .conn
-                .send(TMessage::Create {
-                    tag,
-                    fid,
-                    name: name.to_owned(),
-                    mode: Mode {
-                        perm,
-                        _skip: 0,
-                        flags,
-                    },
-                    access,
-                })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
-            qid
-        };
         if qid.flags.contains(Flag::Directory) {
-            Ok(OpenNode::Dir(
-                P9 {
-                    conn: self.conn.clone(),
-                    fid,
-                    qid,
-                    _phantom: PhantomData,
-                }
-                .into(),
-            ))
+            let dir = Dir9P {
+                conn: self.conn.clone(),
+                fid: newfid,
+                qid,
+            };
+            Ok(Object::Dir(dir.boxed()))
         } else {
-            Ok(OpenNode::File(
-                P9 {
-                    conn: self.conn.clone(),
-                    fid,
-                    qid,
-                    _phantom: PhantomData,
-                }
-                .into(),
-            ))
+            let file = File9P {
+                conn: self.conn.clone(),
+                fid: newfid,
+                qid,
+                cursor: 0,
+            };
+            let access = flags.into();
+            let tag = self.conn.tag();
+            send!(file.conn; {..} <- Open { tag, fid: newfid, access });
+            Ok(Object::File(file.boxed()))
         }
     }
 }
 
-#[async_trait]
-impl OpenDirLike for P9<OpenDir> {
-    async fn read(&self, offset: usize, count: usize) -> Result<Vec<Stat>> {
-        let tag = self.conn.tag();
-        let fid = self.fid;
-        let RMessage::Read { data, .. } = self
-            .conn
-            .send(TMessage::Read {
-                tag,
-                fid,
-                offset: offset as u64,
-                count: count as u32,
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
+impl Drop for Dir9P {
+    fn drop(&mut self) {
+        let mut future = pin! {
+            async {
+                if self.fid != Fid(!0) {
+                    let tag = self.conn.tag();
+                    self.conn.send(TMessage::Clunk { tag, fid: self.fid }).await?;
+                }
+                Ok::<_, Error>(())
+            }
         };
-        let stat: Vec<WireStat> = wire::from_bytes(&data).map_err(|_| Error::InputOutputError)?;
-        Ok(stat.into_iter().map(|x| x.0).collect())
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut i = 0;
+        while let Poll::Pending = Future::poll(future.as_mut(), &mut cx) {
+            if i > u32::MAX {
+                // at least 1s has passed, we might be deadlocked
+                log::warn!("giving up on dropping {:?}", self.fid);
+                return;
+            }
+            core::hint::spin_loop();
+            i += 1;
+        }
     }
 }

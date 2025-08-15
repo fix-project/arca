@@ -5,6 +5,22 @@ use core::{
     ops::{ControlFlow, FromResidual, Try},
 };
 
+#[derive(Debug, Clone)]
+pub struct Error(String);
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "9P: {}", self.0)
+    }
+}
+impl core::error::Error for Error {}
+
+impl From<Error> for vfs::Error {
+    fn from(value: Error) -> Self {
+        vfs::Error::other(value)
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub enum TMessage {
     #[serde(rename = "100")]
@@ -187,6 +203,29 @@ impl RMessage {
             RMessage::LMkdir { tag, .. } => tag,
         }
     }
+
+    pub fn set_tag(&mut self, newtag: Tag) {
+        match self {
+            RMessage::Version { tag, .. } => *tag = newtag,
+            RMessage::Auth { tag, .. } => *tag = newtag,
+            RMessage::Attach { tag, .. } => *tag = newtag,
+            RMessage::Error { tag, .. } => *tag = newtag,
+            RMessage::Flush { tag } => *tag = newtag,
+            RMessage::Walk { tag, .. } => *tag = newtag,
+            RMessage::Open { tag, .. } => *tag = newtag,
+            RMessage::Create { tag, .. } => *tag = newtag,
+            RMessage::Read { tag, .. } => *tag = newtag,
+            RMessage::Write { tag, .. } => *tag = newtag,
+            RMessage::Clunk(tag) => *tag = newtag,
+            RMessage::Remove(tag) => *tag = newtag,
+            RMessage::Stat { tag, .. } => *tag = newtag,
+            RMessage::WStat { tag, .. } => *tag = newtag,
+            RMessage::LError { tag, .. } => *tag = newtag,
+            RMessage::LOpen { tag, .. } => *tag = newtag,
+            RMessage::LCreate { tag, .. } => *tag = newtag,
+            RMessage::LMkdir { tag, .. } => *tag = newtag,
+        }
+    }
 }
 
 impl Try for RMessage {
@@ -200,11 +239,43 @@ impl Try for RMessage {
 
     fn branch(self) -> core::ops::ControlFlow<Self::Residual, Self::Output> {
         match self {
-            RMessage::Error { tag: _, ename } => ControlFlow::Break(Err(Error::Message(ename))),
+            RMessage::Error { tag: _, ename } => ControlFlow::Break(Err(Error(ename))),
             RMessage::LError { tag: _, ecode } => {
-                ControlFlow::Break(Err(Error::Message(alloc::format!("Linux Error {ecode}"))))
+                ControlFlow::Break(Err(Error(alloc::format!("Linux Error {ecode}"))))
             }
             x => ControlFlow::Continue(x),
+        }
+    }
+}
+
+impl FromResidual<core::result::Result<Infallible, derive_more::TryIntoError<vfs::Object>>>
+    for RMessage
+{
+    fn from_residual(
+        residual: core::result::Result<Infallible, derive_more::TryIntoError<vfs::Object>>,
+    ) -> Self {
+        let e: vfs::ErrorKind = residual.unwrap_err().into();
+        Self::Error {
+            tag: Tag(!0),
+            ename: format!("VFS error: {e:?}"),
+        }
+    }
+}
+
+impl FromResidual<core::result::Result<Infallible, vfs::ErrorKind>> for RMessage {
+    fn from_residual(residual: core::result::Result<Infallible, vfs::ErrorKind>) -> Self {
+        Self::Error {
+            tag: Tag(!0),
+            ename: format!("VFS error: {residual:?}"),
+        }
+    }
+}
+
+impl FromResidual<core::result::Result<Infallible, vfs::Error>> for RMessage {
+    fn from_residual(residual: core::result::Result<Infallible, vfs::Error>) -> Self {
+        Self::Error {
+            tag: Tag(!0),
+            ename: format!("VFS error: {residual:?}"),
         }
     }
 }
@@ -215,5 +286,11 @@ impl FromResidual<core::result::Result<Infallible, Error>> for RMessage {
             tag: Tag(!0),
             ename: format!("9P error: {residual:?}"),
         }
+    }
+}
+
+impl FromResidual<core::result::Result<Infallible, RMessage>> for RMessage {
+    fn from_residual(residual: core::result::Result<Infallible, RMessage>) -> Self {
+        residual.unwrap_err()
     }
 }

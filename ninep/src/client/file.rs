@@ -1,96 +1,36 @@
+use core::{
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+
 use super::*;
 
-#[async_trait]
-impl<T: FileType> FileLike for P9<T> {}
+pub struct File9P {
+    pub(super) conn: Arc<Connection>,
+    pub(super) fid: Fid,
+    pub(super) qid: Qid,
+    pub(super) cursor: usize,
+}
 
-#[async_trait]
-impl ClosedFileLike for P9<ClosedFile> {
-    async fn open(self: Box<Self>, access: Access) -> Result<OpenFile> {
-        let tag = self.conn.tag();
-        let fid = self.fid;
-        let qid = if self.conn.linux() {
-            let lflags = match access {
-                Access::Read => 0,
-                Access::Write => 1,
-                Access::ReadWrite => 2,
-                Access::Execute => 010000000,
-            };
-            let RMessage::LOpen { qid, .. } = self
-                .conn
-                .send(TMessage::LOpen {
-                    tag,
-                    fid,
-                    flags: lflags,
-                })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
-            qid
-        } else {
-            let RMessage::Open { qid, .. } = self
-                .conn
-                .send(TMessage::Open { tag, fid, access })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
-            qid
-        };
-        Ok(P9 {
-            conn: self.conn,
-            fid,
-            qid,
-            _phantom: PhantomData,
-        }
-        .into())
-    }
-
-    async fn dup(&self) -> Result<ClosedFile> {
-        let tag = self.conn.tag();
-        let fid = self.fid;
-        let newfid = self.conn.fid();
-        let RMessage::Walk { .. } = self
-            .conn
-            .send(TMessage::Walk {
-                tag,
-                fid,
-                newfid,
-                name: vec![],
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
-        };
-        Ok(P9 {
-            conn: self.conn.clone(),
-            fid,
-            qid: self.qid,
-            _phantom: PhantomData,
-        }
-        .into())
+impl File9P {
+    pub fn qid(&self) -> Qid {
+        self.qid
     }
 }
 
-#[async_trait]
-impl OpenFileLike for P9<OpenFile> {
-    async fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+impl File for File9P {
+    async fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
         let fid = self.fid;
         let tag = self.conn.tag();
+        let offset = self.cursor;
         let mut read = 0;
-        for chunk in buf.chunks_mut(self.conn.msize() - 24) {
-            let RMessage::Read { data, .. } = self
-                .conn
-                .send(TMessage::Read {
-                    tag,
-                    fid,
-                    offset: (offset + read) as u64,
-                    count: chunk.len() as u32,
-                })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
+        for chunk in bytes.chunks_mut(self.conn.msize() - 24) {
+            send!(self.conn; {data, ..} <- Read {
+                tag,
+                fid,
+                offset: (offset + read) as u64,
+                count: chunk.len() as u32
+            });
             let n = core::cmp::min(data.len(), chunk.len());
             chunk[..n].copy_from_slice(&data[..n]);
             read += n;
@@ -98,32 +38,83 @@ impl OpenFileLike for P9<OpenFile> {
                 break;
             }
         }
+        self.cursor += read;
         Ok(read)
     }
 
-    async fn write(&mut self, offset: usize, buf: &[u8]) -> Result<usize> {
+    async fn write(&mut self, bytes: &[u8]) -> Result<usize> {
         let fid = self.fid;
         let mut written = 0;
-        for chunk in buf.chunks(self.conn.msize() - 24) {
+        let offset = self.cursor;
+        for chunk in bytes.chunks(self.conn.msize() - 24) {
             let tag = self.conn.tag();
-            let RMessage::Write { count, .. } = self
-                .conn
-                .send(TMessage::Write {
-                    tag,
-                    fid,
-                    offset: (offset + written) as u64,
-                    data: chunk.to_owned(),
-                })
-                .await??
-            else {
-                return Err(Error::InputOutputError);
-            };
+            send!(self.conn; {count, ..} <- Write {
+                tag,
+                fid,
+                offset: (offset + written) as u64,
+                data: chunk.to_owned(),
+            });
             let count = count as usize;
             written += count;
             if count != chunk.len() {
                 break;
             }
         }
+        self.cursor += written;
         Ok(written)
+    }
+
+    async fn seek(&mut self, from: SeekFrom) -> Result<usize> {
+        match from {
+            SeekFrom::Start(offset) => self.cursor = offset,
+            SeekFrom::End(offset) => {
+                let tag = self.conn.tag();
+                let fid = self.fid;
+                send!(self.conn; {stat, ..} <- Stat {tag, fid});
+                let len = stat.length as usize;
+                self.cursor = len.saturating_add_signed(offset)
+            }
+            SeekFrom::Current(offset) => self.cursor = self.cursor.saturating_add_signed(offset),
+        }
+        Ok(self.cursor)
+    }
+
+    async fn dup(&self) -> Result<Self> {
+        let tag = self.conn.tag();
+        let fid = self.fid;
+        let newfid = self.conn.fid();
+        send!(self.conn; {qid, ..} <- Walk {tag, fid, newfid, name: vec![]});
+        let qid = *qid.last().ok_or(Error::from(ErrorKind::Other))?;
+        Ok(File9P {
+            conn: self.conn.clone(),
+            fid: newfid,
+            qid,
+            cursor: self.cursor,
+        })
+    }
+}
+
+impl Drop for File9P {
+    fn drop(&mut self) {
+        let mut future = pin! {
+            async {
+                if self.fid != Fid(!0) {
+                    let tag = self.conn.tag();
+                    self.conn.send(TMessage::Clunk { tag, fid: self.fid }).await?;
+                }
+                Ok::<_, Error>(())
+            }
+        };
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut i = 0;
+        while let Poll::Pending = Future::poll(future.as_mut(), &mut cx) {
+            if i > u32::MAX {
+                // at least 1s has passed, we might be deadlocked
+                log::warn!("giving up on dropping {:?}", self.fid);
+                return;
+            }
+            core::hint::spin_loop();
+            i += 1;
+        }
     }
 }

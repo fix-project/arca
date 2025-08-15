@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::Eq;
+use core::fmt::Debug;
 use core::hash::Hash;
 use hashbrown::HashMap;
 
@@ -10,17 +11,17 @@ use crate::util::channel::{self, ChannelClosed};
 use crate::util::spinlock::SpinLock;
 
 #[derive(Debug)]
-pub struct Sorter<K: Hash + Eq + Clone + core::fmt::Debug, V> {
+pub struct Sorter<K: Hash + Eq + Clone + Debug, V: Debug> {
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Default for Sorter<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Debug> Default for Sorter<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
     pub fn new() -> Self {
         Self {
             channels: Arc::new(SpinLock::new(Default::default())),
@@ -73,13 +74,13 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sorter<K, V> {
 }
 
 #[derive(Debug)]
-pub struct Receiver<K: Hash + Eq + Clone + core::fmt::Debug, V> {
+pub struct Receiver<K: Hash + Eq + Clone + Debug, V: Debug> {
     port: K,
     rx: channel::Receiver<V>,
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Receiver<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Debug> Receiver<K, V> {
     pub async fn recv(&self) -> Result<V, ChannelClosed> {
         self.rx.recv().await
     }
@@ -89,7 +90,7 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Receiver<K, V> {
     }
 }
 
-impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Drop for Receiver<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Debug> Drop for Receiver<K, V> {
     fn drop(&mut self) {
         let mut channels = self.channels.lock();
         channels.remove(&self.port);
@@ -97,11 +98,11 @@ impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Drop for Receiver<K, V> {
 }
 
 #[derive(Clone)]
-pub struct Sender<K: Hash + Eq + Clone + core::fmt::Debug, V> {
+pub struct Sender<K: Hash + Eq + Clone + Debug, V: Debug> {
     channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
 }
 
-impl<K: Hash + Eq + Clone + core::fmt::Debug, V> Sender<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Debug> Sender<K, V> {
     pub fn send_blocking(&mut self, port: K, value: V) -> Result<(), ChannelClosed> {
         let mut channels = self.channels.lock();
         let channel = channels.get_mut(&port).ok_or(ChannelClosed)?;

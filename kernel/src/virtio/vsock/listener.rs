@@ -6,13 +6,13 @@ pub struct StreamListener {
 }
 
 impl StreamListener {
-    pub async fn bind(addr: SocketAddr) -> Result<StreamListener> {
-        let rx = listen(addr).await;
+    pub async fn bind(port: u32) -> Result<StreamListener> {
+        let rx = listen(SocketAddr { cid: 3, port }).await;
         let addr = rx.addr();
         Ok(StreamListener { addr, rx })
     }
 
-    pub async fn accept(&mut self) -> Result<Stream> {
+    pub async fn accept(&self) -> Result<Stream> {
         let local = self.addr;
         let peer = self.rx.listen().await?;
         let inbound = Flow {

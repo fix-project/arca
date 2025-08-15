@@ -48,6 +48,10 @@ impl<T: ?Sized> RwLock<T> {
         }
     }
 
+    pub fn try_lock(&self) -> Option<WriteGuard<'_, T>> {
+        self.try_write()
+    }
+
     pub fn write(&self) -> WriteGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_write() {
@@ -55,6 +59,10 @@ impl<T: ?Sized> RwLock<T> {
             }
             core::hint::spin_loop();
         }
+    }
+
+    pub fn lock(&self) -> WriteGuard<'_, T> {
+        self.write()
     }
 
     pub fn try_read(&self) -> Option<ReadGuard<'_, T>> {
@@ -107,6 +115,12 @@ impl<T: ?Sized> RwLock<T> {
     }
 
     pub fn unwrite(_: WriteGuard<'_, T>)
+    where
+        T: Sized,
+    {
+    }
+
+    pub fn unlock(_: WriteGuard<'_, T>)
     where
         T: Sized,
     {

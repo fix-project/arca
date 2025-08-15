@@ -101,6 +101,7 @@ impl Driver {
             log::debug!("-> {msg:?}");
             let mut header: Header = msg.into();
             let len = buffers.map(|x| x.size()).unwrap_or(0);
+            let mut waiting = false;
             loop {
                 let mut status = self.status.lock();
 
@@ -117,8 +118,13 @@ impl Driver {
                 if len > 0 && status.rx_buf_alloc == 0 {
                     SpinLock::unlock(status);
                     log::warn!("no rx capacity");
+                    waiting = true;
                     crate::rt::wfi().await;
                     continue;
+                }
+
+                if waiting {
+                    log::warn!("rx okay");
                 }
 
                 header.buf_alloc = status.rx_buf_alloc as u32;
@@ -306,7 +312,7 @@ pub struct Listener {
 }
 
 impl Listener {
-    pub async fn listen(&mut self) -> Result<SocketAddr> {
+    pub async fn listen(&self) -> Result<SocketAddr> {
         Ok(self.rx.recv().await?)
     }
 

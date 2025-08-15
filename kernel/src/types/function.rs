@@ -32,8 +32,13 @@ impl Function {
         let arca = t == Value::Blob("Arcane".into());
         let symbolic = t == Value::Blob("Symbolic".into());
         let data = x.take(1);
-        let Value::Tuple(args) = x.take(2) else {
-            return None;
+        let args = if x.len() < 3 {
+            Tuple::new(0)
+        } else {
+            let Value::Tuple(args) = x.take(2) else {
+                return None;
+            };
+            args
         };
         let args = args.into_inner();
         let args = VecDeque::from(args.into_inner().into_vec());
@@ -69,7 +74,7 @@ impl Function {
     }
 
     pub fn read(self) -> Value {
-        let args = Vec::from_iter(self.args.into_iter());
+        let args = Vec::from_iter(self.args);
         let args = Tuple::from_inner(internal::Tuple::new(args));
         match self.defn {
             Definition::Symbolic(value) => {

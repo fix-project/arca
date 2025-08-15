@@ -1,8 +1,6 @@
 use crate::util::spinlock::SpinLock;
 use core::{
-    convert::Infallible,
     future::Future,
-    ops::{ControlFlow, FromResidual, Try},
     task::{Poll, Waker},
 };
 
@@ -107,31 +105,5 @@ impl<T, E> From<T> for Receiver<Result<T, E>> {
 impl<T> From<T> for Receiver<Option<T>> {
     fn from(value: T) -> Self {
         Receiver::new(Some(value))
-    }
-}
-
-impl<T, E> Try for Receiver<Result<T, E>> {
-    type Output = T;
-
-    type Residual = Result<Infallible, E>;
-
-    fn from_output(output: Self::Output) -> Self {
-        Receiver::new(Ok(output))
-    }
-
-    fn branch(mut self) -> core::ops::ControlFlow<Self::Residual, Self::Output> {
-        let result = self
-            .take()
-            .expect("attempting to branch on unresolved receiver");
-        match result {
-            Ok(t) => ControlFlow::Continue(t),
-            Err(e) => ControlFlow::Break(Err(e)),
-        }
-    }
-}
-
-impl<T, E> FromResidual<Result<Infallible, E>> for Receiver<Result<T, E>> {
-    fn from_residual(residual: Result<Infallible, E>) -> Self {
-        Receiver::new(Err(residual.unwrap_err()))
     }
 }

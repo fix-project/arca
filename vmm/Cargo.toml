@@ -18,16 +18,23 @@ kvm-ioctls = "0.23.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
 arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none" }
-user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"
 rustc-demangle = "0.1.24"
 anyhow = "1.0.97"
 libc = "0.2.174"
-vsock = "0.5.1"
 vmm-sys-util = "0.14.0"
 ctrlc = "3.4.7"
+tokio = { version = "1.47.1", features = ["full"] }
+tokio-vsock = "0.7.2"
+ninep = { version = "0.1.0", path = "../ninep" }
+regex = "1.11.1"
+either = "1.15.0"
+chumsky = "0.10.1"
+vfs = { version = "0.1.0", path = "../vfs" }
+futures = "0.3.31"
+tokio-stream = { version = "0.1.17", features = ["full"] }
 
 [build-dependencies]
 anyhow = "1.0.97"

@@ -1,31 +1,40 @@
-use core::{
-    marker::PhantomData,
-    sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering},
-    u32,
-};
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
 use alloc::collections::btree_map::BTreeMap;
-use common::util::{
-    channel::ChannelClosed, rwlock::RwLock, semaphore::Semaphore, spinlock::SpinLock,
-};
+use common::util::{rwlock::RwLock, semaphore::Semaphore, spinlock::SpinLock};
 
 pub mod dir;
 pub mod file;
-pub mod node;
 
-pub use super::*;
+pub use dir::*;
+pub use file::*;
+
+use super::*;
+use vfs::Error;
+use vfs::Result;
 
 pub struct Client {
     conn: Arc<Connection>,
 }
 
-struct Connection {
+pub struct Connection {
     inbox: Demultiplexer,
     next_tag: AtomicU16,
     next_fid: AtomicU32,
     msize: AtomicUsize,
-    linux: AtomicBool,
 }
+
+macro_rules! send {
+    ($conn:expr; $rx:tt <- $name:ident $tx:tt) => {
+        let RMessage::$name $rx = $conn
+            .send(TMessage::$name $tx)
+            .await??
+        else {
+            return Err(Error::from(ErrorKind::Other));
+        };
+    };
+}
+pub(crate) use send;
 
 impl Connection {
     fn tag(&self) -> Tag {
@@ -38,10 +47,6 @@ impl Connection {
 
     fn msize(&self) -> usize {
         self.msize.load(Ordering::Relaxed)
-    }
-
-    fn linux(&self) -> bool {
-        self.linux.load(Ordering::Relaxed)
     }
 
     async fn send(&self, message: TMessage) -> Result<RMessage> {
@@ -58,110 +63,61 @@ impl Connection {
 }
 
 impl Client {
-    pub async fn new(connection: OpenFile) -> Result<Client> {
+    pub async fn new(connection: impl File + 'static) -> Result<Client> {
         let inbox = Demultiplexer::new(connection).await?;
         let conn = Arc::new(Connection {
             inbox,
             next_tag: AtomicU16::new(0),
             next_fid: AtomicU32::new(0),
             msize: AtomicUsize::new(1024),
-            linux: AtomicBool::new(false),
         });
         let max_msize = 1024 * 64;
-        let msg = TMessage::Version {
-            tag: conn.tag(),
-            msize: max_msize,
-            version: "9P2000.L".into(),
-        };
-        let RMessage::Version { msize, version, .. } = conn.send(msg).await? else {
-            return Err(Error::InputOutputError);
-        };
+        send!(conn; {msize, version, ..} <- Version {tag: conn.tag(), msize: max_msize, version: "9P2000".into()});
         if msize > max_msize {
-            return Err(Error::InputOutputError);
+            return Err(Error::from(ErrorKind::Other));
         }
-        if version == "9P2000" {
-            conn.linux.store(false, Ordering::Relaxed);
-        } else if version == "9P2000.L" {
-            conn.linux.store(true, Ordering::Relaxed);
-        } else {
+        if version != "9P2000" {
             log::error!("server only supports {version}");
-            return Err(Error::InputOutputError);
+            return Err(Error::from(ErrorKind::Other));
         }
         conn.msize.store(msize as usize, Ordering::Relaxed);
         Ok(Client { conn })
     }
 
-    pub async fn auth(&self, uname: &str, aname: &str) -> Result<OpenFile> {
+    pub async fn auth(&self, uname: &str, aname: &str) -> Result<File9P> {
         let tag = self.conn.tag();
         let afid = self.conn.fid();
-        let RMessage::Auth { aqid, .. } = self
-            .conn
-            .send(TMessage::Auth {
-                tag,
-                afid,
-                uname: uname.to_owned(),
-                aname: aname.to_owned(),
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
-        };
-        Ok(P9 {
+        send!(self.conn; {aqid, ..} <- Auth {tag, afid, uname: uname.to_owned(), aname: aname.to_owned()});
+        Ok(File9P {
             conn: self.conn.clone(),
             fid: afid,
             qid: aqid,
-            _phantom: PhantomData,
-        }
-        .into())
+            cursor: 0,
+        })
     }
 
-    pub async fn attach(
-        &self,
-        auth: Option<P9<OpenFile>>,
-        uname: &str,
-        aname: &str,
-    ) -> Result<P9<ClosedDir>> {
+    pub async fn attach(&self, auth: Option<File9P>, uname: &str, aname: &str) -> Result<Dir9P> {
         let tag = self.conn.tag();
         let fid = self.conn.fid();
         let afid = auth.map(|x| x.fid).unwrap_or(Fid(!0));
-        let RMessage::Attach { qid, .. } = self
-            .conn
-            .send(TMessage::Attach {
-                tag,
-                fid,
-                afid,
-                uname: uname.to_owned(),
-                aname: aname.to_owned(),
-                n_uname: if self.conn.linux() { Some(!0) } else { None },
-            })
-            .await??
-        else {
-            return Err(Error::InputOutputError);
-        };
-        Ok(P9 {
+        send!(self.conn; {qid, ..} <- Attach {tag, fid, afid, uname: uname.to_owned(), aname: aname.to_owned(), n_uname: None});
+        Ok(Dir9P {
             conn: self.conn.clone(),
             fid,
             qid,
-            _phantom: PhantomData,
         })
     }
 }
 
-impl From<ChannelClosed> for Error {
-    fn from(_: ChannelClosed) -> Self {
-        Error::Message("connection to server closed".to_owned())
-    }
-}
-
 struct Demultiplexer {
-    conn: SpinLock<OpenFile>,
+    conn: SpinLock<Box<dyn File>>,
     sem: Semaphore,
     storage: Arc<RwLock<BTreeMap<Tag, RMessage>>>,
 }
 
 impl Demultiplexer {
-    pub async fn new(conn: OpenFile) -> Result<Demultiplexer> {
-        let conn = SpinLock::new(conn);
+    pub async fn new(conn: impl File) -> Result<Demultiplexer> {
+        let conn = SpinLock::new(conn.boxed());
         let sem = Semaphore::new(1);
         let storage = Arc::default();
         Ok(Demultiplexer { conn, sem, storage })
@@ -190,11 +146,4 @@ impl Demultiplexer {
             }
         }
     }
-}
-
-pub struct P9<T: NodeType> {
-    conn: Arc<Connection>,
-    fid: Fid,
-    qid: Qid,
-    _phantom: PhantomData<T>,
 }

@@ -161,17 +161,17 @@ impl arca::Runtime for Runtime {
     }
 
     fn with_blob_as_ref<T>(blob: &arca::Blob<Self>, f: impl FnOnce(&[u8]) -> T) -> T {
-        f(&blob.inner())
+        f(blob.inner())
     }
 
     fn with_tuple_as_ref<T>(
         tuple: &arca::Tuple<Self>,
         f: impl FnOnce(&[arca::Value<Self>]) -> T,
     ) -> T {
-        f(&tuple.inner())
+        f(tuple.inner())
     }
 
     fn with_page_as_ref<T>(page: &arca::Page<Self>, f: impl FnOnce(&[u8]) -> T) -> T {
-        f(&page.inner())
+        f(page.inner())
     }
 }

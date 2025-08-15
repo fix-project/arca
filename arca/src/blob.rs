@@ -1,3 +1,6 @@
+#[cfg(feature = "alloc")]
+use alloc::string::String;
+
 use super::prelude::*;
 
 impl<R: Runtime> Blob<R> {
@@ -26,5 +29,12 @@ impl<R: Runtime> From<&[u8]> for Blob<R> {
 impl<R: Runtime> From<&str> for Blob<R> {
     fn from(value: &str) -> Self {
         Self::new(value)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<R: Runtime> From<String> for Blob<R> {
+    fn from(value: String) -> Self {
+        Self::new(&value)
     }
 }

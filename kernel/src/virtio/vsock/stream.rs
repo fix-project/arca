@@ -2,13 +2,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 
+type PartiallyReadVec = (Vec<u8>, usize, channel::Sender<Vec<u8>>);
+
 pub struct Stream {
     outbound: Flow,
     rx: Receiver,
     peer_rx_closed: AtomicBool,
     peer_tx_closed: AtomicBool,
     closed: AtomicBool,
-    last_read: SpinLock<Option<(Vec<u8>, usize, channel::Sender<Vec<u8>>)>>,
+    last_read: SpinLock<Option<PartiallyReadVec>>,
 }
 
 impl Stream {
@@ -23,10 +25,11 @@ impl Stream {
         }
     }
 
-    pub async fn connect(local: SocketAddr, peer: SocketAddr) -> Result<Stream> {
+    pub async fn connect(peer: impl TryInto<SocketAddr>) -> Result<Stream> {
+        let local = SocketAddr { cid: 3, port: 0 };
         let outbound = Flow {
             src: local,
-            dst: peer,
+            dst: peer.try_into().map_err(|_| SocketError::InvalidAddress)?,
         };
         let rx = connect(outbound).await;
         let outbound = rx.inbound().reverse();

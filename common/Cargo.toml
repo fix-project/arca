@@ -19,3 +19,4 @@ arca = { path = "../arca" }
 libc = { version="0.2.164", optional=true }
 elf = { version = "0.7.4", default-features = false }
 hashbrown = { version = "0.15.4", features = ["alloc", "core"] }
+derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
