@@ -13,6 +13,8 @@ pub mod error;
 pub mod os;
 pub mod prelude;
 pub use arca;
+pub mod buffer;
+pub mod io;
 
 use arca::Function;
 use arcane::SyscallError;

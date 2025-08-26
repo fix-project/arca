@@ -1,58 +1,76 @@
 #![no_std]
 #![no_main]
 
-use user::prelude::*;
+use core::fmt::Write;
+use user::buffer::Buffer;
+use user::io::File;
 
 extern crate user;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    let effect = Function::symbolic("effect");
-
-    let _: Blob = os::call_with_current_continuation(effect.clone()("recv"))
-        .try_into()
+    let mut ctl = File::options()
+        .read(true)
+        .write(true)
+        .open("/net/tcp/clone")
         .unwrap();
 
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+    writeln!(ctl, "announce 0.0.0.0:8080").unwrap();
 
-    let prefix = r#"
+    let mut id = [0; 32];
+    let size = ctl.read(&mut id).unwrap();
+    let id = &id[..size];
+    let id = core::str::from_utf8(id).unwrap().trim();
+    let mut buf: Buffer<32> = Buffer::new();
+    write!(&mut buf, "/net/tcp/{id}/listen").unwrap();
+    let listen = core::str::from_utf8(&buf).unwrap();
+
+    user::error::log("listening on port 8080");
+
+    loop {
+        let mut lctl = File::options().read(true).write(true).open(listen).unwrap();
+
+        let mut id = [0; 32];
+        let size = lctl.read(&mut id).unwrap();
+        let id = &id[..size];
+        let id = core::str::from_utf8(id).unwrap().trim();
+        let mut buf: Buffer<32> = Buffer::new();
+        write!(&mut buf, "/net/tcp/{id}/data").unwrap();
+        let buf = core::str::from_utf8(&buf).unwrap();
+
+        let mut ldata = File::options().read(true).write(true).open(buf).unwrap();
+
+        let mut request = [0; 1024];
+        let size = ldata.read(&mut request).unwrap();
+        let request = &request[..size];
+
+        write!(ldata, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n").unwrap();
+
+        write!(
+            ldata,
+            r#"
 <!doctype html>
 <html>
 <head>
-    <title>Hello from Arca!</title>
-    <meta charset="utf-8"/>
+<title>Hello from Arca!</title>
+<meta charset="utf-8"/>
 </head>
 <body>
-    <h1>Hello from the Arca kernel!</h1>
-    <p>You are user #"#
-        .trim();
-    let value = loop {
-        let old: Word = effect.clone()("get", "count")(Continuation)
-            .try_into()
-            .unwrap();
-        let x = old.read();
-        let value = old.read() + 1;
-        let result = effect.clone()("compare-and-swap", "count", old, value)(Continuation);
-        let result: Word = result.try_into().unwrap();
-        if result.read() != x {
-            break value;
-        }
-    };
-    let mut buf = [0u8; 32];
-    let body = numtoa::numtoa_u64(value, 10, &mut buf);
-    let body = Blob::new(body);
-    let suffix = r#"
-    !</p>
+<h1>Hello from Arca!</h1>
+<p>Your request headers:</p>
+<pre>"#
+        )
+        .unwrap();
+        ldata.write(request).unwrap();
+        write!(
+            ldata,
+            r#"</pre>
 </body>
 </html>
-        "#
-    .trim();
+"#
+        )
+        .unwrap();
 
-    effect.clone()("send", header, Continuation);
-    effect.clone()("send", prefix, Continuation);
-    effect.clone()("send", body, Continuation);
-    effect.clone()("send", suffix, Continuation);
-    effect.clone()("close", Continuation);
-
-    unreachable!();
+        writeln!(lctl, "hangup").unwrap();
+    }
 }

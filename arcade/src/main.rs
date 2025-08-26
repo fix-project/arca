@@ -26,7 +26,7 @@ use vfs::mem::MemDir;
 
 extern crate alloc;
 
-const FOO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/foo"));
+const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_server"));
 
 #[kmain]
 async fn main(_: &[usize]) {
@@ -87,7 +87,7 @@ async fn main(_: &[usize]) {
         .unwrap();
 
     let p = Proc::new(
-        FOO,
+        SERVER,
         ProcState {
             ns,
             env: Env::default(),

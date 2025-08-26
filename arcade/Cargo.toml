@@ -31,6 +31,7 @@ trait-variant = "0.1.2"
 futures = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
 vfs = { version = "0.1.0", path = "../vfs" }
 chumsky = { version = "0.10.1", default-features = false }
+user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 
 [build-dependencies]
 anyhow = "1.0.98"

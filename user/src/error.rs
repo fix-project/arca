@@ -1,18 +1,23 @@
+use core::fmt::Write;
+
 use arcane::*;
 
-fn log(s: &str) {
+use crate::buffer::Buffer;
+
+pub fn log(s: impl AsRef<[u8]>) {
+    let s = s.as_ref();
     unsafe {
         arca_debug_log(s.as_ptr(), s.len());
     }
 }
 
-fn log_int(s: &str, x: u64) {
+pub fn log_int(s: &str, x: u64) {
     unsafe {
         arca_debug_log_int(s.as_ptr(), s.len(), x);
     }
 }
 
-fn show(s: &str, x: i64) {
+pub fn show(s: &str, x: i64) {
     unsafe {
         arca_debug_show(s.as_ptr(), s.len(), x);
     }
@@ -20,6 +25,9 @@ fn show(s: &str, x: i64) {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    let mut buf: Buffer<1024> = Buffer::new();
+    write!(&mut buf, "{info}");
+    log(&*buf);
     loop {
         unsafe {
             core::arch::asm!("ud2");

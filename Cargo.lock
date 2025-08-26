@@ -115,6 +115,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "trait-variant",
+ "user",
  "vfs",
 ]
 
@@ -653,7 +654,6 @@ dependencies = [
  "log",
  "macros",
  "time",
- "user",
 ]
 
 [[package]]

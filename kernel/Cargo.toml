@@ -24,7 +24,6 @@ time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 macros = { path = "../macros" }
 # common = { path = "../common", default-features = false, features = ["core_local_cache"] }
 common = { path = "../common", default-features = false }
-user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 arca = { path = "../arca" }
 hashbrown = { version = "0.15.4", features = ["alloc", "core"] }
 arcane = { path = "../arcane" }

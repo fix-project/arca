@@ -15,4 +15,5 @@ pub type ValueRef<'a> = arca::ValueRef<'a, Runtime>;
 pub type Word = arca::Word<Runtime>;
 pub use arca::Continuation;
 
+pub use crate::io;
 pub use crate::os;
