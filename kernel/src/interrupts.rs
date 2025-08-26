@@ -89,9 +89,12 @@ pub fn must_be_disabled() {
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     must_be_disabled();
-    if registers.isr == 0x30 || registers.isr == 0x31 {
+    if registers.isr == 0x30 {
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
+    }
+    if registers.isr == 0x31 {
+        panic!("got ^C interrupt");
     }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {

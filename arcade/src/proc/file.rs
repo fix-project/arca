@@ -16,7 +16,7 @@ pub async fn open(
     let open: Open = flags.try_into()?;
     let create: Create = mode.into();
     let path = if path.is_relative() {
-        state.cwd.clone() + path
+        (*state.cwd).clone() + path
     } else {
         path.to_owned()
     };

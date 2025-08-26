@@ -89,10 +89,10 @@ async fn main(_: &[usize]) {
     let p = Proc::new(
         SERVER,
         ProcState {
-            ns,
-            env: Env::default(),
-            fd: RwLock::new(fd),
-            cwd: PathBuf::from("/".to_owned()),
+            ns: Arc::new(ns),
+            env: Env::default().into(),
+            fd: RwLock::new(fd).into(),
+            cwd: PathBuf::from("/".to_owned()).into(),
         },
     )
     .unwrap();

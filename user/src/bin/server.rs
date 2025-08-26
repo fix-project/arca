@@ -3,7 +3,7 @@
 
 use core::fmt::Write;
 use user::buffer::Buffer;
-use user::io::File;
+use user::io::{self, File};
 
 extern crate user;
 
@@ -29,6 +29,10 @@ pub extern "C" fn _rsstart() -> ! {
 
     loop {
         let mut lctl = File::options().read(true).write(true).open(listen).unwrap();
+
+        if io::fork().unwrap() != 0 {
+            continue;
+        }
 
         let mut id = [0; 32];
         let size = lctl.read(&mut id).unwrap();
@@ -72,5 +76,6 @@ pub extern "C" fn _rsstart() -> ! {
         .unwrap();
 
         writeln!(lctl, "hangup").unwrap();
+        io::exit(0);
     }
 }

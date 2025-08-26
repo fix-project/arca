@@ -104,14 +104,14 @@ impl Dir for ConnDir {
             }
             .boxed(),
             "listen" => {
-                let conn = self.conn.lock();
-                let State::Listening(listener) = &conn.state else {
+                let State::Listening(listener) = self.conn.lock().state.clone() else {
                     return Err(ErrorKind::ResourceBusy.into());
                 };
                 let stream = listener
                     .accept()
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
+                let conn = self.conn.lock();
                 let new = Arc::new(SpinLock::new(Connection {
                     index: 0,
                     state: State::Connected(stream.into()),
@@ -263,8 +263,8 @@ impl File for Data {
         if !self.open.contains(Open::Read) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        let conn = self.conn.lock();
-        let State::Connected(stream) = &conn.state else {
+        let conn = self.conn.lock().clone();
+        let State::Connected(stream) = conn.state else {
             return Err(ErrorKind::ResourceBusy.into());
         };
         stream
@@ -277,8 +277,8 @@ impl File for Data {
         if !self.open.contains(Open::Write) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        let conn = self.conn.lock();
-        let State::Connected(stream) = &conn.state else {
+        let conn = self.conn.lock().clone();
+        let State::Connected(stream) = conn.state else {
             return Err(ErrorKind::ResourceBusy.into());
         };
         stream

@@ -34,71 +34,100 @@ impl Proc {
 
     pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> u8 {
         let _argv = Tuple::from_iter(argv.into_iter().map(Blob::from).map(Value::Blob));
-        let mut f = self.f;
-        loop {
-            let result = f.force();
-            let Value::Function(g) = result else {
-                return 255;
-            };
-            if g.is_arcane() {
-                // call/cc to another function, or returned another function
-                f = g;
-                continue;
-            }
-            let data = g.into_inner().read();
-            let Value::Tuple(mut data) = data else {
-                unreachable!();
-            };
-            let t: Blob = data.take(0).try_into().unwrap();
-            assert_eq!(&*t, b"Symbolic");
-            let effect: Blob = data.take(1).try_into().unwrap();
-            let args: Tuple = data.take(2).try_into().unwrap();
-            let mut args: Vec<Value> = args.into_iter().collect();
-            let Some(Value::Function(k)) = args.pop() else {
-                return 255;
-            };
-            f = match (&*effect, &mut *args) {
-                (b"open", &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)]) => k
-                    .apply(fix(file::open(
+        self.resume().await
+    }
+
+    pub fn resume(self) -> impl Future<Output = u8> + Send {
+        async move {
+            let mut f = self.f;
+            loop {
+                let result = f.force();
+                let Value::Function(g) = result else {
+                    log::error!("proc returned something other than an effect!");
+                    return 255;
+                };
+                if g.is_arcane() {
+                    // call/cc to another function, or returned another function
+                    f = g;
+                    continue;
+                }
+                let data = g.into_inner().read();
+                let Value::Tuple(mut data) = data else {
+                    unreachable!();
+                };
+                let t: Blob = data.take(0).try_into().unwrap();
+                assert_eq!(&*t, b"Symbolic");
+                let effect: Blob = data.take(1).try_into().unwrap();
+                let args: Tuple = data.take(2).try_into().unwrap();
+                let mut args: Vec<Value> = args.into_iter().collect();
+                let Some(Value::Function(k)) = args.pop() else {
+                    return 255;
+                };
+                f = match (&*effect, &mut *args) {
+                    (
+                        b"open",
+                        &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)],
+                    ) => k.apply(fix(file::open(
                         &self.state,
                         path,
                         file::OpenFlags(flags.read() as u32),
                         file::ModeT(mode.read() as u32),
                     )
                     .await)),
-                (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
-                    k.apply(fix(file::write(&self.state, fd.read(), data).await))
-                }
-                (b"read", &mut [Value::Word(fd), Value::Word(count)]) => {
-                    k.apply(fix(file::read(&self.state, fd.read(), count.read()).await))
-                }
-                (b"seek", &mut [Value::Word(fd), Value::Word(offset), Value::Word(whence)]) => k
-                    .apply(fix(file::seek(
-                        &self.state,
-                        fd.read(),
-                        offset.read(),
-                        whence.read(),
-                    )
-                    .await)),
-                (b"close", &mut [Value::Word(fd)]) => {
-                    k.apply(fix(file::close(&self.state, fd.read()).await))
-                }
-                (b"exit", &mut [Value::Word(result)]) => {
-                    return result.read() as u8;
-                }
-                _ => {
-                    panic!("invalid effect: {effect:?}({args:?})");
+                    (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
+                        k.apply(fix(file::write(&self.state, fd.read(), data).await))
+                    }
+                    (b"read", &mut [Value::Word(fd), Value::Word(count)]) => {
+                        k.apply(fix(file::read(&self.state, fd.read(), count.read()).await))
+                    }
+                    (b"seek", &mut [Value::Word(fd), Value::Word(offset), Value::Word(whence)]) => {
+                        k.apply(fix(file::seek(
+                            &self.state,
+                            fd.read(),
+                            offset.read(),
+                            whence.read(),
+                        )
+                        .await))
+                    }
+                    (b"close", &mut [Value::Word(fd)]) => {
+                        k.apply(fix(file::close(&self.state, fd.read()).await))
+                    }
+                    (b"fork", &mut []) => {
+                        let state = Arc::new((*self.state).clone());
+                        let pid = table::PROCS.allocate(&state);
+                        let mut fds = Descriptors::new();
+                        for (i, x) in self.state.fd.read().iter() {
+                            fds.set(i, x.dup().await.unwrap());
+                        }
+                        let new = Proc {
+                            f: k.clone().apply(0),
+                            pid,
+                            state: Arc::new(ProcState {
+                                fd: RwLock::new(fds).into(),
+                                ..(*self.state).clone()
+                            }),
+                        };
+                        kernel::rt::spawn(async move { new.resume().await });
+                        k.apply(fix(Ok(pid as u32)))
+                    }
+                    (b"exit", &mut [Value::Word(result)]) => {
+                        return result.read() as u8;
+                    }
+                    _ => {
+                        panic!("invalid effect: {effect:?}({args:?})");
+                    }
                 }
             }
         }
     }
 }
 
+#[derive(Clone)]
 pub struct ProcState {
-    pub ns: Namespace,
-    pub env: Env,
-    pub fd: RwLock<Descriptors<Object>>,
-    pub cwd: PathBuf,
+    pub ns: Arc<Namespace>,
+    pub env: Arc<Env>,
+    pub fd: Arc<RwLock<Descriptors<Object>>>,
+    pub cwd: Arc<PathBuf>,
 }
 
 #[derive(Debug, Display, Copy, Clone, Eq, PartialEq)]

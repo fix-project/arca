@@ -39,11 +39,14 @@ impl Dir for MemDir {
                 if open.contains(Open::Truncate) {
                     contents.data.write().truncate(0);
                 }
-                Ok(Object::File(MemFile {
-                    cursor: 0,
-                    open,
-                    contents,
-                }.boxed()))
+                Ok(Object::File(
+                    MemFile {
+                        cursor: 0,
+                        open,
+                        contents,
+                    }
+                    .boxed(),
+                ))
             }
         }
     }

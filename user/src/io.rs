@@ -1,4 +1,7 @@
-use core::fmt::Write;
+use core::{
+    fmt::Write,
+    num::{NonZeroU32, NonZeroUsize},
+};
 
 use crate::prelude::*;
 
@@ -154,4 +157,20 @@ impl Write for File {
         self.write(s.as_bytes()).map_err(|_| core::fmt::Error)?;
         Ok(())
     }
+}
+
+pub fn exit(code: u8) -> ! {
+    Function::symbolic("exit")
+        .apply(code as u64)
+        .call_with_current_continuation();
+    unreachable!()
+}
+
+pub fn fork() -> Result<usize> {
+    let result: Word = Function::symbolic("fork")
+        .call_with_current_continuation()
+        .try_into()
+        .map_err(|_| Error)?;
+    let result = result.read() as usize;
+    Ok(result)
 }

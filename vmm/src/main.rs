@@ -28,9 +28,13 @@ async fn main() -> anyhow::Result<()> {
         .get();
     let mut runtime = Runtime::new(smp, 1 << 30, ARCADE.into());
 
-    tokio::spawn(async {
-        let sock = VsockListener::bind(VsockAddr::new(VMADDR_CID_HOST, 1564)).unwrap();
-        let mut s = ninep::Server::new();
+    let spawn = move |x| {
+        tokio::spawn(x);
+    };
+
+    let sock = VsockListener::bind(VsockAddr::new(VMADDR_CID_HOST, 1564)).unwrap();
+    tokio::spawn(async move {
+        let mut s = ninep::Server::new(spawn);
         let dir = FsDir::new("/tmp", Open::ReadWrite).unwrap();
         s.add("", dir);
         let tcp = TcpFS::default();

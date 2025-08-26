@@ -50,7 +50,7 @@ impl Connection {
     }
 
     async fn send(&self, message: TMessage) -> Result<RMessage> {
-        let mut f = self.inbox.conn.lock();
+        let mut f = self.inbox.write.lock();
         let tag = message.tag();
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
@@ -110,39 +110,51 @@ impl Client {
 }
 
 struct Demultiplexer {
-    conn: SpinLock<Box<dyn File>>,
-    sem: Semaphore,
+    read: SpinLock<Box<dyn File>>,
+    write: SpinLock<Box<dyn File>>,
+    handle: Semaphore,
     storage: Arc<RwLock<BTreeMap<Tag, RMessage>>>,
 }
 
 impl Demultiplexer {
     pub async fn new(conn: impl File) -> Result<Demultiplexer> {
-        let conn = SpinLock::new(conn.boxed());
-        let sem = Semaphore::new(1);
+        let conn = conn.boxed();
+        let read = SpinLock::new(conn.dup().await?);
+        let write = SpinLock::new(conn);
+        let handle = Semaphore::new(1);
         let storage = Arc::default();
-        Ok(Demultiplexer { conn, sem, storage })
+        Ok(Demultiplexer {
+            read,
+            write,
+            handle,
+            storage,
+        })
     }
 
     pub async fn read(&self, tag: Tag) -> Result<RMessage> {
-        self.sem.acquire(1).await;
-        let mut storage = self.storage.write();
-        if let Some(result) = storage.remove(&tag) {
-            self.sem.release(1);
+        while !self.handle.try_acquire(1) {
+            let mut storage = self.storage.write();
+            if let Some(result) = storage.remove(&tag) {
+                return Ok(result);
+            }
+            // TODO: fix spin loop
+            core::hint::spin_loop();
+        }
+        if let Some(result) = self.storage.write().remove(&tag) {
             return Ok(result);
         }
-        // TODO: fix head-of-line blocking here
         loop {
             let mut size = [0u8; 4];
-            self.conn.lock().read(&mut size).await?;
+            self.read.lock().read(&mut size).await?;
             let size = u32::from_le_bytes(size);
             let mut buf = vec![0; size as usize - 4];
-            let n = self.conn.lock().read(&mut buf).await?;
+            let n = self.read.lock().read(&mut buf).await?;
             let rmsg: RMessage = wire::from_bytes(&buf[..n])?;
             if rmsg.tag() == tag {
-                self.sem.release(1);
+                self.handle.release(1);
                 return Ok(rmsg);
             } else {
-                storage.insert(rmsg.tag(), rmsg);
+                self.storage.write().insert(rmsg.tag(), rmsg);
             }
         }
     }

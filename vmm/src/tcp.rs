@@ -114,11 +114,14 @@ impl Dir for ConnDir {
                     log::error!("not listening?");
                     return Err(ErrorKind::ResourceBusy.into());
                 };
+                let listener = listener.clone();
                 let listener = listener.lock();
+                SpinLock::unlock(conn);
                 let (stream, _) = listener
                     .accept()
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
+                let conn = self.conn.lock();
                 let new = Arc::new(SpinLock::new(Connection {
                     index: 0,
                     state: State::Connected(Arc::new(SpinLock::new(stream))),
