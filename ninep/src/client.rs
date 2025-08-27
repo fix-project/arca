@@ -55,11 +55,10 @@ impl Connection {
     async fn send(&self, message: TMessage) -> Result<RMessage> {
         let tag = message.tag();
         let rx = self.inbound.receiver(tag);
-        let mut f = self.write.lock();
+        let mut f = self.write.lock().dup().await?;
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
         f.write(&msg).await?;
-        SpinLock::unlock(f);
         let result = rx.recv().await.map_err(Error::other)?;
         log::debug!("<- {result:?}");
         Ok(result)

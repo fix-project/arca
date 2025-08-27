@@ -1,7 +1,6 @@
-// use core::cell::LazyCell;
-
 use core::{
     cell::LazyCell,
+    fmt::Write,
     sync::atomic::{AtomicPtr, Ordering},
     time::Duration,
 };
@@ -96,7 +95,27 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     }
     if registers.isr == 0x31 {
         if kvmclock::time_since_boot() > Duration::from_secs(1) {
-            panic!("got ^C interrupt");
+            log::error!("got ^C interrupt");
+            let mut console = crate::debugcon::CONSOLE.lock();
+            let _ = writeln!(&mut *console, "----- BACKTRACE -----");
+            let mut i = 0;
+            crate::profile::backtrace(|addr, decoded| {
+                if i > 0 {
+                    if let Some((symname, offset)) = decoded {
+                        let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
+                    } else {
+                        let _ = writeln!(&mut *console, "{i}. {addr:#p}");
+                    }
+                }
+                i += 1;
+            });
+            let _ = writeln!(&mut *console, "------ PROFILE ------");
+            crate::profile::log(20);
+            let _ = writeln!(&mut *console, "------ RUNTIME ------");
+            crate::rt::profile();
+            let _ = writeln!(&mut *console, "---------------------");
+            crate::profile::reset();
+            crate::rt::reset_stats();
         }
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;

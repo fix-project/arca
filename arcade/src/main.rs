@@ -7,10 +7,12 @@
 #![feature(never_type)]
 #![allow(dead_code)]
 
+use core::time::Duration;
+
 use ::vfs::*;
 use alloc::format;
 use common::util::descriptors::Descriptors;
-use kernel::prelude::*;
+use kernel::{prelude::*, profile, rt};
 use ninep::Client;
 
 mod dev;
@@ -100,6 +102,7 @@ async fn main(_: &[usize]) {
         },
     )
     .unwrap();
+    profile::begin();
     let exitcode = p.run([]).await;
     log::info!("exitcode: {exitcode}");
 }
