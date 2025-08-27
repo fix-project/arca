@@ -31,12 +31,12 @@ pub async fn open(
     } else {
         dir.open(name, open).await?
     };
-    let index = state.fd.write().insert(file.into());
+    let index = state.fds.write().insert(file.into());
     Ok(index as u32)
 }
 
 pub async fn write(state: &ProcState, fd: u64, buf: &[u8]) -> Result<u32, UnixError> {
-    let mut fdt = state.fd.write();
+    let mut fdt = state.fds.write();
     let fd = fdt
         .get_mut(fd as usize)
         .ok_or(UnixError::BADFD)?
@@ -45,7 +45,7 @@ pub async fn write(state: &ProcState, fd: u64, buf: &[u8]) -> Result<u32, UnixEr
 }
 
 pub async fn read(state: &ProcState, fd: u64, count: u64) -> Result<Blob, UnixError> {
-    let mut fdt = state.fd.write();
+    let mut fdt = state.fds.write();
     let fd = fdt
         .get_mut(fd as usize)
         .ok_or(UnixError::BADFD)?
@@ -57,7 +57,7 @@ pub async fn read(state: &ProcState, fd: u64, count: u64) -> Result<Blob, UnixEr
 }
 
 pub async fn seek(state: &ProcState, fd: u64, offset: u64, whence: u64) -> Result<Word, UnixError> {
-    let mut fdt = state.fd.write();
+    let mut fdt = state.fds.write();
     let fd = fdt
         .get_mut(fd as usize)
         .ok_or(UnixError::BADFD)?
@@ -73,7 +73,7 @@ pub async fn seek(state: &ProcState, fd: u64, offset: u64, whence: u64) -> Resul
 }
 
 pub async fn close(state: &ProcState, fd: u64) -> Result<u32, UnixError> {
-    let mut fdt = state.fd.write();
+    let mut fdt = state.fds.write();
     fdt.remove(fd as usize).ok_or(UnixError::BADFD)?;
     Ok(0)
 }

@@ -7,12 +7,10 @@
 #![feature(never_type)]
 #![allow(dead_code)]
 
-use core::time::Duration;
-
 use ::vfs::*;
 use alloc::format;
 use common::util::descriptors::Descriptors;
-use kernel::{prelude::*, profile, rt};
+use kernel::{prelude::*, profile};
 use ninep::Client;
 
 mod dev;
@@ -49,9 +47,9 @@ async fn main(_: &[usize]) {
     let stdout = ns.walk("/dev/cons", Open::Write).await.unwrap();
     let stderr = stdout.dup().await.unwrap();
 
-    fd.set(0, stdin);
-    fd.set(1, stdout);
-    fd.set(2, stderr);
+    fd.set(0, stdin.into());
+    fd.set(1, stdout.into());
+    fd.set(2, stderr.into());
 
     ns.attach(VSockFS::default(), "/net/vsock", MountType::Replace, true)
         .await
@@ -97,7 +95,7 @@ async fn main(_: &[usize]) {
         ProcState {
             ns: Arc::new(ns),
             env: Env::default().into(),
-            fd: RwLock::new(fd).into(),
+            fds: RwLock::new(fd).into(),
             cwd: PathBuf::from("/".to_owned()).into(),
         },
     )

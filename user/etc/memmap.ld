@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 MEMORY {
-  memory (rwx) : ORIGIN = 0x200000, LENGTH = 64K
+  memory (rwx) : ORIGIN = 0x200000, LENGTH = 128K
 }
 
 SECTIONS {

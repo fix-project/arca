@@ -6,6 +6,42 @@ use user::buffer::Buffer;
 use user::io::{self, File};
 
 extern crate user;
+use user::prelude::*;
+
+struct MVar {
+    fd: u64,
+}
+
+impl MVar {
+    pub fn new() -> MVar {
+        let result: Word = Function::symbolic("mvar-new")
+            .call_with_current_continuation()
+            .try_into()
+            .unwrap();
+        MVar { fd: result.read() }
+    }
+
+    pub fn take(&self) -> Value {
+        Function::symbolic("mvar-take")
+            .apply(self.fd)
+            .call_with_current_continuation()
+    }
+
+    pub fn put(&self, value: impl Into<Value>) {
+        Function::symbolic("mvar-put")
+            .apply(self.fd)
+            .apply(value)
+            .call_with_current_continuation();
+    }
+}
+
+impl Drop for MVar {
+    fn drop(&mut self) {
+        Function::symbolic("close")
+            .apply(self.fd)
+            .call_with_current_continuation();
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
@@ -26,6 +62,9 @@ pub extern "C" fn _rsstart() -> ! {
     let listen = core::str::from_utf8(&buf).unwrap();
 
     user::error::log("listening on port 8080");
+
+    let mvar = MVar::new();
+    mvar.put(0);
 
     loop {
         let mut lctl = File::options().read(true).write(true).open(listen).unwrap();
@@ -48,11 +87,20 @@ pub extern "C" fn _rsstart() -> ! {
         let size = ldata.read(&mut request).unwrap();
         let request = &request[..size];
 
-        write!(ldata, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n").unwrap();
+        let request = core::str::from_utf8(request).unwrap();
 
-        write!(
-            ldata,
-            r#"
+        if request.contains("reset") {
+            let _ = mvar.take();
+            mvar.put(0);
+            write!(ldata, "HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n").unwrap();
+        } else {
+            write!(ldata, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n").unwrap();
+            let number: Word = mvar.take().try_into().unwrap();
+            let number = number.read() + 1;
+            mvar.put(number);
+            write!(
+                ldata,
+                r#"
 <!doctype html>
 <html>
 <head>
@@ -61,19 +109,17 @@ pub extern "C" fn _rsstart() -> ! {
 </head>
 <body>
 <h1>Hello from Arca!</h1>
+<p>You are request #{number}</p>
 <p>Your request headers:</p>
-<pre>"#
-        )
-        .unwrap();
-        ldata.write(request).unwrap();
-        write!(
-            ldata,
-            r#"</pre>
+<pre>
+{request}
+</pre>
 </body>
 </html>
 "#
-        )
-        .unwrap();
+            )
+            .unwrap();
+        }
 
         writeln!(lctl, "hangup").unwrap();
         io::exit(0);

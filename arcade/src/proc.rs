@@ -5,17 +5,17 @@ pub mod file;
 pub mod namespace;
 
 use common::util::descriptors::Descriptors;
-use derive_more::Display;
+use derive_more::{Display, From, TryInto};
 pub use env::Env;
 pub use namespace::Namespace;
 
 use kernel::{
-    prelude::RwLock,
+    prelude::{RwLock, SpinLock},
     types::{Blob, Function, Tuple, Value},
 };
 mod table;
-use alloc::{sync::Arc, vec::Vec};
-use vfs::{ErrorKind, Object, PathBuf};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
 pub struct Proc {
     f: Function,
@@ -24,7 +24,10 @@ pub struct Proc {
 }
 
 impl Proc {
-    pub fn new(elf: &[u8], state: ProcState) -> Result<Self, common::elfloader::Error> {
+    pub fn new(
+        elf: &[u8],
+        state: ProcState,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
@@ -96,14 +99,14 @@ impl Proc {
                         let state = Arc::new((*self.state).clone());
                         let pid = table::PROCS.allocate(&state);
                         let mut fds = Descriptors::new();
-                        for (i, x) in self.state.fd.read().iter() {
+                        for (i, x) in self.state.fds.read().iter() {
                             fds.set(i, x.dup().await.unwrap());
                         }
                         let new = Proc {
                             f: k.clone().apply(0),
                             pid,
                             state: Arc::new(ProcState {
-                                fd: RwLock::new(fds).into(),
+                                fds: RwLock::new(fds).into(),
                                 ..(*self.state).clone()
                             }),
                         };
@@ -112,6 +115,46 @@ impl Proc {
                     }
                     (b"exit", &mut [Value::Word(result)]) => {
                         return result.read() as u8;
+                    }
+                    (b"mvar-new", &mut []) => {
+                        let mvar = MVar::new(SpinLock::new(None));
+                        let i = self.state.fds.lock().insert(FileDescriptor::MVar(mvar));
+                        k.apply(i as u64)
+                    }
+                    (b"mvar-take", &mut [Value::Word(fd)]) => {
+                        let result = try {
+                            loop {
+                                kernel::rt::yield_now().await;
+                                let fds = self.state.fds.lock();
+                                let mvar = fds
+                                    .get(fd.read() as usize)
+                                    .ok_or(UnixError::BADFD)?
+                                    .as_mvar_ref()?;
+                                if let Some(mvar) = mvar.lock().take() {
+                                    break mvar;
+                                }
+                            }
+                        };
+                        k.apply(fix(result))
+                    }
+                    (b"mvar-put", &mut [Value::Word(fd), ref mut value]) => {
+                        let result = try {
+                            loop {
+                                kernel::rt::yield_now().await;
+                                let fds = self.state.fds.lock();
+                                let mvar = fds
+                                    .get(fd.read() as usize)
+                                    .ok_or(UnixError::BADFD)?
+                                    .as_mvar_ref()?;
+                                let mut mvar = mvar.lock();
+                                if mvar.is_some() {
+                                    continue;
+                                }
+                                *mvar = Some(core::mem::take(value));
+                                break 0;
+                            }
+                        };
+                        k.apply(fix(result))
                     }
                     _ => {
                         panic!("invalid effect: {effect:?}({args:?})");
@@ -126,8 +169,87 @@ impl Proc {
 pub struct ProcState {
     pub ns: Arc<Namespace>,
     pub env: Arc<Env>,
-    pub fd: Arc<RwLock<Descriptors<Object>>>,
+    pub fds: Arc<RwLock<Descriptors<FileDescriptor>>>,
     pub cwd: Arc<PathBuf>,
+}
+
+type MVar = Arc<SpinLock<Option<Value>>>;
+
+#[derive(From, TryInto)]
+#[try_into(owned, ref, ref_mut)]
+pub enum FileDescriptor {
+    File(Box<dyn File>),
+    Dir(Box<dyn Dir>),
+    MVar(MVar),
+}
+
+impl From<Object> for FileDescriptor {
+    fn from(value: Object) -> Self {
+        match value {
+            Object::File(file) => file.into(),
+            Object::Dir(dir) => dir.into(),
+        }
+    }
+}
+
+impl FileDescriptor {
+    pub fn is_file(&self) -> bool {
+        matches!(self, FileDescriptor::File(_))
+    }
+
+    pub fn is_dir(&self) -> bool {
+        matches!(self, FileDescriptor::Dir(_))
+    }
+
+    pub fn as_file(self) -> Result<Box<dyn File>> {
+        Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
+    }
+
+    pub fn as_file_ref(&self) -> Result<&dyn File> {
+        let b: &Box<dyn File> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(&*b)
+    }
+
+    pub fn as_file_mut(&mut self) -> Result<&mut dyn File> {
+        let b: &mut Box<dyn File> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(&mut *b)
+    }
+
+    pub fn as_dir(self) -> Result<Box<dyn Dir>> {
+        Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
+    }
+
+    pub fn as_dir_ref(&self) -> Result<&dyn Dir> {
+        let b: &Box<dyn Dir> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(&*b)
+    }
+
+    pub fn as_dir_mut(&mut self) -> Result<&mut dyn Dir> {
+        let b: &mut Box<dyn Dir> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(&mut *b)
+    }
+
+    pub fn as_mvar(self) -> Result<MVar> {
+        Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
+    }
+
+    pub fn as_mvar_ref(&self) -> Result<&MVar> {
+        let b: &MVar = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(b)
+    }
+
+    pub fn as_mvar_mut(&mut self) -> Result<&mut MVar> {
+        let b: &mut MVar = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
+        Ok(b)
+    }
+
+    pub async fn dup(&self) -> Result<Self> {
+        Ok(match self {
+            FileDescriptor::File(file) => FileDescriptor::File(file.dup().await?),
+            FileDescriptor::Dir(dir) => FileDescriptor::Dir(dir.dup().await?),
+            FileDescriptor::MVar(mvar) => FileDescriptor::MVar(mvar.clone()),
+        })
+    }
 }
 
 #[derive(Debug, Display, Copy, Clone, Eq, PartialEq)]
@@ -148,7 +270,7 @@ impl From<Utf8Error> for UnixError {
     }
 }
 
-fn fix<T: Into<Value>>(value: Result<T, UnixError>) -> Value {
+fn fix<T: Into<Value>>(value: core::result::Result<T, UnixError>) -> Value {
     match value {
         Ok(x) => x.into(),
         Err(x) => Value::Word(((-(x.0 as i64)) as u64).into()),
