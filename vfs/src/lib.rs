@@ -368,6 +368,23 @@ impl Create {
     }
 }
 
+pub trait FileExt: File + Send + Sync {
+    fn read_exact(&mut self, mut bytes: &mut [u8]) -> impl Future<Output = Result<()>> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            while !bytes.is_empty() {
+                let n = self.read(bytes).await?;
+                bytes = &mut bytes[n..];
+            }
+            Ok(())
+        }
+    }
+}
+
+impl<T: File> FileExt for T {}
+
 pub trait DirExt: Dir + Send + Sync {
     fn create_or_open(
         &self,

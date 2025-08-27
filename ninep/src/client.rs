@@ -1,7 +1,8 @@
+use core::pin::Pin;
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
-use alloc::collections::btree_map::BTreeMap;
-use common::util::{rwlock::RwLock, semaphore::Semaphore, spinlock::SpinLock};
+use common::util::sorter::{Sender, Sorter};
+use common::util::spinlock::SpinLock;
 
 pub mod dir;
 pub mod file;
@@ -15,10 +16,12 @@ use vfs::Result;
 
 pub struct Client {
     conn: Arc<Connection>,
+    spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
 }
 
 pub struct Connection {
-    inbox: Demultiplexer,
+    inbound: Sorter<Tag, RMessage>,
+    write: SpinLock<Box<dyn File>>,
     next_tag: AtomicU16,
     next_fid: AtomicU32,
     msize: AtomicUsize,
@@ -50,23 +53,34 @@ impl Connection {
     }
 
     async fn send(&self, message: TMessage) -> Result<RMessage> {
-        let mut f = self.inbox.write.lock();
         let tag = message.tag();
+        let rx = self.inbound.receiver(tag);
+        let mut f = self.write.lock();
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
         f.write(&msg).await?;
         SpinLock::unlock(f);
-        let result = self.inbox.read(tag).await?;
+        let result = rx.recv().await.map_err(Error::other)?;
         log::debug!("<- {result:?}");
         Ok(result)
     }
 }
 
 impl Client {
-    pub async fn new(connection: impl File + 'static) -> Result<Client> {
-        let inbox = Demultiplexer::new(connection).await?;
+    pub async fn new(
+        connection: impl File + 'static,
+        spawn: impl Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync,
+    ) -> Result<Client> {
+        let inbound = Sorter::new();
+        let tx = inbound.sender();
+        let connection = connection.boxed();
+        let read = connection.dup().await?;
+        spawn(Box::pin(async move {
+            Self::bg_task(tx, read).await.expect("connection closed");
+        }));
         let conn = Arc::new(Connection {
-            inbox,
+            inbound,
+            write: SpinLock::new(connection),
             next_tag: AtomicU16::new(0),
             next_fid: AtomicU32::new(0),
             msize: AtomicUsize::new(1024),
@@ -81,7 +95,22 @@ impl Client {
             return Err(Error::from(ErrorKind::Other));
         }
         conn.msize.store(msize as usize, Ordering::Relaxed);
-        Ok(Client { conn })
+        Ok(Client {
+            conn,
+            spawn: Arc::new(spawn),
+        })
+    }
+
+    async fn bg_task(mut tx: Sender<Tag, RMessage>, mut read: Box<dyn File>) -> Result<()> {
+        loop {
+            let mut size = [0u8; 4];
+            read.read_exact(&mut size).await?;
+            let size = u32::from_le_bytes(size);
+            let mut buf = vec![0; size as usize - 4];
+            read.read_exact(&mut buf).await?;
+            let rmsg: RMessage = wire::from_bytes(&buf)?;
+            tx.send_blocking(rmsg.tag(), rmsg).map_err(Error::other)?;
+        }
     }
 
     pub async fn auth(&self, uname: &str, aname: &str) -> Result<File9P> {
@@ -93,6 +122,7 @@ impl Client {
             fid: afid,
             qid: aqid,
             cursor: 0,
+            spawn: self.spawn.clone(),
         })
     }
 
@@ -105,57 +135,7 @@ impl Client {
             conn: self.conn.clone(),
             fid,
             qid,
+            spawn: self.spawn.clone(),
         })
-    }
-}
-
-struct Demultiplexer {
-    read: SpinLock<Box<dyn File>>,
-    write: SpinLock<Box<dyn File>>,
-    handle: Semaphore,
-    storage: Arc<RwLock<BTreeMap<Tag, RMessage>>>,
-}
-
-impl Demultiplexer {
-    pub async fn new(conn: impl File) -> Result<Demultiplexer> {
-        let conn = conn.boxed();
-        let read = SpinLock::new(conn.dup().await?);
-        let write = SpinLock::new(conn);
-        let handle = Semaphore::new(1);
-        let storage = Arc::default();
-        Ok(Demultiplexer {
-            read,
-            write,
-            handle,
-            storage,
-        })
-    }
-
-    pub async fn read(&self, tag: Tag) -> Result<RMessage> {
-        while !self.handle.try_acquire(1) {
-            let mut storage = self.storage.write();
-            if let Some(result) = storage.remove(&tag) {
-                return Ok(result);
-            }
-            // TODO: fix spin loop
-            core::hint::spin_loop();
-        }
-        if let Some(result) = self.storage.write().remove(&tag) {
-            return Ok(result);
-        }
-        loop {
-            let mut size = [0u8; 4];
-            self.read.lock().read(&mut size).await?;
-            let size = u32::from_le_bytes(size);
-            let mut buf = vec![0; size as usize - 4];
-            let n = self.read.lock().read(&mut buf).await?;
-            let rmsg: RMessage = wire::from_bytes(&buf[..n])?;
-            if rmsg.tag() == tag {
-                self.handle.release(1);
-                return Ok(rmsg);
-            } else {
-                self.storage.write().insert(rmsg.tag(), rmsg);
-            }
-        }
     }
 }

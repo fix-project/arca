@@ -21,7 +21,7 @@ impl From<Error> for vfs::Error {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug, Hash)]
 pub enum TMessage {
     #[serde(rename = "100")]
     Version {
@@ -109,7 +109,7 @@ pub enum TMessage {
     },
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug, Hash)]
 pub enum RMessage {
     #[serde(rename = "101")]
     Version {

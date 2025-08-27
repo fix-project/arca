@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::*;
+use alloc::collections::vec_deque::VecDeque;
 
-type PartiallyReadVec = (Vec<u8>, usize, channel::Sender<Vec<u8>>);
+use super::*;
 
 pub struct Stream {
     outbound: Flow,
@@ -10,7 +10,7 @@ pub struct Stream {
     peer_rx_closed: AtomicBool,
     peer_tx_closed: AtomicBool,
     closed: AtomicBool,
-    last_read: SpinLock<Option<PartiallyReadVec>>,
+    last_read: SpinLock<Option<VecDeque<u8>>>,
 }
 
 impl Stream {
@@ -53,17 +53,13 @@ impl Stream {
             return Ok(0);
         }
         let mut last_read = self.last_read.lock();
-        if let Some((buf, mut offset, release)) = last_read.take() {
-            assert!(offset <= buf.len());
-            let rest = &buf[offset..];
-            let n = rest.len();
-            bytes[..rest.len()].copy_from_slice(rest);
-            offset += rest.len();
-            if offset >= buf.len() {
+        if let Some(rest) = last_read.as_mut() {
+            let n = core::cmp::min(bytes.len(), rest.len());
+            for i in 0..n {
+                bytes[i] = rest.pop_front().unwrap();
+            }
+            if rest.is_empty() {
                 *last_read = None;
-                release.send_blocking(buf).unwrap();
-            } else {
-                *last_read = Some((buf, offset, release));
             }
             Ok(n)
         } else {
@@ -94,11 +90,14 @@ impl Stream {
                             continue;
                         }
                     }
-                    StreamEvent::Data { data, release } => {
+                    StreamEvent::Data { data } => {
                         let n = core::cmp::min(data.len(), bytes.len());
-                        bytes[..n].copy_from_slice(&data[..n]);
-                        if n < data.len() {
-                            *last_read = Some((data, n, release));
+                        let mut rest: VecDeque<u8> = data.into();
+                        for i in 0..n {
+                            bytes[i] = rest.pop_front().unwrap();
+                        }
+                        if !rest.is_empty() {
+                            *last_read = Some(rest);
                         }
                         return Ok(n);
                     }
@@ -145,9 +144,6 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        if let Some((v, _, ret)) = self.last_read.lock().take() {
-            ret.send_blocking(v).unwrap();
-        }
         if !self.closed.load(Ordering::SeqCst) {
             let _ = crate::rt::spawn_blocking(self.close_internal());
         }

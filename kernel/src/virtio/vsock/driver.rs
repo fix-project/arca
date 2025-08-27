@@ -10,18 +10,17 @@ pub struct Driver {
     rx: VirtQueue,
     tx: VirtQueue,
     status: SpinLock<Status>,
-    used_buffers: channel::Sender<Vec<u8>>,
     listeners: sorter::Sorter<SocketAddr, SocketAddr>,
     streams: sorter::Sorter<Flow, StreamEvent>,
 }
 
 #[derive(Debug, Default)]
 struct Status {
-    tx_buf_alloc: usize,
-    tx_fwd_cnt: usize,
+    peer_buf_alloc: usize,
+    peer_fwd_cnt: usize,
     tx_cnt: usize,
-    rx_buf_alloc: usize,
-    rx_fwd_cnt: usize,
+    buf_alloc: usize,
+    fwd_cnt: usize,
 }
 
 impl Driver {
@@ -33,18 +32,15 @@ impl Driver {
         let len = info.rx.descriptors;
         let rx = VirtQueue::new("rx", info.rx);
         let tx = VirtQueue::new("tx", info.tx);
-        let (buffers_tx, buffers_rx) = channel::unbounded();
         let this = Arc::new(Self {
             rx,
             tx,
-            used_buffers: buffers_tx,
             status: SpinLock::new(Status::default()),
             listeners: Sorter::new(),
             streams: Sorter::new(),
         });
         for _ in 0..len / 2 {
-            this.used_buffers.send_blocking(Vec::new()).unwrap();
-            crate::rt::spawn(this.clone().recv_task(buffers_rx.clone()));
+            crate::rt::spawn(this.clone().recv_task());
         }
         crate::rt::spawn(this.clone().poll_task());
 
@@ -105,20 +101,13 @@ impl Driver {
             loop {
                 let mut status = self.status.lock();
 
-                // TODO: we probably should check if the other end can receive
-                // let tx_free = status
-                //     .tx_buf_alloc
-                //     .wrapping_sub(status.tx_cnt.wrapping_sub(status.tx_fwd_cnt));
-                // if tx_free <= len {
-                //     log::error!("not enough space to transmit ({tx_free} free, need {len})! yielding for now");
-                //     SpinLock::unlock(status);
-                //     crate::rt::yield_now().await;
-                //     continue;
-                // }
-                if len > 0 && status.rx_buf_alloc == 0 {
+                let tx_free = status
+                    .peer_buf_alloc
+                    .wrapping_sub(status.tx_cnt.wrapping_sub(status.peer_fwd_cnt));
+                if tx_free < len {
                     SpinLock::unlock(status);
-                    log::warn!("no rx capacity");
                     waiting = true;
+                    log::info!("waiting for rx capacity");
                     crate::rt::wfi().await;
                     continue;
                 }
@@ -127,8 +116,8 @@ impl Driver {
                     log::warn!("rx okay");
                 }
 
-                header.buf_alloc = status.rx_buf_alloc as u32;
-                header.fwd_cnt = status.rx_fwd_cnt as u32;
+                header.buf_alloc = status.buf_alloc as u32;
+                header.fwd_cnt = status.fwd_cnt as u32;
                 status.tx_cnt = status.tx_cnt.wrapping_add(len);
 
                 let header_buf: &mut [u8; 44] = core::mem::transmute(&mut header);
@@ -206,17 +195,17 @@ impl Driver {
         .await;
     }
 
-    async fn recv_task(self: Arc<Self>, buffers: channel::Receiver<Vec<u8>>) {
+    async fn recv_task(self: Arc<Self>) {
         let mut listeners = self.listeners.sender();
         let mut streams = self.streams.sender();
         unsafe {
             loop {
-                let mut payload_buf = buffers.recv().await.unwrap();
+                let mut payload_buf = vec![0; 65536];
                 payload_buf.resize(65536, 0);
                 let mut header = Header::default();
                 let mut status = self.status.lock();
                 let len = payload_buf.len();
-                status.rx_buf_alloc += len;
+                status.buf_alloc += len;
 
                 let header_buf: &mut [u8; 44] = core::mem::transmute(&mut header);
                 let payload_chain = BufferChain::new_mut(&mut payload_buf);
@@ -226,10 +215,10 @@ impl Driver {
                 let read = self.rx.send(&chain).await;
 
                 let mut status = self.status.lock();
-                status.rx_buf_alloc -= len;
-                status.rx_fwd_cnt += read - 44;
-                status.tx_buf_alloc = header.buf_alloc as usize;
-                status.tx_fwd_cnt = header.fwd_cnt as usize;
+                status.buf_alloc -= len;
+                status.fwd_cnt += read - 44;
+                status.peer_buf_alloc = header.buf_alloc as usize;
+                status.peer_fwd_cnt = header.fwd_cnt as usize;
                 SpinLock::unlock(status);
 
                 assert!(len >= 44);
@@ -266,13 +255,7 @@ impl Driver {
                     Incoming::Read(len) => {
                         payload_buf.truncate(len);
                         if streams
-                            .send_blocking(
-                                flow,
-                                StreamEvent::Data {
-                                    data: payload_buf,
-                                    release: self.used_buffers.clone(),
-                                },
-                            )
+                            .send_blocking(flow, StreamEvent::Data { data: payload_buf })
                             .is_err()
                         {
                             self.rst(flow.reverse()).await
@@ -340,12 +323,6 @@ impl Receiver {
 pub enum StreamEvent {
     Reset,
     Connect,
-    Shutdown {
-        rx: bool,
-        tx: bool,
-    },
-    Data {
-        data: Vec<u8>,
-        release: channel::Sender<Vec<u8>>,
-    },
+    Shutdown { rx: bool, tx: bool },
+    Data { data: Vec<u8> },
 }

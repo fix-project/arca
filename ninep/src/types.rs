@@ -23,7 +23,7 @@ pub struct Qid {
 }
 
 bitflags! {
-    #[derive(Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+    #[derive(Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
     pub struct Access: u8 {
         const Read = 0;
         const Write = 1;

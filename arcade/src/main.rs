@@ -72,7 +72,11 @@ async fn main(_: &[usize]) {
         .unwrap()
         .as_file()
         .unwrap();
-    let remote = Client::new(data).await.unwrap();
+    let remote = Client::new(data, |x| {
+        kernel::rt::spawn(x);
+    })
+    .await
+    .unwrap();
     let host = remote.attach(None, "", "").await.unwrap();
     let tcp = remote.attach(None, "", "tcp").await.unwrap();
 

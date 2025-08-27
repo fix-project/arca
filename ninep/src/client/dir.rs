@@ -1,8 +1,4 @@
-use core::{
-    future::Future,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use core::{future::Future, pin::Pin};
 
 use crate::client::file::File9P;
 use futures::stream::BoxStream;
@@ -14,6 +10,7 @@ pub struct Dir9P {
     pub(super) conn: Arc<Connection>,
     pub(super) fid: Fid,
     pub(super) qid: Qid,
+    pub(super) spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
 }
 
 impl Dir9P {
@@ -56,6 +53,7 @@ impl Dir for Dir9P {
                 fid: new.fid,
                 qid,
                 cursor: 0,
+                spawn: self.spawn.clone(),
             };
             new.fid = Fid(!0);
             Ok(Object::File(file.boxed()))
@@ -86,6 +84,7 @@ impl Dir for Dir9P {
             conn: self.conn.clone(),
             fid: newfid,
             qid,
+            spawn: self.spawn.clone(),
         })
     }
 
@@ -116,6 +115,7 @@ impl Dir for Dir9P {
                 conn: self.conn.clone(),
                 fid: newfid,
                 qid,
+                spawn: self.spawn.clone(),
             };
             Ok(Object::Dir(dir.boxed()))
         } else {
@@ -124,6 +124,7 @@ impl Dir for Dir9P {
                 fid: newfid,
                 qid,
                 cursor: 0,
+                spawn: self.spawn.clone(),
             };
             let access = flags.into();
             let tag = self.conn.tag();
@@ -135,25 +136,14 @@ impl Dir for Dir9P {
 
 impl Drop for Dir9P {
     fn drop(&mut self) {
-        let mut future = pin! {
-            async {
-                if self.fid != Fid(!0) {
-                    let tag = self.conn.tag();
-                    self.conn.send(TMessage::Clunk { tag, fid: self.fid }).await?;
-                }
-                Ok::<_, Error>(())
-            }
-        };
-        let mut cx = Context::from_waker(Waker::noop());
-        let mut i = 0;
-        while let Poll::Pending = Future::poll(future.as_mut(), &mut cx) {
-            if i > u32::MAX {
-                // at least 1s has passed, we might be deadlocked
-                log::warn!("giving up on dropping {:?}", self.fid);
-                return;
-            }
-            core::hint::spin_loop();
-            i += 1;
+        let fid = self.fid;
+        let conn = self.conn.clone();
+        if self.fid != Fid(!0) {
+            let future = Box::pin(async move {
+                let tag = conn.tag();
+                let _ = conn.send(TMessage::Clunk { tag, fid }).await;
+            });
+            (self.spawn)(future);
         }
     }
 }

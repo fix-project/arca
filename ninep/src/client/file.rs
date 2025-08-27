@@ -1,7 +1,4 @@
-use core::{
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use core::pin::Pin;
 
 use super::*;
 
@@ -10,6 +7,7 @@ pub struct File9P {
     pub(super) fid: Fid,
     pub(super) qid: Qid,
     pub(super) cursor: usize,
+    pub(super) spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
 }
 
 impl File9P {
@@ -90,31 +88,21 @@ impl File for File9P {
             fid: newfid,
             qid,
             cursor: self.cursor,
+            spawn: self.spawn.clone(),
         })
     }
 }
 
 impl Drop for File9P {
     fn drop(&mut self) {
-        let mut future = pin! {
-            async {
-                if self.fid != Fid(!0) {
-                    let tag = self.conn.tag();
-                    self.conn.send(TMessage::Clunk { tag, fid: self.fid }).await?;
-                }
-                Ok::<_, Error>(())
-            }
-        };
-        let mut cx = Context::from_waker(Waker::noop());
-        let mut i = 0;
-        while let Poll::Pending = Future::poll(future.as_mut(), &mut cx) {
-            if i > u32::MAX {
-                // at least 1s has passed, we might be deadlocked
-                log::warn!("giving up on dropping {:?}", self.fid);
-                return;
-            }
-            core::hint::spin_loop();
-            i += 1;
+        let fid = self.fid;
+        let conn = self.conn.clone();
+        if self.fid != Fid(!0) {
+            let future = Box::pin(async move {
+                let tag = conn.tag();
+                let _ = conn.send(TMessage::Clunk { tag, fid }).await;
+            });
+            (self.spawn)(future);
         }
     }
 }

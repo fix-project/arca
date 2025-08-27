@@ -3,9 +3,10 @@
 use core::{
     cell::LazyCell,
     sync::atomic::{AtomicPtr, Ordering},
+    time::Duration,
 };
 
-use crate::prelude::*;
+use crate::{kvmclock, prelude::*};
 
 #[core_local]
 pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
@@ -94,7 +95,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         return;
     }
     if registers.isr == 0x31 {
-        panic!("got ^C interrupt");
+        if kvmclock::time_since_boot() > Duration::from_secs(1) {
+            panic!("got ^C interrupt");
+        }
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        return;
     }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
