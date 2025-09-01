@@ -139,10 +139,17 @@ impl Function {
                             panic!("exited with interrupt: {x:?}");
                         }
                         x => {
-                            panic!(
+                            log::error!(
                                 "exited with exception: {x:x?} @ rip={:#x}",
                                 arca.registers()[Register::RIP]
                             );
+                            return Value::Function(arca::Function::from_inner(
+                                Function::symbolic_with_args(
+                                    "",
+                                    vec![Value::Blob(Blob::from("exception")), Value::from(x)]
+                                        .into(),
+                                ),
+                            ));
                         }
                     }
                     if let ControlFlow::Break(result) = handle_syscall(&mut arca, &mut self.args) {

@@ -1,20 +1,26 @@
-use core::str::Utf8Error;
+use core::{
+    cell::UnsafeCell,
+    str::Utf8Error,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Poll, Waker},
+};
 
 pub mod env;
 pub mod file;
 pub mod namespace;
 
-use common::util::descriptors::Descriptors;
+use arca::{Runtime, Word};
+use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
 pub use namespace::Namespace;
 
 use kernel::{
-    prelude::{RwLock, SpinLock},
+    prelude::RwLock,
     types::{Blob, Function, Tuple, Value},
 };
 mod table;
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
 pub struct Proc {
@@ -95,6 +101,16 @@ impl Proc {
                     (b"close", &mut [Value::Word(fd)]) => {
                         k.apply(fix(file::close(&self.state, fd.read()).await))
                     }
+                    (b"dup", &mut [Value::Word(fd)]) => {
+                        let result = try {
+                            let mut fds = self.state.fds.lock();
+                            let old = fds.get(fd.read() as usize).ok_or(UnixError::BADFD)?;
+                            let new = old.dup().await?;
+                            let fd = fds.insert(new);
+                            Word::new(fd as u64)
+                        };
+                        k.apply(fix(result))
+                    }
                     (b"fork", &mut []) => {
                         let state = Arc::new((*self.state).clone());
                         let pid = table::PROCS.allocate(&state);
@@ -116,45 +132,16 @@ impl Proc {
                     (b"exit", &mut [Value::Word(result)]) => {
                         return result.read() as u8;
                     }
-                    (b"mvar-new", &mut []) => {
-                        let mvar = MVar::new(SpinLock::new(None));
+                    (b"monitor-new", &mut []) => {
+                        let mvar = MVar::new(Monitor::new());
                         let i = self.state.fds.lock().insert(FileDescriptor::MVar(mvar));
                         k.apply(i as u64)
                     }
-                    (b"mvar-take", &mut [Value::Word(fd)]) => {
-                        let result = try {
-                            loop {
-                                kernel::rt::yield_now().await;
-                                let fds = self.state.fds.lock();
-                                let mvar = fds
-                                    .get(fd.read() as usize)
-                                    .ok_or(UnixError::BADFD)?
-                                    .as_mvar_ref()?;
-                                if let Some(mvar) = mvar.lock().take() {
-                                    break mvar;
-                                }
-                            }
-                        };
-                        k.apply(fix(result))
-                    }
-                    (b"mvar-put", &mut [Value::Word(fd), ref mut value]) => {
-                        let result = try {
-                            loop {
-                                kernel::rt::yield_now().await;
-                                let fds = self.state.fds.lock();
-                                let mvar = fds
-                                    .get(fd.read() as usize)
-                                    .ok_or(UnixError::BADFD)?
-                                    .as_mvar_ref()?;
-                                let mut mvar = mvar.lock();
-                                if mvar.is_some() {
-                                    continue;
-                                }
-                                *mvar = Some(core::mem::take(value));
-                                break 0;
-                            }
-                        };
-                        k.apply(fix(result))
+                    (b"monitor-enter", &mut [Value::Word(fd), Value::Function(ref mut g)]) => {
+                        let fds = self.state.fds.lock();
+                        let monitor = fds.get(fd.read() as usize).ok_or(UnixError::BADFD).unwrap();
+                        let monitor = monitor.as_mvar_ref().unwrap();
+                        k.apply(monitor.run(core::mem::take(g)).await)
                     }
                     _ => {
                         panic!("invalid effect: {effect:?}({args:?})");
@@ -173,7 +160,120 @@ pub struct ProcState {
     pub cwd: Arc<PathBuf>,
 }
 
-type MVar = Arc<SpinLock<Option<Value>>>;
+pub struct Monitor {
+    sem: Semaphore,
+    value: UnsafeCell<Value>,
+    on_change: UnsafeCell<VecDeque<Waker>>,
+}
+
+unsafe impl Sync for Monitor {}
+unsafe impl Send for Monitor {}
+
+impl Monitor {
+    pub fn new() -> Self {
+        let sem = Semaphore::new(1);
+        Self {
+            sem,
+            value: Default::default(),
+            on_change: Default::default(),
+        }
+    }
+
+    pub async fn run(&self, mut f: Function) -> Value {
+        self.sem.acquire(1).await;
+        let mut changed = false;
+        loop {
+            let result = f.force();
+            let Value::Function(g) = result else {
+                log::error!("monitor returned something other than an effect!");
+                self.sem.release(1);
+                return Runtime::create_null().into();
+            };
+            if g.is_arcane() {
+                // call/cc to another function, or returned another function
+                f = g;
+                continue;
+            }
+            let data = g.into_inner().read();
+            let Value::Tuple(mut data) = data else {
+                unreachable!();
+            };
+            let t: Blob = data.take(0).try_into().unwrap();
+            assert_eq!(&*t, b"Symbolic");
+            let effect: Blob = data.take(1).try_into().unwrap();
+            let args: Tuple = data.take(2).try_into().unwrap();
+            let mut args: Vec<Value> = args.into_iter().collect();
+            let Some(Value::Function(k)) = args.pop() else {
+                return Runtime::create_null().into();
+            };
+            f = match (&*effect, &mut *args) {
+                (b"get", &mut []) => {
+                    let value = unsafe { (*self.value.get()).clone() };
+                    k.apply(value)
+                }
+                (b"set", &mut [ref mut value]) => {
+                    changed = true;
+                    unsafe { core::mem::swap(&mut *self.value.get(), value) };
+                    k.apply(core::mem::take(value))
+                }
+                (b"exit", &mut [ref mut value]) => {
+                    if changed {
+                        unsafe {
+                            for waker in (*self.on_change.get()).drain(..) {
+                                waker.wake();
+                            }
+                        }
+                    }
+                    self.sem.release(1);
+                    return core::mem::take(value);
+                }
+                (b"wait", &mut []) => {
+                    let future = WaitFuture {
+                        already_fired: AtomicBool::new(false),
+                        monitor: self,
+                    };
+                    future.await;
+                    self.sem.acquire(1).await;
+                    changed = false;
+                    k.apply(Runtime::create_null())
+                }
+                _ => {
+                    self.sem.release(1);
+                    return Runtime::create_null().into();
+                }
+            };
+        }
+    }
+}
+
+struct WaitFuture<'a> {
+    already_fired: AtomicBool,
+    monitor: &'a Monitor,
+}
+
+impl Future for WaitFuture<'_> {
+    type Output = ();
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        if self
+            .already_fired
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            unsafe {
+                (*self.monitor.on_change.get()).push_back(cx.waker().clone());
+                self.monitor.sem.release(1);
+                return Poll::Pending;
+            }
+        }
+        return Poll::Ready(());
+    }
+}
+
+type MVar = Arc<Monitor>;
 
 #[derive(From, TryInto)]
 #[try_into(owned, ref, ref_mut)]

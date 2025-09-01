@@ -237,11 +237,27 @@ impl arca::Runtime for Runtime {
     }
 
     fn write_blob(blob: &mut arca::Blob<Self>, offset: usize, buf: &[u8]) -> usize {
-        todo!()
+        unsafe {
+            syscall_result_raw(arcane::arca_blob_write(
+                blob.inner().as_raw() as i64,
+                offset,
+                buf.as_ptr(),
+                buf.len(),
+            ))
+            .unwrap() as usize
+        }
     }
 
     fn write_page(page: &mut arca::Page<Self>, offset: usize, buf: &[u8]) -> usize {
-        todo!()
+        unsafe {
+            syscall_result_raw(arcane::arca_page_write(
+                page.inner().as_raw() as i64,
+                offset,
+                buf.as_ptr(),
+                buf.len(),
+            ))
+            .unwrap() as usize
+        }
     }
 
     fn apply_function(
@@ -402,18 +418,37 @@ impl Runtime {
 
 #[cfg(feature = "allocator")]
 mod allocator {
+    use core::ffi::c_void;
 
-    use core::alloc::GlobalAlloc;
-    struct FakeAllocator;
+    use arca::Entry;
+    use arcane::arca_mmap;
+    use spin::{Mutex, lazy::Lazy};
+    use talc::{ClaimOnOom, OomHandler, Span, Talc, Talck};
 
-    unsafe impl GlobalAlloc for FakeAllocator {
-        unsafe fn alloc(&self, _: core::alloc::Layout) -> *mut u8 {
-            core::ptr::null_mut()
-        }
+    use crate::{prelude::Page, write_entry};
 
-        unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {}
+    unsafe extern "C" {
+        static __stack_top: c_void;
     }
+    static HEAP: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(&raw const __stack_top as usize));
 
     #[global_allocator]
-    static ALLOCATOR: FakeAllocator = FakeAllocator;
+    static ALLOCATOR: Talck<spin::Mutex<()>, Mmap> = Talc::new(Mmap).lock();
+
+    struct Mmap;
+
+    impl OomHandler for Mmap {
+        fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
+            let mut addr = HEAP.lock();
+            let mut entry = write_entry(Entry::RWPage(Page::new(4096)));
+            unsafe {
+                let base = *addr as *mut c_void;
+                let end = base.byte_add(4096);
+                arca_mmap(base, &mut entry);
+                talc.claim(Span::new(base as *mut u8, end as *mut u8));
+            }
+            *addr += 4096;
+            Ok(())
+        }
+    }
 }

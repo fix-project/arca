@@ -82,6 +82,20 @@ impl File {
     }
 }
 
+impl Clone for File {
+    fn clone(&self) -> Self {
+        let result: Word = Function::symbolic("dup")
+            .apply(self.fd)
+            .call_with_current_continuation()
+            .try_into()
+            .unwrap();
+        let fd = result.read() as i64;
+        assert!(fd >= 0);
+        let fd = fd as u32;
+        Self { fd }
+    }
+}
+
 impl Drop for File {
     fn drop(&mut self) {
         Function::symbolic("close")
@@ -166,11 +180,26 @@ pub fn exit(code: u8) -> ! {
     unreachable!()
 }
 
-pub fn fork() -> Result<usize> {
+pub fn fork() -> Result<Option<NonZeroUsize>> {
     let result: Word = Function::symbolic("fork")
         .call_with_current_continuation()
         .try_into()
         .map_err(|_| Error)?;
     let result = result.read() as usize;
-    Ok(result)
+    Ok(NonZeroUsize::new(result))
+}
+
+impl Iterator for File {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut bytes = [0];
+        crate::error::log("reading");
+        if let Ok(1) = self.read(&mut bytes) {
+            crate::error::log_int("read", bytes[0] as u64);
+            Some(bytes[0])
+        } else {
+            None
+        }
+    }
 }

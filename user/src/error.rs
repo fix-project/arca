@@ -17,12 +17,6 @@ pub fn log_int(s: &str, x: u64) {
     }
 }
 
-pub fn show(s: &str, x: i64) {
-    unsafe {
-        arca_debug_show(s.as_ptr(), s.len(), x);
-    }
-}
-
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let mut buf: Buffer<1024> = Buffer::new();

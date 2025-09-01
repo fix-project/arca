@@ -31,3 +31,14 @@ pub fn call_with_current_continuation(f: Function) -> Value {
         os::argument()
     }
 }
+
+pub fn continuation() -> Result<Function, ()> {
+    unsafe {
+        let result = arca_get_continuation();
+        if result <= 0 {
+            return Err(());
+        } else {
+            return Ok(arca::Function::from_inner(syscall_result(result).unwrap()));
+        }
+    }
+}

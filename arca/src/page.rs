@@ -17,4 +17,9 @@ impl<R: Runtime> Page<R> {
     pub fn with_ref<T>(&self, f: impl FnOnce(&[u8]) -> T) -> T {
         R::with_page_as_ref(self, f)
     }
+
+    #[cfg(feature = "alloc")]
+    pub fn with_mut<T>(&mut self, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        R::with_page_as_mut(self, f)
+    }
 }

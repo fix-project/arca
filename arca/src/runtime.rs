@@ -69,6 +69,15 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
     }
 
     #[cfg(feature = "alloc")]
+    fn with_page_as_mut<T>(page: &mut Page<Self>, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        let mut buf = vec![0; page.len()];
+        Self::read_page(page, 0, &mut buf);
+        let result = f(&mut buf);
+        Self::write_page(page, 0, &mut buf);
+        result
+    }
+
+    #[cfg(feature = "alloc")]
     fn with_table_as_ref<T>(table: &Table<Self>, f: impl FnOnce(&[Entry<Self>]) -> T) -> T {
         let v: Vec<Entry<Self>> = table.iter().collect();
         f(&v)

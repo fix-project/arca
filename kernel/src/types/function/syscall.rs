@@ -48,6 +48,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_get => sys_get(args, arca),
         arcane::__NR_set => sys_set(args, arca),
         arcane::__NR_read => sys_read(args, arca),
+        arcane::__NR_write => sys_write(args, arca),
         arcane::__NR_type => sys_type(args, arca),
 
         arcane::__NR_create_word => sys_create_word(args, arca),
@@ -65,6 +66,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_call_with_current_continuation => {
             sys_call_with_current_continuation(args, arca)?
         }
+        arcane::__NR_get_continuation => sys_get_continuation(args, arca),
 
         arcane::__NR_debug_show => sys_show(args, arca),
         arcane::__NR_debug_log => sys_log(args, arca),
@@ -208,7 +210,38 @@ pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             copy_kernel_to_user(ptr, &blob.inner()[offset..offset + len])?;
             Ok(len)
         }
-        Value::Page(_) => todo!(),
+        Value::Page(page) => {
+            let offset = args[1] as usize;
+            let ptr = args[2] as usize;
+            let len = args[3] as usize;
+            let len = core::cmp::min(len, page.len() - offset);
+            copy_kernel_to_user(ptr, &page.inner()[offset..offset + len])?;
+            Ok(len)
+        }
+        Value::Function(_) => todo!(),
+        _ => Err(SyscallError::BadType),
+    }
+}
+
+pub fn sys_write(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let idx = args[0] as usize;
+    match arca.descriptors_mut().get_mut(idx)? {
+        Value::Blob(blob) => {
+            let offset = args[1] as usize;
+            let ptr = args[2] as usize;
+            let len = args[3] as usize;
+            let len = core::cmp::min(len, blob.len() - offset);
+            copy_user_to_kernel_buf(&mut blob.inner_mut()[offset..offset + len], ptr)?;
+            Ok(len)
+        }
+        Value::Page(page) => {
+            let offset = args[1] as usize;
+            let ptr = args[2] as usize;
+            let len = args[3] as usize;
+            let len = core::cmp::min(len, page.len() - offset);
+            copy_user_to_kernel_buf(&mut page.inner_mut()[offset..offset + len], ptr)?;
+            Ok(len)
+        }
         Value::Function(_) => todo!(),
         _ => Err(SyscallError::BadType),
     }
@@ -408,6 +441,19 @@ pub fn sys_call_with_current_continuation(
     ControlFlow::Break(func.apply(k).into())
 }
 
+pub fn sys_get_continuation(_: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let mut unloaded = arca.take();
+    let mut new = unloaded.clone();
+    new.registers_mut()[Register::RAX] = -(arcane::__ERR_interrupted as i64) as u64;
+    let k: Value = Function::from_inner(internal::Function::arcane_with_args(
+        new,
+        Default::default(),
+    ))
+    .into();
+    arca.swap(&mut unloaded);
+    Ok(arca.descriptors_mut().insert(k))
+}
+
 pub fn sys_show(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
@@ -460,6 +506,11 @@ fn copy_kernel_to_user(dst: usize, src: &[u8]) -> Result<()> {
 
 fn copy_user_to_kernel(dst: &mut [MaybeUninit<u8>], src: usize) -> Result<&mut [u8]> {
     crate::vm::copy_user_to_kernel(dst, src).ok_or(SyscallError::BadArgument)
+}
+
+fn copy_user_to_kernel_buf(dst: &mut [u8], src: usize) -> Result<&mut [u8]> {
+    crate::vm::copy_user_to_kernel(unsafe { core::mem::transmute(dst) }, src)
+        .ok_or(SyscallError::BadArgument)
 }
 
 fn read_entry(arca: &mut LoadedArca, entry: arcane::arca_entry) -> Result<Entry> {
