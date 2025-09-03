@@ -43,6 +43,9 @@ struct Data {
 
 impl Dir for VSockFS {
     async fn open(&self, name: &str, open: Open) -> Result<Object> {
+        if name.is_empty() {
+            return Ok(self.dup().await?.boxed().into());
+        }
         let mut conns = self.conns.lock();
         if name == "clone" {
             let conn = Arc::new(SpinLock::new(Connection {

@@ -37,8 +37,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
     pub fn receiver(&self, port: K) -> Receiver<K, V> {
         let mut channels = self.channels.lock();
         let (tx, rx) = channel::unbounded();
-        let old = channels.insert(port.clone(), tx);
-        assert!(old.is_none());
+        channels.insert(port.clone(), tx);
         Receiver {
             port,
             rx,

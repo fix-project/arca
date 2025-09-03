@@ -1,14 +1,14 @@
 use core::pin::Pin;
 
 use alloc::collections::btree_map::BTreeMap;
-use common::util::rwlock::RwLock;
+use common::util::mutex::Mutex;
 use either::Either;
 use futures::StreamExt;
 
 pub use super::*;
 
 pub struct Server<'a> {
-    map: Arc<RwLock<BTreeMap<String, Box<dyn Dir>>>>,
+    map: Arc<Mutex<BTreeMap<String, Box<dyn Dir>>>>,
     spawn: Box<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'a + Send + Sync>,
 }
 
@@ -42,13 +42,22 @@ impl<'a> Server<'a> {
         }
     }
 
-    pub fn add(&mut self, name: &str, root: impl Dir) {
-        self.map.write().insert(name.to_string(), Box::new(root));
+    pub async fn add(&mut self, name: &str, root: impl Dir) {
+        self.map
+            .lock()
+            .await
+            .insert(name.to_string(), Box::new(root));
+    }
+
+    pub fn add_blocking(&mut self, name: &str, root: impl Dir) {
+        self.map
+            .spin_lock()
+            .insert(name.to_string(), Box::new(root));
     }
 
     pub async fn serve(&self, socket: impl File) -> Result<()> {
         let mut socket: Box<dyn File> = Box::new(socket);
-        let fids: Arc<RwLock<BTreeMap<Fid, Arc<RwLock<Either<(Box<dyn Dir>, String), Object>>>>>> =
+        let fids: Arc<Mutex<BTreeMap<Fid, Arc<Mutex<Either<(Box<dyn Dir>, String), Object>>>>>> =
             Default::default();
         loop {
             let mut size = [0; 4];
@@ -94,13 +103,13 @@ impl<'a> Server<'a> {
                         TMessage::Attach {
                             tag, fid, aname, ..
                         } => {
-                            let map = map.read();
+                            let map = map.lock().await;
                             let root = map.get(&aname).ok_or(ErrorKind::NotFound)?.dup().await?;
-                            RwLock::unread(map);
+                            Mutex::unlock(map);
                             let qid = dir(fid);
-                            fids.lock().insert(
+                            fids.lock().await.insert(
                                 fid,
-                                Arc::new(RwLock::new(Either::Right(Object::Dir(root)))),
+                                Arc::new(Mutex::new(Either::Right(Object::Dir(root)))),
                             );
                             RMessage::Attach { tag, qid }
                         }
@@ -111,10 +120,10 @@ impl<'a> Server<'a> {
                             newfid,
                             name,
                         } => {
-                            let fids_ = fids.lock();
+                            let fids_ = fids.lock().await;
                             let object = fids_.get(&fid).ok_or(ErrorKind::NotFound)?.clone();
-                            RwLock::unlock(fids_);
-                            let mut object = object.lock();
+                            Mutex::unlock(fids_);
+                            let mut object = object.lock().await;
                             let path = PathBuf::from(name.join("/"));
                             let object = match &mut *object {
                                 Either::Left((parent, name)) => {
@@ -126,7 +135,8 @@ impl<'a> Server<'a> {
                             if path.is_empty() {
                                 let qid = vec![obj(newfid, &current)];
                                 fids.lock()
-                                    .insert(newfid, Arc::new(RwLock::new(Either::Right(current))));
+                                    .await
+                                    .insert(newfid, Arc::new(Mutex::new(Either::Right(current))));
                                 RMessage::Walk { tag, qid }
                             } else {
                                 // TODO: this walk is messy, is there a simpler way to do it?
@@ -164,18 +174,18 @@ impl<'a> Server<'a> {
                                 } else {
                                     qid.push(file(Fid(!0)));
                                 }
-                                fids.lock().insert(
+                                fids.lock().await.insert(
                                     newfid,
-                                    Arc::new(RwLock::new(Either::Left((parent, name.to_string())))),
+                                    Arc::new(Mutex::new(Either::Left((parent, name.to_string())))),
                                 );
                                 RMessage::Walk { tag, qid }
                             }
                         }
                         TMessage::Open { tag, fid, access } => {
-                            let fids = fids.lock();
+                            let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            RwLock::unlock(fids);
-                            let mut node = f.lock();
+                            Mutex::unlock(fids);
+                            let mut node = f.lock().await;
                             let (parent, name) =
                                 node.as_mut().left().ok_or(ErrorKind::InvalidInput)?;
                             let object = parent.open(&name, access.try_into()?).await?;
@@ -194,8 +204,13 @@ impl<'a> Server<'a> {
                             mode,
                             access,
                         } => {
-                            let node = fids.lock().remove(&fid).ok_or(ErrorKind::NotFound)?.clone();
-                            let new = match &mut *node.lock() {
+                            let node = fids
+                                .lock()
+                                .await
+                                .remove(&fid)
+                                .ok_or(ErrorKind::NotFound)?
+                                .clone();
+                            let new = match &mut *node.lock().await {
                                 Either::Left((parent, name)) => {
                                     let mut parent = parent.open(&name, Open::ReadWrite).await?;
                                     parent
@@ -211,7 +226,8 @@ impl<'a> Server<'a> {
                             };
                             let qid = obj(fid, &new);
                             fids.lock()
-                                .insert(fid, Arc::new(RwLock::new(Either::Right(new))));
+                                .await
+                                .insert(fid, Arc::new(Mutex::new(Either::Right(new))));
                             RMessage::Create {
                                 tag,
                                 qid,
@@ -224,10 +240,10 @@ impl<'a> Server<'a> {
                             offset,
                             count,
                         } => {
-                            let fids = fids.lock();
+                            let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            RwLock::unlock(fids);
-                            let mut f = f.lock();
+                            Mutex::unlock(fids);
+                            let mut f = f.lock().await;
                             let o = f.as_mut().right().ok_or(ErrorKind::InvalidInput)?;
                             let data = match o {
                                 Object::File(f) => {
@@ -280,10 +296,10 @@ impl<'a> Server<'a> {
                             offset,
                             data,
                         } => {
-                            let fids = fids.lock();
+                            let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            RwLock::unlock(fids);
-                            let mut f = f.lock();
+                            Mutex::unlock(fids);
+                            let mut f = f.lock().await;
                             let f = f
                                 .as_mut()
                                 .right()
@@ -296,7 +312,7 @@ impl<'a> Server<'a> {
                             RMessage::Write { tag, count }
                         }
                         TMessage::Clunk { tag, fid } => {
-                            fids.lock().remove(&fid);
+                            fids.lock().await.remove(&fid);
                             RMessage::Clunk(tag)
                         }
                         TMessage::Remove { .. } => todo!("remove"),

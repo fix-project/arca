@@ -7,10 +7,12 @@
 #![feature(never_type)]
 #![allow(dead_code)]
 
+use core::time::Duration;
+
 use ::vfs::*;
 use alloc::format;
 use common::util::descriptors::Descriptors;
-use kernel::{prelude::*, profile};
+use kernel::{prelude::*, rt};
 use ninep::Client;
 
 mod dev;
@@ -26,7 +28,7 @@ use vfs::mem::MemDir;
 
 extern crate alloc;
 
-const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_server"));
+const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MEMCACHED"));
 
 #[kmain]
 async fn main(_: &[usize]) {
@@ -100,7 +102,17 @@ async fn main(_: &[usize]) {
         },
     )
     .unwrap();
-    profile::begin();
+    kernel::profile::begin();
+
+    rt::spawn(async {
+        loop {
+            log::info!("---");
+            rt::profile();
+            rt::reset_stats();
+            rt::delay_for(Duration::from_secs(1)).await;
+        }
+    });
+
     let exitcode = p.run([]).await;
     log::info!("exitcode: {exitcode}");
 }

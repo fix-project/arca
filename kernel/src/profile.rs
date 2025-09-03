@@ -146,7 +146,7 @@ pub fn report(entries: &mut [(*const (), usize)]) {
 }
 
 pub fn log(count: usize) {
-    let mut entries = vec![(core::ptr::null(), count)];
+    let mut entries = vec![(core::ptr::null(), 0); count];
     report(&mut entries);
     for (i, (p, n)) in entries.iter().enumerate() {
         if *n == 0 {

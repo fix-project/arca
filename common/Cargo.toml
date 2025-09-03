@@ -5,11 +5,12 @@ edition = "2021"
 
 [features]
 default = ["std"]
-std = ["alloc", "snafu/std", "libc"]
+std = ["alloc", "snafu/std", "libc", "nix"]
 alloc = []
 thread_local_cache = ["cache"]
 core_local_cache = ["macros", "cache"]
 cache = []
+nix = ["dep:nix"]
 
 [dependencies]
 log = "0.4.22"
@@ -20,3 +21,4 @@ libc = { version="0.2.164", optional=true }
 elf = { version = "0.7.4", default-features = false }
 hashbrown = { version = "0.15.4", features = ["alloc", "core"] }
 derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
+nix = { version = "0.30.1", features = ["mman"], optional = true }

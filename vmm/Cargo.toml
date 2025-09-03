@@ -26,8 +26,6 @@ anyhow = "1.0.97"
 libc = "0.2.174"
 vmm-sys-util = "0.14.0"
 ctrlc = "3.4.7"
-tokio = { version = "1.47.1", features = ["full"] }
-tokio-vsock = "0.7.2"
 ninep = { version = "0.1.0", path = "../ninep" }
 regex = "1.11.1"
 either = "1.15.0"
@@ -35,6 +33,11 @@ chumsky = "0.10.1"
 vfs = { version = "0.1.0", path = "../vfs" }
 futures = "0.3.31"
 tokio-stream = { version = "0.1.17", features = ["full"] }
+smol = "2.0.2"
+nix = { version = "0.30.1", features = ["mman", "socket"] }
+vsock = "0.5.1"
+thread-priority = "3.0.0"
+elevate = "0.6.1"
 
 [build-dependencies]
 anyhow = "1.0.97"

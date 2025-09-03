@@ -1,11 +1,10 @@
 use futures::{lock::Mutex, stream::BoxStream, StreamExt};
 use ninep::*;
-use std::sync::Arc;
-use tokio::{
+use smol::{
     fs::OpenOptions,
     io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _},
 };
-use tokio_stream::wrappers::ReadDirStream;
+use std::sync::Arc;
 use vfs::{Create, Dir, DirEnt, ErrorKind, File, Object, Open};
 
 #[derive(Clone)]
@@ -16,7 +15,7 @@ pub struct FsDir {
 
 #[derive(Clone)]
 pub struct FsFile {
-    file: Arc<Mutex<tokio::fs::File>>,
+    file: Arc<Mutex<smol::fs::File>>,
 }
 
 impl FsDir {
@@ -40,7 +39,7 @@ impl Dir for FsDir {
         }
         let mut path = self.path.clone();
         path.push(name);
-        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if !std::fs::exists(&path).unwrap_or(false) {
             Err(ErrorKind::NotFound.into())
         } else if path.is_dir() {
             Ok(Object::Dir(FsDir { open, path }.boxed()))
@@ -67,19 +66,17 @@ impl Dir for FsDir {
         if !self.open.contains(Open::Read) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        Ok(ReadDirStream::new(
-            tokio::fs::read_dir(&self.path)
-                .await
-                .map_err(Error::other)?,
-        )
-        .then(async |e| {
-            let e = e.map_err(Error::other)?;
-            Ok(DirEnt {
-                name: e.file_name().to_string_lossy().into_owned(),
-                dir: e.file_type().await.map_err(Error::other)?.is_dir(),
+        Ok(smol::fs::read_dir(&self.path)
+            .await
+            .map_err(Error::other)?
+            .then(async |e| {
+                let e = e.map_err(Error::other)?;
+                Ok(DirEnt {
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    dir: e.file_type().await.map_err(Error::other)?.is_dir(),
+                })
             })
-        })
-        .boxed())
+            .boxed())
     }
 
     async fn create(&self, name: &str, create: Create, open: Open) -> Result<Object> {
@@ -89,7 +86,7 @@ impl Dir for FsDir {
         let mut path = self.path.clone();
         path.push(name);
         if create.dir() {
-            tokio::fs::create_dir(&path).await.map_err(Error::other)?;
+            smol::fs::create_dir(&path).await.map_err(Error::other)?;
             Ok(Object::Dir(FsDir { open, path }.boxed()))
         } else {
             let file = OpenOptions::new()
@@ -116,9 +113,9 @@ impl Dir for FsDir {
         let mut path = self.path.clone();
         path.push(name);
         if path.is_dir() {
-            tokio::fs::remove_dir(path).await.map_err(Error::other)?;
+            smol::fs::remove_dir(path).await.map_err(Error::other)?;
         } else {
-            tokio::fs::remove_file(path).await.map_err(Error::other)?;
+            smol::fs::remove_file(path).await.map_err(Error::other)?;
         }
         Ok(())
     }

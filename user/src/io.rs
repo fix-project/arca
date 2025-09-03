@@ -1,5 +1,6 @@
 use core::{
     fmt::Write,
+    marker::PhantomData,
     num::{NonZeroU32, NonZeroUsize},
 };
 
@@ -203,3 +204,134 @@ impl Iterator for File {
         }
     }
 }
+
+pub struct Monitor {
+    fd: u64,
+}
+
+impl Monitor {
+    pub fn new() -> Monitor {
+        let result: Word = Function::symbolic("monitor-new")
+            .call_with_current_continuation()
+            .try_into()
+            .unwrap();
+        Monitor { fd: result.read() }
+    }
+
+    pub fn enter(&self, f: impl FnOnce(&mut MonitorContext) -> Value) -> Value {
+        if let Ok(k) = os::continuation() {
+            Function::symbolic("monitor-enter")
+                .apply(self.fd)
+                .apply(k)
+                .call_with_current_continuation()
+        } else {
+            let mut ctx = MonitorContext(PhantomData);
+            let value = f(&mut ctx);
+            Function::symbolic("exit")
+                .apply(value)
+                .call_with_current_continuation()
+        }
+    }
+
+    pub fn set(&self, value: impl Into<Value>) -> Value {
+        self.enter(|ctx| ctx.set(value.into()))
+    }
+
+    pub fn get(&self) -> Value {
+        self.enter(|ctx| ctx.get())
+    }
+}
+
+pub struct MonitorContext(PhantomData<()>);
+
+impl MonitorContext {
+    pub fn get(&self) -> Value {
+        Function::symbolic("get").call_with_current_continuation()
+    }
+
+    pub fn set(&mut self, value: impl Into<Value>) -> Value {
+        Function::symbolic("set")
+            .apply(value)
+            .call_with_current_continuation()
+    }
+
+    pub fn wait(&self) {
+        Function::symbolic("wait").call_with_current_continuation();
+    }
+}
+
+impl Default for Monitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        Function::symbolic("close")
+            .apply(self.fd)
+            .call_with_current_continuation();
+    }
+}
+
+#[cfg(feature = "allocator")]
+mod buf {
+    extern crate alloc;
+    use core::ops::{Deref, DerefMut};
+
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[derive(Clone)]
+    pub struct Buffered {
+        file: File,
+        pending: Vec<u8>,
+    }
+
+    impl Buffered {
+        pub fn new(file: File) -> Self {
+            Self {
+                file,
+                pending: Vec::new(),
+            }
+        }
+
+        pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let n = core::cmp::min(buf.len(), self.pending.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending = self.pending[n..].to_vec();
+            self.file.read(&mut buf[n..])
+        }
+
+        pub fn read_until(&mut self, end: u8) -> Result<Vec<u8>> {
+            let mut buffer = [0; 1024];
+            loop {
+                if let Some(i) = self.pending.iter().position(|x| *x == end) {
+                    let head = self.pending[..i + 1].to_vec();
+                    let rest = self.pending[i + 1..].to_vec();
+                    self.pending = rest;
+                    return Ok(head);
+                }
+                let n = self.file.read(&mut buffer)?;
+                let slice = &buffer[..n];
+                self.pending.extend_from_slice(slice);
+            }
+        }
+    }
+
+    impl Deref for Buffered {
+        type Target = File;
+
+        fn deref(&self) -> &Self::Target {
+            &self.file
+        }
+    }
+
+    impl DerefMut for Buffered {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.file
+        }
+    }
+}
+
+pub use buf::Buffered;

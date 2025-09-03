@@ -28,6 +28,7 @@ pub use arca::DataType;
 pub use common::buddy::BuddyAllocator;
 pub use common::refcnt::RefCnt;
 pub use common::util::channel;
+pub use common::util::mutex::Mutex;
 pub use common::util::oneshot;
 pub use common::util::rwlock::RwLock;
 pub use common::util::sorter;

@@ -3,60 +3,61 @@ use std::net::SocketAddr;
 use super::*;
 use chumsky::error::Rich;
 use chumsky::{extra, Parser};
-use common::util::{descriptors::Descriptors, spinlock::SpinLock};
+use common::util::descriptors::Descriptors;
 use futures::{stream::BoxStream, StreamExt};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::{TcpListener, TcpStream};
+use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use smol::lock::Mutex;
+use smol::net::{TcpListener, TcpStream};
 use vfs::*;
 
 #[derive(Clone, Default)]
 pub struct TcpFS {
-    conns: Arc<SpinLock<Descriptors<Arc<SpinLock<Connection>>>>>,
+    conns: Arc<Mutex<Descriptors<Arc<Mutex<Connection>>>>>,
 }
 
 #[derive(Clone)]
 struct Connection {
     index: usize,
     state: State,
-    conns: Arc<SpinLock<Descriptors<Arc<SpinLock<Connection>>>>>,
+    conns: Arc<Mutex<Descriptors<Arc<Mutex<Connection>>>>>,
 }
 
 #[derive(Clone)]
 enum State {
     Idle,
-    Connected(Arc<SpinLock<TcpStream>>),
-    Listening(Arc<SpinLock<TcpListener>>),
+    Connected(Arc<Mutex<TcpStream>>),
+    Listening(Arc<Mutex<TcpListener>>),
 }
 
 #[derive(Clone)]
 struct ConnDir {
     open: Open,
-    conn: Arc<SpinLock<Connection>>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 struct Control {
     open: Open,
-    conn: Arc<SpinLock<Connection>>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 struct Data {
     open: Open,
-    conn: Arc<SpinLock<Connection>>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Dir for TcpFS {
     async fn open(&self, name: &str, open: Open) -> Result<Object> {
-        let mut conns = self.conns.lock();
+        let mut conns = self.conns.lock().await;
         if name == "clone" {
-            let conn = Arc::new(SpinLock::new(Connection {
+            let conn = Arc::new(Mutex::new(Connection {
                 index: 0,
                 state: State::Idle,
                 conns: self.conns.clone(),
             }));
             let index = conns.insert(conn.clone());
-            conn.lock().index = index;
+            conn.lock().await.index = index;
             return Ok(Object::File(Control { open, conn }.boxed()));
         }
         let i: usize = str::parse(name).map_err(|_| ErrorKind::NotFound)?;
@@ -65,7 +66,7 @@ impl Dir for TcpFS {
     }
 
     async fn readdir(&self) -> Result<BoxStream<'_, Result<DirEnt>>> {
-        let conns = self.conns.lock();
+        let conns = self.conns.lock().await;
         let mut v = vec![DirEnt {
             name: "clone".to_string(),
             dir: false,
@@ -109,27 +110,28 @@ impl Dir for ConnDir {
             }
             .boxed(),
             "listen" => {
-                let conn = self.conn.lock();
+                let conn = self.conn.lock().await;
                 let State::Listening(listener) = &conn.state else {
                     log::error!("not listening?");
                     return Err(ErrorKind::ResourceBusy.into());
                 };
                 let listener = listener.clone();
-                let listener = listener.lock();
-                SpinLock::unlock(conn);
+                let listener = listener.lock().await;
+                core::mem::drop(conn);
                 let (stream, _) = listener
                     .accept()
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
-                let conn = self.conn.lock();
-                let new = Arc::new(SpinLock::new(Connection {
+                stream.set_nodelay(true).map_err(Error::other)?;
+                let conn = self.conn.lock().await;
+                let new = Arc::new(Mutex::new(Connection {
                     index: 0,
-                    state: State::Connected(Arc::new(SpinLock::new(stream))),
+                    state: State::Connected(Arc::new(Mutex::new(stream))),
                     conns: conn.conns.clone(),
                 }));
-                let mut conns = conn.conns.lock();
+                let mut conns = conn.conns.lock().await;
                 let index = conns.insert(new.clone());
-                new.lock().index = index;
+                new.lock().await.index = index;
                 Control { open, conn: new }
             }
             .boxed(),
@@ -213,7 +215,7 @@ impl File for Control {
         if !self.open.contains(Open::Read) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        let conn = self.conn.lock();
+        let conn = self.conn.lock().await;
         let data = conn.index.to_string() + "\n";
         let n = core::cmp::min(data.len(), bytes.len());
         bytes[..n].copy_from_slice(&data.as_bytes()[..n]);
@@ -229,32 +231,32 @@ impl File for Control {
         let output = result.map_err(|_| ErrorKind::InvalidInput)?;
         match output {
             Command::Connect(dst) => {
-                let mut conn = self.conn.lock();
+                let mut conn = self.conn.lock().await;
                 let State::Idle = conn.state else {
                     return Err(ErrorKind::InvalidInput.into());
                 };
                 let stream = TcpStream::connect(dst)
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
-                conn.state = State::Connected(Arc::new(SpinLock::new(stream)));
+                conn.state = State::Connected(Arc::new(Mutex::new(stream)));
             }
             Command::Announce(addr) => {
-                let mut conn = self.conn.lock();
+                let mut conn = self.conn.lock().await;
                 let State::Idle = conn.state else {
                     return Err(ErrorKind::InvalidInput.into());
                 };
                 let listener = TcpListener::bind(addr)
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
-                conn.state = State::Listening(Arc::new(SpinLock::new(listener)));
+                conn.state = State::Listening(Arc::new(Mutex::new(listener)));
             }
             Command::Hangup => {
-                let mut conn = self.conn.lock();
+                let mut conn = self.conn.lock().await;
                 match conn.state {
                     State::Idle => return Err(ErrorKind::InvalidInput.into()),
                     _ => conn.state = State::Idle,
                 }
-                let mut conns = conn.conns.lock();
+                let mut conns = conn.conns.lock().await;
                 conns.remove(conn.index);
             }
         }
@@ -279,11 +281,11 @@ impl File for Data {
         if !self.open.contains(Open::Read) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        let conn = self.conn.lock();
+        let conn = self.conn.lock().await;
         let State::Connected(stream) = &conn.state else {
             return Err(ErrorKind::ResourceBusy.into());
         };
-        let mut stream = stream.lock();
+        let mut stream = stream.lock().await;
         stream
             .read(bytes)
             .await
@@ -294,11 +296,11 @@ impl File for Data {
         if !self.open.contains(Open::Write) {
             return Err(ErrorKind::PermissionDenied.into());
         }
-        let conn = self.conn.lock();
+        let conn = self.conn.lock().await;
         let State::Connected(stream) = &conn.state else {
             return Err(ErrorKind::ResourceBusy.into());
         };
-        let mut stream = stream.lock();
+        let mut stream = stream.lock().await;
         stream
             .write(bytes)
             .await

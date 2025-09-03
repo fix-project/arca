@@ -929,7 +929,6 @@ impl Deref for BuddyAllocator {
     }
 }
 
-// TODO: this is not safe if there are multiple allocators
 #[cfg(all(not(feature = "std"), feature = "core_local_cache"))]
 pub mod cache {
     use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};

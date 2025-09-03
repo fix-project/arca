@@ -1,11 +1,13 @@
 use core::{
     cell::LazyCell,
     fmt::Write,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     time::Duration,
 };
 
 use crate::{kvmclock, prelude::*};
+
+pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[core_local]
 pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
@@ -90,10 +92,13 @@ pub fn must_be_disabled() {
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     must_be_disabled();
     if registers.isr == 0x30 {
+        // log::warn!("got interrupt from virtio");
+        INTERRUPTED.store(true, Ordering::Relaxed);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     }
     if registers.isr == 0x31 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
         if kvmclock::time_since_boot() > Duration::from_secs(1) {
             log::error!("got ^C interrupt");
             let mut console = crate::debugcon::CONSOLE.lock();
@@ -117,11 +122,13 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
             crate::profile::reset();
             crate::rt::reset_stats();
         }
+        // crate::shutdown();
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
+            INTERRUPTED.store(true, Ordering::Relaxed);
             crate::profile::tick(registers);
             crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         }
@@ -186,6 +193,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         panic!("unhandled exception: {:x?}", registers);
     }
     if registers.isr == 0x20 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
         crate::profile::tick(registers);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
     } else {

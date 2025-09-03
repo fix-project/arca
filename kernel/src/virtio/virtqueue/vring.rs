@@ -29,6 +29,14 @@ impl<T: Copy> Ring<T> {
             (&raw mut self.idx).write_volatile(self.raw_index().wrapping_add(1));
         }
     }
+
+    pub fn flags(&self) -> u16 {
+        unsafe { (&raw const self.flags).read_volatile() }
+    }
+
+    pub fn set_flags(&mut self, value: u16) {
+        unsafe { (&raw mut self.flags).write_volatile(value) }
+    }
 }
 
 #[derive(Debug)]
@@ -40,15 +48,21 @@ pub struct DeviceRing<T: Copy> {
 
 impl<T: Copy> DeviceRing<T> {
     pub unsafe fn new(name: &'static str, ring: *mut Ring<T>) -> Self {
-        Self {
+        let mut this = Self {
             name,
             next_read: 0,
             ring,
-        }
+        };
+        this.ring_mut().set_flags(1); // we don't need notifications from Linux
+        this
     }
 
     fn ring(&self) -> &Ring<T> {
         unsafe { &*self.ring }
+    }
+
+    fn ring_mut(&mut self) -> &mut Ring<T> {
+        unsafe { &mut *self.ring }
     }
 
     pub unsafe fn recv(&mut self) -> Option<T> {
@@ -60,6 +74,10 @@ impl<T: Copy> DeviceRing<T> {
         } else {
             None
         }
+    }
+
+    pub fn avail_notifications_suppressed(&self) -> bool {
+        self.ring().flags() != 0
     }
 }
 
@@ -87,7 +105,10 @@ impl<T: Copy> DriverRing<T> {
         let idx = self.ring().raw_index();
         self.ring_mut().set(idx, value);
         self.ring_mut().inc();
-        crate::io::outl(0xf4, 0);
+    }
+
+    pub fn suppress_used_notifications(&mut self, suppressed: bool) {
+        self.ring_mut().set_flags(if suppressed { 1 } else { 0 });
     }
 }
 

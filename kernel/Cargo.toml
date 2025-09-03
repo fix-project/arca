@@ -22,12 +22,14 @@ bitfield-struct = "0.7.0"
 log = "0.4.21"
 time = { version = "0.3.36", default-features = false, features = ["alloc"] }
 macros = { path = "../macros" }
-# common = { path = "../common", default-features = false, features = ["core_local_cache"] }
-common = { path = "../common", default-features = false }
+common = { path = "../common", default-features = false, features = ["core_local_cache"] }
+# common = { path = "../common", default-features = false }
 arca = { path = "../arca" }
 hashbrown = { version = "0.15.4", features = ["alloc", "core"] }
 arcane = { path = "../arcane" }
 cfg-if = "1.0.1"
+talc = "4.4.3"
+spin = "0.10.0"
 
 [build-dependencies]
 anyhow = "1.0.86"

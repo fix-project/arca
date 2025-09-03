@@ -1,4 +1,9 @@
-use core::ops::{Deref, DerefMut};
+use core::{
+    num::NonZeroUsize,
+    ops::{Deref, DerefMut},
+};
+
+use nix::sys::mman::{MapFlags, ProtFlags};
 
 pub struct Mmap {
     ptr: *mut u8,
@@ -7,17 +12,16 @@ pub struct Mmap {
 
 impl Mmap {
     pub fn new(len: usize) -> Self {
-        let ptr: *mut u8 = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED,
-                -1,
-                0,
-            ) as *mut u8
+        let ptr = unsafe {
+            nix::sys::mman::mmap_anonymous(
+                None,
+                NonZeroUsize::new(len).unwrap(),
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_ANONYMOUS | MapFlags::MAP_SHARED | MapFlags::MAP_HUGE_2GB,
+            )
+            .unwrap()
+            .as_ptr() as *mut u8
         };
-
         assert!(!ptr.is_null());
         log::debug!("mmapped {ptr:p}");
         Mmap { ptr, len }

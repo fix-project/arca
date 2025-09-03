@@ -15,7 +15,7 @@ use alloc::{
 use common::util::rwlock::{ReadGuard, RwLock, WriteGuard};
 use time::OffsetDateTime;
 
-use crate::{kvmclock, prelude::*};
+use crate::{interrupts::INTERRUPTED, kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
@@ -173,13 +173,17 @@ impl Executor {
 
     #[inline(never)]
     fn sleep(&self) {
-        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
-        unsafe {
-            crate::profile::muted(|| {
-                core::arch::asm!("hlt");
-            });
+        if !INTERRUPTED.load(Ordering::Relaxed) {
+            TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
+            unsafe {
+                crate::io::outl(0xf4, 0);
+                crate::profile::muted(|| {
+                    core::arch::asm!("hlt");
+                });
+            }
+            TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
         }
-        TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
+        INTERRUPTED.store(false, Ordering::SeqCst);
         let mut wfi = self.wfi.write();
         while let Some(waker) = wfi.pop_front() {
             waker.wake();

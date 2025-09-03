@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{io, prelude::*};
 
 mod desc;
 mod idx;
@@ -20,9 +20,9 @@ pub struct UsedElement {
 pub struct VirtQueue {
     name: &'static str,
     response_sorter: Sorter<DescriptorIndex, usize>,
-    desc: SpinLock<DescTable>,
-    used: SpinLock<DeviceRing<UsedElement>>,
-    avail: SpinLock<DriverRing<DescriptorIndex>>,
+    desc: Mutex<DescTable>,
+    used: Mutex<DeviceRing<UsedElement>>,
+    avail: Mutex<DriverRing<DescriptorIndex>>,
 }
 
 impl VirtQueue {
@@ -38,9 +38,9 @@ impl VirtQueue {
         VirtQueue {
             name,
             response_sorter: Sorter::new(),
-            desc: SpinLock::new(DescTable::new(name, desc)),
-            used: SpinLock::new(DeviceRing::new(name, used)),
-            avail: SpinLock::new(DriverRing::new(name, avail)),
+            desc: Mutex::new(DescTable::new(name, desc)),
+            used: Mutex::new(DeviceRing::new(name, used)),
+            avail: Mutex::new(DriverRing::new(name, avail)),
         }
     }
 }
@@ -132,7 +132,7 @@ impl VirtQueue {
         let mut buf = Box::new_uninit_slice(bufs.len());
         let descs = loop {
             let descs = {
-                let mut desc = self.desc.lock();
+                let mut desc = self.desc.lock().await;
                 desc.try_allocate_many(&mut buf)
             };
             if let Some(descs) = descs {
@@ -146,7 +146,7 @@ impl VirtQueue {
         let mut previous = None;
         let mut current = Some(bufs);
         let mut i = 0;
-        let mut desc = self.desc.lock();
+        let mut desc = self.desc.lock().await;
         while let Some(x) = current {
             let idx = descs[i];
             desc.get_mut(idx).modify(|d| {
@@ -180,7 +180,10 @@ impl VirtQueue {
         unsafe {
             let head = self.load(bufs).await;
             let rx = self.response_sorter.receiver(head);
-            self.avail.lock().send(head);
+            self.avail.lock().await.send(head);
+            if !self.used.lock().await.avail_notifications_suppressed() {
+                io::outl(0xf4, 0);
+            }
             let result = rx.recv().await;
             let result = match result {
                 Ok(result) => result,
@@ -189,13 +192,13 @@ impl VirtQueue {
                 }
             };
             core::mem::drop(rx);
-            self.desc.lock().liberate(head);
+            self.desc.lock().await.liberate(head);
             result
         }
     }
 
     pub fn poll(&self) {
-        let mut used = self.used.lock();
+        let mut used = self.used.spin_lock();
         unsafe {
             while let Some(used) = used.recv() {
                 let x = self
