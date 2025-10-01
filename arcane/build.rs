@@ -3,7 +3,12 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo::rustc-link-arg=-no-pie");
 
-    let prefix = env::var("ARCA_SDK").unwrap_or("/opt/arca/musl".to_string());
+    let prefix = autotools::build("../modules/arca-musl")
+        .as_os_str()
+        .to_string_lossy()
+        .into_owned();
+
+    eprintln!("{prefix:?}");
 
     let headers = vec!["a.h"];
     for header in &headers {

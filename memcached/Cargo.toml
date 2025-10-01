@@ -12,4 +12,5 @@ chumsky = { version = "0.10.1", default-features = false }
 user = { version = "0.1.0", path = "../user" }
 
 [build-dependencies]
+autotools = "0.2.7"
 cc = "1.2.35"

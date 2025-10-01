@@ -18,4 +18,5 @@ spin = "0.10.0"
 talc = "4.4.3"
 
 [build-dependencies]
+autotools = "0.2.7"
 cc = "1.2.26"

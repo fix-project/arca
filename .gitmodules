@@ -1,0 +1,3 @@
+[submodule "modules/arca-musl"]
+	path = modules/arca-musl
+	url = git@github.com:fix-project/arca-musl

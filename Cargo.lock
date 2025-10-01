@@ -125,6 +125,7 @@ dependencies = [
 name = "arcane"
 version = "0.1.0"
 dependencies = [
+ "autotools",
  "bindgen",
  "derive_more",
 ]
@@ -279,6 +280,15 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
+name = "autotools"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef941527c41b0fc0dd48511a8154cd5fc7e29200a0ff8b7203c5d777dbc795cf"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "backtrace"
@@ -961,6 +971,7 @@ name = "memcached"
 version = "0.1.0"
 dependencies = [
  "arca",
+ "autotools",
  "cc",
  "chumsky",
  "user",
@@ -1626,6 +1637,7 @@ version = "0.1.0"
 dependencies = [
  "arca",
  "arcane",
+ "autotools",
  "cc",
  "numtoa",
  "spin 0.10.0",
