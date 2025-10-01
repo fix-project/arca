@@ -10,7 +10,6 @@
 #![feature(maybe_uninit_uninit_array_transpose)]
 #![feature(negative_impls)]
 #![feature(never_type)]
-#![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
 #![feature(vec_into_raw_parts)]

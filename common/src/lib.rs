@@ -9,7 +9,6 @@
 #![feature(maybe_uninit_write_slice)]
 #![feature(negative_impls)]
 #![feature(new_range_api)]
-#![feature(new_zeroed_alloc)]
 #![feature(ptr_metadata)]
 #![feature(slice_from_ptr_range)]
 #![feature(sync_unsafe_cell)]
