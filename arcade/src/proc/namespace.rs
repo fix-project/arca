@@ -54,7 +54,7 @@ pub enum MountType {
 impl Namespace {
     pub fn new(base: impl Dir) -> Self {
         let mut mounts = BTreeMap::new();
-        let base: Box<dyn Dir> = base.boxed().into();
+        let base: Box<dyn Dir> = base.boxed();
         mounts.insert(PathBuf::from("".to_owned()), MountEnt::File(base));
         let data = NamespaceData {
             mounts: Arc::new(RwLock::new(mounts)),
@@ -88,7 +88,7 @@ impl Namespace {
         let mut mounts = self.data.mounts.write();
         match mtype {
             MountType::Replace => {
-                mounts.insert(mtpt.to_owned(), MountEnt::File(dir.boxed().into()));
+                mounts.insert(mtpt.to_owned(), MountEnt::File(dir.boxed()));
             }
             MountType::Before => {
                 let mut orig = Some(orig);

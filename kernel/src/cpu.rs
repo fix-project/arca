@@ -287,7 +287,7 @@ impl Cpu {
         if pt.len() > 1 {
             return Table::Table2MB(pt.into());
         }
-        return Table::default();
+        Table::default()
     }
 
     pub fn map(&mut self, address: usize, entry: Entry) -> Result<Entry, crate::types::Error> {

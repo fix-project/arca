@@ -20,6 +20,7 @@ impl<T: Shareable> Shared<T> {
         let size = core::mem::size_of_val(&value);
         let mut page = Page::new(size);
         page.with_mut(|slice| {
+            #[allow(clippy::transmute_ptr_to_ref)]
             let r: &mut MaybeUninit<T> = unsafe { core::mem::transmute(slice.as_ptr()) };
             r.write(value);
         });
@@ -35,6 +36,7 @@ impl<T: Shareable> Shared<T> {
         self.monitor.enter(|x| {
             let page: Page = x.get().try_into().unwrap();
             page.with_ref(|slice| {
+                #[allow(clippy::transmute_ptr_to_ref)]
                 let r: &T = unsafe { core::mem::transmute(slice.as_ptr()) };
                 f(r)
             })
@@ -45,6 +47,7 @@ impl<T: Shareable> Shared<T> {
         self.monitor.enter(|x| {
             let mut page: Page = x.get().try_into().unwrap();
             let result = page.with_mut(|slice| {
+                #[allow(clippy::transmute_ptr_to_ref)]
                 let r: &mut T = unsafe { core::mem::transmute(slice.as_ptr()) };
                 f(r)
             });

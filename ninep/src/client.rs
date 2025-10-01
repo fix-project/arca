@@ -14,9 +14,11 @@ use super::*;
 use vfs::Error;
 use vfs::Result;
 
+pub(crate) type SpawnFn<'a> = dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'a + Send + Sync;
+
 pub struct Client {
     conn: Arc<Connection>,
-    spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
+    spawn: Arc<SpawnFn<'static>>,
 }
 
 pub struct Connection {

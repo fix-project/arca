@@ -80,7 +80,7 @@ pub extern "C" fn _rsstart() -> ! {
                         value.pop();
                         let response = match request.command {
                             Command::Set => {
-                                kv.insert(&request.key.as_bytes(), &value, request.flags);
+                                kv.insert(request.key.as_bytes(), &value, request.flags);
                                 "STORED\r\n"
                             }
                             _ => todo!(),
@@ -89,11 +89,11 @@ pub extern "C" fn _rsstart() -> ! {
                     }
                     Request::Get(items) => {
                         for item in items {
-                            let result = kv.lookup(&item.as_bytes());
+                            let result = kv.lookup(item.as_bytes());
                             if let Some((value, flags)) = result {
                                 let bytes = value.len();
                                 write!(ldata, "VALUE {item} {flags} {bytes}\r\n")?;
-                                value.with_ref(|value| ldata.write(&value))?;
+                                value.with_ref(|value| ldata.write(value))?;
                                 ldata.write(b"\r\n")?;
                             }
                         }

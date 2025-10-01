@@ -107,6 +107,7 @@ impl<T: Copy> DriverRing<T> {
         self.ring_mut().inc();
     }
 
+    #[allow(unused)]
     pub fn suppress_used_notifications(&mut self, suppressed: bool) {
         self.ring_mut().set_flags(if suppressed { 1 } else { 0 });
     }

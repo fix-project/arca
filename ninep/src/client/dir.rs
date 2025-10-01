@@ -1,5 +1,3 @@
-use core::{future::Future, pin::Pin};
-
 use crate::client::file::File9P;
 use futures::stream::BoxStream;
 use vfs::path::Component;
@@ -10,7 +8,7 @@ pub struct Dir9P {
     pub(super) conn: Arc<Connection>,
     pub(super) fid: Fid,
     pub(super) qid: Qid,
-    pub(super) spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
+    pub(super) spawn: Arc<super::SpawnFn<'static>>,
 }
 
 impl Dir9P {

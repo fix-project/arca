@@ -7,9 +7,11 @@ use futures::StreamExt;
 
 pub use super::*;
 
+type SpawnFn<'a> = dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'a + Send + Sync;
+
 pub struct Server<'a> {
     map: Arc<Mutex<BTreeMap<String, Box<dyn Dir>>>>,
-    spawn: Box<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'a + Send + Sync>,
+    spawn: Box<SpawnFn<'a>>,
 }
 
 fn dir(fid: Fid) -> Qid {
@@ -31,6 +33,9 @@ fn file(fid: Fid) -> Qid {
 fn obj(fid: Fid, object: &Object) -> Qid {
     if object.is_dir() { dir(fid) } else { file(fid) }
 }
+
+type ArcMutex<T> = Arc<Mutex<T>>;
+type MaybeOpenFile = Either<(Box<dyn Dir>, String), Object>;
 
 impl<'a> Server<'a> {
     pub fn new(
@@ -57,8 +62,7 @@ impl<'a> Server<'a> {
 
     pub async fn serve(&self, socket: impl File) -> Result<()> {
         let mut socket: Box<dyn File> = Box::new(socket);
-        let fids: Arc<Mutex<BTreeMap<Fid, Arc<Mutex<Either<(Box<dyn Dir>, String), Object>>>>>> =
-            Default::default();
+        let fids: ArcMutex<BTreeMap<Fid, ArcMutex<MaybeOpenFile>>> = Default::default();
         loop {
             let mut size = [0; 4];
             socket.read(&mut size).await?;
@@ -127,7 +131,7 @@ impl<'a> Server<'a> {
                             let path = PathBuf::from(name.join("/"));
                             let object = match &mut *object {
                                 Either::Left((parent, name)) => {
-                                    &parent.open(&name, Open::Read).await?
+                                    &parent.open(name, Open::Read).await?
                                 }
                                 Either::Right(obj) => obj,
                             };
@@ -188,7 +192,7 @@ impl<'a> Server<'a> {
                             let mut node = f.lock().await;
                             let (parent, name) =
                                 node.as_mut().left().ok_or(ErrorKind::InvalidInput)?;
-                            let object = parent.open(&name, access.try_into()?).await?;
+                            let object = parent.open(name, access.try_into()?).await?;
                             let qid = obj(fid, &object);
                             *node = Either::Right(object);
                             RMessage::Open {
@@ -212,10 +216,10 @@ impl<'a> Server<'a> {
                                 .clone();
                             let new = match &mut *node.lock().await {
                                 Either::Left((parent, name)) => {
-                                    let mut parent = parent.open(&name, Open::ReadWrite).await?;
+                                    let mut parent = parent.open(name, Open::ReadWrite).await?;
                                     parent
                                         .as_dir_mut()?
-                                        .dyn_create(&name, mode.try_into()?, access.try_into()?)
+                                        .dyn_create(name, mode.try_into()?, access.try_into()?)
                                         .await?
                                 }
                                 Either::Right(obj) => {

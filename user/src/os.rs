@@ -32,13 +32,15 @@ pub fn call_with_current_continuation(f: Function) -> Value {
     }
 }
 
-pub fn continuation() -> Result<Function, ()> {
+pub struct Error;
+
+pub fn continuation() -> Result<Function, Error> {
     unsafe {
         let result = arca_get_continuation();
         if result <= 0 {
-            return Err(());
+            Err(Error)
         } else {
-            return Ok(arca::Function::from_inner(syscall_result(result).unwrap()));
+            Ok(arca::Function::from_inner(syscall_result(result).unwrap()))
         }
     }
 }

@@ -26,7 +26,7 @@ impl KVStore {
     }
 
     pub fn insert(&self, key: &[u8], value: &[u8], meta: u16) {
-        let i = self.index(&key);
+        let i = self.index(key);
         let m = &self.cells[i];
         m.enter(|cell| {
             let mut replacement = Tuple::new(3);
@@ -40,7 +40,7 @@ impl KVStore {
     }
 
     pub fn lookup(&self, target: &[u8]) -> Option<(Blob, u16)> {
-        let i = self.index(&target);
+        let i = self.index(target);
         let m = &self.cells[i];
         let result = m.enter(|cell| {
             let _: Result<(), Value> = try {
@@ -51,15 +51,15 @@ impl KVStore {
                     }
                 };
             };
-            return Null::new().into();
+            Null::new().into()
         });
         match result {
             Value::Tuple(tuple) => {
                 let value: Blob = tuple.get(1).try_into().ok()?;
                 let meta: Word = tuple.get(2).try_into().ok()?;
-                return Some((value, meta.read() as u16));
+                Some((value, meta.read() as u16))
             }
-            _ => return None,
+            _ => None,
         }
     }
 }

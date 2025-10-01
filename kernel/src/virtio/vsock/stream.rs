@@ -55,8 +55,8 @@ impl Stream {
         let mut last_read = self.last_read.lock();
         if let Some(rest) = last_read.as_mut() {
             let n = core::cmp::min(bytes.len(), rest.len());
-            for i in 0..n {
-                bytes[i] = rest.pop_front().unwrap();
+            for item in bytes.iter_mut().take(n) {
+                *item = rest.pop_front().unwrap();
             }
             if rest.is_empty() {
                 *last_read = None;
@@ -93,8 +93,8 @@ impl Stream {
                     StreamEvent::Data { data } => {
                         let n = core::cmp::min(data.len(), bytes.len());
                         let mut rest: VecDeque<u8> = data.into();
-                        for i in 0..n {
-                            bytes[i] = rest.pop_front().unwrap();
+                        for item in bytes.iter_mut().take(n) {
+                            *item = rest.pop_front().unwrap();
                         }
                         if !rest.is_empty() {
                             *last_read = Some(rest);

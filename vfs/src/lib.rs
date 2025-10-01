@@ -274,11 +274,13 @@ impl Object {
     }
 
     pub fn as_file_ref(&self) -> Result<&dyn File> {
+        #[allow(clippy::borrowed_box)]
         let b: &Box<dyn File> = self.try_into()?;
-        Ok(&*b)
+        Ok(b)
     }
 
     pub fn as_file_mut(&mut self) -> Result<&mut dyn File> {
+        #[allow(clippy::borrowed_box)]
         let b: &mut Box<dyn File> = self.try_into()?;
         Ok(&mut *b)
     }
@@ -288,11 +290,13 @@ impl Object {
     }
 
     pub fn as_dir_ref(&self) -> Result<&dyn Dir> {
+        #[allow(clippy::borrowed_box)]
         let b: &Box<dyn Dir> = self.try_into()?;
-        Ok(&*b)
+        Ok(b)
     }
 
     pub fn as_dir_mut(&mut self) -> Result<&mut dyn Dir> {
+        #[allow(clippy::borrowed_box)]
         let b: &mut Box<dyn Dir> = self.try_into()?;
         Ok(&mut *b)
     }

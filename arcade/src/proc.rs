@@ -46,6 +46,7 @@ impl Proc {
         self.resume().await
     }
 
+    #[allow(clippy::manual_async_fn)]
     pub fn resume(self) -> impl Future<Output = u8> + Send {
         async move {
             let mut f = self.f;
@@ -213,7 +214,10 @@ impl Monitor {
                 }
                 (b"set", &mut [ref mut value]) => {
                     changed = true;
-                    unsafe { core::mem::swap(&mut *self.value.get(), value) };
+                    #[allow(clippy::swap_ptr_to_ref)]
+                    unsafe {
+                        core::mem::swap(&mut *self.value.get(), value)
+                    };
                     k.apply(core::mem::take(value))
                 }
                 (b"exit", &mut [ref mut value]) => {
@@ -246,6 +250,12 @@ impl Monitor {
     }
 }
 
+impl Default for Monitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct WaitFuture<'a> {
     already_fired: AtomicBool,
     monitor: &'a Monitor,
@@ -269,7 +279,7 @@ impl Future for WaitFuture<'_> {
                 return Poll::Pending;
             }
         }
-        return Poll::Ready(());
+        Poll::Ready(())
     }
 }
 
@@ -301,13 +311,14 @@ impl FileDescriptor {
         matches!(self, FileDescriptor::Dir(_))
     }
 
-    pub fn as_file(self) -> Result<Box<dyn File>> {
+    pub fn into_file(self) -> Result<Box<dyn File>> {
         Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
     }
 
     pub fn as_file_ref(&self) -> Result<&dyn File> {
+        #[allow(clippy::borrowed_box)]
         let b: &Box<dyn File> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
-        Ok(&*b)
+        Ok(b)
     }
 
     pub fn as_file_mut(&mut self) -> Result<&mut dyn File> {
@@ -315,13 +326,14 @@ impl FileDescriptor {
         Ok(&mut *b)
     }
 
-    pub fn as_dir(self) -> Result<Box<dyn Dir>> {
+    pub fn into_dir(self) -> Result<Box<dyn Dir>> {
         Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
     }
 
     pub fn as_dir_ref(&self) -> Result<&dyn Dir> {
+        #[allow(clippy::borrowed_box)]
         let b: &Box<dyn Dir> = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
-        Ok(&*b)
+        Ok(b)
     }
 
     pub fn as_dir_mut(&mut self) -> Result<&mut dyn Dir> {
@@ -329,7 +341,7 @@ impl FileDescriptor {
         Ok(&mut *b)
     }
 
-    pub fn as_mvar(self) -> Result<MVar> {
+    pub fn into_mvar(self) -> Result<MVar> {
         Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
     }
 

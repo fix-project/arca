@@ -78,11 +78,11 @@ impl Dir for VSockFS {
     }
 
     async fn create(&self, _: &str, _: Create, _: Open) -> Result<Object> {
-        return Err(ErrorKind::PermissionDenied.into());
+        Err(ErrorKind::PermissionDenied.into())
     }
 
     async fn remove(&self, _: &str) -> Result<()> {
-        return Err(ErrorKind::PermissionDenied.into());
+        Err(ErrorKind::PermissionDenied.into())
     }
 
     async fn dup(&self) -> Result<Self> {
@@ -152,11 +152,11 @@ impl Dir for ConnDir {
     }
 
     async fn create(&self, _: &str, _: Create, _: Open) -> Result<Object> {
-        return Err(ErrorKind::PermissionDenied.into());
+        Err(ErrorKind::PermissionDenied.into())
     }
 
     async fn remove(&self, _: &str) -> Result<()> {
-        return Err(ErrorKind::PermissionDenied.into());
+        Err(ErrorKind::PermissionDenied.into())
     }
 
     async fn dup(&self) -> Result<Self> {

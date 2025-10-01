@@ -39,7 +39,7 @@ impl File {
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
         let result: Blob = Function::symbolic("read")
             .apply(self.fd)
-            .apply(bytes.len() as usize)
+            .apply(bytes.len())
             .call_with_current_continuation()
             .try_into()
             .map_err(|_| Error)?;
@@ -55,9 +55,9 @@ impl File {
             .map_err(|_| Error)?;
         let result = result.read() as i64;
         if result < 0 {
-            return Err(Error);
+            Err(Error)
         } else {
-            return Ok(result as usize);
+            Ok(result as usize)
         }
     }
 
@@ -76,9 +76,9 @@ impl File {
             .map_err(|_| Error)?;
         let result = result.read() as i64;
         if result < 0 {
-            return Err(Error);
+            Err(Error)
         } else {
-            return Ok(result as usize);
+            Ok(result as usize)
         }
     }
 }
@@ -160,9 +160,9 @@ impl OpenOptions {
             .map_err(|_| Error)?;
         let result = result.read() as i64;
         if result < 0 {
-            return Err(Error);
+            Err(Error)
         } else {
-            return Ok(File { fd: result as u32 });
+            Ok(File { fd: result as u32 })
         }
     }
 }

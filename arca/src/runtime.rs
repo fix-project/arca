@@ -73,7 +73,7 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
         let mut buf = vec![0; page.len()];
         Self::read_page(page, 0, &mut buf);
         let result = f(&mut buf);
-        Self::write_page(page, 0, &mut buf);
+        Self::write_page(page, 0, &buf);
         result
     }
 

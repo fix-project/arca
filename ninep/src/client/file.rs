@@ -1,5 +1,3 @@
-use core::pin::Pin;
-
 use super::*;
 
 pub struct File9P {
@@ -7,7 +5,7 @@ pub struct File9P {
     pub(super) fid: Fid,
     pub(super) qid: Qid,
     pub(super) cursor: usize,
-    pub(super) spawn: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync>,
+    pub(super) spawn: Arc<super::SpawnFn<'static>>,
 }
 
 impl File9P {

@@ -509,8 +509,11 @@ fn copy_user_to_kernel(dst: &mut [MaybeUninit<u8>], src: usize) -> Result<&mut [
 }
 
 fn copy_user_to_kernel_buf(dst: &mut [u8], src: usize) -> Result<&mut [u8]> {
-    crate::vm::copy_user_to_kernel(unsafe { core::mem::transmute(dst) }, src)
-        .ok_or(SyscallError::BadArgument)
+    crate::vm::copy_user_to_kernel(
+        unsafe { core::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(dst) },
+        src,
+    )
+    .ok_or(SyscallError::BadArgument)
 }
 
 fn read_entry(arca: &mut LoadedArca, entry: arcane::arca_entry) -> Result<Entry> {
