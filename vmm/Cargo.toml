@@ -18,6 +18,7 @@ kvm-ioctls = "0.23.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
 arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none" }
+fix = { path = "../fix", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"
@@ -38,6 +39,7 @@ nix = { version = "0.30.1", features = ["mman", "socket"] }
 vsock = "0.5.1"
 thread-priority = "3.0.0"
 elevate = "0.6.1"
+clap = "4.5.48"
 
 [build-dependencies]
 anyhow = "1.0.97"
