@@ -1,3 +1,4 @@
+#![allow(clippy::double_parens)]
 use core::cell::LazyCell;
 
 use bitfield_struct::bitfield;
