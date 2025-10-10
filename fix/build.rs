@@ -102,16 +102,13 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     let mut memmap = INTERMEDIATEOUT.get().unwrap().clone();
     memmap.push("memmap.ld");
 
-    let cc = Command::new("clang")
+    let prefix = ARCAPREFIX.get().unwrap();
+    let gcc = prefix.join("bin/musl-gcc");
+
+    let cc = Command::new(gcc)
         .args([
-            "-target",
-            "x86_64-unknown-none", // TODO: modify wasm2c to not require non-freestanding libraries (e.g., <math.h>)
             "-o",
             o_file.to_str().unwrap(),
-            "-I",
-            INTERMEDIATEOUT.get().unwrap().to_str().unwrap(),
-            "-I",
-            &ARCAPREFIX.get().unwrap().join("include").into_os_string().into_string().unwrap(),
             "-T",
             memmap.to_str().unwrap(),
             "-O2",
@@ -119,18 +116,13 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-frounding-math",
             // "-fsignaling-nans",
             "-ffreestanding",
-            "-nostdlib",
+            // "-nostdlib",
             "-nostartfiles",
             "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
         ])
         .args(src)
-        .args([
-            "-L",
-            &ARCAPREFIX.get().unwrap().join("lib").into_os_string().into_string().unwrap(),
-            "-l:libc.a",
-        ])
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
     assert!(cc.success());
 
@@ -150,13 +142,15 @@ fn main() -> Result<()> {
     INTERMEDIATEOUT.set(intermediateout).unwrap();
 
     let mut prefix: PathBuf = out_dir.clone().into();
-    prefix.push("arca-musl");
+    prefix.push("arca-musl-large");
 
     if !prefix.exists() {
         create_dir_all(&prefix)?
     }
 
     let prefix = autotools::Config::new("../modules/arca-musl")
+        .cflag("-mcmodel=large")
+        .cxxflag("-mcmodel=large")
         .out_dir(prefix)
         .build();
 
