@@ -1,3 +1,4 @@
+#![allow(clippy::double_parens)]
 use bitfield_struct::bitfield;
 
 pub use crate::gdt::PrivilegeLevel;

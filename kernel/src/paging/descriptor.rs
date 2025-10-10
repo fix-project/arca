@@ -1,3 +1,4 @@
+#![allow(clippy::double_parens)]
 use bitfield_struct::bitfield;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

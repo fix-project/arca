@@ -4,12 +4,14 @@
 
 use std::{num::NonZero, sync::Arc};
 
+use clap::{Arg, ArgAction, Command};
 use libc::VMADDR_CID_HOST;
 use ninep::*;
 use vfs::Open;
 use vmm::runtime::Runtime;
 
 const ARCADE: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_ARCADE_arcade"));
+const FIX: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FIX_fix"));
 
 mod fs;
 mod tcp;
@@ -22,11 +24,26 @@ use vsock::*;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let smp = std::thread::available_parallelism()
-        .unwrap_or(NonZero::new(1).unwrap())
-        .get();
+
+    let matches = Command::new("arca-vmm")
+        .arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+        .get_matches();
+
+    let run_fix = matches.get_flag("fix");
+
+    let smp = if run_fix {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .unwrap_or(NonZero::new(1).unwrap())
+            .get()
+    };
     // let smp = core::cmp::min(smp, 1);
-    let mut runtime = Runtime::new(smp, 1 << 30, ARCADE.into());
+    let mut runtime = if run_fix {
+        Runtime::new(smp, 1 << 30, FIX.into())
+    } else {
+        Runtime::new(smp, 1 << 30, ARCADE.into())
+    };
 
     std::thread::spawn(|| {
         let spawn = move |x| {
