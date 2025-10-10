@@ -1,23 +1,22 @@
 #![no_main]
 #![no_std]
-#![feature(custom_test_frameworks)]
-#![feature(never_type)]
-#![feature(negative_impls)]
 #![feature(allocator_api)]
-#![feature(box_as_ptr)]
 #![feature(bigint_helper_methods)]
+#![feature(box_as_ptr)]
 #![feature(box_into_inner)]
-#![feature(new_zeroed_alloc)]
-#![feature(ptr_metadata)]
-#![feature(vec_into_raw_parts)]
-#![feature(maybe_uninit_slice)]
+#![feature(custom_test_frameworks)]
 #![feature(maybe_uninit_array_assume_init)]
+#![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array_transpose)]
+#![feature(negative_impls)]
+#![feature(never_type)]
+#![feature(ptr_metadata)]
+#![feature(slice_ptr_get)]
+#![feature(vec_into_raw_parts)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
-extern crate defs;
 
 #[macro_use]
 pub extern crate macros;
@@ -37,6 +36,7 @@ pub mod profile;
 pub mod rt;
 pub mod tsc;
 pub mod types;
+pub mod virtio;
 pub mod vm;
 
 mod gdt;
@@ -109,7 +109,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");
     let mut i = 0;
-    crate::profile::backtrace_with(|addr, decoded| {
+    crate::profile::backtrace(|addr, decoded| {
         if i > 0 {
             if let Some((symname, offset)) = decoded {
                 let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");

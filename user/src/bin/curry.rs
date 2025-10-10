@@ -9,21 +9,16 @@ use user::prelude::*;
 /// which evaluates to the same thing.
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    let f: Ref<Lambda> = os::prompt()
+    let f: Function = os::argument()
         .try_into()
         .expect("first argument should be a function");
-    let n: Ref<Word> = os::prompt()
+    let n: Word = os::argument()
         .try_into()
         .expect("second argument should be a word");
     let n = n.read() as usize;
 
-    let mut tree = os::tree(n);
+    let x: Tuple = (0..n).map(|_| os::argument()).collect();
 
-    // read arguments
-    for i in 0..n {
-        tree.put(i, os::prompt());
-    }
-
-    let y = f.apply(tree.into());
-    os::tailcall(y);
+    let y = f(x);
+    os::exit(y);
 }

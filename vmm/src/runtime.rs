@@ -1,11 +1,13 @@
 use std::{
     collections::HashMap,
+    io::{self, Read},
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread::{Scope, ScopedJoinHandle},
+    time::{Duration, Instant},
 };
 
 use common::BuddyAllocator;
@@ -13,9 +15,13 @@ use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{
     kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
 };
-use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
+use libc::EFD_NONBLOCK;
+use vmm_sys_util::eventfd::EventFd;
+
+use crate::vhost::VSockBackend;
 
 fn new_cpu<'scope>(
     i: usize,
@@ -174,15 +180,17 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
             .unwrap();
         let vcpu_exit = vcpu_fd.run().expect("run failed");
         match vcpu_exit {
-            VcpuExit::IoIn(addr, data) => println!(
-                "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
-                addr, data[0],
-            ),
+            VcpuExit::IoIn(addr, data) => match addr {
+                0xe9 => {
+                    io::stdin().read_exact(data).unwrap();
+                }
+                addr => println!(
+                    "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
+                    addr, data[0],
+                ),
+            },
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
-                    if data[0] == 0 {
-                        return;
-                    }
                     ExitCode::from(data[0]).exit_process();
                 }
                 1 => {
@@ -293,6 +301,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 pub struct Runtime {
     kvm: Kvm,
     vm: VmFd,
+    vsock: VSockBackend,
     cores: usize,
     elf: Arc<[u8]>,
 }
@@ -314,9 +323,38 @@ impl Runtime {
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
+        let kick = EventFd::new(EFD_NONBLOCK).unwrap();
+        let call = EventFd::new(EFD_NONBLOCK).unwrap();
+
+        let int = EventFd::new(EFD_NONBLOCK).unwrap();
+
+        vm.register_ioevent(&kick, &IoEventAddress::Pio(0xf4), NoDatamatch)
+            .unwrap();
+        vm.register_irqfd(&call, 0).unwrap();
+        vm.register_irqfd(&int, 1).unwrap();
+
+        let mut last_time = None;
+        ctrlc::set_handler(move || {
+            let now = Instant::now();
+            let diff = last_time.map(|last_time| now.duration_since(last_time));
+            if let Some(diff) = diff {
+                if diff < Duration::from_secs(1) {
+                    log::warn!("got ^C^C; forcing immediate shutdown");
+                    ExitCode::from(130).exit_process();
+                }
+            }
+            log::info!("got ^C; sending soft shutdown");
+            int.write(1).unwrap();
+            last_time = Some(now);
+        })
+        .unwrap();
+
+        let vsock = VSockBackend::new(3, 1024, kick, call).unwrap();
+
         let mut x = Self {
             kvm,
             vm,
+            vsock,
             cores,
             elf: elf.clone(),
         };
@@ -380,7 +418,8 @@ impl Runtime {
         }
     }
 
-    pub fn run(&self, args: &[usize]) {
+    pub fn run(&mut self, args: &[usize]) {
+        self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
@@ -388,7 +427,11 @@ impl Runtime {
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
-        let args = args.to_vec_in(BuddyAllocator);
+        // let args = args.to_vec_in(BuddyAllocator);
+        let mut inner_args = Vec::new_in(BuddyAllocator);
+        let vsock_meta = Box::new_in(self.vsock.metadata(), BuddyAllocator);
+        inner_args.push(BuddyAllocator.to_offset(Box::into_raw_with_allocator(vsock_meta).0));
+        inner_args.extend_from_slice(args);
 
         std::thread::scope(|s| {
             let mut cpus = vec![];
@@ -409,11 +452,8 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                let args_offset = if args.is_empty() {
-                    0
-                } else {
-                    BuddyAllocator.to_offset(args.as_ptr())
-                };
+                assert!(!inner_args.is_empty());
+                let inner_args_offset = BuddyAllocator.to_offset(inner_args.as_ptr());
                 cpus.push(new_cpu(
                     i,
                     s,
@@ -422,8 +462,8 @@ impl Runtime {
                     &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
-                        args.len() as u64,
-                        args_offset as u64,
+                        inner_args.len() as u64,
+                        inner_args_offset as u64,
                         0,
                         0,
                     ],
@@ -434,5 +474,9 @@ impl Runtime {
                 cpu.join().unwrap();
             }
         });
+    }
+
+    pub fn cid(&self) -> u64 {
+        self.vsock.cid()
     }
 }

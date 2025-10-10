@@ -8,5 +8,5 @@ extern crate user;
 /// Return a null value.
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    os::exit(os::null());
+    os::exit(Null::new());
 }

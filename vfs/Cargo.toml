@@ -1,0 +1,14 @@
+[package]
+name = "vfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.89"
+bitflags = "2.9.2"
+common = { version = "0.1.0", path = "../common", default-features = false, features = ["alloc"] }
+derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
+either = { version = "1.15.0", default-features = false }
+futures = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
+log = "0.4.27"
+trait-variant = { version = "0.1.2", default-features = false }

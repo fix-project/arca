@@ -18,7 +18,7 @@ use crate::{
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
+use common::{buddy::BuddyAllocatorRawData, vhost::VSockMetadata, BuddyAllocator};
 
 extern "C" {
     fn kmain(argc: usize, argv: *const usize);
@@ -58,9 +58,6 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
     });
 
 static START_RUNTIME: AtomicBool = AtomicBool::new(false);
-
-#[core_local]
-static FOO: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 unsafe extern "C" fn _start(
@@ -141,7 +138,16 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
     if id == 0 {
         let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
-        let argv = NonNull::new(argv).unwrap_or(NonNull::dangling());
+        let argv = NonNull::new(argv).unwrap();
+
+        let vsock_info = argv.as_ptr().read();
+        let vsock_info: *const VSockMetadata = BuddyAllocator.from_offset(vsock_info);
+        let vsock = &crate::virtio::vsock::DRIVER;
+        vsock
+            .set(crate::virtio::vsock::Driver::new(vsock_info.read()))
+            .unwrap();
+        let argv = argv.add(1);
+        let argc = argc - 1;
 
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);

@@ -1,55 +1,32 @@
-#![feature(allocator_api)]
-#![feature(thread_sleep_until)]
-#![feature(future_join)]
+#![no_main]
+#![no_std]
+#![feature(try_blocks)]
+#![feature(try_trait_v2)]
+#![feature(iterator_try_collect)]
+#![feature(box_patterns)]
+#![feature(never_type)]
+#![allow(dead_code)]
 
-use vmm::client::*;
+use arca::Runtime;
+use kernel::prelude::*;
+
+extern crate alloc;
 
 const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 
-fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let arca = vmm::client::runtime();
+#[kmain]
+async fn main(_: &[usize]) {
+    let f = common::elfloader::load_elf(MODULE).expect("Failed to load elf");
+    let mut tree = Runtime::create_tuple(4);
+    let dummy = Runtime::create_word(0xcafeb0ba);
 
-    log::info!("create thunk");
-    let thunk: Ref<Thunk> = arca.load_elf(MODULE);
-    log::info!("run thunk");
-    let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
+    tree.set(0, dummy);
+    tree.set(1, dummy);
+    tree.set(2, Runtime::create_word(7));
+    tree.set(3, Runtime::create_word(1024));
 
-    let mut tree = arca.create_tree(4);
-    let dummy = arca.create_word(0xcafeb0ba);
-    tree.put(0, dummy.clone().into());
-    tree.put(1, dummy.into());
-    tree.put(2, arca.create_word(7).into());
-    tree.put(3, arca.create_word(1024).into());
-
-    let thunk = lambda.apply(tree.into());
-    let word: Ref<Word> = thunk.run().try_into().unwrap();
+    let f = Runtime::apply_function(f, arca::Value::Tuple(tree));
+    let word: Word = f.force().try_into().unwrap();
     log::info!("{:?}", word.read());
     assert_eq!(word.read(), 1031);
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod test {
-    use vmm::client::*;
-    const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
-
-    #[test]
-    fn test_addblob() {
-        let arca = vmm::client::runtime();
-        let thunk: Ref<Thunk> = arca.load_elf(MODULE);
-        let lambda: Ref<Lambda> = thunk.run().try_into().unwrap();
-
-        let mut tree = arca.create_tree(4);
-        let dummy = arca.create_word(0xcafeb0ba);
-        tree.put(0, dummy.clone().into());
-        tree.put(1, dummy.into());
-        tree.put(2, arca.create_word(7).into());
-        tree.put(3, arca.create_word(1024).into());
-
-        let thunk = lambda.apply(tree.into());
-        let word: Ref<Word> = thunk.run().try_into().unwrap();
-        assert_eq!(word.read(), 1031);
-    }
 }

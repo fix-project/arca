@@ -1,5 +1,11 @@
+pub mod channel;
+pub mod descriptors;
 pub mod initcell;
+pub mod mutex;
+pub mod oneshot;
 pub mod rwlock;
+pub mod semaphore;
+pub mod sorter;
 pub mod spinlock;
 
 pub fn replace_with<T>(x: &mut T, f: impl FnOnce(T) -> T) {

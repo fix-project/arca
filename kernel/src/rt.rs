@@ -15,13 +15,17 @@ use alloc::{
 use common::util::rwlock::{ReadGuard, RwLock, WriteGuard};
 use time::OffsetDateTime;
 
-use crate::{kvmclock, prelude::*};
+use crate::{interrupts::INTERRUPTED, kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
+pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default)]
 pub struct Executor {
     pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
     sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
+    wfi: Arc<RwLock<VecDeque<Waker>>>,
     active: AtomicUsize,
     parallel: AtomicUsize,
 }
@@ -44,8 +48,9 @@ enum Entry<T> {
 impl Executor {
     fn new() -> Executor {
         Executor {
-            pending: Arc::new(RwLock::new(VecDeque::new())),
-            sleeping: RwLock::new(BTreeMap::new()),
+            pending: Arc::default(),
+            sleeping: RwLock::default(),
+            wfi: Arc::default(),
             active: AtomicUsize::new(0),
             parallel: AtomicUsize::new(0),
         }
@@ -54,8 +59,8 @@ impl Executor {
     #[inline(never)]
     async fn resolve<F, T>(future: F, entry: Arc<RwLock<Entry<T>>>)
     where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
+        F: Future<Output = T> + Send,
+        T: Send,
     {
         let result = future.await;
         let mut entry = entry.write();
@@ -88,6 +93,29 @@ impl Executor {
         handle
     }
 
+    pub fn spawn_blocking<'a, F, T>(&self, future: F) -> T
+    where
+        F: Future<Output = T> + Send + 'a,
+        T: Send + 'a,
+    {
+        let entry = Arc::new(RwLock::new(Entry::Nothing));
+        let future = Self::resolve(future, entry.clone());
+        unsafe {
+            let pin: Pin<Box<dyn Future<Output = ()> + Send + 'a>> = Box::pin(future);
+            let pin: BoxFuture = core::mem::transmute(pin);
+            let task = Arc::new(Task {
+                future: SpinLock::new(pin),
+                pending: self.pending.clone(),
+            });
+            let handle = JoinHandle { entry };
+            self.active.fetch_add(1, Ordering::AcqRel);
+            let mut tasks = self.pending.write();
+            tasks.push_back(task);
+            core::mem::drop(tasks);
+            handle.join()
+        }
+    }
+
     #[inline(never)]
     fn wake_sleeping(&self) -> bool {
         let now = kvmclock::now();
@@ -116,7 +144,7 @@ impl Executor {
     fn diff(&self) -> usize {
         let mut time = LAST_TIME.lock();
         let now = kvmclock::time_since_boot().as_nanos();
-        let diff = now - *time;
+        let diff = now.wrapping_sub(*time);
         *time = now;
         diff as usize
     }
@@ -145,30 +173,56 @@ impl Executor {
 
     #[inline(never)]
     fn sleep(&self) {
-        TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
-        unsafe {
-            crate::profile::muted(|| {
-                core::arch::asm!("hlt");
-            });
+        if !INTERRUPTED.load(Ordering::Relaxed) {
+            TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
+            unsafe {
+                crate::io::outl(0xf4, 0);
+                crate::profile::muted(|| {
+                    core::arch::asm!("hlt");
+                });
+            }
+            TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
         }
-        TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
+        INTERRUPTED.store(false, Ordering::SeqCst);
+        let mut wfi = self.wfi.write();
+        while let Some(waker) = wfi.pop_front() {
+            waker.wake();
+        }
+    }
+
+    pub fn tick(&self) {
+        crate::interrupts::must_be_enabled();
+        let mut anything = false;
+        anything |= self.wake_sleeping();
+        anything |= self.run_pending();
+        if !anything {
+            self.sleep();
+        }
     }
 
     pub fn run(&self) {
         self.diff();
         while self.active.load(Ordering::Acquire) != 0 {
-            let mut anything = false;
-            anything |= self.wake_sleeping();
-            anything |= self.run_pending();
-            if !anything {
-                self.sleep();
-            }
+            self.tick();
         }
     }
 }
 
 pub struct JoinHandle<T> {
     entry: Arc<RwLock<Entry<T>>>,
+}
+
+impl<T> JoinHandle<T> {
+    fn join(self) -> T {
+        loop {
+            if let Some(mut entry) = self.entry.try_write() {
+                if let Entry::Finished(value) = &mut *entry {
+                    return value.take().unwrap();
+                }
+            }
+            EXECUTOR.tick();
+        }
+    }
 }
 
 impl<T> Future for JoinHandle<T> {
@@ -194,14 +248,16 @@ where
     EXECUTOR.spawn(future)
 }
 
-pub fn run() {
-    EXECUTOR.run();
+pub fn spawn_blocking<F, T>(future: F) -> T
+where
+    F: Future<Output = T> + Send,
+    T: Send,
+{
+    EXECUTOR.spawn_blocking(future)
 }
 
-impl Default for Executor {
-    fn default() -> Self {
-        Self::new()
-    }
+pub fn run() {
+    EXECUTOR.run();
 }
 
 struct Task {
@@ -296,4 +352,33 @@ pub fn profile() {
         "time spent scheduling: {scheduling:12} ({:3.2}%)",
         scheduling * 100. / total
     );
+}
+
+struct WaitForInterrupt {
+    done: AtomicBool,
+    wfi: Arc<RwLock<VecDeque<Waker>>>,
+}
+
+impl Future for WaitForInterrupt {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let done = self.done.load(Ordering::Acquire);
+        match done {
+            true => Poll::Ready(()),
+            false => {
+                self.done.store(true, Ordering::Release);
+                let mut wfi = self.wfi.write();
+                wfi.push_back(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+pub fn wfi() -> impl Future<Output = ()> {
+    WaitForInterrupt {
+        done: AtomicBool::new(false),
+        wfi: EXECUTOR.wfi.clone(),
+    }
 }

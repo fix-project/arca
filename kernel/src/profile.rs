@@ -5,7 +5,7 @@ use core::{
 
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::{interrupts::IsrRegisterFile, prelude::*};
+use crate::{host, interrupts::IsrRegisterFile, prelude::*};
 
 static PROFILING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -145,40 +145,48 @@ pub fn report(entries: &mut [(*const (), usize)]) {
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-#[inline(never)]
-pub fn backtrace() {
-    use core::arch::asm;
-    unsafe {
-        let mut rbp: *const usize;
-        let mut rip: *const ();
-        asm!("mov {rbp}, rbp", rbp=out(reg)rbp);
-        log::warn!("rbp: {rbp:p}");
-        loop {
-            rip = rbp.add(1).read() as *const ();
-            rbp = rbp.read() as *const usize;
-            if rbp.is_null() {
-                break;
-            }
-
-            log::warn!("rbp: {rbp:p}; rip: {rip:p}");
+pub fn log(count: usize) {
+    let mut entries = vec![(core::ptr::null(), 0); count];
+    report(&mut entries);
+    for (i, (p, n)) in entries.iter().enumerate() {
+        if *n == 0 {
+            break;
         }
+        let symname = host::symname(*p)
+            .map(|(s, i)| alloc::format!("{s}+{i:#x}"))
+            .unwrap_or(alloc::format!("{p:p}"));
+        log::info!("{i}. {symname} - {n}");
     }
 }
 
 #[inline(never)]
-pub fn backtrace_with(mut f: impl FnMut(*const (), Option<(String, usize)>)) {
+pub fn backtrace(f: impl FnMut(*const (), Option<(String, usize)>)) {
     use core::arch::asm;
+    let mut rbp: *const usize;
     unsafe {
-        let mut rbp: *const usize;
-        let mut rip: *const ();
         asm!("mov {rbp}, rbp", rbp=out(reg)rbp);
-        loop {
-            rip = rbp.add(1).read() as *const ();
-            rbp = rbp.read() as *const usize;
-            if rbp.is_null() {
-                break;
-            }
-            f(rip, crate::host::symname(rip));
+        backtrace_from(rbp, f);
+    }
+}
+
+#[inline(never)]
+/// # Safety
+///
+/// The value of `rbp` must be a valid base/frame pointer from which to backtrace.
+pub unsafe fn backtrace_from(
+    mut rbp: *const usize,
+    mut f: impl FnMut(*const (), Option<(String, usize)>),
+) {
+    if rbp.is_null() {
+        return;
+    }
+    let mut rip: *const ();
+    loop {
+        rip = rbp.add(1).read() as *const ();
+        rbp = rbp.read() as *const usize;
+        if rbp.is_null() {
+            break;
         }
+        f(rip, crate::host::symname(rip));
     }
 }

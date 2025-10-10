@@ -5,19 +5,22 @@ use core::{
 };
 
 #[derive(Debug, Default)]
-pub struct SpinLock<T> {
+pub struct SpinLock<T: ?Sized> {
     lock: AtomicBool,
     data: UnsafeCell<T>,
 }
 
 #[derive(Debug)]
-pub struct SpinLockGuard<'a, T> {
+pub struct SpinLockGuard<'a, T: ?Sized> {
     lock: &'a SpinLock<T>,
     data: &'a mut T,
 }
 
-impl<T> SpinLock<T> {
-    pub const fn new(data: T) -> SpinLock<T> {
+impl<T: ?Sized> SpinLock<T> {
+    pub const fn new(data: T) -> SpinLock<T>
+    where
+        T: Sized,
+    {
         SpinLock {
             lock: AtomicBool::new(false),
             data: UnsafeCell::new(data),
@@ -51,22 +54,31 @@ impl<T> SpinLock<T> {
     pub fn get(&self) -> *mut T {
         self.data.get()
     }
+
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let mut guard = self.lock();
+        f(&mut guard)
+    }
+
+    pub fn unlock(guard: SpinLockGuard<'_, T>) {
+        SpinLockGuard::unlock(guard);
+    }
 }
 
-impl<T> SpinLockGuard<'_, T> {
+impl<T: ?Sized> SpinLockGuard<'_, T> {
     pub fn unlock(_: Self) {}
 }
 
-impl<T> Drop for SpinLockGuard<'_, T> {
+impl<T: ?Sized> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.lock.store(false, Ordering::Release);
     }
 }
 
-unsafe impl<T: Send> Send for SpinLock<T> {}
-unsafe impl<T: Send> Sync for SpinLock<T> {}
+unsafe impl<T: Send + ?Sized> Send for SpinLock<T> {}
+unsafe impl<T: Send + ?Sized> Sync for SpinLock<T> {}
 
-impl<T> Deref for SpinLockGuard<'_, T> {
+impl<T: ?Sized> Deref for SpinLockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -74,7 +86,7 @@ impl<T> Deref for SpinLockGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for SpinLockGuard<'_, T> {
+impl<T: ?Sized> DerefMut for SpinLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
     }

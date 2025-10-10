@@ -1,0 +1,2 @@
+CompileFlags:
+  Add: [-nostdinc, -isystem, /opt/arca/musl/include]

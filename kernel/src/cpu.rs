@@ -4,9 +4,10 @@ use core::{
 };
 
 use alloc::format;
-use arca::MapError;
 
 use crate::{initcell::LazyLock, prelude::*, vm::ka2pa};
+
+use crate::types::table::Table;
 
 #[core_local]
 pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
@@ -286,10 +287,10 @@ impl Cpu {
         if pt.len() > 1 {
             return Table::Table2MB(pt.into());
         }
-        todo!();
+        Table::default()
     }
 
-    pub fn map(&mut self, address: usize, entry: Entry) -> Result<Entry, MapError> {
+    pub fn map(&mut self, address: usize, entry: Entry) -> Result<Entry, crate::types::Error> {
         assert!(crate::vm::is_user(address));
 
         let i_512gb = (address >> 39) & 0x1ff;
@@ -306,9 +307,10 @@ impl Cpu {
             AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
             _ => todo!(),
         };
-        let mut table = Table::from(CowPage::Unique(pdpt));
+        let table = Table::from(CowPage::Unique(pdpt));
+        let mut table = arca::Table::from_inner(table);
         let result = table.map(address, entry)?;
-        match table {
+        match table.into_inner() {
             Table::Table512GB(page) => pml4.entry_mut(i_512gb).chain_unique(page.unique()),
             _ => todo!(),
         };
@@ -335,6 +337,6 @@ impl Cpu {
 impl From<ExitReason> for Value {
     fn from(value: ExitReason) -> Self {
         let result = format!("{value:x?}");
-        Value::Blob(result.into())
+        Value::Blob(Blob::from_inner(result.into()))
     }
 }

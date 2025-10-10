@@ -15,8 +15,7 @@
  */
 
 #include "wasm-rt-impl.h"
-#include "defs.h"
-#include "syscall.h"
+#include <arca/sys.h>
 #include "wasm-rt.h"
 
 #include <assert.h>
@@ -87,7 +86,7 @@ void wasm_rt_allocate_memory(wasm_rt_memory_t *memory, uint64_t initial_pages,
   for (uint64_t i = 0; i < byte_length >> 12; i++) {
     arcad page = check(arca_page_create(1 << 12));
     check(arca_mmap(memory->data + i * 4096, &(struct arca_entry){
-                                                 .mode = ENTRY_MODE_READ_WRITE,
+                                                 .mode = __MODE_read_write,
                                                  .data = page,
                                              }));
   }
@@ -111,7 +110,7 @@ uint64_t wasm_rt_grow_memory(wasm_rt_memory_t *memory, uint64_t delta) {
     arcad page = check(arca_page_create(1 << 12));
     check(arca_mmap(memory->data + +memory->size + i * 4096,
                     &(struct arca_entry){
-                        .mode = ENTRY_MODE_READ_WRITE,
+                        .mode = __MODE_read_write,
                         .data = page,
                     }));
   }

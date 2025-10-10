@@ -5,24 +5,22 @@ use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 extern crate alloc;
 use alloc::vec::Vec;
 
-pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
+#[derive(derive_more::From, Debug)]
+pub enum Error {
+    Parse(elf::ParseError),
+    Runtime,
+    InvalidElf,
+}
+
+pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
     log::debug!("loading: {} byte ELF file", elf.len());
-    let elf = ElfBytes::<AnyEndian>::minimal_parse(elf).expect("could not parse elf");
+    let elf = ElfBytes::<AnyEndian>::minimal_parse(elf)?;
     let start_address = elf.ehdr.e_entry;
-    let segments: Vec<ProgramHeader> = elf
-        .segments()
-        .expect("could not find ELF segments")
-        .iter()
-        .collect();
+    let segments: Vec<ProgramHeader> = elf.segments().ok_or(Error::InvalidElf)?.iter().collect();
 
     assert_eq!(elf.ehdr.e_type, elf::abi::ET_EXEC);
 
-    let mut registers = [0; 20];
-    registers[16] = start_address;
-
-    let mut highest_addr = 0;
-
-    let mut table = runtime.create_table(0);
+    let mut table = R::create_table(0);
 
     for (i, segment) in segments.iter().enumerate() {
         match segment.p_type {
@@ -37,22 +35,27 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
                 let memsz = segment.p_memsz as usize;
 
                 let mut pages = (offset + memsz) / 4096;
-                if (offset + memsz % 4096) > 0 {
+                if !(offset + memsz).is_multiple_of(4096) {
                     pages += 1;
                 }
 
                 let mut memi = offset;
                 let mut filei = 0;
-                let data = elf.segment_data(segment).expect("could not find segment");
+                let data = elf.segment_data(segment)?;
                 for page in 0..pages {
                     let page_start = page * 4096;
-                    let mut unique_page = table
-                        .unmap(page_start_memory + page_start)
-                        .and_then(|entry| match entry {
-                            Entry::ROPage(page) | Entry::RWPage(page) => Some(page),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| runtime.create_page(1 << 12));
+                    let unique_page =
+                        table
+                            .unmap(page_start_memory + page_start)
+                            .and_then(|entry| match entry {
+                                Entry::ROPage(page) | Entry::RWPage(page) => Some(page),
+                                _ => None,
+                            });
+                    let mut unique_page = if let Some(up) = unique_page {
+                        up
+                    } else {
+                        R::create_page(1 << 12)
+                    };
                     assert!(memi >= page_start);
                     let page_end = page_start + 4096;
                     if memi >= page_start && memi < page_end {
@@ -77,15 +80,15 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
                     if segment.p_flags & elf::abi::PF_W != 0 {
                         table
                             .map(page_start_memory + page_start, Entry::RWPage(unique_page))
-                            .unwrap();
+                            .map_err(|_| Error::Runtime)?;
                     } else {
                         table
                             .map(page_start_memory + page_start, Entry::ROPage(unique_page))
-                            .unwrap();
+                            .map_err(|_| Error::Runtime)?;
                     }
-                    highest_addr = core::cmp::max(highest_addr, page_start_memory + page_start);
                 }
             }
+            elf::abi::PT_TLS => {}
             elf::abi::PT_PHDR => {
                 // program header
             }
@@ -99,12 +102,16 @@ pub fn load_elf<R: arca::Runtime>(runtime: &R, elf: &[u8]) -> R::Thunk {
         }
     }
 
-    let bytes: Vec<u8> = registers
-        .into_iter()
-        .flat_map(|x| x.to_ne_bytes())
-        .collect();
+    let mut registers = R::create_tuple(20);
+    registers.set(16, Word::from(start_address));
 
-    let registers = runtime.create_blob(&bytes);
-    let descriptors = runtime.create_tree(0);
-    runtime.create_thunk(registers, table, descriptors)
+    let descriptors = R::create_tuple(0);
+
+    let mut data = R::create_tuple(3);
+    data.set(0, Value::Tuple(registers));
+    data.set(1, Value::Table(table));
+    data.set(2, Value::Tuple(descriptors));
+
+    let args = R::create_tuple(0);
+    R::create_function(Tuple::from(("Arcane", data, args)).into()).map_err(|_| Error::Runtime)
 }

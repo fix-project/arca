@@ -6,9 +6,17 @@ version = "0.1.0"
 edition = "2024"
 forced-target = "x86_64-unknown-none"
 
+[features]
+default = ["allocator"]
+allocator = []
+
 [dependencies]
-defs = { path = "../defs" }
 arca = { path = "../arca" }
+arcane = { path = "../arcane" }
+numtoa = "0.3.1"
+spin = "0.10.0"
+talc = "4.4.3"
 
 [build-dependencies]
+autotools = "0.2.7"
 cc = "1.2.26"

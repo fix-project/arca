@@ -5,22 +5,17 @@ extern crate user;
 
 use user::prelude::*;
 
-/// Map a Lambda over a Tree.
+/// Map a Function over a Tuple.
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    let function: Ref<Lambda> = os::prompt()
+    let f: Function = os::argument()
         .try_into()
         .expect("incorrect argument type to map");
-    let mut tree: Ref<Tree> = os::prompt()
+    let xs: Tuple = os::argument()
         .try_into()
         .expect("incorrect argument type to map");
 
-    let mut new_tree = os::tree(tree.len());
+    let ys: Tuple = xs.into_iter().map(|x| f.clone()(x)).collect();
 
-    for i in 0..tree.len() {
-        let f = function.clone();
-        new_tree.put(i, f.apply(tree.take(i)).into());
-    }
-
-    os::exit(new_tree);
+    os::exit(ys);
 }

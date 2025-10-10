@@ -1,0 +1,11 @@
+[package]
+name = "arcane"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+bindgen = "0.72.0"
+autotools = "0.2.7"
+
+[dependencies]
+derive_more = { version = "2.0.1", default-features = false, features = ["full"] }

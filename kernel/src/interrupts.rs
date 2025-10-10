@@ -1,11 +1,13 @@
-// use core::cell::LazyCell;
-
 use core::{
     cell::LazyCell,
-    sync::atomic::{AtomicPtr, Ordering},
+    fmt::Write,
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    time::Duration,
 };
 
-use crate::prelude::*;
+use crate::{kvmclock, prelude::*};
+
+pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[core_local]
 pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
@@ -49,12 +51,84 @@ pub(crate) struct IsrRegisterFile {
 
 extern "C" {
     fn isr_save_state_and_exit(isr: u64, error: u64, registers: &RegisterFile) -> !;
+    fn get_if() -> bool;
+}
+
+pub fn enabled() -> bool {
+    unsafe { get_if() }
+}
+
+pub unsafe fn disable() {
+    core::arch::asm!("cli");
+}
+
+pub unsafe fn enable() {
+    core::arch::asm!("sti");
+}
+
+pub fn critical<T>(f: impl FnOnce() -> T) -> T {
+    let old = enabled();
+    unsafe {
+        disable();
+    }
+    let y = f();
+    if old {
+        unsafe {
+            enable();
+        }
+    }
+    y
+}
+
+pub fn must_be_enabled() {
+    assert!(enabled());
+}
+
+pub fn must_be_disabled() {
+    assert!(!enabled());
 }
 
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
+    must_be_disabled();
+    if registers.isr == 0x30 {
+        // log::warn!("got interrupt from virtio");
+        INTERRUPTED.store(true, Ordering::Relaxed);
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        return;
+    }
+    if registers.isr == 0x31 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+        if kvmclock::time_since_boot() > Duration::from_secs(1) {
+            log::error!("got ^C interrupt");
+            let mut console = crate::debugcon::CONSOLE.lock();
+            let _ = writeln!(&mut *console, "----- BACKTRACE -----");
+            let mut i = 0;
+            crate::profile::backtrace(|addr, decoded| {
+                if i > 0 {
+                    if let Some((symname, offset)) = decoded {
+                        let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
+                    } else {
+                        let _ = writeln!(&mut *console, "{i}. {addr:#p}");
+                    }
+                }
+                i += 1;
+            });
+            let _ = writeln!(&mut *console, "------ PROFILE ------");
+            crate::profile::log(20);
+            let _ = writeln!(&mut *console, "------ RUNTIME ------");
+            crate::rt::profile();
+            let _ = writeln!(&mut *console, "---------------------");
+            crate::profile::reset();
+            crate::rt::reset_stats();
+        }
+        // crate::shutdown();
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        return;
+    }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
+            INTERRUPTED.store(true, Ordering::Relaxed);
             crate::profile::tick(registers);
             crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         }
@@ -67,7 +141,6 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         };
         isr_save_state_and_exit(registers.isr, registers.code, &regs);
     }
-    // supervisor mode
     if registers.isr == 0xd {
         if registers.code == 0 {
             if let Some((name, offset)) = crate::host::symname(registers.rip as *const ()) {
@@ -120,6 +193,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         panic!("unhandled exception: {:x?}", registers);
     }
     if registers.isr == 0x20 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
         crate::profile::tick(registers);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
     } else {

@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 MEMORY {
-  memory (rwx) : ORIGIN = 0x200000, LENGTH = 64K
+  memory (rwx) : ORIGIN = 0x200000, LENGTH = 1M
 }
 
 SECTIONS {
@@ -54,6 +54,7 @@ SECTIONS {
     __stack_bottom = .;
     . = ORIGIN(memory) + LENGTH(memory);
     __stack_top = .;
+    . = ALIGN(4096);
   } > memory 
   /DISCARD/ :
   {

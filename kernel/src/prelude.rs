@@ -3,7 +3,14 @@ pub(crate) use crate::{
     vm,
 };
 
-pub(crate) use alloc::{boxed::Box, string::String, vec, vec::Vec};
+pub use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 
 pub use crate::{
     cpu::{Cpu, Register, RegisterFile, CPU},
@@ -14,15 +21,16 @@ pub use crate::{
         PageTable256TB, PageTable256TBEntry, PageTable2MB, PageTable2MBEntry, PageTable512GB,
         PageTable512GBEntry,
     },
-    types::{
-        Arca, Atom, Blob, Entry, Error, Lambda, LoadedArca, Null, Page, Runtime, Table, Thunk,
-        Tree, Value, Word,
-    },
+    shutdown,
+    types::{Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
 };
-pub use arca::{
-    Atom as _, Blob as _, DataType, Error as _, Lambda as _, Null as _, Page as _, Table as _,
-    Thunk as _, Tree as _, Value as _, Word as _,
-};
+pub use arca::DataType;
 pub use common::buddy::BuddyAllocator;
 pub use common::refcnt::RefCnt;
+pub use common::util::channel;
+pub use common::util::mutex::Mutex;
+pub use common::util::oneshot;
+pub use common::util::rwlock::RwLock;
+pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;
+pub use macros::kmain;

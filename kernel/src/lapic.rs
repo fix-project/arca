@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![allow(clippy::double_parens)]
 use bitfield_struct::bitfield;
 use core::{cell::RefCell, marker::PhantomData};
 
@@ -145,17 +146,36 @@ pub unsafe fn init() {
             .with_mode(TimerMode::Periodic),
     );
 
+    // lapic.set_initial_count(0x4000000); // 1s
+
     // lapic.set_initial_count(0x400000); // 100ms
 
-    lapic.set_initial_count(0x80000); // 10ms
+    // lapic.set_initial_count(0x80000); // 10ms
 
     // lapic.set_initial_count(0x10000); // 1ms
 
     // lapic.set_initial_count(0x8000); // 500us
 
-    // lapic.set_initial_count(0x2000); // 100us
+    lapic.set_initial_count(0x2000); // 100us
 
     // lapic.set_initial_count(0x200); // 10us
 
     // lapic.set_initial_count(0x40); // 1us
+
+    // enable the IOAPIC
+    let io_apic_base: *mut u32 = crate::vm::pa2ka(0xFEC00000);
+    let regsel = io_apic_base;
+    let win = io_apic_base.byte_add(0x10);
+
+    // GSI 0 -> INT 0x30
+    regsel.write_volatile(0x10); // redirection entry 0-lo
+    win.write_volatile(0x30);
+    regsel.write_volatile(0x11); // redirection entry 0-hi
+    win.write_volatile(0x00);
+
+    // GSI 1 -> INT 0x31
+    regsel.write_volatile(0x12); // redirection entry 0-lo
+    win.write_volatile(0x31);
+    regsel.write_volatile(0x13); // redirection entry 0-hi
+    win.write_volatile(0x00);
 }

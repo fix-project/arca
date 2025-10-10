@@ -4,46 +4,56 @@ use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
+use crate::types::internal::{Table, Tuple};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: Table,
-    register_file: RegisterFile,
+    register_file: Box<RegisterFile>,
     descriptors: Descriptors,
-    error_buffer: Option<String>,
+    fsbase: u64,
 }
 
 impl Arca {
     pub fn new() -> Arca {
         let page_table = Table::default();
-        let register_file = RegisterFile::new();
+        let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
 
         Arca {
             page_table,
             register_file,
             descriptors,
-            error_buffer: None,
+            fsbase: 0,
         }
     }
 
-    pub fn new_with(register_file: RegisterFile, page_table: Table, descriptors: Tree) -> Arca {
+    pub fn new_with(
+        register_file: impl Into<Box<RegisterFile>>,
+        page_table: Table,
+        descriptors: Tuple,
+    ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner()).into();
 
         Arca {
             page_table,
-            register_file,
+            register_file: register_file.into(),
             descriptors,
-            error_buffer: None,
+            fsbase: 0,
         }
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
         cpu.activate_address_space(self.page_table);
+        unsafe {
+            core::arch::asm! {
+                "wrfsbase {base}", base=in(reg) self.fsbase
+            };
+        }
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
-            error_buffer: self.error_buffer,
         }
     }
 
@@ -70,6 +80,14 @@ impl Arca {
     pub fn descriptors_mut(&mut self) -> &mut Descriptors {
         &mut self.descriptors
     }
+
+    pub fn read(self) -> (RegisterFile, Table, Tuple) {
+        (
+            *self.register_file,
+            self.page_table,
+            Tuple::new(Vec::from(self.descriptors)),
+        )
+    }
 }
 
 impl Default for Arca {
@@ -80,10 +98,9 @@ impl Default for Arca {
 
 #[derive(Debug)]
 pub struct LoadedArca<'a> {
-    register_file: RegisterFile,
+    register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
-    error_buffer: Option<String>,
 }
 
 impl<'a> LoadedArca<'a> {
@@ -119,13 +136,19 @@ impl<'a> LoadedArca<'a> {
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
         let page_table = self.cpu.deactivate_address_space();
+        let mut fsbase: u64;
+        unsafe {
+            core::arch::asm! {
+                "rdfsbase {base}", base=out(reg) fsbase
+            };
+        }
 
         (
             Arca {
                 register_file: self.register_file,
                 descriptors: self.descriptors,
                 page_table,
-                error_buffer: self.error_buffer,
+                fsbase,
             },
             self.cpu,
         )
@@ -134,24 +157,16 @@ impl<'a> LoadedArca<'a> {
     pub fn swap(&mut self, other: &mut Arca) {
         core::mem::swap(&mut self.register_file, &mut other.register_file);
         core::mem::swap(&mut self.descriptors, &mut other.descriptors);
-        core::mem::swap(&mut self.error_buffer, &mut other.error_buffer);
+        let mut fsbase: u64;
+        unsafe {
+            core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
+        }
+        other.fsbase = fsbase;
         self.cpu.swap_address_space(&mut other.page_table);
     }
 
     pub fn cpu(&mut self) -> &'_ mut Cpu {
         self.cpu
-    }
-
-    pub fn error_buffer(&self) -> Option<&String> {
-        self.error_buffer.as_ref()
-    }
-
-    pub fn error_buffer_mut(&mut self) -> &mut String {
-        self.error_buffer.get_or_insert_with(String::new)
-    }
-
-    pub fn reset_error(&mut self) {
-        self.error_buffer = None;
     }
 }
 
@@ -171,7 +186,7 @@ pub type Result<T> = core::result::Result<T, DescriptorError>;
 impl Descriptors {
     pub fn new() -> Descriptors {
         Descriptors {
-            descriptors: vec![Value::Null],
+            descriptors: vec![Value::default()],
         }
     }
 
@@ -192,7 +207,7 @@ impl Descriptors {
 
     pub fn take(&mut self, index: usize) -> Result<Value> {
         if index == 0 {
-            return Ok(Value::Null);
+            return Ok(Value::default());
         }
         Ok(core::mem::take(
             self.descriptors
@@ -226,9 +241,9 @@ impl Default for Descriptors {
 impl From<Vec<Value>> for Descriptors {
     fn from(mut value: Vec<Value>) -> Self {
         if value.is_empty() {
-            value.push(Value::Null);
+            value.push(Default::default());
         } else {
-            value[0] = Value::Null;
+            value[0] = Default::default();
         }
         Descriptors { descriptors: value }
     }

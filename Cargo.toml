@@ -1,5 +1,8 @@
 [workspace]
-members = [ "common", "vmm", "kernel", "macros" , "user", "defs" , "arca", "fix" ]
-default-members = [ "vmm", "common", "fix" ]
+members = [ "common", "vmm", "kernel", "macros" , "user", "arca" , "arcade" , "ninep", "arcane", "vfs" , "memcached", "fix" ]
+default-members = [ "vmm", "common" ]
 
 resolver = "2"
+
+[profile.release]
+debug = true
