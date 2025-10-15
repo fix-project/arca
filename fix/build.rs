@@ -190,9 +190,25 @@ fn main() -> Result<()> {
         std::fs::write(dst, elf)?;
     }
 
-    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo::rerun-if-changed={dir}/etc/memmap.ld");
-    println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
+    let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+
+    let headers = vec![cwd.clone() + "/fix-shell/handle.h"];
+
+    let bindings = bindgen::Builder::default()
+        .headers(headers)
+        .clang_args(["-nostdinc"])
+        .use_core()
+        .default_enum_style(bindgen::EnumVariation::ModuleConsts)
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate()
+        .expect("Unable to generate bindings");
+
+    bindings
+        .write_to_file(Path::new(&out_dir).join("handle-bindings.rs"))
+        .expect("Couldn't write bindings!");
+
+    println!("cargo::rerun-if-changed={cwd}/etc/memmap.ld");
+    println!("cargo::rustc-link-arg=-T{cwd}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-no-pie");
 
     Ok(())

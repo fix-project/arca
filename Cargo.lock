@@ -314,6 +314,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytemuck"
+version = "1.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -684,6 +690,8 @@ dependencies = [
  "arcane",
  "async-lock",
  "autotools",
+ "bindgen",
+ "bytemuck",
  "cc",
  "chrono",
  "cmake",
