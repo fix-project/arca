@@ -118,7 +118,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-ffreestanding",
             // "-nostdlib",
             "-nostartfiles",
-            "-mcmodel=large",
+            // "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
         ])
@@ -149,8 +149,8 @@ fn main() -> Result<()> {
     }
 
     let prefix = autotools::Config::new("../modules/arca-musl")
-        .cflag("-mcmodel=large")
-        .cxxflag("-mcmodel=large")
+        // .cflag("-mcmodel=large")
+        // .cxxflag("-mcmodel=large")
         .out_dir(prefix)
         .build();
 
