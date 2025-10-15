@@ -26,7 +26,7 @@
 wasm_rt_memory_t *WASM_MEMORIES[128];
 size_t WASM_MEMORIES_N = 0;
 
-uint64_t check(int64_t ret);
+long check(char *msg, long ret);
 [[noreturn]] void trap(const char *msg);
 
 void wasm_rt_trap(wasm_rt_trap_t code) {
@@ -84,8 +84,9 @@ void wasm_rt_allocate_memory(wasm_rt_memory_t *memory, uint64_t initial_pages,
   memory->is64 = is64;
 
   for (uint64_t i = 0; i < byte_length >> 12; i++) {
-    arcad page = check(arca_page_create(1 << 12));
-    check(arca_mmap(memory->data + i * 4096, &(struct arca_entry){
+    arcad page = check("arca_page_create", arca_page_create(1 << 12));
+    check("arca_mmap",
+          arca_mmap(memory->data + i * 4096, &(struct arca_entry){
                                                  .mode = __MODE_read_write,
                                                  .data = page,
                                              }));
@@ -107,12 +108,12 @@ uint64_t wasm_rt_grow_memory(wasm_rt_memory_t *memory, uint64_t delta) {
   uint64_t delta_size = delta * PAGE_SIZE;
 
   for (uint64_t i = 0; i < delta_size >> 12; i++) {
-    arcad page = check(arca_page_create(1 << 12));
-    check(arca_mmap(memory->data + +memory->size + i * 4096,
-                    &(struct arca_entry){
-                        .mode = __MODE_read_write,
-                        .data = page,
-                    }));
+    arcad page = check("arca_page_create", arca_page_create(1 << 12));
+    check("arca_mmap", arca_mmap(memory->data + +memory->size + i * 4096,
+                                 &(struct arca_entry){
+                                     .mode = __MODE_read_write,
+                                     .data = page,
+                                 }));
   }
 
   memory->pages = new_pages;

@@ -30,9 +30,11 @@ trait-variant = "0.1.2"
 futures = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 async-lock = { version = "3.4.1", default-features = false }
+bytemuck = "1.24.0"
 
 [build-dependencies]
 anyhow = "1.0.98"
+bindgen = "0.72.1"
 cc = "1.2.30"
 autotools = "0.2.7"
 cmake = "0.1.54"
