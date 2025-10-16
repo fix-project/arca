@@ -5,12 +5,15 @@
 #![feature(iterator_try_collect)]
 #![feature(box_patterns)]
 #![feature(never_type)]
+#![feature(portable_simd)]
 #![allow(dead_code)]
 
 use arca::Runtime;
 use kernel::prelude::*;
 
-use crate::{handle::FixRuntime, runtime::DeterministicEquivRuntime, runtime::ExecutionRuntime};
+use crate::{
+    handle::handle::FixRuntime, runtime::DeterministicEquivRuntime, runtime::ExecutionRuntime,
+};
 
 extern crate alloc;
 

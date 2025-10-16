@@ -14,11 +14,15 @@ klog-warn = ["kernel/klog-warn"]
 klog-error = ["kernel/klog-error"]
 klog-off = ["kernel/klog-off"]
 debugcon = ["kernel/debugcon"]
+testing-mode = ["fixhandle/testing-mode"]
 
 [dependencies]
 arca = { path = "../arca", features = ["serde"] }
 kernel = { path = "../kernel" }
+macros = { path = "../macros" }
 common = { path = "../common", default-features = false }
+fixhandle = { path = "handle" }
+fixruntime = { path = "runtime" }
 log = "0.4.27"
 serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive"] }
 chrono = { version = "0.4.41", default-features = false, features = ["alloc", "serde"] }
@@ -31,8 +35,10 @@ futures = { version = "0.3.31", default-features = false, features = ["alloc", "
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 async-lock = { version = "3.4.1", default-features = false }
 bytemuck = "1.24.0"
+bitfield-struct = "0.11.0"
 
 [build-dependencies]
+fixshell = { path = "shell", artifact="staticlib", target = "x86_64-unknown-none" }
 anyhow = "1.0.98"
 bindgen = "0.72.1"
 cc = "1.2.30"
