@@ -40,7 +40,7 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
     for (index, v) in de.variants.iter().enumerate() {
         let ident = v.ident.clone();
 
-        let field = match &v.fields {
+        let ty = match &v.fields {
             syn::Fields::Named(fields_named) => {
                 if fields_named.named.len() != 1 {
                     return compile_error("Unable to create bitpack for variants not of 1 field");
@@ -60,8 +60,8 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
 
         let pat = quote! { #name::#ident(inner) };
         let construct = quote! { Self::#ident };
-        let width = quote! { #field::TAGBITS };
-        let unpack = quote! { #field::unpack };
+        let width = quote! { #ty::TAGBITS };
+        let unpack = quote! { #ty::unpack };
 
         variants.push(Variant {
             index: index as u32,

@@ -1,8 +1,9 @@
 #![allow(clippy::double_parens)]
 use core::simd::{u8x32, u64x4};
+use derive_more::{From, TryInto, Unwrap};
 use macros::BitPack;
 
-trait BitPack {
+pub trait BitPack {
     const TAGBITS: u32;
     fn pack(&self) -> u8x32;
     fn unpack(content: u8x32) -> Self;
@@ -34,6 +35,7 @@ const fn bitmask256<const I: u32, const WIDTH: u32>() -> u8x32 {
     u8x32::from_array(out)
 }
 
+#[derive(Debug)]
 struct RawHandle {
     content: u8x32,
 }
@@ -44,6 +46,7 @@ impl RawHandle {
     }
 }
 
+#[derive(Debug)]
 struct MachineHandle {
     inner: RawHandle,
 }
@@ -51,7 +54,11 @@ struct MachineHandle {
 impl MachineHandle {
     fn new(payload: u64, size: u64) -> Self {
         assert!(size & 0xffff000000000000 == 0);
-        let field = unsafe { core::mem::transmute(u64x4::from_array([payload, 0, 0, size])) };
+        let field = unsafe {
+            core::mem::transmute::<core::simd::Simd<u64, 4>, core::simd::Simd<u8, 32>>(
+                u64x4::from_array([payload, 0, 0, size]),
+            )
+        };
         let inner = RawHandle::new(field);
         Self { inner }
     }
@@ -80,6 +87,7 @@ impl BitPack for MachineHandle {
     }
 }
 
+#[derive(Debug)]
 pub struct VirtualHandle {
     inner: MachineHandle,
 }
@@ -109,8 +117,14 @@ impl VirtualHandle {
     pub fn len(&self) -> usize {
         self.inner.get_size().try_into().unwrap()
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
+#[derive(Debug)]
 pub struct PhysicalHandle {
     inner: MachineHandle,
 }
@@ -140,48 +154,64 @@ impl PhysicalHandle {
     pub fn len(&self) -> usize {
         self.inner.get_size().try_into().unwrap()
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug)]
 pub enum Handle {
     VirtualHandle(VirtualHandle),
     PhysicalHandle(PhysicalHandle),
 }
 
-type BlobName = Handle;
+#[derive(BitPack, Debug, TryInto, Unwrap, From)]
+pub enum BlobName {
+    Blob(Handle),
+}
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug, Unwrap)]
 pub enum TreeName {
     NotTag(Handle),
     Tag(Handle),
 }
 
-#[derive(BitPack)]
+impl From<TreeName> for Handle {
+    fn from(val: TreeName) -> Self {
+        match val {
+            TreeName::Tag(h) | TreeName::NotTag(h) => h,
+        }
+    }
+}
+
+#[derive(BitPack, Debug, TryInto, Unwrap, From)]
 pub enum Ref {
-    Blob(BlobName),
-    Tree(TreeName),
+    BlobName(BlobName),
+    TreeName(TreeName),
 }
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug, TryInto, Unwrap, From)]
 pub enum Object {
-    Blob(BlobName),
-    Tree(TreeName),
+    BlobName(BlobName),
+    TreeName(TreeName),
 }
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug, Unwrap)]
 pub enum Thunk {
     Identification(Ref),
     Application(TreeName),
     Selection(TreeName),
 }
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug, TryInto, Unwrap)]
 pub enum Encode {
     Strict(Thunk),
     Shallow(Thunk),
 }
 
-#[derive(BitPack)]
+#[derive(Debug, BitPack, TryInto, Unwrap, From)]
 pub enum FixHandle {
     Ref(Ref),
     Object(Object),
@@ -189,7 +219,7 @@ pub enum FixHandle {
     Encode(Encode),
 }
 
-#[derive(BitPack)]
+#[derive(BitPack, Debug, TryInto, Unwrap, From)]
 pub enum Value {
     Ref(Ref),
     Object(Object),

@@ -720,6 +720,7 @@ dependencies = [
  "cmake",
  "common",
  "derive_more",
+ "fixruntime",
  "futures",
  "include_directory",
  "kernel",
@@ -732,6 +733,39 @@ dependencies = [
  "trait-variant",
  "user",
  "vfs",
+]
+
+[[package]]
+name = "fixhandle"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "macros",
+]
+
+[[package]]
+name = "fixruntime"
+version = "0.1.0"
+dependencies = [
+ "arca",
+ "arcane",
+ "async-lock",
+ "bitfield-struct 0.11.0",
+ "bytemuck",
+ "chrono",
+ "chumsky",
+ "common",
+ "derive_more",
+ "fixhandle",
+ "futures",
+ "kernel",
+ "log",
+ "macros",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "trait-variant",
+ "user",
 ]
 
 [[package]]
