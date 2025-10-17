@@ -2,7 +2,7 @@
 #![feature(portable_simd)]
 #![allow(dead_code)]
 
-pub mod data;
-mod evaluator;
+mod data;
+pub mod fixruntime;
 pub mod runtime;
 mod storage;

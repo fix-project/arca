@@ -68,6 +68,12 @@ impl RawData {
     }
 }
 
+impl Into<Table> for RawData {
+    fn into(self) -> Table {
+        self.data
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BlobData {
     inner: RawData,
@@ -86,6 +92,10 @@ impl BlobData {
 
     pub fn len(&self) -> usize {
         self.inner.length
+    }
+
+    pub fn get(&self, buf: &mut [u8]) -> () {
+        self.inner.get(0, buf)
     }
 }
 

@@ -1,6 +1,6 @@
 #![allow(clippy::double_parens)]
 use core::simd::{u8x32, u64x4};
-use derive_more::{From, TryInto, Unwrap};
+use derive_more::{From, TryInto, TryUnwrap, Unwrap};
 use macros::BitPack;
 
 pub trait BitPack {
@@ -35,7 +35,7 @@ const fn bitmask256<const I: u32, const WIDTH: u32>() -> u8x32 {
     u8x32::from_array(out)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct RawHandle {
     content: u8x32,
 }
@@ -46,7 +46,7 @@ impl RawHandle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct MachineHandle {
     inner: RawHandle,
 }
@@ -87,7 +87,7 @@ impl BitPack for MachineHandle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct VirtualHandle {
     inner: MachineHandle,
 }
@@ -124,7 +124,7 @@ impl VirtualHandle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct PhysicalHandle {
     inner: MachineHandle,
 }
@@ -161,18 +161,19 @@ impl PhysicalHandle {
     }
 }
 
-#[derive(BitPack, Debug)]
+#[derive(BitPack, Debug, Clone, Copy)]
 pub enum Handle {
     VirtualHandle(VirtualHandle),
     PhysicalHandle(PhysicalHandle),
 }
 
-#[derive(BitPack, Debug, TryInto, Unwrap, From)]
+#[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
+#[try_unwrap(ref)]
 pub enum BlobName {
     Blob(Handle),
 }
 
-#[derive(BitPack, Debug, Unwrap)]
+#[derive(BitPack, Debug, Unwrap, Clone, Copy)]
 pub enum TreeName {
     NotTag(Handle),
     Tag(Handle),
@@ -186,32 +187,36 @@ impl From<TreeName> for Handle {
     }
 }
 
-#[derive(BitPack, Debug, TryInto, Unwrap, From)]
+#[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
+#[try_unwrap(ref)]
 pub enum Ref {
     BlobName(BlobName),
     TreeName(TreeName),
 }
 
-#[derive(BitPack, Debug, TryInto, Unwrap, From)]
+#[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
+#[try_unwrap(ref)]
 pub enum Object {
     BlobName(BlobName),
     TreeName(TreeName),
 }
 
-#[derive(BitPack, Debug, Unwrap)]
+#[derive(BitPack, Debug, Unwrap, Clone, Copy)]
 pub enum Thunk {
     Identification(Ref),
     Application(TreeName),
     Selection(TreeName),
 }
 
-#[derive(BitPack, Debug, TryInto, Unwrap)]
+#[derive(BitPack, Debug, TryUnwrap, Unwrap, Clone, Copy)]
+#[try_unwrap(ref)]
 pub enum Encode {
     Strict(Thunk),
     Shallow(Thunk),
 }
 
-#[derive(Debug, BitPack, TryInto, Unwrap, From)]
+#[derive(Debug, BitPack, TryUnwrap, Unwrap, From, Clone, Copy)]
+#[try_unwrap(ref)]
 pub enum FixHandle {
     Ref(Ref),
     Object(Object),
@@ -219,7 +224,7 @@ pub enum FixHandle {
     Encode(Encode),
 }
 
-#[derive(BitPack, Debug, TryInto, Unwrap, From)]
+#[derive(BitPack, Debug, TryInto, Unwrap, From, Clone, Copy)]
 pub enum Value {
     Ref(Ref),
     Object(Object),
