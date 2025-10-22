@@ -54,9 +54,11 @@ fn main() -> anyhow::Result<()> {
 
         let mut s = ninep::Server::new(spawn);
         let dir = FsDir::new("/tmp", Open::ReadWrite).unwrap();
-        s.add_blocking("", dir);
         let tcp = TcpFS::default();
-        s.add_blocking("tcp", tcp);
+        smol::block_on(async {
+            s.add("", dir).await;
+            s.add("tcp", tcp).await;
+        });
         let s = Arc::new(s);
 
         loop {

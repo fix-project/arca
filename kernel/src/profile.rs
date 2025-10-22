@@ -140,6 +140,12 @@ pub fn report(entries: &mut [(*const (), usize)]) {
 
         entries.sort_by_key(|x| x.1);
     }
+    let user = USER_COUNT.load(Ordering::SeqCst);
+    if user > entries[0].1 {
+        entries[0] = (core::ptr::null(), user);
+    }
+    entries.sort_by_key(|x| x.1);
+
     entries.reverse();
 
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
@@ -152,9 +158,12 @@ pub fn log(count: usize) {
         if *n == 0 {
             break;
         }
-        let symname = host::symname(*p)
+        let mut symname = host::symname(*p)
             .map(|(s, i)| alloc::format!("{s}+{i:#x}"))
             .unwrap_or(alloc::format!("{p:p}"));
+        if p.is_null() {
+            symname = "USER".to_string();
+        }
         log::info!("{i}. {symname} - {n}");
     }
 }

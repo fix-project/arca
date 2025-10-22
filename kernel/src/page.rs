@@ -16,6 +16,7 @@ pub type Page1GB = [u8; 1 << 30];
 pub type UniquePage<T> = Box<T, BuddyAllocator>;
 pub type SharedPage<T> = RefCnt<T>;
 
+// TODO: cloning a unique page should produce two shared pages (somehow)
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CowPage<T> {
     Unique(UniquePage<T>),

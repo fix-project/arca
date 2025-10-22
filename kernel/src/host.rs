@@ -10,8 +10,8 @@ impl log::Log for HostLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        crate::interrupts::critical(|| {
-            if self.enabled(record.metadata()) {
+        if self.enabled(record.metadata()) {
+            crate::interrupts::critical(|| {
                 let level = record.level() as u8;
                 let target = (
                     crate::vm::ka2pa(record.target().as_ptr()),
@@ -39,8 +39,8 @@ impl log::Log for HostLogger {
                     crate::io::outl(1, p as u32);
                     crate::io::outl(2, (p >> 32) as u32);
                 }
-            }
-        });
+            });
+        }
     }
 
     fn flush(&self) {

@@ -1,4 +1,4 @@
-mod arca;
+pub mod arca;
 mod blob;
 mod function;
 mod null;
@@ -35,3 +35,5 @@ pub type Function = ::arca::Function<Runtime>;
 pub type Value = ::arca::Value<Runtime>;
 pub type ValueRef<'a> = ::arca::ValueRef<'a, Runtime>;
 pub type Entry = ::arca::Entry<Runtime>;
+
+pub use arca::{Arca, LoadedArca};

@@ -1,17 +1,17 @@
+use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
-use common::util::sorter::Sorter;
 use common::vhost::VSockMetadata;
 
 use super::*;
 use crate::virtio::virtqueue::*;
 
-#[derive(Debug)]
-pub struct Driver {
+pub(crate) struct Driver {
     rx: VirtQueue,
     tx: VirtQueue,
     status: SpinLock<Status>,
-    listeners: sorter::Sorter<SocketAddr, SocketAddr>,
-    streams: sorter::Sorter<Flow, StreamEvent>,
+    listeners: RwLock<BTreeMap<SocketAddr, Weak<RwLock<ListenSocket>>>>,
+    streams: RwLock<BTreeMap<Flow, Weak<RwLock<StreamSocket>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -36,8 +36,8 @@ impl Driver {
             rx,
             tx,
             status: SpinLock::new(Status::default()),
-            listeners: Sorter::new(),
-            streams: Sorter::new(),
+            listeners: Default::default(),
+            streams: Default::default(),
         });
         for _ in 0..len / 2 {
             crate::rt::spawn(this.clone().recv_task());
@@ -47,49 +47,88 @@ impl Driver {
         this
     }
 
-    pub async fn listen(&self, addr: SocketAddr) -> Listener {
+    pub async fn listen(&self, addr: SocketAddr) -> Arc<RwLock<ListenSocket>> {
+        let mut addr = addr;
+
+        let mut listeners = self.listeners.write();
+
         if addr.port == 0 {
+            let mut found = false;
             for port in 49152..=65535 {
-                let addr = SocketAddr {
-                    cid: addr.cid,
-                    port,
-                };
-                if let Some(rx) = self.listeners.try_receiver(addr) {
-                    return Listener { rx };
+                addr.port = port;
+                if !listeners.contains_key(&addr) {
+                    found = true;
+                    break;
                 }
             }
-            panic!("out of ports");
-        } else {
-            Listener {
-                rx: self.listeners.receiver(addr),
+            if !found {
+                panic!("out of ports");
             }
         }
+
+        let socket = Arc::new(RwLock::new(ListenSocket {
+            addr,
+            waker: None,
+            queue: VecDeque::new(),
+        }));
+        let weak = Arc::downgrade(&socket);
+        if let Some(x) = listeners.get(&addr) {
+            if x.strong_count() >= 1 {
+                panic!("addr {addr:?} in use!");
+            }
+        }
+        listeners.insert(addr, weak);
+        core::mem::drop(listeners);
+        socket
     }
 
-    pub async fn accept(&self, flow: Flow) -> Receiver {
-        let rx = self.streams.receiver(flow);
-        self.response(flow.reverse()).await;
-        Receiver { rx }
+    pub async fn accept(&self, flow: Flow) -> Arc<RwLock<StreamSocket>> {
+        let mut streams = self.streams.write();
+        assert!(!streams.contains_key(&flow.reverse()));
+        let socket = Arc::new(RwLock::new(StreamSocket {
+            outbound: flow,
+            waker: None,
+            queue: VecDeque::new(),
+        }));
+        streams.insert(flow.reverse(), Arc::downgrade(&socket));
+        core::mem::drop(streams);
+        self.response(flow).await;
+        socket
     }
 
-    pub async fn connect(&self, flow: Flow) -> Receiver {
+    pub async fn connect(&self, flow: Flow) -> Arc<RwLock<StreamSocket>> {
+        let mut flow = flow;
+        let mut streams = self.streams.write();
+
         if flow.src.port == 0 {
+            let mut found = false;
             for port in 49152..=65535 {
-                let src = SocketAddr {
-                    cid: flow.src.cid,
-                    port,
-                };
-                let flow = Flow { src, dst: flow.dst };
-                if let Some(rx) = self.streams.try_receiver(flow.reverse()) {
-                    self.request(flow).await;
-                    return Receiver { rx };
+                flow.src.port = port;
+                if !streams.contains_key(&flow.reverse()) {
+                    found = true;
+                    break;
                 }
             }
-            panic!("out of ports");
+            if !found {
+                panic!("out of ports");
+            }
         }
-        let rx = self.streams.receiver(flow.reverse());
+
+        let socket = Arc::new(RwLock::new(StreamSocket {
+            outbound: flow,
+            waker: None,
+            queue: VecDeque::new(),
+        }));
+        let weak = Arc::downgrade(&socket);
+        if let Some(x) = streams.get(&flow.reverse()) {
+            if x.strong_count() >= 1 {
+                panic!("flow {flow:?} in use!");
+            }
+        }
+        streams.insert(flow.reverse(), weak);
+        core::mem::drop(streams);
         self.request(flow).await;
-        Receiver { rx }
+        socket
     }
 
     async fn send_message(&self, msg: OutgoingMessage, buffers: Option<&BufferChain<'_>>) -> usize {
@@ -119,10 +158,10 @@ impl Driver {
                 header.buf_alloc = status.buf_alloc as u32;
                 header.fwd_cnt = status.fwd_cnt as u32;
                 status.tx_cnt = status.tx_cnt.wrapping_add(len);
+                SpinLock::unlock(status);
 
                 let header_buf: &mut [u8; 44] = core::mem::transmute(&mut header);
                 let buffers = BufferChain::cons(header_buf, buffers);
-                SpinLock::unlock(status);
                 return self.tx.send(&buffers).await;
             }
         }
@@ -196,8 +235,6 @@ impl Driver {
     }
 
     async fn recv_task(self: Arc<Self>) {
-        let mut listeners = self.listeners.sender();
-        let mut streams = self.streams.sender();
         unsafe {
             loop {
                 let mut payload_buf = vec![0; 65536];
@@ -229,37 +266,78 @@ impl Driver {
                 match message {
                     Incoming::Invalid(_) => self.rst(flow).await,
                     Incoming::Request => {
-                        if listeners.send_blocking(flow.dst, flow.src).is_err() {
+                        let listeners = self.listeners.read();
+                        if let Some(socket) = listeners.get(&flow.dst).and_then(Weak::upgrade) {
+                        core::mem::drop(listeners);
+                            let mut socket = socket.write();
+                            socket.queue.push_back(flow.reverse());
+                            if let Some(waker) = socket.waker.take() {
+                            core::mem::drop(socket);
+                                waker.wake();
+                            }
+                        } else {
                             log::warn!("got incoming request {flow:?}, but no listener");
                             self.rst(flow.reverse()).await
-                        }
+                        };
                     }
                     Incoming::Response => {
-                        if streams.send_blocking(flow, StreamEvent::Connect).is_err() {
-                            log::error!("got response {flow:?}, but no stream");
+                        let streams = self.streams.read();
+                        if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
+                        core::mem::drop(streams);
+                            let mut socket = socket.write();
+                            socket.queue.push_back(StreamEvent::Connect);
+                            if let Some(waker) = socket.waker.take() {
+                            core::mem::drop(socket);
+                                waker.wake();
+                            }
+                        } else {
+                            log::warn!("got response {flow:?}, but no stream");
                             self.rst(flow.reverse()).await
-                        }
+                        };
                     }
                     Incoming::Rst => {
-                        let _ = streams.send_blocking(flow, StreamEvent::Reset).is_ok();
+                        let streams = self.streams.read();
+                        if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
+                            core::mem::drop(streams);
+                            let mut socket = socket.write();
+                            socket.queue.push_back(StreamEvent::Reset);
+                            if let Some(waker) = socket.waker.take() {
+                                core::mem::drop(socket);
+                                waker.wake();
+                            }
+                        }
                     }
                     Incoming::Shutdown { rx, tx } => {
-                        if streams
-                            .send_blocking(flow, StreamEvent::Shutdown { rx, tx })
-                            .is_err()
-                        {
-                            // TODO: why are we receiving these?
-                            self.rst(flow.reverse()).await;
-                        }
+                        let streams = self.streams.read();
+                        if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
+                            core::mem::drop(streams);
+                            let mut socket = socket.write();
+                            socket.queue.push_back(StreamEvent::Shutdown { rx, tx });
+                            if let Some(waker) = socket.waker.take() {
+                                core::mem::drop(socket);
+                                waker.wake();
+                            }
+                        } else {
+                            // log::warn!("got shutdown for {flow:?}, but no stream");
+                        };
                     }
                     Incoming::Read(len) => {
+                        let streams = self.streams.read();
                         payload_buf.truncate(len);
-                        if streams
-                            .send_blocking(flow, StreamEvent::Data { data: payload_buf })
-                            .is_err()
-                        {
+                        if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
+                            core::mem::drop(streams);
+                            let mut socket = socket.write();
+                            socket
+                                .queue
+                                .push_back(StreamEvent::Data { data: payload_buf });
+                            if let Some(waker) = socket.waker.take() {
+                                core::mem::drop(socket);
+                                waker.wake();
+                            }
+                        } else {
+                            log::warn!("got data for {flow:?}, but no stream");
                             self.rst(flow.reverse()).await
-                        }
+                        };
                     }
                     Incoming::CreditUpdate => {}
                     Incoming::CreditRequest => self.update(flow.reverse()).await,
@@ -281,41 +359,19 @@ impl Driver {
     }
 
     pub fn listeners(&self) -> Vec<SocketAddr> {
-        self.listeners.keys()
+        self.listeners
+            .read()
+            .iter()
+            .filter_map(|(k, v)| if v.weak_count() >= 1 { Some(*k) } else { None })
+            .collect()
     }
 
     pub fn streams(&self) -> Vec<Flow> {
-        self.streams.keys()
-    }
-}
-
-#[derive(Debug)]
-pub struct Listener {
-    rx: sorter::Receiver<SocketAddr, SocketAddr>,
-}
-
-impl Listener {
-    pub async fn listen(&self) -> Result<SocketAddr> {
-        Ok(self.rx.recv().await?)
-    }
-
-    pub fn addr(&self) -> SocketAddr {
-        *self.rx.key()
-    }
-}
-
-#[derive(Debug)]
-pub struct Receiver {
-    rx: sorter::Receiver<Flow, StreamEvent>,
-}
-
-impl Receiver {
-    pub async fn recv(&self) -> Result<StreamEvent> {
-        Ok(self.rx.recv().await?)
-    }
-
-    pub fn inbound(&self) -> Flow {
-        *self.rx.key()
+        self.streams
+            .read()
+            .iter()
+            .filter_map(|(k, v)| if v.weak_count() >= 1 { Some(*k) } else { None })
+            .collect()
     }
 }
 

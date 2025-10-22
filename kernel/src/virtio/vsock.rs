@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use common::util::channel::ChannelClosed;
 
 pub mod addr;
 pub(crate) mod driver;
@@ -10,6 +9,7 @@ pub mod message;
 pub mod stream;
 
 pub use addr::*;
+use common::util::channel::{RecvError, SendError};
 pub use driver::*;
 pub use flow::*;
 pub use header::*;
@@ -28,25 +28,31 @@ pub enum SocketError {
 
 pub type Result<T> = core::result::Result<T, SocketError>;
 
-impl From<ChannelClosed> for SocketError {
-    fn from(_: ChannelClosed) -> Self {
+impl<T> From<SendError<T>> for SocketError {
+    fn from(_: SendError<T>) -> Self {
+        SocketError::ConnectionClosed
+    }
+}
+
+impl From<RecvError> for SocketError {
+    fn from(_: RecvError) -> Self {
         SocketError::ConnectionClosed
     }
 }
 
 pub(crate) static DRIVER: OnceLock<Arc<Driver>> = OnceLock::new();
 
-pub(crate) async fn listen(addr: SocketAddr) -> Listener {
+pub(crate) async fn listen(addr: SocketAddr) -> Arc<RwLock<ListenSocket>> {
     let driver = &DRIVER;
     driver.listen(addr).await
 }
 
-pub(crate) async fn accept(flow: Flow) -> Receiver {
+pub(crate) async fn accept(flow: Flow) -> Arc<RwLock<StreamSocket>> {
     let driver = &DRIVER;
     driver.accept(flow).await
 }
 
-pub(crate) async fn connect(flow: Flow) -> Receiver {
+pub(crate) async fn connect(flow: Flow) -> Arc<RwLock<StreamSocket>> {
     let driver = &DRIVER;
     driver.connect(flow).await
 }

@@ -1,10 +1,12 @@
+use core::{future::Future, task::{Poll, Waker}};
+
 use crate::{io, prelude::*};
 
 mod desc;
 mod idx;
 mod vring;
 
-use common::{util::sorter::Sorter, vhost::VirtQueueMetadata};
+use common::vhost::VirtQueueMetadata;
 use desc::*;
 use idx::*;
 use vring::*;
@@ -16,10 +18,33 @@ pub struct UsedElement {
     len: u32,
 }
 
-#[derive(Debug)]
+#[derive(Default)]
+pub struct NotificationChannel {
+    waker: Option<Waker>,
+    data: Option<usize>,
+}
+
+pub struct Notification {
+    channel: Arc<SpinLock<NotificationChannel>>
+}
+
+impl Future for Notification {
+    type Output = usize;
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        let mut channel = self.channel.lock();
+        if let Some(value) = channel.data.take() {
+            Poll::Ready(value)
+        } else {
+            channel.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
 pub struct VirtQueue {
-    name: &'static str,
-    response_sorter: Sorter<DescriptorIndex, usize>,
+    _name: &'static str,
+    notifications: Box<[Arc<SpinLock<NotificationChannel>>]>,
     desc: Mutex<DescTable>,
     used: Mutex<DeviceRing<UsedElement>>,
     avail: Mutex<DriverRing<DescriptorIndex>>,
@@ -35,9 +60,11 @@ impl VirtQueue {
         let desc = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.desc), info.descriptors);
         let used = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.used), info.descriptors);
         let avail = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.avail), info.descriptors);
+        let mut notifications = vec![];
+        notifications.resize_with(info.descriptors, Default::default);
         VirtQueue {
-            name,
-            response_sorter: Sorter::new(),
+            _name: name,
+            notifications: notifications.into(),
             desc: Mutex::new(DescTable::new(name, desc)),
             used: Mutex::new(DeviceRing::new(name, used)),
             avail: Mutex::new(DriverRing::new(name, avail)),
@@ -179,37 +206,29 @@ impl VirtQueue {
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
             let head = self.load(bufs).await;
-            let rx = self.response_sorter.receiver(head);
             self.avail.lock().await.send(head);
             if !self.used.lock().await.avail_notifications_suppressed() {
                 io::outl(0xf4, 0);
             }
-            let result = rx.recv().await;
-            let result = match result {
-                Ok(result) => result,
-                Err(e) => {
-                    panic!("error while waiting for {head:?}: {e:?}");
-                }
-            };
-            core::mem::drop(rx);
+            let result = Notification {
+                channel: self.notifications[head.get() as usize].clone()
+            }.await;
             self.desc.lock().await.liberate(head);
             result
         }
     }
 
     pub fn poll(&self) {
-        let mut used = self.used.spin_lock();
+        let Some(mut used) = self.used.try_lock() else {
+            return;
+        };
         unsafe {
             while let Some(used) = used.recv() {
-                let x = self
-                    .response_sorter
-                    .sender()
-                    .send_blocking(used.id.into(), used.len as usize);
-                if x.is_err() {
-                    panic!(
-                        "{} had error while waking up descriptor {used:?}: {x:?}",
-                        self.name
-                    );
+                let mut notification = self.notifications[used.id as usize].lock();
+                notification.data = Some(used.len as usize);
+                if let Some(waker) = notification.waker.take() {
+                    core::mem::drop(notification);
+                    waker.wake();
                 }
             }
         }

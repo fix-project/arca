@@ -13,6 +13,7 @@
 #![feature(slice_from_ptr_range)]
 #![feature(sync_unsafe_cell)]
 #![feature(try_trait_v2)]
+#![feature(atomic_try_update)]
 #![feature(test)]
 #![feature(unboxed_closures)]
 #![cfg_attr(feature = "std", feature(thread_id_value))]

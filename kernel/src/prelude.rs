@@ -22,7 +22,9 @@ pub use crate::{
         PageTable512GBEntry,
     },
     shutdown,
-    types::{Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
+    types::{
+        Arca, Blob, Entry, Function, LoadedArca, Null, Page, Runtime, Table, Tuple, Value, Word,
+    },
 };
 pub use arca::DataType;
 pub use common::buddy::BuddyAllocator;
@@ -30,6 +32,7 @@ pub use common::refcnt::RefCnt;
 pub use common::util::channel;
 pub use common::util::mutex::Mutex;
 pub use common::util::oneshot;
+pub use common::util::router::Router;
 pub use common::util::rwlock::RwLock;
 pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;
