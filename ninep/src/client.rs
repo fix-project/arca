@@ -61,7 +61,7 @@ impl Connection {
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
         f.write(&msg).await?;
-        let result = rx.recv().await.map_err(Error::other)?;
+        let result = rx.recv().await.map_err(|_| Error::from(ErrorKind::Other))?;
         log::debug!("<- {result:?}");
         Ok(result)
     }
@@ -110,7 +110,8 @@ impl Client {
             let mut buf = vec![0; size as usize - 4];
             read.read_exact(&mut buf).await?;
             let rmsg: RMessage = wire::from_bytes(&buf)?;
-            tx.send_blocking(rmsg.tag(), rmsg).map_err(Error::other)?;
+            tx.send_blocking(rmsg.tag(), rmsg)
+                .map_err(|_| Error::from(ErrorKind::Other))?;
         }
     }
 

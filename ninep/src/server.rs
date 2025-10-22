@@ -54,12 +54,6 @@ impl<'a> Server<'a> {
             .insert(name.to_string(), Box::new(root));
     }
 
-    pub fn add_blocking(&mut self, name: &str, root: impl Dir) {
-        self.map
-            .spin_lock()
-            .insert(name.to_string(), Box::new(root));
-    }
-
     pub async fn serve(&self, socket: impl File) -> Result<()> {
         let mut socket: Box<dyn File> = Box::new(socket);
         let fids: ArcMutex<BTreeMap<Fid, ArcMutex<MaybeOpenFile>>> = Default::default();
@@ -109,7 +103,7 @@ impl<'a> Server<'a> {
                         } => {
                             let map = map.lock().await;
                             let root = map.get(&aname).ok_or(ErrorKind::NotFound)?.dup().await?;
-                            Mutex::unlock(map);
+                            core::mem::drop(map);
                             let qid = dir(fid);
                             fids.lock().await.insert(
                                 fid,
@@ -126,7 +120,7 @@ impl<'a> Server<'a> {
                         } => {
                             let fids_ = fids.lock().await;
                             let object = fids_.get(&fid).ok_or(ErrorKind::NotFound)?.clone();
-                            Mutex::unlock(fids_);
+                            core::mem::drop(fids_);
                             let mut object = object.lock().await;
                             let path = PathBuf::from(name.join("/"));
                             let object = match &mut *object {
@@ -188,7 +182,7 @@ impl<'a> Server<'a> {
                         TMessage::Open { tag, fid, access } => {
                             let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            Mutex::unlock(fids);
+                            core::mem::drop(fids);
                             let mut node = f.lock().await;
                             let (parent, name) =
                                 node.as_mut().left().ok_or(ErrorKind::InvalidInput)?;
@@ -246,7 +240,7 @@ impl<'a> Server<'a> {
                         } => {
                             let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            Mutex::unlock(fids);
+                            core::mem::drop(fids);
                             let mut f = f.lock().await;
                             let o = f.as_mut().right().ok_or(ErrorKind::InvalidInput)?;
                             let data = match o {
@@ -302,7 +296,7 @@ impl<'a> Server<'a> {
                         } => {
                             let fids = fids.lock().await;
                             let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
-                            Mutex::unlock(fids);
+                            core::mem::drop(fids);
                             let mut f = f.lock().await;
                             let f = f
                                 .as_mut()

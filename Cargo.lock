@@ -498,6 +498,8 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "arca",
+ "async-channel",
+ "async-lock",
  "derive_more",
  "elf",
  "hashbrown",

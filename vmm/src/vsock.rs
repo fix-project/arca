@@ -1,4 +1,3 @@
-// use common::util::mutex::Mutex;
 use ninep::*;
 use smol::{
     io::{AsyncReadExt as _, AsyncWriteExt, ReadHalf, WriteHalf},

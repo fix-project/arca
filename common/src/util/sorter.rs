@@ -2,17 +2,18 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use async_channel::{RecvError, SendError};
 use core::cmp::Eq;
 use core::fmt::Debug;
 use core::hash::Hash;
 use hashbrown::HashMap;
 
-use crate::util::channel::{self, ChannelClosed};
-use crate::util::spinlock::SpinLock;
+use crate::util::channel;
+use crate::util::rwlock::RwLock;
 
 #[derive(Debug)]
 pub struct Sorter<K: Hash + Eq + Clone + Debug, V: Debug> {
-    channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
+    channels: Arc<RwLock<HashMap<K, channel::Sender<V>>>>,
 }
 
 impl<K: Hash + Eq + Clone + Debug, V: Debug> Default for Sorter<K, V> {
@@ -24,7 +25,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Default for Sorter<K, V> {
 impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
     pub fn new() -> Self {
         Self {
-            channels: Arc::new(SpinLock::new(Default::default())),
+            channels: Arc::new(RwLock::new(Default::default())),
         }
     }
 
@@ -60,7 +61,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
     }
 
     pub fn len(&self) -> usize {
-        self.channels.lock().len()
+        self.channels.read().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -68,7 +69,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
     }
 
     pub fn keys(&self) -> Vec<K> {
-        self.channels.lock().keys().cloned().collect()
+        self.channels.read().keys().cloned().collect()
     }
 }
 
@@ -76,11 +77,11 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Sorter<K, V> {
 pub struct Receiver<K: Hash + Eq + Clone + Debug, V: Debug> {
     port: K,
     rx: channel::Receiver<V>,
-    channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
+    channels: Arc<RwLock<HashMap<K, channel::Sender<V>>>>,
 }
 
 impl<K: Hash + Eq + Clone + Debug, V: Debug> Receiver<K, V> {
-    pub async fn recv(&self) -> Result<V, ChannelClosed> {
+    pub async fn recv(&self) -> Result<V, RecvError> {
         self.rx.recv().await
     }
 
@@ -98,18 +99,20 @@ impl<K: Hash + Eq + Clone + Debug, V: Debug> Drop for Receiver<K, V> {
 
 #[derive(Clone)]
 pub struct Sender<K: Hash + Eq + Clone + Debug, V: Debug> {
-    channels: Arc<SpinLock<HashMap<K, channel::Sender<V>>>>,
+    channels: Arc<RwLock<HashMap<K, channel::Sender<V>>>>,
 }
 
 impl<K: Hash + Eq + Clone + Debug, V: Debug> Sender<K, V> {
-    pub fn send_blocking(&mut self, port: K, value: V) -> Result<(), ChannelClosed> {
-        let mut channels = self.channels.lock();
-        let channel = channels.get_mut(&port).ok_or(ChannelClosed)?;
-        let result = channel.send_blocking(value);
+    pub fn send_blocking(&mut self, port: K, value: V) -> Result<(), SendError<V>> {
+        let channels = self.channels.read();
+        let Some(channel) = channels.get(&port) else {
+            return Err(SendError(value));
+        };
+        let result = channel.try_send(value);
         if result.is_err() {
             log::warn!("{port:?} was closed");
         }
-        result
+        Ok(())
     }
 
     pub fn close(&mut self, port: K) {

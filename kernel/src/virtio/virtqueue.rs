@@ -198,7 +198,9 @@ impl VirtQueue {
     }
 
     pub fn poll(&self) {
-        let mut used = self.used.spin_lock();
+        let Some(mut used) = self.used.try_lock() else {
+            return;
+        };
         unsafe {
             while let Some(used) = used.recv() {
                 let x = self
