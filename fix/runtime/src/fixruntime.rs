@@ -1,19 +1,14 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 
-use core::simd::u8x32;
-
 use crate::{
     data::{BlobData, TreeData},
-    runtime::{DeterministicEquivRuntime, ExecutionRuntime},
+    runtime::DeterministicEquivRuntime,
     storage::{ObjectStore, Storage},
 };
-use arca::Runtime;
 use bytemuck::bytes_of;
 use derive_more::TryUnwrapError;
-use fixhandle::rawhandle::{BitPack, FixHandle, Object};
-use kernel::types::Blob as ArcaBlob;
-use kernel::{prelude::vec, types::Value};
+use fixhandle::rawhandle::{FixHandle, Object};
 
 #[derive(Debug)]
 pub enum Error {
@@ -27,18 +22,18 @@ impl<T> From<TryUnwrapError<T>> for Error {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct FixRuntime {
-    store: ObjectStore,
+#[derive(Debug)]
+pub struct FixRuntime<'a> {
+    store: &'a mut ObjectStore,
 }
 
-impl FixRuntime {
-    fn new() -> Self {
-        Self::default()
+impl<'a> FixRuntime<'a> {
+    fn new(store: &'a mut ObjectStore) -> Self {
+        Self { store }
     }
 }
 
-impl DeterministicEquivRuntime for FixRuntime {
+impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
     type BlobData = BlobData;
     type TreeData = TreeData;
     type Handle = FixHandle;
@@ -99,39 +94,5 @@ impl DeterministicEquivRuntime for FixRuntime {
                 .map_err(Error::from)
                 .and_then(|h| h.try_unwrap_tree_name_ref().map_err(Error::from))
                 .is_ok()
-    }
-}
-
-fn pack_handle(handle: &FixHandle) -> ArcaBlob {
-    let raw = handle.pack();
-    Runtime::create_blob(raw.as_array())
-}
-
-fn unpack_handle(blob: ArcaBlob) -> FixHandle {
-    let mut buf = [0u8; 32];
-    if Runtime::read_blob(&blob, 0, &mut buf) != 32 {
-        panic!("Failed to parse Arca Blob to Fix Handle")
-    }
-    FixHandle::unpack(u8x32::from_array(buf))
-}
-
-impl ExecutionRuntime for FixRuntime {
-    fn execute(&mut self, combination: &Self::Handle) -> Result<Self::Handle, Self::Error> {
-        let tree = self.get_tree(combination)?;
-        let function_handle = tree.get(1);
-        let elf = self.get_blob(&function_handle)?;
-
-        let mut buffer = vec![0u8; elf.len()];
-        elf.get(&mut buffer);
-
-        let f = common::elfloader::load_elf(&buffer).expect("Failed to load elf");
-        let f = Runtime::apply_function(f, Value::from(pack_handle(combination)));
-
-        let result = f.force();
-        if let Value::Blob(b) = result {
-            Ok(unpack_handle(b))
-        } else {
-            Err(Error::TypeMismatch)
-        }
     }
 }

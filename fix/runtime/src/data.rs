@@ -68,9 +68,9 @@ impl RawData {
     }
 }
 
-impl Into<Table> for RawData {
-    fn into(self) -> Table {
-        self.data
+impl From<RawData> for Table {
+    fn from(val: RawData) -> Self {
+        val.data
     }
 }
 

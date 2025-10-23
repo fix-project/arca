@@ -1,6 +1,8 @@
 use core::clone::Clone;
 use core::result::Result;
 
+use fixhandle::rawhandle::FixHandle;
+
 pub trait DeterministicEquivRuntime {
     type BlobData: Clone + core::fmt::Debug;
     type TreeData: Clone + core::fmt::Debug;
@@ -19,5 +21,9 @@ pub trait DeterministicEquivRuntime {
 }
 
 pub trait ExecutionRuntime: DeterministicEquivRuntime {
-    fn execute(&mut self, combination: &Self::Handle) -> Result<Self::Handle, Self::Error>;
+    fn request_execution(&mut self, combination: &Self::Handle) -> Result<(), Self::Error>;
+}
+
+pub trait Executor {
+    fn execute(&mut self, combination: &FixHandle) -> FixHandle;
 }
