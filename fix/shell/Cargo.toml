@@ -1,0 +1,21 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "fixshell"
+version = "0.1.0"
+edition = "2024"
+forced-target = "x86_64-unknown-none"
+
+[dependencies]
+arca = { path = "../../arca", features = ["serde"] }
+macros = { path = "../../macros" }
+common = { path = "../../common", default-features = false }
+fixhandle = { path = "../handle" }
+serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive"] }
+serde_bytes = { version = "0.11.17", default-features = false, features = ["alloc"] }
+user = { path = "../../user", artifact = "bin", target = "x86_64-unknown-none" }
+arcane = { path = "../../arcane/"}
+
+[build-dependencies]
+cbindgen = "0.29.2"
+anyhow = "1.0.100"
