@@ -25,6 +25,8 @@
 
 wasm_rt_memory_t *WASM_MEMORIES[128];
 size_t WASM_MEMORIES_N = 0;
+wasm_rt_externref_table_t *WASM_TABLES[128];
+size_t WASM_TABLES_N = 0;
 
 long check(char *msg, long ret);
 [[noreturn]] void trap(const char *msg);
@@ -139,7 +141,67 @@ void wasm_rt_free_memory(wasm_rt_memory_t *memory) { return; }
   }
 
 DEFINE_TABLE_OPS(funcref)
-DEFINE_TABLE_OPS(externref)
+
+void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t *table,
+                                      uint32_t elements,
+                                      uint32_t max_elements) {
+  size_t n = WASM_TABLES_N++;
+  assert(n < 128);
+  WASM_TABLES[n] = table;
+
+  assert(max_elements * sizeof(wasm_rt_externref_t) <= (1ull << 32));
+
+  // tables are after the memories in the address space
+  table->data = (void *)((128 + n) << 32);
+  table->max_size = max_elements;
+  table->size = elements;
+
+  uint64_t byte_length = elements * sizeof(wasm_rt_externref_t);
+  uint64_t num_pages = (byte_length + (1ull << 12) - 1) / (1ull << 12);
+
+  for (uint64_t i = 0; i < num_pages; i++) {
+    arcad page = check("arca_page_create", arca_page_create(1 << 12));
+    check("arca_mmap", arca_mmap((uint8_t *)(table->data) + i * 4096,
+                                 &(struct arca_entry){
+                                     .mode = __MODE_read_write,
+                                     .data = page,
+                                 }));
+  }
+  return;
+}
+
+void wasm_rt_free_externref_table(wasm_rt_externref_table_t *table) { return; }
+
+uint32_t wasm_rt_grow_externref_table(wasm_rt_externref_table_t *table,
+                                      uint32_t delta,
+                                      wasm_rt_externref_t init) {
+  uint64_t old_elements = table->size;
+  uint64_t new_elements = old_elements + delta;
+  if (new_elements == 0) {
+    return 0;
+  }
+  if (new_elements < old_elements || new_elements > table->max_size) {
+    return (uint32_t)-1;
+  }
+  uint64_t old_size = old_elements * sizeof(wasm_rt_externref_t);
+  uint64_t new_size = new_elements * sizeof(wasm_rt_externref_t);
+
+  uint64_t old_num_pages = (old_size + (1ull << 12) - 1) / (1ull << 12);
+  uint64_t new_num_pages = (new_size + (1ull << 12) - 1) / (1ull << 12);
+
+  for (uint64_t i = 0; i < new_num_pages - old_num_pages; i++) {
+    arcad page = check("arca_page_create", arca_page_create(1 << 12));
+    check("arca_mmap",
+          arca_mmap((uint8_t *)(table->data) + old_num_pages * 4096 + i * 4096,
+                    &(struct arca_entry){
+                        .mode = __MODE_read_write,
+                        .data = page,
+                    }));
+  }
+
+  table->size = new_elements;
+  return old_elements;
+}
 
 const char *wasm_rt_strerror(wasm_rt_trap_t trap) {
   switch (trap) {
