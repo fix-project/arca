@@ -5,7 +5,6 @@ use common::vhost::VSockMetadata;
 use super::*;
 use crate::virtio::virtqueue::*;
 
-#[derive(Debug)]
 pub struct Driver {
     rx: VirtQueue,
     tx: VirtQueue,

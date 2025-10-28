@@ -2,7 +2,9 @@
 pub mod descriptors;
 pub mod initcell;
 // pub mod mutex;
+pub mod concurrent_trie;
 pub mod oneshot;
+pub mod router;
 pub mod rwlock;
 pub mod semaphore;
 pub mod sorter;

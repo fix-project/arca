@@ -4,7 +4,7 @@ mod desc;
 mod idx;
 mod vring;
 
-use common::{util::sorter::Sorter, vhost::VirtQueueMetadata};
+use common::vhost::VirtQueueMetadata;
 use desc::*;
 use idx::*;
 use vring::*;
@@ -16,10 +16,9 @@ pub struct UsedElement {
     len: u32,
 }
 
-#[derive(Debug)]
 pub struct VirtQueue {
-    name: &'static str,
-    response_sorter: Sorter<DescriptorIndex, usize>,
+    _name: &'static str,
+    response_router: Router<usize>,
     desc: Mutex<DescTable>,
     used: Mutex<DeviceRing<UsedElement>>,
     avail: Mutex<DriverRing<DescriptorIndex>>,
@@ -36,8 +35,8 @@ impl VirtQueue {
         let used = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.used), info.descriptors);
         let avail = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.avail), info.descriptors);
         VirtQueue {
-            name,
-            response_sorter: Sorter::new(),
+            _name: name,
+            response_router: Router::new(),
             desc: Mutex::new(DescTable::new(name, desc)),
             used: Mutex::new(DeviceRing::new(name, used)),
             avail: Mutex::new(DriverRing::new(name, avail)),
@@ -179,19 +178,11 @@ impl VirtQueue {
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
             let head = self.load(bufs).await;
-            let rx = self.response_sorter.receiver(head);
             self.avail.lock().await.send(head);
             if !self.used.lock().await.avail_notifications_suppressed() {
                 io::outl(0xf4, 0);
             }
-            let result = rx.recv().await;
-            let result = match result {
-                Ok(result) => result,
-                Err(e) => {
-                    panic!("error while waiting for {head:?}: {e:?}");
-                }
-            };
-            core::mem::drop(rx);
+            let result = self.response_router.recv(head.get() as u64).await;
             self.desc.lock().await.liberate(head);
             result
         }
@@ -203,16 +194,7 @@ impl VirtQueue {
         };
         unsafe {
             while let Some(used) = used.recv() {
-                let x = self
-                    .response_sorter
-                    .sender()
-                    .send_blocking(used.id.into(), used.len as usize);
-                if x.is_err() {
-                    panic!(
-                        "{} had error while waking up descriptor {used:?}: {x:?}",
-                        self.name
-                    );
-                }
+                self.response_router.send(used.id as u64, used.len as usize);
             }
         }
     }
