@@ -1,7 +1,7 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
-use common::util::sorter::{Sender, Sorter};
+use common::util::router::Router;
 use common::util::spinlock::SpinLock;
 
 pub mod dir;
@@ -22,7 +22,7 @@ pub struct Client {
 }
 
 pub struct Connection {
-    inbound: Sorter<Tag, RMessage>,
+    inbound: Router<RMessage>,
     write: SpinLock<Box<dyn File>>,
     next_tag: AtomicU16,
     next_fid: AtomicU32,
@@ -56,12 +56,11 @@ impl Connection {
 
     async fn send(&self, message: TMessage) -> Result<RMessage> {
         let tag = message.tag();
-        let rx = self.inbound.receiver(tag);
         let mut f = self.write.lock().dup().await?;
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
         f.write(&msg).await?;
-        let result = rx.recv().await.map_err(|_| Error::from(ErrorKind::Other))?;
+        let result = self.inbound.recv(tag.0 as u64).await;
         log::debug!("<- {result:?}");
         Ok(result)
     }
@@ -72,8 +71,8 @@ impl Client {
         connection: impl File + 'static,
         spawn: impl Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync,
     ) -> Result<Client> {
-        let inbound = Sorter::new();
-        let tx = inbound.sender();
+        let inbound = Router::new();
+        let tx = inbound.clone();
         let connection = connection.boxed();
         let read = connection.dup().await?;
         spawn(Box::pin(async move {
@@ -102,7 +101,7 @@ impl Client {
         })
     }
 
-    async fn bg_task(mut tx: Sender<Tag, RMessage>, mut read: Box<dyn File>) -> Result<()> {
+    async fn bg_task(tx: Router<RMessage>, mut read: Box<dyn File>) -> Result<()> {
         loop {
             let mut size = [0u8; 4];
             read.read_exact(&mut size).await?;
@@ -110,8 +109,7 @@ impl Client {
             let mut buf = vec![0; size as usize - 4];
             read.read_exact(&mut buf).await?;
             let rmsg: RMessage = wire::from_bytes(&buf)?;
-            tx.send_blocking(rmsg.tag(), rmsg)
-                .map_err(|_| Error::from(ErrorKind::Other))?;
+            tx.send(rmsg.tag().0 as u64, rmsg);
         }
     }
 
