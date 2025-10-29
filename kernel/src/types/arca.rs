@@ -257,6 +257,9 @@ impl From<Descriptors> for Vec<Value> {
 
 impl From<Arca> for super::Function {
     fn from(value: Arca) -> super::Function {
-        super::Function::from_inner(super::internal::Function::arcane_with_args(value, VecDeque::default()))
+        super::Function::from_inner(super::internal::Function::arcane_with_args(
+            value,
+            VecDeque::default(),
+        ))
     }
 }

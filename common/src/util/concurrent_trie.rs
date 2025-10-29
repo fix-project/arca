@@ -295,6 +295,62 @@ impl<const N: usize, V> Trie<N, V> {
             core::hint::spin_loop();
         }
     }
+
+    fn try_first_key(&self) -> Result<Option<u64>, Retry> {
+        let mode = self.mode.load(Ordering::SeqCst);
+        match mode {
+            Mode::EMPTY => Ok(None),
+            Mode::LEAF => Ok(Some(self.key.load(Ordering::SeqCst))),
+            Mode::INNER => {
+                for i in 0..N {
+                    let cell = &self.children[i];
+                    let child = cell.load(Ordering::SeqCst);
+                    if child.is_null() {
+                        return Err(Retry);
+                    }
+                    if cell
+                        .compare_exchange(
+                            child,
+                            core::ptr::null_mut(),
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_err()
+                    {
+                        return Err(Retry);
+                    }
+                    let child = unsafe { Box::from_raw(child) };
+                    let result = loop {
+                        if let Ok(result) = child.try_first_key() {
+                            break result;
+                        }
+                        core::hint::spin_loop();
+                    };
+                    cell.store(Box::into_raw(child), Ordering::SeqCst);
+                    if let Some(key) = result {
+                        return Ok(Some(key * N as u64 + i as u64));
+                    }
+                }
+                Ok(None)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn first_key(&self) -> Option<u64> {
+        loop {
+            if let Ok(result) = self.try_first_key() {
+                return result;
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+impl<const N: usize, V> Default for Trie<N, V> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub type BinaryTrie<V> = Trie<2, V>;
