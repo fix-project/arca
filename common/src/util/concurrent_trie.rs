@@ -3,78 +3,68 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
 extern crate alloc;
 use alloc::boxed::Box;
 
-// TODO: refactor the synchronization similar to MVar
+struct SyncBox<T> {
+    ptr: AtomicPtr<T>,
+}
 
-// struct SyncBox<T> {
-//     ptr: AtomicPtr<T>,
-// }
+impl<T> SyncBox<T> {
+    pub const fn new() -> Self {
+        SyncBox {
+            ptr: AtomicPtr::new(core::ptr::null_mut()),
+        }
+    }
 
-// impl<T> SyncBox<T> {
-//     pub const fn new() -> Self {
-//         SyncBox {
-//             ptr: AtomicPtr::new(core::ptr::null_mut()),
-//         }
-//     }
+    pub fn take(&self) -> Box<T> {
+        loop {
+            if let Some(result) = self.try_take() {
+                return result;
+            }
+            core::hint::spin_loop();
+        }
+    }
 
-//     pub fn take(&self) -> Box<T> {
-//         loop {
-//             if let Some(result) = self.try_take() {
-//                 return result;
-//             }
-//             core::hint::spin_loop();
-//         }
-//     }
+    pub fn put(&self, value: Box<T>) {
+        let mut value = value;
+        loop {
+            let Err(result) = self.try_put(value) else {
+                return;
+            };
+            value = result;
+            core::hint::spin_loop();
+        }
+    }
 
-//     pub fn put(&self, value: Box<T>) {
-//         let mut value = value;
-//         loop {
-//             let Err(result) = self.try_put(value) else {
-//                 return;
-//             };
-//             value = result;
-//             core::hint::spin_loop();
-//         }
-//     }
+    pub fn try_take(&self) -> Option<Box<T>> {
+        unsafe {
+            Some(Box::from_raw(
+                self.ptr
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
+                        if old.is_null() {
+                            None
+                        } else {
+                            Some(core::ptr::null_mut())
+                        }
+                    })
+                    .ok()?,
+            ))
+        }
+    }
 
-//     pub fn try_take(&self) -> Option<Box<T>> {
-//         unsafe {
-//             Some(Box::from_raw(
-//                 self.ptr
-//                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
-//                         if old.is_null() {
-//                             None
-//                         } else {
-//                             Some(core::ptr::null_mut())
-//                         }
-//                     })
-//                     .ok()?,
-//             ))
-//         }
-//     }
-
-//     pub fn try_put(&self, value: Box<T>) -> Result<(), Box<T>> {
-//         let ptr = Box::into_raw(value);
-//         unsafe {
-//             self.ptr
-//                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
-//                     if old.is_null() {
-//                         Some(ptr)
-//                     } else {
-//                         None
-//                     }
-//                 })
-//                 .map_err(|p| Box::from_raw(p))?;
-//             Ok(())
-//         }
-//     }
-// }
-
-#[derive(Debug)]
-pub struct Trie<const N: usize, V> {
-    mode: AtomicU8,
-    key: AtomicU64,
-    value: AtomicPtr<V>,
-    children: [AtomicPtr<Trie<N, V>>; N],
+    pub fn try_put(&self, value: Box<T>) -> Result<(), Box<T>> {
+        let ptr = Box::into_raw(value);
+        unsafe {
+            self.ptr
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
+                    if old.is_null() {
+                        Some(ptr)
+                    } else {
+                        None
+                    }
+                })
+                .map_err(|p| Box::from_raw(p))?;
+            Ok(())
+        }
+    }
 }
 
 #[allow(non_snake_case)]
@@ -88,13 +78,20 @@ pub mod Mode {
 struct Retry;
 struct RetryWith<V>(pub V);
 
+pub struct Trie<const N: usize, V> {
+    mode: AtomicU8,
+    key: AtomicU64,
+    value: SyncBox<V>,
+    children: [SyncBox<Trie<N, V>>; N],
+}
+
 impl<const N: usize, V> Trie<N, V> {
     pub fn new() -> Self {
         Trie {
             mode: AtomicU8::new(0),
             key: AtomicU64::new(!0),
-            value: AtomicPtr::new(core::ptr::null_mut()),
-            children: [const { AtomicPtr::new(core::ptr::null_mut()) }; N],
+            value: SyncBox::new(),
+            children: [const { SyncBox::new() }; N],
         }
     }
 
@@ -112,37 +109,18 @@ impl<const N: usize, V> Trie<N, V> {
                     return Err(RetryWith(new_value));
                 }
                 self.key.store(key, Ordering::SeqCst);
-                self.value
-                    .store(Box::into_raw(Box::new(new_value)), Ordering::SeqCst);
+                self.value.put(Box::new(new_value));
                 Ok(None)
             }
             Mode::LEAF => {
-                let value = self.value.load(Ordering::SeqCst);
-                if value.is_null() {
-                    // Either the value is still being set, or it's been taken away. Either way
-                    // try again.
+                let Some(value) = self.value.try_take() else {
                     return Err(RetryWith(new_value));
-                }
-                if self
-                    .value
-                    .compare_exchange(
-                        value,
-                        core::ptr::null_mut(),
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                    .is_err()
-                {
-                    // Someone else is messing with this node.
-                    return Err(RetryWith(new_value));
-                }
-                let value = unsafe { Box::from_raw(value) };
+                };
                 // We have ownership of this node (and its value).
                 let key = self.key.load(Ordering::SeqCst);
                 if key == new_key {
                     // Just replace the value.
-                    self.value
-                        .store(Box::into_raw(Box::new(new_value)), Ordering::SeqCst);
+                    self.value.put(Box::new(new_value));
                     Ok(Some(*value))
                 } else {
                     // We've got to upgrade this to an inner node.
@@ -167,7 +145,7 @@ impl<const N: usize, V> Trie<N, V> {
                     // Writing to `zero` and `one` will unblock anyone trying to use this as an
                     // inner node.
                     for (i, child) in children.into_iter().enumerate() {
-                        self.children[i].store(Box::into_raw(child), Ordering::SeqCst);
+                        self.children[i].put(child);
                     }
                     Ok(None)
                 }
@@ -176,32 +154,14 @@ impl<const N: usize, V> Trie<N, V> {
                 // We're in an inner node.  It's possible another thread is initializing this node,
                 // or that someone is trying to downgrade it (or both!).
                 let child = &self.children[new_key as usize % N];
-                unsafe {
-                    let old = child.load(Ordering::SeqCst);
-                    if old.is_null() {
-                        // This isn't initialized, or has been downgraded, or someone else is
-                        // actively inserting into this node.
+                    let Some(old) = child.try_take() else {
                         return Err(RetryWith(new_value));
-                    }
-                    if child
-                        .compare_exchange(
-                            old,
-                            core::ptr::null_mut(),
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        )
-                        .is_err()
-                    {
-                        // We couldn't take ownership; someone else must have.
-                        return Err(RetryWith(new_value));
-                    }
+                    };
                     // We got ownership of this value!
-                    let cell = Box::from_raw(old);
-                    let replaced = cell.try_insert(new_key / N as u64, new_value);
+                    let replaced = old.try_insert(new_key / N as u64, new_value);
                     // Returning ownership will unblock others.
-                    child.store(Box::into_raw(cell), Ordering::SeqCst);
+                    child.put(old);
                     replaced
-                }
             }
             _ => unreachable!(),
         }
@@ -224,28 +184,13 @@ impl<const N: usize, V> Trie<N, V> {
         match mode {
             Mode::EMPTY => return Ok(None),
             Mode::LEAF => {
-                let value = self.value.load(Ordering::SeqCst);
-                if value.is_null() {
-                    // This value might be getting initialized.
+                let Some(value) = self.value.try_take() else {
                     return Err(Retry);
-                }
-                if self
-                    .value
-                    .compare_exchange(
-                        value,
-                        core::ptr::null_mut(),
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                    .is_err()
-                {
-                    // We couldn't claim ownership.
-                    return Err(Retry);
-                }
+                };
                 let key = self.key.load(Ordering::SeqCst);
                 if key != target_key {
-                    // This doesn't match.
-                    self.value.store(value, Ordering::SeqCst);
+                    // This doesn't match, replace the value.
+                    self.value.put(value);
                     return Ok(None);
                 }
                 self.key.store(!0, Ordering::SeqCst);
@@ -256,30 +201,15 @@ impl<const N: usize, V> Trie<N, V> {
                 {
                     unreachable!()
                 }
-                return unsafe { Ok(Some(*Box::from_raw(value))) };
+                return Ok(Some(*value));
             }
             Mode::INNER => {
                 let det = key as usize % N;
                 let rest = key / N as u64;
                 let cell = &self.children[det];
-                let child = cell.load(Ordering::SeqCst);
-                if child.is_null() {
-                    return Err(Retry);
-                }
-                if cell
-                    .compare_exchange(
-                        child,
-                        core::ptr::null_mut(),
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                    .is_err()
-                {
-                    return Err(Retry);
-                }
-                let child = unsafe { Box::from_raw(child) };
+                let child = cell.take();
                 let result = child.try_remove(rest);
-                cell.store(Box::into_raw(child), Ordering::SeqCst);
+                cell.put(child);
                 // TODO: we need to compact this
                 return result;
             }
@@ -304,29 +234,16 @@ impl<const N: usize, V> Trie<N, V> {
             Mode::INNER => {
                 for i in 0..N {
                     let cell = &self.children[i];
-                    let child = cell.load(Ordering::SeqCst);
-                    if child.is_null() {
+                    let Some(child) = cell.try_take() else {
                         return Err(Retry);
-                    }
-                    if cell
-                        .compare_exchange(
-                            child,
-                            core::ptr::null_mut(),
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        )
-                        .is_err()
-                    {
-                        return Err(Retry);
-                    }
-                    let child = unsafe { Box::from_raw(child) };
+                    };
                     let result = loop {
                         if let Ok(result) = child.try_first_key() {
                             break result;
                         }
                         core::hint::spin_loop();
                     };
-                    cell.store(Box::into_raw(child), Ordering::SeqCst);
+                    cell.put(child);
                     if let Some(key) = result {
                         return Ok(Some(key * N as u64 + i as u64));
                     }
