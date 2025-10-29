@@ -9,13 +9,14 @@ pub trait DeterministicEquivRuntime {
     type Handle: Clone + core::fmt::Debug;
     type Error;
 
-    fn create_blob_i64(&mut self, data: u64) -> Self::Handle;
-    fn create_blob(&mut self, data: Self::BlobData) -> Self::Handle;
-    fn create_tree(&mut self, data: Self::TreeData) -> Self::Handle;
+    fn create_blob_i64(data: u64) -> Self::Handle;
+    fn create_blob(data: Self::BlobData) -> Self::Handle;
+    fn create_tree(data: Self::TreeData) -> Self::Handle;
 
-    fn get_blob(&self, handle: &Self::Handle) -> Result<Self::BlobData, Self::Error>;
-    fn get_tree(&self, handle: &Self::Handle) -> Result<Self::TreeData, Self::Error>;
+    fn get_blob(handle: Self::Handle) -> Result<Self::BlobData, Self::Error>;
+    fn get_tree(handle: Self::Handle) -> Result<Self::TreeData, Self::Error>;
 
-    fn is_blob(handle: &Self::Handle) -> bool;
-    fn is_tree(handle: &Self::Handle) -> bool;
+    fn is_blob(handle: Self::Handle) -> bool;
+    fn is_tree(handle: Self::Handle) -> bool;
+    fn len(handle: Self::Handle) -> usize;
 }

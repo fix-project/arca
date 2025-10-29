@@ -168,6 +168,7 @@ pub enum Handle {
 }
 
 #[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
+#[unwrap(ref)]
 #[try_unwrap(ref)]
 pub enum BlobName {
     Blob(Handle),

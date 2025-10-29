@@ -21,6 +21,7 @@ kernel = { path = "../kernel" }
 macros = { path = "../macros" }
 common = { path = "../common", default-features = false }
 fixruntime = { path = "runtime" }
+fixhandle = { path = "handle" }
 log = "0.4.27"
 serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive"] }
 chrono = { version = "0.4.41", default-features = false, features = ["alloc", "serde"] }
@@ -39,6 +40,7 @@ bytemuck = "1.24.0"
 bitfield-struct = "0.11.0"
 
 [build-dependencies]
+fixshell = { path = "shell", artifact="staticlib", target = "x86_64-unknown-none" }
 anyhow = "1.0.98"
 bindgen = "0.72.1"
 cc = "1.2.30"

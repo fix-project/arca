@@ -94,14 +94,14 @@ impl BlobData {
         self.inner.length
     }
 
-    pub fn get(&self, buf: &mut [u8]) -> () {
+    pub fn get(&self, buf: &mut [u8]) {
         self.inner.get(0, buf)
     }
 }
 
-impl Into<RawData> for BlobData {
-    fn into(self) -> RawData {
-        self.inner
+impl From<BlobData> for RawData {
+    fn from(val: BlobData) -> Self {
+        val.inner
     }
 }
 
@@ -144,9 +144,9 @@ impl TreeData {
     }
 }
 
-impl Into<RawData> for TreeData {
-    fn into(self) -> RawData {
-        self.inner
+impl From<TreeData> for RawData {
+    fn from(val: TreeData) -> Self {
+        val.inner
     }
 }
 
