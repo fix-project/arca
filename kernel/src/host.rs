@@ -1,6 +1,7 @@
 use crate::prelude::*;
 
 use alloc::format;
+use common::hypercall;
 
 pub struct HostLogger;
 
@@ -36,8 +37,7 @@ impl log::Log for HostLogger {
                 };
                 let p = crate::vm::ka2pa(&raw const record);
                 unsafe {
-                    crate::io::outl(1, p as u32);
-                    crate::io::outl(2, (p >> 32) as u32);
+                    crate::io::hypercall1(hypercall::LOG, p as u64);
                 }
             });
         }
@@ -61,8 +61,7 @@ pub fn symname(addr: *const ()) -> Option<(String, usize)> {
                 ..Default::default()
             };
             let p = crate::vm::ka2pa(&raw mut symtab);
-            crate::io::outl(3, p as u32);
-            crate::io::outl(4, (p >> 32) as u32);
+            crate::io::hypercall1(hypercall::SYMNAME, p as u64);
             if !symtab.found {
                 return None;
             }
@@ -74,5 +73,21 @@ pub fn symname(addr: *const ()) -> Option<(String, usize)> {
             let name = core::str::from_utf8(bytes).expect("got back invalid UTF-8 from host");
             return Some((name.into(), addr as usize - symtab.addr));
         }
+    }
+}
+
+pub fn memset(region: *mut [u8], value: u8) {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe {
+        crate::io::hypercall3(hypercall::MEMSET, p as u64, value as u64, n as u64);
+    }
+}
+
+pub fn memclr(region: *mut [u8]) {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe {
+        crate::io::hypercall2(hypercall::MEMCLR, p as u64, n as u64);
     }
 }

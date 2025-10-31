@@ -52,3 +52,11 @@ pub struct SymtabRecord {
     pub file_buffer: (usize, usize),
     pub file_len: usize,
 }
+
+pub mod hypercall {
+    pub const EXIT: u64 = 0;
+    pub const LOG: u64 = 1;
+    pub const SYMNAME: u64 = 2;
+    pub const MEMSET: u64 = 3;
+    pub const MEMCLR: u64 = 4;
+}
