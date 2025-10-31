@@ -1,27 +1,42 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Poll, Waker},
+};
 
 use alloc::collections::vec_deque::VecDeque;
 
 use super::*;
 
+pub(crate) struct StreamSocket {
+    pub outbound: Flow,
+    pub waker: Option<Waker>,
+    pub queue: VecDeque<StreamEvent>,
+}
+
 pub struct Stream {
-    outbound: Flow,
-    rx: Receiver,
+    socket: Arc<RwLock<StreamSocket>>,
     peer_rx_closed: AtomicBool,
     peer_tx_closed: AtomicBool,
     closed: AtomicBool,
     last_read: SpinLock<Option<VecDeque<u8>>>,
+    outbound: Flow,
+}
+
+pub struct Read {
+    socket: Arc<RwLock<StreamSocket>>,
 }
 
 impl Stream {
-    pub fn new(outbound: Flow, rx: Receiver) -> Stream {
+    pub(crate) fn new(socket: Arc<RwLock<StreamSocket>>) -> Stream {
+        let outbound = socket.read().outbound;
         Stream {
-            outbound,
-            rx,
-            peer_rx_closed: AtomicBool::new(false),
-            peer_tx_closed: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
+            socket,
+            peer_rx_closed: false.into(),
+            peer_tx_closed: false.into(),
+            closed: false.into(),
             last_read: SpinLock::new(None),
+            outbound,
         }
     }
 
@@ -31,21 +46,15 @@ impl Stream {
             src: local,
             dst: peer.try_into().map_err(|_| SocketError::InvalidAddress)?,
         };
-        let rx = connect(outbound).await;
-        let outbound = rx.inbound().reverse();
-
-        let result = rx.recv().await?;
+        let socket = connect(outbound).await;
+        let result = Read {
+            socket: socket.clone(),
+        }
+        .await;
         let StreamEvent::Connect = result else {
             return Err(SocketError::ConnectionFailed);
         };
-        Ok(Stream {
-            outbound,
-            rx,
-            peer_rx_closed: false.into(),
-            peer_tx_closed: false.into(),
-            closed: false.into(),
-            last_read: SpinLock::new(None),
-        })
+        Ok(Stream::new(socket))
     }
 
     pub async fn recv(&self, bytes: &mut [u8]) -> Result<usize> {
@@ -64,7 +73,10 @@ impl Stream {
             Ok(n)
         } else {
             loop {
-                let result = self.rx.recv().await?;
+                let result = Read {
+                    socket: self.socket.clone(),
+                }
+                .await;
                 return match result {
                     StreamEvent::Reset => Err(SocketError::ConnectionReset),
                     StreamEvent::Connect => Err(SocketError::ConnectionReset),
@@ -122,7 +134,10 @@ impl Stream {
         shutdown(self.outbound, true, true).await;
 
         loop {
-            let result = self.rx.recv().await?;
+            let result = Read {
+                socket: self.socket.clone(),
+            }
+            .await;
             if let StreamEvent::Reset = result {
                 return Ok(());
             };
@@ -146,6 +161,23 @@ impl Drop for Stream {
     fn drop(&mut self) {
         if !self.closed.load(Ordering::SeqCst) {
             let _ = crate::rt::spawn_blocking(self.close_internal());
+        }
+    }
+}
+
+impl Future for Read {
+    type Output = StreamEvent;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        let mut socket = self.socket.write();
+        if let Some(x) = socket.queue.pop_front() {
+            Poll::Ready(x)
+        } else {
+            socket.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }

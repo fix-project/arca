@@ -1,3 +1,5 @@
+use core::{future::Future, task::{Poll, Waker}};
+
 use crate::{io, prelude::*};
 
 mod desc;
@@ -16,9 +18,33 @@ pub struct UsedElement {
     len: u32,
 }
 
+#[derive(Default)]
+pub struct NotificationChannel {
+    waker: Option<Waker>,
+    data: Option<usize>,
+}
+
+pub struct Notification {
+    channel: Arc<SpinLock<NotificationChannel>>
+}
+
+impl Future for Notification {
+    type Output = usize;
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        let mut channel = self.channel.lock();
+        if let Some(value) = channel.data.take() {
+            Poll::Ready(value)
+        } else {
+            channel.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
 pub struct VirtQueue {
     _name: &'static str,
-    response_router: Router<usize>,
+    notifications: Box<[Arc<SpinLock<NotificationChannel>>]>,
     desc: Mutex<DescTable>,
     used: Mutex<DeviceRing<UsedElement>>,
     avail: Mutex<DriverRing<DescriptorIndex>>,
@@ -34,9 +60,11 @@ impl VirtQueue {
         let desc = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.desc), info.descriptors);
         let used = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.used), info.descriptors);
         let avail = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.avail), info.descriptors);
+        let mut notifications = vec![];
+        notifications.resize_with(info.descriptors, Default::default);
         VirtQueue {
             _name: name,
-            response_router: Router::new(),
+            notifications: notifications.into(),
             desc: Mutex::new(DescTable::new(name, desc)),
             used: Mutex::new(DeviceRing::new(name, used)),
             avail: Mutex::new(DriverRing::new(name, avail)),
@@ -182,7 +210,9 @@ impl VirtQueue {
             if !self.used.lock().await.avail_notifications_suppressed() {
                 io::outl(0xf4, 0);
             }
-            let result = self.response_router.recv(head.get() as u64).await;
+            let result = Notification {
+                channel: self.notifications[head.get() as usize].clone()
+            }.await;
             self.desc.lock().await.liberate(head);
             result
         }
@@ -194,7 +224,12 @@ impl VirtQueue {
         };
         unsafe {
             while let Some(used) = used.recv() {
-                self.response_router.send(used.id as u64, used.len as usize);
+                let mut notification = self.notifications[used.id as usize].lock();
+                notification.data = Some(used.len as usize);
+                if let Some(waker) = notification.waker.take() {
+                    core::mem::drop(notification);
+                    waker.wake();
+                }
             }
         }
     }

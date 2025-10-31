@@ -14,7 +14,7 @@ use common::util::{
 };
 use time::OffsetDateTime;
 
-use crate::{interrupts::INTERRUPTED, kvmclock, prelude::*};
+use crate::{interrupts::INTERRUPTED, io, kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
@@ -163,6 +163,7 @@ impl Executor {
             TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
             unsafe {
                 crate::profile::muted(|| {
+                    io::outl(0xf4, 0);
                     core::arch::asm!("hlt");
                 });
             }

@@ -42,17 +42,17 @@ impl From<RecvError> for SocketError {
 
 pub(crate) static DRIVER: OnceLock<Arc<Driver>> = OnceLock::new();
 
-pub(crate) async fn listen(addr: SocketAddr) -> Listener {
+pub(crate) async fn listen(addr: SocketAddr) -> Arc<RwLock<ListenSocket>> {
     let driver = &DRIVER;
     driver.listen(addr).await
 }
 
-pub(crate) async fn accept(flow: Flow) -> Receiver {
+pub(crate) async fn accept(flow: Flow) -> Arc<RwLock<StreamSocket>> {
     let driver = &DRIVER;
     driver.accept(flow).await
 }
 
-pub(crate) async fn connect(flow: Flow) -> Receiver {
+pub(crate) async fn connect(flow: Flow) -> Arc<RwLock<StreamSocket>> {
     let driver = &DRIVER;
     driver.connect(flow).await
 }

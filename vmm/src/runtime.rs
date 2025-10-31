@@ -13,7 +13,7 @@ use std::{
 use common::BuddyAllocator;
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{
-    kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
+    kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES,
 };
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
@@ -319,7 +319,7 @@ impl Runtime {
             guest_phys_addr: 0,
             memory_size: BuddyAllocator.len() as u64,
             userspace_addr: BuddyAllocator.base() as u64,
-            flags: KVM_MEM_LOG_DIRTY_PAGES,
+            flags: 0,
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 

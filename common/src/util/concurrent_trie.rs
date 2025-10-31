@@ -154,14 +154,14 @@ impl<const N: usize, V> Trie<N, V> {
                 // We're in an inner node.  It's possible another thread is initializing this node,
                 // or that someone is trying to downgrade it (or both!).
                 let child = &self.children[new_key as usize % N];
-                    let Some(old) = child.try_take() else {
-                        return Err(RetryWith(new_value));
-                    };
-                    // We got ownership of this value!
-                    let replaced = old.try_insert(new_key / N as u64, new_value);
-                    // Returning ownership will unblock others.
-                    child.put(old);
-                    replaced
+                let Some(old) = child.try_take() else {
+                    return Err(RetryWith(new_value));
+                };
+                // We got ownership of this value!
+                let replaced = old.try_insert(new_key / N as u64, new_value);
+                // Returning ownership will unblock others.
+                child.put(old);
+                replaced
             }
             _ => unreachable!(),
         }
