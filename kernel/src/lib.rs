@@ -16,6 +16,7 @@ extern crate alloc;
 #[macro_use]
 pub extern crate macros;
 
+use common::hypercall;
 pub use macros::core_local;
 
 pub mod allocator;
@@ -86,7 +87,7 @@ pub fn shutdown() -> ! {
 pub fn exit(code: u8) -> ! {
     loop {
         unsafe {
-            io::outb(0, code);
+            io::hypercall1(hypercall::EXIT, code as u64);
         }
         core::hint::spin_loop();
     }
@@ -116,8 +117,5 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     SpinLockGuard::unlock(console);
 
-    loop {
-        unsafe { io::outb(0, 1) }
-        core::hint::spin_loop();
-    }
+    exit(1);
 }
