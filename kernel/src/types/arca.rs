@@ -1,3 +1,4 @@
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::{cpu::ExitReason, prelude::*};
@@ -252,5 +253,14 @@ impl From<Vec<Value>> for Descriptors {
 impl From<Descriptors> for Vec<Value> {
     fn from(value: Descriptors) -> Self {
         value.descriptors
+    }
+}
+
+impl From<Arca> for super::Function {
+    fn from(value: Arca) -> super::Function {
+        super::Function::from_inner(super::internal::Function::arcane_with_args(
+            value,
+            VecDeque::default(),
+        ))
     }
 }
