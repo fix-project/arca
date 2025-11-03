@@ -3,6 +3,8 @@ use kernel::prelude::*;
 use ninep::*;
 use vfs::*;
 
+use async_lock::RwLock;
+
 // use super::*;
 
 #[derive(Clone)]
@@ -85,7 +87,7 @@ impl Namespace {
         let mtpt = mtpt.as_ref().relative();
         let orig = self.walk(mtpt, Open::Read).await?.as_dir()?;
 
-        let mut mounts = self.data.mounts.write();
+        let mut mounts = self.data.mounts.write().await;
         match mtype {
             MountType::Replace => {
                 mounts.insert(mtpt.to_owned(), MountEnt::File(dir.boxed()));
@@ -93,64 +95,68 @@ impl Namespace {
             MountType::Before => {
                 let mut orig = Some(orig);
                 let mut repl = Some(dir);
-                mounts
-                    .entry(mtpt.to_owned())
-                    .and_modify(|x| {
-                        common::util::replace_with(x, |x| match x {
-                            MountEnt::File(object) => MountEnt::Union(UnionData {
-                                entries: Arc::new(RwLock::new(vec![
-                                    Mount::new(repl.take().unwrap(), create),
-                                    Mount::new(object, true),
-                                ])),
-                            }),
-                            MountEnt::Union(union) => {
-                                union
-                                    .entries
-                                    .write()
-                                    .insert(0, Mount::new(repl.take().unwrap(), create));
-                                MountEnt::Union(union)
-                            }
-                        });
+                if let Some(x) = mounts.get_mut(mtpt) {
+                    common::util::async_replace_with(x, async |x| match x {
+                        MountEnt::File(object) => MountEnt::Union(UnionData {
+                            entries: Arc::new(RwLock::new(vec![
+                                Mount::new(repl.take().unwrap(), create),
+                                Mount::new(object, true),
+                            ])),
+                        }),
+                        MountEnt::Union(union) => {
+                            union
+                                .entries
+                                .write()
+                                .await
+                                .insert(0, Mount::new(repl.take().unwrap(), create));
+                            MountEnt::Union(union)
+                        }
                     })
-                    .or_insert_with(|| {
+                    .await;
+                } else {
+                    mounts.insert(
+                        mtpt.to_owned(),
                         MountEnt::Union(UnionData {
                             entries: Arc::new(RwLock::new(vec![
                                 Mount::new(repl.take().unwrap(), create),
                                 Mount::new(orig.take().unwrap(), create),
                             ])),
-                        })
-                    });
+                        }),
+                    );
+                }
             }
             MountType::After => {
                 let mut orig = Some(orig);
                 let mut repl = Some(dir);
-                mounts
-                    .entry(mtpt.to_owned())
-                    .and_modify(|x| {
-                        common::util::replace_with(x, |x| match x {
-                            MountEnt::File(object) => MountEnt::Union(UnionData {
-                                entries: Arc::new(RwLock::new(vec![
-                                    Mount::new(object, true),
-                                    Mount::new(repl.take().unwrap(), create),
-                                ])),
-                            }),
-                            MountEnt::Union(union) => {
-                                union
-                                    .entries
-                                    .write()
-                                    .push(Mount::new(repl.take().unwrap(), create));
-                                MountEnt::Union(union)
-                            }
-                        });
+                if let Some(x) = mounts.get_mut(mtpt) {
+                    common::util::async_replace_with(x, async |x| match x {
+                        MountEnt::File(object) => MountEnt::Union(UnionData {
+                            entries: Arc::new(RwLock::new(vec![
+                                Mount::new(object, true),
+                                Mount::new(repl.take().unwrap(), create),
+                            ])),
+                        }),
+                        MountEnt::Union(union) => {
+                            union
+                                .entries
+                                .write()
+                                .await
+                                .push(Mount::new(repl.take().unwrap(), create));
+                            MountEnt::Union(union)
+                        }
                     })
-                    .or_insert_with(|| {
+                    .await;
+                } else {
+                    mounts.insert(
+                        mtpt.to_owned(),
                         MountEnt::Union(UnionData {
                             entries: Arc::new(RwLock::new(vec![
                                 Mount::new(orig.take().unwrap(), create),
                                 Mount::new(repl.take().unwrap(), create),
                             ])),
-                        })
-                    });
+                        }),
+                    );
+                }
             }
         }
         Ok(())
@@ -170,7 +176,7 @@ impl Namespace {
         let path = path.as_ref().to_owned();
         let path = path.relative();
 
-        let mounts = self.data.mounts.read();
+        let mounts = self.data.mounts.read().await;
         let best = mounts.keys().filter(|m| path.starts_with(m)).fold(
             "".as_ref(),
             |a: &Path, x: &PathBuf| {
@@ -182,7 +188,7 @@ impl Namespace {
         match &mount {
             MountEnt::File(object) => object.walk(rest, open).await,
             MountEnt::Union(u) => {
-                let u = u.entries.read();
+                let u = u.entries.read().await;
                 for mount in u.iter() {
                     if let Ok(x) = mount.dir.walk(rest, open).await {
                         return Ok(x);
@@ -211,7 +217,7 @@ impl Namespace {
         let path = path.as_ref().to_owned();
         let path = path.relative();
 
-        let mounts = self.data.mounts.read();
+        let mounts = self.data.mounts.read().await;
         let best = mounts.keys().filter(|m| path.starts_with(m)).fold(
             "".as_ref(),
             |a: &Path, x: &PathBuf| {
@@ -248,7 +254,7 @@ impl Namespace {
         let path = path.as_ref().to_owned();
         let path = path.relative();
 
-        let mounts = self.data.mounts.read();
+        let mounts = self.data.mounts.read().await;
         let best = mounts.keys().filter(|m| path.starts_with(m)).fold(
             "".as_ref(),
             |a: &Path, x: &PathBuf| {

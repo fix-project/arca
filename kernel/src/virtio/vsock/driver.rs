@@ -8,6 +8,7 @@ use common::vhost::VSockMetadata;
 use super::*;
 use crate::rt;
 use crate::virtio::virtqueue::*;
+use async_lock::RwLock;
 
 pub(crate) struct Driver {
     rx: VirtQueue,
@@ -54,7 +55,7 @@ impl Driver {
     pub async fn listen(&self, addr: SocketAddr) -> Arc<RwLock<ListenSocket>> {
         let mut addr = addr;
 
-        let mut listeners = self.listeners.write();
+        let mut listeners = self.listeners.write().await;
 
         if addr.port == 0 {
             let mut found = false;
@@ -88,7 +89,7 @@ impl Driver {
 
     #[rt::profile]
     pub async fn accept(&self, flow: Flow) -> Arc<RwLock<StreamSocket>> {
-        let mut streams = self.streams.write();
+        let mut streams = self.streams.write().await;
         assert!(!streams.contains_key(&flow.reverse()));
         let socket = Arc::new(RwLock::new(StreamSocket {
             outbound: flow,
@@ -104,7 +105,7 @@ impl Driver {
     #[rt::profile]
     pub async fn connect(&self, flow: Flow) -> Arc<RwLock<StreamSocket>> {
         let mut flow = flow;
-        let mut streams = self.streams.write();
+        let mut streams = self.streams.write().await;
 
         if flow.src.port == 0 {
             let mut found = false;
@@ -283,25 +284,27 @@ impl Driver {
                 match message {
                     Incoming::Invalid(_) => self.rst(flow).await,
                     Incoming::Request => {
-                        let listeners = self.listeners.read();
+                        let listeners = self.listeners.read().await;
                         if let Some(socket) = listeners.get(&flow.dst).and_then(Weak::upgrade) {
                             core::mem::drop(listeners);
-                            let mut socket = socket.write();
+                            let mut socket = socket.write().await;
                             socket.queue.push_back(flow.reverse());
                             if let Some(waker) = socket.waker.take() {
                                 core::mem::drop(socket);
                                 waker.wake();
                             }
                         } else {
+                            core::mem::drop(listeners);
                             log::warn!("got incoming request {flow:?}, but no listener");
+                            log::warn!("current listeners: {:?}", self.listeners().await);
                             self.rst(flow.reverse()).await
                         };
                     }
                     Incoming::Response => {
-                        let streams = self.streams.read();
+                        let streams = self.streams.read().await;
                         if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
                             core::mem::drop(streams);
-                            let mut socket = socket.write();
+                            let mut socket = socket.write().await;
                             socket.queue.push_back(StreamEvent::Connect);
                             if let Some(waker) = socket.waker.take() {
                                 core::mem::drop(socket);
@@ -313,10 +316,10 @@ impl Driver {
                         };
                     }
                     Incoming::Rst => {
-                        let streams = self.streams.read();
+                        let streams = self.streams.read().await;
                         if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
                             core::mem::drop(streams);
-                            let mut socket = socket.write();
+                            let mut socket = socket.write().await;
                             socket.queue.push_back(StreamEvent::Reset);
                             if let Some(waker) = socket.waker.take() {
                                 core::mem::drop(socket);
@@ -325,10 +328,10 @@ impl Driver {
                         }
                     }
                     Incoming::Shutdown { rx, tx } => {
-                        let streams = self.streams.read();
+                        let streams = self.streams.read().await;
                         if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
                             core::mem::drop(streams);
-                            let mut socket = socket.write();
+                            let mut socket = socket.write().await;
                             socket.queue.push_back(StreamEvent::Shutdown { rx, tx });
                             if let Some(waker) = socket.waker.take() {
                                 core::mem::drop(socket);
@@ -339,11 +342,11 @@ impl Driver {
                         };
                     }
                     Incoming::Read(len) => {
-                        let streams = self.streams.read();
+                        let streams = self.streams.read().await;
                         payload_buf.truncate(len);
                         if let Some(socket) = streams.get(&flow).and_then(Weak::upgrade) {
                             core::mem::drop(streams);
-                            let mut socket = socket.write();
+                            let mut socket = socket.write().await;
                             socket
                                 .queue
                                 .push_back(StreamEvent::Data { data: payload_buf });
@@ -375,19 +378,33 @@ impl Driver {
         self.tx.poll();
     }
 
-    pub fn listeners(&self) -> Vec<SocketAddr> {
+    pub async fn listeners(&self) -> Vec<SocketAddr> {
         self.listeners
             .read()
+            .await
             .iter()
-            .filter_map(|(k, v)| if v.weak_count() >= 1 { Some(*k) } else { None })
+            .filter_map(|(k, v)| {
+                if v.strong_count() >= 1 {
+                    Some(*k)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
-    pub fn streams(&self) -> Vec<Flow> {
+    pub async fn streams(&self) -> Vec<Flow> {
         self.streams
             .read()
+            .await
             .iter()
-            .filter_map(|(k, v)| if v.weak_count() >= 1 { Some(*k) } else { None })
+            .filter_map(|(k, v)| {
+                if v.strong_count() >= 1 {
+                    Some(*k)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 }

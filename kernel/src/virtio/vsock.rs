@@ -17,6 +17,8 @@ pub use listener::*;
 pub use message::*;
 pub use stream::*;
 
+use async_lock::RwLock;
+
 #[derive(Debug)]
 pub enum SocketError {
     InvalidAddress,
@@ -73,13 +75,13 @@ pub(crate) async fn rst(flow: Flow) {
 }
 
 #[allow(unused)]
-pub(crate) fn listeners() -> Vec<SocketAddr> {
+pub(crate) async fn listeners() -> Vec<SocketAddr> {
     let driver = &DRIVER;
-    driver.listeners()
+    driver.listeners().await
 }
 
 #[allow(unused)]
-pub(crate) fn streams() -> Vec<Flow> {
+pub(crate) async fn streams() -> Vec<Flow> {
     let driver = &DRIVER;
-    driver.streams()
+    driver.streams().await
 }

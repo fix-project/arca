@@ -18,6 +18,8 @@ use ninep::Client;
 mod dev;
 mod vsock;
 
+use async_lock::RwLock;
+
 mod proc;
 use crate::{
     dev::DevFS,

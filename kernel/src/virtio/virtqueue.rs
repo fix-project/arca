@@ -3,7 +3,7 @@ use core::{
     task::{Poll, Waker},
 };
 
-use crate::{io, prelude::*, rt};
+use crate::{io, prelude::*};
 
 mod desc;
 mod idx;
@@ -51,9 +51,9 @@ impl Future for Notification {
 pub struct VirtQueue {
     _name: &'static str,
     notifications: Box<[Arc<SpinLock<NotificationChannel>>]>,
-    desc: SpinLock<DescTable>,
-    used: SpinLock<DeviceRing<UsedElement>>,
-    avail: SpinLock<DriverRing<DescriptorIndex>>,
+    desc: RwLock<DescTable>,
+    used: RwLock<DeviceRing<UsedElement>>,
+    avail: RwLock<DriverRing<DescriptorIndex>>,
 }
 
 impl VirtQueue {
@@ -71,9 +71,9 @@ impl VirtQueue {
         VirtQueue {
             _name: name,
             notifications: notifications.into(),
-            desc: SpinLock::new(DescTable::new(name, desc)),
-            used: SpinLock::new(DeviceRing::new(name, used)),
-            avail: SpinLock::new(DriverRing::new(name, avail)),
+            desc: RwLock::new(DescTable::new(name, desc)),
+            used: RwLock::new(DeviceRing::new(name, used)),
+            avail: RwLock::new(DriverRing::new(name, avail)),
         }
     }
 }
@@ -161,56 +161,56 @@ impl Buffer<'_> {
 }
 
 impl VirtQueue {
-    #[rt::profile]
     async fn load(&self, bufs: &BufferChain<'_>) -> DescriptorIndex {
-        let mut buf = Box::new_uninit_slice(bufs.len());
-        let descs = loop {
-            let descs = {
-                let mut desc = self.desc.lock();
-                desc.try_allocate_many(&mut buf)
-            };
-            if let Some(descs) = descs {
-                break descs;
-            }
-            // TODO: handle descriptor unavailability better
-            log::warn!("out of descriptors");
-            crate::rt::wfi().await;
-        };
-        let mut head = None;
-        let mut previous = None;
-        let mut current = Some(bufs);
-        let mut i = 0;
-        // let mut desc = self.desc.lock();
-        while let Some(x) = current {
-            let idx = descs[i];
-            self.desc.lock().get_mut(idx).modify(|d| {
-                let (p, w) = match &x.car {
-                    Buffer::Immutable(x) => (*x as *const [u8], false),
-                    Buffer::Mutable(x) => (*x as *const [u8], true),
+        unsafe {
+            let mut buf = Box::new_uninit_slice(bufs.len());
+            let descs = loop {
+                let descs = {
+                    let mut desc = self.desc.lock();
+                    desc.try_allocate_many(&mut buf)
                 };
-                let (addr, len) = p.to_raw_parts();
-                d.addr = addr as *mut ();
-                d.len = len;
-                d.next = None;
-                d.device_writeable = w;
-            });
-            if let Some(previous) = previous {
-                self.desc.lock().get_mut(previous).modify(|d| {
-                    d.next = Some(idx);
+                if let Some(descs) = descs {
+                    break descs;
+                }
+                // TODO: handle descriptor unavailability better
+                log::warn!("out of descriptors");
+                crate::rt::wfi().await;
+            };
+            let mut head = None;
+            let mut previous = None;
+            let mut current = Some(bufs);
+            let mut i = 0;
+            while let Some(x) = current {
+                let idx = descs[i];
+                let desc = self.desc.read();
+                desc.get_mut_unchecked(idx).modify(|d| {
+                    let (p, w) = match &x.car {
+                        Buffer::Immutable(x) => (*x as *const [u8], false),
+                        Buffer::Mutable(x) => (*x as *const [u8], true),
+                    };
+                    let (addr, len) = p.to_raw_parts();
+                    d.addr = addr as *mut ();
+                    d.len = len;
+                    d.next = None;
+                    d.device_writeable = w;
                 });
-            }
-            previous = Some(idx);
+                if let Some(previous) = previous {
+                    desc.get_mut_unchecked(previous).modify(|d| {
+                        d.next = Some(idx);
+                    });
+                }
+                previous = Some(idx);
 
-            if head.is_none() {
-                head = Some(idx);
+                if head.is_none() {
+                    head = Some(idx);
+                }
+                current = x.cdr;
+                i += 1;
             }
-            current = x.cdr;
-            i += 1;
+            head.unwrap()
         }
-        head.unwrap()
     }
 
-    #[rt::profile]
     async unsafe fn notification(&self, head: DescriptorIndex) -> usize {
         Notification {
             channel: self.notifications[head.get() as usize].clone(),
@@ -218,26 +218,22 @@ impl VirtQueue {
         .await
     }
 
-    #[rt::profile]
     async unsafe fn mark_avail(&self, head: DescriptorIndex) {
         let mut avail = self.avail.lock();
         avail.send(head);
     }
 
-    #[rt::profile]
     async unsafe fn mark_free(&self, head: DescriptorIndex) {
         let mut desc = self.desc.lock();
         desc.liberate(head);
     }
 
-    #[rt::profile]
     async unsafe fn send_interrupt(&self) {
-        if !self.used.lock().avail_notifications_suppressed() {
+        if !self.used.read().avail_notifications_suppressed() {
             io::outl(0xf4, 0);
         }
     }
 
-    #[rt::profile]
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
             let head = self.load(bufs).await;

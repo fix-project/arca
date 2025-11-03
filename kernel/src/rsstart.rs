@@ -100,6 +100,7 @@ unsafe extern "C" fn _start(
         let mut raw = *ptr;
         raw.base = vm::pa2ka(0);
         common::buddy::import(raw);
+        BuddyAllocator.set_caching(false);
 
         init_cpu_tls();
     } else {
@@ -150,6 +151,7 @@ unsafe extern "C" fn _start(
         let argv = argv.add(1);
         let argc = argc - 1;
 
+        BuddyAllocator.set_caching(true);
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);
     } else {

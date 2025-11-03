@@ -1,6 +1,7 @@
 use core::{
     future::Future,
-    task::{Poll, Waker},
+    pin::pin,
+    task::{Context, Poll, Waker},
 };
 
 use alloc::collections::vec_deque::VecDeque;
@@ -15,9 +16,21 @@ pub(crate) struct ListenSocket {
     pub queue: VecDeque<Flow>,
 }
 
+impl Drop for ListenSocket {
+    fn drop(&mut self) {
+        panic!("who dropped a ListenSocket?");
+    }
+}
+
 pub struct StreamListener {
     socket: Arc<RwLock<ListenSocket>>,
     pub addr: SocketAddr,
+}
+
+impl Drop for StreamListener {
+    fn drop(&mut self) {
+        panic!("who dropped a StreamListener?");
+    }
 }
 
 struct Accept {
@@ -28,7 +41,7 @@ impl StreamListener {
     #[rt::profile]
     pub async fn bind(port: u32) -> Result<StreamListener> {
         let socket = listen(SocketAddr { cid: 3, port }).await;
-        let addr = socket.read().addr;
+        let addr = socket.read().await.addr;
         Ok(StreamListener { socket, addr })
     }
 
@@ -39,7 +52,7 @@ impl StreamListener {
         }
         .await;
         let socket = accept(flow).await;
-        Ok(Stream::new(socket))
+        Ok(Stream::new(socket).await)
     }
 }
 
@@ -50,7 +63,14 @@ impl Future for Accept {
         self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        let mut socket = self.socket.write();
+        let mut fake_cx = Context::from_waker(Waker::noop());
+        let mut socket = loop {
+            let socket = pin! {self.socket.write()};
+            if let Poll::Ready(result) = Future::poll(socket, &mut fake_cx) {
+                break result;
+            }
+            core::hint::spin_loop();
+        };
         if let Some(x) = socket.queue.pop_front() {
             Poll::Ready(x)
         } else {

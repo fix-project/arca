@@ -17,7 +17,10 @@ impl Mmap {
                 None,
                 NonZeroUsize::new(len).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                MapFlags::MAP_ANONYMOUS | MapFlags::MAP_SHARED | MapFlags::MAP_HUGE_1GB,
+                MapFlags::MAP_ANONYMOUS
+                    | MapFlags::MAP_SHARED
+                    | MapFlags::MAP_HUGE_2MB
+                    | MapFlags::MAP_HUGETLB,
             )
             .unwrap()
             .as_ptr() as *mut u8

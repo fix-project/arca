@@ -10,11 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{BuddyAllocator, hypercall};
+use common::{hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
-use kvm_bindings::{
-    kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES,
-};
+use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
@@ -145,7 +143,7 @@ fn new_cpu<'scope>(
         .spawn_scoped(scope, move || {
             run_cpu(vcpu_fd, elf, flag);
         })
-    .unwrap()
+        .unwrap()
 }
 
 fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
@@ -174,7 +172,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
             .set_mp_state(kvm_bindings::kvm_mp_state {
                 mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
             })
-        .unwrap();
+            .unwrap();
         let vcpu_exit = vcpu_fd.run().expect("run failed");
         match vcpu_exit {
             VcpuExit::IoIn(addr, data) => match addr {
@@ -196,7 +194,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             ExitCode::from(args[0] as u8).exit_process();
                         }
                         hypercall::LOG => {
-                            let record: *const common::LogRecord = BuddyAllocator.from_offset(args[1] as usize);
+                            let record: *const common::LogRecord =
+                                BuddyAllocator.from_offset(args[1] as usize);
                             unsafe {
                                 let common::LogRecord {
                                     level,
@@ -212,10 +211,16 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                     target.1,
                                 );
                                 let file = file.map(|x| {
-                                    std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
                                 });
                                 let module_path = module_path.map(|x| {
-                                    std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
                                 });
                                 let message = std::str::from_raw_parts(
                                     BuddyAllocator.from_offset::<u8>(message.0),
@@ -224,13 +229,13 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 
                                 log::logger().log(
                                     &log::Record::builder()
-                                    .level(level)
-                                    .target(target)
-                                    .file(file)
-                                    .line(line)
-                                    .module_path(module_path)
-                                    .args(format_args!("{message}"))
-                                    .build(),
+                                        .level(level)
+                                        .target(target)
+                                        .file(file)
+                                        .line(line)
+                                        .module_path(module_path)
+                                        .args(format_args!("{message}"))
+                                        .build(),
                                 );
                             }
                         }
@@ -243,7 +248,10 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 record.file_len = name.len();
                                 let (ptr, cap) = record.file_buffer;
                                 let buffer: &mut [u8] = unsafe {
-                                    core::slice::from_raw_parts_mut(BuddyAllocator.from_offset(ptr), cap)
+                                    core::slice::from_raw_parts_mut(
+                                        BuddyAllocator.from_offset(ptr),
+                                        cap,
+                                    )
                                 };
                                 if name.len() > cap {
                                     buffer.copy_from_slice(&name.as_bytes()[..cap]);
@@ -258,7 +266,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             }
                         }
                         hypercall::MEMSET => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let ptr: *mut u8 = BuddyAllocator.from_offset(args[0] as usize);
                             let chr = args[1] as u8;
                             let len = args[2] as usize;
                             unsafe {
@@ -268,7 +276,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             }
                         }
                         hypercall::MEMCLR => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let ptr: *mut u8 = BuddyAllocator.from_offset(args[0] as usize);
+                            log::info!("ptr: {ptr:p}");
                             let len = args[1] as usize;
                             unsafe {
                                 let mem = core::slice::from_raw_parts_mut(ptr, len);
@@ -472,19 +481,19 @@ impl Runtime {
                 assert!(!inner_args.is_empty());
                 let inner_args_offset = BuddyAllocator.to_offset(inner_args.as_ptr());
                 cpus.push(new_cpu(
-                        i,
-                        s,
-                        vcpu_fd,
-                        &elf,
-                        &[
+                    i,
+                    s,
+                    vcpu_fd,
+                    &elf,
+                    &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
                         inner_args.len() as u64,
                         inner_args_offset as u64,
                         0,
                         0,
-                        ],
-                        &kvm_cpuid,
+                    ],
+                    &kvm_cpuid,
                 ));
             }
             for cpu in cpus {
