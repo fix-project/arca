@@ -102,7 +102,7 @@ async fn main(_: &[usize]) {
         },
     )
     .unwrap();
-    kernel::profile::begin();
+    kernel::iprofile::begin();
 
     rt::spawn(async {
         loop {

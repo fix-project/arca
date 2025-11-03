@@ -6,6 +6,8 @@ use core::{
 
 use alloc::collections::vec_deque::VecDeque;
 
+use crate::rt;
+
 use super::*;
 
 pub(crate) struct StreamSocket {
@@ -40,6 +42,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn connect(peer: impl TryInto<SocketAddr>) -> Result<Stream> {
         let local = SocketAddr { cid: 3, port: 0 };
         let outbound = Flow {
@@ -57,6 +60,7 @@ impl Stream {
         Ok(Stream::new(socket))
     }
 
+    #[rt::profile]
     pub async fn recv(&self, bytes: &mut [u8]) -> Result<usize> {
         if bytes.is_empty() {
             return Ok(0);
@@ -118,6 +122,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn send(&self, buf: &[u8]) -> Result<usize> {
         if self.peer_rx_closed.load(Ordering::SeqCst) {
             Err(SocketError::ConnectionClosed)
@@ -127,6 +132,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     async fn close_internal(&mut self) -> Result<()> {
         if self.closed.fetch_or(true, Ordering::SeqCst) {
             return Ok(());
@@ -144,6 +150,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn close(mut self) -> Result<()> {
         self.close_internal().await
     }

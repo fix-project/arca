@@ -5,6 +5,7 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
+pub use macros::profile;
 
 use alloc::{boxed::Box, sync::Arc, task::Wake};
 use common::util::{
@@ -162,7 +163,7 @@ impl Executor {
         if !INTERRUPTED.load(Ordering::Relaxed) {
             TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
             unsafe {
-                crate::profile::muted(|| {
+                crate::iprofile::muted(|| {
                     io::outl(0xf4, 0);
                     core::arch::asm!("hlt");
                 });

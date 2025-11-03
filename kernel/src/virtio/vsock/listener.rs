@@ -5,6 +5,8 @@ use core::{
 
 use alloc::collections::vec_deque::VecDeque;
 
+use crate::rt;
+
 use super::*;
 
 pub(crate) struct ListenSocket {
@@ -23,12 +25,14 @@ struct Accept {
 }
 
 impl StreamListener {
+    #[rt::profile]
     pub async fn bind(port: u32) -> Result<StreamListener> {
         let socket = listen(SocketAddr { cid: 3, port }).await;
         let addr = socket.read().addr;
         Ok(StreamListener { socket, addr })
     }
 
+    #[rt::profile]
     pub async fn accept(&self) -> Result<Stream> {
         let flow = Accept {
             socket: self.socket.clone(),

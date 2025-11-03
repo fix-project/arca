@@ -110,7 +110,8 @@ unsafe extern "C" fn _start(
     // per-cpu init
     crate::tsc::init();
     crate::kvmclock::init();
-    crate::profile::init();
+    crate::iprofile::init();
+    crate::aprofile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
 

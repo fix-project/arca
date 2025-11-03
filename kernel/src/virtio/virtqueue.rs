@@ -1,6 +1,9 @@
-use core::{future::Future, task::{Poll, Waker}};
+use core::{
+    future::Future,
+    task::{Poll, Waker},
+};
 
-use crate::{io, prelude::*};
+use crate::{io, prelude::*, rt};
 
 mod desc;
 mod idx;
@@ -25,13 +28,16 @@ pub struct NotificationChannel {
 }
 
 pub struct Notification {
-    channel: Arc<SpinLock<NotificationChannel>>
+    channel: Arc<SpinLock<NotificationChannel>>,
 }
 
 impl Future for Notification {
     type Output = usize;
 
-    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
         let mut channel = self.channel.lock();
         if let Some(value) = channel.data.take() {
             Poll::Ready(value)
@@ -45,9 +51,9 @@ impl Future for Notification {
 pub struct VirtQueue {
     _name: &'static str,
     notifications: Box<[Arc<SpinLock<NotificationChannel>>]>,
-    desc: Mutex<DescTable>,
-    used: Mutex<DeviceRing<UsedElement>>,
-    avail: Mutex<DriverRing<DescriptorIndex>>,
+    desc: SpinLock<DescTable>,
+    used: SpinLock<DeviceRing<UsedElement>>,
+    avail: SpinLock<DriverRing<DescriptorIndex>>,
 }
 
 impl VirtQueue {
@@ -65,9 +71,9 @@ impl VirtQueue {
         VirtQueue {
             _name: name,
             notifications: notifications.into(),
-            desc: Mutex::new(DescTable::new(name, desc)),
-            used: Mutex::new(DeviceRing::new(name, used)),
-            avail: Mutex::new(DriverRing::new(name, avail)),
+            desc: SpinLock::new(DescTable::new(name, desc)),
+            used: SpinLock::new(DeviceRing::new(name, used)),
+            avail: SpinLock::new(DriverRing::new(name, avail)),
         }
     }
 }
@@ -155,11 +161,12 @@ impl Buffer<'_> {
 }
 
 impl VirtQueue {
+    #[rt::profile]
     async fn load(&self, bufs: &BufferChain<'_>) -> DescriptorIndex {
         let mut buf = Box::new_uninit_slice(bufs.len());
         let descs = loop {
             let descs = {
-                let mut desc = self.desc.lock().await;
+                let mut desc = self.desc.lock();
                 desc.try_allocate_many(&mut buf)
             };
             if let Some(descs) = descs {
@@ -173,10 +180,10 @@ impl VirtQueue {
         let mut previous = None;
         let mut current = Some(bufs);
         let mut i = 0;
-        let mut desc = self.desc.lock().await;
+        // let mut desc = self.desc.lock();
         while let Some(x) = current {
             let idx = descs[i];
-            desc.get_mut(idx).modify(|d| {
+            self.desc.lock().get_mut(idx).modify(|d| {
                 let (p, w) = match &x.car {
                     Buffer::Immutable(x) => (*x as *const [u8], false),
                     Buffer::Mutable(x) => (*x as *const [u8], true),
@@ -188,7 +195,7 @@ impl VirtQueue {
                 d.device_writeable = w;
             });
             if let Some(previous) = previous {
-                desc.get_mut(previous).modify(|d| {
+                self.desc.lock().get_mut(previous).modify(|d| {
                     d.next = Some(idx);
                 });
             }
@@ -203,17 +210,41 @@ impl VirtQueue {
         head.unwrap()
     }
 
+    #[rt::profile]
+    async unsafe fn notification(&self, head: DescriptorIndex) -> usize {
+        Notification {
+            channel: self.notifications[head.get() as usize].clone(),
+        }
+        .await
+    }
+
+    #[rt::profile]
+    async unsafe fn mark_avail(&self, head: DescriptorIndex) {
+        let mut avail = self.avail.lock();
+        avail.send(head);
+    }
+
+    #[rt::profile]
+    async unsafe fn mark_free(&self, head: DescriptorIndex) {
+        let mut desc = self.desc.lock();
+        desc.liberate(head);
+    }
+
+    #[rt::profile]
+    async unsafe fn send_interrupt(&self) {
+        if !self.used.lock().avail_notifications_suppressed() {
+            io::outl(0xf4, 0);
+        }
+    }
+
+    #[rt::profile]
     pub async fn send(&self, bufs: &BufferChain<'_>) -> usize {
         unsafe {
             let head = self.load(bufs).await;
-            self.avail.lock().await.send(head);
-            if !self.used.lock().await.avail_notifications_suppressed() {
-                io::outl(0xf4, 0);
-            }
-            let result = Notification {
-                channel: self.notifications[head.get() as usize].clone()
-            }.await;
-            self.desc.lock().await.liberate(head);
+            self.mark_avail(head).await;
+            self.send_interrupt().await;
+            let result = self.notification(head).await;
+            self.mark_free(head).await;
             result
         }
     }
