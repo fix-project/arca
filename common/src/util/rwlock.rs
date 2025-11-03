@@ -140,6 +140,8 @@ impl<T: ?Sized> RwLock<T> {
 
 unsafe impl<T: Send> Send for RwLock<T> {}
 unsafe impl<T: Send> Sync for RwLock<T> {}
+impl<T: ?Sized> !Send for WriteGuard<'_, T> {}
+impl<T: ?Sized> !Send for ReadGuard<'_, T> {}
 
 impl<'a, T: ?Sized> WriteGuard<'a, T> {
     pub fn unlock(_: Self) {}

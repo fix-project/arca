@@ -7,7 +7,7 @@ use core::{
     pin::Pin,
     ptr::NonNull,
     range::Range,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 extern crate alloc;
 use alloc::alloc::{AllocError, Allocator};
@@ -495,7 +495,7 @@ impl AllocatorInner {
 pub struct BuddyAllocatorImpl {
     base: *mut (),
     size: usize,
-    caching: bool,
+    caching: AtomicBool,
     inner: Pin<&'static AllocatorInner>,
     refcnt: Pin<&'static [AtomicUsize]>,
 }
@@ -546,7 +546,7 @@ impl BuddyAllocatorImpl {
         let temp = BuddyAllocatorImpl {
             base,
             size,
-            caching: false,
+            caching: AtomicBool::new(false),
             inner: unsafe { core::mem::transmute(inner.as_ref()) },
             refcnt: unsafe { core::mem::transmute(refcnt.as_ref()) },
         };
@@ -596,7 +596,7 @@ impl BuddyAllocatorImpl {
         let allocator = BuddyAllocatorImpl {
             base,
             size: slice.len(),
-            caching: cfg!(feature = "cache"),
+            caching: AtomicBool::new(cfg!(feature = "cache")),
             inner: Pin::static_ref(new_inner),
             refcnt: Pin::static_ref(new_refcnt),
         };
@@ -609,9 +609,13 @@ impl BuddyAllocatorImpl {
         allocator
     }
 
-    pub fn set_caching(&mut self, enable: bool) {
+    pub fn set_caching(&self, enable: bool) -> bool {
         if cfg!(feature = "cache") {
-            self.caching = enable;
+            self.caching
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(enable))
+                .unwrap_or_else(|x| x)
+        } else {
+            false
         }
     }
 
@@ -826,9 +830,9 @@ impl BuddyAllocatorImpl {
         let BuddyAllocatorImpl {
             base,
             size,
-            caching: _caching,
             inner,
             refcnt,
+            ..
         } = self;
         let p = inner.get_ref() as *const AllocatorInner;
         let q = refcnt.get_ref() as *const [AtomicUsize];
@@ -867,7 +871,7 @@ impl BuddyAllocatorImpl {
         BuddyAllocatorImpl {
             base,
             size,
-            caching: cfg!(feature = "cache"),
+            caching: AtomicBool::new(cfg!(feature = "cache")),
             inner: Pin::static_ref(&*inner),
             refcnt: Pin::static_ref(&*refcnt),
         }
@@ -893,7 +897,7 @@ impl Clone for BuddyAllocatorImpl {
         Self {
             base: self.base,
             size: self.size,
-            caching: self.caching,
+            caching: AtomicBool::new(self.caching.load(Ordering::SeqCst)),
             inner: self.inner,
             refcnt: self.refcnt,
         }
@@ -940,8 +944,12 @@ pub mod cache {
     pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
 
     #[core_local]
-    pub static ALLOCATION_CACHE: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+    pub static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
         LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+
+    // #[core_local]
+    // pub static ALLOCATION_CACHE_2MB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+    //     LazyLock::new(|| SpinLock::new(ArrayVec::new()));
 }
 
 #[cfg(all(feature = "std", feature = "thread_local_cache"))]
@@ -956,14 +964,18 @@ pub mod cache {
     pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
 
     #[thread_local]
-    pub static ALLOCATION_CACHE: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+    pub static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
         LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+
+    // #[thread_local]
+    // pub static ALLOCATION_CACHE_2MB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
+    //     LazyLock::new(|| SpinLock::new(ArrayVec::new()));
 }
 
 #[cfg(feature = "cache")]
 impl BuddyAllocatorImpl {
-    fn allocate_from_cache(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
-        let mut cache = cache::ALLOCATION_CACHE.lock();
+    fn allocate_from_cache_4kb(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
+        let mut cache = cache::ALLOCATION_CACHE_4KB.lock();
         if cache.is_empty() {
             let mut space = [core::ptr::null_mut(); cache::INCREMENT];
             let count = self.allocate_many_raw(size, &mut space);
@@ -976,8 +988,8 @@ impl BuddyAllocatorImpl {
         NonNull::new(converted).ok_or(AllocError)
     }
 
-    fn free_to_cache(&self, ptr: *mut (), size: usize) {
-        let mut cache = cache::ALLOCATION_CACHE.lock();
+    fn free_to_cache_4kb(&self, ptr: *mut (), size: usize) {
+        let mut cache = cache::ALLOCATION_CACHE_4KB.lock();
         if cache.len() == cache.capacity() {
             let mut space = [core::ptr::null_mut(); cache::INCREMENT];
             for spot in space.iter_mut() {
@@ -988,8 +1000,8 @@ impl BuddyAllocatorImpl {
         cache.push(ptr).unwrap();
     }
 
-    pub fn try_replenish(&self) -> bool {
-        let Some(mut cache) = cache::ALLOCATION_CACHE.try_lock() else {
+    pub fn try_replenish_4kb(&self) -> bool {
+        let Some(mut cache) = cache::ALLOCATION_CACHE_4KB.try_lock() else {
             return false;
         };
         let size = 4096;
@@ -1015,6 +1027,60 @@ impl BuddyAllocatorImpl {
         }
         true
     }
+
+    // fn allocate_from_cache_2mb(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
+    //     let mut cache = cache::ALLOCATION_CACHE_2MB.lock();
+    //     if cache.is_empty() {
+    //         let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+    //         let count = self.allocate_many_raw(size, &mut space);
+    //         for entry in space.iter().take(count) {
+    //             cache.push(*entry).unwrap();
+    //         }
+    //     }
+    //     let raw = cache.pop().ok_or(AllocError)?;
+    //     let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
+    //     NonNull::new(converted).ok_or(AllocError)
+    // }
+
+    // fn free_to_cache_2mb(&self, ptr: *mut (), size: usize) {
+    //     let mut cache = cache::ALLOCATION_CACHE_2MB.lock();
+    //     if cache.len() == cache.capacity() {
+    //         let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+    //         for spot in space.iter_mut() {
+    //             *spot = cache.pop().unwrap();
+    //         }
+    //         self.free_many_raw(size, &space);
+    //     }
+    //     cache.push(ptr).unwrap();
+    // }
+
+    // pub fn try_replenish_2mb(&self) -> bool {
+    //     let Some(mut cache) = cache::ALLOCATION_CACHE_2MB.try_lock() else {
+    //         return false;
+    //     };
+    //     let size = 4096;
+    //     if cache.len() >= cache::WATERMARK_HIGH {
+    //         let mut space: [*mut (); cache::INCREMENT] = [core::ptr::null_mut(); cache::INCREMENT];
+    //         for spot in space.iter_mut() {
+    //             *spot = cache.pop().unwrap();
+    //         }
+    //         if self.try_free_many_raw(size, &space).is_none() {
+    //             return false;
+    //         }
+    //         return true;
+    //     }
+    //     if cache.len() < cache::WATERMARK_HIGH {
+    //         let mut space = [core::ptr::null_mut(); cache::INCREMENT];
+    //         let Some(count) = self.try_allocate_many_raw(size, &mut space) else {
+    //             return false;
+    //         };
+    //         for entry in space.iter().take(count) {
+    //             cache.push(*entry).unwrap();
+    //         }
+    //         return true;
+    //     }
+    //     true
+    // }
 }
 
 unsafe impl Allocator for BuddyAllocatorImpl {
@@ -1025,9 +1091,14 @@ unsafe impl Allocator for BuddyAllocatorImpl {
 
         #[cfg(feature = "cache")]
         {
-            if self.caching && size <= 4096 && align <= 4096 {
-                return self.allocate_from_cache(size);
+            let caching = self.caching.load(Ordering::SeqCst);
+            if caching && size <= 4096 && align <= 4096 {
+                return self.allocate_from_cache_4kb(size);
             }
+            // if caching && size == (1 << 21) && align <= (1 << 21) {
+            //     let result = self.allocate_from_cache_2mb(size);
+            //     return result;
+            // }
         }
 
         let raw = self.allocate_raw(size);
@@ -1042,10 +1113,15 @@ unsafe impl Allocator for BuddyAllocatorImpl {
 
         #[cfg(feature = "cache")]
         {
-            if self.caching && size <= 4096 && align <= 4096 {
-                self.free_to_cache(ptr.as_ptr() as *mut (), size);
+            let caching = self.caching.load(Ordering::SeqCst);
+            if caching && size <= 4096 && align <= 4096 {
+                self.free_to_cache_4kb(ptr.as_ptr() as *mut (), size);
                 return;
             }
+            // if caching && size == (1 << 21) && align <= (1 << 21) {
+            //     self.free_to_cache_2mb(ptr.as_ptr() as *mut (), size);
+            //     return;
+            // }
         }
 
         self.free_raw(ptr.as_ptr() as *mut (), size)

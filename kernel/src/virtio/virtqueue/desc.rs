@@ -33,6 +33,10 @@ impl DescTable {
         unsafe { &mut (*self.table)[usize::from(index)] }
     }
 
+    pub unsafe fn get_mut_unchecked(&self, index: DescriptorIndex) -> &mut Desc {
+        unsafe { &mut (*self.table)[usize::from(index)] }
+    }
+
     pub fn try_allocate(&mut self) -> Option<DescriptorIndex> {
         let idx = self.free_index?;
         // safety: since this was on the free list, the device isn't using it

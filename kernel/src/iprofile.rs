@@ -5,7 +5,12 @@ use core::{
 
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::{host, interrupts::IsrRegisterFile, prelude::*};
+use crate::{
+    debugcon::CONSOLE,
+    host::{self},
+    interrupts::IsrRegisterFile,
+    prelude::*,
+};
 
 static PROFILING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -154,6 +159,9 @@ pub fn report(entries: &mut [(*const (), usize)]) {
 pub fn log(count: usize) {
     let mut entries = vec![(core::ptr::null(), 0); count];
     report(&mut entries);
+    use core::fmt::Write as _;
+    let mut console = CONSOLE.lock();
+    writeln!(console, "##### PROFILE #####").unwrap();
     for (i, (p, n)) in entries.iter().enumerate() {
         if *n == 0 {
             break;
@@ -164,8 +172,9 @@ pub fn log(count: usize) {
         if p.is_null() {
             symname = "USER".to_string();
         }
-        log::info!("{i}. {symname} - {n}");
+        writeln!(console, "{i}.\t{n:5}\t{symname}").unwrap();
     }
+    writeln!(console, "###################").unwrap();
 }
 
 #[inline(never)]

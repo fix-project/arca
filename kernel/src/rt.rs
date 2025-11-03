@@ -5,6 +5,7 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
+pub use macros::profile;
 
 use alloc::{boxed::Box, sync::Arc, task::Wake};
 use common::util::{
@@ -14,7 +15,7 @@ use common::util::{
 };
 use time::OffsetDateTime;
 
-use crate::{interrupts::INTERRUPTED, io, kvmclock, prelude::*};
+use crate::{debugcon::CONSOLE, interrupts::INTERRUPTED, io, kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
@@ -162,10 +163,8 @@ impl Executor {
         if !INTERRUPTED.load(Ordering::Relaxed) {
             TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
             unsafe {
-                crate::profile::muted(|| {
-                    io::outl(0xf4, 0);
-                    core::arch::asm!("hlt");
-                });
+                io::outl(0xf4, 0);
+                core::arch::asm!("hlt");
             }
             TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
         }
@@ -337,18 +336,28 @@ pub fn profile() {
     let working = TIME_WORKING.load(Ordering::SeqCst) as f64;
     let sleeping = TIME_SLEEPING.load(Ordering::SeqCst) as f64;
     let total = scheduling + working + sleeping;
-    log::info!(
+    use core::fmt::Write as _;
+    let mut console = CONSOLE.lock();
+    writeln!(console, "***** RUNTIME *****").unwrap();
+    writeln!(
+        console,
         "time spent sleeping:   {sleeping:12} ({:3.2}%)",
         sleeping * 100. / total
-    );
-    log::info!(
+    )
+    .unwrap();
+    writeln!(
+        console,
         "time spent working:    {working:12} ({:3.2}%)",
         working * 100. / total
-    );
-    log::info!(
+    )
+    .unwrap();
+    writeln!(
+        console,
         "time spent scheduling: {scheduling:12} ({:3.2}%)",
         scheduling * 100. / total
-    );
+    )
+    .unwrap();
+    writeln!(console, "*******************").unwrap();
 }
 
 struct WaitForInterrupt {

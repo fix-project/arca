@@ -1,10 +1,13 @@
 use core::{
     future::Future,
+    pin::pin,
     sync::atomic::{AtomicBool, Ordering},
-    task::{Poll, Waker},
+    task::{Context, Poll, Waker},
 };
 
 use alloc::collections::vec_deque::VecDeque;
+
+use crate::rt;
 
 use super::*;
 
@@ -19,7 +22,7 @@ pub struct Stream {
     peer_rx_closed: AtomicBool,
     peer_tx_closed: AtomicBool,
     closed: AtomicBool,
-    last_read: SpinLock<Option<VecDeque<u8>>>,
+    last_read: Mutex<Option<VecDeque<u8>>>,
     outbound: Flow,
 }
 
@@ -28,18 +31,19 @@ pub struct Read {
 }
 
 impl Stream {
-    pub(crate) fn new(socket: Arc<RwLock<StreamSocket>>) -> Stream {
-        let outbound = socket.read().outbound;
+    pub(crate) async fn new(socket: Arc<RwLock<StreamSocket>>) -> Stream {
+        let outbound = socket.read().await.outbound;
         Stream {
             socket,
             peer_rx_closed: false.into(),
             peer_tx_closed: false.into(),
             closed: false.into(),
-            last_read: SpinLock::new(None),
+            last_read: Mutex::new(None),
             outbound,
         }
     }
 
+    #[rt::profile]
     pub async fn connect(peer: impl TryInto<SocketAddr>) -> Result<Stream> {
         let local = SocketAddr { cid: 3, port: 0 };
         let outbound = Flow {
@@ -54,14 +58,15 @@ impl Stream {
         let StreamEvent::Connect = result else {
             return Err(SocketError::ConnectionFailed);
         };
-        Ok(Stream::new(socket))
+        Ok(Stream::new(socket).await)
     }
 
+    #[rt::profile]
     pub async fn recv(&self, bytes: &mut [u8]) -> Result<usize> {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let mut last_read = self.last_read.lock();
+        let mut last_read = self.last_read.lock().await;
         if let Some(rest) = last_read.as_mut() {
             let n = core::cmp::min(bytes.len(), rest.len());
             for item in bytes.iter_mut().take(n) {
@@ -118,6 +123,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn send(&self, buf: &[u8]) -> Result<usize> {
         if self.peer_rx_closed.load(Ordering::SeqCst) {
             Err(SocketError::ConnectionClosed)
@@ -127,6 +133,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     async fn close_internal(&mut self) -> Result<()> {
         if self.closed.fetch_or(true, Ordering::SeqCst) {
             return Ok(());
@@ -144,8 +151,10 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn close(mut self) -> Result<()> {
-        self.close_internal().await
+        self.close_internal().await?;
+        Ok(())
     }
 
     pub fn peer(&self) -> SocketAddr {
@@ -172,7 +181,14 @@ impl Future for Read {
         self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Self::Output> {
-        let mut socket = self.socket.write();
+        let mut fake_cx = Context::from_waker(Waker::noop());
+        let mut socket = loop {
+            let socket = pin! {self.socket.write()};
+            if let Poll::Ready(result) = Future::poll(socket, &mut fake_cx) {
+                break result;
+            }
+            core::hint::spin_loop();
+        };
         if let Some(x) = socket.queue.pop_front() {
             Poll::Ready(x)
         } else {

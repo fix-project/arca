@@ -15,10 +15,8 @@ use derive_more::{Display, From, TryInto};
 pub use env::Env;
 pub use namespace::Namespace;
 
-use kernel::{
-    prelude::RwLock,
-    types::{Blob, Function, Tuple, Value},
-};
+use async_lock::RwLock;
+use kernel::types::{Blob, Function, Tuple, Value};
 mod table;
 use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
@@ -104,7 +102,7 @@ impl Proc {
                     }
                     (b"dup", &mut [Value::Word(fd)]) => {
                         let result = try {
-                            let mut fds = self.state.fds.lock();
+                            let mut fds = self.state.fds.write().await;
                             let old = fds.get(fd.read() as usize).ok_or(UnixError::BADFD)?;
                             let new = old.dup().await?;
                             let fd = fds.insert(new);
@@ -116,7 +114,7 @@ impl Proc {
                         let state = Arc::new((*self.state).clone());
                         let pid = table::PROCS.allocate(&state);
                         let mut fds = Descriptors::new();
-                        for (i, x) in self.state.fds.read().iter() {
+                        for (i, x) in self.state.fds.read().await.iter() {
                             fds.set(i, x.dup().await.unwrap());
                         }
                         let new = Proc {
@@ -135,11 +133,16 @@ impl Proc {
                     }
                     (b"monitor-new", &mut []) => {
                         let mvar = MVar::new(Monitor::new());
-                        let i = self.state.fds.lock().insert(FileDescriptor::MVar(mvar));
+                        let i = self
+                            .state
+                            .fds
+                            .write()
+                            .await
+                            .insert(FileDescriptor::MVar(mvar));
                         k.apply(i as u64)
                     }
                     (b"monitor-enter", &mut [Value::Word(fd), Value::Function(ref mut g)]) => {
-                        let fds = self.state.fds.lock();
+                        let fds = self.state.fds.write().await;
                         let monitor = fds.get(fd.read() as usize).ok_or(UnixError::BADFD).unwrap();
                         let monitor = monitor.as_mvar_ref().unwrap();
                         k.apply(monitor.run(core::mem::take(g)).await)

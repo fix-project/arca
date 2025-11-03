@@ -25,15 +25,16 @@ use common::hypercall;
 pub use macros::core_local;
 
 pub mod allocator;
+pub mod aprofile;
 pub mod cpu;
 pub mod debugcon;
 pub mod host;
 pub mod io;
+pub mod iprofile;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod prelude;
-pub mod profile;
 pub mod rt;
 pub mod tsc;
 pub mod types;
@@ -110,7 +111,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");
     let mut i = 0;
-    crate::profile::backtrace(|addr, decoded| {
+    crate::iprofile::backtrace(|addr, decoded| {
         if i > 0 {
             if let Some((symname, offset)) = decoded {
                 let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
