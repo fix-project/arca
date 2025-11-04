@@ -94,6 +94,9 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
         }
     }
 
+    let shell_top = env::var_os("CARGO_STATICLIB_FILE_FIXSHELL_fixshell").unwrap();
+    src.push(PathBuf::from(shell_top));
+
     println!("{src:?}");
 
     let mut o_file = INTERMEDIATEOUT.get().unwrap().clone();
@@ -116,11 +119,13 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-frounding-math",
             // "-fsignaling-nans",
             "-ffreestanding",
-            // "-nostdlib",
+            "-nostdlib",
             "-nostartfiles",
             // "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
+            "-mavx2",
+            "-march=native"
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
@@ -191,21 +196,6 @@ fn main() -> Result<()> {
     }
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-
-    let headers = vec![cwd.clone() + "/fix-shell/handle.h"];
-
-    let bindings = bindgen::Builder::default()
-        .headers(headers)
-        .clang_args(["-nostdinc"])
-        .use_core()
-        .default_enum_style(bindgen::EnumVariation::ModuleConsts)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Unable to generate bindings");
-
-    bindings
-        .write_to_file(Path::new(&out_dir).join("handle-bindings.rs"))
-        .expect("Couldn't write bindings!");
 
     println!("cargo::rerun-if-changed={cwd}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-T{cwd}/etc/memmap.ld");

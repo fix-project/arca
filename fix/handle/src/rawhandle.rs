@@ -232,16 +232,11 @@ pub enum Value {
     Thunk(Thunk),
 }
 
-#[cfg(test)]
+#[cfg(feature = "testing-mode")]
 mod tests {
-    use core::simd::u16x16;
-
     use super::*;
 
-    extern crate std;
-    extern crate test;
-
-    #[test]
+    #[test_case]
     fn test_tag_gits() {
         assert_eq!(Handle::TAGBITS, 241);
         assert_eq!(BlobName::TAGBITS, 241);
@@ -250,7 +245,7 @@ mod tests {
         assert_eq!(Thunk::TAGBITS, 245);
     }
 
-    #[test]
+    #[test_case]
     fn test_tag_masks() {
         assert_eq!(Handle::TAGMASK.as_array()[30], 0b00000001);
         assert_eq!(Handle::TAGMASK.as_array()[31], 0b00000000);
@@ -265,7 +260,7 @@ mod tests {
         assert_eq!(Thunk::TAGMASK.as_array()[31], 0b00000000);
     }
 
-    #[test]
+    #[test_case]
     fn test_pack() {
         let h: Handle = PhysicalHandle::new(42, 10086).into();
         let res = h.pack();
@@ -278,7 +273,7 @@ mod tests {
         assert_eq!(field[15], 0b0000000000000011);
     }
 
-    #[test]
+    #[test_case]
     fn test_round_trip() {
         let h: Handle = PhysicalHandle::new(42, 10086).into();
         let res = Handle::unpack(h.pack())

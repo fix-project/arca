@@ -710,6 +710,8 @@ dependencies = [
  "common",
  "derive_more",
  "fixhandle",
+ "fixruntime",
+ "fixshell",
  "futures",
  "include_directory",
  "kernel",
@@ -729,6 +731,42 @@ version = "0.1.0"
 dependencies = [
  "derive_more",
  "macros",
+]
+
+[[package]]
+name = "fixruntime"
+version = "0.1.0"
+dependencies = [
+ "arca",
+ "arcane",
+ "async-lock",
+ "bitfield-struct 0.11.0",
+ "bytemuck",
+ "chrono",
+ "chumsky",
+ "common",
+ "derive_more",
+ "fixhandle",
+ "futures",
+ "kernel",
+ "log",
+ "macros",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "trait-variant",
+ "user",
+]
+
+[[package]]
+name = "fixshell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arca",
+ "arcane",
+ "fixhandle",
+ "user",
 ]
 
 [[package]]
@@ -941,6 +979,17 @@ checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d93587f37623a1a17d94ef2bc9ada592f5465fe7732084ab7beefabe5c77c0c4"
+dependencies = [
+ "bitflags 2.9.2",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
