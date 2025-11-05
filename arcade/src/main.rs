@@ -6,6 +6,11 @@
 #![feature(box_patterns)]
 #![feature(never_type)]
 #![allow(dead_code)]
+#![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
+#![cfg_attr(feature = "testing-mode", allow(unused))]
+
+#[cfg(feature = "testing-mode")]
+mod testing;
 
 use core::time::Duration;
 
@@ -32,6 +37,12 @@ const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MEMCACHED"));
 
 #[kmain]
 async fn main(_: &[usize]) {
+    #[cfg(feature = "testing-mode")]
+    {
+        crate::testing::test_runner();
+        return;
+    }
+
     let mut fd = Descriptors::new();
 
     let mut ns = Namespace::new(MemDir::default());

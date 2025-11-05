@@ -22,6 +22,7 @@ pub mod internal {
     pub use super::word::Word;
 }
 
+pub use arca::Arca;
 pub use runtime::Error;
 pub use runtime::Runtime;
 
