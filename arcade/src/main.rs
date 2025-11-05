@@ -7,6 +7,10 @@
 #![feature(never_type)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
+#![cfg_attr(feature = "testing-mode", allow(unused))]
+
+#[cfg(feature = "testing-mode")]
+mod testing;
 
 use core::time::Duration;
 
@@ -15,9 +19,6 @@ use alloc::format;
 use common::util::descriptors::Descriptors;
 use kernel::{prelude::*, rt};
 use ninep::Client;
-
-#[cfg(feature = "testing-mode")]
-mod testing;
 
 mod dev;
 mod vsock;
