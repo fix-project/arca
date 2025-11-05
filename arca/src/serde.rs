@@ -1,6 +1,5 @@
 use serde::de::{VariantAccess, Visitor};
-use serde::ser::SerializeMap;
-use serde::ser::SerializeTuple;
+use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize};
 
 use core::fmt;
@@ -79,8 +78,7 @@ impl<R: Runtime> Serialize for Tuple<R> {
         S: serde::Serializer,
     {
         self.with_ref(|x| {
-            let mut s = serializer.serialize_tuple(x.len())?;
-            s.serialize_element(&x.len())?;
+            let mut s = serializer.serialize_seq(Some(x.len()))?;
             for value in x.iter() {
                 s.serialize_element(&value)?
             }
