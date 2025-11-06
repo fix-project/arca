@@ -14,7 +14,7 @@ klog-warn = ["kernel/klog-warn"]
 klog-error = ["kernel/klog-error"]
 klog-off = ["kernel/klog-off"]
 debugcon = ["kernel/debugcon"]
-testing-mode = []
+testing-mode = ["kernel/testing-mode"]
 
 [dependencies]
 arca = { path = "../arca", features = ["serde"] }
