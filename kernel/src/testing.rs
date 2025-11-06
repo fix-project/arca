@@ -1,15 +1,31 @@
-pub fn test_runner(tests: &[&dyn Fn()]) {
-    log::info!("Running {} tests", tests.len());
-    for test in tests {
-        test();
+#![allow(dead_code)]
+
+pub struct TestDescAndFn {
+    pub name: &'static str,
+    pub function: fn() -> (),
+}
+
+impl TestDescAndFn {
+    fn run(&self) {
+        (self.function)();
+        log::info!("Test {} PASS", self.name);
     }
 }
 
-#[no_mangle]
-extern "C" fn kmain() -> ! {
-    if crate::cpuinfo::is_bootstrap() {
-        crate::test_main();
-        crate::shutdown()
+pub struct ModuleDesc {
+    pub name: &'static str,
+    pub functions: &'static [TestDescAndFn],
+}
+
+impl ModuleDesc {
+    pub fn run(&self) {
+        log::info!(
+            "Running {} tests for module {}",
+            self.functions.len(),
+            self.name
+        );
+        for f in self.functions {
+            f.run();
+        }
     }
-    crate::halt();
 }

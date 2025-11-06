@@ -5,12 +5,10 @@
 #![feature(iterator_try_collect)]
 #![feature(box_patterns)]
 #![feature(never_type)]
+#![feature(proc_macro_hygiene)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
 #![cfg_attr(feature = "testing-mode", allow(unused))]
-
-#[cfg(feature = "testing-mode")]
-mod testing;
 
 use core::time::Duration;
 
@@ -31,6 +29,15 @@ use crate::{
 };
 use vfs::mem::MemDir;
 
+#[arca_module_test]
+mod testing;
+
+#[arca_module_test]
+mod dummy_testing {
+    #[arca_test]
+    fn test_abc() {}
+}
+
 extern crate alloc;
 
 const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MEMCACHED"));
@@ -39,7 +46,8 @@ const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MEMCACHED"));
 async fn main(_: &[usize]) {
     #[cfg(feature = "testing-mode")]
     {
-        crate::testing::test_runner();
+        crate::testing::__MODULE_TESTS.run();
+        crate::dummy_testing::__MODULE_TESTS.run();
         return;
     }
 

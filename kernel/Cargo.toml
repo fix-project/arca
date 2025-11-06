@@ -16,6 +16,7 @@ klog-warn = []
 klog-error = []
 klog-off = []
 debugcon = []
+testing-mode = ["macros/testing-mode"]
 
 [dependencies]
 bitfield-struct = "0.7.0"
