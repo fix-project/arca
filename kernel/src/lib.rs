@@ -83,9 +83,7 @@ pub fn halt() {
 }
 
 pub fn pause() {
-    unsafe {
-        core::arch::x86_64::_mm_pause();
-    }
+    core::arch::x86_64::_mm_pause();
 }
 
 pub fn shutdown() -> ! {
