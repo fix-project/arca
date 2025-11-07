@@ -92,7 +92,7 @@ impl From<Header> for IncomingMessage {
 
 impl From<OutgoingMessage> for Header {
     fn from(value: OutgoingMessage) -> Self {
-        if value.flow.src.cid != 3 || value.flow.dst.cid != 2 {
+        if value.flow.dst.cid != 2 {
             log::error!("trying to send outgoing message to {:?}", value.flow);
         }
         Header {

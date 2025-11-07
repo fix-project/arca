@@ -37,7 +37,7 @@ impl Proc {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
-        let p = Proc { f, state, pid };
+        let p = Proc { f, pid, state };
         Ok(p)
     }
 
