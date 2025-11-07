@@ -126,15 +126,25 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    // // screw it, we hardcoding ... TODO(kmohr)
-    // let image_indx: Word = Function::symbolic("get")
-    //     // .apply(hostname)
-    //     // .apply(port)
-    //     .apply(file_path)
-    //     .call_with_current_continuation()
-    //     .try_into()
-    //     .expect("add should return a word");
+    // let image = std::fs::read("./images/parrot.png").expect("failed to open image");
+    // let size = 128;
+    // let thumbnail = get_thumbnail(image, size);
+    //
+    // std::fs::write("thumbnail.png", &thumbnail).expect("Failed to write thumbnail");
 
+    // Assume kernel provides tree of hostname, port, filepath
+    // let argument = os::argument();
+    // let tree: Tuple = argument.try_into().unwrap();
+    // let host_blob: Blob = tree.get(0).try_into().unwrap();
+    // let mut buffer = [0u8; 128];
+    // let buf_slice: &mut [u8] = &mut buffer;
+    // // let hostname = str::from_utf8(host_blob.read(buf_slice, buf_slice));
+    //
+    // let hostname: Blob = Blob::from("localhost");
+    // let port: Word = Word::from(11211);
+    // let file_path: Blob =
+    //     Blob::from("/home/kmohr/workspace/arca/thumbnail-example/images/parrot.png");
+    //
     let mut ppm_data = File::options()
         .read(true)
         .open("/n/host/falls_1.ppm")

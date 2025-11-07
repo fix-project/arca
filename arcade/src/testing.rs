@@ -104,19 +104,3 @@ fn test_entry_error() {
         serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
     assert_eq!(deserialized_error, error);
 }
-
-pub fn test_runner() {
-    test_serde_null();
-    test_serde_word();
-    test_serde_blob();
-    test_serde_tuple();
-    test_serde_page();
-    test_serde_table();
-    test_serde_function();
-    test_serde_ropage();
-    test_serde_rwpage();
-    test_serde_rotable();
-    test_serde_rwtable();
-    test_value_error();
-    test_entry_error();
-}

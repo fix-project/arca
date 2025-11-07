@@ -36,6 +36,7 @@ user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 thumbnail-example = { path = "../thumbnail-example", artifact = "bin", target = "x86_64-unknown-none" }
 memcached = { path = "../memcached", artifact = "bin", target = "x86_64-unknown-none" }
 async-lock = { version = "3.4.1", default-features = false }
+crc32fast = { version = "1.5.0", default-features = false }
 
 [build-dependencies]
 anyhow = "1.0.98"

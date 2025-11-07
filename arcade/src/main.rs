@@ -74,9 +74,9 @@ async fn main(args: &[usize]) {
     let stdout = ns.walk("/dev/cons", Open::Write).await.unwrap();
     let stderr = stdout.dup().await.unwrap();
 
-    fd.set(0, stdin.into());
-    fd.set(1, stdout.into());
-    fd.set(2, stderr.into());
+    // fd.set(0, stdin.into());
+    // fd.set(1, stdout.into());
+    // fd.set(2, stderr.into());
 
     ns.attach(VSockFS::new(cid), "/net/vsock", MountType::Replace, true)
         .await
@@ -384,6 +384,9 @@ async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
                         size_bytes,
                         size_mb
                     );
+                    // hash this so we can verify it on the other side
+                    let hash = crc32fast::hash(&message);
+                    log::info!("Message CRC32 hash: {:08x}", hash);
 
                     if let Err(e) = data_file.write(&message).await {
                         log::error!("Failed to send message: {:?}", e);
