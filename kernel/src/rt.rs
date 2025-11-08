@@ -13,7 +13,6 @@ use common::util::{
     concurrent_trie::Trie,
     rwlock::RwLock,
 };
-use time::OffsetDateTime;
 
 use crate::{debugcon::CONSOLE, interrupts::INTERRUPTED, io, kvmclock, prelude::*};
 
@@ -122,9 +121,9 @@ impl Executor {
             // No first key found. If we missed one because of a race it's not the end of the world anyway.
             return false;
         };
-        let now = kvmclock::now();
-        let timestamp = now.unix_timestamp() as u64;
-        if key < timestamp {
+        let now = kvmclock::time_since_boot();
+        let timestamp = now.as_nanos() as u64;
+        if key >= timestamp {
             // The first task is still in the future.
             return false;
         }
@@ -299,29 +298,27 @@ pub fn yield_now() -> impl Future<Output = ()> {
     Yield(AtomicBool::new(false))
 }
 
-struct Delay(OffsetDateTime);
+struct Delay(Duration);
 
 impl Future for Delay {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let now = kvmclock::now();
+        let now = kvmclock::time_since_boot();
         if now >= self.0 {
             return Poll::Ready(());
         }
         let waker = cx.waker().clone();
-        EXECUTOR
-            .sleeping
-            .insert(self.0.unix_timestamp() as u64, waker);
+        EXECUTOR.sleeping.insert(self.0.as_nanos() as u64, waker);
         Poll::Pending
     }
 }
 
 pub fn delay_for(duration: Duration) -> impl Future<Output = ()> {
-    delay_until(kvmclock::now() + duration)
+    delay_until(kvmclock::time_since_boot() + duration)
 }
 
-pub fn delay_until(time: OffsetDateTime) -> impl Future<Output = ()> {
+pub fn delay_until(time: Duration) -> impl Future<Output = ()> {
     Delay(time)
 }
 
