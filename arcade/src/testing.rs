@@ -80,6 +80,24 @@ fn test_serde_rwtable() {
     assert_eq!(deserialized_rwtable, rwtable);
 }
 
+fn test_value_error() {
+    let unknown_variant = [7, 0];
+    let deserialized: Result<Value, postcard::Error> = postcard::from_bytes(&unknown_variant);
+    let deserialized_error = deserialized.expect_err("should have been err");
+    let error =
+        serde::de::Error::unknown_variant("7", &["Null", "Word", "Blob", "Tuple", "Page", "Table"]);
+    assert_eq!(deserialized_error, error);
+}
+
+fn test_entry_error() {
+    let unknown_variant = [5, 0];
+    let deserialized: Result<Entry, postcard::Error> = postcard::from_bytes(&unknown_variant);
+    let deserialized_error = deserialized.expect_err("should have been err");
+    let error =
+        serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
+    assert_eq!(deserialized_error, error);
+}
+
 pub fn test_runner() {
     test_serde_null();
     test_serde_word();
@@ -92,4 +110,6 @@ pub fn test_runner() {
     test_serde_rwpage();
     test_serde_rotable();
     test_serde_rwtable();
+    test_value_error();
+    test_entry_error();
 }
