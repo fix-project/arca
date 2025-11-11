@@ -179,8 +179,8 @@ impl<'de, R: Runtime> Visitor<'de> for ValueVisitor<R> {
                 let v = variant_access.newtype_variant::<Function<R>>()?;
                 Ok(Value::Function(v))
             }
-            _other => Err(serde::de::Error::unknown_variant(
-                "other",
+            other => Err(serde::de::Error::unknown_variant(
+                &format!("{}", other),
                 &["Null", "Word", "Blob", "Tuple", "Page", "Table"],
             )),
         }
@@ -372,25 +372,25 @@ impl<'de, R: Runtime> Visitor<'de> for EntryVisitor<R> {
     {
         let (variant, variant_access) = data.variant()?;
         match variant {
-            "Null" => Ok(Entry::Null(0)),
-            "ROPage" => {
+            0 => Ok(Entry::Null(0)),
+            1 => {
                 let v = variant_access.newtype_variant::<Page<R>>()?;
                 Ok(Entry::ROPage(v))
             }
-            "RWPage" => {
+            2 => {
                 let v = variant_access.newtype_variant::<Page<R>>()?;
                 Ok(Entry::RWPage(v))
             }
-            "ROTable" => {
+            3 => {
                 let v = variant_access.newtype_variant::<Table<R>>()?;
                 Ok(Entry::ROTable(v))
             }
-            "RWTable" => {
+            4 => {
                 let v = variant_access.newtype_variant::<Table<R>>()?;
                 Ok(Entry::RWTable(v))
             }
             other => Err(serde::de::Error::unknown_variant(
-                other,
+                &format!("{}", other),
                 &["Null", "ROPage", "RWPage", "ROTable", "RWTable"],
             )),
         }

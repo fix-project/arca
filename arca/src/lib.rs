@@ -29,7 +29,7 @@ pub mod prelude {
         value::Value, value::ValueRef,
     };
     #[cfg(feature = "alloc")]
-    pub(crate) use alloc::{vec, vec::Vec};
+    pub(crate) use alloc::{format, vec, vec::Vec};
 }
 
 pub use prelude::*;

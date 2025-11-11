@@ -52,6 +52,52 @@ fn test_serde_function() {
     assert_eq!(deserialized_func, func);
 }
 
+fn test_serde_ropage() {
+    let ropage = Entry::ROPage(Page::new(1));
+    let bytes_vec = postcard::to_allocvec(&ropage).unwrap();
+    let deserialized_ropage: Entry = postcard::from_bytes(&bytes_vec).unwrap();
+    assert_eq!(deserialized_ropage, ropage);
+}
+
+fn test_serde_rwpage() {
+    let rwpage = Entry::RWPage(Page::new(1));
+    let bytes_vec = postcard::to_allocvec(&rwpage).unwrap();
+    let deserialized_rwpage: Entry = postcard::from_bytes(&bytes_vec).unwrap();
+    assert_eq!(deserialized_rwpage, rwpage);
+}
+
+fn test_serde_rotable() {
+    let rotable = Entry::ROTable(Table::new(1));
+    let bytes_vec = postcard::to_allocvec(&rotable).unwrap();
+    let deserialized_rotable: Entry = postcard::from_bytes(&bytes_vec).unwrap();
+    assert_eq!(deserialized_rotable, rotable);
+}
+
+fn test_serde_rwtable() {
+    let rwtable = Entry::RWTable(Table::new(1));
+    let bytes_vec = postcard::to_allocvec(&rwtable).unwrap();
+    let deserialized_rwtable: Entry = postcard::from_bytes(&bytes_vec).unwrap();
+    assert_eq!(deserialized_rwtable, rwtable);
+}
+
+fn test_value_error() {
+    let unknown_variant = [7, 0];
+    let deserialized: Result<Value, postcard::Error> = postcard::from_bytes(&unknown_variant);
+    let deserialized_error = deserialized.expect_err("should have been err");
+    let error =
+        serde::de::Error::unknown_variant("7", &["Null", "Word", "Blob", "Tuple", "Page", "Table"]);
+    assert_eq!(deserialized_error, error);
+}
+
+fn test_entry_error() {
+    let unknown_variant = [5, 0];
+    let deserialized: Result<Entry, postcard::Error> = postcard::from_bytes(&unknown_variant);
+    let deserialized_error = deserialized.expect_err("should have been err");
+    let error =
+        serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
+    assert_eq!(deserialized_error, error);
+}
+
 pub fn test_runner() {
     test_serde_null();
     test_serde_word();
@@ -60,4 +106,10 @@ pub fn test_runner() {
     test_serde_page();
     test_serde_table();
     test_serde_function();
+    test_serde_ropage();
+    test_serde_rwpage();
+    test_serde_rotable();
+    test_serde_rwtable();
+    test_value_error();
+    test_entry_error();
 }
