@@ -24,7 +24,7 @@ mod vsock;
 mod proc;
 use crate::{
     dev::DevFS,
-    proc::{Env, Namespace, Proc, ProcState, namespace::MountType},
+    proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
     vsock::VSockFS,
 };
 use vfs::mem::MemDir;
@@ -56,7 +56,7 @@ async fn main(args: &[usize]) {
     let host_listener_port = args[1];
     let tcp_port = args[2];
 
-    // let mut fd = Descriptors::new();
+    let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
     let mut ns = Namespace::new(MemDir::default());
 
@@ -74,9 +74,9 @@ async fn main(args: &[usize]) {
     let stdout = ns.walk("/dev/cons", Open::Write).await.unwrap();
     let stderr = stdout.dup().await.unwrap();
 
-    // fd.set(0, stdin.into());
-    // fd.set(1, stdout.into());
-    // fd.set(2, stderr.into());
+    fd.set(0, stdin.into());
+    fd.set(1, stdout.into());
+    fd.set(2, stderr.into());
 
     ns.attach(VSockFS::new(cid), "/net/vsock", MountType::Replace, true)
         .await
@@ -207,16 +207,13 @@ async fn main(args: &[usize]) {
 
             if !all_data.is_empty() {
                 log::info!("Received complete message of {} bytes", all_data.len());
-                // verify the message with a crc32 hash
-                log::info!(
-                    "CRC32 hash of received message: {:08x}",
-                    crc32fast::hash(&all_data)
-                );
 
                 // TODO(kmohr) just assuming this is a continuation for now
+                // should define a set of possible messages
+                // also need filename here
                 match postcard::from_bytes(&all_data).unwrap() {
                     Value::Function(k) => {
-                        let result = k.apply(Word::new(0)).force();
+                        let result = k.apply(Word::new(5)).force();
                         log::info!("Continuation result: {:?}", result);
                     }
                     _ => {
@@ -357,9 +354,6 @@ async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
                         size_bytes,
                         size_mb
                     );
-                    // hash this so we can verify it on the other side
-                    let hash = crc32fast::hash(&message);
-                    log::info!("Message CRC32 hash: {:08x}", hash);
 
                     if let Err(e) = data_file.write(&message).await {
                         log::error!("Failed to send message: {:?}", e);

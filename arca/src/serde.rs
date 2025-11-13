@@ -78,9 +78,9 @@ impl<R: Runtime> Serialize for Tuple<R> {
         S: serde::Serializer,
     {
         self.with_ref(|x| {
-            let mut s = serializer.serialize_seq(Some(x.len())).unwrap();
+            let mut s = serializer.serialize_seq(Some(x.len()))?;
             for value in x.iter() {
-                s.serialize_element(&value).unwrap()
+                s.serialize_element(&value)?
             }
             s.end()
         })
@@ -103,11 +103,11 @@ impl<R: Runtime> Serialize for Table<R> {
     {
         self.with_ref(|x| {
             let len = x.iter().filter(|x| !x.is_null()).count();
-            let mut s = serializer.serialize_map(Some(len + 1)).unwrap();
-            s.serialize_entry("len", &self.len()).unwrap();
+            let mut s = serializer.serialize_map(Some(len + 1))?;
+            s.serialize_entry("len", &self.len())?;
             for (i, value) in x.iter().enumerate() {
                 if !value.is_null() {
-                    s.serialize_entry(&i, &value).unwrap()
+                    s.serialize_entry(&i, &value)?
                 }
             }
             s.end()
@@ -149,34 +149,34 @@ impl<'de, R: Runtime> Visitor<'de> for ValueVisitor<R> {
     where
         A: serde::de::EnumAccess<'de>,
     {
-        let (variant, variant_access) = data.variant().unwrap();
+        let (variant, variant_access) = data.variant()?;
         match variant {
             0 => {
-                let v = variant_access.newtype_variant::<Null<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Null<R>>()?;
                 Ok(Value::Null(v))
             }
             1 => {
-                let v = variant_access.newtype_variant::<Word<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Word<R>>()?;
                 Ok(Value::Word(v))
             }
             2 => {
-                let v = variant_access.newtype_variant::<Blob<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Blob<R>>()?;
                 Ok(Value::Blob(v))
             }
             3 => {
-                let v = variant_access.newtype_variant::<Tuple<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Tuple<R>>()?;
                 Ok(Value::Tuple(v))
             }
             4 => {
-                let v = variant_access.newtype_variant::<Page<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Page<R>>()?;
                 Ok(Value::Page(v))
             }
             5 => {
-                let v = variant_access.newtype_variant::<Table<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Table<R>>()?;
                 Ok(Value::Table(v))
             }
             6 => {
-                let v = variant_access.newtype_variant::<Function<R>>().unwrap();
+                let v = variant_access.newtype_variant::<Function<R>>()?;
                 Ok(Value::Function(v))
             }
             other => Err(serde::de::Error::unknown_variant(
@@ -271,7 +271,7 @@ impl<'de, R: Runtime> Visitor<'de> for TupleVisitor<R> {
         A: serde::de::SeqAccess<'de>,
     {
         let mut items = Vec::<Value<R>>::new();
-        while let Some(elem) = seq.next_element().unwrap() {
+        while let Some(elem) = seq.next_element()? {
             items.push(elem);
         }
 
@@ -334,10 +334,10 @@ impl<'de, R: Runtime> Visitor<'de> for TableVisitor<R> {
         A: serde::de::MapAccess<'de>,
     {
         let (first_key, first_value): (alloc::string::String, usize) =
-            map.next_entry().unwrap().expect("at least one element needed");
+            map.next_entry()?.expect("at least one element needed");
         assert_eq!(first_key, "len");
         let mut table = Table::new(first_value);
-        while let Some((key, value)) = map.next_entry().unwrap() {
+        while let Some((key, value)) = map.next_entry()? {
             table.set(key, value).expect("map entry");
         }
         Ok(table)
@@ -347,7 +347,9 @@ impl<'de, R: Runtime> Visitor<'de> for TableVisitor<R> {
 impl<'de, R: Runtime> Deserialize<'de> for Entry<R> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>, { deserializer.deserialize_enum(
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_enum(
             "Entry",
             &["Null", "ROPage", "RWPage", "ROTable", "RWTable"],
             EntryVisitor::<R>(core::marker::PhantomData),
@@ -368,7 +370,7 @@ impl<'de, R: Runtime> Visitor<'de> for EntryVisitor<R> {
     where
         A: serde::de::EnumAccess<'de>,
     {
-        let (variant, variant_access) = data.variant().unwrap();
+        let (variant, variant_access) = data.variant()?;
         match variant {
             0 => Ok(Entry::Null(0)),
             1 => {
@@ -400,7 +402,7 @@ impl<'de, R: Runtime> Deserialize<'de> for Function<R> {
     where
         D: serde::Deserializer<'de>,
     {
-        let val = Value::deserialize(deserializer).unwrap();
+        let val = Value::deserialize(deserializer)?;
         Ok(Function::new(val).unwrap())
     }
 }
