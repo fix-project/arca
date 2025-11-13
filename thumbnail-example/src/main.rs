@@ -150,7 +150,6 @@ pub extern "C" fn _rsstart() -> ! {
         .open("/n/host/falls_1.ppm")
         .expect("could not open ppm file");
     user::error::log("opened ppm file");
-
     // the sun.ppm file is 12814240 bytes eeeek
     // try allocating 2GB into a Box
     user::error::log("allocating a bunch of space");
