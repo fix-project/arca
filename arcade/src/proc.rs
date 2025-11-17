@@ -41,6 +41,17 @@ impl Proc {
         Ok(p)
     }
 
+    pub fn from_function(
+        function: Function,
+        state: ProcState,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
+        let f = function;
+        let state = Arc::new(state);
+        let pid = table::PROCS.allocate(&state);
+        let p = Proc { f, pid, state };
+        Ok(p)
+    }
+
     pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> u8 {
         let _argv = Tuple::from_iter(argv.into_iter().map(Blob::from).map(Value::Blob));
         self.resume().await

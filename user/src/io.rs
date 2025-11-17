@@ -6,6 +6,8 @@ use core::{
 
 use crate::prelude::*;
 
+extern crate alloc;
+
 pub struct File {
     fd: u32,
 }
@@ -37,6 +39,7 @@ impl File {
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
+        crate::error::log(alloc::format!("File::read {} bytes", bytes.len()));
         let result: Blob = Function::symbolic("read")
             .apply(self.fd)
             .apply(bytes.len())
