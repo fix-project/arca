@@ -137,6 +137,7 @@ async fn main(args: &[usize]) {
         let mut id = [0; 32];
         let size = tcp_ctl.read(&mut id).await.unwrap();
         let id = core::str::from_utf8(&id[..size]).unwrap().trim();
+        log::info!("TCP connection ID string: {}", id);
         let id: usize = id.parse().unwrap();
 
         log::info!("Got TCP connection ID: {}", id);
@@ -157,76 +158,85 @@ async fn main(args: &[usize]) {
         let listen_path = format!("/net/tcp/{id}/listen");
         log::info!("Listen path: {}", listen_path);
 
-        // Continually listen for incoming connections
+        // TODO(kmohr): handle multiple connections
+        log::info!("Waiting for connections...");
+        let mut listen_file = ns
+            .walk(&listen_path, Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+
+        // Accept a new connection - this blocks until someone connects
+        let mut id = [0; 32];
+        let size = listen_file.read(&mut id).await.unwrap();
+        let id = core::str::from_utf8(&id[..size]).unwrap().trim();
+        let data_path = format!("/net/tcp/{id}/data");
+
+        log::info!("New connection accepted: {}", id);
+
+        // Get data file for the accepted connection
+        let mut data_file = ns
+            .walk(&data_path, Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+
+        // Read data from the connection - handle arbitrarily large messages
+        let mut all_data = Vec::new();
+        let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
+
         loop {
-            log::info!("Waiting for connections...");
-            let mut listen_file = ns
-                .walk(&listen_path, Open::ReadWrite)
-                .await
-                .unwrap()
-                .as_file()
-                .unwrap();
-
-            // Accept a new connection - this blocks until someone connects
-            let mut id = [0; 32];
-            let size = listen_file.read(&mut id).await.unwrap();
-            let id = core::str::from_utf8(&id[..size]).unwrap().trim();
-            let data_path = format!("/net/tcp/{id}/data");
-
-            log::info!("New connection accepted: {}", id);
-
-            // Get data file for the accepted connection
-            let mut data_file = ns
-                .walk(&data_path, Open::ReadWrite)
-                .await
-                .unwrap()
-                .as_file()
-                .unwrap();
-
-            // Read data from the connection - handle arbitrarily large messages
-            let mut all_data = Vec::new();
-            let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
-
-            loop {
-                match data_file.read(&mut buffer).await {
-                    Ok(bytes_read) => {
-                        if bytes_read > 0 {
-                            all_data.extend_from_slice(&buffer[..bytes_read]);
-                        } else {
-                            // bytes_read == 0 means the connection is closed
-                            log::info!("Connection closed by client");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Error reading data: {:?}", e);
+            match data_file.read(&mut buffer).await {
+                Ok(bytes_read) => {
+                    if bytes_read > 0 {
+                        all_data.extend_from_slice(&buffer[..bytes_read]);
+                    } else {
+                        // bytes_read == 0 means the connection is closed
+                        log::info!("Connection closed by client");
                         break;
                     }
                 }
-            }
-
-            if !all_data.is_empty() {
-                log::info!("Received complete message of {} bytes", all_data.len());
-
-                // TODO(kmohr) just assuming this is a continuation for now
-                // should define a set of possible messages
-                // also need filename here
-                match postcard::from_bytes(&all_data).unwrap() {
-                    Value::Function(k) => {
-                        let result = k.apply(Word::new(5)).force();
-                        log::info!("Continuation result: {:?}", result);
-                    }
-                    _ => {
-                        log::error!("Received message is not a Function!");
-                    }
+                Err(e) => {
+                    log::error!("Error reading data: {:?}", e);
+                    break;
                 }
             }
-
-            // Connection is automatically dropped when data_file goes out of scope
-            // The TCP connection will be closed
-            log::info!("Dropping connection {}", id);
         }
-    } else {
+
+        if !all_data.is_empty() {
+            log::info!("Received complete message of {} bytes", all_data.len());
+
+            // TODO(kmohr) just assuming this is a continuation for now
+            // should define a set of possible messages
+            // also need filename here
+            match postcard::from_bytes(&all_data).unwrap() {
+                Value::Function(k) => {
+                    let p = Proc::from_function(
+                        k,
+                        ProcState {
+                            ns: Arc::new(ns),
+                            env: Env::default().into(),
+                            fds: RwLock::new(fd).into(),
+                            cwd: PathBuf::from("/".to_owned()).into(),
+                        },
+                    )
+                    .expect("Failed to create Proc from received Function");
+
+                    let exitcode = p.run([]).await;
+                    log::info!("exitcode: {exitcode}");
+                }
+                _ => {
+                    log::error!("Received message is not a Function!");
+                }
+            }
+        }
+
+        // Connection is automatically dropped when data_file goes out of scope
+        // The TCP connection will be closed
+        log::info!("Dropping connection {}", id);
+    } else if MACHINE == 1 {
         let x: Result<u64> = try {
             let f = common::elfloader::load_elf(THUMBNAILER).unwrap();
             let result = run(f, ns.clone()).await?;
@@ -241,6 +251,22 @@ async fn main(args: &[usize]) {
                 log::warn!("addition failed")
             }
         }
+    } else {
+        log::info!("Machine 2 starting thumbnailer without TCP server");
+        // just run the thumbnailer without networking
+        let p = Proc::new(
+            THUMBNAILER,
+            ProcState {
+                ns: Arc::new(ns),
+                env: Env::default().into(),
+                fds: RwLock::new(fd).into(),
+                cwd: PathBuf::from("/".to_owned()).into(),
+            },
+        )
+        .expect("Failed to create Proc from ELF");
+
+        let exitcode = p.run([]).await;
+        log::info!("exitcode: {exitcode}");
     }
 }
 
@@ -282,9 +308,7 @@ async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
                 counter += 1;
                 k.apply(counter)
             }
-            (b"get", []) => {
-                // Send "hello, world!" to localhost:11234 and then exit this process
-
+            (b"open", &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)]) => {
                 let send_tcp_msg = || async {
                     // Get a new TCP connection
                     let tcp_ctl_result = ns.walk("/net/tcp/clone", vfs::Open::ReadWrite).await;
@@ -342,8 +366,14 @@ async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
                         }
                     };
 
-                    // Send continuation
-                    let val = Value::Function(k);
+                    // TODO(kmohr): hmmmm this is so slow...
+                    let resumed_f = Function::symbolic("open")
+                        .apply(Value::Blob(path.clone()))
+                        .apply(Value::Word(flags))
+                        .apply(Value::Word(mode))
+                        .apply(Value::Function(k));
+
+                    let val = Value::Function(resumed_f);
                     let message = postcard::to_allocvec(&val).unwrap();
 
                     // log the message size in bytes and MB
@@ -368,7 +398,7 @@ async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
                 // we don't actually need to run k anymore
                 return Ok(ret_code as u64);
             }
-            _ => panic!("invalid effect: {effect:?}({args:?})"),
+            _ => panic!("invalid effect (main.rs): {effect:?}({args:?})"),
         };
     }
 }

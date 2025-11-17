@@ -86,6 +86,8 @@ impl<'a> Server<'a> {
                             msize,
                             version,
                         } => {
+                            // TODO(kmohr) this is kinda dumb uuhhhhh unsure why this is needed
+                            let msize = core::cmp::min(msize, 16384);
                             if version.starts_with("9P2000") {
                                 RMessage::Version {
                                     tag,
