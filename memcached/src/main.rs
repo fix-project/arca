@@ -27,13 +27,27 @@ use proto::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
+    // To modify this, add a `/tmp/memcached.conf` file that contains only the port number to use
+    let memcached_port = match File::options()
+        .read(true)
+        .write(false)
+        .open("/n/host/memcached.conf")
+    {
+        Ok(mut m_conf) => {
+            let mut memcached_port = [0; 8];
+            let n = m_conf.read(&mut memcached_port).unwrap();
+            let memcached_port = &memcached_port[..n];
+            let memcached_port = core::str::from_utf8(memcached_port).unwrap().trim();
+            memcached_port.parse().expect("Invalid port number")
+        }
+        Err(_) => 11211,
+    };
+
     let mut ctl = File::options()
         .read(true)
         .write(true)
         .open("/net/tcp/clone")
         .unwrap();
-
-    writeln!(ctl, "announce 0.0.0.0:11211").unwrap();
 
     let mut id = [0; 32];
     let size = ctl.read(&mut id).unwrap();
@@ -43,7 +57,12 @@ pub extern "C" fn _rsstart() -> ! {
     write!(&mut buf, "/net/tcp/{id}/listen").unwrap();
     let listen = core::str::from_utf8(&buf).unwrap();
 
-    user::error::log("listening on port 11211");
+    let announce_str = alloc::format!("announce 0.0.0.0:{}\n", memcached_port);
+    if let Err(e) = write!(ctl, "{}", announce_str) {
+        user::error::log(alloc::format!("announce failed: {:?}", e).as_bytes());
+    }
+
+    user::error::log(alloc::format!("listening on port {memcached_port}"));
 
     let kv = KVStore::new(256);
 

@@ -6,8 +6,8 @@ pub struct StreamListener {
 }
 
 impl StreamListener {
-    pub async fn bind(port: u32) -> Result<StreamListener> {
-        let rx = listen(SocketAddr { cid: 3, port }).await;
+    pub async fn bind(cid: u64, port: u32) -> Result<StreamListener> {
+        let rx = listen(SocketAddr { cid, port }).await;
         let addr = rx.addr();
         Ok(StreamListener { addr, rx })
     }

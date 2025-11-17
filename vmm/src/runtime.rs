@@ -307,7 +307,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
+    pub fn new(cid: usize, cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
@@ -349,7 +349,7 @@ impl Runtime {
         })
         .unwrap();
 
-        let vsock = VSockBackend::new(3, 1024, kick, call).unwrap();
+        let vsock = VSockBackend::new(cid as u64, 1024, kick, call).unwrap();
 
         let mut x = Self {
             kvm,
