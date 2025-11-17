@@ -439,15 +439,47 @@ mod allocator {
 
     impl OomHandler for Mmap {
         fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
+            const PAGE_SIZE: usize = 4096;
+
+            // Calculate the total size needed, considering alignment requirements
+            let align = layout.align().max(PAGE_SIZE);
+            // add some metadata padding
+            // TODO(kmohr) what is the exact amount needed?
+            let required_size = (layout.size() + 128).max(PAGE_SIZE);
+            crate::error::log_int("Allocating memory of size", required_size as u64);
+
+            // Round up to alignment boundary
+            // TODO(kmohr) is this done twice...
+            let aligned_size = (required_size + align - 1) & !(align - 1);
+            let pages_needed = (aligned_size + PAGE_SIZE - 1) / PAGE_SIZE;
+            let total_size = pages_needed * PAGE_SIZE;
+
             let mut addr = HEAP.lock();
-            let mut entry = write_entry(Entry::RWPage(Page::new(4096)));
-            unsafe {
-                let base = *addr as *mut c_void;
-                let end = base.byte_add(4096);
-                arca_mmap(base, &mut entry);
-                talc.claim(Span::new(base as *mut u8, end as *mut u8));
+            let current_addr = *addr;
+
+            // Align the base address to the required alignment
+            let aligned_base = (current_addr + align - 1) & !(align - 1);
+
+            // Allocate each page individually to avoid issues with large single pages
+            for i in 0..pages_needed {
+                let page_addr = aligned_base + (i * PAGE_SIZE);
+                let mut entry = write_entry(Entry::RWPage(Page::new(PAGE_SIZE)));
+
+                unsafe {
+                    let base = page_addr as *mut c_void;
+                    arca_mmap(base, &mut entry);
+                }
             }
-            *addr += 4096;
+
+            // Claim the entire aligned region for the allocator
+            unsafe {
+                let base = aligned_base as *mut u8;
+                let end = base.add(total_size);
+                talc.claim(Span::new(base, end));
+            }
+
+            // Update heap pointer to after the allocated region
+            *addr = aligned_base + total_size;
             Ok(())
         }
     }

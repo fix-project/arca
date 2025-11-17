@@ -68,6 +68,7 @@ impl arca::Runtime for Runtime {
     }
 
     fn read_blob(blob: &arca::Blob<Self>, offset: usize, buf: &mut [u8]) -> usize {
+        log::error!("read_blob: offset={}, buf_len={}", offset, buf.len());
         let len = core::cmp::min(buf.len(), blob.len() - offset);
         buf[..len].copy_from_slice(&blob[offset..offset + len]);
         len
