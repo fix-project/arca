@@ -11,3 +11,7 @@ syn = "2.0.67"
 
 [lib]
 proc-macro = true
+
+[features]
+default = []
+testing-mode = []

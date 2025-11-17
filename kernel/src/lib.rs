@@ -4,7 +4,6 @@
 #![feature(bigint_helper_methods)]
 #![feature(box_as_ptr)]
 #![feature(box_into_inner)]
-#![feature(custom_test_frameworks)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array_transpose)]
@@ -13,8 +12,6 @@
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
 #![feature(vec_into_raw_parts)]
-#![test_runner(crate::testing::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
 
@@ -54,8 +51,8 @@ pub use lapic::LAPIC;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(test)]
-mod testing;
+#[cfg(feature = "testing-mode")]
+pub mod testing;
 
 #[no_mangle]
 static mut EXIT_CODE: u8 = 0;
