@@ -132,19 +132,6 @@ pub extern "C" fn _rsstart() -> ! {
     //
     // std::fs::write("thumbnail.png", &thumbnail).expect("Failed to write thumbnail");
 
-    // Assume kernel provides tree of hostname, port, filepath
-    // let argument = os::argument();
-    // let tree: Tuple = argument.try_into().unwrap();
-    // let host_blob: Blob = tree.get(0).try_into().unwrap();
-    // let mut buffer = [0u8; 128];
-    // let buf_slice: &mut [u8] = &mut buffer;
-    // // let hostname = str::from_utf8(host_blob.read(buf_slice, buf_slice));
-    //
-    // let hostname: Blob = Blob::from("localhost");
-    // let port: Word = Word::from(11211);
-    // let file_path: Blob =
-    //     Blob::from("/home/kmohr/workspace/arca/thumbnail-example/images/parrot.png");
-    //
     let mut ppm_data = File::options()
         .read(true)
         .open("/n/host/falls_1.ppm")
