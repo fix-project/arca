@@ -114,6 +114,11 @@ impl Dir for MemDir {
 
 impl File for MemFile {
     async fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
+        log::info!(
+            "MemFile::read: cursor={}, bytes_len={}",
+            self.cursor,
+            bytes.len()
+        );
         if !self.open.contains(Open::Read) {
             return Err(ErrorKind::PermissionDenied.into());
         }

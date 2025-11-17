@@ -6,5 +6,7 @@ fn main() -> Result<()> {
     println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-no-pie");
 
+    println!("cargo::rerun-if-changed={dir}/src/testing.rs");
+
     Ok(())
 }

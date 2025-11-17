@@ -15,6 +15,8 @@ use derive_more::{Display, From, TryInto};
 pub use env::Env;
 pub use namespace::Namespace;
 
+use crate::MACHINE;
+
 use kernel::{
     prelude::RwLock,
     types::{Blob, Function, Tuple, Value},
@@ -37,7 +39,18 @@ impl Proc {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
-        let p = Proc { f, state, pid };
+        let p = Proc { f, pid, state };
+        Ok(p)
+    }
+
+    pub fn from_function(
+        function: Function,
+        state: ProcState,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
+        let f = function;
+        let state = Arc::new(state);
+        let pid = table::PROCS.allocate(&state);
+        let p = Proc { f, pid, state };
         Ok(p)
     }
 
@@ -77,13 +90,118 @@ impl Proc {
                     (
                         b"open",
                         &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)],
-                    ) => k.apply(fix(file::open(
-                        &self.state,
-                        path,
-                        file::OpenFlags(flags.read() as u32),
-                        file::ModeT(mode.read() as u32),
-                    )
-                    .await)),
+                    ) => {
+                        if MACHINE == 1 {
+                            let send_tcp_msg = || async {
+                                // Get a new TCP connection
+                                let tcp_ctl_result = self
+                                    .state
+                                    .ns
+                                    .walk("/net/tcp/clone", vfs::Open::ReadWrite)
+                                    .await;
+                                let mut tcp_ctl = match tcp_ctl_result {
+                                    Ok(obj) => match obj.as_file() {
+                                        Ok(file) => file,
+                                        Err(_) => {
+                                            log::error!("Failed to get TCP control file");
+                                            return 1;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        log::error!("Failed to walk to /net/tcp/clone: {:?}", e);
+                                        return 1;
+                                    }
+                                };
+
+                                // Read the connection ID
+                                let mut id_buf = [0u8; 32];
+                                let size = match tcp_ctl.read(&mut id_buf).await {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        log::error!("Failed to read connection ID: {:?}", e);
+                                        return 1;
+                                    }
+                                };
+                                let conn_id = match core::str::from_utf8(&id_buf[..size]) {
+                                    Ok(s) => s.trim(),
+                                    Err(_) => {
+                                        log::error!("Invalid UTF-8 in connection ID");
+                                        return 1;
+                                    }
+                                };
+
+                                // Connect to localhost:11234
+                                let connect_cmd = alloc::format!("connect 127.0.0.1:11212\n");
+                                if let Err(e) = tcp_ctl.write(connect_cmd.as_bytes()).await {
+                                    log::error!("Failed to send connect command: {:?}", e);
+                                    return 1;
+                                }
+
+                                // Get the data file for this connection
+                                let data_path = alloc::format!("/net/tcp/{}/data", conn_id);
+                                let mut data_file = match self
+                                    .state
+                                    .ns
+                                    .walk(&data_path, vfs::Open::ReadWrite)
+                                    .await
+                                {
+                                    Ok(obj) => match obj.as_file() {
+                                        Ok(file) => file,
+                                        Err(_) => {
+                                            log::error!("Failed to get data file");
+                                            return 1;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        log::error!("Failed to walk to data path: {:?}", e);
+                                        return 1;
+                                    }
+                                };
+
+                                // TODO(kmohr): hmmmm this is so slow...
+                                let resumed_f = Function::symbolic("open")
+                                    .apply(Value::Blob(path.clone()))
+                                    .apply(Value::Word(flags))
+                                    .apply(Value::Word(mode))
+                                    .apply(Value::Function(k));
+
+                                let val = Value::Function(resumed_f);
+                                let message = postcard::to_allocvec(&val).unwrap();
+
+                                // log the message size in bytes and MB
+                                let size_bytes = message.len();
+                                let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                                log::info!(
+                                    "Sending message of size: {} bytes ({:.2} MB)",
+                                    size_bytes,
+                                    size_mb
+                                );
+
+                                if let Err(e) = data_file.write(&message).await {
+                                    log::error!("Failed to send message: {:?}", e);
+                                    return 1;
+                                }
+
+                                log::info!("Sent serialized continuation to localhost:11234");
+                                return 0;
+                            };
+
+                            // assuming machine 1 has no files
+                            // TODO(kmohr): encode the machine to use in the filename
+
+                            let ret_code = send_tcp_msg().await;
+                            // we don't actually need to run k anymore
+                            return ret_code as u8;
+                        } else {
+                            k.apply(fix(file::open(
+                                &self.state,
+                                path,
+                                file::OpenFlags(flags.read() as u32),
+                                file::ModeT(mode.read() as u32),
+                            )
+                            .await))
+                        }
+                    }
                     (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
                         k.apply(fix(file::write(&self.state, fd.read(), data).await))
                     }

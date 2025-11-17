@@ -5,12 +5,10 @@
 #![feature(iterator_try_collect)]
 #![feature(box_patterns)]
 #![feature(never_type)]
+#![feature(proc_macro_hygiene)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
 #![cfg_attr(feature = "testing-mode", allow(unused))]
-
-#[cfg(feature = "testing-mode")]
-mod testing;
 
 use core::time::Duration;
 
@@ -26,24 +24,39 @@ mod vsock;
 mod proc;
 use crate::{
     dev::DevFS,
-    proc::{Env, Namespace, Proc, ProcState, namespace::MountType},
+    proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
     vsock::VSockFS,
 };
 use vfs::mem::MemDir;
 
+#[arca_module_test]
+mod testing;
+
+#[arca_module_test]
+mod dummy_testing {
+    #[arca_test]
+    fn test_abc() {}
+}
+
 extern crate alloc;
 
-const SERVER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MEMCACHED"));
+pub const MACHINE: i32 = 1;
+const THUMBNAILER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_THUMBNAIL_EXAMPLE"));
 
 #[kmain]
-async fn main(_: &[usize]) {
+async fn main(args: &[usize]) {
     #[cfg(feature = "testing-mode")]
     {
-        crate::testing::test_runner();
+        crate::testing::__MODULE_TESTS.run();
+        crate::dummy_testing::__MODULE_TESTS.run();
         return;
     }
 
-    let mut fd = Descriptors::new();
+    let cid = args[0] as u64;
+    let host_listener_port = args[1];
+    let tcp_port = args[2];
+
+    let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
     let mut ns = Namespace::new(MemDir::default());
 
@@ -51,6 +64,7 @@ async fn main(_: &[usize]) {
     ns.mkdir("/net/tcp").await.unwrap();
     ns.mkdir("/net/vsock").await.unwrap();
     ns.mkdir("/dev").await.unwrap();
+    ns.mkdir("/data").await.unwrap();
 
     ns.attach(DevFS::default(), "dev", MountType::Replace, true)
         .await
@@ -64,7 +78,7 @@ async fn main(_: &[usize]) {
     fd.set(1, stdout.into());
     fd.set(2, stderr.into());
 
-    ns.attach(VSockFS::default(), "/net/vsock", MountType::Replace, true)
+    ns.attach(VSockFS::new(cid), "/net/vsock", MountType::Replace, true)
         .await
         .unwrap();
 
@@ -78,7 +92,9 @@ async fn main(_: &[usize]) {
     let size = ctl.read(&mut id).await.unwrap();
     let id = core::str::from_utf8(&id[..size]).unwrap().trim();
     let id: usize = id.parse().unwrap();
-    ctl.write(b"connect 2:1564\n").await.unwrap();
+    ctl.write(format!("connect 2:{}\n", host_listener_port).as_bytes())
+        .await
+        .unwrap();
     let data = ns
         .walk(format!("/net/vsock/{id}/data"), Open::ReadWrite)
         .await
@@ -90,8 +106,11 @@ async fn main(_: &[usize]) {
     })
     .await
     .unwrap();
+
+    // Set up TCP connection
     let host = remote.attach(None, "", "").await.unwrap();
     let tcp = remote.attach(None, "", "tcp").await.unwrap();
+    let data = remote.attach(None, "", "data").await.unwrap();
 
     ns.mkdir("/n").await.unwrap();
     ns.mkdir("/n/host").await.unwrap();
@@ -102,28 +121,136 @@ async fn main(_: &[usize]) {
     ns.attach(tcp, "/net/tcp", MountType::Replace, true)
         .await
         .unwrap();
+    ns.attach(data, "/data", MountType::Replace, true)
+        .await
+        .unwrap();
 
-    let p = Proc::new(
-        SERVER,
-        ProcState {
-            ns: Arc::new(ns),
-            env: Env::default().into(),
-            fds: RwLock::new(fd).into(),
-            cwd: PathBuf::from("/".to_owned()).into(),
-        },
-    )
-    .unwrap();
-    kernel::profile::begin();
+    if MACHINE == 0 {
+        // Spawn TCP server loop on a separate thread/core
+        // rt::spawn(async move {
+        log::info!("TCP server starting on separate thread");
 
-    rt::spawn(async {
-        loop {
-            log::info!("---");
-            rt::profile();
-            rt::reset_stats();
-            rt::delay_for(Duration::from_secs(1)).await;
+        // Get id from /tcp/clone
+        let mut tcp_ctl = ns
+            .walk("/net/tcp/clone", Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+        let mut id = [0; 32];
+        let size = tcp_ctl.read(&mut id).await.unwrap();
+        let id = core::str::from_utf8(&id[..size]).unwrap().trim();
+        log::info!("TCP connection ID string: {}", id);
+        let id: usize = id.parse().unwrap();
+
+        log::info!("Got TCP connection ID: {}", id);
+
+        // Listen to incoming connections on the specified tcp_port
+        let tcp_announcement = alloc::format!("announce 127.0.0.1:{}\n", tcp_port);
+        log::info!("Announcing on: {}", tcp_announcement.trim());
+        match tcp_ctl.write(tcp_announcement.as_bytes()).await {
+            Ok(bytes_written) => {
+                log::info!("Successfully wrote {} bytes to tcp control", bytes_written);
+            }
+            Err(e) => {
+                log::error!("Failed to announce TCP listener: {:?}", e);
+                return;
+            }
         }
-    });
 
-    let exitcode = p.run([]).await;
-    log::info!("exitcode: {exitcode}");
+        let listen_path = format!("/net/tcp/{id}/listen");
+        log::info!("Listen path: {}", listen_path);
+
+        // TODO(kmohr): handle multiple connections
+        log::info!("Waiting for connections...");
+        let mut listen_file = ns
+            .walk(&listen_path, Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+
+        // Accept a new connection - this blocks until someone connects
+        let mut id = [0; 32];
+        let size = listen_file.read(&mut id).await.unwrap();
+        let id = core::str::from_utf8(&id[..size]).unwrap().trim();
+        let data_path = format!("/net/tcp/{id}/data");
+
+        log::info!("New connection accepted: {}", id);
+
+        // Get data file for the accepted connection
+        let mut data_file = ns
+            .walk(&data_path, Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+
+        // Read data from the connection - handle arbitrarily large messages
+        let mut all_data = Vec::new();
+        let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
+
+        loop {
+            match data_file.read(&mut buffer).await {
+                Ok(bytes_read) => {
+                    if bytes_read > 0 {
+                        all_data.extend_from_slice(&buffer[..bytes_read]);
+                    } else {
+                        // bytes_read == 0 means the connection is closed
+                        log::info!("Connection closed by client");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error reading data: {:?}", e);
+                    break;
+            }
+        }
+
+        if !all_data.is_empty() {
+            log::info!("Received complete message of {} bytes", all_data.len());
+
+            // TODO(kmohr) just assuming this is a continuation for now
+            // should define a set of possible messages
+            // also need filename here
+            match postcard::from_bytes(&all_data).unwrap() {
+                Value::Function(k) => {
+                    let p = Proc::from_function(
+                        k,
+                        ProcState {
+                            ns: Arc::new(ns),
+                            env: Env::default().into(),
+                            fds: RwLock::new(fd).into(),
+                            cwd: PathBuf::from("/".to_owned()).into(),
+                        },
+                    )
+                    .expect("Failed to create Proc from received Function");
+
+                    let exitcode = p.run([]).await;
+                    log::info!("exitcode: {exitcode}");
+                }
+                _ => {
+                    log::error!("Received message is not a Function!");
+                }
+            }
+        }
+
+        // Connection is automatically dropped when data_file goes out of scope
+        // The TCP connection will be closed
+        log::info!("Dropping connection {}", id);
+    } else if MACHINE == 1 {
+        let p = Proc::new(
+            THUMBNAILER,
+            ProcState {
+                ns: Arc::new(ns),
+                env: Env::default().into(),
+                fds: RwLock::new(fd).into(),
+                cwd: PathBuf::from("/".to_owned()).into(),
+            },
+        )
+        .expect("Failed to create Proc from ELF");
+
+        let exitcode = p.run([]).await;
+        log::info!("exitcode: {exitcode}");
+    }
 }

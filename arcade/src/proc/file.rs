@@ -45,13 +45,17 @@ pub async fn write(state: &ProcState, fd: u64, buf: &[u8]) -> Result<u32, UnixEr
 }
 
 pub async fn read(state: &ProcState, fd: u64, count: u64) -> Result<Blob, UnixError> {
+    log::info!("read: fd={}, count={}", fd as usize, count);
     let mut fdt = state.fds.write();
     let fd = fdt
         .get_mut(fd as usize)
         .ok_or(UnixError::BADFD)?
         .as_file_mut()?;
+    log::info!("count={}", count);
+    // TODO(kmohr): what if we turned the user buffer into a Blob directly to avoid the copy?
     let mut buf = vec![0; count as usize];
     let sz = fd.dyn_read(&mut buf).await?;
+    log::info!("sz={}", sz);
     buf.truncate(sz);
     Ok(Blob::from_inner(kernel::types::internal::Blob::new(buf)))
 }

@@ -1,6 +1,7 @@
 use kernel::prelude::*;
 extern crate alloc;
 
+#[arca_test]
 fn test_serde_null() {
     let null = Value::Null(Null::new());
     let bytes_vec = postcard::to_allocvec(&null).unwrap();
@@ -8,6 +9,7 @@ fn test_serde_null() {
     assert_eq!(deserialized_null, null);
 }
 
+#[arca_test]
 fn test_serde_word() {
     let word = Value::Word(1.into());
     let bytes_vec = postcard::to_allocvec(&word).unwrap();
@@ -15,6 +17,7 @@ fn test_serde_word() {
     assert_eq!(deserialized_word, word);
 }
 
+#[arca_test]
 fn test_serde_blob() {
     let blob = Value::Blob("hello, world!".into());
     let bytes_vec = postcard::to_allocvec(&blob).unwrap();
@@ -22,6 +25,7 @@ fn test_serde_blob() {
     assert_eq!(deserialized_blob, blob);
 }
 
+#[arca_test]
 fn test_serde_tuple() {
     let tuple = Value::Tuple((1, 2, 3).into());
     let bytes_vec = postcard::to_allocvec(&tuple).unwrap();
@@ -29,6 +33,7 @@ fn test_serde_tuple() {
     assert_eq!(deserialized_tuple, tuple);
 }
 
+#[arca_test]
 fn test_serde_page() {
     let page = Value::Page(Page::new(1));
     let bytes_vec = postcard::to_allocvec(&page).unwrap();
@@ -36,6 +41,7 @@ fn test_serde_page() {
     assert_eq!(deserialized_page, page);
 }
 
+#[arca_test]
 fn test_serde_table() {
     let table = Value::Table(Table::new(1));
     let bytes_vec = postcard::to_allocvec(&table).unwrap();
@@ -43,6 +49,7 @@ fn test_serde_table() {
     assert_eq!(deserialized_table, table);
 }
 
+#[arca_test]
 fn test_serde_function() {
     let arca = Arca::new();
     let inner_func: arca::Function<Runtime> = Function::from(arca);
@@ -96,20 +103,4 @@ fn test_entry_error() {
     let error =
         serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
     assert_eq!(deserialized_error, error);
-}
-
-pub fn test_runner() {
-    test_serde_null();
-    test_serde_word();
-    test_serde_blob();
-    test_serde_tuple();
-    test_serde_page();
-    test_serde_table();
-    test_serde_function();
-    test_serde_ropage();
-    test_serde_rwpage();
-    test_serde_rotable();
-    test_serde_rwtable();
-    test_value_error();
-    test_entry_error();
 }

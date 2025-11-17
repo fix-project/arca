@@ -25,38 +25,79 @@ use vsock::*;
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    let max_smp = std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(1).unwrap())
+        .get();
+
     let matches = Command::new("arca-vmm")
         .arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("smp")
+                .short('s')
+                .long("smp")
+                .help("Number of CPU cores for the guest VM")
+                .required(false),
+        )
+        .arg(
+            Arg::new("cid")
+                .short('c')
+                .long("cid")
+                .help("Guest VM's CID")
+                .default_value("3")
+                .required(false),
+        )
+        .arg(
+            Arg::new("tcp-port")
+                .short('p')
+                .long("tcp-port")
+                .help("Port number for TCP listener in the guest VM")
+                .default_value("11211")
+                .required(false),
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
 
-    let smp = if run_fix {
-        1
-    } else {
-        std::thread::available_parallelism()
-            .unwrap_or(NonZero::new(1).unwrap())
-            .get()
-    };
-    // let smp = core::cmp::min(smp, 1);
+    let smp = matches
+        .get_one::<String>("smp")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(max_smp);
+
+    let cid = matches
+        .get_one::<String>("cid")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(3);
+
+    let tcp_port = matches
+        .get_one::<String>("tcp-port")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(11211);
+
+    // TODO(kmohr): can this create an invalid port number?
+    let host_listener_port = (cid as u32) + 1561;
+
     let mut runtime = if run_fix {
-        Runtime::new(smp, 1 << 30, FIX.into())
+        Runtime::new(cid, smp, 1 << 32, FIX.into())
     } else {
-        Runtime::new(smp, 1 << 30, ARCADE.into())
+        Runtime::new(cid, smp, 1 << 32, ARCADE.into())
     };
 
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         let spawn = move |x| {
             smol::spawn(x).detach();
         };
 
-        let sock = VsockListener::bind(&VsockAddr::new(VMADDR_CID_HOST, 1564)).unwrap();
+        let sock =
+            VsockListener::bind(&VsockAddr::new(VMADDR_CID_HOST, host_listener_port)).unwrap();
 
         let mut s = ninep::Server::new(spawn);
         let dir = FsDir::new("/tmp", Open::ReadWrite).unwrap();
         s.add_blocking("", dir);
         let tcp = TcpFS::default();
         s.add_blocking("tcp", tcp);
+        // put all data for the 9P server to read/write in ~/data
+        let shared_data_dir = FsDir::new("/home/kmohr/data", Open::ReadWrite).unwrap();
+        s.add_blocking("data", shared_data_dir);
         let s = Arc::new(s);
 
         loop {
@@ -70,7 +111,14 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    runtime.run(&[]);
+    log::info!(
+        "Running {} on VM cid={} and TCP port {} with {} core(s)",
+        if run_fix { "fix" } else { "arcade" },
+        cid,
+        tcp_port,
+        smp
+    );
+    runtime.run(&[cid, host_listener_port as usize, tcp_port as usize]);
 
     Ok(())
 }

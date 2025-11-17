@@ -87,6 +87,8 @@ impl<'a> Server<'a> {
                             msize,
                             version,
                         } => {
+                            // TODO(kmohr) this is kinda dumb uuhhhhh unsure why this is needed
+                            let msize = core::cmp::min(msize, 16384);
                             if version.starts_with("9P2000") {
                                 RMessage::Version {
                                     tag,
@@ -167,14 +169,15 @@ impl<'a> Server<'a> {
                                 };
                                 let name = path.file_name().ok_or(ErrorKind::InvalidFilename)?;
                                 let parent = parent.as_dir()?;
-                                let mut isdir: bool = false;
                                 let dirents: Vec<Result<DirEnt>> =
                                     parent.readdir().await?.collect().await;
-                                for x in dirents {
-                                    let x = x?;
-                                    isdir |= x.dir;
-                                }
-                                if isdir {
+                                let f = dirents
+                                    .iter()
+                                    .find(|x| x.as_ref().unwrap().name == name)
+                                    .ok_or(ErrorKind::NotFound)?
+                                    .as_ref()
+                                    .unwrap();
+                                if f.dir {
                                     qid.push(dir(Fid(!0)));
                                 } else {
                                     qid.push(file(Fid(!0)));
