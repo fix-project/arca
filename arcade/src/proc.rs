@@ -106,7 +106,7 @@ impl Proc {
                         let result = try {
                             let mut fds = self.state.fds.lock();
                             let old = fds.get(fd.read() as usize).ok_or(UnixError::BADFD)?;
-                            let new = old.dup().await?;
+                            let new = old.dup().await.map_err(|e| e.into())?;
                             let fd = fds.insert(new);
                             Word::new(fd as u64)
                         };

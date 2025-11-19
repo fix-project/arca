@@ -69,13 +69,16 @@ pub extern "C" fn _rsstart() -> ! {
 
         let result: Result<(), Error> = try {
             loop {
-                let bytes = ldata.read_until(b'\n')?;
-                let request = request().parse(&bytes).into_result()?;
+                let bytes = ldata.read_until(b'\n').map_err(|e| e.into())?;
+                let request = request()
+                    .parse(&bytes)
+                    .into_result()
+                    .map_err(|e| e.into())?;
 
                 match request {
                     Request::Storage(request) => {
                         let mut value = vec![0; request.value + 2];
-                        ldata.read(&mut value)?;
+                        ldata.read(&mut value).map_err(|e| e.into())?;
                         value.pop();
                         value.pop();
                         let response = match request.command {
@@ -85,19 +88,22 @@ pub extern "C" fn _rsstart() -> ! {
                             }
                             _ => todo!(),
                         };
-                        ldata.write_str(response)?;
+                        ldata.write_str(response).map_err(|e| e.into())?;
                     }
                     Request::Get(items) => {
                         for item in items {
                             let result = kv.lookup(item.as_bytes());
                             if let Some((value, flags)) = result {
                                 let bytes = value.len();
-                                write!(ldata, "VALUE {item} {flags} {bytes}\r\n")?;
-                                value.with_ref(|value| ldata.write(value))?;
-                                ldata.write(b"\r\n")?;
+                                write!(ldata, "VALUE {item} {flags} {bytes}\r\n")
+                                    .map_err(|e| e.into())?;
+                                value
+                                    .with_ref(|value| ldata.write(value))
+                                    .map_err(|e| e.into())?;
+                                ldata.write(b"\r\n").map_err(|e| e.into())?;
                             }
                         }
-                        ldata.write(b"END\r\n")?;
+                        ldata.write(b"END\r\n").map_err(|e| e.into())?;
                     }
                     Request::Delete(_) => {
                         let _ = ldata.write(b"CLIENT_ERROR\r\n");

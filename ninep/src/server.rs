@@ -79,7 +79,7 @@ impl<'a> Server<'a> {
             let map = self.map.clone();
             let future = async move {
                 let tag = request.tag();
-                let mut response: RMessage = try {
+                let response: Result<RMessage> = try {
                     match request {
                         TMessage::Version {
                             tag,
@@ -108,7 +108,8 @@ impl<'a> Server<'a> {
                             tag, fid, aname, ..
                         } => {
                             let map = map.lock().await;
-                            let root = map.get(&aname).ok_or(ErrorKind::NotFound)?.dup().await?;
+                            let root = map.get(&aname).ok_or(ErrorKind::NotFound.into())?;
+                            let root = root.dup().await?;
                             Mutex::unlock(map);
                             let qid = dir(fid);
                             fids.lock().await.insert(
@@ -125,7 +126,7 @@ impl<'a> Server<'a> {
                             name,
                         } => {
                             let fids_ = fids.lock().await;
-                            let object = fids_.get(&fid).ok_or(ErrorKind::NotFound)?.clone();
+                            let object = fids_.get(&fid).ok_or(ErrorKind::NotFound.into())?.clone();
                             Mutex::unlock(fids_);
                             let mut object = object.lock().await;
                             let path = PathBuf::from(name.join("/"));
@@ -164,7 +165,8 @@ impl<'a> Server<'a> {
                                 } else {
                                     current.dup().await?
                                 };
-                                let name = path.file_name().ok_or(ErrorKind::InvalidFilename)?;
+                                let name =
+                                    path.file_name().ok_or(ErrorKind::InvalidFilename.into())?;
                                 let parent = parent.as_dir()?;
                                 let mut isdir: bool = false;
                                 let dirents: Vec<Result<DirEnt>> =
@@ -187,11 +189,14 @@ impl<'a> Server<'a> {
                         }
                         TMessage::Open { tag, fid, access } => {
                             let fids = fids.lock().await;
-                            let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
+                            let f = fids
+                                .get(&fid)
+                                .ok_or(ErrorKind::InvalidInput.into())?
+                                .clone();
                             Mutex::unlock(fids);
                             let mut node = f.lock().await;
                             let (parent, name) =
-                                node.as_mut().left().ok_or(ErrorKind::InvalidInput)?;
+                                node.as_mut().left().ok_or(ErrorKind::InvalidInput.into())?;
                             let object = parent.open(name, access.try_into()?).await?;
                             let qid = obj(fid, &object);
                             *node = Either::Right(object);
@@ -212,7 +217,7 @@ impl<'a> Server<'a> {
                                 .lock()
                                 .await
                                 .remove(&fid)
-                                .ok_or(ErrorKind::NotFound)?
+                                .ok_or(ErrorKind::NotFound.into())?
                                 .clone();
                             let new = match &mut *node.lock().await {
                                 Either::Left((parent, name)) => {
@@ -245,10 +250,13 @@ impl<'a> Server<'a> {
                             count,
                         } => {
                             let fids = fids.lock().await;
-                            let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
+                            let f = fids
+                                .get(&fid)
+                                .ok_or(ErrorKind::InvalidInput.into())?
+                                .clone();
                             Mutex::unlock(fids);
                             let mut f = f.lock().await;
-                            let o = f.as_mut().right().ok_or(ErrorKind::InvalidInput)?;
+                            let o = f.as_mut().right().ok_or(ErrorKind::InvalidInput.into())?;
                             let data = match o {
                                 Object::File(f) => {
                                     if f.seekable() {
@@ -301,13 +309,16 @@ impl<'a> Server<'a> {
                             data,
                         } => {
                             let fids = fids.lock().await;
-                            let f = fids.get(&fid).ok_or(ErrorKind::InvalidInput)?.clone();
+                            let f = fids
+                                .get(&fid)
+                                .ok_or(ErrorKind::InvalidInput.into())?
+                                .clone();
                             Mutex::unlock(fids);
                             let mut f = f.lock().await;
                             let f = f
                                 .as_mut()
                                 .right()
-                                .ok_or(ErrorKind::InvalidInput)?
+                                .ok_or(Error::from(ErrorKind::InvalidInput))?
                                 .as_file_mut()?;
                             if f.seekable() {
                                 f.dyn_seek(SeekFrom::Start(offset as usize)).await?;
@@ -323,15 +334,17 @@ impl<'a> Server<'a> {
                         TMessage::Stat { .. } => todo!("stat"),
                         TMessage::WStat { .. } => todo!("wstat"),
                         _ => {
-                            Err(ErrorKind::Unsupported)?;
+                            Err(Error::from(ErrorKind::Unsupported))?;
                             unreachable!()
                         }
                     }
                 };
-                response.set_tag(tag);
-                log::debug!("-> {response:?}");
-                let response = wire::to_bytes_with_len(response).unwrap();
-                socket.write(&response).await.unwrap();
+                if let Ok(mut response) = response {
+                    response.set_tag(tag);
+                    log::debug!("-> {response:?}");
+                    let response = wire::to_bytes_with_len(response).unwrap();
+                    socket.write(&response).await.unwrap();
+                }
             };
             (self.spawn)(Box::pin(future));
         }
