@@ -40,7 +40,7 @@ mod dummy_testing {
 
 extern crate alloc;
 
-const MACHINE: i32 = 1;
+pub const MACHINE: i32 = 1;
 const THUMBNAILER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_THUMBNAIL_EXAMPLE"));
 
 #[kmain]
@@ -119,6 +119,9 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
     ns.attach(tcp, "/net/tcp", MountType::Replace, true)
+        .await
+        .unwrap();
+    ns.attach(data, "/data", MountType::Replace, true)
         .await
         .unwrap();
 
@@ -236,23 +239,6 @@ async fn main(args: &[usize]) {
         // The TCP connection will be closed
         log::info!("Dropping connection {}", id);
     } else if MACHINE == 1 {
-        let x: Result<u64> = try {
-            let f = common::elfloader::load_elf(THUMBNAILER).unwrap();
-            let result = run(f, ns.clone()).await?;
-            result
-        };
-
-        match x {
-            Ok(result) => {
-                log::info!("result: {result}");
-            }
-            Err(_) => {
-                log::warn!("addition failed")
-            }
-        }
-    } else {
-        log::info!("Machine 2 starting thumbnailer without TCP server");
-        // just run the thumbnailer without networking
         let p = Proc::new(
             THUMBNAILER,
             ProcState {
@@ -266,138 +252,5 @@ async fn main(args: &[usize]) {
 
         let exitcode = p.run([]).await;
         log::info!("exitcode: {exitcode}");
-    }
-}
-
-async fn run(mut f: Function, ns: Namespace) -> Result<u64> {
-    let mut counter: u64 = 0;
-
-    loop {
-        let result = f.force();
-
-        let g = match result {
-            Value::Function(g) => g,
-            Value::Word(x) => return Ok(x.read().try_into().unwrap()),
-            _ => {
-                log::error!("proc returned something other than an effect or number!");
-                return Err(ErrorKind::Unsupported.into());
-            }
-        };
-
-        if g.is_arcane() {
-            f = g;
-            continue;
-        }
-
-        let Value::Tuple(mut data) = g.into_inner().read() else {
-            unreachable!()
-        };
-        let t: Blob = data.take(0).try_into().unwrap();
-        assert_eq!(&*t, b"Symbolic");
-        let effect: Blob = data.take(1).try_into().unwrap();
-        let args: Tuple = data.take(2).try_into().unwrap();
-        let mut args: Vec<Value> = args.into_iter().collect();
-        let Some(Value::Function(k)) = args.pop() else {
-            return Err(ErrorKind::Other.into());
-        };
-
-        f = match (&*effect, &mut *args) {
-            (b"add", [Value::Word(l), Value::Word(r)]) => k.apply(l.read() + r.read()),
-            (b"incr", []) => {
-                counter += 1;
-                k.apply(counter)
-            }
-            (b"open", &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)]) => {
-                let send_tcp_msg = || async {
-                    // Get a new TCP connection
-                    let tcp_ctl_result = ns.walk("/net/tcp/clone", vfs::Open::ReadWrite).await;
-                    let mut tcp_ctl = match tcp_ctl_result {
-                        Ok(obj) => match obj.as_file() {
-                            Ok(file) => file,
-                            Err(_) => {
-                                log::error!("Failed to get TCP control file");
-                                return 1;
-                            }
-                        },
-                        Err(e) => {
-                            log::error!("Failed to walk to /net/tcp/clone: {:?}", e);
-                            return 1;
-                        }
-                    };
-
-                    // Read the connection ID
-                    let mut id_buf = [0u8; 32];
-                    let size = match tcp_ctl.read(&mut id_buf).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            log::error!("Failed to read connection ID: {:?}", e);
-                            return 1;
-                        }
-                    };
-                    let conn_id = match core::str::from_utf8(&id_buf[..size]) {
-                        Ok(s) => s.trim(),
-                        Err(_) => {
-                            log::error!("Invalid UTF-8 in connection ID");
-                            return 1;
-                        }
-                    };
-
-                    // Connect to localhost:11234
-                    let connect_cmd = alloc::format!("connect 127.0.0.1:11212\n");
-                    if let Err(e) = tcp_ctl.write(connect_cmd.as_bytes()).await {
-                        log::error!("Failed to send connect command: {:?}", e);
-                        return 1;
-                    }
-
-                    // Get the data file for this connection
-                    let data_path = alloc::format!("/net/tcp/{}/data", conn_id);
-                    let mut data_file = match ns.walk(&data_path, vfs::Open::ReadWrite).await {
-                        Ok(obj) => match obj.as_file() {
-                            Ok(file) => file,
-                            Err(_) => {
-                                log::error!("Failed to get data file");
-                                return 1;
-                            }
-                        },
-                        Err(e) => {
-                            log::error!("Failed to walk to data path: {:?}", e);
-                            return 1;
-                        }
-                    };
-
-                    // TODO(kmohr): hmmmm this is so slow...
-                    let resumed_f = Function::symbolic("open")
-                        .apply(Value::Blob(path.clone()))
-                        .apply(Value::Word(flags))
-                        .apply(Value::Word(mode))
-                        .apply(Value::Function(k));
-
-                    let val = Value::Function(resumed_f);
-                    let message = postcard::to_allocvec(&val).unwrap();
-
-                    // log the message size in bytes and MB
-                    let size_bytes = message.len();
-                    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-                    log::info!(
-                        "Sending message of size: {} bytes ({:.2} MB)",
-                        size_bytes,
-                        size_mb
-                    );
-
-                    if let Err(e) = data_file.write(&message).await {
-                        log::error!("Failed to send message: {:?}", e);
-                        return 1;
-                    }
-
-                    log::info!("Sent serialized continuation to localhost:11234");
-                    return 0;
-                };
-
-                let ret_code = send_tcp_msg().await;
-                // we don't actually need to run k anymore
-                return Ok(ret_code as u64);
-            }
-            _ => panic!("invalid effect (main.rs): {effect:?}({args:?})"),
-        };
     }
 }

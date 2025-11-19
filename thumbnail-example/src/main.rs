@@ -114,7 +114,7 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     let mut output_file = File::options()
         .write(true)
         .create(true)
-        .open("/n/host/thumbnail.ppm")
+        .open("/data/thumbnail.ppm")
         .expect("could not create output thumbnail file");
     let n = output_file
         .write(&thumbnail)
@@ -126,21 +126,17 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    // let image = std::fs::read("./images/parrot.png").expect("failed to open image");
-    // let size = 128;
-    // let thumbnail = get_thumbnail(image, size);
-    //
-    // std::fs::write("thumbnail.png", &thumbnail).expect("Failed to write thumbnail");
-
+    // TODO(kmohr) take this input file path as argument
     let mut ppm_data = File::options()
         .read(true)
-        .open("/n/host/falls_1.ppm")
+        .open("/data/falls_1.ppm")
         .expect("could not open ppm file");
     user::error::log("opened ppm file");
     // the sun.ppm file is 12814240 bytes eeeek
     // try allocating 2GB into a Box
     user::error::log("allocating a bunch of space");
-    let mut buf = alloc::vec![0; 2332861];
+    let mut buf = alloc::vec![0; 12814240];
+    // let mut buf = alloc::vec![0; 2332861];
     user::error::log("alloced a bunch of space");
     let n = ppm_data
         .read(&mut buf[..])

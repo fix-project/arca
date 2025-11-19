@@ -30,7 +30,8 @@ impl File for File9P {
             let n = core::cmp::min(data.len(), chunk.len());
             chunk[..n].copy_from_slice(&data[..n]);
             read += n;
-            if data.len() != chunk.len() {
+            if data.len() < 2048 {
+                // TODO(kmohr) waahhhhhh this is so stupid why is file read so nondeterministic
                 break;
             }
         }

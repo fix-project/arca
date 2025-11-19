@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
         s.add_blocking("", dir);
         let tcp = TcpFS::default();
         s.add_blocking("tcp", tcp);
+        // put all data for the 9P server to read/write in ~/data
         let shared_data_dir = FsDir::new("/home/kmohr/data", Open::ReadWrite).unwrap();
         s.add_blocking("data", shared_data_dir);
         let s = Arc::new(s);

@@ -439,17 +439,16 @@ mod allocator {
 
     impl OomHandler for Mmap {
         fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
+            // TODO(kmohr) review this
             const PAGE_SIZE: usize = 4096;
 
             // Calculate the total size needed, considering alignment requirements
+            // TODO(kmohr) I'm just arbitrarily adding 128 bytes
+            // what is the exact amount of space needed for metadata?
             let align = layout.align().max(PAGE_SIZE);
-            // add some metadata padding
-            // TODO(kmohr) what is the exact amount needed?
             let required_size = (layout.size() + 128).max(PAGE_SIZE);
-            crate::error::log_int("Allocating memory of size", required_size as u64);
 
             // Round up to alignment boundary
-            // TODO(kmohr) is this done twice...
             let aligned_size = (required_size + align - 1) & !(align - 1);
             let pages_needed = (aligned_size + PAGE_SIZE - 1) / PAGE_SIZE;
             let total_size = pages_needed * PAGE_SIZE;
