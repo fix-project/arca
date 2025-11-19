@@ -31,7 +31,11 @@ jobs:
         target: x86_64-unknown-none
         components: clippy
     - name: Setup
-      run: sudo apt update && sudo apt install gcc-multilib
+      run: |
+        sudo apt update && sudo apt install gcc-multilib
+        wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz
+        tar xvf wasi-sdk-29.0-x86_64-linux.tar.gz
+        echo WASI_SDK_PATH=`pwd`/wasi-sdk-29.0-x86_64-linux | sudo tee -a $GITHUB_ENV
     - name: Clippy
       run: cargo clippy --all-features
   build:
@@ -47,6 +51,9 @@ jobs:
     - name: Setup
       run: |
         sudo apt update && sudo apt install gcc-multilib
+        wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz
+        tar xvf wasi-sdk-29.0-x86_64-linux.tar.gz
+        echo WASI_SDK_PATH=`pwd`/wasi-sdk-29.0-x86_64-linux | sudo tee -a $GITHUB_ENV
         sudo modprobe vhost_vsock
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
         sudo udevadm control --reload-rules
