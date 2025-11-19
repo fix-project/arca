@@ -34,7 +34,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_get_argument => {
             if let Some(front) = argv.pop_front() {
                 let idx = arca.descriptors_mut().insert(front);
-                Ok(idx)
+                idx
             } else {
                 arca.registers_mut()[Register::RAX] = (-(arcane::__ERR_interrupted as i32)) as u64;
                 let arca = arca.take();
@@ -62,6 +62,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_map => sys_map(args, arca),
         arcane::__NR_mmap => sys_mmap(args, arca),
         arcane::__NR_mprotect => sys_mprotect(args, arca),
+        arcane::__NR_compat_mmap => sys_compat_mmap(args, arca),
 
         arcane::__NR_call_with_current_continuation => {
             sys_call_with_current_continuation(args, arca)?
@@ -80,8 +81,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
     };
     let regs = arca.registers_mut();
     if let Err(err) = result {
-        // log::warn!("system call {num} failed with {err:?}");
-        panic!("system call {num} failed with {err:?}");
+        log::debug!("system call {num} failed with {err:?}");
     }
     regs[Register::RAX] = match result {
         Ok(x) => x as u64,
@@ -99,14 +99,18 @@ pub fn sys_drop(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_clone(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let src = args[0] as usize;
     let clone = arca.descriptors_mut().get(src)?.clone();
-    Ok(arca.descriptors_mut().insert(clone))
+    arca.descriptors_mut().insert(clone)
 }
 
 pub fn sys_exit(args: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
     let idx = args[0] as usize;
     let value = match arca.descriptors_mut().take(idx) {
         Ok(value) => value,
-        Err(err) => return ControlFlow::Continue(Err(err.into())),
+        Err(_) => {
+            return ControlFlow::Break(
+                arca::Function::symbolic("exit was called with a bad argument").into(),
+            );
+        }
     };
     ControlFlow::Break(value)
 }
@@ -139,7 +143,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
                 unreachable!();
             };
             let value = tree.set(inner_idx, value);
-            Ok(arca.descriptors_mut().insert(value))
+            arca.descriptors_mut().insert(value)
         }
         DataType::Table => {
             let ptr = args[3] as usize;
@@ -177,7 +181,7 @@ pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     match target {
         Value::Tuple(tree) => {
             let value = tree.get(inner_idx);
-            Ok(arca.descriptors_mut().insert(value))
+            arca.descriptors_mut().insert(value)
         }
         Value::Table(table) => {
             let ptr = args[2] as usize;
@@ -264,7 +268,7 @@ pub fn sys_type(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
 pub fn sys_create_word(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let val = args[0];
-    Ok(arca.descriptors_mut().insert(Word::new(val).into()))
+    arca.descriptors_mut().insert(Word::new(val).into())
 }
 
 pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -274,33 +278,33 @@ pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let buffer = copy_user_to_kernel(&mut buffer, ptr)?;
     Ok(arca
         .descriptors_mut()
-        .insert(Value::Blob(Blob::new(buffer))))
+        .insert(Value::Blob(Blob::new(buffer)))?)
 }
 
 pub fn sys_create_tuple(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let buf = vec![Value::default(); len];
     let val = Value::Tuple(Tuple::from_inner(internal::Tuple::new(buf)));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_page(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Page(Page::new(len));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_table(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Table(Table::new(len));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_function(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let data = args[0] as usize;
     let data = arca.descriptors_mut().take(data)?;
     let result = Function::new(data)?;
-    Ok(arca.descriptors_mut().insert(result.into()))
+    arca.descriptors_mut().insert(result.into())
 }
 
 pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -316,7 +320,7 @@ pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
     let thunk = f.apply(x);
     let idx = arca.descriptors_mut().insert(thunk.into());
-    Ok(idx)
+    idx
 }
 
 pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -421,6 +425,64 @@ pub fn sys_mprotect(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
+pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let addr = args[0] as usize;
+    let len = args[1] as usize;
+    let mode = args[2] as u32;
+
+    if mode != arcane::__MODE_none && mode != arcane::__MODE_read_write {
+        unimplemented!("mode: {mode}");
+    }
+
+    if arca.rusage().memory + len > arca.rlimit().memory {
+        return Err(SyscallError::OutOfMemory);
+    }
+
+    let mut p = addr;
+    while p < addr + len {
+        if p % Page1GB::SIZE == 0 && len >= Page1GB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page1GB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page1GB::SIZE);
+                // TODO: handle failure
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page1GB::SIZE;
+            continue;
+        }
+        if p % Page2MB::SIZE == 0 && len >= Page2MB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page2MB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page2MB::SIZE);
+                // TODO: handle failure
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page2MB::SIZE;
+            continue;
+        }
+        if p % Page4KB::SIZE == 0 && len >= Page4KB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page4KB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page4KB::SIZE);
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page4KB::SIZE;
+            continue;
+        }
+        panic!("unaligned mmap or bad size");
+    }
+    Ok(len)
+}
+
 pub fn sys_call_with_current_continuation(
     args: [u64; 6],
     arca: &mut LoadedArca,
@@ -451,7 +513,7 @@ pub fn sys_get_continuation(_: [u64; 6], arca: &mut LoadedArca) -> Result<usize>
     ))
     .into();
     arca.swap(&mut unloaded);
-    Ok(arca.descriptors_mut().insert(k))
+    arca.descriptors_mut().insert(k)
 }
 
 pub fn sys_show(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -565,7 +627,7 @@ fn write_entry(arca: &mut LoadedArca, entry: Entry) -> arcane::arca_entry {
         arca::Entry::ROTable(x) => (arcane::__MODE_read_only, arcane::__TYPE_table, x.into()),
         arca::Entry::RWTable(x) => (arcane::__MODE_read_write, arcane::__TYPE_table, x.into()),
     };
-    let index = arca.descriptors_mut().insert(value);
+    let index = arca.descriptors_mut().insert(value).unwrap();
     arcane::arca_entry {
         mode,
         datatype,

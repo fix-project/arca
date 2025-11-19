@@ -11,5 +11,6 @@ pub enum SyscallError {
     BadIndex = __ERR_bad_index,
     BadType = __ERR_bad_type,
     BadArgument = __ERR_bad_argument,
+    OutOfMemory = __ERR_out_of_memory,
     Interrupted = __ERR_interrupted,
 }
