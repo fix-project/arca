@@ -52,6 +52,26 @@ impl<R: Runtime> Value<R> {
             Value::Function(_) => DataType::Function,
         }
     }
+
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Value::Null(_) => 0,
+            Value::Word(word) => word.len(),
+            Value::Blob(blob) => blob.len(),
+            Value::Tuple(tuple) => tuple
+                .iter()
+                .map(|v| v.byte_size())
+                .reduce(|x, y| x + y)
+                .unwrap(),
+            Value::Page(page) => page.len(),
+            Value::Table(table) => table
+                .iter()
+                .map(|e| e.byte_size())
+                .reduce(|x, y| x + y)
+                .unwrap(),
+            Value::Function(function) => function.read_cloned().byte_size(),
+        }
+    }
 }
 
 impl<R: Runtime> From<Option<Value<R>>> for Value<R> {
@@ -117,6 +137,26 @@ impl<'a, R: Runtime> ValueRef<'a, R> {
             ValueRef::Page(x) => RawValueRef::Page(x.inner()),
             ValueRef::Table(x) => RawValueRef::Table(x.inner()),
             ValueRef::Function(x) => RawValueRef::Function(x.inner()),
+        }
+    }
+
+    pub fn byte_size(&self) -> usize {
+        match self {
+            ValueRef::Null(_) => 0,
+            ValueRef::Word(word) => word.len(),
+            ValueRef::Blob(blob) => blob.len(),
+            ValueRef::Tuple(tuple) => tuple
+                .iter()
+                .map(|v| v.byte_size())
+                .reduce(|x, y| x + y)
+                .unwrap(),
+            ValueRef::Page(page) => page.len(),
+            ValueRef::Table(table) => table
+                .iter()
+                .map(|e| e.byte_size())
+                .reduce(|x, y| x + y)
+                .unwrap(),
+            ValueRef::Function(function) => function.read_cloned().byte_size(),
         }
     }
 }

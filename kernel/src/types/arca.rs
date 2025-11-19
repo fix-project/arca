@@ -1,10 +1,12 @@
 use alloc::{collections::vec_deque::VecDeque, vec::Vec};
+use arca::ValueRef;
+use arcane::SyscallError;
 
 use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
-use crate::types::internal::{Table, Tuple};
+use crate::types::internal;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
@@ -12,19 +14,27 @@ pub struct Arca {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     fsbase: u64,
+    rlimit: Resources,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Resources {
+    pub memory: usize,
 }
 
 impl Arca {
     pub fn new() -> Arca {
-        let page_table = Table::default();
+        let page_table = Table::from_inner(internal::Table::default());
         let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
+        let rlimit = Resources { memory: 1 << 21 };
 
         Arca {
             page_table,
             register_file,
             descriptors,
             fsbase: 0,
+            rlimit,
         }
     }
 
@@ -32,28 +42,45 @@ impl Arca {
         register_file: impl Into<Box<RegisterFile>>,
         page_table: Table,
         descriptors: Tuple,
+        rlimit: Tuple,
     ) -> Arca {
-        let descriptors = Vec::from(descriptors.into_inner()).into();
+        let descriptors = Vec::from(descriptors.into_inner().into_inner()).into();
+
+        let mem_limit = Word::try_from(rlimit.get(0).clone()).unwrap().read() as usize;
+        let rlimit = Resources { memory: mem_limit };
 
         Arca {
             page_table,
             register_file: register_file.into(),
             descriptors,
             fsbase: 0,
+            rlimit,
         }
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
-        cpu.activate_address_space(self.page_table);
+        let memory = ValueRef::Table(&self.page_table).byte_size()
+            + self
+                .descriptors
+                .iter()
+                .map(|x| x.byte_size())
+                .reduce(|x, y| x + y)
+                .unwrap();
+
+        cpu.activate_address_space(self.page_table.into_inner());
         unsafe {
             core::arch::asm! {
                 "wrfsbase {base}", base=in(reg) self.fsbase
             };
         }
+        let rusage = Resources { memory };
+        assert!(rusage.memory <= self.rlimit.memory);
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
+            rlimit: self.rlimit,
+            rusage,
         }
     }
 
@@ -85,8 +112,16 @@ impl Arca {
         (
             *self.register_file,
             self.page_table,
-            Tuple::new(Vec::from(self.descriptors)),
+            Tuple::from_inner(internal::Tuple::new(Vec::from(self.descriptors))),
         )
+    }
+
+    pub fn rlimit(&self) -> &Resources {
+        &self.rlimit
+    }
+
+    pub fn rlimit_mut(&mut self) -> &mut Resources {
+        &mut self.rlimit
     }
 }
 
@@ -101,6 +136,8 @@ pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
+    rlimit: Resources,
+    rusage: Resources,
 }
 
 impl<'a> LoadedArca<'a> {
@@ -120,8 +157,24 @@ impl<'a> LoadedArca<'a> {
         &self.descriptors
     }
 
-    pub fn descriptors_mut(&mut self) -> &mut Descriptors {
-        &mut self.descriptors
+    pub fn descriptors_mut(&'_ mut self) -> DescriptorsProxy<'_, 'a> {
+        DescriptorsProxy { arca: self }
+    }
+
+    pub fn rlimit(&self) -> &Resources {
+        &self.rlimit
+    }
+
+    pub fn rlimit_mut(&mut self) -> &mut Resources {
+        &mut self.rlimit
+    }
+
+    pub fn rusage(&self) -> &Resources {
+        &self.rusage
+    }
+
+    pub fn rusage_mut(&mut self) -> &mut Resources {
+        &mut self.rusage
     }
 
     pub fn unload(self) -> Arca {
@@ -135,7 +188,7 @@ impl<'a> LoadedArca<'a> {
     }
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
-        let page_table = self.cpu.deactivate_address_space();
+        let page_table = Table::from_inner(self.cpu.deactivate_address_space());
         let mut fsbase: u64;
         unsafe {
             core::arch::asm! {
@@ -149,6 +202,7 @@ impl<'a> LoadedArca<'a> {
                 descriptors: self.descriptors,
                 page_table,
                 fsbase,
+                rlimit: self.rlimit,
             },
             self.cpu,
         )
@@ -162,7 +216,7 @@ impl<'a> LoadedArca<'a> {
             core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
         }
         other.fsbase = fsbase;
-        self.cpu.swap_address_space(&mut other.page_table);
+        self.cpu.swap_address_space(other.page_table.inner_mut());
     }
 
     pub fn cpu(&mut self) -> &'_ mut Cpu {
@@ -230,6 +284,27 @@ impl Descriptors {
         self.descriptors.push(value);
         i
     }
+
+    pub fn iter(&'_ self) -> Iter<'_> {
+        Iter { i: 0, d: self }
+    }
+}
+
+pub struct Iter<'a> {
+    i: usize,
+    d: &'a Descriptors,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i >= self.d.descriptors.len() {
+            return None;
+        }
+        self.i += 1;
+        return Some(self.d.get(self.i - 1).unwrap());
+    }
 }
 
 impl Default for Descriptors {
@@ -261,5 +336,35 @@ impl From<Arca> for super::Function {
             value,
             VecDeque::default(),
         ))
+    }
+}
+
+pub struct DescriptorsProxy<'a, 'cpu> {
+    arca: &'a mut LoadedArca<'cpu>,
+}
+
+impl<'a> DescriptorsProxy<'a, '_> {
+    pub fn insert(self, value: Value) -> core::result::Result<usize, SyscallError> {
+        let size = value.byte_size();
+        if self.arca.rusage().memory + size > self.arca.rlimit().memory {
+            return Err(SyscallError::OutOfMemory);
+        }
+        self.arca.rusage_mut().memory += size;
+        Ok(self.arca.descriptors.insert(value))
+    }
+
+    pub fn take(self, index: usize) -> core::result::Result<Value, SyscallError> {
+        let value = self.arca.descriptors.take(index)?;
+        let size = value.byte_size();
+        self.arca.rusage_mut().memory -= size;
+        Ok(value)
+    }
+
+    pub fn get(self, index: usize) -> core::result::Result<&'a Value, DescriptorError> {
+        self.arca.descriptors.get(index)
+    }
+
+    pub fn get_mut(self, index: usize) -> core::result::Result<&'a mut Value, DescriptorError> {
+        self.arca.descriptors.get_mut(index)
     }
 }

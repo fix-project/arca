@@ -34,4 +34,14 @@ impl<R: Runtime> Entry<R> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Entry::Null(_) => 0,
+            Entry::ROPage(page) => page.len(),
+            Entry::RWPage(page) => page.len(),
+            Entry::ROTable(table) => ValueRef::Table(table).byte_size(),
+            Entry::RWTable(table) => ValueRef::Table(table).byte_size(),
+        }
+    }
 }

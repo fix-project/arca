@@ -34,7 +34,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_get_argument => {
             if let Some(front) = argv.pop_front() {
                 let idx = arca.descriptors_mut().insert(front);
-                Ok(idx)
+                idx
             } else {
                 arca.registers_mut()[Register::RAX] = (-(arcane::__ERR_interrupted as i32)) as u64;
                 let arca = arca.take();
@@ -99,7 +99,7 @@ pub fn sys_drop(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_clone(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let src = args[0] as usize;
     let clone = arca.descriptors_mut().get(src)?.clone();
-    Ok(arca.descriptors_mut().insert(clone))
+    arca.descriptors_mut().insert(clone)
 }
 
 pub fn sys_exit(args: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Value, Result<usize>> {
@@ -139,7 +139,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
                 unreachable!();
             };
             let value = tree.set(inner_idx, value);
-            Ok(arca.descriptors_mut().insert(value))
+            arca.descriptors_mut().insert(value)
         }
         DataType::Table => {
             let ptr = args[3] as usize;
@@ -177,7 +177,7 @@ pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     match target {
         Value::Tuple(tree) => {
             let value = tree.get(inner_idx);
-            Ok(arca.descriptors_mut().insert(value))
+            arca.descriptors_mut().insert(value)
         }
         Value::Table(table) => {
             let ptr = args[2] as usize;
@@ -264,7 +264,7 @@ pub fn sys_type(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
 pub fn sys_create_word(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let val = args[0];
-    Ok(arca.descriptors_mut().insert(Word::new(val).into()))
+    arca.descriptors_mut().insert(Word::new(val).into())
 }
 
 pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -274,33 +274,33 @@ pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let buffer = copy_user_to_kernel(&mut buffer, ptr)?;
     Ok(arca
         .descriptors_mut()
-        .insert(Value::Blob(Blob::new(buffer))))
+        .insert(Value::Blob(Blob::new(buffer)))?)
 }
 
 pub fn sys_create_tuple(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let buf = vec![Value::default(); len];
     let val = Value::Tuple(Tuple::from_inner(internal::Tuple::new(buf)));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_page(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Page(Page::new(len));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_table(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[0] as usize;
     let val = Value::Table(Table::new(len));
-    Ok(arca.descriptors_mut().insert(val))
+    arca.descriptors_mut().insert(val)
 }
 
 pub fn sys_create_function(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let data = args[0] as usize;
     let data = arca.descriptors_mut().take(data)?;
     let result = Function::new(data)?;
-    Ok(arca.descriptors_mut().insert(result.into()))
+    arca.descriptors_mut().insert(result.into())
 }
 
 pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -316,7 +316,7 @@ pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
     let thunk = f.apply(x);
     let idx = arca.descriptors_mut().insert(thunk.into());
-    Ok(idx)
+    idx
 }
 
 pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -451,7 +451,7 @@ pub fn sys_get_continuation(_: [u64; 6], arca: &mut LoadedArca) -> Result<usize>
     ))
     .into();
     arca.swap(&mut unloaded);
-    Ok(arca.descriptors_mut().insert(k))
+    arca.descriptors_mut().insert(k)
 }
 
 pub fn sys_show(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -565,7 +565,7 @@ fn write_entry(arca: &mut LoadedArca, entry: Entry) -> arcane::arca_entry {
         arca::Entry::ROTable(x) => (arcane::__MODE_read_only, arcane::__TYPE_table, x.into()),
         arca::Entry::RWTable(x) => (arcane::__MODE_read_write, arcane::__TYPE_table, x.into()),
     };
-    let index = arca.descriptors_mut().insert(value);
+    let index = arca.descriptors_mut().insert(value).unwrap();
     arcane::arca_entry {
         mode,
         datatype,

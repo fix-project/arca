@@ -47,6 +47,7 @@ impl Function {
             let registers: Tuple = data.get(0).try_into().ok()?;
             let memory: Table = data.get(1).try_into().ok()?;
             let descriptors: Tuple = data.get(2).try_into().ok()?;
+            let rlimit: Tuple = data.get(3).try_into().ok()?;
 
             let registers = registers.into_inner();
             let mut register_file = RegisterFile::new();
@@ -61,9 +62,7 @@ impl Function {
                 };
                 register_file[i] = w.read();
             }
-            let memory = memory.into_inner();
-            let descriptors = descriptors.into_inner();
-            let arca = Arca::new_with(register_file, memory, descriptors);
+            let arca = Arca::new_with(register_file, memory, descriptors, rlimit);
             Function::arcane_with_args(arca, args)
         } else if symbolic {
             Function::symbolic_with_args(data, args)
@@ -88,11 +87,7 @@ impl Function {
                     for i in 0..18 {
                         rr.set(i, Value::Word(Word::new(r[i])));
                     }
-                    (
-                        Value::Tuple(rr),
-                        Value::Table(Table::from_inner(t)),
-                        Value::Tuple(Tuple::from_inner(d)),
-                    )
+                    (Value::Tuple(rr), Value::Table(t), Value::Tuple(d))
                 }),
                 args,
             ))),
