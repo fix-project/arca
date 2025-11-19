@@ -52,6 +52,7 @@ pub async fn read(state: &ProcState, fd: u64, count: u64) -> Result<Blob, UnixEr
         .ok_or(UnixError::BADFD)?
         .as_file_mut()?;
     log::info!("count={}", count);
+    // TODO(kmohr): what if we turned the user buffer into a Blob directly to avoid the copy?
     let mut buf = vec![0; count as usize];
     let sz = fd.dyn_read(&mut buf).await?;
     log::info!("sz={}", sz);
