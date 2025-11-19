@@ -4,3 +4,6 @@
 [submodule "fix/wabt"]
 	path = fix/wabt
 	url = https://github.com/WebAssembly/wabt.git
+[submodule "wasi/wabt"]
+	path = wasi/wabt
+	url = https://github.com/WebAssembly/wabt.git

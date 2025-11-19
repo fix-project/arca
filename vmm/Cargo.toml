@@ -19,6 +19,7 @@ arca = { path = "../arca" }
 common = { path = "../common" }
 arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none" }
 fix = { path = "../fix", artifact = "bin", target = "x86_64-unknown-none" }
+wasi = { path = "../wasi", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"

@@ -1106,7 +1106,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78bed444cc8a2160f01cbcf811ef18cac863ad68ae8ca62092e8db51d51c761c"
 dependencies = [
  "libc",
- "wasi",
+ "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.59.0",
 ]
 
@@ -1810,6 +1810,7 @@ dependencies = [
  "vfs",
  "vmm-sys-util",
  "vsock",
+ "wasi 0.1.0",
 ]
 
 [[package]]
@@ -1830,6 +1831,34 @@ checksum = "4e8b4d00e672f147fc86a09738fadb1445bd1c0a40542378dfb82909deeee688"
 dependencies = [
  "libc",
  "nix 0.29.0",
+]
+
+[[package]]
+name = "wasi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arca",
+ "arcane",
+ "async-lock",
+ "autotools",
+ "cc",
+ "chrono",
+ "chumsky",
+ "cmake",
+ "common",
+ "derive_more",
+ "futures",
+ "include_directory",
+ "kernel",
+ "log",
+ "ninep",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "trait-variant",
+ "user",
+ "vfs",
 ]
 
 [[package]]
