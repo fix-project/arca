@@ -64,4 +64,4 @@ jobs:
       run: cargo build --verbose
     - name: Test
       run: |
-        sudo -su $USER /home/runner/.cargo/bin/cargo test --verbose
+        sudo --preserve-env=WASI_SDK_PATH -su $USER /home/runner/.cargo/bin/cargo test --verbose
