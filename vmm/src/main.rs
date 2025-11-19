@@ -4,7 +4,7 @@
 
 use std::{num::NonZero, sync::Arc};
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, Command};
 use libc::VMADDR_CID_HOST;
 use ninep::*;
 use vfs::Open;
@@ -12,6 +12,7 @@ use vmm::runtime::Runtime;
 
 const ARCADE: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_ARCADE_arcade"));
 const FIX: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FIX_fix"));
+const WASI: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WASI_wasi"));
 
 mod fs;
 mod tcp;
@@ -26,23 +27,31 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let matches = Command::new("arca-vmm")
-        .arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("BIN")
+                .long("bin")
+                .help("binary to run")
+                .value_parser(["arcade", "fix", "wasi"])
+                .default_value("arcade"),
+        )
         .get_matches();
 
-    let run_fix = matches.get_flag("fix");
+    let bin: &String = matches.get_one("BIN").expect("default");
 
-    let smp = if run_fix {
-        1
-    } else {
-        std::thread::available_parallelism()
+    let smp = match bin.as_str() {
+        "arcade" => std::thread::available_parallelism()
             .unwrap_or(NonZero::new(1).unwrap())
-            .get()
+            .get(),
+        "fix" => 1,
+        "wasi" => 1,
+        _ => panic!("value is not allowed"),
     };
-    // let smp = core::cmp::min(smp, 1);
-    let mut runtime = if run_fix {
-        Runtime::new(smp, 1 << 30, FIX.into())
-    } else {
-        Runtime::new(smp, 1 << 30, ARCADE.into())
+
+    let mut runtime = match bin.as_str() {
+        "arcade" => Runtime::new(smp, 1 << 30, ARCADE.into()),
+        "fix" => Runtime::new(smp, 1 << 30, FIX.into()),
+        "wasi" => Runtime::new(smp, 1 << 30, WASI.into()),
+        _ => panic!("value is not allowed"),
     };
 
     std::thread::spawn(|| {

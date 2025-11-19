@@ -22,12 +22,10 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/mman.h>
 
-wasm_rt_memory_t *WASM_MEMORIES[128];
-size_t WASM_MEMORIES_N = 0;
-
-uint64_t check(int64_t ret);
 [[noreturn]] void trap(const char *msg);
+uint64_t check(const char *msg, int64_t ret);
 
 void wasm_rt_trap(wasm_rt_trap_t code) {
   assert(code != WASM_RT_TRAP_NONE);
@@ -68,29 +66,35 @@ bool wasm_rt_is_initialized(void) { return true; }
 
 void wasm_rt_free(void) {}
 
+static void *os_mmap(size_t size) {
+  int map_prot = PROT_NONE;
+  int map_flags = MAP_ANONYMOUS | MAP_PRIVATE;
+  uint8_t *addr = (uint8_t *)(check(
+      "mmap", (int64_t)mmap(NULL, size, map_prot, map_flags, -1, 0)));
+  return addr;
+}
+
+static int os_mprotect(void *addr, size_t size) {
+  return mprotect(addr, size, PROT_READ | PROT_WRITE);
+}
+
+static int os_munmap(void *addr, size_t size) {
+  return check("munmap", munmap(addr, size));
+}
+
 void wasm_rt_allocate_memory(wasm_rt_memory_t *memory, uint64_t initial_pages,
                              uint64_t max_pages, bool is64) {
-  size_t n = WASM_MEMORIES_N++;
-  assert(n < 128);
-  WASM_MEMORIES[n] = memory;
-
   assert(max_pages <= (1ul << 32) / PAGE_SIZE);
 
-  memory->data = (void *)(n << 32);
   uint64_t byte_length = initial_pages * PAGE_SIZE;
+  void *addr = os_mmap(1ul << 32);
+  check("os_mprotect", os_mprotect(addr, byte_length));
+
+  memory->data = (uint8_t *)(addr);
   memory->size = byte_length;
   memory->pages = initial_pages;
   memory->max_pages = max_pages;
   memory->is64 = is64;
-
-  for (uint64_t i = 0; i < byte_length >> 12; i++) {
-    arcad page = check(arca_page_create(1 << 12));
-    check(arca_mmap(memory->data + i * 4096, &(struct arca_entry){
-                                                 .mode = __MODE_read_write,
-                                                 .data = page,
-                                             }));
-  }
-  return;
 }
 
 uint64_t wasm_rt_grow_memory(wasm_rt_memory_t *memory, uint64_t delta) {
@@ -106,13 +110,10 @@ uint64_t wasm_rt_grow_memory(wasm_rt_memory_t *memory, uint64_t delta) {
   uint64_t new_size = new_pages * PAGE_SIZE;
   uint64_t delta_size = delta * PAGE_SIZE;
 
-  for (uint64_t i = 0; i < delta_size >> 12; i++) {
-    arcad page = check(arca_page_create(1 << 12));
-    check(arca_mmap(memory->data + +memory->size + i * 4096,
-                    &(struct arca_entry){
-                        .mode = __MODE_read_write,
-                        .data = page,
-                    }));
+  int ret = os_mprotect(memory->data + old_size, delta_size);
+
+  if (ret != 0) {
+    return -1;
   }
 
   memory->pages = new_pages;
@@ -120,7 +121,9 @@ uint64_t wasm_rt_grow_memory(wasm_rt_memory_t *memory, uint64_t delta) {
   return old_pages;
 }
 
-void wasm_rt_free_memory(wasm_rt_memory_t *memory) { return; }
+void wasm_rt_free_memory(wasm_rt_memory_t *memory) {
+  os_munmap(memory->data, memory->size);
+}
 
 #define DEFINE_TABLE_OPS(type)                                                 \
   void wasm_rt_allocate_##type##_table(wasm_rt_##type##_table_t *table,        \

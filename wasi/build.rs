@@ -28,11 +28,7 @@ fn c2wasm(c: &[u8]) -> Result<Vec<u8>> {
         let mut wasm_file = INTERMEDIATEOUT.get().unwrap().clone();
         wasm_file.push("module.wasm");
         let clang = Command::new("/opt/wasi-sdk/bin/clang")
-            .args([
-                "-o",
-                wasm_file.to_str().unwrap(),
-                c_file.to_str().unwrap(),
-            ])
+            .args(["-o", wasm_file.to_str().unwrap(), c_file.to_str().unwrap()])
             .status()
             .map_err(|e| {
                 if let ErrorKind::NotFound = e.kind() {
