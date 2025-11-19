@@ -35,7 +35,7 @@ fn c2wasm(c: &[u8]) -> Result<Vec<u8>> {
                 .map_err(|_| anyhow!("Could not WASI_SDK_PATH. Did you install wasi-sdk?"))?;
 
             let program = {
-                let mut p = PathBuf::from(wasi_sdk);
+                let mut p = PathBuf::from(wasi_sdk.clone());
                 p.push("bin/clang");
                 if p.exists() {
                     Ok(String::from(p.to_str().expect("Invalid path")))
@@ -48,14 +48,15 @@ fn c2wasm(c: &[u8]) -> Result<Vec<u8>> {
 
             (
                 program,
-                vec!["--sysroot=${{WASI_SDK_PATH}}/share/wasi-sysroot"],
+                vec![format!("--sysroot={}/share/wasi-sysroot", wasi_sdk)],
             )
         };
+        println!("{} {:?}", program, extra_args);
         let clang = Command::new(program)
-            .args(["-o", wasm_file.to_str().unwrap(), c_file.to_str().unwrap()])
             .args(extra_args)
+            .args(["-o", wasm_file.to_str().unwrap(), c_file.to_str().unwrap()])
             .status()
-            .map_err(|e| Into::<anyhow::Error>::into(e))?;
+            .map_err(Into::<anyhow::Error>::into)?;
         assert!(clang.success());
         Ok(std::fs::read(wasm_file)?)
     }
