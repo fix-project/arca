@@ -122,17 +122,15 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
 
     let cc = Command::new(gcc)
         .args([
-            "-Wl,-static",
-            "-no-pie",
+            "-static-pie",
             "-o",
             o_file.to_str().unwrap(),
             "-O2",
             "-fno-optimize-sibling-calls",
             "-frounding-math",
             "-fsignaling-nans",
-            //"-Twasi-shell/memmap.ld",
-            // "--verbose",
-            "-Wl,-no-pie",
+            "-Twasi-shell/memmap.ld",
+            "--verbose",
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
@@ -161,8 +159,9 @@ fn main() -> Result<()> {
     }
 
     let prefix = autotools::Config::new("../modules/arca-musl")
-        .disable_shared()
-        .enable_static()
+        //.disable_shared()
+        //.enable_static()
+        .insource(true)
         .out_dir(prefix)
         .build();
 
