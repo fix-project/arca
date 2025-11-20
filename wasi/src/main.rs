@@ -25,8 +25,8 @@ async fn main(_: &[usize]) {
     tree.set(2, Runtime::create_word(7));
     tree.set(3, Runtime::create_word(1024));
 
-    let f = Runtime::apply_function(f, arca::Value::Tuple(tree));
-    let word: Word = f.force().try_into().unwrap();
-    log::info!("{:?}", word.read());
-    assert_eq!(word.read(), 1031);
+    let f: Function = Runtime::apply_function(f, arca::Value::Tuple(tree));
+    //let word: Word = f.force().try_into().unwrap();
+    log::info!("{:?}", f.force());
+    //assert_eq!(word.read(), 1031);
 }

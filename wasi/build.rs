@@ -122,7 +122,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
 
     let cc = Command::new(gcc)
         .args([
-            "-static",
+            "-Wl,-static",
             "-no-pie",
             "-o",
             o_file.to_str().unwrap(),
@@ -130,6 +130,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-fno-optimize-sibling-calls",
             "-frounding-math",
             "-fsignaling-nans",
+            //"-Twasi-shell/memmap.ld",
             // "--verbose",
             "-Wl,-no-pie",
         ])

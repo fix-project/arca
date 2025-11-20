@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <stdlib.h>
 
 [[noreturn]] void trap(const char *msg);
 uint64_t check(const char *msg, int64_t ret);
@@ -129,7 +130,9 @@ void wasm_rt_free_memory(wasm_rt_memory_t *memory) {
   void wasm_rt_allocate_##type##_table(wasm_rt_##type##_table_t *table,        \
                                        uint32_t elements,                      \
                                        uint32_t max_elements) {                \
-    abort();                                                                   \
+    table->size = elements;                                             \
+    table->max_size = max_elements;                                     \
+    table->data = calloc(table->size, sizeof(wasm_rt_##type##_t));                                                                 \
   }                                                                            \
   void wasm_rt_free_##type##_table(wasm_rt_##type##_table_t *table) {          \
     abort();                                                                   \

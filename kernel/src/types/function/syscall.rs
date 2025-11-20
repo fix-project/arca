@@ -24,7 +24,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         regs[Register::R8],
         regs[Register::R9],
     ];
-
+    log::info!("syscall {num}");
     let result = match num as u32 {
         arcane::__NR_nop => Ok(0),
         arcane::__NR_drop => sys_drop(args, arca),
@@ -355,6 +355,8 @@ pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let addr = args[0] as usize;
     let ptr = args[1] as usize;
+
+    log::info!("{addr:#x} {ptr:#x}");
 
     let mut entry: MaybeUninit<arcane::arca_entry> = MaybeUninit::uninit();
     copy_user_to_kernel(

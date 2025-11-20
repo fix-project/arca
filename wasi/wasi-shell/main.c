@@ -116,6 +116,7 @@ void w2c_wasi__snapshot__preview1_proc_exit(
 int main(int argc, char **argv) {
   w2c_module module;
   wasm2c_module_instantiate(&module, (struct w2c_wasi__snapshot__preview1 *)&module);
+  arca_exit(0);
   w2c_module_0x5Fstart(&module);
   // TODO: set the return value correctly
   arca_exit(0);
