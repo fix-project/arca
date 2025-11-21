@@ -54,6 +54,14 @@ fn main() -> anyhow::Result<()> {
                 .default_value("127.0.0.1:11211")
                 .required(false),
         )
+        .arg(
+            Arg::new("listener")
+                .short('l')
+                .long("is-listener")
+                .help("Run as arca listening for continuations")
+                .action(ArgAction::SetTrue)
+                .required(false),
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
@@ -69,6 +77,8 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(3);
 
     let host = matches.get_one::<String>("host").unwrap();
+
+    let is_listener = matches.get_flag("listener");
 
     // TODO(kmohr): can this create an invalid port number?
     let host_listener_port = (cid as u32) + 1561;
@@ -121,7 +131,12 @@ fn main() -> anyhow::Result<()> {
     );
 
     // XXX: this will break if usize is smaller than u64
-    runtime.run(&[cid, host_listener_port as usize, ipaddr as usize]);
+    runtime.run(&[
+        cid,
+        host_listener_port as usize,
+        ipaddr as usize,
+        is_listener as usize,
+    ]);
 
     Ok(())
 }
