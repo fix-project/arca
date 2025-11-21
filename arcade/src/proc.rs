@@ -18,6 +18,7 @@ pub use namespace::Namespace;
 use crate::MACHINE;
 
 use kernel::{
+    kvmclock,
     prelude::RwLock,
     types::{Blob, Function, Tuple, Value},
 };
@@ -159,6 +160,7 @@ impl Proc {
                                 };
 
                                 // TODO(kmohr): hmmmm this is so slow...
+                                let k_create_init = kvmclock::time_since_boot();
                                 let resumed_f = Function::symbolic("open")
                                     .apply(Value::Blob(path.clone()))
                                     .apply(Value::Word(flags))
@@ -167,6 +169,12 @@ impl Proc {
 
                                 let val = Value::Function(resumed_f);
                                 let message = postcard::to_allocvec(&val).unwrap();
+                                let k_create_end = kvmclock::time_since_boot();
+
+                                log::info!(
+                                    "Created serialized continuation in {} ms",
+                                    (k_create_end - k_create_init).as_millis()
+                                );
 
                                 // log the message size in bytes and MB
                                 let size_bytes = message.len();
@@ -188,8 +196,10 @@ impl Proc {
 
                             // assuming machine 1 has no files
                             // TODO(kmohr): encode the machine to use in the filename
-
+                            let init = kvmclock::time_since_boot();
                             let ret_code = send_tcp_msg().await;
+                            let end = kvmclock::time_since_boot();
+                            log::info!("TCP open took {} ms", (end - init).as_millis());
                             // we don't actually need to run k anymore
                             return ret_code as u8;
                         } else {
