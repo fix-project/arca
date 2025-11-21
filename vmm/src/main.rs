@@ -18,6 +18,7 @@ mod tcp;
 mod vsock;
 
 use ::vsock::{VsockAddr, VsockListener};
+use common::ipaddr::IpAddr;
 use fs::*;
 use tcp::*;
 use vsock::*;
@@ -47,11 +48,10 @@ fn main() -> anyhow::Result<()> {
                 .required(false),
         )
         .arg(
-            Arg::new("tcp-port")
-                .short('p')
-                .long("tcp-port")
-                .help("Port number for TCP listener in the guest VM")
-                .default_value("11211")
+            Arg::new("host")
+                .long("host")
+                .help("IP address/port number for TCP listener in the guest VM")
+                .default_value("127.0.0.1:11211")
                 .required(false),
         )
         .get_matches();
@@ -68,10 +68,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3);
 
-    let tcp_port = matches
-        .get_one::<String>("tcp-port")
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(11211);
+    let host = matches.get_one::<String>("host").unwrap();
 
     // TODO(kmohr): can this create an invalid port number?
     let host_listener_port = (cid as u32) + 1561;
@@ -111,14 +108,20 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    let ipaddr = IpAddr::try_from(host.as_str()).unwrap();
+    log::info!("Guest VM will connect to host at {}", ipaddr.port);
+    let ipaddr: u64 = u64::from(IpAddr::try_from(host.as_str()).unwrap());
+
     log::info!(
-        "Running {} on VM cid={} and TCP port {} with {} core(s)",
+        "Running {} on VM cid={} and hostname {} with {} core(s)",
         if run_fix { "fix" } else { "arcade" },
         cid,
-        tcp_port,
+        host,
         smp
     );
-    runtime.run(&[cid, host_listener_port as usize, tcp_port as usize]);
+
+    // XXX: this will break if usize is smaller than u64
+    runtime.run(&[cid, host_listener_port as usize, ipaddr as usize]);
 
     Ok(())
 }

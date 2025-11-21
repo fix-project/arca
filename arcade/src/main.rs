@@ -10,12 +10,11 @@
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
-use core::time::Duration;
-
 use ::vfs::*;
 use alloc::format;
+use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
-use kernel::{prelude::*, rt};
+use kernel::{kvmclock, prelude::*, rt};
 use ninep::Client;
 
 mod dev;
@@ -40,7 +39,7 @@ mod dummy_testing {
 
 extern crate alloc;
 
-pub const MACHINE: i32 = 1;
+pub const MACHINE: i32 = 0;
 const THUMBNAILER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_THUMBNAIL_EXAMPLE"));
 
 #[kmain]
@@ -127,7 +126,6 @@ async fn main(args: &[usize]) {
 
     if MACHINE == 0 {
         // Spawn TCP server loop on a separate thread/core
-        // rt::spawn(async move {
         log::info!("TCP server starting on separate thread");
 
         // Get id from /tcp/clone
@@ -146,7 +144,9 @@ async fn main(args: &[usize]) {
         log::info!("Got TCP connection ID: {}", id);
 
         // Listen to incoming connections on the specified tcp_port
-        let tcp_announcement = alloc::format!("announce 127.0.0.1:{}\n", tcp_port);
+        let tcp_port_str = IpAddr::from(tcp_port as u64).to_string();
+        log::info!("Listening on TCP port: {}", tcp_port_str);
+        let tcp_announcement = alloc::format!("announce {}\n", tcp_port_str);
         log::info!("Announcing on: {}", tcp_announcement.trim());
         match tcp_ctl.write(tcp_announcement.as_bytes()).await {
             Ok(bytes_written) => {
@@ -177,6 +177,8 @@ async fn main(args: &[usize]) {
         let data_path = format!("/net/tcp/{id}/data");
 
         log::info!("New connection accepted: {}", id);
+
+        let get_k_init = kvmclock::time_since_boot();
 
         // Get data file for the accepted connection
         let mut data_file = ns
@@ -213,6 +215,7 @@ async fn main(args: &[usize]) {
             // TODO(kmohr) just assuming this is a continuation for now
             // should define a set of possible messages
             // also need filename here
+            let k_decode_init = kvmclock::time_since_boot();
             match postcard::from_bytes(&all_data).unwrap() {
                 Value::Function(k) => {
                     let p = Proc::from_function(
@@ -225,8 +228,23 @@ async fn main(args: &[usize]) {
                         },
                     )
                     .expect("Failed to create Proc from received Function");
+                    let k_decode_end = kvmclock::time_since_boot();
+                    log::info!(
+                        "Timing: k_decode={}",
+                        (k_decode_end - k_decode_init).as_millis()
+                    );
+
+                    let run_k_time = kvmclock::time_since_boot();
 
                     let exitcode = p.run([]).await;
+
+                    let run_k_end_time = kvmclock::time_since_boot();
+
+                    log::info!(
+                        "Timing: get_k={} run_k={}",
+                        (run_k_time - get_k_init).as_millis(),
+                        (run_k_end_time - run_k_time).as_millis()
+                    );
                     log::info!("exitcode: {exitcode}");
                 }
                 _ => {

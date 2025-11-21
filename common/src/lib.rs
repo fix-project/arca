@@ -23,6 +23,7 @@ pub use buddy::BuddyAllocator;
 pub mod arrayvec;
 pub mod controlreg;
 pub mod elfloader;
+pub mod ipaddr;
 pub mod sendable;
 pub mod util;
 pub mod vhost;
