@@ -122,15 +122,15 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
 
     let cc = Command::new(gcc)
         .args([
-            "-static-pie",
+            "-static",
             "-o",
             o_file.to_str().unwrap(),
-            "-O2",
-            "-fno-optimize-sibling-calls",
-            "-frounding-math",
-            "-fsignaling-nans",
-            "-Twasi-shell/memmap.ld",
-            "--verbose",
+            // "-O2",
+            // "-fno-optimize-sibling-calls",
+            // "-frounding-math",
+            // "-fsignaling-nans",
+            // "-Twasi-shell/memmap.ld",
+            // "--verbose",
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
@@ -152,16 +152,15 @@ fn main() -> Result<()> {
     INTERMEDIATEOUT.set(intermediateout).unwrap();
 
     let mut prefix: PathBuf = out_dir.clone().into();
-    prefix.push("arca-musl");
+    prefix.push("arca-musl-wasi");
 
     if !prefix.exists() {
         create_dir_all(&prefix)?
     }
 
     let prefix = autotools::Config::new("../modules/arca-musl")
-        //.disable_shared()
-        //.enable_static()
-        .insource(true)
+        .disable_shared()
+        .enable_static()
         .out_dir(prefix)
         .build();
 
@@ -200,6 +199,7 @@ fn main() -> Result<()> {
     }
 
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    println!("cargo::rerun-if-changed={dir}/../modules/arca-musl");
     println!("cargo::rerun-if-changed={dir}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-no-pie");
