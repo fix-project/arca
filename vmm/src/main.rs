@@ -2,7 +2,7 @@
 #![feature(thread_sleep_until)]
 #![feature(future_join)]
 
-use std::{num::NonZero, sync::Arc};
+use std::{default, num::NonZero, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
 use libc::VMADDR_CID_HOST;
@@ -18,6 +18,7 @@ mod tcp;
 mod vsock;
 
 use ::vsock::{VsockAddr, VsockListener};
+use common::ipaddr::IpAddr;
 use fs::*;
 use tcp::*;
 use vsock::*;
@@ -47,11 +48,25 @@ fn main() -> anyhow::Result<()> {
                 .required(false),
         )
         .arg(
-            Arg::new("tcp-port")
-                .short('p')
-                .long("tcp-port")
-                .help("Port number for TCP listener in the guest VM")
-                .default_value("11211")
+            Arg::new("host")
+                .long("host")
+                .help("IP address/port number for TCP listener in the guest VM")
+                .default_value("127.0.0.1:11211")
+                .required(false),
+        )
+        .arg(
+            Arg::new("listener")
+                .short('l')
+                .long("is-listener")
+                .help("Run as arca listening for continuations")
+                .action(ArgAction::SetTrue)
+                .required(false),
+        )
+        .arg(
+            Arg::new("disable-continuation-sending")
+                .long("disable-continuation-sending")
+                .help("Disable sending continuations to the host")
+                .action(ArgAction::SetTrue)
                 .required(false),
         )
         .get_matches();
@@ -68,10 +83,10 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3);
 
-    let tcp_port = matches
-        .get_one::<String>("tcp-port")
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(11211);
+    let host = matches.get_one::<String>("host").unwrap();
+    let disable_continuation_sending = matches.get_flag("disable-continuation-sending");
+
+    let is_listener = matches.get_flag("listener");
 
     // TODO(kmohr): can this create an invalid port number?
     let host_listener_port = (cid as u32) + 1561;
@@ -96,8 +111,8 @@ fn main() -> anyhow::Result<()> {
         let tcp = TcpFS::default();
         s.add_blocking("tcp", tcp);
         // put all data for the 9P server to read/write in ~/data
-        let shared_data_dir = FsDir::new("/home/kmohr/data", Open::ReadWrite).unwrap();
-        s.add_blocking("data", shared_data_dir);
+        // let shared_data_dir = FsDir::new("/home/kmohr/data", Open::ReadWrite).unwrap();
+        // s.add_blocking("data", shared_data_dir);
         let s = Arc::new(s);
 
         loop {
@@ -111,14 +126,26 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    let ipaddr = IpAddr::try_from(host.as_str()).unwrap();
+    log::info!("Guest VM will connect to host at {}", ipaddr.port);
+    let ipaddr: u64 = u64::from(IpAddr::try_from(host.as_str()).unwrap());
+
     log::info!(
-        "Running {} on VM cid={} and TCP port {} with {} core(s)",
+        "Running {} on VM cid={} and hostname {} with {} core(s)",
         if run_fix { "fix" } else { "arcade" },
         cid,
-        tcp_port,
+        host,
         smp
     );
-    runtime.run(&[cid, host_listener_port as usize, tcp_port as usize]);
+
+    // XXX: this will break if usize is smaller than u64
+    runtime.run(&[
+        cid,
+        host_listener_port as usize,
+        ipaddr as usize,
+        is_listener as usize,
+        disable_continuation_sending as usize,
+    ]);
 
     Ok(())
 }

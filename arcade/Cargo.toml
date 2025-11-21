@@ -34,8 +34,8 @@ vfs = { version = "0.1.0", path = "../vfs" }
 chumsky = { version = "0.10.1", default-features = false }
 user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 thumbnail-example = { path = "../thumbnail-example", artifact = "bin", target = "x86_64-unknown-none" }
-memcached = { path = "../memcached", artifact = "bin", target = "x86_64-unknown-none" }
 async-lock = { version = "3.4.1", default-features = false }
+lz4_flex = { version = "0.12.0", default-features = false }
 
 [build-dependencies]
 anyhow = "1.0.98"

@@ -73,6 +73,9 @@ pub trait Dir: Send + Sync + DynDir + 'static {
             let path = path.as_ref().relative();
             let (head, rest) = path.split();
             if rest.is_empty() {
+                if head.is_empty() {
+                    return Ok(Object::Dir(self.dup().await?.boxed()));
+                }
                 return self.open(head, open).await;
             }
             let child = self.open(head, Open::Read).await?.as_dir()?;

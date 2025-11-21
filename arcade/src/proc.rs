@@ -10,19 +10,21 @@ pub mod file;
 pub mod namespace;
 
 use arca::{Runtime, Word};
+use common::ipaddr::IpAddr;
 use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
+use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 pub use namespace::Namespace;
-
-use crate::MACHINE;
+use vfs::path::Path;
 
 use kernel::{
+    kvmclock,
     prelude::RwLock,
     types::{Blob, Function, Tuple, Value},
 };
 mod table;
-use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::vec_deque::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
 pub struct Proc {
@@ -64,7 +66,11 @@ impl Proc {
         async move {
             let mut f = self.f;
             loop {
+                let force_time = kvmclock::time_since_boot();
                 let result = f.force();
+                let force_time = kvmclock::time_since_boot() - force_time;
+                log::info!("PERF\nforce time: {} us", force_time.as_micros());
+
                 let Value::Function(g) = result else {
                     log::error!("proc returned something other than an effect!");
                     return 255;
@@ -91,8 +97,17 @@ impl Proc {
                         b"open",
                         &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)],
                     ) => {
-                        if MACHINE == 1 {
-                            let send_tcp_msg = || async {
+                        // TODO this is not the right place for all this logic
+                        // Figure out which machine the file is on
+                        // filenames will be of the form "hostname:port/path/to/file"
+                        let tcp_init = kvmclock::time_since_boot();
+                        let s = &str::from_utf8(path).unwrap();
+                        let path_p = Path::new(s);
+                        let (host, filename) = path_p.split();
+                        let host_ip: IpAddr = host.try_into().unwrap();
+                        if host_ip != *self.state.host {
+                            // Extract TCP connection setup
+                            let setup_tcp_connection = || async {
                                 // Get a new TCP connection
                                 let tcp_ctl_result = self
                                     .state
@@ -104,12 +119,12 @@ impl Proc {
                                         Ok(file) => file,
                                         Err(_) => {
                                             log::error!("Failed to get TCP control file");
-                                            return 1;
+                                            return Err(());
                                         }
                                     },
                                     Err(e) => {
                                         log::error!("Failed to walk to /net/tcp/clone: {:?}", e);
-                                        return 1;
+                                        return Err(());
                                     }
                                 };
 
@@ -119,27 +134,27 @@ impl Proc {
                                     Ok(s) => s,
                                     Err(e) => {
                                         log::error!("Failed to read connection ID: {:?}", e);
-                                        return 1;
+                                        return Err(());
                                     }
                                 };
                                 let conn_id = match core::str::from_utf8(&id_buf[..size]) {
                                     Ok(s) => s.trim(),
                                     Err(_) => {
                                         log::error!("Invalid UTF-8 in connection ID");
-                                        return 1;
+                                        return Err(());
                                     }
                                 };
 
-                                // Connect to localhost:11234
+                                // Connect to localhost:11212
                                 let connect_cmd = alloc::format!("connect 127.0.0.1:11212\n");
                                 if let Err(e) = tcp_ctl.write(connect_cmd.as_bytes()).await {
                                     log::error!("Failed to send connect command: {:?}", e);
-                                    return 1;
+                                    return Err(());
                                 }
 
                                 // Get the data file for this connection
                                 let data_path = alloc::format!("/net/tcp/{}/data", conn_id);
-                                let mut data_file = match self
+                                let data_file = match self
                                     .state
                                     .ns
                                     .walk(&data_path, vfs::Open::ReadWrite)
@@ -149,57 +164,146 @@ impl Proc {
                                         Ok(file) => file,
                                         Err(_) => {
                                             log::error!("Failed to get data file");
-                                            return 1;
+                                            return Err(());
                                         }
                                     },
                                     Err(e) => {
                                         log::error!("Failed to walk to data path: {:?}", e);
-                                        return 1;
+                                        return Err(());
                                     }
                                 };
 
-                                // TODO(kmohr): hmmmm this is so slow...
-                                let resumed_f = Function::symbolic("open")
-                                    .apply(Value::Blob(path.clone()))
-                                    .apply(Value::Word(flags))
-                                    .apply(Value::Word(mode))
-                                    .apply(Value::Function(k));
-
-                                let val = Value::Function(resumed_f);
-                                let message = postcard::to_allocvec(&val).unwrap();
-
-                                // log the message size in bytes and MB
-                                let size_bytes = message.len();
-                                let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-                                log::info!(
-                                    "Sending message of size: {} bytes ({:.2} MB)",
-                                    size_bytes,
-                                    size_mb
-                                );
-
-                                if let Err(e) = data_file.write(&message).await {
-                                    log::error!("Failed to send message: {:?}", e);
-                                    return 1;
-                                }
-
-                                log::info!("Sent serialized continuation to localhost:11234");
-                                return 0;
+                                Ok(data_file)
                             };
 
-                            // assuming machine 1 has no files
-                            // TODO(kmohr): encode the machine to use in the filename
+                            // Handle the two different cases
+                            let continuation_sending_enabled = self
+                                .state
+                                .env
+                                .get("CONTINUATION_SENDING_ENABLED")
+                                .map(|v| v == "1")
+                                .unwrap_or(true);
 
-                            let ret_code = send_tcp_msg().await;
-                            // we don't actually need to run k anymore
-                            return ret_code as u8;
+                            if !continuation_sending_enabled {
+                                // File request path - returns a continuation with file descriptor
+                                let handle_file_request = || async {
+                                    let mut data_file = setup_tcp_connection().await.map_err(|_| 1u8)?;
+                                    
+                                    log::info!("continuation sending disabled, requesting the file instead");
+
+                                    // ask the other server for the file
+                                    let mut msg = alloc::vec![b'R'];
+                                    msg.extend_from_slice(filename.as_bytes());
+                                    data_file.write(&msg).await.unwrap();
+
+                                    // read the response
+                                    let (message, _) = crate::proto::read_request(data_file).await.unwrap();
+                                    let file_response = match message {
+                                        crate::proto::Message::FileResponse(response) => response,
+                                        _ => panic!("Expected FileResponse, got something else"),
+                                    };
+                                    log::info!(
+                                        "Received file of size {} bytes",
+                                        file_response.file_size
+                                    );
+
+                                    // Create the file and return file descriptor
+                                    let mut new_file = vfs::MemFile::default();
+                                    new_file.write(&file_response.file_data).await.unwrap();
+                                    new_file.seek(vfs::SeekFrom::Start(0)).await.unwrap();
+                                    let fd = self.state.fds.lock().insert(FileDescriptor::File(new_file.boxed()));
+                                    
+                                    Ok::<usize, u8>(fd)
+                                };
+
+                                let tcp_init = kvmclock::time_since_boot();
+                                let file_req = handle_file_request().await;
+                                let tcp_end = kvmclock::time_since_boot();
+
+                                log::info!(
+                                    "TIMING:\nnetwork read: {} us",
+                                    (tcp_end - tcp_init).as_micros()
+                                );
+
+                                match file_req {
+                                    Ok(result) => k.apply(Value::Word(Word::new(result as u64))),
+                                    Err(_) => return 1,
+                                }
+                            } else {
+                                // Continuation sending path - sends continuation and exits process
+                                let handle_continuation = || async {
+                                    let mut data_file = setup_tcp_connection().await.map_err(|_| ())?;
+                                    
+                                    log::info!("sending continuation to open file remotely");
+
+                                    // TODO(kmohr): hmmmm this is so slow...
+                                    let k_create_init = kvmclock::time_since_boot();
+                                    let resumed_f = Function::symbolic("open")
+                                        .apply(Value::Blob(path.clone()))
+                                        .apply(Value::Word(flags))
+                                        .apply(Value::Word(mode))
+                                        .apply(Value::Function(k));
+
+                                    let val = Value::Function(resumed_f);
+
+                                    let serialize_init = kvmclock::time_since_boot();
+                                    let msg = postcard::to_allocvec(&val).unwrap();
+                                    let serialize_end = kvmclock::time_since_boot();
+                                    let k_msg = compress_prepend_size(&msg);
+                                    let compress_end = kvmclock::time_since_boot();
+
+                                    // the msg should start with 'C' and the continuation size as a u32
+                                    let mut msg = alloc::vec![b'C'];
+                                    let size_bytes = (k_msg.len() as u32).to_be_bytes();
+                                    msg.extend_from_slice(&size_bytes);
+                                    msg.extend_from_slice(&k_msg);
+                                    
+                                    // check the first couple bytes
+                                    log::info!(
+                                        "Prepared continuation message, first bytes: {:02X?}",
+                                        &msg[..core::cmp::min(16, msg.len())]
+                                    );
+
+                                    let size_bytes = msg.len();
+                                    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                                    log::info!(
+                                        "PERF\ntcp time: {} us\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
+                                        (k_create_init - tcp_init).as_micros(),
+                                        (serialize_init - k_create_init).as_micros(),
+                                        (serialize_end - serialize_init).as_micros(),
+                                        (compress_end - serialize_end).as_micros(),
+                                        size_bytes,
+                                        size_mb
+                                    );
+
+                                    if let Err(e) = data_file.write(&msg).await {
+                                        log::error!("Failed to send msg: {:?}", e);
+                                        return Err(());
+                                    }
+
+                                    Ok(())
+                                };
+
+                                match handle_continuation().await {
+                                    Ok(_) => return 0,  // Successfully sent continuation, exit process
+                                    Err(_) => return 1, // Error occurred
+                                }
+                            }
                         } else {
-                            k.apply(fix(file::open(
+                            let init_time = kvmclock::time_since_boot();
+                            let file = fix(file::open(
                                 &self.state,
-                                path,
+                                filename.as_bytes(),
                                 file::OpenFlags(flags.read() as u32),
                                 file::ModeT(mode.read() as u32),
                             )
-                            .await))
+                            .await);
+                            let end_time = kvmclock::time_since_boot();
+                            log::info!(
+                                "PERF\nopen local time: {} us",
+                                (end_time - init_time).as_micros()
+                            );
+                            k.apply(file)
                         }
                     }
                     (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
@@ -279,6 +383,7 @@ pub struct ProcState {
     pub env: Arc<Env>,
     pub fds: Arc<RwLock<Descriptors<FileDescriptor>>>,
     pub cwd: Arc<PathBuf>,
+    pub host: Arc<IpAddr>,
 }
 
 pub struct Monitor {

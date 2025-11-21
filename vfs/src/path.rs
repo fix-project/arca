@@ -223,6 +223,10 @@ impl Path {
             None => ("", c.as_path()),
         }
     }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.path.as_bytes()
+    }
 }
 
 impl AsRef<str> for Path {
