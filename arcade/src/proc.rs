@@ -10,12 +10,12 @@ pub mod file;
 pub mod namespace;
 
 use arca::{Runtime, Word};
+use common::ipaddr::IpAddr;
 use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
 pub use namespace::Namespace;
-
-use crate::MACHINE;
+use vfs::path::Path;
 
 use kernel::{
     kvmclock,
@@ -92,7 +92,16 @@ impl Proc {
                         b"open",
                         &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)],
                     ) => {
-                        if MACHINE == 1 {
+                        // TODO this is not the right place for all this logic
+                        // Figure out which machine the file is on
+                        // filenames will be of the form "hostname:port/path/to/file"
+                        let s = &str::from_utf8(path).unwrap();
+                        let path_p = Path::new(s);
+                        let (host, filename) = path_p.split();
+                        log::info!("host: {}, filename: {}", host, filename);
+                        let host_ip: IpAddr = host.try_into().unwrap();
+                        if host_ip != *self.state.host {
+                            log::info!("Opening file on remote host {}", host_ip);
                             let send_tcp_msg = || async {
                                 // Get a new TCP connection
                                 let tcp_ctl_result = self
@@ -203,9 +212,10 @@ impl Proc {
                             // we don't actually need to run k anymore
                             return ret_code as u8;
                         } else {
+                            log::info!("Opening file on local host: {}", filename);
                             k.apply(fix(file::open(
                                 &self.state,
-                                path,
+                                filename.as_bytes(),
                                 file::OpenFlags(flags.read() as u32),
                                 file::ModeT(mode.read() as u32),
                             )
@@ -287,6 +297,7 @@ pub struct ProcState {
     pub env: Arc<Env>,
     pub fds: Arc<RwLock<Descriptors<FileDescriptor>>>,
     pub cwd: Arc<PathBuf>,
+    pub host: Arc<IpAddr>,
 }
 
 pub struct Monitor {

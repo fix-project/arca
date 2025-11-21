@@ -43,6 +43,9 @@ impl FromStr for IpAddr {
         if octets_index != 3 {
             return Err(InvalidAddr);
         }
+        // Handle the last octet
+        let byte: u8 = str::parse(remaining_addr).map_err(|_| InvalidAddr)?;
+        octets[octets_index] = byte;
 
         let port: u16 = str::parse(port).map_err(|_| InvalidAddr)?;
         Ok(IpAddr { octets, port })

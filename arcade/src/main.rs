@@ -39,7 +39,6 @@ mod dummy_testing {
 
 extern crate alloc;
 
-pub const MACHINE: i32 = 0;
 const THUMBNAILER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_THUMBNAIL_EXAMPLE"));
 
 #[kmain]
@@ -53,7 +52,8 @@ async fn main(args: &[usize]) {
 
     let cid = args[0] as u64;
     let host_listener_port = args[1];
-    let tcp_port = args[2];
+    let tcp_port = IpAddr::from(args[2] as u64);
+    let is_listener = args[3] != 0;
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -124,7 +124,7 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
 
-    if MACHINE == 0 {
+    if is_listener {
         // Spawn TCP server loop on a separate thread/core
         log::info!("TCP server starting on separate thread");
 
@@ -144,7 +144,7 @@ async fn main(args: &[usize]) {
         log::info!("Got TCP connection ID: {}", id);
 
         // Listen to incoming connections on the specified tcp_port
-        let tcp_port_str = IpAddr::from(tcp_port as u64).to_string();
+        let tcp_port_str = tcp_port.to_string();
         log::info!("Listening on TCP port: {}", tcp_port_str);
         let tcp_announcement = alloc::format!("announce {}\n", tcp_port_str);
         log::info!("Announcing on: {}", tcp_announcement.trim());
@@ -226,6 +226,7 @@ async fn main(args: &[usize]) {
                             env: Env::default().into(),
                             fds: RwLock::new(fd).into(),
                             cwd: PathBuf::from("/".to_owned()).into(),
+                            host: Arc::new(tcp_port),
                         },
                     )
                     .expect("Failed to create Proc from received Function");
@@ -257,7 +258,7 @@ async fn main(args: &[usize]) {
         // Connection is automatically dropped when data_file goes out of scope
         // The TCP connection will be closed
         log::info!("Dropping connection {}", id);
-    } else if MACHINE == 1 {
+    } else {
         let p = Proc::new(
             THUMBNAILER,
             ProcState {
@@ -265,6 +266,7 @@ async fn main(args: &[usize]) {
                 env: Env::default().into(),
                 fds: RwLock::new(fd).into(),
                 cwd: PathBuf::from("/".to_owned()).into(),
+                host: Arc::new(tcp_port),
             },
         )
         .expect("Failed to create Proc from ELF");

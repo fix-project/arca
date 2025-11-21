@@ -114,7 +114,7 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     let mut output_file = File::options()
         .write(true)
         .create(true)
-        .open("/data/thumbnail.ppm")
+        .open("127.0.0.1:11212/data/thumbnail.ppm")
         .expect("could not create output thumbnail file");
     let n = output_file
         .write(&thumbnail)
@@ -129,7 +129,7 @@ pub extern "C" fn _rsstart() -> ! {
     // TODO(kmohr) take this input file path as argument
     let mut ppm_data = File::options()
         .read(true)
-        .open("/data/falls_1.ppm")
+        .open("127.0.0.1:11212/data/falls_1.ppm")
         .expect("could not open ppm file");
     user::error::log("opened ppm file");
 
