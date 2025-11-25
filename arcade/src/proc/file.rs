@@ -11,7 +11,6 @@ pub async fn open(
     flags: OpenFlags,
     mode: ModeT,
 ) -> Result<u32, UnixError> {
-    log::info!("open: path={:?}", str::from_utf8(path));
     let s = &str::from_utf8(path)?;
     let path = Path::new(s);
     let open: Open = flags.try_into()?;
@@ -24,15 +23,12 @@ pub async fn open(
     let name = path
         .file_name()
         .ok_or(Error::from(ErrorKind::Unsupported))?;
-    log::info!("open: path={:?}, name={}", path, name);
     let path = path.relative();
     let parent = Path::new(path).parent().unwrap();
     let dir = state.ns.walk(parent, Open::Write).await?.as_dir().unwrap();
     let file = if flags.create() {
-        log::info!("open: create");
         dir.create_or_open(name, create, open).await?
     } else {
-        log::info!("open: open");
         dir.open(name, open).await?
     };
     let index = state.fds.write().insert(file.into());
@@ -49,17 +45,14 @@ pub async fn write(state: &ProcState, fd: u64, buf: &[u8]) -> Result<u32, UnixEr
 }
 
 pub async fn read(state: &ProcState, fd: u64, count: u64) -> Result<Blob, UnixError> {
-    log::info!("read: fd={}, count={}", fd as usize, count);
     let mut fdt = state.fds.write();
     let fd = fdt
         .get_mut(fd as usize)
         .ok_or(UnixError::BADFD)?
         .as_file_mut()?;
-    log::info!("count={}", count);
     // TODO(kmohr): what if we turned the user buffer into a Blob directly to avoid the copy?
     let mut buf = vec![0; count as usize];
     let sz = fd.dyn_read(&mut buf).await?;
-    log::info!("sz={}", sz);
     buf.truncate(sz);
     Ok(Blob::from_inner(kernel::types::internal::Blob::new(buf)))
 }
