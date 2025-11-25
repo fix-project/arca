@@ -211,6 +211,7 @@ impl<'a> LoadedArca<'a> {
     pub fn swap(&mut self, other: &mut Arca) {
         core::mem::swap(&mut self.register_file, &mut other.register_file);
         core::mem::swap(&mut self.descriptors, &mut other.descriptors);
+        core::mem::swap(&mut self.rlimit, &mut other.rlimit);
         let mut fsbase: u64;
         unsafe {
             core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
@@ -219,8 +220,8 @@ impl<'a> LoadedArca<'a> {
         self.cpu.swap_address_space(other.page_table.inner_mut());
     }
 
-    pub fn cpu(&mut self) -> &'_ mut Cpu {
-        self.cpu
+    pub fn cpu(&'_ mut self) -> CpuProxy<'_, 'a> {
+        CpuProxy { arca: self }
     }
 }
 
@@ -366,5 +367,32 @@ impl<'a> DescriptorsProxy<'a, '_> {
 
     pub fn get_mut(self, index: usize) -> core::result::Result<&'a mut Value, DescriptorError> {
         self.arca.descriptors.get_mut(index)
+    }
+}
+
+pub struct CpuProxy<'a, 'cpu> {
+    arca: &'a mut LoadedArca<'cpu>,
+}
+
+impl<'a> CpuProxy<'a, '_> {
+    pub fn map(
+        &mut self,
+        address: usize,
+        entry: Entry,
+    ) -> core::result::Result<Entry, SyscallError> {
+        let limit = self.arca.rlimit().memory;
+        let new_size = entry.byte_size();
+        let old = self.arca.cpu.map(address, Entry::Null(new_size))?;
+        let old_size = old.byte_size();
+        let usage = &mut self.arca.rusage_mut().memory;
+        *usage -= old_size;
+        if *usage + new_size > limit {
+            self.arca.cpu.map(address, old)?;
+            self.arca.rusage_mut().memory += old_size;
+            return Err(SyscallError::OutOfMemory);
+        }
+        self.arca.cpu.map(address, entry)?;
+        self.arca.rusage_mut().memory += new_size;
+        Ok(old)
     }
 }

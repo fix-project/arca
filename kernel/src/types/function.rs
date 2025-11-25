@@ -158,4 +158,11 @@ impl Function {
     pub fn is_arcane(&self) -> bool {
         matches!(self.defn, Definition::Arcane(_))
     }
+
+    pub fn arca_mut(&mut self) -> Option<&mut Arca> {
+        match &mut self.defn {
+            Definition::Symbolic(_) => None,
+            Definition::Arcane(arca) => Some(arca),
+        }
+    }
 }

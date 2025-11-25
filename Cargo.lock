@@ -111,7 +111,6 @@ dependencies = [
  "futures",
  "kernel",
  "log",
- "memcached",
  "ninep",
  "postcard",
  "serde",
@@ -1069,17 +1068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memcached"
-version = "0.1.0"
-dependencies = [
- "arca",
- "autotools",
- "cc",
- "chumsky",
- "user",
-]
-
-[[package]]
 name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1432,6 +1420,15 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "rlimit"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7043b63bd0cd1aaa628e476b80e6d4023a3b50eb32789f2728908107bd0c793a"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "rustc-demangle"
@@ -1864,6 +1861,7 @@ dependencies = [
  "ninep",
  "nix 0.30.1",
  "regex",
+ "rlimit",
  "rustc-demangle",
  "smol",
  "thread-priority",

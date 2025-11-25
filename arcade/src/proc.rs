@@ -101,14 +101,14 @@ impl Proc {
                         k.apply(fix(file::close(&self.state, fd.read()).await))
                     }
                     (b"dup", &mut [Value::Word(fd)]) => {
-                        let result = try {
+                        let result = async || {
                             let mut fds = self.state.fds.write().await;
                             let old = fds.get(fd.read() as usize).ok_or(UnixError::BADFD)?;
                             let new = old.dup().await?;
                             let fd = fds.insert(new);
-                            Word::new(fd as u64)
+                            Ok(Word::new(fd as u64))
                         };
-                        k.apply(fix(result))
+                        k.apply(fix(result().await))
                     }
                     (b"fork", &mut []) => {
                         let state = Arc::new((*self.state).clone());
@@ -146,6 +146,14 @@ impl Proc {
                         let monitor = fds.get(fd.read() as usize).ok_or(UnixError::BADFD).unwrap();
                         let monitor = monitor.as_mvar_ref().unwrap();
                         k.apply(monitor.run(core::mem::take(g)).await)
+                    }
+                    (b"arca:rlimit", &mut [Value::Word(limit)]) => {
+                        let mut k = k.into_inner();
+                        let rlimit = k.arca_mut().unwrap().rlimit_mut().memory;
+                        log::info!("old rlimit: {rlimit:#x}");
+                        log::info!("new rlimit: {:#x}", limit.read());
+                        k.arca_mut().unwrap().rlimit_mut().memory = limit.read() as usize;
+                        Function::from_inner(k)
                     }
                     _ => {
                         panic!("invalid effect: {effect:?}({args:?})");

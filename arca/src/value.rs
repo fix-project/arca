@@ -62,7 +62,7 @@ impl<R: Runtime> Value<R> {
                 .iter()
                 .map(|v| v.byte_size())
                 .reduce(|x, y| x + y)
-                .unwrap(),
+                .unwrap_or(0),
             Value::Page(page) => page.len(),
             Value::Table(table) => table
                 .iter()
