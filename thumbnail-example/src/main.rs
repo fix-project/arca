@@ -119,8 +119,8 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     let n = output_file
         .write(&thumbnail)
         .expect("could not write thumbnail data to file");
-
     user::error::log(alloc::format!("wrote {} bytes to thumbnail.ppm", n).as_bytes());
+
     output_height as u8
 }
 
@@ -135,8 +135,8 @@ pub extern "C" fn _rsstart() -> ! {
     // the sun.ppm file is 12814240 bytes eeeek
     // try allocating 2GB into a Box
     user::error::log("allocating a bunch of space");
-    let mut buf = alloc::vec![0; 12814240];
-    // let mut buf = alloc::vec![0; 2332861];
+    // let mut buf = alloc::vec![0; 12814240];
+    let mut buf = alloc::vec![0; 2332861];
     user::error::log("alloced a bunch of space");
     let n = ppm_data
         .read(&mut buf[..])

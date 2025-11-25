@@ -31,6 +31,7 @@ pub struct MemFile {
 
 impl Dir for MemDir {
     async fn open(&self, name: &str, open: Open) -> Result<Object> {
+        log::info!("MemDir::open: name={}, open={:?}", name, open);
         let contents = self.contents.data.read();
         let file = contents.get(name).ok_or(ErrorKind::NotFound)?.clone();
         match file {
