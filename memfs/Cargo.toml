@@ -1,8 +1,0 @@
-[package]
-name = "memfs"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-vfs = { path = "../vfs" }
-futures = "0.3"
