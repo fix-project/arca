@@ -175,8 +175,10 @@ impl Namespace {
     pub async fn walk(&self, path: impl AsRef<Path>, open: Open) -> Result<Object> {
         let path = path.as_ref().to_owned();
         let path = path.relative();
+        log::info!("Namespace::walk: path={:?}, open={:?}", path, open);
 
         let mounts = self.data.mounts.read();
+        log::info!("Namespace::walk: mounts={:?}", mounts.keys());
         let best = mounts.keys().filter(|m| path.starts_with(m)).fold(
             "".as_ref(),
             |a: &Path, x: &PathBuf| {
@@ -185,6 +187,7 @@ impl Namespace {
         );
         let rest = path.strip_prefix(best).unwrap();
         let mount = mounts.get(best).unwrap();
+        log::info!("Namespace::walk: best={:?}, rest={:?}", best, rest);
         match &mount {
             MountEnt::File(object) => object.walk(rest, open).await,
             MountEnt::Union(u) => {

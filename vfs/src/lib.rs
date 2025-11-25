@@ -6,8 +6,6 @@
 extern crate alloc;
 
 pub mod error;
-#[cfg(feature = "loader")]
-pub mod loader;
 pub mod mem;
 pub mod path;
 
@@ -71,10 +69,14 @@ pub trait Dir: Send + Sync + DynDir + 'static {
     where
         Self: Sized,
     {
+        log::info!("Dir::walk: path={:?}, open={:?}", path.as_ref(), open);
         async move {
             let path = path.as_ref().relative();
             let (head, rest) = path.split();
             if rest.is_empty() {
+                if head.is_empty() {
+                    return Ok(Object::Dir(self.dup().await?.boxed()));
+                }
                 return self.open(head, open).await;
             }
             let child = self.open(head, Open::Read).await?.as_dir()?;
@@ -182,6 +184,7 @@ impl File for Box<dyn File> {
 
 impl Dir for Box<dyn Dir> {
     async fn open(&self, name: &str, open: Open) -> Result<Object> {
+        log::info!("Dir::open: name={}, open={:?}", name, open);
         (**self).dyn_open(name, open).await
     }
 
@@ -190,6 +193,12 @@ impl Dir for Box<dyn Dir> {
     }
 
     async fn create(&self, name: &str, create: Create, open: Open) -> Result<Object> {
+        log::info!(
+            "Dir::create: name={}, create={:?}, open={:?}",
+            name,
+            create,
+            open
+        );
         (**self).dyn_create(name, create, open).await
     }
 

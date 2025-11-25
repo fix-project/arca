@@ -29,8 +29,10 @@ pub async fn open(
     let parent = Path::new(path).parent().unwrap();
     let dir = state.ns.walk(parent, Open::Write).await?.as_dir().unwrap();
     let file = if flags.create() {
+        log::info!("open: create");
         dir.create_or_open(name, create, open).await?
     } else {
+        log::info!("open: open");
         dir.open(name, open).await?
     };
     let index = state.fds.write().insert(file.into());
