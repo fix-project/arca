@@ -82,6 +82,12 @@ impl Namespace {
         mtype: MountType,
         create: bool,
     ) -> Result<()> {
+        log::info!(
+            "Namespace::attach: mtpt={:?}, mtype={:?}, create={}",
+            mtpt.as_ref(),
+            mtype,
+            create
+        );
         let mtpt = mtpt.as_ref().relative();
         let orig = self.walk(mtpt, Open::Read).await?.as_dir()?;
 
@@ -222,6 +228,7 @@ impl Namespace {
         let mount = mounts.get(best).unwrap();
         match mount {
             MountEnt::File(d) => {
+                log::info!("Namespace::create: rest={:?}", rest);
                 let parent = rest.parent();
                 let name = rest.file_name().ok_or(ErrorKind::NotFound)?;
                 let parent = if let Some(parent) = parent

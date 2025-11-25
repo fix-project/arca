@@ -15,6 +15,7 @@ use alloc::format;
 use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*, rt};
+use memfs::MemFs;
 use ninep::Client;
 
 mod dev;
@@ -109,7 +110,7 @@ async fn main(args: &[usize]) {
     // Set up TCP connection
     let host = remote.attach(None, "", "").await.unwrap();
     let tcp = remote.attach(None, "", "tcp").await.unwrap();
-    let data = remote.attach(None, "", "data").await.unwrap();
+    // let data = remote.attach(None, "", "data").await.unwrap();
 
     ns.mkdir("/n").await.unwrap();
     ns.mkdir("/n/host").await.unwrap();
@@ -120,11 +121,23 @@ async fn main(args: &[usize]) {
     ns.attach(tcp, "/net/tcp", MountType::Replace, true)
         .await
         .unwrap();
-    ns.attach(data, "/data", MountType::Replace, true)
-        .await
-        .unwrap();
+    // ns.attach(data, "/data", MountType::Replace, true)
+    //     .await
+    //     .unwrap();
 
     if is_listener {
+        // move everything from /data into an in memory FS for processing
+        // TODO(kmohr): implement a better way to handle files for processing
+        // let sun_ppm = include_bytes!("/home/kmohr/data/Sun.ppm");
+        let falls_ppm = include_bytes!("/home/kmohr/data/falls_1.ppm");
+        let mut mem_data = MemFs::new();
+        // create files in memfs
+        // mem_data.add_file("Sun.ppm".into(), sun_ppm.to_vec());
+        mem_data.add_file("falls_1.ppm".into(), falls_ppm.to_vec());
+        ns.attach(mem_data, "/data", MountType::Replace, true)
+            .await
+            .unwrap();
+
         // Spawn TCP server loop on a separate thread/core
         log::info!("TCP server starting on separate thread");
 
