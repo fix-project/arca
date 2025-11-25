@@ -6,6 +6,8 @@
 extern crate alloc;
 
 pub mod error;
+#[cfg(feature = "loader")]
+pub mod loader;
 pub mod mem;
 pub mod path;
 

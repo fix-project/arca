@@ -11,6 +11,7 @@ pub async fn open(
     flags: OpenFlags,
     mode: ModeT,
 ) -> Result<u32, UnixError> {
+    log::info!("open: path={:?}", str::from_utf8(path));
     let s = &str::from_utf8(path)?;
     let path = Path::new(s);
     let open: Open = flags.try_into()?;
@@ -23,6 +24,7 @@ pub async fn open(
     let name = path
         .file_name()
         .ok_or(Error::from(ErrorKind::Unsupported))?;
+    log::info!("open: path={:?}, name={}", path, name);
     let path = path.relative();
     let parent = Path::new(path).parent().unwrap();
     let dir = state.ns.walk(parent, Open::Write).await?.as_dir().unwrap();
