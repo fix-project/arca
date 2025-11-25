@@ -82,12 +82,6 @@ impl Namespace {
         mtype: MountType,
         create: bool,
     ) -> Result<()> {
-        log::info!(
-            "Namespace::attach: mtpt={:?}, mtype={:?}, create={}",
-            mtpt.as_ref(),
-            mtype,
-            create
-        );
         let mtpt = mtpt.as_ref().relative();
         let orig = self.walk(mtpt, Open::Read).await?.as_dir()?;
 
@@ -175,10 +169,8 @@ impl Namespace {
     pub async fn walk(&self, path: impl AsRef<Path>, open: Open) -> Result<Object> {
         let path = path.as_ref().to_owned();
         let path = path.relative();
-        log::info!("Namespace::walk: path={:?}, open={:?}", path, open);
 
         let mounts = self.data.mounts.read();
-        log::info!("Namespace::walk: mounts={:?}", mounts.keys());
         let best = mounts.keys().filter(|m| path.starts_with(m)).fold(
             "".as_ref(),
             |a: &Path, x: &PathBuf| {
@@ -187,7 +179,6 @@ impl Namespace {
         );
         let rest = path.strip_prefix(best).unwrap();
         let mount = mounts.get(best).unwrap();
-        log::info!("Namespace::walk: best={:?}, rest={:?}", best, rest);
         match &mount {
             MountEnt::File(object) => object.walk(rest, open).await,
             MountEnt::Union(u) => {
@@ -231,7 +222,6 @@ impl Namespace {
         let mount = mounts.get(best).unwrap();
         match mount {
             MountEnt::File(d) => {
-                log::info!("Namespace::create: rest={:?}", rest);
                 let parent = rest.parent();
                 let name = rest.file_name().ok_or(ErrorKind::NotFound)?;
                 let parent = if let Some(parent) = parent

@@ -16,6 +16,8 @@ use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*, rt};
 use ninep::Client;
+// frame format isn't supported in no_std env
+use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 
 mod dev;
 mod vsock;
@@ -109,7 +111,6 @@ async fn main(args: &[usize]) {
     // Set up TCP connection
     let host = remote.attach(None, "", "").await.unwrap();
     let tcp = remote.attach(None, "", "tcp").await.unwrap();
-    // let data = remote.attach(None, "", "data").await.unwrap();
 
     ns.mkdir("/n").await.unwrap();
     ns.mkdir("/n/host").await.unwrap();
@@ -120,15 +121,13 @@ async fn main(args: &[usize]) {
     ns.attach(tcp, "/net/tcp", MountType::Replace, true)
         .await
         .unwrap();
-    // ns.attach(data, "/data", MountType::Replace, true)
-    //     .await
-    //     .unwrap();
-    // move everything from /data into an in memory FS for processing
-    // TODO(kmohr): implement a better way to handle files for processing
-    // let sun_ppm = include_bytes!("/home/kmohr/data/Sun.ppm");
+
+    // TODO(kmohr): this runs on the assumption that the input file exists
+    // locally in memory at the time the continuation is called.
+    // Ideally, the continuation should be called as the file is read off the
+    // network.
     let falls_ppm = include_bytes!("/home/kmohr/data/falls_1.ppm");
-    let mut memfs = MemDir::default();
-    // write falls_ppm to falls_1.ppm in memfs
+    let memfs = MemDir::default();
     let mut falls_file = memfs
         .create("falls_1.ppm", Create::UserWrite, Open::ReadWrite)
         .await
@@ -142,7 +141,6 @@ async fn main(args: &[usize]) {
 
     if is_listener {
         // Spawn TCP server loop on a separate thread/core
-        log::info!("TCP server starting on separate thread");
 
         // Get id from /tcp/clone
         let mut tcp_ctl = ns
@@ -177,116 +175,128 @@ async fn main(args: &[usize]) {
         let listen_path = format!("/net/tcp/{id}/listen");
         log::info!("Listen path: {}", listen_path);
 
-        // TODO(kmohr): handle multiple connections
-        log::info!("Waiting for connections...");
-        let mut listen_file = ns
-            .walk(&listen_path, Open::ReadWrite)
-            .await
-            .unwrap()
-            .as_file()
-            .unwrap();
-
-        // Accept a new connection - this blocks until someone connects
-        let mut id = [0; 32];
-        let size = listen_file.read(&mut id).await.unwrap();
-        let id = core::str::from_utf8(&id[..size]).unwrap().trim();
-        let data_path = format!("/net/tcp/{id}/data");
-
-        log::info!("New connection accepted: {}", id);
-
-        let get_k_init = kvmclock::time_since_boot();
-
-        // Get data file for the accepted connection
-        let mut data_file = ns
-            .walk(&data_path, Open::ReadWrite)
-            .await
-            .unwrap()
-            .as_file()
-            .unwrap();
-
-        // Read data from the connection - handle arbitrarily large messages
-        let mut all_data = Vec::new();
-        let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
+        let shared_ns = Arc::new(ns);
 
         loop {
-            match data_file.read(&mut buffer).await {
-                Ok(bytes_read) => {
-                    if bytes_read > 0 {
-                        all_data.extend_from_slice(&buffer[..bytes_read]);
-                    } else {
-                        // bytes_read == 0 means the connection is closed
-                        log::info!("Connection closed by client");
+            // TODO(kmohr): handle multiple connections
+            log::info!("Waiting for connections...");
+            let mut listen_file = shared_ns
+                .walk(&listen_path, Open::ReadWrite)
+                .await
+                .unwrap()
+                .as_file()
+                .unwrap();
+
+            // Accept a new connection - this blocks until someone connects
+            let mut id = [0; 32];
+            let size = listen_file.read(&mut id).await.unwrap();
+            let id = core::str::from_utf8(&id[..size]).unwrap().trim();
+            let data_path = format!("/net/tcp/{id}/data");
+
+            log::info!("New connection accepted: {}", id);
+
+            // TODO(kmohr): the time to actually read k off the network is way larger than
+            // anything else. we should see what optimizations are possible here
+            let get_k_init = kvmclock::time_since_boot();
+
+            // Get data file for the accepted connection
+            let mut data_file = shared_ns
+                .walk(&data_path, Open::ReadWrite)
+                .await
+                .unwrap()
+                .as_file()
+                .unwrap();
+
+            // Read data from the connection - handle arbitrarily large messages
+            let mut all_data = Vec::new();
+            let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
+
+            loop {
+                match data_file.read(&mut buffer).await {
+                    Ok(bytes_read) => {
+                        if bytes_read > 0 {
+                            all_data.extend_from_slice(&buffer[..bytes_read]);
+                        } else {
+                            // bytes_read == 0 means the connection is closed
+                            log::info!("Connection closed by client");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Error reading data: {:?}", e);
                         break;
                     }
                 }
-                Err(e) => {
-                    log::error!("Error reading data: {:?}", e);
-                    break;
             }
-        }
 
-        if !all_data.is_empty() {
-            log::info!("Received complete message of {} bytes", all_data.len());
+            if !all_data.is_empty() {
+                log::info!("Received complete message of {} bytes", all_data.len());
 
-            // TODO(kmohr) just assuming this is a continuation for now
-            // should define a set of possible messages
-            // also need filename here
-            let k_decode_init = kvmclock::time_since_boot();
-            match postcard::from_bytes(&all_data).unwrap() {
-                Value::Function(k) => {
-                    let p = Proc::from_function(
-                        k,
-                        ProcState {
-                            ns: Arc::new(ns),
-                            env: Env::default().into(),
-                            fds: RwLock::new(fd).into(),
-                            cwd: PathBuf::from("/".to_owned()).into(),
-                            host: Arc::new(tcp_port),
-                        },
-                    )
-                    .expect("Failed to create Proc from received Function");
-                    let k_decode_end = kvmclock::time_since_boot();
-                    log::info!(
-                        "Timing: k_decode={}",
-                        (k_decode_end - k_decode_init).as_millis()
-                    );
+                // TODO(kmohr) just assuming this is a continuation for now
+                // should define a set of possible messages
+                // also need filename here
+                let k_decode_init = kvmclock::time_since_boot();
+                let decompressed = decompress_size_prepended(&all_data).unwrap();
 
-                    let run_k_time = kvmclock::time_since_boot();
+                match postcard::from_bytes(&decompressed).unwrap() {
+                    Value::Function(k) => {
+                        let p = Proc::from_function(
+                            k,
+                            ProcState {
+                                ns: shared_ns.clone(),
+                                env: Env::default().into(),
+                                fds: RwLock::new(Descriptors::new()).into(),
+                                cwd: PathBuf::from("/".to_owned()).into(),
+                                host: Arc::new(tcp_port),
+                            },
+                        )
+                        .expect("Failed to create Proc from received Function");
+                        let k_decode_end = kvmclock::time_since_boot();
+                        log::info!(
+                            "Timing: k_decode={}",
+                            (k_decode_end - k_decode_init).as_millis()
+                        );
 
-                    let exitcode = p.run([]).await;
+                        let run_k_time = kvmclock::time_since_boot();
 
-                    let run_k_end_time = kvmclock::time_since_boot();
+                        let exitcode = p.run([]).await;
 
-                    log::info!(
-                        "Timing: get_k={} run_k={}",
-                        (run_k_time - get_k_init).as_millis(),
-                        (run_k_end_time - run_k_time).as_millis()
-                    );
-                    log::info!("exitcode: {exitcode}");
-                }
-                _ => {
-                    log::error!("Received message is not a Function!");
+                        let run_k_end_time = kvmclock::time_since_boot();
+
+                        log::info!(
+                            "Timing: get_k={} run_k={}",
+                            (run_k_time - get_k_init).as_millis(),
+                            (run_k_end_time - run_k_time).as_millis()
+                        );
+                        log::info!("exitcode: {exitcode}");
+                    }
+                    _ => {
+                        log::error!("Received message is not a Function!");
+                    }
                 }
             }
-        }
 
-        // Connection is automatically dropped when data_file goes out of scope
-        // The TCP connection will be closed
-        log::info!("Dropping connection {}", id);
+            // Connection is automatically dropped when data_file goes out of scope
+            // The TCP connection will be closed
+            log::info!("Dropping connection {}", id);
+        }
     } else {
-        let p = Proc::new(
-            THUMBNAILER,
-            ProcState {
-                ns: Arc::new(ns),
-                env: Env::default().into(),
-                fds: RwLock::new(fd).into(),
-                cwd: PathBuf::from("/".to_owned()).into(),
-                host: Arc::new(tcp_port),
-            },
-        )
-        .expect("Failed to create Proc from ELF");
-
-        let exitcode = p.run([]).await;
-        log::info!("exitcode: {exitcode}");
+        let shared_ns = Arc::new(ns);
+        let shared_port = Arc::new(tcp_port);
+        for _ in 0..10 {
+            let p = Proc::new(
+                THUMBNAILER,
+                ProcState {
+                    ns: shared_ns.clone(),
+                    env: Env::default().into(),
+                    fds: RwLock::new(Descriptors::new()).into(),
+                    cwd: PathBuf::from("/".to_owned()).into(),
+                    host: shared_port.clone(),
+                },
+            )
+            .expect("Failed to create Proc from ELF");
+            let exitcode = p.run([]).await;
+            log::info!("exitcode: {exitcode}");
+        }
     }
 }
