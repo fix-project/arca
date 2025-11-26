@@ -166,6 +166,8 @@ fn main() -> Result<()> {
         .define("BUILD_TESTS", "OFF")
         .define("BUILD_LIBWASM", "OFF")
         .define("BUILD_TOOLS", "ON")
+        .cflag("-fPIE")
+        .cxxflag("-fPIE")
         .out_dir(dst)
         .build();
 

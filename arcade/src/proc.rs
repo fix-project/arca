@@ -101,13 +101,15 @@ impl Proc {
                         k.apply(fix(file::close(&self.state, fd.read()).await))
                     }
                     (b"dup", &mut [Value::Word(fd)]) => {
-                        let result = try {
+                        #[allow(clippy::redundant_closure_call)]
+                        let result = (async || {
                             let mut fds = self.state.fds.write().await;
                             let old = fds.get(fd.read() as usize).ok_or(UnixError::BADFD)?;
                             let new = old.dup().await?;
                             let fd = fds.insert(new);
-                            Word::new(fd as u64)
-                        };
+                            Ok(Word::new(fd as u64))
+                        })()
+                        .await;
                         k.apply(fix(result))
                     }
                     (b"fork", &mut []) => {
