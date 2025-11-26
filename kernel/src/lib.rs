@@ -12,7 +12,6 @@
 #![feature(never_type)]
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
-#![feature(vec_into_raw_parts)]
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 

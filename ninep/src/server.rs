@@ -79,7 +79,7 @@ impl<'a> Server<'a> {
             let map = self.map.clone();
             let future = async move {
                 let tag = request.tag();
-                let mut response: RMessage = try {
+                let mut response: RMessage = (async || {
                     match request {
                         TMessage::Version {
                             tag,
@@ -327,7 +327,7 @@ impl<'a> Server<'a> {
                             unreachable!()
                         }
                     }
-                };
+                })().await;
                 response.set_tag(tag);
                 log::debug!("-> {response:?}");
                 let response = wire::to_bytes_with_len(response).unwrap();
