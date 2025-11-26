@@ -6,7 +6,6 @@
 #![feature(layout_for_ptr)]
 #![feature(maybe_uninit_as_bytes)]
 #![feature(maybe_uninit_slice)]
-#![feature(maybe_uninit_write_slice)]
 #![feature(negative_impls)]
 #![feature(new_range_api)]
 #![feature(ptr_metadata)]

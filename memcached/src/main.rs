@@ -67,7 +67,7 @@ pub extern "C" fn _rsstart() -> ! {
         let ldata = File::options().read(true).write(true).open(buf).unwrap();
         let mut ldata = Buffered::new(ldata);
 
-        let result: Result<(), Error> = try {
+        let result: Result<(), Error> = (|| {
             loop {
                 let bytes = ldata.read_until(b'\n')?;
                 let request = request().parse(&bytes).into_result()?;
@@ -104,7 +104,7 @@ pub extern "C" fn _rsstart() -> ! {
                     }
                 }
             }
-        };
+        })();
         let result = result.unwrap_err();
         let _ = writeln!(ldata, "SERVER_ERROR {result}");
         let _ = writeln!(lctl, "hangup");
