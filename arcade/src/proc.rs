@@ -96,6 +96,7 @@ impl Proc {
                         // TODO this is not the right place for all this logic
                         // Figure out which machine the file is on
                         // filenames will be of the form "hostname:port/path/to/file"
+                        let tcp_init = kvmclock::time_since_boot();
                         let s = &str::from_utf8(path).unwrap();
                         let path_p = Path::new(s);
                         let (host, filename) = path_p.split();
@@ -176,39 +177,35 @@ impl Proc {
                                     .apply(Value::Function(k));
 
                                 let val = Value::Function(resumed_f);
-                                let message =
-                                    compress_prepend_size(&postcard::to_allocvec(&val).unwrap());
-                                let k_create_end = kvmclock::time_since_boot();
 
-                                log::info!(
-                                    "Created serialized continuation in {} ms",
-                                    (k_create_end - k_create_init).as_millis()
-                                );
+                                let serialize_init = kvmclock::time_since_boot();
+                                let msg = postcard::to_allocvec(&val).unwrap();
+                                let serialize_end = kvmclock::time_since_boot();
+                                let msg = compress_prepend_size(&msg);
+                                let compress_end = kvmclock::time_since_boot();
 
                                 // log the message size in bytes and MB
-                                let size_bytes = message.len();
+                                let size_bytes = msg.len();
                                 let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
                                 log::info!(
-                                    "Sending message of size: {} bytes ({:.2} MB)",
+                                    "PERF\ntcp time: {} us\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
+                                    (k_create_init - tcp_init).as_micros(),
+                                    (serialize_init - k_create_init).as_micros(),
+                                    (serialize_end - serialize_init).as_micros(),
+                                    (compress_end - serialize_end).as_micros(),
                                     size_bytes,
                                     size_mb
                                 );
 
-                                if let Err(e) = data_file.write(&message).await {
-                                    log::error!("Failed to send message: {:?}", e);
+                                if let Err(e) = data_file.write(&msg).await {
+                                    log::error!("Failed to send msg: {:?}", e);
                                     return 1;
                                 }
 
                                 return 0;
                             };
 
-                            // assuming machine 1 has no files
-                            // TODO(kmohr): encode the machine to use in the filename
-                            let init = kvmclock::time_since_boot();
                             let ret_code = send_tcp_msg().await;
-                            let end = kvmclock::time_since_boot();
-                            log::info!("TCP open took {} ms", (end - init).as_millis());
-                            // we don't actually need to run k anymore
                             return ret_code as u8;
                         } else {
                             k.apply(fix(file::open(

@@ -5,6 +5,7 @@ extern crate alloc;
 extern crate user;
 
 use arca::Word;
+use core::arch::x86_64::_rdtsc;
 use user::io::File;
 use user::prelude::*;
 
@@ -111,15 +112,15 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     }
 
     // write the thumbnail to a new ppm file
-    let mut output_file = File::options()
-        .write(true)
-        .create(true)
-        .open("127.0.0.1:11212/data/thumbnail.ppm")
-        .expect("could not create output thumbnail file");
-    let n = output_file
-        .write(&thumbnail)
-        .expect("could not write thumbnail data to file");
-    user::error::log(alloc::format!("wrote {} bytes to thumbnail.ppm", n).as_bytes());
+    // let mut output_file = File::options()
+    //     .write(true)
+    //     .create(true)
+    //     .open("127.0.0.1:11212/data/thumbnail.ppm")
+    //     .expect("could not create output thumbnail file");
+    // let n = output_file
+    //     .write(&thumbnail)
+    //     .expect("could not write thumbnail data to file");
+    // user::error::log(alloc::format!("wrote {} bytes to thumbnail.ppm", n).as_bytes());
 
     output_height as u8
 }
@@ -131,21 +132,30 @@ pub extern "C" fn _rsstart() -> ! {
         .read(true)
         .open("127.0.0.1:11212/data/falls_1.ppm")
         .expect("could not open ppm file");
-    user::error::log("opened ppm file");
+    // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
-    // the sun.ppm file is 12814240 bytes eeeek
-    // try allocating 2GB into a Box
-    user::error::log("allocating a bunch of space");
+    let alloc_start = unsafe { _rdtsc() };
     // let mut buf = alloc::vec![0; 12814240];
     let mut buf = alloc::vec![0; 2332861];
-    user::error::log("alloced a bunch of space");
+    let alloc_end = unsafe { _rdtsc() };
+
     let n = ppm_data
         .read(&mut buf[..])
         .expect("could not read ppm file");
-
-    user::error::log(alloc::format!("read {} bytes from ppm file", n).as_bytes());
+    let read_file_end = unsafe { _rdtsc() };
 
     let size = thumbnail_ppm6(&buf);
+    let algo_end = unsafe { _rdtsc() };
 
+    let total_time = algo_end - alloc_start;
+    user::error::log(
+        alloc::format!(
+            "TIMING: \nalloc: {}%\nread file: {}%\nalgorithm: {}%",
+            (alloc_end - alloc_start) * 100 / total_time,
+            (read_file_end - alloc_end) * 100 / total_time,
+            (algo_end - read_file_end) * 100 / total_time,
+        )
+        .as_bytes(),
+    );
     crate::io::exit(size);
 }

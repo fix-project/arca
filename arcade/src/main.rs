@@ -14,7 +14,7 @@ use ::vfs::*;
 use alloc::format;
 use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
-use kernel::{kvmclock, prelude::*, rt};
+use kernel::{kvmclock, prelude::*, profile, rt};
 use ninep::Client;
 // frame format isn't supported in no_std env
 use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
@@ -228,6 +228,7 @@ async fn main(args: &[usize]) {
                     }
                 }
             }
+            let get_k_end = kvmclock::time_since_boot();
 
             if !all_data.is_empty() {
                 log::info!("Received complete message of {} bytes", all_data.len());
@@ -235,8 +236,9 @@ async fn main(args: &[usize]) {
                 // TODO(kmohr) just assuming this is a continuation for now
                 // should define a set of possible messages
                 // also need filename here
-                let k_decode_init = kvmclock::time_since_boot();
+                let k_decompress_init = kvmclock::time_since_boot();
                 let decompressed = decompress_size_prepended(&all_data).unwrap();
+                let k_decompress_end = kvmclock::time_since_boot();
 
                 match postcard::from_bytes(&decompressed).unwrap() {
                     Value::Function(k) => {
@@ -252,22 +254,19 @@ async fn main(args: &[usize]) {
                         )
                         .expect("Failed to create Proc from received Function");
                         let k_decode_end = kvmclock::time_since_boot();
-                        log::info!(
-                            "Timing: k_decode={}",
-                            (k_decode_end - k_decode_init).as_millis()
-                        );
-
-                        let run_k_time = kvmclock::time_since_boot();
 
                         let exitcode = p.run([]).await;
 
                         let run_k_end_time = kvmclock::time_since_boot();
 
                         log::info!(
-                            "Timing: get_k={} run_k={}",
-                            (run_k_time - get_k_init).as_millis(),
-                            (run_k_end_time - run_k_time).as_millis()
+                            "TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                            (get_k_end - get_k_init).as_micros(),
+                            (k_decompress_end - k_decompress_init).as_micros(),
+                            (k_decode_end - k_decompress_end).as_micros(),
+                            (run_k_end_time - k_decode_end).as_micros()
                         );
+
                         log::info!("exitcode: {exitcode}");
                     }
                     _ => {
@@ -283,7 +282,8 @@ async fn main(args: &[usize]) {
     } else {
         let shared_ns = Arc::new(ns);
         let shared_port = Arc::new(tcp_port);
-        for _ in 0..10 {
+        for _ in 0..100 {
+            let start_time = kvmclock::time_since_boot();
             let p = Proc::new(
                 THUMBNAILER,
                 ProcState {
@@ -296,6 +296,11 @@ async fn main(args: &[usize]) {
             )
             .expect("Failed to create Proc from ELF");
             let exitcode = p.run([]).await;
+            let end_time = kvmclock::time_since_boot();
+            log::info!(
+                "TIMING: begin k: {} us",
+                (end_time - start_time).as_micros()
+            );
             log::info!("exitcode: {exitcode}");
         }
     }
