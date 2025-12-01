@@ -7,6 +7,7 @@ fn main() {
         .as_os_str()
         .to_string_lossy()
         .into_owned();
+    println!("cargo::rerun-if-changed=../modules/arca-musl");
 
     eprintln!("{prefix:?}");
 

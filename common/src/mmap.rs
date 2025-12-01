@@ -17,10 +17,10 @@ impl Mmap {
                 None,
                 NonZeroUsize::new(len).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                MapFlags::MAP_ANONYMOUS
-                    | MapFlags::MAP_SHARED
+                MapFlags::MAP_ANONYMOUS | MapFlags::MAP_SHARED, // | MapFlags::MAP_HUGE_2MB
+                                                                // | MapFlags::MAP_HUGETLB,
             )
-            .unwrap()
+            .expect("unable to reserve memory")
             .as_ptr() as *mut u8
         };
         assert!(!ptr.is_null());

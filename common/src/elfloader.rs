@@ -13,6 +13,13 @@ pub enum Error {
 }
 
 pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
+    load_elf_with_memlimit(elf, 1 << 21)
+}
+
+pub fn load_elf_with_memlimit<R: arca::Runtime>(
+    elf: &[u8],
+    memlimit: usize,
+) -> Result<Function<R>, Error> {
     log::debug!("loading: {} byte ELF file", elf.len());
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf)?;
     let start_address = elf.ehdr.e_entry;
@@ -107,10 +114,14 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
 
     let descriptors = R::create_tuple(0);
 
-    let mut data = R::create_tuple(3);
+    let mut rlimit = R::create_tuple(1);
+    rlimit.set(0, Word::from(memlimit as u64));
+
+    let mut data = R::create_tuple(4);
     data.set(0, Value::Tuple(registers));
     data.set(1, Value::Table(table));
     data.set(2, Value::Tuple(descriptors));
+    data.set(3, Value::Tuple(rlimit));
 
     let args = R::create_tuple(0);
     R::create_function(Tuple::from(("Arcane", data, args)).into()).map_err(|_| Error::Runtime)
