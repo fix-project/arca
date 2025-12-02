@@ -11,7 +11,6 @@
 #![feature(never_type)]
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
-#![feature(vec_into_raw_parts)]
 
 extern crate alloc;
 

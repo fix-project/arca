@@ -4,7 +4,6 @@
 extern crate alloc;
 extern crate user;
 
-use arca::Word;
 use core::arch::x86_64::_rdtsc;
 use user::io::File;
 use user::prelude::*;
@@ -139,7 +138,7 @@ pub extern "C" fn _rsstart() -> ! {
     let mut buf = alloc::vec![0; 2332861];
     let alloc_end = unsafe { _rdtsc() };
 
-    let n = ppm_data
+    let _n = ppm_data
         .read(&mut buf[..])
         .expect("could not read ppm file");
     let read_file_end = unsafe { _rdtsc() };
