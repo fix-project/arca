@@ -26,6 +26,9 @@ mod proto;
 mod vsock;
 
 mod proc;
+
+mod tcpserver;
+
 use crate::{
     dev::DevFS,
     proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},

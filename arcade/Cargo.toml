@@ -36,6 +36,8 @@ user = { path = "../user", artifact = "bin", target = "x86_64-unknown-none" }
 thumbnail-example = { path = "../thumbnail-example", artifact = "bin", target = "x86_64-unknown-none" }
 async-lock = { version = "3.4.1", default-features = false }
 lz4_flex = { version = "0.12.0", default-features = false }
+async-trait = "0.1.89"
+hashbrown = "0.16.1"
 
 [build-dependencies]
 anyhow = "1.0.98"
