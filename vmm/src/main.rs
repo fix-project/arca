@@ -2,7 +2,7 @@
 #![feature(thread_sleep_until)]
 #![feature(future_join)]
 
-use std::{num::NonZero, sync::Arc};
+use std::{default, num::NonZero, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
 use libc::VMADDR_CID_HOST;
@@ -62,6 +62,13 @@ fn main() -> anyhow::Result<()> {
                 .action(ArgAction::SetTrue)
                 .required(false),
         )
+        .arg(
+            Arg::new("disable-continuation-sending")
+                .long("disable-continuation-sending")
+                .help("Disable sending continuations to the host")
+                .action(ArgAction::SetTrue)
+                .required(false),
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
@@ -77,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(3);
 
     let host = matches.get_one::<String>("host").unwrap();
+    let disable_continuation_sending = matches.get_flag("disable-continuation-sending");
 
     let is_listener = matches.get_flag("listener");
 
@@ -136,6 +144,7 @@ fn main() -> anyhow::Result<()> {
         host_listener_port as usize,
         ipaddr as usize,
         is_listener as usize,
+        disable_continuation_sending as usize,
     ]);
 
     Ok(())

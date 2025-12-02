@@ -17,10 +17,11 @@ use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*, profile, rt};
 use ninep::Client;
 // frame format isn't supported in no_std env
-use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
+use lz4_flex::block::{decompress_size_prepended};
 
 mod dev;
 mod vsock;
+mod proto;
 
 mod proc;
 use crate::{
@@ -56,6 +57,7 @@ async fn main(args: &[usize]) {
     let host_listener_port = args[1];
     let tcp_port = IpAddr::from(args[2] as u64);
     let is_listener = args[3] != 0;
+    let disable_continuation_sending = args[4] != 0;
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -140,8 +142,6 @@ async fn main(args: &[usize]) {
         .unwrap();
 
     if is_listener {
-        // Spawn TCP server loop on a separate thread/core
-
         // Get id from /tcp/clone
         let mut tcp_ctl = ns
             .walk("/net/tcp/clone", Open::ReadWrite)
@@ -193,6 +193,7 @@ async fn main(args: &[usize]) {
             let id = core::str::from_utf8(&id[..size]).unwrap().trim();
             let data_path = format!("/net/tcp/{id}/data");
 
+            // TODO is this connection closed on Ctrl-C?
             log::info!("New connection accepted: {}", id);
 
             // TODO(kmohr): the time to actually read k off the network is way larger than
@@ -207,39 +208,14 @@ async fn main(args: &[usize]) {
                 .as_file()
                 .unwrap();
 
-            // Read data from the connection - handle arbitrarily large messages
-            let mut all_data = Vec::new();
-            let mut buffer = vec![0u8; 4096]; // Larger buffer for better performance
-
-            loop {
-                match data_file.read(&mut buffer).await {
-                    Ok(bytes_read) => {
-                        if bytes_read > 0 {
-                            all_data.extend_from_slice(&buffer[..bytes_read]);
-                        } else {
-                            // bytes_read == 0 means the connection is closed
-                            log::info!("Connection closed by client");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Error reading data: {:?}", e);
-                        break;
-                    }
-                }
-            }
+            let (message, mut data_file) = proto::read_request(data_file).await.unwrap();
             let get_k_end = kvmclock::time_since_boot();
 
-            if !all_data.is_empty() {
-                log::info!("Received complete message of {} bytes", all_data.len());
-
-                // TODO(kmohr) just assuming this is a continuation for now
-                // should define a set of possible messages
-                // also need filename here
+            match message {
+                proto::Message::Continuation(proto::Continuation { continuation_size: _,  data }) => {
                 let k_decompress_init = kvmclock::time_since_boot();
-                let decompressed = decompress_size_prepended(&all_data).unwrap();
+                let decompressed = decompress_size_prepended(&data).unwrap();
                 let k_decompress_end = kvmclock::time_since_boot();
-
                 match postcard::from_bytes(&decompressed).unwrap() {
                     Value::Function(k) => {
                         let p = Proc::from_function(
@@ -268,27 +244,68 @@ async fn main(args: &[usize]) {
                         );
 
                         log::info!("exitcode: {exitcode}");
-                    }
+                    },
                     _ => {
-                        log::error!("Received message is not a Function!");
+                        log::error!("Expected Function value in Continuation, got something else");
                     }
                 }
-            }
+            
+                },
+                proto::Message::FileRequest(proto::FileRequest{file_path}) => {
+                    log::info!("Received File Request for path {}", file_path);
+                    // send back the requested file data
+                    let mut file = shared_ns
+                        .walk(&file_path, Open::Read)
+                        .await
+                        .unwrap()
+                        .as_file()
+                        .unwrap();
+                    
+                    // TODO(kmohr) let's just encode the file size instead of reading in chunks like this
+                    let mut file_data = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    loop {
+                        match file.read(&mut buffer).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) => file_data.extend_from_slice(&buffer[..n]),
+                            Err(e) => {
+                                log::error!("Failed to read file: {:?}", e);
+                                break;
+                            }
+                        }
+                    }
+                    let file_size = file_data.len() as u32;
 
-            // Connection is automatically dropped when data_file goes out of scope
-            // The TCP connection will be closed
-            log::info!("Dropping connection {}", id);
+                    // send back b'F' + file size as u32 + file data
+                    let mut response = alloc::vec![b'F'];
+                    response.extend_from_slice(&file_size.to_be_bytes());
+                    response.extend_from_slice(&file_data);
+                    data_file.write(&response).await.unwrap();
+                    log::info!("msg size: {}", response.len());
+                    log::info!("Sent file response for {}", file_path);
+                },
+                _ => {
+                    log::error!("Expected Continuation or FileRequest message, got something else");
+                } 
+            }
         }
     } else {
         let shared_ns = Arc::new(ns);
         let shared_port = Arc::new(tcp_port);
+
+        let env = Env::default();
+        env.set(
+            "CONTINUATION_SENDING_ENABLED",
+            if disable_continuation_sending { "0" } else { "1" },
+        );
+
         for _ in 0..100 {
             let start_time = kvmclock::time_since_boot();
             let p = Proc::new(
                 THUMBNAILER,
                 ProcState {
                     ns: shared_ns.clone(),
-                    env: Env::default().into(),
+                    env: env.clone().into(),
                     fds: RwLock::new(Descriptors::new()).into(),
                     cwd: PathBuf::from("/".to_owned()).into(),
                     host: shared_port.clone(),

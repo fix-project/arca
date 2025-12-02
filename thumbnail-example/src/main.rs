@@ -60,6 +60,7 @@ pub fn parse_u32(bytes: &[u8]) -> Result<u32, &'static str> {
 }
 
 fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
+    let algo_start = unsafe { _rdtsc() };
     // check the magic number
     let index = 0;
     let (magic_number, index) = get_next_token(input_bytes, index);
@@ -91,10 +92,12 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
     static CHANNELS: u32 = 3;
     let output_height: u32 = (OUTPUT_WIDTH as f32 / width as f32 * height as f32) as u32;
+    let algo_before_alloc = unsafe { _rdtsc() };
     let header_data = alloc::format!("P6\n{} {}\n{}\n", OUTPUT_WIDTH, output_height, maxval);
     let out_index = header_data.len();
     let mut thumbnail =
         alloc::vec![0u8; out_index + (OUTPUT_WIDTH * output_height * CHANNELS) as usize];
+    let after_alloc = unsafe { _rdtsc() };
     thumbnail[..out_index].copy_from_slice(header_data.as_bytes());
     let scale_x = width as f32 / OUTPUT_WIDTH as f32;
     let scale_y = height as f32 / output_height as f32;
@@ -110,6 +113,17 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
             }
         }
     }
+
+    let algo_end = unsafe { _rdtsc() };
+    user::error::log(
+        alloc::format!(
+            "TIMING (thumbnail_ppm6): \nalgorithm without alloc: {}%\nalloc: {}%",
+            ((algo_before_alloc - algo_start) + (algo_end - after_alloc)) * 100
+                / (algo_end - algo_start),
+            (after_alloc - algo_before_alloc) * 100 / (algo_end - algo_start),
+        )
+        .as_bytes(),
+    );
 
     // write the thumbnail to a new ppm file
     // let mut output_file = File::options()
