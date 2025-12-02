@@ -28,6 +28,7 @@ mod vsock;
 mod proc;
 
 mod tcpserver;
+mod tcputil;
 
 use crate::{
     dev::DevFS,
