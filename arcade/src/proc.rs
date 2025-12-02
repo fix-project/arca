@@ -24,7 +24,7 @@ use kernel::{
     types::{Blob, Function, Tuple, Value},
 };
 mod table;
-use alloc::{boxed::Box, collections::vec_deque::VecDeque, string::ToString, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
 pub struct Proc {
@@ -187,9 +187,12 @@ impl Proc {
                             if !continuation_sending_enabled {
                                 // File request path - returns a continuation with file descriptor
                                 let handle_file_request = || async {
-                                    let mut data_file = setup_tcp_connection().await.map_err(|_| 1u8)?;
-                                    
-                                    log::info!("continuation sending disabled, requesting the file instead");
+                                    let mut data_file =
+                                        setup_tcp_connection().await.map_err(|_| 1u8)?;
+
+                                    log::info!(
+                                        "continuation sending disabled, requesting the file instead"
+                                    );
 
                                     // ask the other server for the file
                                     let mut msg = alloc::vec![b'R'];
@@ -197,7 +200,8 @@ impl Proc {
                                     data_file.write(&msg).await.unwrap();
 
                                     // read the response
-                                    let (message, _) = crate::proto::read_request(data_file).await.unwrap();
+                                    let (message, _) =
+                                        crate::proto::read_request(data_file).await.unwrap();
                                     let file_response = match message {
                                         crate::proto::Message::FileResponse(response) => response,
                                         _ => panic!("Expected FileResponse, got something else"),
@@ -211,8 +215,12 @@ impl Proc {
                                     let mut new_file = vfs::MemFile::default();
                                     new_file.write(&file_response.file_data).await.unwrap();
                                     new_file.seek(vfs::SeekFrom::Start(0)).await.unwrap();
-                                    let fd = self.state.fds.lock().insert(FileDescriptor::File(new_file.boxed()));
-                                    
+                                    let fd = self
+                                        .state
+                                        .fds
+                                        .lock()
+                                        .insert(FileDescriptor::File(new_file.boxed()));
+
                                     Ok::<usize, u8>(fd)
                                 };
 
@@ -232,8 +240,9 @@ impl Proc {
                             } else {
                                 // Continuation sending path - sends continuation and exits process
                                 let handle_continuation = || async {
-                                    let mut data_file = setup_tcp_connection().await.map_err(|_| ())?;
-                                    
+                                    let mut data_file =
+                                        setup_tcp_connection().await.map_err(|_| ())?;
+
                                     log::info!("sending continuation to open file remotely");
 
                                     // TODO(kmohr): hmmmm this is so slow...
@@ -257,7 +266,7 @@ impl Proc {
                                     let size_bytes = (k_msg.len() as u32).to_be_bytes();
                                     msg.extend_from_slice(&size_bytes);
                                     msg.extend_from_slice(&k_msg);
-                                    
+
                                     // check the first couple bytes
                                     log::info!(
                                         "Prepared continuation message, first bytes: {:02X?}",
