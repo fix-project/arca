@@ -128,7 +128,7 @@ async fn main(args: &[usize]) {
     // locally in memory at the time the continuation is called.
     // Ideally, the continuation should be called as the file is read off the
     // network.
-    let falls_ppm = include_bytes!("/home/yuhan/data/falls_1.ppm");
+    let falls_ppm = include_bytes!(concat!(env!("HOME"),  "/data/falls_1.ppm"));
     let memfs = MemDir::default();
     let mut falls_file = memfs
         .create("falls_1.ppm", Create::UserWrite, Open::ReadWrite)
