@@ -14,10 +14,10 @@ use ::vfs::*;
 use alloc::format;
 use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
-use kernel::{kvmclock, prelude::*, profile, rt};
+use kernel::{kvmclock, prelude::*};
 use ninep::Client;
 // frame format isn't supported in no_std env
-use lz4_flex::block::{decompress_size_prepended};
+use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
 mod vsock;
@@ -128,7 +128,7 @@ async fn main(args: &[usize]) {
     // locally in memory at the time the continuation is called.
     // Ideally, the continuation should be called as the file is read off the
     // network.
-    let falls_ppm = include_bytes!("/home/kmohr/data/falls_1.ppm");
+    let falls_ppm = include_bytes!("/home/yuhan/data/falls_1.ppm");
     let memfs = MemDir::default();
     let mut falls_file = memfs
         .create("falls_1.ppm", Create::UserWrite, Open::ReadWrite)
