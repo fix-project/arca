@@ -14,7 +14,7 @@ use common::ipaddr::IpAddr;
 use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
-use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
+use lz4_flex::block::compress_prepend_size;
 pub use namespace::Namespace;
 use vfs::path::Path;
 
