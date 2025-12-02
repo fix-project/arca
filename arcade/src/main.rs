@@ -17,15 +17,16 @@ use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*};
 use ninep::Client;
 // frame format isn't supported in no_std env
-use lz4_flex::block::{decompress_size_prepended};
+use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
-mod vsock;
 mod proto;
+mod vsock;
 
 mod proc;
 
 mod tcpserver;
+mod tcputil;
 
 use crate::{
     dev::DevFS,
@@ -215,46 +216,50 @@ async fn main(args: &[usize]) {
             let get_k_end = kvmclock::time_since_boot();
 
             match message {
-                proto::Message::Continuation(proto::Continuation { continuation_size: _,  data }) => {
-                let k_decompress_init = kvmclock::time_since_boot();
-                let decompressed = decompress_size_prepended(&data).unwrap();
-                let k_decompress_end = kvmclock::time_since_boot();
-                match postcard::from_bytes(&decompressed).unwrap() {
-                    Value::Function(k) => {
-                        let p = Proc::from_function(
-                            k,
-                            ProcState {
-                                ns: shared_ns.clone(),
-                                env: Env::default().into(),
-                                fds: RwLock::new(Descriptors::new()).into(),
-                                cwd: PathBuf::from("/".to_owned()).into(),
-                                host: Arc::new(tcp_port),
-                            },
-                        )
-                        .expect("Failed to create Proc from received Function");
-                        let k_decode_end = kvmclock::time_since_boot();
+                proto::Message::Continuation(proto::Continuation {
+                    continuation_size: _,
+                    data,
+                }) => {
+                    let k_decompress_init = kvmclock::time_since_boot();
+                    let decompressed = decompress_size_prepended(&data).unwrap();
+                    let k_decompress_end = kvmclock::time_since_boot();
+                    match postcard::from_bytes(&decompressed).unwrap() {
+                        Value::Function(k) => {
+                            let p = Proc::from_function(
+                                k,
+                                ProcState {
+                                    ns: shared_ns.clone(),
+                                    env: Env::default().into(),
+                                    fds: RwLock::new(Descriptors::new()).into(),
+                                    cwd: PathBuf::from("/".to_owned()).into(),
+                                    host: Arc::new(tcp_port),
+                                },
+                            )
+                            .expect("Failed to create Proc from received Function");
+                            let k_decode_end = kvmclock::time_since_boot();
 
-                        let exitcode = p.run([]).await;
+                            let exitcode = p.run([]).await;
 
-                        let run_k_end_time = kvmclock::time_since_boot();
+                            let run_k_end_time = kvmclock::time_since_boot();
 
-                        log::info!(
-                            "TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                            (get_k_end - get_k_init).as_micros(),
-                            (k_decompress_end - k_decompress_init).as_micros(),
-                            (k_decode_end - k_decompress_end).as_micros(),
-                            (run_k_end_time - k_decode_end).as_micros()
-                        );
+                            log::info!(
+                                "TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                                (get_k_end - get_k_init).as_micros(),
+                                (k_decompress_end - k_decompress_init).as_micros(),
+                                (k_decode_end - k_decompress_end).as_micros(),
+                                (run_k_end_time - k_decode_end).as_micros()
+                            );
 
-                        log::info!("exitcode: {exitcode}");
-                    },
-                    _ => {
-                        log::error!("Expected Function value in Continuation, got something else");
+                            log::info!("exitcode: {exitcode}");
+                        }
+                        _ => {
+                            log::error!(
+                                "Expected Function value in Continuation, got something else"
+                            );
+                        }
                     }
                 }
-            
-                },
-                proto::Message::FileRequest(proto::FileRequest{file_path}) => {
+                proto::Message::FileRequest(proto::FileRequest { file_path }) => {
                     log::info!("Received File Request for path {}", file_path);
                     // send back the requested file data
                     let mut file = shared_ns
@@ -263,7 +268,7 @@ async fn main(args: &[usize]) {
                         .unwrap()
                         .as_file()
                         .unwrap();
-                    
+
                     // TODO(kmohr) let's just encode the file size instead of reading in chunks like this
                     let mut file_data = Vec::new();
                     let mut buffer = [0u8; 4096];
@@ -286,10 +291,10 @@ async fn main(args: &[usize]) {
                     data_file.write(&response).await.unwrap();
                     log::info!("msg size: {}", response.len());
                     log::info!("Sent file response for {}", file_path);
-                },
+                }
                 _ => {
                     log::error!("Expected Continuation or FileRequest message, got something else");
-                } 
+                }
             }
         }
     } else {
@@ -299,7 +304,11 @@ async fn main(args: &[usize]) {
         let env = Env::default();
         env.set(
             "CONTINUATION_SENDING_ENABLED",
-            if disable_continuation_sending { "0" } else { "1" },
+            if disable_continuation_sending {
+                "0"
+            } else {
+                "1"
+            },
         );
 
         for _ in 0..100 {
