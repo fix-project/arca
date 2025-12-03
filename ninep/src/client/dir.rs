@@ -1,7 +1,5 @@
 use crate::client::file::File9P;
-use crate::wire;
-use futures::{StreamExt, stream::BoxStream};
-use serde::Deserialize;
+use futures::stream::BoxStream;
 use vfs::path::Component;
 
 use super::*;
@@ -25,72 +23,7 @@ impl Dir for Dir9P {
     }
 
     async fn readdir(&self) -> Result<BoxStream<'_, Result<DirEnt>>> {
-        log::info!("readdir called!!!");
-        //  A client can list the contents of a directory by reading it, as if it were any other file.
-        let tag = self.conn.tag();
-        let fid = self.fid;
-
-        // check that im actually a dir
-        if !self.qid.flags.contains(Flag::Directory) {
-            return Err(Error::from(ErrorKind::NotADirectory));
-        }
-
-        log::info!("qid : {:?}", self.qid);
-
-        send!(self.conn; {data, ..} <- Read {
-            tag,
-            fid,
-            offset: 0,
-            count: u32::MAX,
-        });
-
-        log::info!("first 256 bytes = {:?}", &data[..]);
-
-        let mut entries = Vec::new();
-        let mut offset = 0;
-
-        while offset < data.len() {
-            if offset + 2 > data.len() {
-                break; // Not enough data for size field
-            }
-
-            // Read the size of this entry
-            let size = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-
-            log::info!(
-                "Parsing directory entry of size {}, data len is {} with offset {}",
-                size,
-                data.len(),
-                offset
-            );
-
-            offset += 2; // Move past the size field
-            if offset + size > data.len() {
-                break; // Entry extends beyond available data
-            }
-
-            // Use the wire deserializer for this entry
-            let entry_data = &data[offset..offset + size];
-            log::info!("Entry data: {:?}", entry_data);
-            log::info!("entry data len: {}", entry_data.len());
-            match wire::from_bytes_with_len::<types::Stat>(entry_data) {
-                Ok(stat) => {
-                    log::info!("Wire deserializer succeeded for entry: {:?}", stat);
-                    // let is_dir = (stat.mode & 0x80000000) != 0; // DMDIR flag
-                    entries.push(DirEnt {
-                        name: stat.name,
-                        dir: true, // TODO(kmohr)
-                    });
-                }
-                Err(e) => {
-                    log::warn!("Wire deserializer failed,: {:?}", e);
-                }
-            }
-
-            offset += size;
-        }
-
-        Ok(futures::stream::iter(entries.into_iter().map(Ok)).boxed())
+        todo!();
     }
 
     async fn create(&self, name: &str, create: Create, open: Open) -> Result<Object> {
