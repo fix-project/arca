@@ -28,27 +28,20 @@ mod table;
 use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
-#[cfg(feature = "ablation")]
-use crate::tcpserver::AblatedClient;
-#[cfg(not(feature = "ablation"))]
-use crate::tcpserver::ContinuationClient;
+use crate::tcpserver;
 
 pub struct Proc {
     f: Function,
     pid: u64,
     state: Arc<ProcState>,
-    #[cfg(feature = "ablation")]
-    handler: Arc<AblatedClient>,
-    #[cfg(not(feature = "ablation"))]
-    handler: Arc<ContinuationClient>,
+    handler: Arc<tcpserver::Client>,
 }
 
 impl Proc {
     pub fn new(
         elf: &[u8],
         state: ProcState,
-        #[cfg(feature = "ablation")] handler: Arc<AblatedClient>,
-        #[cfg(not(feature = "ablation"))] handler: Arc<ContinuationClient>,
+        handler: Arc<tcpserver::Client>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
@@ -65,8 +58,7 @@ impl Proc {
     pub fn from_function(
         function: Function,
         state: ProcState,
-        #[cfg(feature = "ablation")] handler: Arc<AblatedClient>,
-        #[cfg(not(feature = "ablation"))] handler: Arc<ContinuationClient>,
+        handler: Arc<tcpserver::Client>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = function;
         let state = Arc::new(state);

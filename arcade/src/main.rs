@@ -242,23 +242,7 @@ async fn main(args: &[usize]) {
         let shared_ns = Arc::new(ns);
         let shared_port = Arc::new(tcp_port);
 
-        let client = {
-            #[cfg(feature = "ablation")]
-            {
-                use crate::tcpserver::AblatedClient;
-
-                AblatedClient::new(client_conn)
-            }
-
-            #[cfg(not(feature = "ablation"))]
-            {
-                use crate::tcpserver::ContinuationClient;
-
-                ContinuationClient::new(client_conn)
-            }
-        };
-
-        #[cfg(feature = "ablation")]
+        let client = tcpserver::Client::new(client_conn);
         {
             let client = client.clone();
             kernel::rt::spawn(async move { client.run().await });
