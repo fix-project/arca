@@ -5,7 +5,7 @@ use vfs::{File, Open};
 
 use crate::proc::Namespace;
 
-pub async fn connect_to(ns: &Arc<Namespace>, addr: IpAddr) -> Result<Box<dyn File>, ()> {
+pub async fn connect_to(ns: &Namespace, addr: IpAddr) -> Result<Box<dyn File>, ()> {
     let tcp_ctl_result = ns.walk("/net/tcp/clone", vfs::Open::ReadWrite).await;
     let mut tcp_ctl = match tcp_ctl_result {
         Ok(obj) => match obj.as_file() {
@@ -64,7 +64,7 @@ pub async fn connect_to(ns: &Arc<Namespace>, addr: IpAddr) -> Result<Box<dyn Fil
     Ok(data_file)
 }
 
-pub async fn listen_on(ns: &Arc<Namespace>, addr: IpAddr) -> Result<String, ()> {
+pub async fn listen_on(ns: &Namespace, addr: IpAddr) -> Result<String, ()> {
     // Get id from /tcp/clone
     let mut tcp_ctl = ns
         .walk("/net/tcp/clone", Open::ReadWrite)
@@ -101,7 +101,7 @@ pub async fn listen_on(ns: &Arc<Namespace>, addr: IpAddr) -> Result<String, ()> 
 }
 
 pub async fn get_one_incoming_connection(
-    ns: &Arc<Namespace>,
+    ns: &Namespace,
     listen_path: String,
 ) -> Result<Box<dyn File>, ()> {
     log::info!("Waiting for connections...");
@@ -122,7 +122,7 @@ pub async fn get_one_incoming_connection(
     log::info!("New connection accepted: {}", id);
 
     // Get data file for the accepted connection
-    let mut data_file = ns
+    let data_file = ns
         .walk(&data_path, Open::ReadWrite)
         .await
         .unwrap()

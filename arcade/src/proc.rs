@@ -14,6 +14,7 @@ use common::ipaddr::IpAddr;
 use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
+#[cfg(not(feature = "ablation"))]
 use lz4_flex::block::compress_prepend_size;
 pub use namespace::Namespace;
 use vfs::path::Path;
@@ -27,32 +28,55 @@ mod table;
 use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
+#[cfg(feature = "ablation")]
+use crate::tcpserver::AblatedClient;
+#[cfg(not(feature = "ablation"))]
+use crate::tcpserver::ContinuationClient;
+
 pub struct Proc {
     f: Function,
     pid: u64,
     state: Arc<ProcState>,
+    #[cfg(feature = "ablation")]
+    handler: Arc<AblatedClient>,
+    #[cfg(not(feature = "ablation"))]
+    handler: Arc<ContinuationClient>,
 }
 
 impl Proc {
     pub fn new(
         elf: &[u8],
         state: ProcState,
+        #[cfg(feature = "ablation")] handler: Arc<AblatedClient>,
+        #[cfg(not(feature = "ablation"))] handler: Arc<ContinuationClient>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
-        let p = Proc { f, pid, state };
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler,
+        };
         Ok(p)
     }
 
     pub fn from_function(
         function: Function,
         state: ProcState,
+        #[cfg(feature = "ablation")] handler: Arc<AblatedClient>,
+        #[cfg(not(feature = "ablation"))] handler: Arc<ContinuationClient>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = function;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
-        let p = Proc { f, pid, state };
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler,
+        };
         Ok(p)
     }
 
@@ -100,132 +124,43 @@ impl Proc {
                         // TODO this is not the right place for all this logic
                         // Figure out which machine the file is on
                         // filenames will be of the form "hostname:port/path/to/file"
-                        let tcp_init = kvmclock::time_since_boot();
                         let s = &str::from_utf8(path).unwrap();
                         let path_p = Path::new(s);
                         let (host, filename) = path_p.split();
                         let host_ip: IpAddr = host.try_into().unwrap();
                         if host_ip != *self.state.host {
-                            // Extract TCP connection setup
-                            let setup_tcp_connection = || async {
-                                // Get a new TCP connection
-                                let tcp_ctl_result = self
-                                    .state
-                                    .ns
-                                    .walk("/net/tcp/clone", vfs::Open::ReadWrite)
-                                    .await;
-                                let mut tcp_ctl = match tcp_ctl_result {
-                                    Ok(obj) => match obj.as_file() {
-                                        Ok(file) => file,
-                                        Err(_) => {
-                                            log::error!("Failed to get TCP control file");
-                                            return Err(());
-                                        }
-                                    },
-                                    Err(e) => {
-                                        log::error!("Failed to walk to /net/tcp/clone: {:?}", e);
-                                        return Err(());
-                                    }
-                                };
-
-                                // Read the connection ID
-                                let mut id_buf = [0u8; 32];
-                                let size = match tcp_ctl.read(&mut id_buf).await {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        log::error!("Failed to read connection ID: {:?}", e);
-                                        return Err(());
-                                    }
-                                };
-                                let conn_id = match core::str::from_utf8(&id_buf[..size]) {
-                                    Ok(s) => s.trim(),
-                                    Err(_) => {
-                                        log::error!("Invalid UTF-8 in connection ID");
-                                        return Err(());
-                                    }
-                                };
-
-                                // Connect to localhost:11212
-                                let connect_cmd = alloc::format!("connect 127.0.0.1:11212\n");
-                                if let Err(e) = tcp_ctl.write(connect_cmd.as_bytes()).await {
-                                    log::error!("Failed to send connect command: {:?}", e);
-                                    return Err(());
-                                }
-
-                                // Get the data file for this connection
-                                let data_path = alloc::format!("/net/tcp/{}/data", conn_id);
-                                let data_file = match self
-                                    .state
-                                    .ns
-                                    .walk(&data_path, vfs::Open::ReadWrite)
-                                    .await
-                                {
-                                    Ok(obj) => match obj.as_file() {
-                                        Ok(file) => file,
-                                        Err(_) => {
-                                            log::error!("Failed to get data file");
-                                            return Err(());
-                                        }
-                                    },
-                                    Err(e) => {
-                                        log::error!("Failed to walk to data path: {:?}", e);
-                                        return Err(());
-                                    }
-                                };
-
-                                Ok(data_file)
-                            };
-
-                            // Handle the two different cases
-                            let continuation_sending_enabled = self
-                                .state
-                                .env
-                                .get("CONTINUATION_SENDING_ENABLED")
-                                .map(|v| v == "1")
-                                .unwrap_or(true);
-
-                            if !continuation_sending_enabled {
-                                // File request path - returns a continuation with file descriptor
-                                let handle_file_request = || async {
-                                    let mut data_file =
-                                        setup_tcp_connection().await.map_err(|_| 1u8)?;
-
-                                    log::info!(
-                                        "continuation sending disabled, requesting the file instead"
-                                    );
-
-                                    // ask the other server for the file
-                                    let mut msg = alloc::vec![b'R'];
-                                    msg.extend_from_slice(filename.as_bytes());
-                                    data_file.write(&msg).await.unwrap();
-
-                                    // read the response
-                                    let (message, _) =
-                                        crate::proto::read_request(data_file).await.unwrap();
-                                    let file_response = match message {
-                                        crate::proto::Message::FileResponse(response) => response,
-                                        _ => panic!("Expected FileResponse, got something else"),
-                                    };
-                                    log::info!(
-                                        "Received file of size {} bytes",
-                                        file_response.file_size
-                                    );
-
-                                    // Create the file and return file descriptor
-                                    let mut new_file = vfs::MemFile::default();
-                                    new_file.write(&file_response.file_data).await.unwrap();
-                                    new_file.seek(vfs::SeekFrom::Start(0)).await.unwrap();
-                                    let fd = self
-                                        .state
-                                        .fds
-                                        .lock()
-                                        .insert(FileDescriptor::File(new_file.boxed()));
-
-                                    Ok::<usize, u8>(fd)
-                                };
+                            #[cfg(feature = "ablation")]
+                            {
+                                use alloc::string::ToString;
 
                                 let tcp_init = kvmclock::time_since_boot();
-                                let file_req = handle_file_request().await;
+
+                                log::info!("Sending File Request");
+
+                                let f = self
+                                    .handler
+                                    .request_file(filename.to_string())
+                                    .await
+                                    .expect("Failed to send File Request");
+
+                                log::info!("Sent File Request");
+
+                                let data = f.await;
+
+                                log::info!("Received file of size {} bytes", data.len());
+
+                                // Create the file and return file descriptor
+                                let mut new_file = vfs::MemFile::default();
+                                new_file.write(data.as_slice()).await.unwrap();
+                                new_file.seek(vfs::SeekFrom::Start(0)).await.unwrap();
+                                let fd = self
+                                    .state
+                                    .fds
+                                    .lock()
+                                    .insert(FileDescriptor::File(new_file.boxed()));
+
+                                let file_req = Ok::<usize, u8>(fd);
+
                                 let tcp_end = kvmclock::time_since_boot();
 
                                 log::info!(
@@ -237,65 +172,45 @@ impl Proc {
                                     Ok(result) => k.apply(Value::Word(Word::new(result as u64))),
                                     Err(_) => return 1,
                                 }
-                            } else {
-                                // Continuation sending path - sends continuation and exits process
-                                let handle_continuation = || async {
-                                    let mut data_file =
-                                        setup_tcp_connection().await.map_err(|_| ())?;
+                            }
 
-                                    log::info!("sending continuation to open file remotely");
+                            #[cfg(not(feature = "ablation"))]
+                            {
+                                log::info!("sending continuation to open file remotely");
 
-                                    // TODO(kmohr): hmmmm this is so slow...
-                                    let k_create_init = kvmclock::time_since_boot();
-                                    let resumed_f = Function::symbolic("open")
-                                        .apply(Value::Blob(path.clone()))
-                                        .apply(Value::Word(flags))
-                                        .apply(Value::Word(mode))
-                                        .apply(Value::Function(k));
+                                // TODO(kmohr): hmmmm this is so slow...
+                                let k_create_init = kvmclock::time_since_boot();
+                                let resumed_f = Function::symbolic("open")
+                                    .apply(Value::Blob(path.clone()))
+                                    .apply(Value::Word(flags))
+                                    .apply(Value::Word(mode))
+                                    .apply(Value::Function(k));
 
-                                    let val = Value::Function(resumed_f);
+                                let val = Value::Function(resumed_f);
 
-                                    let serialize_init = kvmclock::time_since_boot();
-                                    let msg = postcard::to_allocvec(&val).unwrap();
-                                    let serialize_end = kvmclock::time_since_boot();
-                                    let k_msg = compress_prepend_size(&msg);
-                                    let compress_end = kvmclock::time_since_boot();
+                                let serialize_init = kvmclock::time_since_boot();
+                                let msg = postcard::to_allocvec(&val).unwrap();
+                                let serialize_end = kvmclock::time_since_boot();
+                                let k_msg = compress_prepend_size(&msg);
+                                let compress_end = kvmclock::time_since_boot();
 
-                                    // the msg should start with 'C' and the continuation size as a u32
-                                    let mut msg = alloc::vec![b'C'];
-                                    let size_bytes = (k_msg.len() as u32).to_be_bytes();
-                                    msg.extend_from_slice(&size_bytes);
-                                    msg.extend_from_slice(&k_msg);
+                                let size_bytes = msg.len();
+                                let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
 
-                                    // check the first couple bytes
-                                    log::info!(
-                                        "Prepared continuation message, first bytes: {:02X?}",
-                                        &msg[..core::cmp::min(16, msg.len())]
-                                    );
+                                let res = self.handler.request_to_run(k_msg).await;
 
-                                    let size_bytes = msg.len();
-                                    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-                                    log::info!(
-                                        "PERF\ntcp time: {} us\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
-                                        (k_create_init - tcp_init).as_micros(),
-                                        (serialize_init - k_create_init).as_micros(),
-                                        (serialize_end - serialize_init).as_micros(),
-                                        (compress_end - serialize_end).as_micros(),
-                                        size_bytes,
-                                        size_mb
-                                    );
+                                log::info!(
+                                    "PERF\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
+                                    (serialize_init - k_create_init).as_micros(),
+                                    (serialize_end - serialize_init).as_micros(),
+                                    (compress_end - serialize_end).as_micros(),
+                                    size_bytes,
+                                    size_mb
+                                );
 
-                                    if let Err(e) = data_file.write(&msg).await {
-                                        log::error!("Failed to send msg: {:?}", e);
-                                        return Err(());
-                                    }
-
-                                    Ok(())
-                                };
-
-                                match handle_continuation().await {
-                                    Ok(_) => return 0,  // Successfully sent continuation, exit process
-                                    Err(_) => return 1, // Error occurred
+                                match res {
+                                    Ok(_) => return 0,
+                                    Err(_) => return 1,
                                 }
                             }
                         } else {
@@ -357,6 +272,7 @@ impl Proc {
                                 fds: RwLock::new(fds).into(),
                                 ..(*self.state).clone()
                             }),
+                            handler: self.handler.clone(),
                         };
                         kernel::rt::spawn(async move { new.resume().await });
                         k.apply(fix(Ok(pid as u32)))
