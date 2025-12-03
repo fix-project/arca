@@ -160,7 +160,6 @@ pub extern "C" fn _rsstart() -> ! {
 
     let alloc_start = unsafe { _rdtsc() };
     let mut buf = alloc::vec![0; file_size.read() as usize];
-    // let mut buf = alloc::vec![0; 2332861];
     let alloc_end = unsafe { _rdtsc() };
 
     let _n = ppm_data
