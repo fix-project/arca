@@ -22,7 +22,6 @@ use ninep::Client;
 use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
-mod proto;
 mod vsock;
 
 mod proc;
