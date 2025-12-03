@@ -165,22 +165,34 @@ impl AblatedClient {
                 Err(_) => return Ok(()),
                 Ok(future) => {
                     let msg: Message = {
-                        log::info!("Locking to read size");
                         let mut buf = [0u8; 8];
-                        self.f
-                            .lock()
-                            .read_exact(&mut buf)
-                            .await
-                            .expect("Failed to read size");
+                        {
+                            let mut readbuf = buf.as_mut_slice();
+                            while !readbuf.is_empty() {
+                                let n = self
+                                    .f
+                                    .lock()
+                                    .read(readbuf)
+                                    .await
+                                    .expect("Failed to read msg size");
+                                readbuf = &mut readbuf[n..];
+                            }
+                        }
                         let len = usize::from_ne_bytes(buf);
 
-                        log::info!("Locking to read msg content");
                         let mut message_buf = vec![0u8; len];
-                        self.f
-                            .lock()
-                            .read_exact(&mut message_buf)
-                            .await
-                            .expect("Failed to read content");
+                        {
+                            let mut message_readbuf = message_buf.as_mut_slice();
+                            while !message_readbuf.is_empty() {
+                                let n = self
+                                    .f
+                                    .lock()
+                                    .read(message_readbuf)
+                                    .await
+                                    .expect("Failed to read content");
+                                message_readbuf = &mut message_readbuf[n..];
+                            }
+                        }
                         log::info!("Read msg content");
 
                         postcard::from_bytes(message_buf.as_slice()).unwrap()
