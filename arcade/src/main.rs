@@ -14,7 +14,6 @@ use ::vfs::*;
 use alloc::format;
 use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
-use core::str::FromStr;
 use kernel::{kvmclock, prelude::*};
 use ninep::Client;
 // frame format isn't supported in no_std env
@@ -62,8 +61,9 @@ async fn main(args: &[usize]) {
 
     let cid = args[0] as u64;
     let host_listener_port = args[1];
-    let tcp_port = IpAddr::from(args[2] as u64);
-    let is_listener = args[3] != 0;
+    let iam_ipaddr = IpAddr::from(args[2] as u64);
+    let peer_ipaddr = IpAddr::from(args[3] as u64);
+    let is_listener = args[4] != 0;
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -149,7 +149,7 @@ async fn main(args: &[usize]) {
 
     // Setup the tcp connection between the **two** machines
     let (server_conn, client_conn) = if is_listener {
-        let listen_path = tcputil::listen_on(&ns, tcp_port)
+        let listen_path = tcputil::listen_on(&ns, iam_ipaddr)
             .await
             .expect("Failed to listen on port");
         let server_conn = tcputil::get_one_incoming_connection(&ns, listen_path.clone())
@@ -160,10 +160,10 @@ async fn main(args: &[usize]) {
             .expect("Failed to get incoming connection");
         (server_conn, client_conn)
     } else {
-        let client_conn = tcputil::connect_to(&ns, IpAddr::from_str("127.0.0.1:11212").unwrap())
+        let client_conn = tcputil::connect_to(&ns, peer_ipaddr)
             .await
             .expect("Failed to connect");
-        let server_conn = tcputil::connect_to(&ns, IpAddr::from_str("127.0.0.1:11212").unwrap())
+        let server_conn = tcputil::connect_to(&ns, peer_ipaddr)
             .await
             .expect("Failed to connect");
         (server_conn, client_conn)
@@ -210,7 +210,7 @@ async fn main(args: &[usize]) {
                                 env: Env::default().into(),
                                 fds: RwLock::new(Descriptors::new()).into(),
                                 cwd: PathBuf::from("/".to_owned()).into(),
-                                host: Arc::new(tcp_port),
+                                host: Arc::new(iam_ipaddr),
                             },
                             client.clone(),
                         )
@@ -240,7 +240,7 @@ async fn main(args: &[usize]) {
         }
     } else {
         let shared_ns = Arc::new(ns);
-        let shared_port = Arc::new(tcp_port);
+        let shared_port = Arc::new(iam_ipaddr);
 
         let client = tcpserver::Client::new(client_conn);
         {

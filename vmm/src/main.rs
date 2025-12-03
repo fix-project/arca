@@ -48,10 +48,17 @@ fn main() -> anyhow::Result<()> {
                 .required(false),
         )
         .arg(
-            Arg::new("host")
-                .long("host")
-                .help("IP address/port number for TCP listener in the guest VM")
+            Arg::new("iam")
+                .long("iam")
+                .help("Self IP address")
                 .default_value("127.0.0.1:11211")
+                .required(false),
+        )
+        .arg(
+            Arg::new("peer")
+                .long("peer")
+                .help("Peer IP address")
+                .default_value("127.0.0.1:11212")
                 .required(false),
         )
         .arg(
@@ -76,7 +83,8 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3);
 
-    let host = matches.get_one::<String>("host").unwrap();
+    let iam = matches.get_one::<String>("iam").unwrap();
+    let peer = matches.get_one::<String>("peer").unwrap();
 
     let is_listener = matches.get_flag("listener");
 
@@ -118,23 +126,24 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    let ipaddr = IpAddr::try_from(host.as_str()).unwrap();
-    log::info!("Guest VM will connect to host at {}", ipaddr.port);
-    let ipaddr: u64 = u64::from(IpAddr::try_from(host.as_str()).unwrap());
+    let iam_ipaddr: u64 = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
+    let peer_ipaddr: u64 = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
 
     log::info!(
-        "Running {} on VM cid={} and hostname {} with {} core(s)",
+        "Running {} on VM cid={} with {} core(s). I am {} and peer is {}",
         if run_fix { "fix" } else { "arcade" },
         cid,
-        host,
-        smp
+        smp,
+        iam,
+        peer,
     );
 
     // XXX: this will break if usize is smaller than u64
     runtime.run(&[
         cid,
         host_listener_port as usize,
-        ipaddr as usize,
+        iam_ipaddr as usize,
+        peer_ipaddr as usize,
         is_listener as usize,
     ]);
 
