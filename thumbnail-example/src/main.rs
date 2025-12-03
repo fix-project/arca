@@ -140,16 +140,26 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
-    // TODO(kmohr) take this input file path as argument
+    let filename: Blob = os::argument()
+        .try_into()
+        .expect("could not get filename argument");
+    let mut filename_str = [0; 256];
+    let filename_size = filename.read(0, &mut filename_str[..]);
+    let filename_str = core::str::from_utf8(&filename_str[..filename_size])
+        .expect("could not convert filename to str");
+
+    let file_size: Word = os::argument()
+        .try_into()
+        .expect("could not get file size argument");
+
     let mut ppm_data = File::options()
         .read(true)
-        .open("127.0.0.1:11212/data/falls_1.ppm")
+        .open(filename_str)
         .expect("could not open ppm file");
     // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
     let alloc_start = unsafe { _rdtsc() };
-    // let mut buf = alloc::vec![0; 12814240];
-    let mut buf = alloc::vec![0; 2332861];
+    let mut buf = alloc::vec![0; file_size.read() as usize];
     let alloc_end = unsafe { _rdtsc() };
 
     let _n = ppm_data
