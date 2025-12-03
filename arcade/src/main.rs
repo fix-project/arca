@@ -323,10 +323,18 @@ async fn main(args: &[usize]) {
             },
         );
 
-        for _ in 0..10 {
+        for _ in 0..1 {
             let start_time = kvmclock::time_since_boot();
-            let p = Proc::new(
-                THUMBNAILER,
+
+            let thumbnailer_function =
+                common::elfloader::load_elf(THUMBNAILER).expect("Failed to load ELF as Function");
+            // TODO(kmohr) create a generator for this
+            let image_filename =
+                arca::Value::Blob(arca::Blob::from("127.0.0.1:11212/data/falls_1.ppm"));
+            let f = thumbnailer_function.apply(image_filename);
+
+            let p = Proc::from_function(
+                f,
                 ProcState {
                     ns: shared_ns.clone(),
                     env: env.clone().into(),
@@ -338,6 +346,7 @@ async fn main(args: &[usize]) {
             .expect("Failed to create Proc from ELF");
             let exitcode = p.run([]).await;
             let end_time = kvmclock::time_since_boot();
+
             log::info!(
                 "TIMING: begin k: {} us",
                 (end_time - start_time).as_micros()
