@@ -1,7 +1,6 @@
 // TODO(kmohr) maybe try to make this pretty later
 
 use alloc::{boxed::Box, string::String, string::ToString, vec::Vec};
-use ninep::client::file;
 use vfs::File;
 
 #[derive(Debug, Clone, PartialEq)]
