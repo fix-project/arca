@@ -251,6 +251,10 @@ impl ContinuationClient {
         write_message_to_f(&mut self.f.lock(), &m).await?;
         Ok(())
     }
+
+    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct TcpServer<H: MessageServer + Send> {
@@ -281,3 +285,8 @@ impl<H: MessageServer + Send> TcpServer<H> {
         }
     }
 }
+
+#[cfg(feature = "ablation")]
+pub type Client = AblatedClient;
+#[cfg(not(feature = "ablation"))]
+pub type Client = ContinuationClient;
