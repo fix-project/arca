@@ -38,7 +38,6 @@ pub async fn connect_to(ns: &Namespace, addr: IpAddr) -> Result<Box<dyn File>, (
         }
     };
 
-    // Connect to localhost:11212
     let connect_cmd = alloc::format!("connect {}\n", addr);
     if let Err(e) = tcp_ctl.write(connect_cmd.as_bytes()).await {
         log::error!("Failed to send connect command: {:?}", e);
