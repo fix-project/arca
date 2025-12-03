@@ -17,7 +17,6 @@ use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*};
 use ninep::Client;
 // frame format isn't supported in no_std env
-#[cfg(not(feature = "ablation"))]
 use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
@@ -169,99 +168,100 @@ async fn main(args: &[usize]) {
         (server_conn, client_conn)
     };
 
-    // Setup Handler
-    if is_listener {
-        // For now, have the listener only reponding to requests
-        // let conn = Arc::new(SpinLock::new(conn));
-        let shared_ns = Arc::new(ns);
-        #[cfg(feature = "ablation")]
-        {
-            // Ablated case
+    let shared_ns = Arc::new(ns);
 
-            use crate::tcpserver::AblatedServer;
-            let server = AblatedServer::new(server_conn, shared_ns);
-            let tcpserver = TcpServer::new(server);
+    // Setup Servers
+    #[cfg(feature = "ablation")]
+    let (tcpserver_handle, continuation_receiver) = {
+        use crate::tcpserver::AblatedServer;
+        let server = AblatedServer::new(server_conn, shared_ns.clone());
+        let tcpserver = TcpServer::new(server);
+        let handle = kernel::rt::spawn(async move { tcpserver.run().await });
 
-            let _ = tcpserver.run().await;
-        }
+        let (sender, receiver) = channel::unbounded::<Option<Vec<u8>>>();
+        sender
+            .send_blocking(None)
+            .expect("Failed to close sender side");
+        (handle, receiver)
+    };
 
-        #[cfg(not(feature = "ablation"))]
-        {
-            // Nonablate case
-            use crate::tcpserver::{ContinuationClient, ContinuationServer};
-            let (sender, receiver) = channel::unbounded();
-            let server = ContinuationServer::new(server_conn, sender);
-            let tcpserver = TcpServer::new(server);
-            let client = ContinuationClient::new(client_conn);
+    #[cfg(not(feature = "ablation"))]
+    let (tcpserver_handle, continuation_receiver) = {
+        use crate::tcpserver::ContinuationServer;
+        let (sender, receiver) = channel::unbounded();
+        let server = ContinuationServer::new(server_conn, sender);
+        let tcpserver = TcpServer::new(server);
+        let handle = kernel::rt::spawn(async move { tcpserver.run().await });
+        (handle, receiver)
+    };
 
-            kernel::rt::spawn(async move { tcpserver.run().await });
+    // Setup Clients
+    let (client_tx, client_rx) = tcpserver::make_client(client_conn);
+    let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
 
-            loop {
-                let data: Vec<u8> = receiver.recv().await.unwrap();
-                let k_decompress_init = kvmclock::time_since_boot();
-                let decompressed = decompress_size_prepended(&data).unwrap();
-                let k_decompress_end = kvmclock::time_since_boot();
-                match postcard::from_bytes(&decompressed).unwrap() {
-                    Value::Function(k) => {
-                        let p = Proc::from_function(
-                            k,
-                            ProcState {
-                                ns: shared_ns.clone(),
-                                env: Env::default().into(),
-                                fds: RwLock::new(Descriptors::new()).into(),
-                                cwd: PathBuf::from("/".to_owned()).into(),
-                                host: Arc::new(iam_ipaddr),
-                            },
-                            client.clone(),
-                        )
-                        .expect("Failed to create Proc from received Function");
-                        let k_decode_end = kvmclock::time_since_boot();
+    // For now, handle all incoming continuation requests on a separate spawned loop
+    let shared_ns_for_continuation = shared_ns.clone();
+    let continuation_handling_handle = kernel::rt::spawn(async move {
+        loop {
+            let req = continuation_receiver.recv().await.unwrap();
+            if req.is_none() {
+                break;
+            }
+            let data = req.unwrap();
 
-                        let exitcode = p.run([]).await;
+            let k_decompress_init = kvmclock::time_since_boot();
+            let decompressed = decompress_size_prepended(&data).unwrap();
+            let k_decompress_end = kvmclock::time_since_boot();
+            match postcard::from_bytes(&decompressed).unwrap() {
+                Value::Function(k) => {
+                    let p = Proc::from_remote_function(
+                        k,
+                        ProcState {
+                            ns: shared_ns_for_continuation.clone(),
+                            env: Env::default().into(),
+                            fds: RwLock::new(Descriptors::new()).into(),
+                            cwd: PathBuf::from("/".to_owned()).into(),
+                            host: Arc::new(iam_ipaddr),
+                        },
+                    )
+                    .expect("Failed to create Proc from received Function");
+                    let k_decode_end = kvmclock::time_since_boot();
 
-                        let run_k_end_time = kvmclock::time_since_boot();
+                    let exitcode = p.run([]).await;
 
-                        log::info!(
-                            //"TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                            "TIMING:\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                            //(get_k_end - get_k_init).as_micros(),
-                            (k_decompress_end - k_decompress_init).as_micros(),
-                            (k_decode_end - k_decompress_end).as_micros(),
-                            (run_k_end_time - k_decode_end).as_micros()
-                        );
+                    let run_k_end_time = kvmclock::time_since_boot();
 
-                        log::info!("exitcode: {exitcode}");
-                    }
-                    _ => {
-                        log::error!("Expected Function value in Continuation, got something else");
-                    }
+                    log::info!(
+                        //"TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                        "TIMING:\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                        //(get_k_end - get_k_init).as_micros(),
+                        (k_decompress_end - k_decompress_init).as_micros(),
+                        (k_decode_end - k_decompress_end).as_micros(),
+                        (run_k_end_time - k_decode_end).as_micros()
+                    );
+
+                    log::info!("exitcode: {exitcode}");
+                }
+                _ => {
+                    log::error!("Expected Function value in Continuation, got something else");
                 }
             }
         }
-    } else {
-        let shared_ns = Arc::new(ns);
-        let shared_port = Arc::new(iam_ipaddr);
+    });
 
-        let client = tcpserver::Client::new(client_conn);
-        {
-            let client = client.clone();
-            kernel::rt::spawn(async move { client.run().await });
-        }
-
-        let env = Env::default();
-
+    if !is_listener {
         for _ in 0..100 {
             let start_time = kvmclock::time_since_boot();
             let p = Proc::new(
                 THUMBNAILER,
                 ProcState {
                     ns: shared_ns.clone(),
-                    env: env.clone().into(),
+                    env: Env::default().into(),
                     fds: RwLock::new(Descriptors::new()).into(),
                     cwd: PathBuf::from("/".to_owned()).into(),
-                    host: shared_port.clone(),
+                    host: iam_ipaddr.into(),
                 },
-                client.clone(),
+                client_tx.clone(),
             )
             .expect("Failed to create Proc from ELF");
             let exitcode = p.run([]).await;
@@ -273,4 +273,13 @@ async fn main(args: &[usize]) {
             log::info!("exitcode: {exitcode}");
         }
     }
+
+    // Close client_tx after main jobs are done
+    let _ = client_tx.close().await;
+    log::info!("Joining client rx");
+    let _ = client_rx_handle.await;
+    log::info!("Joining tcpserver");
+    let _ = tcpserver_handle.await;
+    log::info!("Joining continuation handling");
+    let _ = continuation_handling_handle.await;
 }

@@ -34,14 +34,14 @@ pub struct Proc {
     f: Function,
     pid: u64,
     state: Arc<ProcState>,
-    handler: Arc<tcpserver::Client>,
+    handler: Option<Arc<tcpserver::ClientTx>>,
 }
 
 impl Proc {
     pub fn new(
         elf: &[u8],
         state: ProcState,
-        handler: Arc<tcpserver::Client>,
+        handler: Arc<tcpserver::ClientTx>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
@@ -50,7 +50,7 @@ impl Proc {
             f,
             pid,
             state,
-            handler,
+            handler: Some(handler),
         };
         Ok(p)
     }
@@ -58,7 +58,7 @@ impl Proc {
     pub fn from_function(
         function: Function,
         state: ProcState,
-        handler: Arc<tcpserver::Client>,
+        handler: Arc<tcpserver::ClientTx>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = function;
         let state = Arc::new(state);
@@ -67,7 +67,23 @@ impl Proc {
             f,
             pid,
             state,
-            handler,
+            handler: Some(handler),
+        };
+        Ok(p)
+    }
+
+    pub fn from_remote_function(
+        function: Function,
+        state: ProcState,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
+        let f = function;
+        let state = Arc::new(state);
+        let pid = table::PROCS.allocate(&state);
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler: None,
         };
         Ok(p)
     }
@@ -131,6 +147,8 @@ impl Proc {
 
                                 let f = self
                                     .handler
+                                    .as_ref()
+                                    .expect("Migrated function should not need more continuation handling")
                                     .request_file(filename.to_string())
                                     .await
                                     .expect("Failed to send File Request");
@@ -189,7 +207,7 @@ impl Proc {
                                 let size_bytes = msg.len();
                                 let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
 
-                                let res = self.handler.request_to_run(k_msg).await;
+                                let res = self.handler.as_ref().expect("Migrated function should not need more continuation handling").request_to_run(k_msg).await;
 
                                 log::info!(
                                     "PERF\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",

@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
             Arg::new("listener")
                 .short('l')
                 .long("is-listener")
-                .help("Run as arca listening for continuations")
+                .help("Act as the listencer during connection establishment")
                 .action(ArgAction::SetTrue)
                 .required(false),
         )
