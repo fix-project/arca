@@ -1,6 +1,5 @@
 use core::panic;
 
-use alloc::collections::vec_deque::VecDeque;
 use async_trait::async_trait;
 use kernel::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -51,32 +50,28 @@ async fn write_all(f: &mut Box<dyn File>, mut buf: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-async fn write_message_to_f(
-    f: &Arc<SpinLock<Box<dyn File>>>,
-    message: &Message,
-) -> Result<(), Error> {
+async fn write_message_to_f(f: &mut Box<dyn File>, message: &Message) -> Result<(), Error> {
     let m = postcard::to_allocvec(message).unwrap();
     let buf = m.len().to_ne_bytes();
-    let mut f = f.lock();
-    write_all(&mut f, &buf).await?;
-    write_all(&mut f, m.as_slice()).await?;
+    write_all(f, &buf).await?;
+    write_all(f, m.as_slice()).await?;
     Ok(())
 }
 
 #[async_trait]
-pub trait MessageHandler {
-    async fn process_message(&self, msg: Message) -> Result<(), Error>;
+pub trait MessageServer {
+    async fn process_message(&mut self, msg: Message) -> Result<(), Error>;
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error>;
 }
 
-pub struct AblatedHandler {
-    f: Arc<SpinLock<Box<dyn File>>>,
+pub struct AblatedServer {
+    f: Box<dyn File>,
     shared_ns: Arc<Namespace>,
-    futures: SpinLock<VecDeque<oneshot::Sender<Vec<u8>>>>,
 }
 
 #[async_trait]
-impl MessageHandler for AblatedHandler {
-    async fn process_message(&self, msg: Message) -> Result<(), Error> {
+impl MessageServer for AblatedServer {
+    async fn process_message(&mut self, msg: Message) -> Result<(), Error> {
         match msg {
             Message::FileRequest(FileRequest { file_path }) => {
                 log::info!("Received File Request for path {}", file_path);
@@ -103,34 +98,45 @@ impl MessageHandler for AblatedHandler {
                     }
                 }
 
+                log::info!("Read data {}", file_path);
+
                 let response = Message::FileResponse(FileResponse { file_data });
-                write_message_to_f(&self.f, &response).await?;
+                write_message_to_f(&mut self.f, &response).await?;
+                log::info!("Replied {}", file_path);
                 Ok(())
             }
-            Message::FileResponse(FileResponse { file_data }) => {
-                log::info!("Received File Response");
-
-                self.futures
-                    .lock()
-                    .pop_front()
-                    .expect("Received File Response without matching File Request")
-                    .send(file_data);
-
-                Ok(())
+            Message::FileResponse(_) => {
+                panic!("FileResponse should be handled AblatedClient")
             }
             Message::Continuation(_) => {
                 panic!("Should not receive continuation message in ablated handler")
             }
         }
     }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        self.f.read_exact(buf).await.map_err(|_| Error::VfsError)
+    }
+}
+impl AblatedServer {
+    pub fn new(f: Box<dyn File>, shared_ns: Arc<Namespace>) -> Self {
+        AblatedServer { f, shared_ns }
+    }
 }
 
-impl AblatedHandler {
-    pub fn new(f: Arc<SpinLock<Box<dyn File>>>, shared_ns: Arc<Namespace>) -> Arc<AblatedHandler> {
-        Arc::new(AblatedHandler {
-            f,
-            shared_ns,
-            futures: SpinLock::new(VecDeque::new()),
+pub struct AblatedClient {
+    f: SpinLock<Box<dyn File>>,
+    future_send: channel::Sender<oneshot::Sender<Vec<u8>>>,
+    future_recv: channel::Receiver<oneshot::Sender<Vec<u8>>>,
+}
+
+impl AblatedClient {
+    pub fn new(f: Box<dyn File>) -> Arc<Self> {
+        let (future_send, future_recv) = channel::unbounded();
+        Arc::new(Self {
+            f: SpinLock::new(f),
+            future_send,
+            future_recv,
         })
     }
 
@@ -141,25 +147,72 @@ impl AblatedHandler {
         let m = Message::FileRequest(FileRequest { file_path });
         let (sender, receiver) = oneshot::channel();
         {
-            let mut guard = self.futures.lock();
-            guard.push_back(sender);
-            write_message_to_f(&self.f, &m).await?;
+            log::info!("Try to lock on self.futures");
+            let mut guard = self.f.lock();
+            write_message_to_f(&mut guard, &m).await?;
+            self.future_send
+                .send_blocking(sender)
+                .expect("Failed to send blocking");
         }
         Ok(receiver)
     }
+
+    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+        loop {
+            let x = self.future_recv.recv().await;
+
+            match x {
+                Err(_) => return Ok(()),
+                Ok(future) => {
+                    let msg: Message = {
+                        log::info!("Locking to read size");
+                        let mut buf = [0u8; 8];
+                        self.f
+                            .lock()
+                            .read_exact(&mut buf)
+                            .await
+                            .expect("Failed to read size");
+                        let len = usize::from_ne_bytes(buf);
+
+                        log::info!("Locking to read msg content");
+                        let mut message_buf = vec![0u8; len];
+                        self.f
+                            .lock()
+                            .read_exact(&mut message_buf)
+                            .await
+                            .expect("Failed to read content");
+                        log::info!("Read msg content");
+
+                        postcard::from_bytes(message_buf.as_slice()).unwrap()
+                    };
+
+                    match msg {
+                        Message::FileResponse(FileResponse { file_data }) => {
+                            log::info!("Received File Response");
+                            future.send(file_data);
+                        }
+                        Message::FileRequest(_) => panic!(),
+                        Message::Continuation(_) => panic!(),
+                    }
+                }
+            }
+        }
+    }
 }
 
-pub struct ContinuationHandler {
-    f: Arc<SpinLock<Box<dyn File>>>,
-    continuations: Arc<SpinLock<VecDeque<Vec<u8>>>>,
+pub struct ContinuationServer {
+    f: Box<dyn File>,
+    continuations: channel::Sender<Vec<u8>>,
 }
 
 #[async_trait]
-impl MessageHandler for ContinuationHandler {
-    async fn process_message(&self, msg: Message) -> Result<(), Error> {
+impl MessageServer for ContinuationServer {
+    async fn process_message(&mut self, msg: Message) -> Result<(), Error> {
         match msg {
             Message::Continuation(Continuation { data }) => {
-                self.continuations.lock().push_back(data);
+                self.continuations
+                    .send_blocking(data)
+                    .expect("Failed to send continuation data");
                 Ok(())
             }
             Message::FileResponse(_) => {
@@ -170,50 +223,61 @@ impl MessageHandler for ContinuationHandler {
             }
         }
     }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        self.f.read_exact(buf).await.map_err(|_| Error::VfsError)
+    }
 }
 
-impl ContinuationHandler {
-    pub fn new(
-        f: Arc<SpinLock<Box<dyn File>>>,
-        continuations: Arc<SpinLock<VecDeque<Vec<u8>>>>,
-    ) -> Arc<ContinuationHandler> {
-        Arc::new(ContinuationHandler { f, continuations })
+impl ContinuationServer {
+    pub fn new(f: Box<dyn File>, continuations: channel::Sender<Vec<u8>>) -> ContinuationServer {
+        ContinuationServer { f, continuations }
+    }
+}
+
+pub struct ContinuationClient {
+    f: SpinLock<Box<dyn File>>,
+}
+
+impl ContinuationClient {
+    pub fn new(f: Box<dyn File>) -> Arc<Self> {
+        Arc::new(Self {
+            f: SpinLock::new(f),
+        })
     }
 
     pub async fn request_to_run(&self, data: Vec<u8>) -> Result<(), Error> {
         let m = Message::Continuation(Continuation { data });
-        write_message_to_f(&self.f, &m).await?;
+        write_message_to_f(&mut self.f.lock(), &m).await?;
+        Ok(())
+    }
+
+    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
         Ok(())
     }
 }
 
-pub struct TcpHandler<H: MessageHandler + Send> {
-    f: Arc<SpinLock<Box<dyn File>>>,
-    handler: Arc<H>,
+pub struct TcpServer<H: MessageServer + Send> {
+    handler: H,
 }
 
-impl<H: MessageHandler + Send> TcpHandler<H> {
-    pub fn new(f: Arc<SpinLock<Box<dyn File>>>, handler: Arc<H>) -> Self {
-        Self { f, handler }
+impl<H: MessageServer + Send> TcpServer<H> {
+    pub fn new(handler: H) -> Self {
+        Self { handler }
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
             let msg = {
+                log::info!("Locking to read size");
                 let mut buf = [0u8; 8];
-                self.f
-                    .lock()
-                    .read_exact(&mut buf)
-                    .await
-                    .map_err(|_| Error::VfsError)?;
+                self.handler.read_exact(&mut buf).await?;
                 let len = usize::from_ne_bytes(buf);
 
+                log::info!("Locking to read msg content");
                 let mut message_buf = vec![0u8; len];
-                self.f
-                    .lock()
-                    .read_exact(message_buf.as_mut_slice())
-                    .await
-                    .map_err(|_| Error::VfsError)?;
+                self.handler.read_exact(&mut message_buf).await?;
+                log::info!("Read msg content");
 
                 postcard::from_bytes(message_buf.as_slice()).unwrap()
             };
@@ -221,3 +285,8 @@ impl<H: MessageHandler + Send> TcpHandler<H> {
         }
     }
 }
+
+#[cfg(feature = "ablation")]
+pub type Client = AblatedClient;
+#[cfg(not(feature = "ablation"))]
+pub type Client = ContinuationClient;
