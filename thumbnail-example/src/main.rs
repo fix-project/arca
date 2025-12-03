@@ -148,6 +148,10 @@ pub extern "C" fn _rsstart() -> ! {
     let filename_str = core::str::from_utf8(&filename_str[..filename_size])
         .expect("could not convert filename to str");
 
+    let file_size: Word = os::argument()
+        .try_into()
+        .expect("could not get file size argument");
+
     let mut ppm_data = File::options()
         .read(true)
         .open(filename_str)
@@ -155,7 +159,7 @@ pub extern "C" fn _rsstart() -> ! {
     // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
     let alloc_start = unsafe { _rdtsc() };
-    let mut buf = alloc::vec![0; 12814240];
+    let mut buf = alloc::vec![0; file_size.read() as usize];
     // let mut buf = alloc::vec![0; 2332861];
     let alloc_end = unsafe { _rdtsc() };
 

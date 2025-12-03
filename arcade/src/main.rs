@@ -130,12 +130,12 @@ async fn main(args: &[usize]) {
     let images_dir = remote.attach(None, "", "images").await.unwrap();
     // let dirents: Vec<Result<DirEnt>> = images_dir.readdir().await.unwrap().collect().await;
 
-    // ugh whatever TODO
-    let img_name_size_map = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
+    // TODO: read from the directory instead of hardcoding filenames and sizes
+    let img_names_to_sizes = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
 
     let data_dir = MemDir::default();
-    for (image_name, image_size) in img_name_size_map {
-        let mut img_bytes = vec![0u8; image_size];
+    for (image_name, image_size) in img_names_to_sizes.iter() {
+        let mut img_bytes = vec![0u8; *image_size];
 
         let mut image_file = images_dir
             .walk(image_name, Open::Read)
@@ -323,15 +323,22 @@ async fn main(args: &[usize]) {
             },
         );
 
-        for _ in 0..1 {
+        for _ in 0..10 {
             let start_time = kvmclock::time_since_boot();
 
             let thumbnailer_function =
                 common::elfloader::load_elf(THUMBNAILER).expect("Failed to load ELF as Function");
+
             // TODO(kmohr) create a generator for this
-            let image_filename =
-                arca::Value::Blob(arca::Blob::from("127.0.0.1:11212/data/falls_1.ppm"));
-            let f = thumbnailer_function.apply(image_filename);
+            let image_hostname = "127.0.0.1:11212";
+            let image_filename = "falls_1.ppm";
+            let image_size = img_names_to_sizes[image_filename];
+
+            let filepath = arca::Value::Blob(arca::Blob::from(
+                format!("{}/data/{}", image_hostname, image_filename).as_bytes(),
+            ));
+            let image_filesize = arca::Value::Word(arca::Word::new(image_size as u64));
+            let f = thumbnailer_function.apply(filepath).apply(image_filesize);
 
             let p = Proc::from_function(
                 f,
