@@ -79,7 +79,8 @@ impl<'a> Server<'a> {
             let map = self.map.clone();
             let future = async move {
                 let tag = request.tag();
-                let f = async || {
+                #[allow(clippy::redundant_closure_call)]
+                let mut response: RMessage = (async || {
                     match request {
                         TMessage::Version {
                             tag,
@@ -330,8 +331,8 @@ impl<'a> Server<'a> {
                             unreachable!()
                         }
                     }
-                };
-                let mut response = f().await;
+                })()
+                .await;
                 response.set_tag(tag);
                 log::debug!("-> {response:?}");
                 let response = wire::to_bytes_with_len(response).unwrap();

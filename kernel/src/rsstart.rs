@@ -187,7 +187,7 @@ unsafe fn init_cpu_tls() {
 unsafe fn init_syscalls() {
     // p 175: https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24593.pdf
     crate::msr::wrmsr(0xC0000081, ((0x18 | 0b11) << 48) | (0x08 << 32)); // STAR
-    crate::msr::wrmsr(0xC0000082, syscall_handler as *const () as u64); // LSTAR
-    crate::msr::wrmsr(0xC0000083, syscall_handler as *const () as u64); // CSTAR
+    crate::msr::wrmsr(0xC0000082, syscall_handler as *const () as usize as u64); // LSTAR
+    crate::msr::wrmsr(0xC0000083, syscall_handler as *const () as usize as u64); // CSTAR
     crate::msr::wrmsr(0xC0000084, 0x200); // SFMASK
 }
