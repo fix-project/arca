@@ -21,6 +21,7 @@ use ninep::Client;
 use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
+mod input_gen;
 mod proc;
 mod tcpserver;
 mod tcputil;
@@ -32,6 +33,7 @@ use crate::{
     vsock::VSockFS,
 };
 
+use crate::input_gen::InputHostGenerator;
 use crate::tcpserver::TcpServer;
 use vfs::mem::MemDir;
 
@@ -261,6 +263,8 @@ async fn main(args: &[usize]) {
     });
 
     if !is_listener {
+        let mut host_gen =
+            InputHostGenerator::new(iam_ipaddr.to_string(), peer_ipaddr.to_string(), 100, 0.5);
         for _ in 0..100 {
             let start_time = kvmclock::time_since_boot();
 
@@ -268,7 +272,7 @@ async fn main(args: &[usize]) {
                 common::elfloader::load_elf(THUMBNAILER).expect("Failed to load ELF as Function");
 
             // TODO(kmohr) create a generator for this
-            let image_hostname = "127.0.0.1:11212";
+            let image_hostname = host_gen.next().unwrap();
             let image_filename = "falls_1.ppm";
             let image_size = img_names_to_sizes[image_filename];
 
