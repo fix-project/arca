@@ -11,6 +11,7 @@
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
 use ::vfs::*;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
@@ -20,12 +21,10 @@ use ninep::Client;
 use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
-mod vsock;
-
 mod proc;
-
 mod tcpserver;
 mod tcputil;
+mod vsock;
 
 use crate::{
     dev::DevFS,
@@ -129,20 +128,32 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
 
-    // TODO(kmohr): this runs on the assumption that the input file exists
-    // locally in memory at the time the continuation is called.
-    // Ideally, the continuation should be called as the file is read off the
-    // network.
-    let falls_ppm = include_bytes!(concat!(env!("HOME"), "/data/falls_1.ppm"));
-    let memfs = MemDir::default();
-    let mut falls_file = memfs
-        .create("falls_1.ppm", Create::UserWrite, Open::ReadWrite)
-        .await
-        .unwrap()
-        .as_file()
-        .unwrap();
-    falls_file.write(falls_ppm).await.unwrap();
-    ns.attach(memfs, "/data", MountType::Replace, true)
+    // copy listed files from /data into the in-memory fs
+    let remote_data = remote.attach(None, "", "data").await.unwrap();
+
+    // TODO: read from the directory instead of hardcoding filenames and sizes
+    let img_names_to_sizes = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
+
+    let local_data = MemDir::default();
+    for (image_name, image_size) in img_names_to_sizes.iter() {
+        let mut img_bytes = vec![0u8; *image_size];
+        let mut image_file = remote_data
+            .walk(image_name, Open::Read)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+        image_file.read(&mut img_bytes).await.unwrap();
+
+        let mut mem_image_file = local_data
+            .create(image_name, Create::UserWrite, Open::ReadWrite)
+            .await
+            .unwrap()
+            .as_file()
+            .unwrap();
+        mem_image_file.write(&img_bytes).await.unwrap();
+    }
+    ns.attach(local_data, "/data", MountType::Replace, true)
         .await
         .unwrap();
 
@@ -252,8 +263,22 @@ async fn main(args: &[usize]) {
     if !is_listener {
         for _ in 0..100 {
             let start_time = kvmclock::time_since_boot();
-            let p = Proc::new(
-                THUMBNAILER,
+
+            let thumbnailer_function =
+                common::elfloader::load_elf(THUMBNAILER).expect("Failed to load ELF as Function");
+
+            // TODO(kmohr) create a generator for this
+            let image_hostname = "127.0.0.1:11212";
+            let image_filename = "falls_1.ppm";
+            let image_size = img_names_to_sizes[image_filename];
+
+            let filepath = arca::Value::Blob(arca::Blob::from(
+                format!("{}/data/{}", image_hostname, image_filename).as_bytes(),
+            ));
+            let image_filesize = arca::Value::Word(arca::Word::new(image_size as u64));
+
+            let p = Proc::from_function(
+                thumbnailer_function.apply(filepath).apply(image_filesize),
                 ProcState {
                     ns: shared_ns.clone(),
                     env: Env::default().into(),
@@ -266,6 +291,7 @@ async fn main(args: &[usize]) {
             .expect("Failed to create Proc from ELF");
             let exitcode = p.run([]).await;
             let end_time = kvmclock::time_since_boot();
+
             log::info!(
                 "TIMING: begin k: {} us",
                 (end_time - start_time).as_micros()
