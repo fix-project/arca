@@ -10,7 +10,10 @@
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ::vfs::*;
 use alloc::collections::BTreeMap;
@@ -33,7 +36,7 @@ mod vsock;
 use crate::{
     dev::DevFS,
     proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
-    record::{Accumulator, RemoteInvocationRecord},
+    record::{Accumulator, Record, RemoteInvocationRecord},
     vsock::VSockFS,
 };
 
@@ -67,6 +70,7 @@ async fn main(args: &[usize]) {
     let iam_ipaddr = IpAddr::from(args[2] as u64);
     let peer_ipaddr = IpAddr::from(args[3] as u64);
     let is_listener = args[4] != 0;
+    let duration = Duration::from_secs(args[5] as u64);
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -137,7 +141,10 @@ async fn main(args: &[usize]) {
     let remote_data = remote.attach(None, "", "data").await.unwrap();
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
-    let img_names_to_sizes = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
+    let img_names_to_sizes = Arc::new(BTreeMap::from([
+        ("falls_1.ppm", 2332861),
+        ("Sun.ppm", 12814240),
+    ]));
 
     let local_data = MemDir::default();
     for (image_name, image_size) in img_names_to_sizes.iter() {
@@ -215,95 +222,148 @@ async fn main(args: &[usize]) {
     let (client_tx, client_rx) = tcpserver::make_client(client_conn);
     let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
 
-    // For now, handle all incoming continuation requests on a separate spawned loop
-    let shared_ns_for_continuation = shared_ns.clone();
-    let continuation_handling_handle = kernel::rt::spawn(async move {
-        let mut accumulator = record::Accumulator::default();
-        loop {
-            let req = continuation_receiver.recv().await.unwrap();
-            if req.is_none() {
-                break;
-            }
-            let data = req.unwrap();
+    let smp = kernel::ncores();
+    let total_count = Arc::new(AtomicUsize::new(0));
+    let total_time = Arc::new(AtomicU64::new(0));
+    let mut worker_threads = vec![];
+    {
+        let go = Arc::new(AtomicBool::new(false));
+        let ready_count = Arc::new(AtomicUsize::new(0));
 
-            let k_decompress_init = kvmclock::time_since_boot();
-            let decompressed = decompress_size_prepended(&data).unwrap();
-            let k_decompress_end = kvmclock::time_since_boot();
-            match postcard::from_bytes(&decompressed).unwrap() {
-                Value::Function(k) => {
-                    let p = Proc::from_remote_function(
-                        k,
-                        ProcState {
-                            ns: shared_ns_for_continuation.clone(),
-                            env: Env::default().into(),
-                            fds: RwLock::new(Descriptors::new()).into(),
-                            cwd: PathBuf::from("/".to_owned()).into(),
-                            host: Arc::new(iam_ipaddr),
-                        },
-                    )
-                    .expect("Failed to create Proc from received Function");
-                    let k_decode_end = kvmclock::time_since_boot();
+        for _ in 0..smp {
+            let go = go.clone();
+            let total_count = total_count.clone();
+            let total_time = total_time.clone();
+            let ready_count = ready_count.clone();
+            let shared_ns = shared_ns.clone();
+            let img_names_to_sizes = img_names_to_sizes.clone();
+            let client_tx = client_tx.clone();
+            let continuation_receiver = continuation_receiver.clone();
 
-                    let (exitcode, _) = p.run([]).await;
+            worker_threads.push(kernel::rt::spawn(async move {
+                let handle_one = async || -> (Record, Duration) {
+                    if let Some(Ok(Some(continuation))) = continuation_receiver.try_recv() {
+                        let k_decompress_init = kvmclock::time_since_boot();
+                        let decompressed = decompress_size_prepended(&continuation).unwrap();
+                        let k_decompress_end = kvmclock::time_since_boot();
+                        match postcard::from_bytes(&decompressed).unwrap() {
+                            Value::Function(k) => {
+                                let p = Proc::from_remote_function(
+                                    k,
+                                    ProcState {
+                                        ns: shared_ns.clone(),
+                                        env: Env::default().into(),
+                                        fds: RwLock::new(Descriptors::new()).into(),
+                                        cwd: PathBuf::from("/".to_owned()).into(),
+                                        host: Arc::new(iam_ipaddr),
+                                    },
+                                )
+                                .expect("Failed to create Proc from received Function");
+                                let k_decode_end = kvmclock::time_since_boot();
 
-                    let run_k_end_time = kvmclock::time_since_boot();
+                                let (exitcode, _) = p.run([]).await;
 
-                    accumulator.accumulate(
-                        RemoteInvocationRecord {
-                            decompression: k_decompress_end - k_decompress_init,
-                            deserialization: k_decode_end - k_decompress_end,
-                            execution: run_k_end_time - k_decode_end,
+                                let run_k_end_time = kvmclock::time_since_boot();
+
+                                log::debug!("exitcode: {exitcode}");
+
+                                (
+                                    RemoteInvocationRecord {
+                                        decompression: k_decompress_end - k_decompress_init,
+                                        deserialization: k_decode_end - k_decompress_end,
+                                        execution: run_k_end_time - k_decode_end,
+                                    }
+                                    .into(),
+                                    Duration::default(),
+                                )
+                            }
+                            _ => {
+                                panic!(
+                                    "Expected Function value in Continuation, got something else"
+                                );
+                            }
                         }
-                        .into(),
-                        Duration::default(),
-                    );
+                    } else {
+                        let start_time = kvmclock::time_since_boot();
 
-                    log::debug!("exitcode: {exitcode}");
+                        let thumbnailer_function = common::elfloader::load_elf(THUMBNAILER)
+                            .expect("Failed to load ELF as Function");
+
+                        // TODO(kmohr) create a generator for this
+                        let image_hostname = "127.0.0.1:11212";
+                        let image_filename = "falls_1.ppm";
+                        let image_size = img_names_to_sizes[image_filename];
+
+                        let filepath = arca::Value::Blob(arca::Blob::from(
+                            format!("{}/data/{}", image_hostname, image_filename).as_bytes(),
+                        ));
+                        let image_filesize = arca::Value::Word(arca::Word::new(image_size as u64));
+
+                        let p = Proc::from_function(
+                            thumbnailer_function.apply(filepath).apply(image_filesize),
+                            ProcState {
+                                ns: shared_ns.clone(),
+                                env: Env::default().into(),
+                                fds: RwLock::new(Descriptors::new()).into(),
+                                cwd: PathBuf::from("/".to_owned()).into(),
+                                host: iam_ipaddr.into(),
+                            },
+                            client_tx.clone(),
+                        )
+                        .expect("Failed to create Proc from ELF");
+                        let (exitcode, record) = p.run([]).await;
+                        let end_time = kvmclock::time_since_boot();
+                        log::debug!("exitcode: {exitcode}");
+                        (record, end_time - start_time)
+                    }
+                };
+
+                let mut count = 0;
+                ready_count.fetch_add(1, Ordering::Release);
+
+                while !go.load(Ordering::Acquire) {
+                    handle_one().await;
+                    kernel::rt::yield_now().await;
                 }
-                _ => {
-                    log::error!("Expected Function value in Continuation, got something else");
-                }
-            }
+
+                let exp_start = kvmclock::time_since_boot();
+                let mut accumulator = Accumulator::default();
+
+                let runtime = loop {
+                    let runtime = kvmclock::time_since_boot() - exp_start;
+                    if &runtime >= &duration {
+                        break runtime;
+                    }
+
+                    let (record, d) = handle_one().await;
+                    accumulator.accumulate(record, d);
+                    count += 1;
+                };
+                total_count.fetch_add(count, Ordering::SeqCst);
+                total_time.fetch_add(runtime.as_nanos() as u64, Ordering::SeqCst);
+                accumulator
+            }));
         }
-        accumulator
-    });
+
+        while ready_count.load(Ordering::Acquire) < smp {
+            kernel::rt::yield_now().await;
+        }
+        kernel::rt::delay_for(Duration::from_millis(1000)).await;
+        go.store(true, Ordering::Release);
+    }
 
     let mut accumulator = Accumulator::default();
-    if !is_listener {
-        for _ in 0..100 {
-            let start_time = kvmclock::time_since_boot();
 
-            let thumbnailer_function =
-                common::elfloader::load_elf(THUMBNAILER).expect("Failed to load ELF as Function");
-
-            // TODO(kmohr) create a generator for this
-            let image_hostname = "127.0.0.1:11212";
-            let image_filename = "falls_1.ppm";
-            let image_size = img_names_to_sizes[image_filename];
-
-            let filepath = arca::Value::Blob(arca::Blob::from(
-                format!("{}/data/{}", image_hostname, image_filename).as_bytes(),
-            ));
-            let image_filesize = arca::Value::Word(arca::Word::new(image_size as u64));
-
-            let p = Proc::from_function(
-                thumbnailer_function.apply(filepath).apply(image_filesize),
-                ProcState {
-                    ns: shared_ns.clone(),
-                    env: Env::default().into(),
-                    fds: RwLock::new(Descriptors::new()).into(),
-                    cwd: PathBuf::from("/".to_owned()).into(),
-                    host: iam_ipaddr.into(),
-                },
-                client_tx.clone(),
-            )
-            .expect("Failed to create Proc from ELF");
-            let (exitcode, record) = p.run([]).await;
-            let end_time = kvmclock::time_since_boot();
-            accumulator.accumulate(record, end_time - start_time);
-            log::debug!("exitcode: {exitcode}");
-        }
+    log::debug!("Collecting worker thread metrics");
+    for j in worker_threads {
+        accumulator += j.await;
     }
+    let total_time = total_time.load(Ordering::SeqCst);
+    let total_count = total_count.load(Ordering::SeqCst);
+
+    let freq = (total_count as f64 / (total_time as f64 / 1e9)) * smp as f64;
+    let freq_per_core = freq / smp as f64;
+    let time_per_core = Duration::from_secs_f64(1. / freq) * smp as u32;
 
     // Close client_tx after main jobs are done
     let _ = client_tx.close().await;
@@ -311,9 +371,7 @@ async fn main(args: &[usize]) {
     let _ = client_rx_handle.await;
     log::debug!("Joining tcpserver");
     let _ = tcpserver_handle.await;
-    log::debug!("Joining continuation handling");
 
-    let res = continuation_handling_handle.await;
-    accumulator += res;
+    log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz, {time_per_core:?} per iter)");
     log::info!("{}", accumulator);
 }
