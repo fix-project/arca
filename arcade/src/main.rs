@@ -10,6 +10,8 @@
 #![cfg_attr(feature = "testing-mode", allow(unreachable_code))]
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
+use core::time::Duration;
+
 use ::vfs::*;
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -23,6 +25,8 @@ use lz4_flex::block::decompress_size_prepended;
 mod dev;
 mod input_gen;
 mod proc;
+
+mod record;
 mod tcpserver;
 mod tcputil;
 mod vsock;
@@ -30,6 +34,7 @@ mod vsock;
 use crate::{
     dev::DevFS,
     proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
+    record::{Accumulator, RemoteInvocationRecord},
     vsock::VSockFS,
 };
 
@@ -215,6 +220,7 @@ async fn main(args: &[usize]) {
     // For now, handle all incoming continuation requests on a separate spawned loop
     let shared_ns_for_continuation = shared_ns.clone();
     let continuation_handling_handle = kernel::rt::spawn(async move {
+        let mut accumulator = record::Accumulator::default();
         loop {
             let req = continuation_receiver.recv().await.unwrap();
             if req.is_none() {
@@ -240,28 +246,31 @@ async fn main(args: &[usize]) {
                     .expect("Failed to create Proc from received Function");
                     let k_decode_end = kvmclock::time_since_boot();
 
-                    let exitcode = p.run([]).await;
+                    let (exitcode, _) = p.run([]).await;
 
                     let run_k_end_time = kvmclock::time_since_boot();
 
-                    log::info!(
-                        //"TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                        "TIMING:\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                        //(get_k_end - get_k_init).as_micros(),
-                        (k_decompress_end - k_decompress_init).as_micros(),
-                        (k_decode_end - k_decompress_end).as_micros(),
-                        (run_k_end_time - k_decode_end).as_micros()
+                    accumulator.accumulate(
+                        RemoteInvocationRecord {
+                            decompression: k_decompress_end - k_decompress_init,
+                            deserialization: k_decode_end - k_decompress_end,
+                            execution: run_k_end_time - k_decode_end,
+                        }
+                        .into(),
+                        Duration::default(),
                     );
 
-                    log::info!("exitcode: {exitcode}");
+                    log::debug!("exitcode: {exitcode}");
                 }
                 _ => {
                     log::error!("Expected Function value in Continuation, got something else");
                 }
             }
         }
+        accumulator
     });
 
+    let mut accumulator = Accumulator::default();
     if !is_listener {
         let mut host_gen =
             InputHostGenerator::new(iam_ipaddr.to_string(), peer_ipaddr.to_string(), 100, 0.5);
@@ -293,23 +302,22 @@ async fn main(args: &[usize]) {
                 client_tx.clone(),
             )
             .expect("Failed to create Proc from ELF");
-            let exitcode = p.run([]).await;
+            let (exitcode, record) = p.run([]).await;
             let end_time = kvmclock::time_since_boot();
-
-            log::info!(
-                "TIMING: begin k: {} us",
-                (end_time - start_time).as_micros()
-            );
-            log::info!("exitcode: {exitcode}");
+            accumulator.accumulate(record, end_time - start_time);
+            log::debug!("exitcode: {exitcode}");
         }
     }
 
     // Close client_tx after main jobs are done
     let _ = client_tx.close().await;
-    log::info!("Joining client rx");
+    log::debug!("Joining client rx");
     let _ = client_rx_handle.await;
-    log::info!("Joining tcpserver");
+    log::debug!("Joining tcpserver");
     let _ = tcpserver_handle.await;
-    log::info!("Joining continuation handling");
-    let _ = continuation_handling_handle.await;
+    log::debug!("Joining continuation handling");
+
+    let res = continuation_handling_handle.await;
+    accumulator += res;
+    log::info!("{}", accumulator);
 }
