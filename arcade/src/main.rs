@@ -22,15 +22,18 @@ use ninep::Client;
 use lz4_flex::block::decompress_size_prepended;
 
 mod dev;
-mod proto;
+mod proc;
+mod tcpserver;
+mod tcputil;
 mod vsock;
 
-mod proc;
 use crate::{
     dev::DevFS,
     proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
     vsock::VSockFS,
 };
+
+use crate::tcpserver::TcpServer;
 use vfs::mem::MemDir;
 
 #[arca_module_test]
@@ -57,9 +60,9 @@ async fn main(args: &[usize]) {
 
     let cid = args[0] as u64;
     let host_listener_port = args[1];
-    let tcp_port = IpAddr::from(args[2] as u64);
-    let is_listener = args[3] != 0;
-    let disable_continuation_sending = args[4] != 0;
+    let iam_ipaddr = IpAddr::from(args[2] as u64);
+    let peer_ipaddr = IpAddr::from(args[3] as u64);
+    let is_listener = args[4] != 0;
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -128,7 +131,6 @@ async fn main(args: &[usize]) {
 
     // copy all the files from /images into the in-memory fs
     let images_dir = remote.attach(None, "", "images").await.unwrap();
-    // let dirents: Vec<Result<DirEnt>> = images_dir.readdir().await.unwrap().collect().await;
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
@@ -157,173 +159,111 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
 
-    if is_listener {
-        // Get id from /tcp/clone
-        let mut tcp_ctl = ns
-            .walk("/net/tcp/clone", Open::ReadWrite)
+    // Setup the tcp connection between the **two** machines
+    let (server_conn, client_conn) = if is_listener {
+        let listen_path = tcputil::listen_on(&ns, iam_ipaddr)
             .await
-            .unwrap()
-            .as_file()
-            .unwrap();
-        let mut id = [0; 32];
-        let size = tcp_ctl.read(&mut id).await.unwrap();
-        let id = core::str::from_utf8(&id[..size]).unwrap().trim();
-        log::info!("TCP connection ID string: {}", id);
-        let id: usize = id.parse().unwrap();
+            .expect("Failed to listen on port");
+        let server_conn = tcputil::get_one_incoming_connection(&ns, listen_path.clone())
+            .await
+            .expect("Failed to get incoming connection");
+        let client_conn = tcputil::get_one_incoming_connection(&ns, listen_path)
+            .await
+            .expect("Failed to get incoming connection");
+        (server_conn, client_conn)
+    } else {
+        let client_conn = tcputil::connect_to(&ns, peer_ipaddr)
+            .await
+            .expect("Failed to connect");
+        let server_conn = tcputil::connect_to(&ns, peer_ipaddr)
+            .await
+            .expect("Failed to connect");
+        (server_conn, client_conn)
+    };
 
-        log::info!("Got TCP connection ID: {}", id);
+    let shared_ns = Arc::new(ns);
 
-        // Listen to incoming connections on the specified tcp_port
-        let tcp_port_str = tcp_port.to_string();
-        log::info!("Listening on TCP port: {}", tcp_port_str);
-        let tcp_announcement = alloc::format!("announce {}\n", tcp_port_str);
-        log::info!("Announcing on: {}", tcp_announcement.trim());
-        match tcp_ctl.write(tcp_announcement.as_bytes()).await {
-            Ok(bytes_written) => {
-                log::info!("Successfully wrote {} bytes to tcp control", bytes_written);
-            }
-            Err(e) => {
-                log::error!("Failed to announce TCP listener: {:?}", e);
-                return;
-            }
-        }
+    // Setup Servers
+    #[cfg(feature = "ablation")]
+    let (tcpserver_handle, continuation_receiver) = {
+        use crate::tcpserver::AblatedServer;
+        let server = AblatedServer::new(server_conn, shared_ns.clone());
+        let tcpserver = TcpServer::new(server);
+        let handle = kernel::rt::spawn(async move { tcpserver.run().await });
 
-        let listen_path = format!("/net/tcp/{id}/listen");
-        log::info!("Listen path: {}", listen_path);
+        let (sender, receiver) = channel::unbounded::<Option<Vec<u8>>>();
+        sender
+            .send_blocking(None)
+            .expect("Failed to close sender side");
+        (handle, receiver)
+    };
 
-        let shared_ns = Arc::new(ns);
+    #[cfg(not(feature = "ablation"))]
+    let (tcpserver_handle, continuation_receiver) = {
+        use crate::tcpserver::ContinuationServer;
+        let (sender, receiver) = channel::unbounded();
+        let server = ContinuationServer::new(server_conn, sender);
+        let tcpserver = TcpServer::new(server);
+        let handle = kernel::rt::spawn(async move { tcpserver.run().await });
+        (handle, receiver)
+    };
 
+    // Setup Clients
+    let (client_tx, client_rx) = tcpserver::make_client(client_conn);
+    let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
+
+    // For now, handle all incoming continuation requests on a separate spawned loop
+    let shared_ns_for_continuation = shared_ns.clone();
+    let continuation_handling_handle = kernel::rt::spawn(async move {
         loop {
-            // TODO(kmohr): handle multiple connections
-            log::info!("Waiting for connections...");
-            let mut listen_file = shared_ns
-                .walk(&listen_path, Open::ReadWrite)
-                .await
-                .unwrap()
-                .as_file()
-                .unwrap();
+            let req = continuation_receiver.recv().await.unwrap();
+            if req.is_none() {
+                break;
+            }
+            let data = req.unwrap();
 
-            // Accept a new connection - this blocks until someone connects
-            let mut id = [0; 32];
-            let size = listen_file.read(&mut id).await.unwrap();
-            let id = core::str::from_utf8(&id[..size]).unwrap().trim();
-            let data_path = format!("/net/tcp/{id}/data");
+            let k_decompress_init = kvmclock::time_since_boot();
+            let decompressed = decompress_size_prepended(&data).unwrap();
+            let k_decompress_end = kvmclock::time_since_boot();
+            match postcard::from_bytes(&decompressed).unwrap() {
+                Value::Function(k) => {
+                    let p = Proc::from_remote_function(
+                        k,
+                        ProcState {
+                            ns: shared_ns_for_continuation.clone(),
+                            env: Env::default().into(),
+                            fds: RwLock::new(Descriptors::new()).into(),
+                            cwd: PathBuf::from("/".to_owned()).into(),
+                            host: Arc::new(iam_ipaddr),
+                        },
+                    )
+                    .expect("Failed to create Proc from received Function");
+                    let k_decode_end = kvmclock::time_since_boot();
 
-            // TODO is this connection closed on Ctrl-C?
-            log::info!("New connection accepted: {}", id);
+                    let exitcode = p.run([]).await;
 
-            // TODO(kmohr): the time to actually read k off the network is way larger than
-            // anything else. we should see what optimizations are possible here
-            let get_k_init = kvmclock::time_since_boot();
+                    let run_k_end_time = kvmclock::time_since_boot();
 
-            // Get data file for the accepted connection
-            let mut data_file = shared_ns
-                .walk(&data_path, Open::ReadWrite)
-                .await
-                .unwrap()
-                .as_file()
-                .unwrap();
+                    log::info!(
+                        //"TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                        "TIMING:\ndecompress: {} us\ndecode: {} us\nrun: {} us",
+                        //(get_k_end - get_k_init).as_micros(),
+                        (k_decompress_end - k_decompress_init).as_micros(),
+                        (k_decode_end - k_decompress_end).as_micros(),
+                        (run_k_end_time - k_decode_end).as_micros()
+                    );
 
-            let (message, mut data_file) = proto::read_request(data_file).await.unwrap();
-            let get_k_end = kvmclock::time_since_boot();
-
-            match message {
-                proto::Message::Continuation(proto::Continuation {
-                    continuation_size: _,
-                    data,
-                }) => {
-                    let k_decompress_init = kvmclock::time_since_boot();
-                    let decompressed = decompress_size_prepended(&data).unwrap();
-                    let k_decompress_end = kvmclock::time_since_boot();
-                    match postcard::from_bytes(&decompressed).unwrap() {
-                        Value::Function(k) => {
-                            let p = Proc::from_function(
-                                k,
-                                ProcState {
-                                    ns: shared_ns.clone(),
-                                    env: Env::default().into(),
-                                    fds: RwLock::new(Descriptors::new()).into(),
-                                    cwd: PathBuf::from("/".to_owned()).into(),
-                                    host: Arc::new(tcp_port),
-                                },
-                            )
-                            .expect("Failed to create Proc from received Function");
-                            let k_decode_end = kvmclock::time_since_boot();
-
-                            let exitcode = p.run([]).await;
-
-                            let run_k_end_time = kvmclock::time_since_boot();
-
-                            log::info!(
-                                "TIMING:\nnetwork read: {} us\ndecompress: {} us\ndecode: {} us\nrun: {} us",
-                                (get_k_end - get_k_init).as_micros(),
-                                (k_decompress_end - k_decompress_init).as_micros(),
-                                (k_decode_end - k_decompress_end).as_micros(),
-                                (run_k_end_time - k_decode_end).as_micros()
-                            );
-
-                            log::info!("exitcode: {exitcode}");
-                        }
-                        _ => {
-                            log::error!(
-                                "Expected Function value in Continuation, got something else"
-                            );
-                        }
-                    }
-                }
-                proto::Message::FileRequest(proto::FileRequest { file_path }) => {
-                    log::info!("Received File Request for path {}", file_path);
-                    // send back the requested file data
-                    let mut file = shared_ns
-                        .walk(&file_path, Open::Read)
-                        .await
-                        .unwrap()
-                        .as_file()
-                        .unwrap();
-
-                    // TODO(kmohr) let's just encode the file size instead of reading in chunks like this
-                    let mut file_data = Vec::new();
-                    let mut buffer = [0u8; 4096];
-                    loop {
-                        match file.read(&mut buffer).await {
-                            Ok(0) => break, // EOF
-                            Ok(n) => file_data.extend_from_slice(&buffer[..n]),
-                            Err(e) => {
-                                log::error!("Failed to read file: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                    let file_size = file_data.len() as u32;
-
-                    // send back b'F' + file size as u32 + file data
-                    let mut response = alloc::vec![b'F'];
-                    response.extend_from_slice(&file_size.to_be_bytes());
-                    response.extend_from_slice(&file_data);
-                    data_file.write(&response).await.unwrap();
-                    log::info!("msg size: {}", response.len());
-                    log::info!("Sent file response for {}", file_path);
+                    log::info!("exitcode: {exitcode}");
                 }
                 _ => {
-                    log::error!("Expected Continuation or FileRequest message, got something else");
+                    log::error!("Expected Function value in Continuation, got something else");
                 }
             }
         }
-    } else {
-        let shared_ns = Arc::new(ns);
-        let shared_port = Arc::new(tcp_port);
+    });
 
-        let env = Env::default();
-        env.set(
-            "CONTINUATION_SENDING_ENABLED",
-            if disable_continuation_sending {
-                "0"
-            } else {
-                "1"
-            },
-        );
-
-        for _ in 0..10 {
+    if !is_listener {
+        for _ in 0..100 {
             let start_time = kvmclock::time_since_boot();
 
             let thumbnailer_function =
@@ -344,11 +284,12 @@ async fn main(args: &[usize]) {
                 f,
                 ProcState {
                     ns: shared_ns.clone(),
-                    env: env.clone().into(),
+                    env: Env::default().into(),
                     fds: RwLock::new(Descriptors::new()).into(),
                     cwd: PathBuf::from("/".to_owned()).into(),
-                    host: shared_port.clone(),
+                    host: iam_ipaddr.into(),
                 },
+                client_tx.clone(),
             )
             .expect("Failed to create Proc from ELF");
             let exitcode = p.run([]).await;
@@ -361,4 +302,13 @@ async fn main(args: &[usize]) {
             log::info!("exitcode: {exitcode}");
         }
     }
+
+    // Close client_tx after main jobs are done
+    let _ = client_tx.close().await;
+    log::info!("Joining client rx");
+    let _ = client_rx_handle.await;
+    log::info!("Joining tcpserver");
+    let _ = tcpserver_handle.await;
+    log::info!("Joining continuation handling");
+    let _ = continuation_handling_handle.await;
 }
