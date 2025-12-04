@@ -87,7 +87,7 @@ impl MessageServer for AblatedServer {
     async fn process_message(&mut self, msg: Message) -> Result<(), Error> {
         match msg {
             Message::FileRequest(FileRequest { file_path }) => {
-                log::info!("Received File Request for path {}", file_path);
+                log::debug!("Received File Request for path {}", file_path);
                 // send back the requested file data
                 let mut file = self
                     .shared_ns
@@ -111,11 +111,11 @@ impl MessageServer for AblatedServer {
                     }
                 }
 
-                log::info!("Read data {}", file_path);
+                log::debug!("Read data {}", file_path);
 
                 let response = Message::FileResponse(FileResponse { file_data });
                 write_message_to_f(&mut self.f, &response).await?;
-                log::info!("Replied {}", file_path);
+                log::debug!("Replied {}", file_path);
                 Ok(())
             }
             Message::ClientClose => Err(Error::MessageProcessing),
@@ -198,11 +198,11 @@ impl AblatedClientRx {
 
             match x {
                 Err(_) => {
-                    log::info!("ClientTx hanging up");
+                    log::debug!("ClientTx hanging up");
                     return Ok(());
                 }
                 Ok(None) => {
-                    log::info!("ClientTx hanging up");
+                    log::debug!("ClientTx hanging up");
                     return Ok(());
                 }
                 Ok(Some(future)) => {
@@ -235,14 +235,14 @@ impl AblatedClientRx {
                                 message_readbuf = &mut message_readbuf[n..];
                             }
                         }
-                        log::info!("Read msg content");
+                        log::debug!("Read msg content");
 
                         postcard::from_bytes(message_buf.as_slice()).unwrap()
                     };
 
                     match msg {
                         Message::FileResponse(FileResponse { file_data }) => {
-                            log::info!("Received File Response");
+                            log::debug!("Received File Response");
                             future.send(file_data);
                         }
                         Message::ClientClose => panic!(),
