@@ -75,15 +75,15 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     let height: u32 = parse_u32(&height_str).expect("could not read height data");
     let maxval: u32 = parse_u32(&maxval_str).expect("could not read maxval data");
 
-    user::error::log(
-        alloc::format!(
-            "PPM image: width={} height={} maxval={}",
-            width,
-            height,
-            maxval
-        )
-        .as_bytes(),
-    );
+    //user::error::log(
+    //    alloc::format!(
+    //        "PPM image: width={} height={} maxval={}",
+    //        width,
+    //        height,
+    //        maxval
+    //    )
+    //    .as_bytes(),
+    //);
 
     if maxval >= 256 {
         panic!("Only maxval < 256 is supported");
@@ -114,15 +114,15 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     }
 
     let algo_end = unsafe { _rdtsc() };
-    user::error::log(
-        alloc::format!(
-            "TIMING (thumbnail_ppm6): \nalgorithm without alloc: {}%\nalloc: {}%",
-            ((algo_before_alloc - algo_start) + (algo_end - after_alloc)) * 100
-                / (algo_end - algo_start),
-            (after_alloc - algo_before_alloc) * 100 / (algo_end - algo_start),
-        )
-        .as_bytes(),
-    );
+    //user::error::log(
+    //    alloc::format!(
+    //        "TIMING (thumbnail_ppm6): \nalgorithm without alloc: {}%\nalloc: {}%",
+    //        ((algo_before_alloc - algo_start) + (algo_end - after_alloc)) * 100
+    //            / (algo_end - algo_start),
+    //        (after_alloc - algo_before_alloc) * 100 / (algo_end - algo_start),
+    //    )
+    //    .as_bytes(),
+    //);
 
     // write the thumbnail to a new ppm file
     // let mut output_file = File::options()
@@ -171,14 +171,14 @@ pub extern "C" fn _rsstart() -> ! {
     let algo_end = unsafe { _rdtsc() };
 
     let total_time = algo_end - alloc_start;
-    user::error::log(
-        alloc::format!(
-            "TIMING: \nalloc: {}%\nread file: {}%\nalgorithm: {}%",
-            (alloc_end - alloc_start) * 100 / total_time,
-            (read_file_end - alloc_end) * 100 / total_time,
-            (algo_end - read_file_end) * 100 / total_time,
-        )
-        .as_bytes(),
-    );
+    //user::error::log(
+    //    alloc::format!(
+    //        "TIMING: \nalloc: {}%\nread file: {}%\nalgorithm: {}%",
+    //        (alloc_end - alloc_start) * 100 / total_time,
+    //        (read_file_end - alloc_end) * 100 / total_time,
+    //        (algo_end - read_file_end) * 100 / total_time,
+    //    )
+    //    .as_bytes(),
+    //);
     crate::io::exit(size);
 }
