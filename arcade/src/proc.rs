@@ -28,7 +28,10 @@ mod table;
 use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
-use crate::tcpserver;
+use crate::{
+    record::{LocalRecord, Record},
+    tcpserver,
+};
 
 pub struct Proc {
     f: Function,
@@ -88,24 +91,25 @@ impl Proc {
         Ok(p)
     }
 
-    pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> u8 {
+    pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> (u8, Record) {
         let _argv = Tuple::from_iter(argv.into_iter().map(Blob::from).map(Value::Blob));
         self.resume().await
     }
 
     #[allow(clippy::manual_async_fn)]
-    pub fn resume(self) -> impl Future<Output = u8> + Send {
+    pub fn resume(self) -> impl Future<Output = (u8, Record)> + Send {
         async move {
             let mut f = self.f;
+            let mut record = Record::LocalRecord(LocalRecord);
             loop {
                 let force_time = kvmclock::time_since_boot();
                 let result = f.force();
                 let force_time = kvmclock::time_since_boot() - force_time;
-                log::info!("PERF\nforce time: {} us", force_time.as_micros());
+                // log::info!("PERF\nforce time: {} us", force_time.as_micros());
 
                 let Value::Function(g) = result else {
                     log::error!("proc returned something other than an effect!");
-                    return 255;
+                    return (255, record);
                 };
                 if g.is_arcane() {
                     // call/cc to another function, or returned another function
@@ -122,7 +126,7 @@ impl Proc {
                 let args: Tuple = data.take(2).try_into().unwrap();
                 let mut args: Vec<Value> = args.into_iter().collect();
                 let Some(Value::Function(k)) = args.pop() else {
-                    return 255;
+                    return (255, record);
                 };
                 f = match (&*effect, &mut *args) {
                     (
@@ -141,9 +145,11 @@ impl Proc {
                             {
                                 use alloc::string::ToString;
 
+                                use crate::record::RemoteDataRecord;
+
                                 let tcp_init = kvmclock::time_since_boot();
 
-                                log::info!("Sending File Request");
+                                log::debug!("Sending File Request");
 
                                 let f = self
                                     .handler
@@ -153,11 +159,11 @@ impl Proc {
                                     .await
                                     .expect("Failed to send File Request");
 
-                                log::info!("Sent File Request");
+                                log::debug!("Sent File Request");
 
                                 let data = f.await;
 
-                                log::info!("Received file of size {} bytes", data.len());
+                                log::debug!("Received file of size {} bytes", data.len());
 
                                 // Create the file and return file descriptor
                                 let mut new_file = vfs::MemFile::default();
@@ -173,20 +179,27 @@ impl Proc {
 
                                 let tcp_end = kvmclock::time_since_boot();
 
-                                log::info!(
-                                    "TIMING:\nnetwork read: {} us",
-                                    (tcp_end - tcp_init).as_micros()
-                                );
+                                record = RemoteDataRecord {
+                                    remote_data_read: tcp_end - tcp_init,
+                                }
+                                .into();
+
+                                //log::info!(
+                                //    "TIMING:\nnetwork read: {} us",
+                                //    (tcp_end - tcp_init).as_micros()
+                                //);
 
                                 match file_req {
                                     Ok(result) => k.apply(Value::Word(Word::new(result as u64))),
-                                    Err(_) => return 1,
+                                    Err(_) => return (1, record),
                                 }
                             }
 
                             #[cfg(not(feature = "ablation"))]
                             {
-                                log::info!("sending continuation to open file remotely");
+                                use crate::record::MigratedRecord;
+
+                                log::debug!("sending continuation to open file remotely");
 
                                 // TODO(kmohr): hmmmm this is so slow...
                                 let k_create_init = kvmclock::time_since_boot();
@@ -204,23 +217,32 @@ impl Proc {
                                 let k_msg = compress_prepend_size(&msg);
                                 let compress_end = kvmclock::time_since_boot();
 
-                                let size_bytes = msg.len();
-                                let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                                //let size_bytes = msg.len();
+                                //let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
 
                                 let res = self.handler.as_ref().expect("Migrated function should not need more continuation handling").request_to_run(k_msg).await;
+                                let sending_end = kvmclock::time_since_boot();
 
-                                log::info!(
-                                    "PERF\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
-                                    (serialize_init - k_create_init).as_micros(),
-                                    (serialize_end - serialize_init).as_micros(),
-                                    (compress_end - serialize_end).as_micros(),
-                                    size_bytes,
-                                    size_mb
-                                );
+                                record = MigratedRecord {
+                                    creation: serialize_init - k_create_init,
+                                    serialization: serialize_end - serialize_init,
+                                    compression: compress_end - serialize_end,
+                                    sending: sending_end - compress_end,
+                                }
+                                .into();
+
+                                //log::info!(
+                                //    "PERF\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
+                                //    (serialize_init - k_create_init).as_micros(),
+                                //    (serialize_end - serialize_init).as_micros(),
+                                //    (compress_end - serialize_end).as_micros(),
+                                //    size_bytes,
+                                //    size_mb
+                                //);
 
                                 match res {
-                                    Ok(_) => return 0,
-                                    Err(_) => return 1,
+                                    Ok(_) => return (0, record),
+                                    Err(_) => return (1, record),
                                 }
                             }
                         } else {
@@ -232,11 +254,12 @@ impl Proc {
                                 file::ModeT(mode.read() as u32),
                             )
                             .await);
+
                             let end_time = kvmclock::time_since_boot();
-                            log::info!(
-                                "PERF\nopen local time: {} us",
-                                (end_time - init_time).as_micros()
-                            );
+                            //log::info!(
+                            //    "PERF\nopen local time: {} us",
+                            //    (end_time - init_time).as_micros()
+                            //);
                             k.apply(file)
                         }
                     }
@@ -290,7 +313,7 @@ impl Proc {
                         k.apply(fix(Ok(pid as u32)))
                     }
                     (b"exit", &mut [Value::Word(result)]) => {
-                        return result.read() as u8;
+                        return (result.read() as u8, record);
                     }
                     (b"monitor-new", &mut []) => {
                         let mvar = MVar::new(Monitor::new());
