@@ -136,7 +136,7 @@ impl Display for Accumulator {
         if self.local_count > 0 {
             write!(
                 f,
-                "Local execution (total {}):\n{}",
+                "Local execution (total {}):\n{} us",
                 self.local_count,
                 self.local_record.as_micros() as usize / self.local_count
             )?;
