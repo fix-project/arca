@@ -111,9 +111,9 @@ fn main() -> anyhow::Result<()> {
         let tcp = TcpFS::default();
         s.add_blocking("tcp", tcp);
 
-        // put all data for the 9P server to read/write in ~/images
+        // NOTE: this assumes you have ppm files in $HOME/data/
         let shared_data_dir = FsDir::new(concat!(env!("HOME"), "/data/"), Open::ReadWrite).unwrap();
-        s.add_blocking("images", shared_data_dir);
+        s.add_blocking("data", shared_data_dir);
 
         let s = Arc::new(s);
 
