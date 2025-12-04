@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
                 .short('s')
                 .long("smp")
                 .help("Number of CPU cores for the guest VM")
+                .value_parser(clap::value_parser!(usize))
                 .required(false),
         )
         .arg(
@@ -44,6 +45,7 @@ fn main() -> anyhow::Result<()> {
                 .short('c')
                 .long("cid")
                 .help("Guest VM's CID")
+                .value_parser(clap::value_parser!(usize))
                 .default_value("3")
                 .required(false),
         )
@@ -69,24 +71,24 @@ fn main() -> anyhow::Result<()> {
                 .action(ArgAction::SetTrue)
                 .required(false),
         )
+        .arg(
+            Arg::new("duration")
+                .long("duration")
+                .help("Duration of experiment")
+                .value_parser(clap::value_parser!(usize))
+                .default_value("10")
+                .required(false),
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
 
-    let smp = matches
-        .get_one::<String>("smp")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(max_smp);
-
-    let cid = matches
-        .get_one::<String>("cid")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(3);
-
+    let smp = *matches.get_one::<usize>("smp").unwrap_or(&max_smp);
+    let cid = *matches.get_one::<usize>("cid").unwrap();
     let iam = matches.get_one::<String>("iam").unwrap();
     let peer = matches.get_one::<String>("peer").unwrap();
-
     let is_listener = matches.get_flag("listener");
+    let duration = *matches.get_one::<usize>("duration").unwrap();
 
     // TODO(kmohr): can this create an invalid port number?
     let host_listener_port = (cid as u32) + 1561;
@@ -128,14 +130,15 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    let iam_ipaddr: u64 = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
-    let peer_ipaddr: u64 = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
+    let iam_ipaddr = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
+    let peer_ipaddr = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
 
     log::info!(
-        "Running {} on VM cid={} with {} core(s). I am {} and peer is {}",
+        "Running {} on VM cid={} with {} core(s) for {}s. I am {} and peer is {}",
         if run_fix { "fix" } else { "arcade" },
         cid,
         smp,
+        duration,
         iam,
         peer,
     );
@@ -147,6 +150,7 @@ fn main() -> anyhow::Result<()> {
         iam_ipaddr as usize,
         peer_ipaddr as usize,
         is_listener as usize,
+        duration,
     ]);
 
     Ok(())
