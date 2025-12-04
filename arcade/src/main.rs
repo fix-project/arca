@@ -130,18 +130,16 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
 
-    // copy all the files from /images into the in-memory fs
-    let images_dir = remote.attach(None, "", "images").await.unwrap();
-    // let dirents: Vec<Result<DirEnt>> = images_dir.readdir().await.unwrap().collect().await;
+    // copy listed files from /data into the in-memory fs
+    let remote_data = remote.attach(None, "", "data").await.unwrap();
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = BTreeMap::from([("falls_1.ppm", 2332861), ("Sun.ppm", 12814240)]);
 
-    let data_dir = MemDir::default();
+    let local_data = MemDir::default();
     for (image_name, image_size) in img_names_to_sizes.iter() {
         let mut img_bytes = vec![0u8; *image_size];
-
-        let mut image_file = images_dir
+        let mut image_file = remote_data
             .walk(image_name, Open::Read)
             .await
             .unwrap()
@@ -149,7 +147,7 @@ async fn main(args: &[usize]) {
             .unwrap();
         image_file.read(&mut img_bytes).await.unwrap();
 
-        let mut mem_image_file = data_dir
+        let mut mem_image_file = local_data
             .create(image_name, Create::UserWrite, Open::ReadWrite)
             .await
             .unwrap()
@@ -157,7 +155,7 @@ async fn main(args: &[usize]) {
             .unwrap();
         mem_image_file.write(&img_bytes).await.unwrap();
     }
-    ns.attach(data_dir, "/data", MountType::Replace, true)
+    ns.attach(local_data, "/data", MountType::Replace, true)
         .await
         .unwrap();
 
@@ -280,10 +278,9 @@ async fn main(args: &[usize]) {
                 format!("{}/data/{}", image_hostname, image_filename).as_bytes(),
             ));
             let image_filesize = arca::Value::Word(arca::Word::new(image_size as u64));
-            let f = thumbnailer_function.apply(filepath).apply(image_filesize);
 
             let p = Proc::from_function(
-                f,
+                thumbnailer_function.apply(filepath).apply(image_filesize),
                 ProcState {
                     ns: shared_ns.clone(),
                     env: Env::default().into(),
