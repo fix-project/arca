@@ -28,6 +28,7 @@ use lz4_flex::block::decompress_size_prepended;
 mod dev;
 mod vsock;
 
+mod input_gen;
 mod proc;
 
 mod record;
@@ -41,6 +42,7 @@ use crate::{
     vsock::VSockFS,
 };
 
+use crate::input_gen::UnboundedInputHostGenerator;
 use crate::tcpserver::TcpServer;
 use vfs::mem::MemDir;
 
@@ -240,9 +242,14 @@ async fn main(args: &[usize]) {
             let img_names_to_sizes = img_names_to_sizes.clone();
             let client_tx = client_tx.clone();
             let continuation_receiver = continuation_receiver.clone();
+            let mut host_gen = UnboundedInputHostGenerator::new(
+                iam_ipaddr.to_string(),
+                peer_ipaddr.to_string(),
+                0.99,
+            );
 
             worker_threads.push(kernel::rt::spawn(async move {
-                let handle_one = async || -> (Record, Duration) {
+                let mut handle_one = async || -> (Record, Duration) {
                     if let Some(Ok(Some(continuation))) = continuation_receiver.try_recv() {
                         let k_decompress_init = kvmclock::time_since_boot();
                         let decompressed = decompress_size_prepended(&continuation).unwrap();
@@ -290,8 +297,7 @@ async fn main(args: &[usize]) {
                         let thumbnailer_function = common::elfloader::load_elf(THUMBNAILER)
                             .expect("Failed to load ELF as Function");
 
-                        // TODO(kmohr) create a generator for this
-                        let image_hostname = "127.0.0.1:11212";
+                        let image_hostname = host_gen.next().unwrap();
                         let image_filename = "falls_1.ppm";
                         let image_size = img_names_to_sizes[image_filename];
 

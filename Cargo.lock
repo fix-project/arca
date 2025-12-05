@@ -112,10 +112,12 @@ dependencies = [
  "futures",
  "hashbrown 0.16.1",
  "kernel",
+ "libm",
  "log",
  "lz4_flex",
  "ninep",
  "postcard",
+ "rand",
  "serde",
  "serde_bytes",
  "thumbnail-example",
@@ -1045,6 +1047,12 @@ dependencies = [
  "cfg-if",
  "windows-targets 0.53.3",
 ]
+
+[[package]]
+name = "libm"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "linux-raw-sys"
