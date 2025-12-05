@@ -200,13 +200,15 @@ async fn main(args: &[usize]) {
     #[cfg(feature = "ablation")]
     let (tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::AblatedServer;
-        let server = AblatedServer::new(server_conn, shared_ns.clone());
+        let (read_half, write_half) = server_conn;
+        let server = AblatedServer::new(read_half, write_half, shared_ns.clone());
         let tcpserver = TcpServer::new(server);
         let handle = kernel::rt::spawn(async move { tcpserver.run().await });
 
         let (sender, receiver) = channel::unbounded::<Option<Vec<u8>>>();
         sender
-            .send_blocking(None)
+            .send(None)
+            .await
             .expect("Failed to close sender side");
         (handle, receiver)
     };
@@ -215,14 +217,17 @@ async fn main(args: &[usize]) {
     let (tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::ContinuationServer;
         let (sender, receiver) = channel::unbounded();
-        let server = ContinuationServer::new(server_conn, sender);
+        let (read_half, write_half) = server_conn;
+        let server = ContinuationServer::new(read_half, write_half, sender);
         let tcpserver = TcpServer::new(server);
         let handle = kernel::rt::spawn(async move { tcpserver.run().await });
         (handle, receiver)
     };
 
     // Setup Clients
-    let (client_tx, client_rx) = tcpserver::make_client(client_conn);
+    let (read_half, write_half) = client_conn;
+    let (client_tx, client_relay, client_rx) = tcpserver::make_client(read_half, write_half);
+    let client_relay_handle = kernel::rt::spawn(async move { client_relay.run().await });
     let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
 
     let smp = kernel::ncores();
@@ -245,7 +250,8 @@ async fn main(args: &[usize]) {
             let mut host_gen = UnboundedInputHostGenerator::new(
                 iam_ipaddr.to_string(),
                 peer_ipaddr.to_string(),
-                0.99,
+                // 0.99,
+                0.0,
             );
 
             worker_threads.push(kernel::rt::spawn(async move {
@@ -374,6 +380,8 @@ async fn main(args: &[usize]) {
 
     // Close client_tx after main jobs are done
     let _ = client_tx.close().await;
+    log::debug!("Joining client relay");
+    let _ = client_relay_handle.await;
     log::debug!("Joining client rx");
     let _ = client_rx_handle.await;
     log::debug!("Joining tcpserver");

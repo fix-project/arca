@@ -14,14 +14,16 @@ const ARCADE: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_ARCADE_arcade"));
 const FIX: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FIX_fix"));
 
 mod fs;
+mod relay;
 mod tcp;
 mod vsock;
 
 use ::vsock::{VsockAddr, VsockListener};
-use common::ipaddr::IpAddr;
 use fs::*;
 use tcp::*;
 use vsock::*;
+
+use crate::relay::relay_tcp_vsock;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

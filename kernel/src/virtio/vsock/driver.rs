@@ -107,7 +107,7 @@ impl Driver {
                 if tx_free < len {
                     SpinLock::unlock(status);
                     waiting = true;
-                    log::info!("waiting for rx capacity");
+                    log::info!("waiting for rx capacity {tx_free} {len}");
                     crate::rt::wfi().await;
                     continue;
                 }
