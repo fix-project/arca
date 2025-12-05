@@ -78,7 +78,8 @@ pub trait MessageServer {
 }
 
 pub struct AblatedServer {
-    f: Box<dyn File>,
+    f_read_half: Box<dyn File>,
+    f_write_half: Box<dyn File>,
     shared_ns: Arc<Namespace>,
 }
 
@@ -99,7 +100,7 @@ impl MessageServer for AblatedServer {
 
                 // TODO(kmohr) let's just encode the file size instead of reading in chunks like this
                 let mut file_data = Vec::new();
-                let mut buffer = [0u8; 4096];
+                let mut buffer = [0u8; 4 * 1024 * 1024];
                 loop {
                     match file.read(&mut buffer).await {
                         Ok(0) => break, // EOF
@@ -114,7 +115,7 @@ impl MessageServer for AblatedServer {
                 log::debug!("Read data {}", file_path);
 
                 let response = Message::FileResponse(FileResponse { file_data });
-                write_message_to_f(&mut self.f, &response).await?;
+                write_message_to_f(&mut self.f_write_half, &response).await?;
                 log::debug!("Replied {}", file_path);
                 Ok(())
             }
@@ -129,70 +130,126 @@ impl MessageServer for AblatedServer {
     }
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
-        read_exact(&mut self.f, buf).await
+        read_exact(&mut self.f_read_half, buf).await
     }
 }
 impl AblatedServer {
-    pub fn new(f: Box<dyn File>, shared_ns: Arc<Namespace>) -> Self {
-        AblatedServer { f, shared_ns }
+    pub fn new(
+        f_read_half: Box<dyn File>,
+        f_write_half: Box<dyn File>,
+        shared_ns: Arc<Namespace>,
+    ) -> Self {
+        AblatedServer {
+            f_read_half,
+            f_write_half,
+            shared_ns,
+        }
     }
 }
 
 pub struct AblatedClientTx {
-    f: Arc<SpinLock<Box<dyn File>>>,
+    // f: Arc<SpinLock<Box<dyn File>>>,
+    // Futures to get some one to send the file request
+    file_request_future_send: channel::Sender<Option<String>>,
+    // Futures to be filled whe data arrives
     future_send: channel::Sender<Option<oneshot::Sender<Vec<u8>>>>,
 }
 
+pub struct AblatedClientRelay {
+    f_write_half: Box<dyn File>,
+    file_request_future_recv: channel::Receiver<Option<String>>,
+}
+
 pub struct AblatedClientRx {
-    f: Arc<SpinLock<Box<dyn File>>>,
+    f_read_half: Box<dyn File>,
     future_recv: channel::Receiver<Option<oneshot::Sender<Vec<u8>>>>,
 }
 
 impl AblatedClientTx {
     fn new(
-        f: Arc<SpinLock<Box<dyn File>>>,
+        file_request_future_send: channel::Sender<Option<String>>,
         future_send: channel::Sender<Option<oneshot::Sender<Vec<u8>>>>,
     ) -> Arc<Self> {
-        Arc::new(Self { f, future_send })
+        Arc::new(Self {
+            file_request_future_send,
+            future_send,
+        })
     }
 
     pub async fn request_file(
         &self,
         file_path: String,
     ) -> Result<oneshot::Receiver<Vec<u8>>, Error> {
-        let m = Message::FileRequest(FileRequest { file_path });
         let (sender, receiver) = oneshot::channel();
-        {
-            let mut guard = self.f.lock();
-            write_message_to_f(&mut guard, &m).await?;
-            self.future_send
-                .send_blocking(Some(sender))
-                .expect("Failed to send blocking");
-        }
+        self.future_send
+            .send_blocking(Some(sender))
+            .expect("Failed to send blocking");
+        self.file_request_future_send
+            .send_blocking(Some(file_path))
+            .expect("Failed to send blocking");
         Ok(receiver)
     }
 
     pub async fn close(&self) {
         {
-            write_message_to_f(&mut self.f.lock(), &Message::ClientClose)
-                .await
-                .expect("Failed to send Close Connection message");
             self.future_send
+                .send_blocking(None)
+                .expect("Failed to send blocking");
+            self.file_request_future_send
                 .send_blocking(None)
                 .expect("Failed to send blocking");
         }
     }
 }
 
-impl AblatedClientRx {
+impl AblatedClientRelay {
     fn new(
-        f: Arc<SpinLock<Box<dyn File>>>,
-        future_recv: channel::Receiver<Option<oneshot::Sender<Vec<u8>>>>,
-    ) -> Arc<Self> {
-        Arc::new(Self { f, future_recv })
+        f_write_half: Box<dyn File>,
+        file_request_future_recv: channel::Receiver<Option<String>>,
+    ) -> Self {
+        Self {
+            f_write_half,
+            file_request_future_recv,
+        }
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+    async fn close(&mut self) {
+        let _ = write_message_to_f(&mut self.f_write_half, &Message::ClientClose).await;
+    }
+
+    pub async fn run(mut self) -> Result<(), Error> {
+        loop {
+            let x = self.file_request_future_recv.recv().await;
+            match x {
+                Err(_) => {
+                    self.close().await;
+                    return Ok(());
+                }
+                Ok(None) => {
+                    self.close().await;
+                    return Ok(());
+                }
+                Ok(Some(file_path)) => {
+                    let m = Message::FileRequest(FileRequest { file_path });
+                    let _ = write_message_to_f(&mut self.f_write_half, &m).await;
+                }
+            }
+        }
+    }
+}
+
+impl AblatedClientRx {
+    fn new(
+        f_read_half: Box<dyn File>,
+        future_recv: channel::Receiver<Option<oneshot::Sender<Vec<u8>>>>,
+    ) -> Self {
+        Self {
+            f_read_half,
+            future_recv,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
             let x = self.future_recv.recv().await;
 
@@ -212,8 +269,7 @@ impl AblatedClientRx {
                             let mut readbuf = buf.as_mut_slice();
                             while !readbuf.is_empty() {
                                 let n = self
-                                    .f
-                                    .lock()
+                                    .f_read_half
                                     .read(readbuf)
                                     .await
                                     .expect("Failed to read msg size");
@@ -227,8 +283,7 @@ impl AblatedClientRx {
                             let mut message_readbuf = message_buf.as_mut_slice();
                             while !message_readbuf.is_empty() {
                                 let n = self
-                                    .f
-                                    .lock()
+                                    .f_read_half
                                     .read(message_readbuf)
                                     .await
                                     .expect("Failed to read content");
@@ -256,7 +311,8 @@ impl AblatedClientRx {
 }
 
 pub struct ContinuationServer {
-    f: Box<dyn File>,
+    f_read_half: Box<dyn File>,
+    f_write_half: Box<dyn File>,
     continuations: channel::Sender<Option<Vec<u8>>>,
 }
 
@@ -281,60 +337,107 @@ impl MessageServer for ContinuationServer {
     }
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
-        read_exact(&mut self.f, buf).await
+        read_exact(&mut self.f_read_half, buf).await
     }
 }
 
 impl Drop for ContinuationServer {
     fn drop(&mut self) {
-        self.continuations
-            .send_blocking(None)
-            .expect("Failed to close continuation channel");
+        let _ = self.continuations.send_blocking(None);
     }
 }
 
 impl ContinuationServer {
     pub fn new(
-        f: Box<dyn File>,
+        f_read_half: Box<dyn File>,
+        f_write_half: Box<dyn File>,
         continuations: channel::Sender<Option<Vec<u8>>>,
     ) -> ContinuationServer {
-        ContinuationServer { f, continuations }
+        ContinuationServer {
+            f_read_half,
+            f_write_half,
+            continuations,
+        }
     }
 }
 
 pub struct ContinuationClientRx;
 
 impl ContinuationClientRx {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {})
+    fn new() -> Self {
+        Self {}
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+    pub async fn run(self) -> Result<(), Error> {
         Ok(())
     }
 }
 
 pub struct ContinuationClientTx {
-    f: SpinLock<Box<dyn File>>,
+    continuation_request_future_send: channel::Sender<Option<Vec<u8>>>,
 }
 
 impl ContinuationClientTx {
-    fn new(f: Box<dyn File>) -> Arc<Self> {
+    fn new(continuation_request_future_send: channel::Sender<Option<Vec<u8>>>) -> Arc<Self> {
         Arc::new(Self {
-            f: SpinLock::new(f),
+            continuation_request_future_send,
         })
     }
 
     pub async fn request_to_run(&self, data: Vec<u8>) -> Result<(), Error> {
-        let m = Message::Continuation(Continuation { data });
-        write_message_to_f(&mut self.f.lock(), &m).await?;
+        let _ = self
+            .continuation_request_future_send
+            .send_blocking(Some(data));
         Ok(())
     }
 
     pub async fn close(&self) {
-        write_message_to_f(&mut self.f.lock(), &Message::ClientClose)
-            .await
-            .expect("Failed to send Connection Close message");
+        {
+            self.continuation_request_future_send
+                .send_blocking(None)
+                .expect("Failed to send blocking");
+        }
+    }
+}
+
+pub struct ContinuationClientRelay {
+    f_write_half: Box<dyn File>,
+    continuation_request_future_recv: channel::Receiver<Option<Vec<u8>>>,
+}
+
+impl ContinuationClientRelay {
+    fn new(
+        f_write_half: Box<dyn File>,
+        continuation_request_future_recv: channel::Receiver<Option<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            f_write_half,
+            continuation_request_future_recv,
+        }
+    }
+
+    async fn close(&mut self) {
+        let _ = write_message_to_f(&mut self.f_write_half, &Message::ClientClose).await;
+    }
+
+    pub async fn run(mut self) -> Result<(), Error> {
+        loop {
+            let x = self.continuation_request_future_recv.recv().await;
+            match x {
+                Err(_) => {
+                    self.close().await;
+                    return Ok(());
+                }
+                Ok(None) => {
+                    self.close().await;
+                    return Ok(());
+                }
+                Ok(Some(data)) => {
+                    let m = Message::Continuation(Continuation { data });
+                    let _ = write_message_to_f(&mut self.f_write_half, &m).await;
+                }
+            }
+        }
     }
 }
 
@@ -365,37 +468,56 @@ impl<H: MessageServer + Send> TcpServer<H> {
 #[cfg(feature = "ablation")]
 pub type ClientTx = AblatedClientTx;
 #[cfg(feature = "ablation")]
+pub type ClientRelay = AblatedClientRelay;
+#[cfg(feature = "ablation")]
 pub type ClientRx = AblatedClientRx;
 #[cfg(not(feature = "ablation"))]
 pub type ClientTx = ContinuationClientTx;
 #[cfg(not(feature = "ablation"))]
+pub type ClientRelay = ContinuationClientRelay;
+#[cfg(not(feature = "ablation"))]
 pub type ClientRx = ContinuationClientRx;
 
-fn make_ablated_client(client_conn: Box<dyn File>) -> (Arc<AblatedClientTx>, Arc<AblatedClientRx>) {
+fn make_ablated_client(
+    client_conn_read_end: Box<dyn File>,
+    client_conn_write_end: Box<dyn File>,
+) -> (Arc<AblatedClientTx>, AblatedClientRelay, AblatedClientRx) {
+    let (file_request_future_send, file_request_future_recv) = channel::unbounded();
     let (future_send, future_recv) = channel::unbounded();
-    let f = Arc::new(SpinLock::new(client_conn));
 
     (
-        AblatedClientTx::new(f.clone(), future_send),
-        AblatedClientRx::new(f, future_recv),
+        AblatedClientTx::new(file_request_future_send, future_send),
+        AblatedClientRelay::new(client_conn_write_end, file_request_future_recv),
+        AblatedClientRx::new(client_conn_read_end, future_recv),
     )
 }
 
 fn make_non_ablated_client(
-    client_conn: Box<dyn File>,
-) -> (Arc<ContinuationClientTx>, Arc<ContinuationClientRx>) {
+    _client_conn_read_end: Box<dyn File>,
+    client_conn_write_end: Box<dyn File>,
+) -> (
+    Arc<ContinuationClientTx>,
+    ContinuationClientRelay,
+    ContinuationClientRx,
+) {
+    let (future_send, future_recv) = channel::unbounded();
+
     (
-        ContinuationClientTx::new(client_conn),
+        ContinuationClientTx::new(future_send),
+        ContinuationClientRelay::new(client_conn_write_end, future_recv),
         ContinuationClientRx::new(),
     )
 }
 
-pub fn make_client(client_conn: Box<dyn File>) -> (Arc<ClientTx>, Arc<ClientRx>) {
+pub fn make_client(
+    client_conn_read_end: Box<dyn File>,
+    client_conn_write_end: Box<dyn File>,
+) -> (Arc<ClientTx>, ClientRelay, ClientRx) {
     #[cfg(feature = "ablation")]
-    let res = make_ablated_client(client_conn);
+    let res = make_ablated_client(client_conn_read_end, client_conn_write_end);
 
     #[cfg(not(feature = "ablation"))]
-    let res = make_non_ablated_client(client_conn);
+    let res = make_non_ablated_client(client_conn_read_end, client_conn_write_end);
 
     res
 }

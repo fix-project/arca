@@ -5,7 +5,7 @@ use vfs::{File, Open};
 
 use crate::proc::Namespace;
 
-pub async fn connect_to(ns: &Namespace, addr: IpAddr) -> Result<Box<dyn File>, ()> {
+async fn connect_to(ns: &Namespace, addr: IpAddr) -> Result<Box<dyn File>, ()> {
     let tcp_ctl_result = ns.walk("/net/tcp/clone", vfs::Open::ReadWrite).await;
     let mut tcp_ctl = match tcp_ctl_result {
         Ok(obj) => match obj.as_file() {
@@ -63,6 +63,15 @@ pub async fn connect_to(ns: &Namespace, addr: IpAddr) -> Result<Box<dyn File>, (
     Ok(data_file)
 }
 
+pub async fn connect_to_pair(
+    ns: &Namespace,
+    addr: IpAddr,
+) -> Result<(Box<dyn File>, Box<dyn File>), ()> {
+    let read_half = connect_to(ns, addr).await?;
+    let write_half = connect_to(ns, addr).await?;
+    Ok((read_half, write_half))
+}
+
 pub async fn listen_on(ns: &Namespace, addr: IpAddr) -> Result<String, ()> {
     // Get id from /tcp/clone
     let mut tcp_ctl = ns
@@ -99,7 +108,7 @@ pub async fn listen_on(ns: &Namespace, addr: IpAddr) -> Result<String, ()> {
     Ok(listen_path)
 }
 
-pub async fn get_one_incoming_connection(
+async fn get_one_incoming_connection(
     ns: &Namespace,
     listen_path: String,
 ) -> Result<Box<dyn File>, ()> {
@@ -129,4 +138,13 @@ pub async fn get_one_incoming_connection(
         .unwrap();
 
     Ok(data_file)
+}
+
+pub async fn get_one_incoming_connection_pair(
+    ns: &Namespace,
+    listen_path: String,
+) -> Result<(Box<dyn File>, Box<dyn File>), ()> {
+    let write_half = get_one_incoming_connection(ns, listen_path.clone()).await?;
+    let read_half = get_one_incoming_connection(ns, listen_path).await?;
+    Ok((read_half, write_half))
 }
