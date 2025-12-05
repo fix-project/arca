@@ -4,7 +4,6 @@
 extern crate alloc;
 extern crate user;
 
-use core::arch::x86_64::_rdtsc;
 use user::io::File;
 use user::prelude::*;
 
@@ -59,7 +58,6 @@ pub fn parse_u32(bytes: &[u8]) -> Result<u32, &'static str> {
 }
 
 fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
-    let algo_start = unsafe { _rdtsc() };
     // check the magic number
     let index = 0;
     let (magic_number, index) = get_next_token(input_bytes, index);
@@ -91,12 +89,10 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
     static CHANNELS: u32 = 3;
     let output_height: u32 = (OUTPUT_WIDTH as f32 / width as f32 * height as f32) as u32;
-    let algo_before_alloc = unsafe { _rdtsc() };
     let header_data = alloc::format!("P6\n{} {}\n{}\n", OUTPUT_WIDTH, output_height, maxval);
     let out_index = header_data.len();
     let mut thumbnail =
         alloc::vec![0u8; out_index + (OUTPUT_WIDTH * output_height * CHANNELS) as usize];
-    let after_alloc = unsafe { _rdtsc() };
     thumbnail[..out_index].copy_from_slice(header_data.as_bytes());
     let scale_x = width as f32 / OUTPUT_WIDTH as f32;
     let scale_y = height as f32 / output_height as f32;
@@ -113,7 +109,6 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
         }
     }
 
-    let algo_end = unsafe { _rdtsc() };
     //user::error::log(
     //    alloc::format!(
     //        "TIMING (thumbnail_ppm6): \nalgorithm without alloc: {}%\nalloc: {}%",
@@ -158,19 +153,14 @@ pub extern "C" fn _rsstart() -> ! {
         .expect("could not open ppm file");
     // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
-    let alloc_start = unsafe { _rdtsc() };
     let mut buf = alloc::vec![0; file_size.read() as usize];
-    let alloc_end = unsafe { _rdtsc() };
 
     let _n = ppm_data
         .read(&mut buf[..])
         .expect("could not read ppm file");
-    let read_file_end = unsafe { _rdtsc() };
 
     let size = thumbnail_ppm6(&buf);
-    let algo_end = unsafe { _rdtsc() };
 
-    let total_time = algo_end - alloc_start;
     //user::error::log(
     //    alloc::format!(
     //        "TIMING: \nalloc: {}%\nread file: {}%\nalgorithm: {}%",

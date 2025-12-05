@@ -296,7 +296,6 @@ async fn main(args: &[usize]) {
                         let thumbnailer_function = common::elfloader::load_elf(THUMBNAILER)
                             .expect("Failed to load ELF as Function");
 
-                        // TODO(kmohr) create a generator for this
                         let image_hostname = host_gen.next().unwrap();
                         let image_filename = "falls_1.ppm";
                         let image_size = img_names_to_sizes[image_filename];
