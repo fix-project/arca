@@ -102,10 +102,7 @@ impl Proc {
             let mut f = self.f;
             let mut record = Record::LocalRecord(LocalRecord);
             loop {
-                let force_time = kvmclock::time_since_boot();
                 let result = f.force();
-                let force_time = kvmclock::time_since_boot() - force_time;
-                // log::info!("PERF\nforce time: {} us", force_time.as_micros());
 
                 let Value::Function(g) = result else {
                     log::error!("proc returned something other than an effect!");
@@ -246,7 +243,6 @@ impl Proc {
                                 }
                             }
                         } else {
-                            let init_time = kvmclock::time_since_boot();
                             let file = fix(file::open(
                                 &self.state,
                                 filename.as_bytes(),
@@ -254,12 +250,6 @@ impl Proc {
                                 file::ModeT(mode.read() as u32),
                             )
                             .await);
-
-                            let end_time = kvmclock::time_since_boot();
-                            //log::info!(
-                            //    "PERF\nopen local time: {} us",
-                            //    (end_time - init_time).as_micros()
-                            //);
                             k.apply(file)
                         }
                     }
