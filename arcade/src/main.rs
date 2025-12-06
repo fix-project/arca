@@ -146,7 +146,7 @@ async fn main(args: &[usize]) {
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
         ("falls_1.ppm", 2332861),
-        ("Sun.ppm", 12814240),
+        //("Sun.ppm", 12814240),
     ]));
 
     let local_data = MemDir::default();
@@ -177,18 +177,18 @@ async fn main(args: &[usize]) {
         let listen_path = tcputil::listen_on(&ns, iam_ipaddr)
             .await
             .expect("Failed to listen on port");
-        let server_conn = tcputil::get_one_incoming_connection(&ns, listen_path.clone())
+        let server_conn = tcputil::get_one_incoming_connection_pair(&ns, listen_path.clone())
             .await
             .expect("Failed to get incoming connection");
-        let client_conn = tcputil::get_one_incoming_connection(&ns, listen_path)
+        let client_conn = tcputil::get_one_incoming_connection_pair(&ns, listen_path)
             .await
             .expect("Failed to get incoming connection");
         (server_conn, client_conn)
     } else {
-        let client_conn = tcputil::connect_to(&ns, peer_ipaddr)
+        let client_conn = tcputil::connect_to_pair(&ns, peer_ipaddr)
             .await
             .expect("Failed to connect");
-        let server_conn = tcputil::connect_to(&ns, peer_ipaddr)
+        let server_conn = tcputil::connect_to_pair(&ns, peer_ipaddr)
             .await
             .expect("Failed to connect");
         (server_conn, client_conn)
@@ -207,8 +207,7 @@ async fn main(args: &[usize]) {
 
         let (sender, receiver) = channel::unbounded::<Option<Vec<u8>>>();
         sender
-            .send(None)
-            .await
+            .send_blocking(None)
             .expect("Failed to close sender side");
         (handle, receiver)
     };
@@ -238,7 +237,7 @@ async fn main(args: &[usize]) {
         let go = Arc::new(AtomicBool::new(false));
         let ready_count = Arc::new(AtomicUsize::new(0));
 
-        for _ in 0..smp {
+        for _ in 0..smp - 4 {
             let go = go.clone();
             let total_count = total_count.clone();
             let total_time = total_time.clone();
@@ -358,7 +357,7 @@ async fn main(args: &[usize]) {
             }));
         }
 
-        while ready_count.load(Ordering::Acquire) < smp {
+        while ready_count.load(Ordering::Acquire) < smp - 4 {
             kernel::rt::yield_now().await;
         }
         kernel::rt::delay_for(Duration::from_millis(1000)).await;

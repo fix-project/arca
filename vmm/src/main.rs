@@ -5,6 +5,7 @@
 use std::{num::NonZero, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
+use common::ipaddr::IpAddr;
 use libc::VMADDR_CID_HOST;
 use ninep::*;
 use vfs::Open;
@@ -23,6 +24,7 @@ use fs::*;
 use tcp::*;
 use vsock::*;
 
+#[allow(unused)]
 use crate::relay::relay_tcp_vsock;
 
 fn main() -> anyhow::Result<()> {

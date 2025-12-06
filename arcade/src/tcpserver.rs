@@ -385,7 +385,9 @@ impl ContinuationClientTx {
     }
 
     pub async fn request_to_run(&self, data: Vec<u8>) -> Result<(), Error> {
-        let _ = self.continuation_request_future_send.send_blocking(Some(data));
+        let _ = self
+            .continuation_request_future_send
+            .send_blocking(Some(data));
         Ok(())
     }
 

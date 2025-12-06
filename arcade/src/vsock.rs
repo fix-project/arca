@@ -104,9 +104,9 @@ impl Dir for VSockFS {
 
 impl Dir for ConnDir {
     async fn open(&self, name: &str, open: Open) -> Result<Object> {
-        //if !open.contains(Open::Read) {
-        //    return Err(ErrorKind::PermissionDenied.into());
-        //}
+        if !open.contains(Open::Read) {
+            return Err(ErrorKind::PermissionDenied.into());
+        }
         Ok(Object::File(match name {
             "ctl" => Control {
                 open,
