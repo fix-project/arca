@@ -196,7 +196,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             ExitCode::from(args[0] as u8).exit_process();
                         }
                         hypercall::LOG => {
-                            let record: *const common::LogRecord = BuddyAllocator.from_offset(args[1] as usize);
+                            let record: *const common::LogRecord = BuddyAllocator.from_offset(args[0] as usize);
                             unsafe {
                                 let common::LogRecord {
                                     level,
