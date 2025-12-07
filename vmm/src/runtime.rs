@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    io::{self, Read},
+    io::{self, Read, Write},
+    net::TcpStream,
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -10,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{BuddyAllocator, hypercall};
+use common::{hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{
     kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
@@ -30,6 +31,8 @@ fn new_cpu<'scope>(
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
+    server_conn: TcpStream,
+    client_conn: TcpStream,
 ) -> ScopedJoinHandle<'scope, ()> {
     // set up the CPU in long mode
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
@@ -143,12 +146,18 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            run_cpu(vcpu_fd, elf, flag);
+            run_cpu(vcpu_fd, elf, flag, server_conn, client_conn);
         })
-    .unwrap()
+        .unwrap()
 }
 
-fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
+fn run_cpu(
+    mut vcpu_fd: VcpuFd,
+    elf: &ElfBytes<AnyEndian>,
+    exit: Arc<AtomicBool>,
+    mut server_conn: TcpStream,
+    mut client_conn: TcpStream,
+) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -174,7 +183,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
             .set_mp_state(kvm_bindings::kvm_mp_state {
                 mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
             })
-        .unwrap();
+            .unwrap();
         let vcpu_exit = vcpu_fd.run().expect("run failed");
         match vcpu_exit {
             VcpuExit::IoIn(addr, data) => match addr {
@@ -196,7 +205,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             ExitCode::from(args[0] as u8).exit_process();
                         }
                         hypercall::LOG => {
-                            let record: *const common::LogRecord = BuddyAllocator.from_offset(args[0] as usize);
+                            let record: *const common::LogRecord =
+                                BuddyAllocator.from_offset(args[0] as usize);
                             unsafe {
                                 let common::LogRecord {
                                     level,
@@ -212,10 +222,16 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                     target.1,
                                 );
                                 let file = file.map(|x| {
-                                    std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
                                 });
                                 let module_path = module_path.map(|x| {
-                                    std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
                                 });
                                 let message = std::str::from_raw_parts(
                                     BuddyAllocator.from_offset::<u8>(message.0),
@@ -224,13 +240,13 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 
                                 log::logger().log(
                                     &log::Record::builder()
-                                    .level(level)
-                                    .target(target)
-                                    .file(file)
-                                    .line(line)
-                                    .module_path(module_path)
-                                    .args(format_args!("{message}"))
-                                    .build(),
+                                        .level(level)
+                                        .target(target)
+                                        .file(file)
+                                        .line(line)
+                                        .module_path(module_path)
+                                        .args(format_args!("{message}"))
+                                        .build(),
                                 );
                             }
                         }
@@ -243,7 +259,10 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 record.file_len = name.len();
                                 let (ptr, cap) = record.file_buffer;
                                 let buffer: &mut [u8] = unsafe {
-                                    core::slice::from_raw_parts_mut(BuddyAllocator.from_offset(ptr), cap)
+                                    core::slice::from_raw_parts_mut(
+                                        BuddyAllocator.from_offset(ptr),
+                                        cap,
+                                    )
                                 };
                                 if name.len() > cap {
                                     buffer.copy_from_slice(&name.as_bytes()[..cap]);
@@ -274,6 +293,42 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 let mem = core::slice::from_raw_parts_mut(ptr, len);
                                 mem.fill(0);
                                 regs.rax = mem.as_ptr() as u64;
+                            }
+                        }
+                        hypercall::SERVERREAD => {
+                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let len = args[1] as usize;
+                            unsafe {
+                                let buf = core::slice::from_raw_parts_mut(ptr, len);
+                                let n = server_conn.read(buf).unwrap_or(0);
+                                regs.rax = n as u64;
+                            }
+                        }
+                        hypercall::SERVERWRITE => {
+                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let len = args[1] as usize;
+                            unsafe {
+                                let buf = core::slice::from_raw_parts(ptr, len);
+                                let n = server_conn.write(buf).unwrap_or(0);
+                                regs.rax = n as u64;
+                            }
+                        }
+                        hypercall::CLIENTREAD => {
+                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let len = args[1] as usize;
+                            unsafe {
+                                let buf = core::slice::from_raw_parts_mut(ptr, len);
+                                let n = client_conn.read(buf).unwrap_or(0);
+                                regs.rax = n as u64;
+                            }
+                        }
+                        hypercall::CLIENTWRITE => {
+                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let len = args[1] as usize;
+                            unsafe {
+                                let buf = core::slice::from_raw_parts(ptr, len);
+                                let n = client_conn.write(buf).unwrap_or(0);
+                                regs.rax = n as u64;
                             }
                         }
                         x => unimplemented!("hypercall {x}"),
@@ -435,7 +490,7 @@ impl Runtime {
         }
     }
 
-    pub fn run(&mut self, args: &[usize]) {
+    pub fn run(&mut self, args: &[usize], server_conn: TcpStream, client_conn: TcpStream) {
         self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
@@ -472,19 +527,21 @@ impl Runtime {
                 assert!(!inner_args.is_empty());
                 let inner_args_offset = BuddyAllocator.to_offset(inner_args.as_ptr());
                 cpus.push(new_cpu(
-                        i,
-                        s,
-                        vcpu_fd,
-                        &elf,
-                        &[
+                    i,
+                    s,
+                    vcpu_fd,
+                    &elf,
+                    &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
                         inner_args.len() as u64,
                         inner_args_offset as u64,
                         0,
                         0,
-                        ],
-                        &kvm_cpuid,
+                    ],
+                    &kvm_cpuid,
+                    server_conn.try_clone().unwrap(),
+                    client_conn.try_clone().unwrap(),
                 ));
             }
             for cpu in cpus {
