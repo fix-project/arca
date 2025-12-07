@@ -8,6 +8,7 @@ use clap::{Arg, ArgAction, Command};
 use common::ipaddr::IpAddr;
 use libc::VMADDR_CID_HOST;
 use ninep::*;
+use std::net::{TcpListener, TcpStream};
 use vfs::Open;
 use vmm::runtime::Runtime;
 
@@ -134,6 +135,18 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Setup Tcp Connection
+    let (server_conn, client_conn) = if is_listener {
+        let listener = TcpListener::bind(iam)?;
+        let conn1 = listener.accept()?;
+        let conn2 = listener.accept()?;
+        (conn1.0, conn2.0)
+    } else {
+        let conn1 = TcpStream::connect(peer)?;
+        let conn2 = TcpStream::connect(peer)?;
+        (conn2, conn1)
+    };
+
     let iam_ipaddr = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
     let peer_ipaddr = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
 
@@ -148,14 +161,18 @@ fn main() -> anyhow::Result<()> {
     );
 
     // XXX: this will break if usize is smaller than u64
-    runtime.run(&[
-        cid,
-        host_listener_port as usize,
-        iam_ipaddr as usize,
-        peer_ipaddr as usize,
-        is_listener as usize,
-        duration,
-    ]);
+    runtime.run(
+        &[
+            cid,
+            host_listener_port as usize,
+            iam_ipaddr as usize,
+            peer_ipaddr as usize,
+            is_listener as usize,
+            duration,
+        ],
+        server_conn,
+        client_conn,
+    );
 
     Ok(())
 }

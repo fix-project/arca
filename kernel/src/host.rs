@@ -91,3 +91,27 @@ pub fn memclr(region: *mut [u8]) {
         crate::io::hypercall2(hypercall::MEMCLR, p as u64, n as u64);
     }
 }
+
+pub fn server_read(region: *mut [u8]) -> usize {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe { crate::io::hypercall2(hypercall::SERVERREAD, p as u64, n as u64) as usize }
+}
+
+pub fn server_write(region: *const [u8]) -> usize {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe { crate::io::hypercall2(hypercall::SERVERWRITE, p as u64, n as u64) as usize }
+}
+
+pub fn client_read(region: *mut [u8]) -> usize {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe { crate::io::hypercall2(hypercall::CLIENTREAD, p as u64, n as u64) as usize }
+}
+
+pub fn client_write(region: *const [u8]) -> usize {
+    let (p, n) = region.to_raw_parts();
+    let p = vm::ka2pa(p);
+    unsafe { crate::io::hypercall2(hypercall::CLIENTWRITE, p as u64, n as u64) as usize }
+}
