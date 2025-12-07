@@ -104,7 +104,7 @@ pub struct Accumulator {
     remote_invocation_record: RemoteInvocationRecord,
     local_count: usize,
     remote_data_count: usize,
-    migrated_count: usize,
+    pub migrated_count: usize,
     remote_invocation_count: usize,
 }
 

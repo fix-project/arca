@@ -5,6 +5,7 @@
 use std::{num::NonZero, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
+use common::ipaddr::IpAddr;
 use libc::VMADDR_CID_HOST;
 use ninep::*;
 use std::net::{TcpListener, TcpStream};
@@ -146,6 +147,9 @@ fn main() -> anyhow::Result<()> {
         (conn2, conn1)
     };
 
+    let iam_ipaddr = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
+    let peer_ipaddr = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
+
     log::info!(
         "Running {} on VM cid={} with {} core(s) for {}s. I am {} and peer is {}",
         if run_fix { "fix" } else { "arcade" },
@@ -158,7 +162,14 @@ fn main() -> anyhow::Result<()> {
 
     // XXX: this will break if usize is smaller than u64
     runtime.run(
-        &[cid, host_listener_port as usize, duration],
+        &[
+            cid,
+            host_listener_port as usize,
+            iam_ipaddr as usize,
+            peer_ipaddr as usize,
+            is_listener as usize,
+            duration,
+        ],
         server_conn,
         client_conn,
     );

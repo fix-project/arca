@@ -72,7 +72,7 @@ async fn main(args: &[usize]) {
     let host_listener_port = args[1];
     let iam_ipaddr = IpAddr::from(args[2] as u64);
     let peer_ipaddr = IpAddr::from(args[3] as u64);
-    let is_listener = args[4] != 0;
+    let _is_listener = args[4] != 0;
     let duration = Duration::from_secs(args[5] as u64);
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
@@ -146,7 +146,7 @@ async fn main(args: &[usize]) {
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
         ("falls_1.ppm", 2332861),
-        //("Sun.ppm", 12814240),
+        ("Sun.ppm", 12814240),
     ]));
 
     let local_data = MemDir::default();
@@ -172,36 +172,13 @@ async fn main(args: &[usize]) {
         .await
         .unwrap();
 
-    // Setup the tcp connection between the **two** machines
-    let (server_conn, client_conn) = if is_listener {
-        let listen_path = tcputil::listen_on(&ns, iam_ipaddr)
-            .await
-            .expect("Failed to listen on port");
-        let server_conn = tcputil::get_one_incoming_connection_pair(&ns, listen_path.clone())
-            .await
-            .expect("Failed to get incoming connection");
-        let client_conn = tcputil::get_one_incoming_connection_pair(&ns, listen_path)
-            .await
-            .expect("Failed to get incoming connection");
-        (server_conn, client_conn)
-    } else {
-        let client_conn = tcputil::connect_to_pair(&ns, peer_ipaddr)
-            .await
-            .expect("Failed to connect");
-        let server_conn = tcputil::connect_to_pair(&ns, peer_ipaddr)
-            .await
-            .expect("Failed to connect");
-        (server_conn, client_conn)
-    };
-
     let shared_ns = Arc::new(ns);
 
     // Setup Servers
     #[cfg(feature = "ablation")]
     let (tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::AblatedServer;
-        let (read_half, write_half) = server_conn;
-        let server = AblatedServer::new(read_half, write_half, shared_ns.clone());
+        let server = AblatedServer::new(shared_ns.clone());
         let tcpserver = TcpServer::new(server);
         let handle = kernel::rt::spawn(async move { tcpserver.run().await });
 
@@ -216,20 +193,19 @@ async fn main(args: &[usize]) {
     let (tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::ContinuationServer;
         let (sender, receiver) = channel::unbounded();
-        let (read_half, write_half) = server_conn;
-        let server = ContinuationServer::new(read_half, write_half, sender);
+        let server = ContinuationServer::new(sender);
         let tcpserver = TcpServer::new(server);
         let handle = kernel::rt::spawn(async move { tcpserver.run().await });
         (handle, receiver)
     };
 
     // Setup Clients
-    let (read_half, write_half) = client_conn;
-    let (client_tx, client_relay, client_rx) = tcpserver::make_client(read_half, write_half);
+    let (client_tx, client_relay, client_rx) = tcpserver::make_client();
     let client_relay_handle = kernel::rt::spawn(async move { client_relay.run().await });
     let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
 
     let smp = kernel::ncores();
+    let worker_thread_num = smp - 4;
     let total_count = Arc::new(AtomicUsize::new(0));
     let total_time = Arc::new(AtomicU64::new(0));
     let mut worker_threads = vec![];
@@ -237,7 +213,7 @@ async fn main(args: &[usize]) {
         let go = Arc::new(AtomicBool::new(false));
         let ready_count = Arc::new(AtomicUsize::new(0));
 
-        for _ in 0..smp - 4 {
+        for _ in 0..worker_thread_num {
             let go = go.clone();
             let total_count = total_count.clone();
             let total_time = total_time.clone();
@@ -343,7 +319,7 @@ async fn main(args: &[usize]) {
 
                 let runtime = loop {
                     let runtime = kvmclock::time_since_boot() - exp_start;
-                    if &runtime >= &duration {
+                    if runtime >= duration {
                         break runtime;
                     }
 
@@ -357,7 +333,7 @@ async fn main(args: &[usize]) {
             }));
         }
 
-        while ready_count.load(Ordering::Acquire) < smp - 4 {
+        while ready_count.load(Ordering::Acquire) < worker_thread_num {
             kernel::rt::yield_now().await;
         }
         kernel::rt::delay_for(Duration::from_millis(1000)).await;
@@ -371,11 +347,11 @@ async fn main(args: &[usize]) {
         accumulator += j.await;
     }
     let total_time = total_time.load(Ordering::SeqCst);
-    let total_count = total_count.load(Ordering::SeqCst);
+    let total_count = total_count.load(Ordering::SeqCst) - accumulator.migrated_count;
 
-    let freq = (total_count as f64 / (total_time as f64 / 1e9)) * smp as f64;
-    let freq_per_core = freq / smp as f64;
-    let time_per_core = Duration::from_secs_f64(1. / freq) * smp as u32;
+    let freq = (total_count as f64 / (total_time as f64 / 1e9)) * worker_thread_num as f64;
+    let freq_per_core = freq / worker_thread_num as f64;
+    let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
 
     // Close client_tx after main jobs are done
     let _ = client_tx.close().await;
