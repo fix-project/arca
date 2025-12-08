@@ -59,6 +59,14 @@ impl<T, F: FnOnce() -> T> LazyLock<T, F> {
         }
     }
 
+    pub fn get_or_force(this: &Self) -> &T {
+        if let Some(got) = Self::get(this) {
+            got
+        } else {
+            Self::force(this)
+        }
+    }
+
     pub fn set(this: &Self, value: T) -> Result<(), T> {
         if this
             .stat
@@ -91,7 +99,7 @@ impl<T, F: FnOnce() -> T> Deref for LazyLock<T, F> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        LazyLock::<T, F>::force(self)
+        LazyLock::<T, F>::get_or_force(self)
     }
 }
 
