@@ -1,5 +1,4 @@
-use alloc::collections::VecDeque;
-use alloc::vec::Vec;
+use alloc::{collections::vec_deque::VecDeque, vec::Vec};
 
 use crate::{cpu::ExitReason, prelude::*};
 
