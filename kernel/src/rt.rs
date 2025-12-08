@@ -46,8 +46,8 @@ enum Entry<T> {
 
 impl Executor {
     fn new() -> Executor {
-        let (todo_tx, todo_rx) = channel::unbounded();
-        let (wfi_tx, wfi_rx) = channel::unbounded();
+        let (todo_tx, todo_rx) = channel::bounded(4096);
+        let (wfi_tx, wfi_rx) = channel::bounded(4096);
         Executor {
             todo_rx,
             todo_tx,
@@ -117,7 +117,7 @@ impl Executor {
 
     #[inline(never)]
     fn wake_sleeping(&self) -> bool {
-        let Some(key) = self.sleeping.first_key() else {
+        let Ok(Some(key)) = self.sleeping.try_first_key() else {
             // No first key found. If we missed one because of a race it's not the end of the world anyway.
             return false;
         };

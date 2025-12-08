@@ -75,8 +75,8 @@ pub mod Mode {
     pub const WAIT: u8 = !0;
 }
 
-struct Retry;
-struct RetryWith<V>(pub V);
+pub struct Retry;
+pub struct RetryWith<V>(pub V);
 
 pub struct Trie<const N: usize, V> {
     mode: AtomicU8,
@@ -226,7 +226,7 @@ impl<const N: usize, V> Trie<N, V> {
         }
     }
 
-    fn try_first_key(&self) -> Result<Option<u64>, Retry> {
+    pub fn try_first_key(&self) -> Result<Option<u64>, Retry> {
         let mode = self.mode.load(Ordering::SeqCst);
         match mode {
             Mode::EMPTY => Ok(None),

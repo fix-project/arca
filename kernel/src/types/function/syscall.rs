@@ -434,9 +434,9 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         unimplemented!("mode: {mode}");
     }
 
-    if arca.rusage().memory + len > arca.rlimit().memory {
-        return Err(SyscallError::OutOfMemory);
-    }
+    // if arca.rusage().memory + len > arca.rlimit().memory {
+    //     return Err(SyscallError::OutOfMemory);
+    // }
 
     let mut p = addr;
     while p < addr + len {

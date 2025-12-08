@@ -141,23 +141,24 @@ impl<'a, R: Runtime> ValueRef<'a, R> {
     }
 
     pub fn byte_size(&self) -> usize {
-        match self {
-            ValueRef::Null(_) => 0,
-            ValueRef::Word(word) => word.len(),
-            ValueRef::Blob(blob) => blob.len(),
-            ValueRef::Tuple(tuple) => tuple
-                .iter()
-                .map(|v| v.byte_size())
-                .reduce(|x, y| x + y)
-                .unwrap(),
-            ValueRef::Page(page) => page.len(),
-            ValueRef::Table(table) => table
-                .iter()
-                .map(|e| e.byte_size())
-                .reduce(|x, y| x + y)
-                .unwrap(),
-            ValueRef::Function(function) => function.read_cloned().byte_size(),
-        }
+        todo!("don't call this");
+        // match self {
+        //     ValueRef::Null(_) => 0,
+        //     ValueRef::Word(word) => word.len(),
+        //     ValueRef::Blob(blob) => blob.len(),
+        //     ValueRef::Tuple(tuple) => tuple
+        //         .iter()
+        //         .map(|v| v.byte_size())
+        //         .reduce(|x, y| x + y)
+        //         .unwrap(),
+        //     ValueRef::Page(page) => page.len(),
+        //     ValueRef::Table(table) => table
+        //         .iter()
+        //         .map(|e| e.byte_size())
+        //         .reduce(|x, y| x + y)
+        //         .unwrap(),
+        //     ValueRef::Function(function) => function.read_cloned().byte_size(),
+        // }
     }
 }
 
