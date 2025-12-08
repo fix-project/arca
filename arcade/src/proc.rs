@@ -149,14 +149,14 @@ impl Proc {
                         let monitor = monitor.as_mvar_ref().unwrap();
                         k.apply(monitor.run(core::mem::take(g)).await)
                     }
-                    (b"arca:rlimit", &mut [Value::Word(limit)]) => {
-                        let mut k = k.into_inner();
-                        let rlimit = k.arca_mut().unwrap().rlimit_mut().memory;
-                        log::info!("old rlimit: {rlimit:#x}");
-                        log::info!("new rlimit: {:#x}", limit.read());
-                        k.arca_mut().unwrap().rlimit_mut().memory = limit.read() as usize;
-                        Function::from_inner(k)
-                    }
+                    // (b"arca:rlimit", &mut [Value::Word(limit)]) => {
+                    //     let mut k = k.into_inner();
+                    //     let rlimit = k.arca_mut().unwrap().rlimit_mut().memory;
+                    //     log::info!("old rlimit: {rlimit:#x}");
+                    //     log::info!("new rlimit: {:#x}", limit.read());
+                    //     k.arca_mut().unwrap().rlimit_mut().memory = limit.read() as usize;
+                    //     Function::from_inner(k)
+                    // }
                     _ => {
                         panic!("invalid effect: {effect:?}({args:?})");
                     }

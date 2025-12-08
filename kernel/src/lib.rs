@@ -6,7 +6,6 @@
 #![feature(box_into_inner)]
 #![feature(custom_test_frameworks)]
 #![feature(maybe_uninit_array_assume_init)]
-#![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array_transpose)]
 #![feature(negative_impls)]
 #![feature(never_type)]
