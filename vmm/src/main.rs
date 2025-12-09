@@ -99,9 +99,9 @@ fn main() -> anyhow::Result<()> {
     let host_listener_port = (cid as u32) + 1561;
 
     let mut runtime = if run_fix {
-        Runtime::new(cid, smp, 1 << 32, FIX.into())
+        Runtime::new(cid, smp, 1 << 34, FIX.into())
     } else {
-        Runtime::new(cid, smp, 1 << 32, ARCADE.into())
+        Runtime::new(cid, smp, 1 << 34, ARCADE.into())
     };
 
     std::thread::spawn(move || {

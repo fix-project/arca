@@ -1,52 +1,73 @@
-use core::ops::Add;
-use core::{fmt::Display, ops::AddAssign, time::Duration};
-use derive_more::From;
+use core::{fmt::Display, time::Duration};
+use derive_more::{Add, AddAssign, From};
 
 fn average(d: &Duration, count: usize) -> Duration {
     Duration::from_micros(d.as_micros() as u64 / count as u64)
 }
 
-#[derive(Debug, Copy, Clone, Default)]
-pub struct LocalRecord;
+#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
+pub struct LocalRecord {
+    pub loading_elf: Duration,
+    pub force: Duration,
+    pub handle_effect: Duration,
+    pub execution: Duration,
+}
 
-#[derive(Debug, Copy, Clone, Default)]
+impl Display for LocalRecord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "loading_elf: {} us ", self.loading_elf.as_micros())?;
+        write!(f, "force: {} us ", self.force.as_micros())?;
+        write!(f, "handle_effect: {} us ", self.handle_effect.as_micros())?;
+        write!(f, "execution: {} us ", self.execution.as_micros())
+    }
+}
+
+impl LocalRecord {
+    fn average(&self, count: usize) -> Self {
+        Self {
+            loading_elf: average(&self.loading_elf, count),
+            force: average(&self.force, count),
+            handle_effect: average(&self.handle_effect, count),
+            execution: average(&self.execution, count),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
 pub struct RemoteDataRecord {
+    pub loading_elf: Duration,
+    pub force: Duration,
     pub remote_data_read: Duration,
+    pub execution: Duration,
 }
 
 impl Display for RemoteDataRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "loading_elf: {} us ", self.loading_elf.as_micros())?;
+        write!(f, "force: {} us ", self.force.as_micros())?;
         write!(
             f,
-            "remote_data_read: {} us",
+            "remote_data_read: {} us ",
             self.remote_data_read.as_micros()
-        )
-    }
-}
-
-impl Add for RemoteDataRecord {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            remote_data_read: self
-                .remote_data_read
-                .checked_add(rhs.remote_data_read)
-                .expect("record overflowing"),
-        }
+        )?;
+        write!(f, "execution: {} us ", self.execution.as_micros())
     }
 }
 
 impl RemoteDataRecord {
     fn average(&self, count: usize) -> Self {
         Self {
+            loading_elf: average(&self.loading_elf, count),
+            force: average(&self.force, count),
             remote_data_read: average(&self.remote_data_read, count),
+            execution: average(&self.execution, count),
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
 pub struct MigratedRecord {
+    pub loading_elf: Duration,
     pub force: Duration,
     pub creation: Duration,
     pub serialization: Duration,
@@ -54,47 +75,21 @@ pub struct MigratedRecord {
     pub sending: Duration,
 }
 
-impl Add for MigratedRecord {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            force: self
-                .force
-                .checked_add(rhs.creation)
-                .expect("record overflowing"),
-            creation: self
-                .creation
-                .checked_add(rhs.creation)
-                .expect("record overflowing"),
-            serialization: self
-                .serialization
-                .checked_add(rhs.serialization)
-                .expect("record overflowing"),
-            compression: self
-                .compression
-                .checked_add(rhs.compression)
-                .expect("record overflowing"),
-            sending: self
-                .sending
-                .checked_add(rhs.sending)
-                .expect("record overflowing"),
-        }
-    }
-}
-
 impl Display for MigratedRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        writeln!(f, "creation: {} us", self.creation.as_micros())?;
-        writeln!(f, "serialization: {} us", self.serialization.as_micros())?;
-        writeln!(f, "compression: {} us", self.compression.as_micros())?;
-        writeln!(f, "sending: {} us", self.sending.as_micros())
+        write!(f, "loading_elf: {} us ", self.loading_elf.as_micros())?;
+        write!(f, "force: {} us ", self.force.as_micros())?;
+        write!(f, "creation: {} us ", self.creation.as_micros())?;
+        write!(f, "serialization: {} us ", self.serialization.as_micros())?;
+        write!(f, "compression: {} us ", self.compression.as_micros())?;
+        write!(f, "sending: {} us ", self.sending.as_micros())
     }
 }
 
 impl MigratedRecord {
     fn average(&self, count: usize) -> Self {
         Self {
+            loading_elf: average(&self.loading_elf, count),
             force: average(&self.force, count),
             creation: average(&self.creation, count),
             serialization: average(&self.serialization, count),
@@ -104,57 +99,52 @@ impl MigratedRecord {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
 pub struct RemoteInvocationRecord {
-    pub decompression: Duration,
-    pub deserialization: Duration,
-    pub execution: Duration,
-}
-
-impl Add for RemoteInvocationRecord {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            decompression: self
-                .decompression
-                .checked_add(rhs.decompression)
-                .expect("record overflowing"),
-            deserialization: self
-                .deserialization
-                .checked_add(rhs.deserialization)
-                .expect("record overflowing"),
-            execution: self
-                .execution
-                .checked_add(rhs.execution)
-                .expect("record overflowing"),
-        }
-    }
+    decompression: Duration,
+    deserialization: Duration,
+    force: Duration,
+    handle_effect: Duration,
+    execution: Duration,
 }
 
 impl Display for RemoteInvocationRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        writeln!(f, "decompression: {} us", self.decompression.as_micros())?;
-        writeln!(
+        write!(f, "decompression: {} us ", self.decompression.as_micros())?;
+        write!(
             f,
-            "deserialization: {} us",
+            "deserialization: {} us ",
             self.deserialization.as_micros()
         )?;
-        writeln!(f, "execution: {} us", self.execution.as_micros())
+        write!(f, "force: {} us ", self.force.as_micros())?;
+        write!(f, "handle_effect: {} us ", self.handle_effect.as_micros())?;
+        write!(f, "execution: {} us ", self.execution.as_micros())
     }
 }
 
 impl RemoteInvocationRecord {
+    pub fn new(decompression: Duration, deserialization: Duration, record: LocalRecord) -> Self {
+        Self {
+            decompression,
+            deserialization,
+            force: record.force,
+            handle_effect: record.handle_effect,
+            execution: record.execution,
+        }
+    }
+
     fn average(&self, count: usize) -> Self {
         Self {
             decompression: average(&self.decompression, count),
             deserialization: average(&self.deserialization, count),
+            force: average(&self.force, count),
+            handle_effect: average(&self.handle_effect, count),
             execution: average(&self.execution, count),
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, From)]
+#[derive(Debug, Copy, Clone, From, derive_more::Display)]
 pub enum Record {
     LocalRecord(LocalRecord),
     RemoteDataRecord(RemoteDataRecord),
@@ -162,9 +152,9 @@ pub enum Record {
     RemoteInvocationRecord(RemoteInvocationRecord),
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
 pub struct Accumulator {
-    local_record: Duration,
+    local_record: LocalRecord,
     remote_data_record: RemoteDataRecord,
     migrated_record: MigratedRecord,
     remote_invocation_record: RemoteInvocationRecord,
@@ -175,95 +165,58 @@ pub struct Accumulator {
 }
 
 impl Accumulator {
-    pub fn accumulate(&mut self, r: Record, total: Duration) {
+    pub fn accumulate(&mut self, r: Record) {
         match r {
-            Record::LocalRecord(_) => {
-                self.local_record += total;
+            Record::LocalRecord(local_record) => {
+                self.local_record += local_record;
                 self.local_count += 1;
             }
             Record::RemoteDataRecord(remote_data_record) => {
-                self.remote_data_record = self.remote_data_record + remote_data_record;
+                self.remote_data_record += remote_data_record;
                 self.remote_data_count += 1;
             }
-            Record::MigratedRecord(mut migrated_record) => {
-                migrated_record.force = total
-                    - migrated_record.compression
-                    - migrated_record.serialization
-                    - migrated_record.creation
-                    - migrated_record.sending;
-                self.migrated_record = self.migrated_record + migrated_record;
+            Record::MigratedRecord(migrated_record) => {
+                self.migrated_record += migrated_record;
                 self.migrated_count += 1;
             }
             Record::RemoteInvocationRecord(remote_invocation_record) => {
-                self.remote_invocation_record =
-                    self.remote_invocation_record + remote_invocation_record;
+                self.remote_invocation_record += remote_invocation_record;
                 self.remote_invocation_count += 1;
             }
         }
     }
 }
 
-impl Add for Accumulator {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            local_record: self.local_record + rhs.local_record,
-            remote_data_record: self.remote_data_record + rhs.remote_data_record,
-            migrated_record: self.migrated_record + rhs.migrated_record,
-            remote_invocation_record: self.remote_invocation_record + rhs.remote_invocation_record,
-            local_count: self.local_count + rhs.local_count,
-            remote_data_count: self.remote_data_count + rhs.remote_data_count,
-            migrated_count: self.migrated_count + rhs.migrated_count,
-            remote_invocation_count: self.remote_invocation_count + rhs.remote_invocation_count,
-        }
-    }
-}
-
-impl AddAssign for Accumulator {
-    fn add_assign(&mut self, rhs: Self) {
-        self.local_record = self.local_record + rhs.local_record;
-        self.remote_data_record = self.remote_data_record + rhs.remote_data_record;
-        self.migrated_record = self.migrated_record + rhs.migrated_record;
-        self.remote_invocation_record =
-            self.remote_invocation_record + rhs.remote_invocation_record;
-        self.local_count = self.local_count + rhs.local_count;
-        self.remote_data_count = self.remote_data_count + rhs.remote_data_count;
-        self.migrated_count = self.migrated_count + rhs.migrated_count;
-        self.remote_invocation_count = self.remote_invocation_count + rhs.remote_invocation_count;
-    }
-}
-
 impl Display for Accumulator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.local_count > 0 {
-            write!(
+            writeln!(
                 f,
-                "Local execution (total {}):\n{} us",
+                "Local execution (total {}):{}",
                 self.local_count,
-                self.local_record.as_micros() as usize / self.local_count
+                self.local_record.average(self.local_count)
             )?;
         }
         if self.remote_data_count > 0 {
-            write!(
+            writeln!(
                 f,
-                "Local execution with remote data (total {}):\n{}",
+                "Local execution with remote data (total {}):{}",
                 self.remote_data_count,
                 self.remote_data_record.average(self.remote_data_count),
             )?;
         }
         if self.migrated_count > 0 {
-            write!(
+            writeln!(
                 f,
-                "Execution migrated to another machine (total {}):\n{}",
+                "Execution migrated to another machine (total {}):{}",
                 self.migrated_count,
                 self.migrated_record.average(self.migrated_count)
             )?;
         }
         if self.remote_invocation_count > 0 {
-            write!(
+            writeln!(
                 f,
-                "Execution from received continuation (total {}):\n{}",
+                "Execution from received continuation (total {}):{}",
                 self.remote_invocation_count,
                 self.remote_invocation_record
                     .average(self.remote_invocation_count),
