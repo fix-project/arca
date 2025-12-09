@@ -145,8 +145,8 @@ async fn main(args: &[usize]) {
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
-        ("falls_1.ppm", 2332861),
-        //("Sun.ppm", 12814240),
+        //("falls_1.ppm", 2332861),
+        ("Sun.ppm", 12814240),
     ]));
 
     let local_data = MemDir::default();
@@ -226,11 +226,11 @@ async fn main(args: &[usize]) {
                 iam_ipaddr.to_string(),
                 peer_ipaddr.to_string(),
                 // 0.99,
-                0.0,
+                0.5,
             );
 
             worker_threads.push(kernel::rt::spawn(async move {
-                let mut handle_one = async || -> (Record, Duration) {
+                let mut handle_one = async || -> Record {
                     if let Some(Ok(Some(continuation))) = continuation_receiver.try_recv() {
                         let k_decompress_init = kvmclock::time_since_boot();
                         let decompressed = decompress_size_prepended(&continuation).unwrap();
@@ -250,21 +250,24 @@ async fn main(args: &[usize]) {
                                 .expect("Failed to create Proc from received Function");
                                 let k_decode_end = kvmclock::time_since_boot();
 
-                                let (exitcode, _) = p.run([]).await;
-
-                                let run_k_end_time = kvmclock::time_since_boot();
+                                let (exitcode, record) = p.run([]).await;
 
                                 log::debug!("exitcode: {exitcode}");
-
-                                (
-                                    RemoteInvocationRecord {
-                                        decompression: k_decompress_end - k_decompress_init,
-                                        deserialization: k_decode_end - k_decompress_end,
-                                        execution: run_k_end_time - k_decode_end,
+                                let record = match record {
+                                    Record::LocalRecord(local_record) => local_record,
+                                    Record::RemoteDataRecord(_)
+                                    | Record::MigratedRecord(_)
+                                    | Record::RemoteInvocationRecord(_) => {
+                                        panic!("Unexpected record type")
                                     }
-                                    .into(),
-                                    Duration::default(),
+                                };
+
+                                RemoteInvocationRecord::new(
+                                    k_decompress_end - k_decompress_init,
+                                    k_decode_end - k_decompress_end,
+                                    record,
                                 )
+                                .into()
                             }
                             _ => {
                                 panic!(
@@ -273,13 +276,13 @@ async fn main(args: &[usize]) {
                             }
                         }
                     } else {
-                        let start_time = kvmclock::time_since_boot();
-
+                        let loading_elf_start = kvmclock::time_since_boot();
                         let thumbnailer_function = common::elfloader::load_elf(THUMBNAILER)
                             .expect("Failed to load ELF as Function");
+                        let loading_elf_end = kvmclock::time_since_boot();
 
                         let image_hostname = host_gen.next().unwrap();
-                        let image_filename = "falls_1.ppm";
+                        let image_filename = "Sun.ppm";
                         let image_size = img_names_to_sizes[image_filename];
 
                         let filepath = arca::Value::Blob(arca::Blob::from(
@@ -299,10 +302,22 @@ async fn main(args: &[usize]) {
                             client_tx.clone(),
                         )
                         .expect("Failed to create Proc from ELF");
-                        let (exitcode, record) = p.run([]).await;
-                        let end_time = kvmclock::time_since_boot();
+                        let (exitcode, mut record) = p.run([]).await;
                         log::debug!("exitcode: {exitcode}");
-                        (record, end_time - start_time)
+                        match &mut record {
+                            Record::LocalRecord(local_record) => {
+                                local_record.loading_elf = loading_elf_end - loading_elf_start;
+                            }
+                            Record::RemoteDataRecord(remote_data_record) => {
+                                remote_data_record.loading_elf =
+                                    loading_elf_end - loading_elf_start;
+                            }
+                            Record::MigratedRecord(migrated_record) => {
+                                migrated_record.loading_elf = loading_elf_end - loading_elf_start;
+                            }
+                            Record::RemoteInvocationRecord(_) => panic!("Unexpected record type"),
+                        }
+                        record
                     }
                 };
 
@@ -323,8 +338,8 @@ async fn main(args: &[usize]) {
                         break runtime;
                     }
 
-                    let (record, d) = handle_one().await;
-                    accumulator.accumulate(record, d);
+                    let record = handle_one().await;
+                    accumulator.accumulate(record);
                     count += 1;
                 };
                 total_count.fetch_add(count, Ordering::SeqCst);
@@ -351,7 +366,7 @@ async fn main(args: &[usize]) {
 
     let freq = (total_count as f64 / (total_time as f64 / 1e9)) * worker_thread_num as f64;
     let freq_per_core = freq / worker_thread_num as f64;
-    let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
+    // let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
 
     // Close client_tx after main jobs are done
     let _ = client_tx.close().await;
@@ -362,6 +377,6 @@ async fn main(args: &[usize]) {
     log::debug!("Joining tcpserver");
     let _ = tcpserver_handle.await;
 
-    log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz, {time_per_core:?} per iter)");
+    log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz");
     log::info!("{}", accumulator);
 }

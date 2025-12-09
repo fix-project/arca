@@ -100,8 +100,9 @@ impl Proc {
     pub fn resume(self) -> impl Future<Output = (u8, Record)> + Send {
         async move {
             let mut f = self.f;
-            let mut record = Record::LocalRecord(LocalRecord);
+            let mut record = LocalRecord::default().into();
             loop {
+                let force_start = kvmclock::time_since_boot();
                 let result = f.force();
 
                 let Value::Function(g) = result else {
@@ -140,6 +141,8 @@ impl Proc {
                         if host_ip != *self.state.host {
                             #[cfg(feature = "ablation")]
                             {
+                                use core::time::Duration;
+
                                 use alloc::string::ToString;
 
                                 use crate::record::RemoteDataRecord;
@@ -177,7 +180,10 @@ impl Proc {
                                 let tcp_end = kvmclock::time_since_boot();
 
                                 record = RemoteDataRecord {
+                                    loading_elf: Duration::from_secs(0),
+                                    force: tcp_init - force_start,
                                     remote_data_read: tcp_end - tcp_init,
+                                    execution: Duration::from_secs(0),
                                 }
                                 .into();
 
@@ -223,7 +229,8 @@ impl Proc {
                                 let sending_end = kvmclock::time_since_boot();
 
                                 record = MigratedRecord {
-                                    force: Duration::from_secs(0),
+                                    loading_elf: Duration::from_secs(0),
+                                    force: k_create_init - force_start,
                                     creation: serialize_init - k_create_init,
                                     serialization: serialize_end - serialize_init,
                                     compression: compress_end - serialize_end,
@@ -246,6 +253,7 @@ impl Proc {
                                 }
                             }
                         } else {
+                            let effect_handling_start = kvmclock::time_since_boot();
                             let file = fix(file::open(
                                 &self.state,
                                 filename.as_bytes(),
@@ -253,6 +261,19 @@ impl Proc {
                                 file::ModeT(mode.read() as u32),
                             )
                             .await);
+                            let effect_handling_done = kvmclock::time_since_boot();
+                            match &mut record {
+                                Record::LocalRecord(local_record) => {
+                                    local_record.force = effect_handling_start - force_start;
+                                    local_record.handle_effect =
+                                        effect_handling_done - effect_handling_start;
+                                }
+                                Record::RemoteDataRecord(_)
+                                | Record::MigratedRecord(_)
+                                | Record::RemoteInvocationRecord(_) => {
+                                    panic!("Unexpected record type")
+                                }
+                            }
                             k.apply(file)
                         }
                     }
@@ -306,6 +327,18 @@ impl Proc {
                         k.apply(fix(Ok(pid as u32)))
                     }
                     (b"exit", &mut [Value::Word(result)]) => {
+                        let force_end = kvmclock::time_since_boot();
+                        match &mut record {
+                            Record::LocalRecord(local_record) => {
+                                local_record.execution = force_end - force_start;
+                            }
+                            Record::RemoteDataRecord(remote_data_record) => {
+                                remote_data_record.execution = force_end - force_start;
+                            }
+                            Record::MigratedRecord(_) | Record::RemoteInvocationRecord(_) => {
+                                panic!("Unexpected record type")
+                            }
+                        }
                         return (result.read() as u8, record);
                     }
                     (b"monitor-new", &mut []) => {
