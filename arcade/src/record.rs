@@ -1,5 +1,6 @@
-use core::{fmt::Display, time::Duration};
-use derive_more::{Add, AddAssign, From};
+use core::ops::Add;
+use core::{fmt::Display, ops::AddAssign, time::Duration};
+use derive_more::From;
 
 fn average(d: &Duration, count: usize) -> Duration {
     Duration::from_micros(d.as_micros() as u64 / count as u64)
@@ -8,7 +9,7 @@ fn average(d: &Duration, count: usize) -> Duration {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct LocalRecord;
 
-#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RemoteDataRecord {
     pub remote_data_read: Duration,
 }
@@ -23,6 +24,19 @@ impl Display for RemoteDataRecord {
     }
 }
 
+impl Add for RemoteDataRecord {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            remote_data_read: self
+                .remote_data_read
+                .checked_add(rhs.remote_data_read)
+                .expect("record overflowing"),
+        }
+    }
+}
+
 impl RemoteDataRecord {
     fn average(&self, count: usize) -> Self {
         Self {
@@ -31,12 +45,42 @@ impl RemoteDataRecord {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct MigratedRecord {
+    pub force: Duration,
     pub creation: Duration,
     pub serialization: Duration,
     pub compression: Duration,
     pub sending: Duration,
+}
+
+impl Add for MigratedRecord {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            force: self
+                .force
+                .checked_add(rhs.creation)
+                .expect("record overflowing"),
+            creation: self
+                .creation
+                .checked_add(rhs.creation)
+                .expect("record overflowing"),
+            serialization: self
+                .serialization
+                .checked_add(rhs.serialization)
+                .expect("record overflowing"),
+            compression: self
+                .compression
+                .checked_add(rhs.compression)
+                .expect("record overflowing"),
+            sending: self
+                .sending
+                .checked_add(rhs.sending)
+                .expect("record overflowing"),
+        }
+    }
 }
 
 impl Display for MigratedRecord {
@@ -51,6 +95,7 @@ impl Display for MigratedRecord {
 impl MigratedRecord {
     fn average(&self, count: usize) -> Self {
         Self {
+            force: average(&self.force, count),
             creation: average(&self.creation, count),
             serialization: average(&self.serialization, count),
             compression: average(&self.compression, count),
@@ -59,11 +104,32 @@ impl MigratedRecord {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RemoteInvocationRecord {
     pub decompression: Duration,
     pub deserialization: Duration,
     pub execution: Duration,
+}
+
+impl Add for RemoteInvocationRecord {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            decompression: self
+                .decompression
+                .checked_add(rhs.decompression)
+                .expect("record overflowing"),
+            deserialization: self
+                .deserialization
+                .checked_add(rhs.deserialization)
+                .expect("record overflowing"),
+            execution: self
+                .execution
+                .checked_add(rhs.execution)
+                .expect("record overflowing"),
+        }
+    }
 }
 
 impl Display for RemoteInvocationRecord {
@@ -96,7 +162,7 @@ pub enum Record {
     RemoteInvocationRecord(RemoteInvocationRecord),
 }
 
-#[derive(Debug, Copy, Clone, Default, Add, AddAssign)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct Accumulator {
     local_record: Duration,
     remote_data_record: RemoteDataRecord,
@@ -116,18 +182,55 @@ impl Accumulator {
                 self.local_count += 1;
             }
             Record::RemoteDataRecord(remote_data_record) => {
-                self.remote_data_record += remote_data_record;
+                self.remote_data_record = self.remote_data_record + remote_data_record;
                 self.remote_data_count += 1;
             }
-            Record::MigratedRecord(migrated_record) => {
-                self.migrated_record += migrated_record;
+            Record::MigratedRecord(mut migrated_record) => {
+                migrated_record.force = total
+                    - migrated_record.compression
+                    - migrated_record.serialization
+                    - migrated_record.creation
+                    - migrated_record.sending;
+                self.migrated_record = self.migrated_record + migrated_record;
                 self.migrated_count += 1;
             }
             Record::RemoteInvocationRecord(remote_invocation_record) => {
-                self.remote_invocation_record += remote_invocation_record;
+                self.remote_invocation_record =
+                    self.remote_invocation_record + remote_invocation_record;
                 self.remote_invocation_count += 1;
             }
         }
+    }
+}
+
+impl Add for Accumulator {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            local_record: self.local_record + rhs.local_record,
+            remote_data_record: self.remote_data_record + rhs.remote_data_record,
+            migrated_record: self.migrated_record + rhs.migrated_record,
+            remote_invocation_record: self.remote_invocation_record + rhs.remote_invocation_record,
+            local_count: self.local_count + rhs.local_count,
+            remote_data_count: self.remote_data_count + rhs.remote_data_count,
+            migrated_count: self.migrated_count + rhs.migrated_count,
+            remote_invocation_count: self.remote_invocation_count + rhs.remote_invocation_count,
+        }
+    }
+}
+
+impl AddAssign for Accumulator {
+    fn add_assign(&mut self, rhs: Self) {
+        self.local_record = self.local_record + rhs.local_record;
+        self.remote_data_record = self.remote_data_record + rhs.remote_data_record;
+        self.migrated_record = self.migrated_record + rhs.migrated_record;
+        self.remote_invocation_record =
+            self.remote_invocation_record + rhs.remote_invocation_record;
+        self.local_count = self.local_count + rhs.local_count;
+        self.remote_data_count = self.remote_data_count + rhs.remote_data_count;
+        self.migrated_count = self.migrated_count + rhs.migrated_count;
+        self.remote_invocation_count = self.remote_invocation_count + rhs.remote_invocation_count;
     }
 }
 
