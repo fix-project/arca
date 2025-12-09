@@ -84,12 +84,21 @@ fn main() -> anyhow::Result<()> {
                 .default_value("10")
                 .required(false),
         )
+        .arg(
+            Arg::new("ratio")
+                .long("ratio")
+                .help("ratio of local")
+                .value_parser(clap::value_parser!(usize))
+                .default_value("50")
+                .required(false),
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
 
     let smp = *matches.get_one::<usize>("smp").unwrap_or(&max_smp);
     let cid = *matches.get_one::<usize>("cid").unwrap();
+    let ratio = *matches.get_one::<usize>("ratio").unwrap();
     let iam = matches.get_one::<String>("iam").unwrap();
     let peer = matches.get_one::<String>("peer").unwrap();
     let is_listener = matches.get_flag("listener");
@@ -169,6 +178,7 @@ fn main() -> anyhow::Result<()> {
             peer_ipaddr as usize,
             is_listener as usize,
             duration,
+            ratio,
         ],
         server_conn,
         client_conn,

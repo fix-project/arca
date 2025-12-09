@@ -75,6 +75,7 @@ async fn main(args: &[usize]) {
     let peer_ipaddr = IpAddr::from(args[3] as u64);
     let _is_listener = args[4] != 0;
     let duration = Duration::from_secs(args[5] as u64);
+    let ratio = args[6] as f64 / 100 as f64;
 
     let mut fd: Descriptors<FileDescriptor> = Descriptors::new();
 
@@ -146,7 +147,7 @@ async fn main(args: &[usize]) {
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
-        //("falls_1.ppm", 2332861),
+        ("falls_1.ppm", 2332861),
         ("Sun.ppm", 12814240),
     ]));
 
@@ -227,7 +228,7 @@ async fn main(args: &[usize]) {
                 iam_ipaddr.to_string(),
                 peer_ipaddr.to_string(),
                 // 0.99,
-                0.5,
+                ratio,
             );
             let mut rng = SmallRng::seed_from_u64(i as u64);
 
