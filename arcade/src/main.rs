@@ -146,7 +146,7 @@ async fn main(args: &[usize]) {
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
         ("falls_1.ppm", 2332861),
-        ("Sun.ppm", 12814240),
+        //("Sun.ppm", 12814240),
     ]));
 
     let local_data = MemDir::default();

@@ -194,6 +194,8 @@ impl Proc {
 
                             #[cfg(not(feature = "ablation"))]
                             {
+                                use core::time::Duration;
+
                                 use crate::record::MigratedRecord;
 
                                 log::debug!("sending continuation to open file remotely");
@@ -221,6 +223,7 @@ impl Proc {
                                 let sending_end = kvmclock::time_since_boot();
 
                                 record = MigratedRecord {
+                                    force: Duration::from_secs(0),
                                     creation: serialize_init - k_create_init,
                                     serialization: serialize_end - serialize_init,
                                     compression: compress_end - serialize_end,
