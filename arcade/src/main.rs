@@ -22,6 +22,7 @@ use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*};
 use ninep::Client;
+use rand::{RngCore, SeedableRng, rngs::SmallRng};
 // frame format isn't supported in no_std env
 use lz4_flex::block::decompress_size_prepended;
 
@@ -213,7 +214,7 @@ async fn main(args: &[usize]) {
         let go = Arc::new(AtomicBool::new(false));
         let ready_count = Arc::new(AtomicUsize::new(0));
 
-        for _ in 0..worker_thread_num {
+        for i in 0..worker_thread_num {
             let go = go.clone();
             let total_count = total_count.clone();
             let total_time = total_time.clone();
@@ -228,10 +229,13 @@ async fn main(args: &[usize]) {
                 // 0.99,
                 0.5,
             );
+            let mut rng = SmallRng::seed_from_u64(i as u64);
 
             worker_threads.push(kernel::rt::spawn(async move {
                 let mut handle_one = async || -> Record {
-                    if let Some(Ok(Some(continuation))) = continuation_receiver.try_recv() {
+                    let sample = rng.next_u64() as f64 / (u64::MAX as f64) < 0.8;
+                    if sample && let Some(Ok(Some(continuation))) = continuation_receiver.try_recv()
+                    {
                         let k_decompress_init = kvmclock::time_since_boot();
                         let decompressed = decompress_size_prepended(&continuation).unwrap();
                         let k_decompress_end = kvmclock::time_since_boot();
