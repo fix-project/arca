@@ -59,7 +59,7 @@ pub fn parse_u32(bytes: &[u8]) -> Result<u32, &'static str> {
     Ok(n)
 }
 
-fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
+fn thumbnail_ppm6(input_bytes: &[u8], former_alloc_time: u64) -> u8 {
     unsafe { core::arch::x86_64::_mm_lfence() };
     let algo_start = unsafe { _rdtsc() };
     unsafe { core::arch::x86_64::_mm_lfence() };
@@ -119,11 +119,11 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
             let src_x = (x as f32 * scale_x) as usize;
             let src_y = (y as f32 * scale_y) as usize;
             for c in 0..CHANNELS {
-                core::hint::black_box(dummy);
-                //thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] = 1;
-                //input_bytes[indeix
-                //    + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
-                //    + (c as usize)];
+                //core::hint::black_box(dummy);
+                thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] =
+                input_bytes[index
+                    + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
+                    + (c as usize)];
             }
         }
     }
@@ -134,7 +134,8 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
 
     user::error::log(
         alloc::format!(
-            "TIMING (thumbnail_ppm6):{}tsc algorithm before alloc:{}tsc alloc:{}tsc algorithm:{}tsc",
+            "TIMING (thumbnail_ppm6):first alloc {}tsc {}tsc(algorithm before alloc:{}tsc alloc:{}tsc algorithm:{}tsc)",
+            former_alloc_time,
             algo_end - algo_start,
             algo_before_alloc - algo_start,
             after_alloc - algo_before_alloc,
@@ -177,13 +178,21 @@ pub extern "C" fn _rsstart() -> ! {
         .expect("could not open ppm file");
     // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let before_alloc= unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
+
     let mut buf = alloc::vec![0; file_size.read() as usize];
+
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let after_alloc = unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
 
     let _n = ppm_data
         .read(&mut buf[..])
         .expect("could not read ppm file");
 
-    let size = thumbnail_ppm6(&buf);
+    let size = thumbnail_ppm6(&buf, after_alloc - before_alloc);
 
     //user::error::log(
     //    alloc::format!(
