@@ -440,7 +440,7 @@ mod allocator {
     impl OomHandler for Mmap {
         fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
             // TODO(kmohr) review this
-            const PAGE_SIZE: usize = 4096;
+            const PAGE_SIZE: usize = 2 * 1024 * 1024;
 
             // Calculate the total size needed, considering alignment requirements
             // TODO(kmohr) I'm just arbitrarily adding 128 bytes
