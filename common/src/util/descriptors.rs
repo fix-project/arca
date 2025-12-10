@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{vec::Vec};
+use alloc::vec::Vec;
 
 #[derive(Clone)]
 pub struct Descriptors<T> {
@@ -9,7 +9,9 @@ pub struct Descriptors<T> {
 
 impl<T> Default for Descriptors<T> {
     fn default() -> Self {
-        Descriptors { table: Vec::with_capacity(512) }
+        Descriptors {
+            table: Vec::with_capacity(512),
+        }
     }
 }
 

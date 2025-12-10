@@ -11,6 +11,7 @@
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
 use core::{
+    cmp::min,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -151,7 +152,8 @@ async fn main(args: &[usize]) {
         ("Sun.ppm", 12814240),
     ]));
 
-    let local_data = MemDir::default();
+    let mut img_names_to_contents: BTreeMap<String, Table> = BTreeMap::default();
+
     for (image_name, image_size) in img_names_to_sizes.iter() {
         let mut img_bytes = vec![0u8; *image_size];
         let mut image_file = remote_data
@@ -162,18 +164,26 @@ async fn main(args: &[usize]) {
             .unwrap();
         image_file.read(&mut img_bytes).await.unwrap();
 
-        let mut mem_image_file = local_data
-            .create(image_name, Create::UserWrite, Open::ReadWrite)
-            .await
-            .unwrap()
-            .as_file()
-            .unwrap();
-        mem_image_file.write(&img_bytes).await.unwrap();
-    }
-    ns.attach(local_data, "/data", MountType::Replace, true)
-        .await
-        .unwrap();
+        let mut table = Table::new(*image_size);
+        let pagesize = match table.clone().into_inner() {
+            kernel::types::internal::Table::Table1GB(_) => 2 * 1024 * 1024,
+            kernel::types::internal::Table::Table2MB(_) => panic!(),
+            kernel::types::internal::Table::Table512GB(_) => panic!(),
+        } as usize;
 
+        for i in 0..image_size.div_ceil(pagesize) {
+            let mut page = Page::new(pagesize);
+            page.write(
+                0,
+                &img_bytes[i * pagesize..min((i + 1) * pagesize, *image_size)],
+            );
+            let _ = table.set(i, Entry::ROPage(page));
+        }
+
+        img_names_to_contents.insert(String::from(*image_name), table);
+    }
+
+    let img_names_to_contents = Arc::new(img_names_to_contents);
     let shared_ns = Arc::new(ns);
 
     // Setup Servers
@@ -222,6 +232,7 @@ async fn main(args: &[usize]) {
             let ready_count = ready_count.clone();
             let shared_ns = shared_ns.clone();
             let img_names_to_sizes = img_names_to_sizes.clone();
+            let img_names_to_contents = img_names_to_contents.clone();
             let client_tx = client_tx.clone();
             let continuation_receiver = continuation_receiver.clone();
             let mut host_gen = UnboundedInputHostGenerator::new(
@@ -251,6 +262,7 @@ async fn main(args: &[usize]) {
                                         cwd: PathBuf::from("/".to_owned()).into(),
                                         host: Arc::new(iam_ipaddr),
                                     },
+                                    img_names_to_contents.clone(),
                                 )
                                 .expect("Failed to create Proc from received Function");
                                 let k_decode_end = kvmclock::time_since_boot();
@@ -305,6 +317,7 @@ async fn main(args: &[usize]) {
                                 host: iam_ipaddr.into(),
                             },
                             client_tx.clone(),
+                            img_names_to_contents.clone(),
                         )
                         .expect("Failed to create Proc from ELF");
                         let (exitcode, mut record) = p.run([]).await;

@@ -4,6 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Poll, Waker},
 };
+use kernel::prelude::*;
 
 pub mod env;
 pub mod file;
@@ -25,7 +26,12 @@ use kernel::{
     types::{Blob, Function, Tuple, Value},
 };
 mod table;
-use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{btree_map::BTreeMap, vec_deque::VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
 
 use crate::{
@@ -38,6 +44,7 @@ pub struct Proc {
     pid: u64,
     state: Arc<ProcState>,
     handler: Option<Arc<tcpserver::ClientTx>>,
+    img_names_to_contents: Arc<BTreeMap<String, Table>>,
 }
 
 impl Proc {
@@ -45,6 +52,7 @@ impl Proc {
         elf: &[u8],
         state: ProcState,
         handler: Arc<tcpserver::ClientTx>,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
@@ -54,6 +62,7 @@ impl Proc {
             pid,
             state,
             handler: Some(handler),
+            img_names_to_contents,
         };
         Ok(p)
     }
@@ -62,6 +71,7 @@ impl Proc {
         function: Function,
         state: ProcState,
         handler: Arc<tcpserver::ClientTx>,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = function;
         let state = Arc::new(state);
@@ -71,6 +81,7 @@ impl Proc {
             pid,
             state,
             handler: Some(handler),
+            img_names_to_contents,
         };
         Ok(p)
     }
@@ -78,6 +89,7 @@ impl Proc {
     pub fn from_remote_function(
         function: Function,
         state: ProcState,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = function;
         let state = Arc::new(state);
@@ -87,6 +99,7 @@ impl Proc {
             pid,
             state,
             handler: None,
+            img_names_to_contents,
         };
         Ok(p)
     }
@@ -254,13 +267,17 @@ impl Proc {
                             }
                         } else {
                             let effect_handling_start = kvmclock::time_since_boot();
-                            let file = fix(file::open(
-                                &self.state,
-                                filename.as_bytes(),
-                                file::OpenFlags(flags.read() as u32),
-                                file::ModeT(mode.read() as u32),
-                            )
-                            .await);
+                            let file = self
+                                .img_names_to_contents
+                                .get(&filename.file_name().unwrap().to_string())
+                                .expect("File does not exist");
+                            //let file = fix(file::open(
+                            //    &self.state,
+                            //    filename.as_bytes(),
+                            //    file::OpenFlags(flags.read() as u32),
+                            //    file::ModeT(mode.read() as u32),
+                            //)
+                            //.await);
                             let effect_handling_done = kvmclock::time_since_boot();
                             match &mut record {
                                 Record::LocalRecord(local_record) => {
@@ -274,7 +291,7 @@ impl Proc {
                                     panic!("Unexpected record type")
                                 }
                             }
-                            k.apply(file)
+                            k.apply(file.clone())
                         }
                     }
                     (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
@@ -322,6 +339,7 @@ impl Proc {
                                 ..(*self.state).clone()
                             }),
                             handler: self.handler.clone(),
+                            img_names_to_contents: self.img_names_to_contents.clone(),
                         };
                         kernel::rt::spawn(async move { new.resume().await });
                         k.apply(fix(Ok(pid as u32)))

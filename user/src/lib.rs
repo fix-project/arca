@@ -416,6 +416,13 @@ impl Runtime {
     }
 }
 
+pub unsafe fn map_file(base_addr: *mut core::ffi::c_void, entry: Entry) {
+    let mut entry = write_entry(entry);
+    unsafe {
+        arca_mmap(base_addr, &mut entry);
+    }
+}
+
 #[cfg(feature = "allocator")]
 mod allocator {
     use core::ffi::c_void;
@@ -460,6 +467,10 @@ mod allocator {
             let aligned_base = (current_addr + align - 1) & !(align - 1);
 
             let page_addr = aligned_base;
+
+            if page_addr + total_size > 1024 * 1024 * 1024 {
+                panic!("Heap growing into mmap region")
+            }
 
             unsafe {
                 let base = page_addr as *mut c_void;

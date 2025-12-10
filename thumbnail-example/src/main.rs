@@ -4,10 +4,10 @@
 extern crate alloc;
 extern crate user;
 
-use core::arch::x86_64::{__rdtscp, _rdtsc};
-
+use alloc::slice;
 use user::io::File;
 use user::prelude::*;
+use user::map_file;
 
 static OUTPUT_WIDTH: u32 = 256;
 
@@ -59,10 +59,10 @@ pub fn parse_u32(bytes: &[u8]) -> Result<u32, &'static str> {
     Ok(n)
 }
 
-fn thumbnail_ppm6(input_bytes: &[u8], former_alloc_time: u64) -> u8 {
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let algo_start = unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
+fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let algo_start = unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
     // check the magic number
     let index = 0;
@@ -98,18 +98,16 @@ fn thumbnail_ppm6(input_bytes: &[u8], former_alloc_time: u64) -> u8 {
     let header_data = alloc::format!("P6\n{} {}\n{}\n", OUTPUT_WIDTH, output_height, maxval);
     let out_index = header_data.len();
 
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let algo_before_alloc = unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let algo_before_alloc = unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
     let mut thumbnail =
         alloc::vec![0u8; out_index + (OUTPUT_WIDTH * output_height * CHANNELS) as usize];
 
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let after_alloc = unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
-
-    let dummy = 0;
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let after_alloc = unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
     thumbnail[..out_index].copy_from_slice(header_data.as_bytes());
     let scale_x = width as f32 / OUTPUT_WIDTH as f32;
@@ -119,7 +117,6 @@ fn thumbnail_ppm6(input_bytes: &[u8], former_alloc_time: u64) -> u8 {
             let src_x = (x as f32 * scale_x) as usize;
             let src_y = (y as f32 * scale_y) as usize;
             for c in 0..CHANNELS {
-                //core::hint::black_box(dummy);
                 thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] =
                 input_bytes[index
                     + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
@@ -128,21 +125,21 @@ fn thumbnail_ppm6(input_bytes: &[u8], former_alloc_time: u64) -> u8 {
         }
     }
 
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let algo_end = unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let algo_end = unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
-    user::error::log(
-        alloc::format!(
-            "TIMING (thumbnail_ppm6):first alloc {}tsc {}tsc(algorithm before alloc:{}tsc alloc:{}tsc algorithm:{}tsc)",
-            former_alloc_time,
-            algo_end - algo_start,
-            algo_before_alloc - algo_start,
-            after_alloc - algo_before_alloc,
-            algo_end - after_alloc,
-        )
-        .as_bytes(),
-    );
+    //user::error::log(
+    //    alloc::format!(
+    //        "TIMING (thumbnail_ppm6):first alloc {}tsc {}tsc(algorithm before alloc:{}tsc alloc:{}tsc algorithm:{}tsc)",
+    //        former_alloc_time,
+    //        algo_end - algo_start,
+    //        algo_before_alloc - algo_start,
+    //        after_alloc - algo_before_alloc,
+    //        algo_end - after_alloc,
+    //    )
+    //    .as_bytes(),
+    //);
 
     // write the thumbnail to a new ppm file
     // let mut output_file = File::options()
@@ -172,27 +169,27 @@ pub extern "C" fn _rsstart() -> ! {
         .try_into()
         .expect("could not get file size argument");
 
-    let mut ppm_data = File::options()
+    let ppm_data = File::options()
         .read(true)
         .open(filename_str)
         .expect("could not open ppm file");
     // XXX: any timestamps taken before this are liable to be wrong due to continuation passing
 
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let before_alloc= unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let before_alloc= unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
-    let mut buf = alloc::vec![0; file_size.read() as usize];
+    let buf: &[u8] = unsafe {
+        let base_addr = (1024 * 1024 * 1024) as *mut core::ffi::c_void;
+        map_file(base_addr, Entry::ROTable(ppm_data.content));
+        slice::from_raw_parts(base_addr as *const u8, file_size.read() as usize)
+    };
 
-    unsafe { core::arch::x86_64::_mm_lfence() };
-    let after_alloc = unsafe { _rdtsc() };
-    unsafe { core::arch::x86_64::_mm_lfence() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
+    //let after_alloc= unsafe { _rdtsc() };
+    //unsafe { core::arch::x86_64::_mm_lfence() };
 
-    let _n = ppm_data
-        .read(&mut buf[..])
-        .expect("could not read ppm file");
-
-    let size = thumbnail_ppm6(&buf, after_alloc - before_alloc);
+    let size = thumbnail_ppm6(&buf);
 
     //user::error::log(
     //    alloc::format!(
