@@ -125,6 +125,7 @@ impl<'a> Server<'a> {
                             newfid,
                             name,
                         } => {
+                            log::info!("walking: {name:?}");
                             let fids_ = fids.lock().await;
                             let object = fids_.get(&fid).ok_or(ErrorKind::NotFound.into())?.clone();
                             Mutex::unlock(fids_);
@@ -173,7 +174,9 @@ impl<'a> Server<'a> {
                                     parent.readdir().await?.collect().await;
                                 for x in dirents {
                                     let x = x?;
-                                    isdir |= x.dir;
+                                    if x.name == name {
+                                        isdir |= x.dir;
+                                    }
                                 }
                                 if isdir {
                                     qid.push(dir(Fid(!0)));

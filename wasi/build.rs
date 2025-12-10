@@ -54,7 +54,7 @@ fn c2wasm(c: &[u8]) -> Result<Vec<u8>> {
         println!("{} {:?}", program, extra_args);
         let clang = Command::new(program)
             .args(extra_args)
-            .args(["-o", wasm_file.to_str().unwrap(), c_file.to_str().unwrap()])
+            .args(["-I /home/emmasudo/arca/wasi/wabt/third_party/simde/simde/arm/neon", "-o", wasm_file.to_str().unwrap(), c_file.to_str().unwrap()])
             .status()
             .map_err(Into::<anyhow::Error>::into)?;
         assert!(clang.success());
@@ -142,7 +142,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
-    let out_dir = env::var_os("OUT_DIR").unwrap();
+    let out_dir = "/tmp";
 
     let mut intermediateout: PathBuf = out_dir.clone().into();
     intermediateout.push("inter-out");
@@ -186,16 +186,19 @@ fn main() -> Result<()> {
         let f = f?;
         let path = f.path();
         let base = path.file_stem().unwrap();
-        let dst = Path::new(&out_dir).join(base);
+        let mut dst = Path::new(&out_dir).join(base);
         println!(
             "cargo::rerun-if-changed=wasm/{}",
             f.file_name().to_str().unwrap()
         );
-        let c = std::fs::read(f.path())?;
-        let wasm = c2wasm(&c)?;
+        let wasm= std::fs::read(f.path())?;
+        //let wasm = c2wasm(&c)?;
         let (c, h) = wasm2c(&wasm)?;
+        
         let elf = c2elf(&c, &h)?;
-        std::fs::write(dst, elf)?;
+        std::fs::write(&dst, &elf)?;
+        dst.add_extension("size");
+        std::fs::write(dst , elf.len().to_ne_bytes())?;
     }
 
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();

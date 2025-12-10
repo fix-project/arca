@@ -30,7 +30,7 @@ impl File for File9P {
             let n = core::cmp::min(data.len(), chunk.len());
             chunk[..n].copy_from_slice(&data[..n]);
             read += n;
-            if data.len() != chunk.len() {
+            if n != chunk.len() {
                 break;
             }
         }

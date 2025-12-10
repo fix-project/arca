@@ -1,4 +1,12 @@
 {
     "rust-analyzer.cargo.target": "x86_64-unknown-none",
     "rust-analyzer.check.allTargets": false,
+    "files.associations": {
+        "variant": "c",
+        "syscall.h": "c",
+        "uio.h": "c",
+        "unistd.h": "c",
+        "compare": "c",
+        "cstdint": "c"
+    },
 }
