@@ -4,6 +4,8 @@
 extern crate alloc;
 extern crate user;
 
+use core::arch::x86_64::{__rdtscp, _rdtsc};
+
 use user::io::File;
 use user::prelude::*;
 
@@ -58,6 +60,10 @@ pub fn parse_u32(bytes: &[u8]) -> Result<u32, &'static str> {
 }
 
 fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let algo_start = unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
+
     // check the magic number
     let index = 0;
     let (magic_number, index) = get_next_token(input_bytes, index);
@@ -91,8 +97,20 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
     let output_height: u32 = (OUTPUT_WIDTH as f32 / width as f32 * height as f32) as u32;
     let header_data = alloc::format!("P6\n{} {}\n{}\n", OUTPUT_WIDTH, output_height, maxval);
     let out_index = header_data.len();
+
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let algo_before_alloc = unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
+
     let mut thumbnail =
         alloc::vec![0u8; out_index + (OUTPUT_WIDTH * output_height * CHANNELS) as usize];
+
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let after_alloc = unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
+
+    let dummy = 0;
+
     thumbnail[..out_index].copy_from_slice(header_data.as_bytes());
     let scale_x = width as f32 / OUTPUT_WIDTH as f32;
     let scale_y = height as f32 / output_height as f32;
@@ -101,23 +119,29 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
             let src_x = (x as f32 * scale_x) as usize;
             let src_y = (y as f32 * scale_y) as usize;
             for c in 0..CHANNELS {
-                thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] =
-                    input_bytes[index
-                        + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
-                        + (c as usize)];
+                core::hint::black_box(dummy);
+                //thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] = 1;
+                //input_bytes[indeix
+                //    + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
+                //    + (c as usize)];
             }
         }
     }
 
-    //user::error::log(
-    //    alloc::format!(
-    //        "TIMING (thumbnail_ppm6): \nalgorithm without alloc: {}%\nalloc: {}%",
-    //        ((algo_before_alloc - algo_start) + (algo_end - after_alloc)) * 100
-    //            / (algo_end - algo_start),
-    //        (after_alloc - algo_before_alloc) * 100 / (algo_end - algo_start),
-    //    )
-    //    .as_bytes(),
-    //);
+    unsafe { core::arch::x86_64::_mm_lfence() };
+    let algo_end = unsafe { _rdtsc() };
+    unsafe { core::arch::x86_64::_mm_lfence() };
+
+    user::error::log(
+        alloc::format!(
+            "TIMING (thumbnail_ppm6):{}tsc algorithm before alloc:{}tsc alloc:{}tsc algorithm:{}tsc",
+            algo_end - algo_start,
+            algo_before_alloc - algo_start,
+            after_alloc - algo_before_alloc,
+            algo_end - after_alloc,
+        )
+        .as_bytes(),
+    );
 
     // write the thumbnail to a new ppm file
     // let mut output_file = File::options()
