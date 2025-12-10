@@ -63,6 +63,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_map => sys_map(args, arca),
         arcane::__NR_mmap => sys_mmap(args, arca),
         arcane::__NR_mprotect => sys_mprotect(args, arca),
+        arcane::__NR_compat_mmap => sys_compat_mmap(args, arca),
 
         arcane::__NR_call_with_current_continuation => {
             sys_call_with_current_continuation(args, arca)?
@@ -440,6 +441,64 @@ pub fn sys_mprotect(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         _ => return Err(SyscallError::BadArgument),
     }
     Ok(0)
+}
+
+pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let addr = args[0] as usize;
+    let len = args[1] as usize;
+    let mode = args[2] as u32;
+
+    if mode != arcane::__MODE_none && mode != arcane::__MODE_read_write {
+        unimplemented!("mode: {mode}");
+    }
+
+    // if arca.rusage().memory + len > arca.rlimit().memory {
+    //     return Err(SyscallError::OutOfMemory);
+    // }
+
+    let mut p = addr;
+    while p < addr + len {
+        if p % Page1GB::SIZE == 0 && len >= Page1GB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page1GB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page1GB::SIZE);
+                // TODO: handle failure
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page1GB::SIZE;
+            continue;
+        }
+        if p % Page2MB::SIZE == 0 && len >= Page2MB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page2MB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page2MB::SIZE);
+                // TODO: handle failure
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page2MB::SIZE;
+            continue;
+        }
+        if p % Page4KB::SIZE == 0 && len >= Page4KB::SIZE {
+            if mode == arcane::__MODE_none {
+                let entry = Entry::Null(Page4KB::SIZE);
+                arca.cpu().map(p, entry).unwrap();
+            } else if mode == arcane::__MODE_read_write {
+                let page = Page::new(Page4KB::SIZE);
+                let entry = Entry::RWPage(page);
+                arca.cpu().map(p, entry).unwrap();
+            }
+            p += Page4KB::SIZE;
+            continue;
+        }
+        panic!("unaligned mmap or bad size");
+    }
+    Ok(p - addr)
 }
 
 pub fn sys_call_with_current_continuation(

@@ -421,7 +421,7 @@ mod allocator {
     use core::ffi::c_void;
 
     use arca::Entry;
-    use arcane::arca_mmap;
+    use arcane::{__MODE_read_write, arca_compat_mmap, arca_mmap};
     use spin::{Mutex, lazy::Lazy};
     use talc::{ClaimOnOom, OomHandler, Span, Talc, Talck};
 
@@ -450,8 +450,8 @@ mod allocator {
 
             // Round up to alignment boundary
             let aligned_size = (required_size + align - 1) & !(align - 1);
-            let pages_needed = (aligned_size + PAGE_SIZE - 1) / PAGE_SIZE;
-            let total_size = pages_needed * PAGE_SIZE;
+            let pages_needed = aligned_size.div_ceil(PAGE_SIZE);
+            let mut total_size = pages_needed * PAGE_SIZE;
 
             let mut addr = HEAP.lock();
             let current_addr = *addr;
@@ -459,15 +459,15 @@ mod allocator {
             // Align the base address to the required alignment
             let aligned_base = (current_addr + align - 1) & !(align - 1);
 
-            // Allocate each page individually to avoid issues with large single pages
-            for i in 0..pages_needed {
-                let page_addr = aligned_base + (i * PAGE_SIZE);
-                let mut entry = write_entry(Entry::RWPage(Page::new(PAGE_SIZE)));
+            let page_addr = aligned_base;
 
-                unsafe {
-                    let base = page_addr as *mut c_void;
-                    arca_mmap(base, &mut entry);
+            unsafe {
+                let base = page_addr as *mut c_void;
+                let len= arca_compat_mmap(base, total_size, __MODE_read_write);
+                if len < 0 {
+                    panic!("Failed to handle oom");
                 }
+                total_size = len as usize;
             }
 
             // Claim the entire aligned region for the allocator
