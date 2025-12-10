@@ -147,7 +147,7 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            log::info!("set_for_current {}", core_id.id);
+            log::debug!("set_for_current {}", core_id.id);
             let res = core_affinity::set_for_current(core_id);
             if !res {
                 panic!("Failed to pin thread to core")
@@ -503,14 +503,8 @@ impl Runtime {
         client_conn: TcpStream,
         is_listener: bool,
     ) {
-        //let core_ids = core_affinity::get_core_ids().unwrap();
-        //let mut iter = core_ids.into_iter();
-        //
-        let mut core_id = if is_listener {
-            core_affinity::CoreId { id: 0 }
-        } else {
-            core_affinity::CoreId { id: 32 }
-        };
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let mut iter = core_ids.into_iter();
 
         self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
@@ -563,9 +557,12 @@ impl Runtime {
                     &kvm_cpuid,
                     server_conn.try_clone().unwrap(),
                     client_conn.try_clone().unwrap(),
-                    core_id,
+                    if is_listener {
+                        iter.next().unwrap()
+                    } else {
+                        iter.next_back().unwrap()
+                    },
                 ));
-                core_id.id += 1;
             }
             for cpu in cpus {
                 cpu.join().unwrap();
