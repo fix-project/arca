@@ -463,7 +463,7 @@ mod allocator {
 
             unsafe {
                 let base = page_addr as *mut c_void;
-                let len= arca_compat_mmap(base, total_size, __MODE_read_write);
+                let len = arca_compat_mmap(base, total_size, __MODE_read_write);
                 if len < 0 {
                     panic!("Failed to handle oom");
                 }

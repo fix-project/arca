@@ -33,6 +33,7 @@ fn new_cpu<'scope>(
     cpuid: &CpuId,
     server_conn: TcpStream,
     client_conn: TcpStream,
+    core_id: core_affinity::CoreId,
 ) -> ScopedJoinHandle<'scope, ()> {
     // set up the CPU in long mode
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
@@ -146,6 +147,11 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
+            log::info!("set_for_current {}", core_id.id);
+            let res = core_affinity::set_for_current(core_id);
+            if !res {
+                panic!("Failed to pin thread to core")
+            }
             run_cpu(vcpu_fd, elf, flag, server_conn, client_conn);
         })
         .unwrap()
@@ -490,7 +496,22 @@ impl Runtime {
         }
     }
 
-    pub fn run(&mut self, args: &[usize], server_conn: TcpStream, client_conn: TcpStream) {
+    pub fn run(
+        &mut self,
+        args: &[usize],
+        server_conn: TcpStream,
+        client_conn: TcpStream,
+        is_listener: bool,
+    ) {
+        //let core_ids = core_affinity::get_core_ids().unwrap();
+        //let mut iter = core_ids.into_iter();
+        //
+        let mut core_id = if is_listener {
+            core_affinity::CoreId { id: 0 }
+        } else {
+            core_affinity::CoreId { id: 32 }
+        };
+
         self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
@@ -542,7 +563,9 @@ impl Runtime {
                     &kvm_cpuid,
                     server_conn.try_clone().unwrap(),
                     client_conn.try_clone().unwrap(),
+                    core_id,
                 ));
+                core_id.id += 1;
             }
             for cpu in cpus {
                 cpu.join().unwrap();
