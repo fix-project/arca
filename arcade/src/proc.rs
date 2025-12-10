@@ -158,7 +158,7 @@ impl Proc {
 
                                 use alloc::string::ToString;
 
-                                use crate::record::RemoteDataRecord;
+                                use crate::{fileutil::buffer_to_table, record::RemoteDataRecord};
 
                                 let tcp_init = kvmclock::time_since_boot();
 
@@ -178,17 +178,7 @@ impl Proc {
 
                                 log::debug!("Received file of size {} bytes", data.len());
 
-                                // Create the file and return file descriptor
-                                let mut new_file = vfs::MemFile::default();
-                                new_file.write(data.as_slice()).await.unwrap();
-                                new_file.seek(vfs::SeekFrom::Start(0)).await.unwrap();
-                                let fd = self
-                                    .state
-                                    .fds
-                                    .lock()
-                                    .insert(FileDescriptor::File(new_file.boxed()));
-
-                                let file_req = Ok::<usize, u8>(fd);
+                                let new_file = buffer_to_table(&data);
 
                                 let tcp_end = kvmclock::time_since_boot();
 
@@ -205,10 +195,7 @@ impl Proc {
                                 //    (tcp_end - tcp_init).as_micros()
                                 //);
 
-                                match file_req {
-                                    Ok(result) => k.apply(Value::Word(Word::new(result as u64))),
-                                    Err(_) => return (1, record),
-                                }
+                                k.apply(Value::Table(new_file))
                             }
 
                             #[cfg(not(feature = "ablation"))]

@@ -6,8 +6,8 @@ extern crate user;
 
 use alloc::slice;
 use user::io::File;
-use user::prelude::*;
 use user::map_file;
+use user::prelude::*;
 
 static OUTPUT_WIDTH: u32 = 256;
 
@@ -118,9 +118,9 @@ fn thumbnail_ppm6(input_bytes: &[u8]) -> u8 {
             let src_y = (y as f32 * scale_y) as usize;
             for c in 0..CHANNELS {
                 thumbnail[out_index + ((y * OUTPUT_WIDTH + x) * CHANNELS + c) as usize] =
-                input_bytes[index
-                    + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
-                    + (c as usize)];
+                    input_bytes[index
+                        + (src_y * (width as usize) + src_x) * (CHANNELS as usize)
+                        + (c as usize)];
             }
         }
     }

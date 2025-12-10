@@ -11,7 +11,6 @@
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
 use core::{
-    cmp::min,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -33,12 +32,14 @@ mod vsock;
 mod input_gen;
 mod proc;
 
+mod fileutil;
 mod record;
 mod tcpserver;
 mod tcputil;
 
 use crate::{
     dev::DevFS,
+    fileutil::buffer_to_table,
     proc::{Env, FileDescriptor, Namespace, Proc, ProcState, namespace::MountType},
     record::{Accumulator, Record, RemoteInvocationRecord},
     vsock::VSockFS,
@@ -148,8 +149,8 @@ async fn main(args: &[usize]) {
 
     // TODO: read from the directory instead of hardcoding filenames and sizes
     let img_names_to_sizes = Arc::new(BTreeMap::from([
-        ("falls_1.ppm", 2332861),
-        ("Sun.ppm", 12814240),
+        (String::from("falls_1.ppm"), 2332861),
+        (String::from("Sun.ppm"), 12814240),
     ]));
 
     let mut img_names_to_contents: BTreeMap<String, Table> = BTreeMap::default();
@@ -164,23 +165,8 @@ async fn main(args: &[usize]) {
             .unwrap();
         image_file.read(&mut img_bytes).await.unwrap();
 
-        let mut table = Table::new(*image_size);
-        let pagesize = match table.clone().into_inner() {
-            kernel::types::internal::Table::Table1GB(_) => 2 * 1024 * 1024,
-            kernel::types::internal::Table::Table2MB(_) => panic!(),
-            kernel::types::internal::Table::Table512GB(_) => panic!(),
-        } as usize;
-
-        for i in 0..image_size.div_ceil(pagesize) {
-            let mut page = Page::new(pagesize);
-            page.write(
-                0,
-                &img_bytes[i * pagesize..min((i + 1) * pagesize, *image_size)],
-            );
-            let _ = table.set(i, Entry::ROPage(page));
-        }
-
-        img_names_to_contents.insert(String::from(*image_name), table);
+        let table = buffer_to_table(&img_bytes);
+        img_names_to_contents.insert(image_name.clone(), table);
     }
 
     let img_names_to_contents = Arc::new(img_names_to_contents);
@@ -190,7 +176,7 @@ async fn main(args: &[usize]) {
     #[cfg(feature = "ablation")]
     let (tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::AblatedServer;
-        let server = AblatedServer::new(shared_ns.clone());
+        let server = AblatedServer::new(img_names_to_sizes.clone(), img_names_to_contents.clone());
         let tcpserver = TcpServer::new(server);
         let handle = kernel::rt::spawn(async move { tcpserver.run().await });
 

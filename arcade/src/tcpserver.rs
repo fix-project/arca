@@ -1,12 +1,13 @@
 use core::panic;
 
+use alloc::collections::btree_map::BTreeMap;
 use async_trait::async_trait;
 use kernel::host::*;
 use kernel::prelude::*;
+use ninep::path::Path;
 use serde::{Deserialize, Serialize};
-use vfs::{File, Open};
 
-use crate::proc::Namespace;
+use crate::fileutil;
 
 #[derive(Debug)]
 pub enum Error {
@@ -69,7 +70,8 @@ pub trait MessageServer {
 }
 
 pub struct AblatedServer {
-    shared_ns: Arc<Namespace>,
+    img_names_to_sizes: Arc<BTreeMap<String, usize>>,
+    img_names_to_contents: Arc<BTreeMap<String, Table>>,
 }
 
 #[async_trait]
@@ -79,26 +81,22 @@ impl MessageServer for AblatedServer {
             Message::FileRequest(FileRequest { file_path }) => {
                 log::debug!("Received File Request for path {}", file_path);
                 // send back the requested file data
-                let mut file = self
-                    .shared_ns
-                    .walk(&file_path, Open::Read)
-                    .await
-                    .unwrap()
-                    .as_file()
-                    .unwrap();
+                let file_name = Path::new(&file_path).file_name().unwrap();
 
-                // TODO(kmohr) let's just encode the file size instead of reading in chunks like this
-                let mut file_data = Vec::new();
-                let mut buffer = [0u8; 4 * 1024 * 1024];
-                loop {
-                    match file.read(&mut buffer).await {
-                        Ok(0) => break, // EOF
-                        Ok(n) => file_data.extend_from_slice(&buffer[..n]),
-                        Err(e) => {
-                            log::error!("Failed to read file: {:?}", e);
-                            break;
-                        }
-                    }
+                let file = self
+                    .img_names_to_contents
+                    .get(file_name)
+                    .expect("File does not exist");
+
+                let size = *self
+                    .img_names_to_sizes
+                    .get(file_name)
+                    .expect("File size does not exist");
+
+                let mut file_data = vec![0u8; size];
+                let n = fileutil::read_table_to_buffer(file, 0, &mut file_data);
+                if n != size {
+                    panic!("Failed to read all data");
                 }
 
                 log::debug!("Read data {}", file_path);
@@ -123,8 +121,14 @@ impl MessageServer for AblatedServer {
     }
 }
 impl AblatedServer {
-    pub fn new(shared_ns: Arc<Namespace>) -> Self {
-        AblatedServer { shared_ns }
+    pub fn new(
+        img_names_to_sizes: Arc<BTreeMap<String, usize>>,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
+    ) -> Self {
+        AblatedServer {
+            img_names_to_sizes,
+            img_names_to_contents,
+        }
     }
 }
 

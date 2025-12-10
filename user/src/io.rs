@@ -115,7 +115,7 @@ impl File {
 //}
 // impl Iterator for File {
 //     type Item = u8;
-// 
+//
 //     fn next(&mut self) -> Option<Self::Item> {
 //         let mut bytes = [0];
 //         crate::error::log("reading");
@@ -187,7 +187,7 @@ impl OpenOptions {
         //} else {
         //    Ok(File { fd: result as u32 })
         //}
-        Ok(File { content : result })
+        Ok(File { content: result })
     }
 }
 
@@ -206,7 +206,6 @@ pub fn fork() -> Result<Option<NonZeroUsize>> {
     let result = result.read() as usize;
     Ok(NonZeroUsize::new(result))
 }
-
 
 pub struct Monitor {
     fd: u64,
