@@ -106,7 +106,10 @@ impl MessageServer for AblatedServer {
                 log::debug!("Replied {}", file_path);
                 Ok(())
             }
-            Message::ClientClose => Err(Error::MessageProcessing),
+            Message::ClientClose => {
+                log::info!("Clienclosing connection");
+                Err(Error::MessageProcessing)
+            },
             Message::FileResponse(_) => {
                 panic!("FileResponse should be handled AblatedClient")
             }

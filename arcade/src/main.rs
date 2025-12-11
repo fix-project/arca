@@ -75,7 +75,7 @@ async fn main(args: &[usize]) {
     let host_listener_port = args[1];
     let iam_ipaddr = IpAddr::from(args[2] as u64);
     let peer_ipaddr = IpAddr::from(args[3] as u64);
-    let _is_listener = args[4] != 0;
+    let is_listener = args[4] != 0;
     let duration = Duration::from_secs(args[5] as u64);
     let ratio = args[6] as f64 / 100 as f64;
 
@@ -230,54 +230,58 @@ async fn main(args: &[usize]) {
             let mut rng = SmallRng::seed_from_u64(i as u64);
 
             worker_threads.push(kernel::rt::spawn(async move {
-                let mut handle_one = async || -> Record {
-                    let sample = rng.next_u64() as f64 / (u64::MAX as f64) < 0.8;
-                    if sample && let Some(Ok(Some(continuation))) = continuation_receiver.try_recv()
-                    {
-                        let k_decompress_init = kvmclock::time_since_boot();
-                        let decompressed = decompress_size_prepended(&continuation).unwrap();
-                        let k_decompress_end = kvmclock::time_since_boot();
-                        match postcard::from_bytes(&decompressed).unwrap() {
-                            Value::Function(k) => {
-                                let p = Proc::from_remote_function(
-                                    k,
-                                    ProcState {
-                                        ns: shared_ns.clone(),
-                                        env: Env::default().into(),
-                                        fds: RwLock::new(Descriptors::new()).into(),
-                                        cwd: PathBuf::from("/".to_owned()).into(),
-                                        host: Arc::new(iam_ipaddr),
-                                    },
-                                    img_names_to_contents.clone(),
-                                )
-                                .expect("Failed to create Proc from received Function");
-                                let k_decode_end = kvmclock::time_since_boot();
+                let mut handle_one = async || -> Option<Record> {
+                    if is_listener {
+                      if let Ok(Some(continuation)) = continuation_receiver.recv().await
+                      {
+                          let k_decompress_init = kvmclock::time_since_boot();
+                          let decompressed = decompress_size_prepended(&continuation).unwrap();
+                          let k_decompress_end = kvmclock::time_since_boot();
+                          match postcard::from_bytes(&decompressed).unwrap() {
+                              Value::Function(k) => {
+                                  let p = Proc::from_remote_function(
+                                      k,
+                                      ProcState {
+                                          ns: shared_ns.clone(),
+                                          env: Env::default().into(),
+                                          fds: RwLock::new(Descriptors::new()).into(),
+                                          cwd: PathBuf::from("/".to_owned()).into(),
+                                          host: Arc::new(iam_ipaddr),
+                                      },
+                                      img_names_to_contents.clone(),
+                                  )
+                                  .expect("Failed to create Proc from received Function");
+                                  let k_decode_end = kvmclock::time_since_boot();
 
-                                let (exitcode, record) = p.run([]).await;
+                                  let (exitcode, record) = p.run([]).await;
 
-                                log::debug!("exitcode: {exitcode}");
-                                let record = match record {
-                                    Record::LocalRecord(local_record) => local_record,
-                                    Record::RemoteDataRecord(_)
-                                    | Record::MigratedRecord(_)
-                                    | Record::RemoteInvocationRecord(_) => {
-                                        panic!("Unexpected record type")
-                                    }
-                                };
+                                  log::debug!("exitcode: {exitcode}");
+                                  let record = match record {
+                                      Record::LocalRecord(local_record) => local_record,
+                                      Record::RemoteDataRecord(_)
+                                      | Record::MigratedRecord(_)
+                                      | Record::RemoteInvocationRecord(_) => {
+                                          panic!("Unexpected record type")
+                                      }
+                                  };
 
-                                RemoteInvocationRecord::new(
-                                    k_decompress_end - k_decompress_init,
-                                    k_decode_end - k_decompress_end,
-                                    record,
-                                )
-                                .into()
-                            }
-                            _ => {
-                                panic!(
-                                    "Expected Function value in Continuation, got something else"
-                                );
-                            }
-                        }
+                                  let record: Record = RemoteInvocationRecord::new(
+                                      k_decompress_end - k_decompress_init,
+                                      k_decode_end - k_decompress_end,
+                                      record,
+                                  )
+                                  .into();
+                                  
+
+                                  Some(record)
+                              }
+                              _ => {
+                                  panic!(
+                                      "Expected Function value in Continuation, got something else"
+                                  );
+                              }
+                          }
+                      } else { None }
                     } else {
                         let loading_elf_start = kvmclock::time_since_boot();
                         let thumbnailer_function = common::elfloader::load_elf(THUMBNAILER)
@@ -321,7 +325,7 @@ async fn main(args: &[usize]) {
                             }
                             Record::RemoteInvocationRecord(_) => panic!("Unexpected record type"),
                         }
-                        record
+                        Some(record)
                     }
                 };
 
@@ -343,7 +347,10 @@ async fn main(args: &[usize]) {
                     }
 
                     let record = handle_one().await;
-                    accumulator.accumulate(record);
+                    match record {
+                        Some(record) => { accumulator.accumulate(record); },
+                        None => { break runtime; },
+                    }
                     count += 1;
                 };
                 total_count.fetch_add(count, Ordering::SeqCst);
@@ -361,26 +368,54 @@ async fn main(args: &[usize]) {
 
     let mut accumulator = Accumulator::default();
 
-    log::debug!("Collecting worker thread metrics");
-    for j in worker_threads {
-        accumulator += j.await;
+    #[cfg(feature = "ablation")]
+    {
+       if !is_listener {
+          log::debug!("Collecting worker thread metrics");
+          for j in worker_threads {
+              accumulator += j.await;
+          }
+          let total_time = total_time.load(Ordering::SeqCst);
+          let total_count = total_count.load(Ordering::SeqCst) - accumulator.migrated_count;
+
+          let freq = (total_count as f64 / (total_time as f64 / 1e9)) * worker_thread_num as f64;
+          let freq_per_core = freq / worker_thread_num as f64;
+          // let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
+          
+          log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz");
+          log::info!("{}", accumulator);
+        }
+
+
+        if is_listener {
+          kernel::rt::delay_for(duration + Duration::from_secs(5)).await;
+          //log::info!("Listener joining on tcpserver");
+          // Close client_tx after main jobs are done
+          //let _ = client_tx.close().await;
+          //log::info!("Joining client relay");
+          //let _ = client_relay_handle.await;
+          //log::info!("Joining client rx");
+          //let _ = client_rx_handle.await;
+          //      log::info!("Joining tcpserver");
+          //let _ = tcpserver_handle.await;
+        }
     }
-    let total_time = total_time.load(Ordering::SeqCst);
-    let total_count = total_count.load(Ordering::SeqCst) - accumulator.migrated_count;
 
-    let freq = (total_count as f64 / (total_time as f64 / 1e9)) * worker_thread_num as f64;
-    let freq_per_core = freq / worker_thread_num as f64;
-    // let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
+    #[cfg(not(feature = "ablation"))]
+    {
+          log::debug!("Collecting worker thread metrics");
+          for j in worker_threads {
+              accumulator += j.await;
+          }
+          let total_time = total_time.load(Ordering::SeqCst);
+          let total_count = total_count.load(Ordering::SeqCst) - accumulator.migrated_count;
 
-    // Close client_tx after main jobs are done
-    let _ = client_tx.close().await;
-    log::debug!("Joining client relay");
-    let _ = client_relay_handle.await;
-    log::debug!("Joining client rx");
-    let _ = client_rx_handle.await;
-    log::debug!("Joining tcpserver");
-    let _ = tcpserver_handle.await;
+          let freq = (total_count as f64 / (total_time as f64 / 1e9)) * worker_thread_num as f64;
+          let freq_per_core = freq / worker_thread_num as f64;
+          // let time_per_core = Duration::from_secs_f64(1. / freq) * worker_thread_num as u32;
+          
+          log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz");
+          log::info!("{}", accumulator);
+    }
 
-    log::info!("{freq:10.2} Hz (per core: {freq_per_core:10.2} Hz");
-    log::info!("{}", accumulator);
 }
