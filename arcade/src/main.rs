@@ -22,7 +22,6 @@ use common::ipaddr::IpAddr;
 use common::util::descriptors::Descriptors;
 use kernel::{kvmclock, prelude::*};
 use ninep::Client;
-use rand::{RngCore, SeedableRng, rngs::SmallRng};
 // frame format isn't supported in no_std env
 use lz4_flex::block::decompress_size_prepended;
 
@@ -188,7 +187,7 @@ async fn main(args: &[usize]) {
     };
 
     #[cfg(not(feature = "ablation"))]
-    let (tcpserver_handle, continuation_receiver) = {
+    let (_tcpserver_handle, continuation_receiver) = {
         use crate::tcpserver::ContinuationServer;
         let (sender, receiver) = channel::unbounded();
         let server = ContinuationServer::new(sender);
@@ -199,8 +198,8 @@ async fn main(args: &[usize]) {
 
     // Setup Clients
     let (client_tx, client_relay, client_rx) = tcpserver::make_client();
-    let client_relay_handle = kernel::rt::spawn(async move { client_relay.run().await });
-    let client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
+    let _client_relay_handle = kernel::rt::spawn(async move { client_relay.run().await });
+    let _client_rx_handle = kernel::rt::spawn(async move { client_rx.run().await });
 
     let smp = kernel::ncores();
     let worker_thread_num = smp - 4;
@@ -211,7 +210,7 @@ async fn main(args: &[usize]) {
         let go = Arc::new(AtomicBool::new(false));
         let ready_count = Arc::new(AtomicUsize::new(0));
 
-        for i in 0..worker_thread_num {
+        for _ in 0..worker_thread_num {
             let go = go.clone();
             let total_count = total_count.clone();
             let total_time = total_time.clone();
@@ -227,7 +226,6 @@ async fn main(args: &[usize]) {
                 // 0.99,
                 ratio,
             );
-            let mut rng = SmallRng::seed_from_u64(i as u64);
 
             worker_threads.push(kernel::rt::spawn(async move {
                 let mut handle_one = async || -> Option<Record> {
