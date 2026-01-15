@@ -101,6 +101,13 @@ impl<T: ?Sized> RwLock<T> {
         ReadGuard::upgrade(guard)
     }
 
+    pub fn try_upgrade(guard: ReadGuard<'_, T>) -> Option<WriteGuard<'_, T>>
+    where
+        T: Sized,
+    {
+        ReadGuard::try_upgrade(guard)
+    }
+
     pub fn downgrade(guard: WriteGuard<'_, T>) -> ReadGuard<'_, T>
     where
         T: Sized,
@@ -133,6 +140,8 @@ impl<T: ?Sized> RwLock<T> {
 
 unsafe impl<T: Send> Send for RwLock<T> {}
 unsafe impl<T: Send> Sync for RwLock<T> {}
+impl<T: ?Sized> !Send for WriteGuard<'_, T> {}
+impl<T: ?Sized> !Send for ReadGuard<'_, T> {}
 
 impl<'a, T: ?Sized> WriteGuard<'a, T> {
     pub fn unlock(_: Self) {}
@@ -175,6 +184,12 @@ impl<'a, T> ReadGuard<'a, T> {
         let lock = this.lock;
         ReadGuard::unlock(this);
         lock.write()
+    }
+
+    pub fn try_upgrade(this: Self) -> Option<WriteGuard<'a, T>> {
+        let lock = this.lock;
+        ReadGuard::unlock(this);
+        lock.try_write()
     }
 }
 

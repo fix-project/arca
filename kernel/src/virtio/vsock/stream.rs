@@ -1,58 +1,72 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    future::Future,
+    pin::pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll, Waker},
+};
 
 use alloc::collections::vec_deque::VecDeque;
 
+use crate::rt;
+
 use super::*;
 
+pub(crate) struct StreamSocket {
+    pub outbound: Flow,
+    pub waker: Option<Waker>,
+    pub queue: VecDeque<StreamEvent>,
+}
+
 pub struct Stream {
-    outbound: Flow,
-    rx: Receiver,
+    socket: Arc<RwLock<StreamSocket>>,
     peer_rx_closed: AtomicBool,
     peer_tx_closed: AtomicBool,
     closed: AtomicBool,
-    last_read: SpinLock<Option<VecDeque<u8>>>,
+    last_read: Mutex<Option<VecDeque<u8>>>,
+    outbound: Flow,
+}
+
+pub struct Read {
+    socket: Arc<RwLock<StreamSocket>>,
 }
 
 impl Stream {
-    pub fn new(outbound: Flow, rx: Receiver) -> Stream {
+    pub(crate) async fn new(socket: Arc<RwLock<StreamSocket>>) -> Stream {
+        let outbound = socket.read().await.outbound;
         Stream {
+            socket,
+            peer_rx_closed: false.into(),
+            peer_tx_closed: false.into(),
+            closed: false.into(),
+            last_read: Mutex::new(None),
             outbound,
-            rx,
-            peer_rx_closed: AtomicBool::new(false),
-            peer_tx_closed: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
-            last_read: SpinLock::new(None),
         }
     }
 
+    #[rt::profile]
     pub async fn connect(peer: impl TryInto<SocketAddr>) -> Result<Stream> {
         let local = SocketAddr { cid: 3, port: 0 };
         let outbound = Flow {
             src: local,
             dst: peer.try_into().map_err(|_| SocketError::InvalidAddress)?,
         };
-        let rx = connect(outbound).await;
-        let outbound = rx.inbound().reverse();
-
-        let result = rx.recv().await?;
+        let socket = connect(outbound).await;
+        let result = Read {
+            socket: socket.clone(),
+        }
+        .await;
         let StreamEvent::Connect = result else {
             return Err(SocketError::ConnectionFailed);
         };
-        Ok(Stream {
-            outbound,
-            rx,
-            peer_rx_closed: false.into(),
-            peer_tx_closed: false.into(),
-            closed: false.into(),
-            last_read: SpinLock::new(None),
-        })
+        Ok(Stream::new(socket).await)
     }
 
+    #[rt::profile]
     pub async fn recv(&self, bytes: &mut [u8]) -> Result<usize> {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let mut last_read = self.last_read.lock();
+        let mut last_read = self.last_read.lock().await;
         if let Some(rest) = last_read.as_mut() {
             let n = core::cmp::min(bytes.len(), rest.len());
             for item in bytes.iter_mut().take(n) {
@@ -64,7 +78,10 @@ impl Stream {
             Ok(n)
         } else {
             loop {
-                let result = self.rx.recv().await?;
+                let result = Read {
+                    socket: self.socket.clone(),
+                }
+                .await;
                 return match result {
                     StreamEvent::Reset => Err(SocketError::ConnectionReset),
                     StreamEvent::Connect => Err(SocketError::ConnectionReset),
@@ -106,6 +123,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     pub async fn send(&self, buf: &[u8]) -> Result<usize> {
         if self.peer_rx_closed.load(Ordering::SeqCst) {
             Err(SocketError::ConnectionClosed)
@@ -115,6 +133,7 @@ impl Stream {
         }
     }
 
+    #[rt::profile]
     async fn close_internal(&mut self) -> Result<()> {
         if self.closed.fetch_or(true, Ordering::SeqCst) {
             return Ok(());
@@ -122,15 +141,20 @@ impl Stream {
         shutdown(self.outbound, true, true).await;
 
         loop {
-            let result = self.rx.recv().await?;
+            let result = Read {
+                socket: self.socket.clone(),
+            }
+            .await;
             if let StreamEvent::Reset = result {
                 return Ok(());
             };
         }
     }
 
+    #[rt::profile]
     pub async fn close(mut self) -> Result<()> {
-        self.close_internal().await
+        self.close_internal().await?;
+        Ok(())
     }
 
     pub fn peer(&self) -> SocketAddr {
@@ -146,6 +170,30 @@ impl Drop for Stream {
     fn drop(&mut self) {
         if !self.closed.load(Ordering::SeqCst) {
             let _ = crate::rt::spawn_blocking(self.close_internal());
+        }
+    }
+}
+
+impl Future for Read {
+    type Output = StreamEvent;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        let mut fake_cx = Context::from_waker(Waker::noop());
+        let mut socket = loop {
+            let socket = pin! {self.socket.write()};
+            if let Poll::Ready(result) = Future::poll(socket, &mut fake_cx) {
+                break result;
+            }
+            core::hint::spin_loop();
+        };
+        if let Some(x) = socket.queue.pop_front() {
+            Poll::Ready(x)
+        } else {
+            socket.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }

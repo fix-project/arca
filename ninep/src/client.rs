@@ -1,8 +1,8 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
-use common::util::sorter::{Sender, Sorter};
-use common::util::spinlock::SpinLock;
+use async_lock::RwLock;
+use common::util::router::Router;
 
 pub mod dir;
 pub mod file;
@@ -22,8 +22,8 @@ pub struct Client {
 }
 
 pub struct Connection {
-    inbound: Sorter<Tag, RMessage>,
-    write: SpinLock<Box<dyn File>>,
+    inbound: Router<RMessage>,
+    write: RwLock<Box<dyn File>>,
     next_tag: AtomicU16,
     next_fid: AtomicU32,
     msize: AtomicUsize,
@@ -56,12 +56,11 @@ impl Connection {
 
     async fn send(&self, message: TMessage) -> Result<RMessage> {
         let tag = message.tag();
-        let rx = self.inbound.receiver(tag);
-        let mut f = self.write.lock().dup().await?;
         log::debug!("-> {message:?}");
         let msg = wire::to_bytes_with_len(message)?;
+        let mut f = self.write.write().await;
         f.write(&msg).await?;
-        let result = rx.recv().await.map_err(Error::other)?;
+        let result = self.inbound.recv(tag.0 as u64).await;
         log::debug!("<- {result:?}");
         Ok(result)
     }
@@ -72,8 +71,8 @@ impl Client {
         connection: impl File + 'static,
         spawn: impl Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + 'static + Send + Sync,
     ) -> Result<Client> {
-        let inbound = Sorter::new();
-        let tx = inbound.sender();
+        let inbound = Router::new();
+        let tx = inbound.clone();
         let connection = connection.boxed();
         let read = connection.dup().await?;
         spawn(Box::pin(async move {
@@ -81,7 +80,7 @@ impl Client {
         }));
         let conn = Arc::new(Connection {
             inbound,
-            write: SpinLock::new(connection),
+            write: RwLock::new(connection),
             next_tag: AtomicU16::new(0),
             next_fid: AtomicU32::new(0),
             msize: AtomicUsize::new(1024),
@@ -102,7 +101,7 @@ impl Client {
         })
     }
 
-    async fn bg_task(mut tx: Sender<Tag, RMessage>, mut read: Box<dyn File>) -> Result<()> {
+    async fn bg_task(tx: Router<RMessage>, mut read: Box<dyn File>) -> Result<()> {
         loop {
             let mut size = [0u8; 4];
             read.read_exact(&mut size).await?;
@@ -110,7 +109,7 @@ impl Client {
             let mut buf = vec![0; size as usize - 4];
             read.read_exact(&mut buf).await?;
             let rmsg: RMessage = wire::from_bytes(&buf)?;
-            tx.send_blocking(rmsg.tag(), rmsg).map_err(Error::other)?;
+            tx.send(rmsg.tag().0 as u64, rmsg);
         }
     }
 

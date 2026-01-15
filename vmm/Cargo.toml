@@ -40,6 +40,7 @@ vsock = "0.5.1"
 thread-priority = "3.0.0"
 elevate = "0.6.1"
 clap = "4.5.48"
+rlimit = "0.10.2"
 
 [build-dependencies]
 anyhow = "1.0.97"

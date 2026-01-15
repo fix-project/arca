@@ -20,6 +20,11 @@ pub fn bench(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn profile(attr: TokenStream, item: TokenStream) -> TokenStream {
+    testing::profile(attr, item)
+}
+
+#[proc_macro_attribute]
 pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
     util::kmain(attr, item)
 }

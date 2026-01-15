@@ -84,3 +84,32 @@ pub fn bench(_: TokenStream, item: TokenStream) -> TokenStream {
     }
     .into()
 }
+
+pub fn profile(_: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = item;
+    let kernel = kernel_ident();
+    let name = sig.ident.to_string();
+    quote! {
+        #(#attrs)*
+        #vis #sig {
+            static __function_name: &str = const {
+                concat!(#name, "@", file!(), ":", line!())
+            };
+            let mut f = async || #block;
+
+            let __start = #kernel::kvmclock::time_since_boot();
+            let result = f().await;
+            let end = #kernel::kvmclock::time_since_boot();
+            let duration = end - __start;
+            #kernel::aprofile::log_time_spent(&__function_name, duration);
+            result
+        }
+    }
+    .into()
+}

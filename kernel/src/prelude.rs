@@ -30,6 +30,7 @@ pub use common::refcnt::RefCnt;
 pub use common::util::channel;
 pub use common::util::mutex::Mutex;
 pub use common::util::oneshot;
+pub use common::util::router::Router;
 pub use common::util::rwlock::RwLock;
 pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;

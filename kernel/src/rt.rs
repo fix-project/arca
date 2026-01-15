@@ -5,29 +5,28 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
+pub use macros::profile;
 
-use alloc::{
-    boxed::Box,
-    collections::{btree_map::BTreeMap, vec_deque::VecDeque},
-    sync::Arc,
-    task::Wake,
+use alloc::{boxed::Box, sync::Arc, task::Wake};
+use common::util::{
+    channel::{Receiver, Sender},
+    concurrent_trie::Trie,
+    rwlock::RwLock,
 };
-use common::util::rwlock::{ReadGuard, RwLock, WriteGuard};
-use time::OffsetDateTime;
 
-use crate::{interrupts::INTERRUPTED, kvmclock, prelude::*};
+use crate::{debugcon::CONSOLE, interrupts::INTERRUPTED, io, kvmclock, prelude::*};
 
 pub static EXECUTOR: LazyLock<Executor> = LazyLock::new(Executor::new);
 
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-#[derive(Default)]
 pub struct Executor {
-    pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
-    sleeping: RwLock<BTreeMap<OffsetDateTime, Waker>>,
-    wfi: Arc<RwLock<VecDeque<Waker>>>,
+    todo_rx: Receiver<Arc<Task>>,
+    todo_tx: Sender<Arc<Task>>,
+    sleeping: Trie<2, Waker>,
+    wfi_rx: Receiver<Waker>,
+    wfi_tx: Sender<Waker>,
     active: AtomicUsize,
-    parallel: AtomicUsize,
 }
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -47,12 +46,15 @@ enum Entry<T> {
 
 impl Executor {
     fn new() -> Executor {
+        let (todo_tx, todo_rx) = channel::bounded(4096);
+        let (wfi_tx, wfi_rx) = channel::bounded(4096);
         Executor {
-            pending: Arc::default(),
-            sleeping: RwLock::default(),
-            wfi: Arc::default(),
+            todo_rx,
+            todo_tx,
+            sleeping: Trie::default(),
+            wfi_rx,
+            wfi_tx,
             active: AtomicUsize::new(0),
-            parallel: AtomicUsize::new(0),
         }
     }
 
@@ -84,12 +86,11 @@ impl Executor {
         let future = Self::resolve(future, entry.clone());
         let task = Arc::new(Task {
             future: SpinLock::new(Box::pin(future)),
-            pending: self.pending.clone(),
+            todo: self.todo_tx.clone(),
         });
         let handle = JoinHandle { entry };
         self.active.fetch_add(1, Ordering::AcqRel);
-        let mut tasks = self.pending.write();
-        tasks.push_back(task);
+        self.todo_tx.try_send(task).unwrap();
         handle
     }
 
@@ -105,40 +106,33 @@ impl Executor {
             let pin: BoxFuture = core::mem::transmute(pin);
             let task = Arc::new(Task {
                 future: SpinLock::new(pin),
-                pending: self.pending.clone(),
+                todo: self.todo_tx.clone(),
             });
             let handle = JoinHandle { entry };
             self.active.fetch_add(1, Ordering::AcqRel);
-            let mut tasks = self.pending.write();
-            tasks.push_back(task);
-            core::mem::drop(tasks);
+            self.todo_tx.try_send(task).unwrap();
             handle.join()
         }
     }
 
     #[inline(never)]
     fn wake_sleeping(&self) -> bool {
-        let now = kvmclock::now();
-        let sleeping = self.sleeping.read();
-        let Some((first, _)) = sleeping.first_key_value() else {
+        let Ok(Some(key)) = self.sleeping.try_first_key() else {
+            // No first key found. If we missed one because of a race it's not the end of the world anyway.
             return false;
         };
-        if first > &now {
+        let now = kvmclock::time_since_boot();
+        let timestamp = now.as_nanos() as u64;
+        if key >= timestamp {
+            // The first task is still in the future.
             return false;
         }
-        let mut sleeping = ReadGuard::upgrade(sleeping);
-        let mut anything = false;
-        while let Some(first) = sleeping.first_entry() {
-            let now = kvmclock::now();
-            if &now >= first.key() {
-                let waker = first.remove();
-                waker.wake_by_ref();
-                anything = true;
-            } else {
-                break;
-            }
-        }
-        anything
+        let Some(value) = self.sleeping.remove(key) else {
+            // We saw a first key, but someone else grabbed it first. They can deal with this.
+            return false;
+        };
+        value.wake();
+        true
     }
 
     fn diff(&self) -> usize {
@@ -151,20 +145,12 @@ impl Executor {
 
     #[inline(never)]
     fn run_pending(&self) -> bool {
-        let tasks = self.pending.read();
-        if tasks.is_empty() {
-            return false;
-        }
-        let mut tasks = ReadGuard::upgrade(tasks);
-        let Some(task) = tasks.pop_front() else {
+        let Ok(task) = self.todo_rx.try_recv() else {
             return false;
         };
-        WriteGuard::unlock(tasks);
-        self.parallel.fetch_add(1, Ordering::SeqCst);
         TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
         let result = task.poll();
         TIME_WORKING.fetch_add(self.diff(), Ordering::SeqCst);
-        self.parallel.fetch_sub(1, Ordering::SeqCst);
         if result.is_ready() {
             self.active.fetch_sub(1, Ordering::AcqRel);
         }
@@ -176,23 +162,32 @@ impl Executor {
         if !INTERRUPTED.load(Ordering::Relaxed) {
             TIME_SCHEDULING.fetch_add(self.diff(), Ordering::SeqCst);
             unsafe {
-                crate::io::outl(0xf4, 0);
-                crate::profile::muted(|| {
-                    core::arch::asm!("hlt");
-                });
+                io::outl(0xf4, 0);
+                core::arch::asm!("hlt");
             }
             TIME_SLEEPING.fetch_add(self.diff(), Ordering::SeqCst);
         }
-        INTERRUPTED.store(false, Ordering::SeqCst);
-        let mut wfi = self.wfi.write();
-        while let Some(waker) = wfi.pop_front() {
-            waker.wake();
+    }
+
+    #[inline(never)]
+    fn wake_interrupted(&self) -> bool {
+        let mut anything = false;
+        if INTERRUPTED
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            while let Ok(waker) = self.wfi_rx.try_recv() {
+                anything = true;
+                waker.wake();
+            }
         }
+        anything
     }
 
     pub fn tick(&self) {
         crate::interrupts::must_be_enabled();
         let mut anything = false;
+        anything |= self.wake_interrupted();
         anything |= self.wake_sleeping();
         anything |= self.run_pending();
         if !anything {
@@ -262,7 +257,7 @@ pub fn run() {
 
 struct Task {
     future: SpinLock<BoxFuture>,
-    pending: Arc<RwLock<VecDeque<Arc<Task>>>>,
+    todo: Sender<Arc<Task>>,
 }
 
 impl Task {
@@ -276,9 +271,8 @@ impl Task {
 
 impl Wake for Task {
     fn wake(self: Arc<Self>) {
-        let other = self.clone();
-        let mut tasks = other.pending.write();
-        tasks.push_back(self);
+        let todo = self.todo.clone();
+        todo.try_send(self).unwrap();
     }
 }
 
@@ -304,28 +298,27 @@ pub fn yield_now() -> impl Future<Output = ()> {
     Yield(AtomicBool::new(false))
 }
 
-struct Delay(OffsetDateTime);
+struct Delay(Duration);
 
 impl Future for Delay {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let now = kvmclock::now();
+        let now = kvmclock::time_since_boot();
         if now >= self.0 {
             return Poll::Ready(());
         }
         let waker = cx.waker().clone();
-        let mut sleeping = EXECUTOR.sleeping.write();
-        sleeping.insert(self.0, waker);
+        EXECUTOR.sleeping.insert(self.0.as_nanos() as u64, waker);
         Poll::Pending
     }
 }
 
 pub fn delay_for(duration: Duration) -> impl Future<Output = ()> {
-    delay_until(kvmclock::now() + duration)
+    delay_until(kvmclock::time_since_boot() + duration)
 }
 
-pub fn delay_until(time: OffsetDateTime) -> impl Future<Output = ()> {
+pub fn delay_until(time: Duration) -> impl Future<Output = ()> {
     Delay(time)
 }
 
@@ -340,23 +333,33 @@ pub fn profile() {
     let working = TIME_WORKING.load(Ordering::SeqCst) as f64;
     let sleeping = TIME_SLEEPING.load(Ordering::SeqCst) as f64;
     let total = scheduling + working + sleeping;
-    log::info!(
+    use core::fmt::Write as _;
+    let mut console = CONSOLE.lock();
+    writeln!(console, "***** RUNTIME *****").unwrap();
+    writeln!(
+        console,
         "time spent sleeping:   {sleeping:12} ({:3.2}%)",
         sleeping * 100. / total
-    );
-    log::info!(
+    )
+    .unwrap();
+    writeln!(
+        console,
         "time spent working:    {working:12} ({:3.2}%)",
         working * 100. / total
-    );
-    log::info!(
+    )
+    .unwrap();
+    writeln!(
+        console,
         "time spent scheduling: {scheduling:12} ({:3.2}%)",
         scheduling * 100. / total
-    );
+    )
+    .unwrap();
+    writeln!(console, "*******************").unwrap();
 }
 
 struct WaitForInterrupt {
     done: AtomicBool,
-    wfi: Arc<RwLock<VecDeque<Waker>>>,
+    wfi: Sender<Waker>,
 }
 
 impl Future for WaitForInterrupt {
@@ -368,8 +371,7 @@ impl Future for WaitForInterrupt {
             true => Poll::Ready(()),
             false => {
                 self.done.store(true, Ordering::Release);
-                let mut wfi = self.wfi.write();
-                wfi.push_back(cx.waker().clone());
+                self.wfi.try_send(cx.waker().clone()).unwrap();
                 Poll::Pending
             }
         }
@@ -379,6 +381,6 @@ impl Future for WaitForInterrupt {
 pub fn wfi() -> impl Future<Output = ()> {
     WaitForInterrupt {
         done: AtomicBool::new(false),
-        wfi: EXECUTOR.wfi.clone(),
+        wfi: EXECUTOR.wfi_tx.clone(),
     }
 }

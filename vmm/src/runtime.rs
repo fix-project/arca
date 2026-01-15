@@ -10,11 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::BuddyAllocator;
+use common::{hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
-use kvm_bindings::{
-    kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
-};
+use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
@@ -149,9 +147,6 @@ fn new_cpu<'scope>(
 }
 
 fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
-    let mut log_record: usize = 0;
-    let mut symtab_record: usize = 0;
-
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -191,77 +186,108 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
             },
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
-                    ExitCode::from(data[0]).exit_process();
-                }
-                1 => {
-                    log_record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
-                }
-                2 => {
-                    log_record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                    let record: *const common::LogRecord = BuddyAllocator.from_offset(log_record);
-                    unsafe {
-                        let common::LogRecord {
-                            level,
-                            target,
-                            file,
-                            line,
-                            module_path,
-                            message,
-                        } = *record;
-                        let level = log::Level::iter().nth(level as usize - 1).unwrap();
-                        let target = std::str::from_raw_parts(
-                            BuddyAllocator.from_offset::<u8>(target.0),
-                            target.1,
-                        );
-                        let file = file.map(|x| {
-                            std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
-                        });
-                        let module_path = module_path.map(|x| {
-                            std::str::from_raw_parts(BuddyAllocator.from_offset::<u8>(x.0), x.1)
-                        });
-                        let message = std::str::from_raw_parts(
-                            BuddyAllocator.from_offset::<u8>(message.0),
-                            message.1,
-                        );
-
-                        log::logger().log(
-                            &log::Record::builder()
-                                .level(level)
-                                .target(target)
-                                .file(file)
-                                .line(line)
-                                .module_path(module_path)
-                                .args(format_args!("{message}"))
-                                .build(),
-                        );
-                    }
-                }
-                3 => {
-                    symtab_record = u32::from_ne_bytes(data.try_into().unwrap()) as usize;
-                }
-                4 => {
-                    symtab_record |= (u32::from_ne_bytes(data.try_into().unwrap()) as usize) << 32;
-                    let record: *mut common::SymtabRecord =
-                        BuddyAllocator.from_offset(symtab_record);
-                    let record: &mut common::SymtabRecord = unsafe { &mut *record };
-                    let target = record.addr;
-                    if let Some((name, addr)) = lookup(target) {
-                        record.file_len = name.len();
-                        let (ptr, cap) = record.file_buffer;
-                        let buffer: &mut [u8] = unsafe {
-                            core::slice::from_raw_parts_mut(BuddyAllocator.from_offset(ptr), cap)
-                        };
-                        if name.len() > cap {
-                            buffer.copy_from_slice(&name.as_bytes()[..cap]);
-                        } else {
-                            buffer[..name.len()].copy_from_slice(name.as_bytes());
+                    let mut regs = vcpu_fd.get_regs().unwrap();
+                    let code = regs.rax;
+                    let args = &[regs.rdi, regs.rsi, regs.rcx, regs.r10, regs.r8, regs.r9];
+                    match code {
+                        hypercall::EXIT => {
+                            ExitCode::from(args[0] as u8).exit_process();
                         }
-                        record.offset = record.addr - addr;
-                        record.addr = addr;
-                        record.found = true;
-                    } else {
-                        record.found = false;
-                    }
+                        hypercall::LOG => {
+                            let record: *const common::LogRecord =
+                                BuddyAllocator.from_offset(args[1] as usize);
+                            unsafe {
+                                let common::LogRecord {
+                                    level,
+                                    target,
+                                    file,
+                                    line,
+                                    module_path,
+                                    message,
+                                } = *record;
+                                let level = log::Level::iter().nth(level as usize - 1).unwrap();
+                                let target = std::str::from_raw_parts(
+                                    BuddyAllocator.from_offset::<u8>(target.0),
+                                    target.1,
+                                );
+                                let file = file.map(|x| {
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
+                                });
+                                let module_path = module_path.map(|x| {
+                                    std::str::from_raw_parts(
+                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        x.1,
+                                    )
+                                });
+                                let message = std::str::from_raw_parts(
+                                    BuddyAllocator.from_offset::<u8>(message.0),
+                                    message.1,
+                                );
+
+                                log::logger().log(
+                                    &log::Record::builder()
+                                        .level(level)
+                                        .target(target)
+                                        .file(file)
+                                        .line(line)
+                                        .module_path(module_path)
+                                        .args(format_args!("{message}"))
+                                        .build(),
+                                );
+                            }
+                        }
+                        hypercall::SYMNAME => {
+                            let record: *mut common::SymtabRecord =
+                                BuddyAllocator.from_offset(args[0] as usize);
+                            let record: &mut common::SymtabRecord = unsafe { &mut *record };
+                            let target = record.addr;
+                            if let Some((name, addr)) = lookup(target) {
+                                record.file_len = name.len();
+                                let (ptr, cap) = record.file_buffer;
+                                let buffer: &mut [u8] = unsafe {
+                                    core::slice::from_raw_parts_mut(
+                                        BuddyAllocator.from_offset(ptr),
+                                        cap,
+                                    )
+                                };
+                                if name.len() > cap {
+                                    buffer.copy_from_slice(&name.as_bytes()[..cap]);
+                                } else {
+                                    buffer[..name.len()].copy_from_slice(name.as_bytes());
+                                }
+                                record.offset = record.addr - addr;
+                                record.addr = addr;
+                                record.found = true;
+                            } else {
+                                record.found = false;
+                            }
+                        }
+                        hypercall::MEMSET => {
+                            let ptr: *mut u8 = BuddyAllocator.from_offset(args[0] as usize);
+                            let chr = args[1] as u8;
+                            let len = args[2] as usize;
+                            unsafe {
+                                let mem = core::slice::from_raw_parts_mut(ptr, len);
+                                mem.fill(chr);
+                                regs.rax = mem.as_ptr() as u64;
+                            }
+                        }
+                        hypercall::MEMCLR => {
+                            let ptr: *mut u8 = BuddyAllocator.from_offset(args[0] as usize);
+                            log::info!("ptr: {ptr:p}");
+                            let len = args[1] as usize;
+                            unsafe {
+                                let mem = core::slice::from_raw_parts_mut(ptr, len);
+                                mem.fill(0);
+                                regs.rax = mem.as_ptr() as u64;
+                            }
+                        }
+                        x => unimplemented!("hypercall {x}"),
+                    };
+                    vcpu_fd.set_regs(&regs).unwrap();
                 }
                 0xe9 => {
                     let data = data[0];
@@ -319,7 +345,7 @@ impl Runtime {
             guest_phys_addr: 0,
             memory_size: BuddyAllocator.len() as u64,
             userspace_addr: BuddyAllocator.base() as u64,
-            flags: KVM_MEM_LOG_DIRTY_PAGES,
+            flags: 0,
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 

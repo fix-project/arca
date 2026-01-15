@@ -25,6 +25,14 @@ impl Page {
         }
     }
 
+    pub fn shared(self) -> Page {
+        match self {
+            Page::Page4KB(page) => Page::Page4KB(page.shared().into()),
+            Page::Page2MB(page) => Page::Page2MB(page.shared().into()),
+            Page::Page1GB(page) => Page::Page1GB(page.shared().into()),
+        }
+    }
+
     pub fn size(&self) -> usize {
         match self {
             Page::Page4KB(_) => 1 << 12,

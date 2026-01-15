@@ -2,9 +2,10 @@
 #![feature(thread_sleep_until)]
 #![feature(future_join)]
 
-use std::{num::NonZero, sync::Arc};
+use std::{num::NonZero, path::PathBuf, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
+use common::BuddyAllocator;
 use libc::VMADDR_CID_HOST;
 use ninep::*;
 use vfs::Open;
@@ -27,23 +28,45 @@ fn main() -> anyhow::Result<()> {
 
     let matches = Command::new("arca-vmm")
         .arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("bin")
+                .value_parser(clap::value_parser!(PathBuf))
+                .conflicts_with("fix")
+                .required(true),
+        )
+        .arg(
+            Arg::new("smp")
+                .long("smp")
+                .value_parser(clap::value_parser!(usize))
+        )
         .get_matches();
 
     let run_fix = matches.get_flag("fix");
 
-    let smp = if run_fix {
-        1
-    } else {
-        std::thread::available_parallelism()
-            .unwrap_or(NonZero::new(1).unwrap())
-            .get()
-    };
+    let smp = matches.get_one("smp").cloned().unwrap_or_else(
+        || if run_fix {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .unwrap_or(NonZero::new(1).unwrap())
+                .get()
+        });
+
+    let (_soft, hard) = rlimit::getrlimit(rlimit::Resource::AS).unwrap();
+    rlimit::setrlimit(rlimit::Resource::AS, hard, hard).unwrap();
+    log::info!("set max address space size to {hard} bytes");
+
     // let smp = core::cmp::min(smp, 1);
     let mut runtime = if run_fix {
-        Runtime::new(smp, 1 << 30, FIX.into())
+        Runtime::new(smp, 1 << 32, FIX.into())
     } else {
-        Runtime::new(smp, 1 << 30, ARCADE.into())
+        Runtime::new(smp, 1 << 32, ARCADE.into())
     };
+    let bin = matches
+        .get_one::<PathBuf>("bin")
+        .expect("bin argument is required; clap should have caught this");
+
+    let bin = std::fs::read(bin)?;
 
     std::thread::spawn(|| {
         let spawn = move |x| {
@@ -54,9 +77,11 @@ fn main() -> anyhow::Result<()> {
 
         let mut s = ninep::Server::new(spawn);
         let dir = FsDir::new("/tmp", Open::ReadWrite).unwrap();
-        s.add_blocking("", dir);
         let tcp = TcpFS::default();
-        s.add_blocking("tcp", tcp);
+        smol::block_on(async {
+            s.add("", dir).await;
+            s.add("tcp", tcp).await;
+        });
         let s = Arc::new(s);
 
         loop {
@@ -70,7 +95,14 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    runtime.run(&[]);
+    let mut rtbin = Vec::new_in(BuddyAllocator);
+    rtbin.extend_from_slice(&bin);
+    let rtbin = rtbin.into_boxed_slice();
+    let ptr = BuddyAllocator.to_offset(rtbin.as_ptr());
+    let len = rtbin.len();
+    Box::leak(rtbin);
+
+    runtime.run(&[ptr, len]);
 
     Ok(())
 }

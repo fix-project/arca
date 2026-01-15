@@ -100,6 +100,7 @@ unsafe extern "C" fn _start(
         let mut raw = *ptr;
         raw.base = vm::pa2ka(0);
         common::buddy::import(raw);
+        BuddyAllocator.set_caching(false);
 
         init_cpu_tls();
     } else {
@@ -110,7 +111,8 @@ unsafe extern "C" fn _start(
     // per-cpu init
     crate::tsc::init();
     crate::kvmclock::init();
-    crate::profile::init();
+    crate::iprofile::init();
+    crate::aprofile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
 
@@ -143,12 +145,13 @@ unsafe extern "C" fn _start(
         let vsock_info = argv.as_ptr().read();
         let vsock_info: *const VSockMetadata = BuddyAllocator.from_offset(vsock_info);
         let vsock = &crate::virtio::vsock::DRIVER;
-        vsock
+        assert!(vsock
             .set(crate::virtio::vsock::Driver::new(vsock_info.read()))
-            .unwrap();
+            .is_ok());
         let argv = argv.add(1);
         let argc = argc - 1;
 
+        BuddyAllocator.set_caching(true);
         kmain(argc, argv.as_ptr());
         START_RUNTIME.store(true, Ordering::Release);
     } else {

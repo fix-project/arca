@@ -6,7 +6,6 @@
 #![feature(box_into_inner)]
 #![feature(custom_test_frameworks)]
 #![feature(maybe_uninit_array_assume_init)]
-#![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array_transpose)]
 #![feature(negative_impls)]
 #![feature(never_type)]
@@ -20,18 +19,20 @@ extern crate alloc;
 #[macro_use]
 pub extern crate macros;
 
+use common::hypercall;
 pub use macros::core_local;
 
 pub mod allocator;
+pub mod aprofile;
 pub mod cpu;
 pub mod debugcon;
 pub mod host;
 pub mod io;
+pub mod iprofile;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod prelude;
-pub mod profile;
 pub mod rt;
 pub mod tsc;
 pub mod types;
@@ -90,7 +91,7 @@ pub fn shutdown() -> ! {
 pub fn exit(code: u8) -> ! {
     loop {
         unsafe {
-            io::outb(0, code);
+            io::hypercall1(hypercall::EXIT, code as u64);
         }
         core::hint::spin_loop();
     }
@@ -106,7 +107,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");
     let mut i = 0;
-    crate::profile::backtrace(|addr, decoded| {
+    crate::iprofile::backtrace(|addr, decoded| {
         if i > 0 {
             if let Some((symname, offset)) = decoded {
                 let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
@@ -120,8 +121,5 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     SpinLockGuard::unlock(console);
 
-    loop {
-        unsafe { io::outb(0, 1) }
-        core::hint::spin_loop();
-    }
+    exit(1);
 }

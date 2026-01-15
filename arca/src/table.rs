@@ -26,6 +26,9 @@ impl<R: Runtime> Table<R> {
     }
 
     pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, R::Error> {
+        if entry.len() == 0 {
+            return Ok(entry);
+        }
         let result = if address + entry.len() > self.len() {
             try_replace_with(self, |this: Self| -> Result<Self, R::Error> {
                 let mut embiggened = R::create_table(this.len() * 512);
