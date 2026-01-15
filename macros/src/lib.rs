@@ -25,6 +25,21 @@ pub fn profile(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn arca_module_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    testing::arca_module_test(attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn inline_module_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    testing::inline_module_test(attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn arca_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
 pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
     util::kmain(attr, item)
 }

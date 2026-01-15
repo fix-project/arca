@@ -7,11 +7,22 @@ use kernel::virtio::vsock::{SocketAddr, Stream, StreamListener};
 
 #[derive(Clone, Default)]
 pub struct VSockFS {
+    cid: u64,
     conns: Arc<RwLock<Descriptors<Arc<RwLock<Connection>>>>>,
+}
+
+impl VSockFS {
+    pub fn new(cid: u64) -> Self {
+        VSockFS {
+            cid,
+            conns: Arc::new(RwLock::new(Descriptors::default())),
+        }
+    }
 }
 
 #[derive(Clone)]
 struct Connection {
+    cid: u64,
     index: usize,
     state: State,
     conns: Arc<RwLock<Descriptors<Arc<RwLock<Connection>>>>>,
@@ -50,6 +61,7 @@ impl Dir for VSockFS {
         let mut conns = self.conns.write().await;
         if name == "clone" {
             let conn = Arc::new(RwLock::new(Connection {
+                cid: self.cid,
                 index: 0,
                 state: State::Idle,
                 conns: self.conns.clone(),
@@ -116,7 +128,9 @@ impl Dir for ConnDir {
                     .accept()
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
+                let conn = self.conn.read().await;
                 let new = Arc::new(RwLock::new(Connection {
+                    cid: conn.cid,
                     index: 0,
                     state: State::Connected(stream.into()),
                     conns: conn.conns.clone(),
@@ -223,7 +237,7 @@ impl File for Control {
                 let State::Idle = conn.state else {
                     return Err(ErrorKind::InvalidInput.into());
                 };
-                let stream = Stream::connect(dst)
+                let stream = Stream::connect(conn.cid, dst)
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
                 conn.state = State::Connected(Arc::new(stream));
@@ -233,7 +247,7 @@ impl File for Control {
                 let State::Idle = conn.state else {
                     return Err(ErrorKind::InvalidInput.into());
                 };
-                let listener = StreamListener::bind(port)
+                let listener = StreamListener::bind(conn.cid, port)
                     .await
                     .map_err(|_| ErrorKind::ResourceBusy)?;
                 conn.state = State::Listening(Arc::new(listener));

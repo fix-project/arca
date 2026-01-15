@@ -24,14 +24,19 @@ pub use crate::{
     shutdown,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
 };
+
+#[cfg(feature = "testing-mode")]
+pub use crate::testing::{ModuleDesc, TestDescAndFn};
+
 pub use arca::DataType;
+pub use async_lock::RwLock;
 pub use common::buddy::BuddyAllocator;
 pub use common::refcnt::RefCnt;
 pub use common::util::channel;
 pub use common::util::mutex::Mutex;
 pub use common::util::oneshot;
 pub use common::util::router::Router;
-pub use common::util::rwlock::RwLock;
+// pub use common::util::rwlock::RwLock;
 pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;
-pub use macros::kmain;
+pub use macros::{arca_module_test, arca_test, inline_module_test, kmain};

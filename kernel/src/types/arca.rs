@@ -1,5 +1,4 @@
 use alloc::{collections::vec_deque::VecDeque, vec::Vec};
-// use arca::ValueRef;
 use arcane::SyscallError;
 
 use crate::{cpu::ExitReason, prelude::*};

@@ -5,13 +5,13 @@ use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
 };
-use kernel::{initcell::LazyLock, prelude::RwLock};
+use kernel::initcell::LazyLock;
 
 pub static PROCS: LazyLock<ProcTable> = LazyLock::new(Default::default);
 
 #[derive(Default)]
 pub struct ProcTable {
-    table: Arc<RwLock<BTreeMap<u64, Weak<ProcState>>>>,
+    table: Arc<common::util::rwlock::RwLock<BTreeMap<u64, Weak<ProcState>>>>,
     current: AtomicU64,
 }
 

@@ -20,6 +20,7 @@ impl File for File9P {
         let tag = self.conn.tag();
         let offset = self.cursor;
         let mut read = 0;
+
         for chunk in bytes.chunks_mut(self.conn.msize() - 24) {
             send!(self.conn; {data, ..} <- Read {
                 tag,
@@ -30,7 +31,8 @@ impl File for File9P {
             let n = core::cmp::min(data.len(), chunk.len());
             chunk[..n].copy_from_slice(&data[..n]);
             read += n;
-            if data.len() != chunk.len() {
+
+            if n != chunk.len() {
                 break;
             }
         }

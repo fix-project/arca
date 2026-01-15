@@ -154,7 +154,7 @@ impl Driver {
                 let tx_free = peer_buf_alloc.wrapping_sub(tx_cnt.wrapping_sub(peer_fwd_count));
                 if tx_free < len {
                     waiting = true;
-                    log::info!("waiting for rx capacity");
+                    log::info!("waiting for rx capacity {tx_free} {len}");
                     crate::rt::wfi().await;
                     continue;
                 }
@@ -416,3 +416,6 @@ pub enum StreamEvent {
     Shutdown { rx: bool, tx: bool },
     Data { data: Vec<u8> },
 }
+
+// TODO: why do we need this?
+unsafe impl Sync for Driver {}

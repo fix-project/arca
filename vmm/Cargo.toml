@@ -11,6 +11,7 @@ klog-warn = ["arcade/klog-warn"]
 klog-error = ["arcade/klog-error"]
 klog-off = ["arcade/klog-off"]
 debugcon = ["arcade/debugcon"]
+ablation = ["arcade/ablation"]
 
 [dependencies]
 kvm-bindings = { version = "0.13.0" }
@@ -41,6 +42,7 @@ thread-priority = "3.0.0"
 elevate = "0.6.1"
 clap = "4.5.48"
 rlimit = "0.10.2"
+core_affinity = "0.8.3"
 
 [build-dependencies]
 anyhow = "1.0.97"

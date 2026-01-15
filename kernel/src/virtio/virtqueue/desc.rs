@@ -147,5 +147,8 @@ mod inner {
             result
         }
     }
+
+    // TODO: is this necessary?
+    unsafe impl Sync for Desc {}
 }
 use inner::*;

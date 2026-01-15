@@ -4,6 +4,7 @@ use core::{
 };
 
 use crate::{io, prelude::*};
+use common::util::rwlock::RwLock;
 
 mod desc;
 mod idx;

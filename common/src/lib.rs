@@ -23,6 +23,7 @@ pub use buddy::BuddyAllocator;
 pub mod arrayvec;
 pub mod controlreg;
 pub mod elfloader;
+pub mod ipaddr;
 pub mod sendable;
 pub mod util;
 pub mod vhost;
@@ -57,4 +58,8 @@ pub mod hypercall {
     pub const SYMNAME: u64 = 2;
     pub const MEMSET: u64 = 3;
     pub const MEMCLR: u64 = 4;
+    pub const SERVERREAD: u64 = 5;
+    pub const SERVERWRITE: u64 = 6;
+    pub const CLIENTREAD: u64 = 7;
+    pub const CLIENTWRITE: u64 = 8;
 }

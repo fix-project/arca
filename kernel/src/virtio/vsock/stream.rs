@@ -44,8 +44,8 @@ impl Stream {
     }
 
     #[rt::profile]
-    pub async fn connect(peer: impl TryInto<SocketAddr>) -> Result<Stream> {
-        let local = SocketAddr { cid: 3, port: 0 };
+    pub async fn connect(cid: u64, peer: impl TryInto<SocketAddr>) -> Result<Stream> {
+        let local = SocketAddr { cid, port: 0 };
         let outbound = Flow {
             src: local,
             dst: peer.try_into().map_err(|_| SocketError::InvalidAddress)?,

@@ -115,3 +115,5 @@ impl<T: Copy> DriverRing<T> {
 
 unsafe impl<T: Copy> Send for DeviceRing<T> {}
 unsafe impl<T: Copy> Send for DriverRing<T> {}
+unsafe impl<T: Copy> Sync for DeviceRing<T> {}
+unsafe impl<T: Copy> Sync for DriverRing<T> {}

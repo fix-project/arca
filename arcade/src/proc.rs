@@ -4,55 +4,123 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Poll, Waker},
 };
+use kernel::prelude::*;
 
 pub mod env;
 pub mod file;
 pub mod namespace;
 
 use arca::{Runtime, Word};
+use common::ipaddr::IpAddr;
 use common::util::{descriptors::Descriptors, semaphore::Semaphore};
 use derive_more::{Display, From, TryInto};
 pub use env::Env;
+#[cfg(not(feature = "ablation"))]
+use lz4_flex::block::compress_prepend_size;
 pub use namespace::Namespace;
+use vfs::path::Path;
 
-use async_lock::RwLock;
-use kernel::types::{Blob, Function, Tuple, Value};
+use kernel::{
+    kvmclock,
+    prelude::RwLock,
+    types::{Blob, Function, Tuple, Value},
+};
 mod table;
-use alloc::{boxed::Box, collections::vec_deque::VecDeque, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{btree_map::BTreeMap, vec_deque::VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use vfs::{Dir, ErrorKind, File, Object, PathBuf, Result};
+
+use crate::{
+    record::{LocalRecord, Record},
+    tcpserver,
+};
 
 pub struct Proc {
     f: Function,
     pid: u64,
     state: Arc<ProcState>,
+    handler: Option<Arc<tcpserver::ClientTx>>,
+    img_names_to_contents: Arc<BTreeMap<String, Table>>,
 }
 
 impl Proc {
     pub fn new(
         elf: &[u8],
         state: ProcState,
+        handler: Arc<tcpserver::ClientTx>,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
     ) -> core::result::Result<Self, common::elfloader::Error> {
         let f = common::elfloader::load_elf(elf)?;
         let state = Arc::new(state);
         let pid = table::PROCS.allocate(&state);
-        let p = Proc { f, state, pid };
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler: Some(handler),
+            img_names_to_contents,
+        };
         Ok(p)
     }
 
-    pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> u8 {
+    pub fn from_function(
+        function: Function,
+        state: ProcState,
+        handler: Arc<tcpserver::ClientTx>,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
+        let f = function;
+        let state = Arc::new(state);
+        let pid = table::PROCS.allocate(&state);
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler: Some(handler),
+            img_names_to_contents,
+        };
+        Ok(p)
+    }
+
+    pub fn from_remote_function(
+        function: Function,
+        state: ProcState,
+        img_names_to_contents: Arc<BTreeMap<String, Table>>,
+    ) -> core::result::Result<Self, common::elfloader::Error> {
+        let f = function;
+        let state = Arc::new(state);
+        let pid = table::PROCS.allocate(&state);
+        let p = Proc {
+            f,
+            pid,
+            state,
+            handler: None,
+            img_names_to_contents,
+        };
+        Ok(p)
+    }
+
+    pub async fn run(self, argv: impl IntoIterator<Item = &str>) -> (u8, Record) {
         let _argv = Tuple::from_iter(argv.into_iter().map(Blob::from).map(Value::Blob));
         self.resume().await
     }
 
     #[allow(clippy::manual_async_fn)]
-    pub fn resume(self) -> impl Future<Output = u8> + Send {
+    pub fn resume(self) -> impl Future<Output = (u8, Record)> + Send {
         async move {
             let mut f = self.f;
+            let mut record = LocalRecord::default().into();
             loop {
+                let force_start = kvmclock::time_since_boot();
                 let result = f.force();
+
                 let Value::Function(g) = result else {
                     log::error!("proc returned something other than an effect!");
-                    return 255;
+                    return (255, record);
                 };
                 if g.is_arcane() {
                     // call/cc to another function, or returned another function
@@ -69,19 +137,150 @@ impl Proc {
                 let args: Tuple = data.take(2).try_into().unwrap();
                 let mut args: Vec<Value> = args.into_iter().collect();
                 let Some(Value::Function(k)) = args.pop() else {
-                    return 255;
+                    return (255, record);
                 };
                 f = match (&*effect, &mut *args) {
                     (
                         b"open",
                         &mut [Value::Blob(ref path), Value::Word(flags), Value::Word(mode)],
-                    ) => k.apply(fix(file::open(
-                        &self.state,
-                        path,
-                        file::OpenFlags(flags.read() as u32),
-                        file::ModeT(mode.read() as u32),
-                    )
-                    .await)),
+                    ) => {
+                        // TODO this is not the right place for all this logic
+                        // Figure out which machine the file is on
+                        // filenames will be of the form "hostname:port/path/to/file"
+                        let s = &str::from_utf8(path).unwrap();
+                        let path_p = Path::new(s);
+                        let (host, filename) = path_p.split();
+                        let host_ip: IpAddr = host.try_into().unwrap();
+                        if host_ip != *self.state.host {
+                            #[cfg(feature = "ablation")]
+                            {
+                                use core::time::Duration;
+
+                                use alloc::string::ToString;
+
+                                use crate::{fileutil::buffer_to_table, record::RemoteDataRecord};
+
+                                let tcp_init = kvmclock::time_since_boot();
+
+                                log::debug!("Sending File Request");
+
+                                let f = self
+                                    .handler
+                                    .as_ref()
+                                    .expect("Migrated function should not need more continuation handling")
+                                    .request_file(filename.to_string())
+                                    .await
+                                    .expect("Failed to send File Request");
+
+                                log::debug!("Sent File Request");
+
+                                let data = f.await;
+
+                                log::debug!("Received file of size {} bytes", data.len());
+
+                                let new_file = buffer_to_table(&data);
+
+                                let tcp_end = kvmclock::time_since_boot();
+
+                                record = RemoteDataRecord {
+                                    loading_elf: Duration::from_secs(0),
+                                    force: tcp_init - force_start,
+                                    remote_data_read: tcp_end - tcp_init,
+                                    execution: Duration::from_secs(0),
+                                }
+                                .into();
+
+                                //log::info!(
+                                //    "TIMING:\nnetwork read: {} us",
+                                //    (tcp_end - tcp_init).as_micros()
+                                //);
+
+                                k.apply(Value::Table(new_file))
+                            }
+
+                            #[cfg(not(feature = "ablation"))]
+                            {
+                                use core::time::Duration;
+
+                                use crate::record::MigratedRecord;
+
+                                log::debug!("sending continuation to open file remotely");
+
+                                // TODO(kmohr): hmmmm this is so slow...
+                                let k_create_init = kvmclock::time_since_boot();
+                                let resumed_f = Function::symbolic("open")
+                                    .apply(Value::Blob(path.clone()))
+                                    .apply(Value::Word(flags))
+                                    .apply(Value::Word(mode))
+                                    .apply(Value::Function(k));
+
+                                let val = Value::Function(resumed_f);
+
+                                let serialize_init = kvmclock::time_since_boot();
+                                let msg = postcard::to_allocvec(&val).unwrap();
+                                let serialize_end = kvmclock::time_since_boot();
+                                let k_msg = compress_prepend_size(&msg);
+                                let compress_end = kvmclock::time_since_boot();
+
+                                //let size_bytes = msg.len();
+                                //let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+
+                                let res = self.handler.as_ref().expect("Migrated function should not need more continuation handling").request_to_run(k_msg).await;
+                                let sending_end = kvmclock::time_since_boot();
+
+                                record = MigratedRecord {
+                                    loading_elf: Duration::from_secs(0),
+                                    force: k_create_init - force_start,
+                                    creation: serialize_init - k_create_init,
+                                    serialization: serialize_end - serialize_init,
+                                    compression: compress_end - serialize_end,
+                                    sending: sending_end - compress_end,
+                                }
+                                .into();
+
+                                //log::info!(
+                                //    "PERF\ncontinuation creation: {} us\nserialization: {} us\ncompression: {} us\nsize: {} bytes ({:.2} MB)",
+                                //    (serialize_init - k_create_init).as_micros(),
+                                //    (serialize_end - serialize_init).as_micros(),
+                                //    (compress_end - serialize_end).as_micros(),
+                                //    size_bytes,
+                                //    size_mb
+                                //);
+
+                                match res {
+                                    Ok(_) => return (0, record),
+                                    Err(_) => return (1, record),
+                                }
+                            }
+                        } else {
+                            let effect_handling_start = kvmclock::time_since_boot();
+                            let file = self
+                                .img_names_to_contents
+                                .get(&filename.file_name().unwrap().to_string())
+                                .expect("File does not exist");
+                            //let file = fix(file::open(
+                            //    &self.state,
+                            //    filename.as_bytes(),
+                            //    file::OpenFlags(flags.read() as u32),
+                            //    file::ModeT(mode.read() as u32),
+                            //)
+                            //.await);
+                            let effect_handling_done = kvmclock::time_since_boot();
+                            match &mut record {
+                                Record::LocalRecord(local_record) => {
+                                    local_record.force = effect_handling_start - force_start;
+                                    local_record.handle_effect =
+                                        effect_handling_done - effect_handling_start;
+                                }
+                                Record::RemoteDataRecord(_)
+                                | Record::MigratedRecord(_)
+                                | Record::RemoteInvocationRecord(_) => {
+                                    panic!("Unexpected record type")
+                                }
+                            }
+                            k.apply(file.clone())
+                        }
+                    }
                     (b"write", &mut [Value::Word(fd), Value::Blob(ref data)]) => {
                         k.apply(fix(file::write(&self.state, fd.read(), data).await))
                     }
@@ -126,12 +325,26 @@ impl Proc {
                                 fds: RwLock::new(fds).into(),
                                 ..(*self.state).clone()
                             }),
+                            handler: self.handler.clone(),
+                            img_names_to_contents: self.img_names_to_contents.clone(),
                         };
                         kernel::rt::spawn(async move { new.resume().await });
                         k.apply(fix(Ok(pid as u32)))
                     }
                     (b"exit", &mut [Value::Word(result)]) => {
-                        return result.read() as u8;
+                        let force_end = kvmclock::time_since_boot();
+                        match &mut record {
+                            Record::LocalRecord(local_record) => {
+                                local_record.execution = force_end - force_start;
+                            }
+                            Record::RemoteDataRecord(remote_data_record) => {
+                                remote_data_record.execution = force_end - force_start;
+                            }
+                            Record::MigratedRecord(_) | Record::RemoteInvocationRecord(_) => {
+                                panic!("Unexpected record type")
+                            }
+                        }
+                        return (result.read() as u8, record);
                     }
                     (b"monitor-new", &mut []) => {
                         let mvar = MVar::new(Monitor::new());
@@ -172,6 +385,7 @@ pub struct ProcState {
     pub env: Arc<Env>,
     pub fds: Arc<RwLock<Descriptors<FileDescriptor>>>,
     pub cwd: Arc<PathBuf>,
+    pub host: Arc<IpAddr>,
 }
 
 pub struct Monitor {

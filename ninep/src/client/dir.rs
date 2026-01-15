@@ -23,7 +23,7 @@ impl Dir for Dir9P {
     }
 
     async fn readdir(&self) -> Result<BoxStream<'_, Result<DirEnt>>> {
-        todo!()
+        todo!();
     }
 
     async fn create(&self, name: &str, create: Create, open: Open) -> Result<Object> {

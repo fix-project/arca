@@ -39,10 +39,10 @@ struct Accept {
 
 impl StreamListener {
     #[rt::profile]
-    pub async fn bind(port: u32) -> Result<StreamListener> {
-        let socket = listen(SocketAddr { cid: 3, port }).await;
-        let addr = socket.read().await.addr;
-        Ok(StreamListener { socket, addr })
+    pub async fn bind(cid: u64, port: u32) -> Result<StreamListener> {
+        let rx = listen(SocketAddr { cid, port }).await;
+        let addr = rx.read().await.addr;
+        Ok(StreamListener { socket: rx, addr })
     }
 
     #[rt::profile]

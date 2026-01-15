@@ -59,6 +59,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_create_function => sys_create_function(args, arca),
 
         arcane::__NR_apply => sys_apply(args, arca),
+        // arcane::__NR_force => sys_force(args, arca),
         arcane::__NR_map => sys_map(args, arca),
         arcane::__NR_mmap => sys_mmap(args, arca),
         arcane::__NR_mprotect => sys_mprotect(args, arca),
@@ -323,6 +324,26 @@ pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     idx
 }
 
+#[allow(unused)]
+pub fn sys_force(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    // let lambda = args[0] as usize;
+    //
+    // let f: Function = arca
+    //     .descriptors_mut()
+    //     .take(lambda)?
+    //     .try_into()
+    //     .map_err(|_| SyscallError::BadType)?;
+    //
+    // let internal_function = f.into_inner();
+    // let cpu = arca.cpu();
+    // let result = internal_function.force_on(cpu);
+    // let idx = arca.descriptors_mut().insert(result);
+    // Ok(idx)
+    //
+    // ugh I give up
+    Ok(0)
+}
+
 pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let table = args[0] as usize;
     let addr = args[1] as usize;
@@ -480,7 +501,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         }
         panic!("unaligned mmap or bad size");
     }
-    Ok(len)
+    Ok(p - addr)
 }
 
 pub fn sys_call_with_current_continuation(

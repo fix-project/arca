@@ -1,6 +1,6 @@
 use crate::prelude::*;
+use core::alloc::{Allocator, GlobalAlloc, Layout};
 use core::ptr::NonNull;
-use core::alloc::{Allocator, Layout, GlobalAlloc};
 
 // use talc::{OomHandler, Span, Talc, Talck};
 
@@ -10,7 +10,10 @@ static ALLOCATOR: Buddy = Buddy;
 struct Buddy;
 unsafe impl GlobalAlloc for Buddy {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        BuddyAllocator.allocate(layout).map(|x| &raw mut (*x.as_ptr())[0]).unwrap_or(core::ptr::null_mut())
+        BuddyAllocator
+            .allocate(layout)
+            .map(|x| &raw mut (*x.as_ptr())[0])
+            .unwrap_or(core::ptr::null_mut())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
