@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{self, Read, Write},
-    net::TcpStream,
+    io::{self, Read},
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -29,9 +28,6 @@ fn new_cpu<'scope>(
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
-    server_conn: TcpStream,
-    client_conn: TcpStream,
-    core_id: core_affinity::CoreId,
 ) -> ScopedJoinHandle<'scope, ()> {
     // set up the CPU in long mode
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
@@ -145,23 +141,12 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            log::debug!("set_for_current {}", core_id.id);
-            let res = core_affinity::set_for_current(core_id);
-            if !res {
-                panic!("Failed to pin thread to core")
-            }
-            run_cpu(vcpu_fd, elf, flag, server_conn, client_conn);
+            run_cpu(vcpu_fd, elf, flag);
         })
         .unwrap()
 }
 
-fn run_cpu(
-    mut vcpu_fd: VcpuFd,
-    elf: &ElfBytes<AnyEndian>,
-    exit: Arc<AtomicBool>,
-    mut server_conn: TcpStream,
-    mut client_conn: TcpStream,
-) {
+fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -297,42 +282,6 @@ fn run_cpu(
                                 let mem = core::slice::from_raw_parts_mut(ptr, len);
                                 mem.fill(0);
                                 regs.rax = mem.as_ptr() as u64;
-                            }
-                        }
-                        hypercall::SERVERREAD => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
-                            let len = args[1] as usize;
-                            unsafe {
-                                let buf = core::slice::from_raw_parts_mut(ptr, len);
-                                let n = server_conn.read(buf).unwrap_or(0);
-                                regs.rax = n as u64;
-                            }
-                        }
-                        hypercall::SERVERWRITE => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
-                            let len = args[1] as usize;
-                            unsafe {
-                                let buf = core::slice::from_raw_parts(ptr, len);
-                                let n = server_conn.write(buf).unwrap_or(0);
-                                regs.rax = n as u64;
-                            }
-                        }
-                        hypercall::CLIENTREAD => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
-                            let len = args[1] as usize;
-                            unsafe {
-                                let buf = core::slice::from_raw_parts_mut(ptr, len);
-                                let n = client_conn.read(buf).unwrap_or(0);
-                                regs.rax = n as u64;
-                            }
-                        }
-                        hypercall::CLIENTWRITE => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
-                            let len = args[1] as usize;
-                            unsafe {
-                                let buf = core::slice::from_raw_parts(ptr, len);
-                                let n = client_conn.write(buf).unwrap_or(0);
-                                regs.rax = n as u64;
                             }
                         }
                         x => unimplemented!("hypercall {x}"),
@@ -494,16 +443,7 @@ impl Runtime {
         }
     }
 
-    pub fn run(
-        &mut self,
-        args: &[usize],
-        server_conn: TcpStream,
-        client_conn: TcpStream,
-        is_listener: bool,
-    ) {
-        let core_ids = core_affinity::get_core_ids().unwrap();
-        let mut iter = core_ids.into_iter();
-
+    pub fn run(&mut self, args: &[usize]) {
         self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
@@ -553,13 +493,6 @@ impl Runtime {
                         0,
                     ],
                     &kvm_cpuid,
-                    server_conn.try_clone().unwrap(),
-                    client_conn.try_clone().unwrap(),
-                    if is_listener {
-                        iter.next().unwrap()
-                    } else {
-                        iter.next_back().unwrap()
-                    },
                 ));
             }
             for cpu in cpus {

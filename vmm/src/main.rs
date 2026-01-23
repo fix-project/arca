@@ -5,10 +5,9 @@
 use std::{num::NonZero, path::PathBuf, sync::Arc};
 
 use clap::{Arg, ArgAction, Command};
-use common::ipaddr::IpAddr;
+use common::BuddyAllocator;
 use libc::VMADDR_CID_HOST;
 use ninep::*;
-use std::net::{TcpListener, TcpStream};
 use vfs::Open;
 use vmm::runtime::Runtime;
 
@@ -60,73 +59,24 @@ fn main() -> anyhow::Result<()> {
                 .default_value("3")
                 .required(false),
         )
-        .arg(
-            Arg::new("iam")
-                .long("iam")
-                .help("Self IP address")
-                .default_value("127.0.0.1:11211")
-                .required(false),
-        )
-        .arg(
-            Arg::new("peer")
-                .long("peer")
-                .help("Peer IP address")
-                .default_value("127.0.0.1:11212")
-                .required(false),
-        )
-        .arg(
-            Arg::new("listener")
-                .short('l')
-                .long("is-listener")
-                .help("Act as the listencer during connection establishment")
-                .action(ArgAction::SetTrue)
-                .required(false),
-        )
-        .arg(
-            Arg::new("duration")
-                .long("duration")
-                .help("Duration of experiment")
-                .value_parser(clap::value_parser!(usize))
-                .default_value("10")
-                .required(false),
-        )
-        .arg(
-            Arg::new("ratio")
-                .long("ratio")
-                .help("ratio of local")
-                .value_parser(clap::value_parser!(usize))
-                .default_value("50")
-                .required(false),
-        )
         .get_matches();
 
-    let run_fix = matches.get_flag("fix");
+    let fix = matches.get_flag("fix");
 
-    let (_soft, hard) = rlimit::getrlimit(rlimit::Resource::AS).unwrap();
-    rlimit::setrlimit(rlimit::Resource::AS, hard, hard).unwrap();
-    log::info!("set max address space size to {hard} bytes");
+    // let (_soft, hard) = rlimit::getrlimit(rlimit::Resource::AS).unwrap();
+    // rlimit::setrlimit(rlimit::Resource::AS, hard, hard).unwrap();
+    // log::info!("set max address space size to {hard} bytes");
 
     let smp = *matches.get_one::<usize>("smp").unwrap_or(&max_smp);
     let cid = *matches.get_one::<usize>("cid").unwrap();
-    let ratio = *matches.get_one::<usize>("ratio").unwrap();
-    let iam = matches.get_one::<String>("iam").unwrap();
-    let peer = matches.get_one::<String>("peer").unwrap();
-    let is_listener = matches.get_flag("listener");
-    let duration = *matches.get_one::<usize>("duration").unwrap();
 
-    // TODO(kmohr): can this create an invalid port number?
-    let host_listener_port = (cid as u32) + 1561;
+    let host_listener_port = 1234;
 
-    let mut runtime = if run_fix {
+    let mut runtime = if fix {
         Runtime::new(cid, smp, 1 << 34, FIX.into())
     } else {
         Runtime::new(cid, smp, 1 << 34, ARCADE.into())
     };
-    // let bin = matches
-    //     .get_one::<PathBuf>("bin")
-    //     .expect("bin argument is required; clap should have caught this");
-
-    // let bin = std::fs::read(bin)?;
 
     std::thread::spawn(move || {
         let spawn = move |x| {
@@ -137,15 +87,13 @@ fn main() -> anyhow::Result<()> {
             VsockListener::bind(&VsockAddr::new(VMADDR_CID_HOST, host_listener_port)).unwrap();
 
         let mut s = ninep::Server::new(spawn);
-        let dir = FsDir::new("/tmp", Open::ReadWrite).unwrap();
+        let dir = FsDir::new(".", Open::ReadWrite).unwrap();
+        let home = FsDir::new(std::env::home_dir().unwrap(), Open::ReadWrite).unwrap();
         let tcp = TcpFS::default();
         smol::block_on(async {
             s.add("", dir).await;
+            s.add("home", home).await;
             s.add("tcp", tcp).await;
-            // NOTE: this assumes you have ppm files in $HOME/data/
-            let shared_data_dir =
-                FsDir::new(concat!(env!("HOME"), "/data/"), Open::ReadWrite).unwrap();
-            s.add("data", shared_data_dir).await;
         });
         let s = Arc::new(s);
 
@@ -160,55 +108,19 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // let mut rtbin = Vec::new_in(BuddyAllocator);
-    // rtbin.extend_from_slice(&bin);
-    // let rtbin = rtbin.into_boxed_slice();
-    // let ptr = BuddyAllocator.to_offset(rtbin.as_ptr());
-    // let len = rtbin.len();
-    // Box::leak(rtbin);
-
-    // runtime.run(&[ptr, len]);
-
-    // Setup Tcp Connection
-    let (server_conn, client_conn) = if is_listener {
-        let listener = TcpListener::bind(iam)?;
-        let conn1 = listener.accept()?;
-        let conn2 = listener.accept()?;
-        (conn1.0, conn2.0)
+    if fix {
+        runtime.run(&[]);
     } else {
-        let conn1 = TcpStream::connect(peer)?;
-        let conn2 = TcpStream::connect(peer)?;
-        (conn2, conn1)
-    };
+        let bin = std::fs::read(matches.get_one::<std::path::PathBuf>("bin").unwrap())?;
 
-    let iam_ipaddr = u64::from(IpAddr::try_from(iam.as_str()).unwrap());
-    let peer_ipaddr = u64::from(IpAddr::try_from(peer.as_str()).unwrap());
-
-    log::info!(
-        "Running {} on VM cid={} with {} core(s) for {}s. I am {} and peer is {}",
-        if run_fix { "fix" } else { "arcade" },
-        cid,
-        smp,
-        duration,
-        iam,
-        peer,
-    );
-
-    // XXX: this will break if usize is smaller than u64
-    runtime.run(
-        &[
-            cid,
-            host_listener_port as usize,
-            iam_ipaddr as usize,
-            peer_ipaddr as usize,
-            is_listener as usize,
-            duration,
-            ratio,
-        ],
-        server_conn,
-        client_conn,
-        is_listener,
-    );
+        let mut rtbin = Vec::new_in(BuddyAllocator);
+        rtbin.extend_from_slice(&bin);
+        let rtbin = rtbin.into_boxed_slice();
+        let ptr = BuddyAllocator.to_offset(rtbin.as_ptr());
+        let len = rtbin.len();
+        Box::leak(rtbin);
+        runtime.run(&[ptr, len]);
+    }
 
     Ok(())
 }
