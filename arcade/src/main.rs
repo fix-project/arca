@@ -27,9 +27,6 @@ mod input_gen;
 mod proc;
 
 mod fileutil;
-mod record;
-mod tcpserver;
-mod tcputil;
 
 use crate::{
     dev::DevFS,

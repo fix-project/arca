@@ -416,13 +416,6 @@ impl Runtime {
     }
 }
 
-pub unsafe fn map_file(base_addr: *mut core::ffi::c_void, entry: Entry) {
-    let mut entry = write_entry(entry);
-    unsafe {
-        arca_mmap(base_addr, &mut entry);
-    }
-}
-
 #[cfg(feature = "allocator")]
 mod allocator {
     use core::ffi::c_void;

@@ -277,9 +277,8 @@ pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[1] as usize;
     let mut buffer = Box::new_uninit_slice(len);
     let buffer = copy_user_to_kernel(&mut buffer, ptr)?;
-    Ok(arca
-        .descriptors_mut()
-        .insert(Value::Blob(Blob::new(buffer)))?)
+    arca.descriptors_mut()
+        .insert(Value::Blob(Blob::new(buffer)))
 }
 
 pub fn sys_create_tuple(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -461,7 +460,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
     let mut p = addr;
     while p < addr + len {
-        if p % Page1GB::SIZE == 0 && len >= Page1GB::SIZE {
+        if p.is_multiple_of(Page1GB::SIZE) && len >= Page1GB::SIZE {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page1GB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -474,7 +473,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             p += Page1GB::SIZE;
             continue;
         }
-        if p % Page2MB::SIZE == 0 && len >= Page2MB::SIZE {
+        if p.is_multiple_of(Page2MB::SIZE) && len >= Page2MB::SIZE {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page2MB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -487,7 +486,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             p += Page2MB::SIZE;
             continue;
         }
-        if p % Page4KB::SIZE == 0 && len >= Page4KB::SIZE {
+        if p.is_multiple_of(Page4KB::SIZE) && len >= Page4KB::SIZE {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page4KB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -511,7 +510,7 @@ pub fn sys_call_with_current_continuation(
     let func = args[0] as usize;
     let func = match arca.descriptors_mut().take(func) {
         Ok(x) => x,
-        Err(e) => return ControlFlow::Continue(Err(e.into())),
+        Err(e) => return ControlFlow::Continue(Err(e)),
     };
     let Ok(func) = Function::try_from(func) else {
         return ControlFlow::Continue(Err(SyscallError::BadType));

@@ -11,7 +11,6 @@ klog-warn = ["arcade/klog-warn"]
 klog-error = ["arcade/klog-error"]
 klog-off = ["arcade/klog-off"]
 debugcon = ["arcade/debugcon"]
-ablation = ["arcade/ablation"]
 
 [dependencies]
 kvm-bindings = { version = "0.13.0" }

@@ -26,7 +26,7 @@ impl<R: Runtime> Table<R> {
     }
 
     pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, R::Error> {
-        if entry.len() == 0 {
+        if entry.is_empty() {
             return Ok(entry);
         }
         let result = if address + entry.len() > self.len() {

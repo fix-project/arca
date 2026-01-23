@@ -303,7 +303,7 @@ impl<'a> Iterator for Iter<'a> {
             return None;
         }
         self.i += 1;
-        return Some(self.d.get(self.i - 1).unwrap());
+        Some(self.d.get(self.i - 1).unwrap())
     }
 }
 

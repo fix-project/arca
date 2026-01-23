@@ -109,13 +109,11 @@ dependencies = [
  "kernel",
  "libm",
  "log",
- "lz4_flex",
  "ninep",
  "postcard",
  "rand",
  "serde",
  "serde_bytes",
- "thumbnail-example",
  "trait-variant",
  "user",
  "vfs",
@@ -357,12 +355,6 @@ dependencies = [
  "futures-lite",
  "piper",
 ]
-
-[[package]]
-name = "bytemuck"
-version = "1.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
 
 [[package]]
 name = "byteorder"
@@ -1089,12 +1081,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
-name = "lz4_flex"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
-
-[[package]]
 name = "macros"
 version = "0.1.0"
 dependencies = [
@@ -1376,15 +1362,6 @@ checksum = "d11f2fedc3b7dafdc2851bc52f277377c5473d378859be234bc7ebb593144d01"
 dependencies = [
  "ar_archive_writer",
  "cc",
-]
-
-[[package]]
-name = "qoi"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]
@@ -1755,17 +1732,6 @@ dependencies = [
  "log",
  "rustversion",
  "windows",
-]
-
-[[package]]
-name = "thumbnail-example"
-version = "0.1.0"
-dependencies = [
- "arca",
- "autotools",
- "cc",
- "qoi",
- "user",
 ]
 
 [[package]]

@@ -182,7 +182,7 @@ impl<const N: usize, V> Trie<N, V> {
         let target_key = key;
         let mode = self.mode.load(Ordering::SeqCst);
         match mode {
-            Mode::EMPTY => return Ok(None),
+            Mode::EMPTY => Ok(None),
             Mode::LEAF => {
                 let Some(value) = self.value.try_take() else {
                     return Err(Retry);
@@ -201,7 +201,7 @@ impl<const N: usize, V> Trie<N, V> {
                 {
                     unreachable!()
                 }
-                return Ok(Some(*value));
+                Ok(Some(*value))
             }
             Mode::INNER => {
                 let det = key as usize % N;
@@ -211,7 +211,7 @@ impl<const N: usize, V> Trie<N, V> {
                 let result = child.try_remove(rest);
                 cell.put(child);
                 // TODO: we need to compact this
-                return result;
+                result
             }
             _ => unreachable!(),
         }

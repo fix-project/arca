@@ -33,6 +33,7 @@ impl DescTable {
         unsafe { &mut (*self.table)[usize::from(index)] }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self, index: DescriptorIndex) -> &mut Desc {
         unsafe { &mut (*self.table)[usize::from(index)] }
     }
