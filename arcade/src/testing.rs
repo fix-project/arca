@@ -103,7 +103,6 @@ fn test_entry_error() {
     let error =
         serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
     assert_eq!(deserialized_error, error);
-<<<<<<< HEAD
 }
 
 pub fn test_runner() {
@@ -120,6 +119,4 @@ pub fn test_runner() {
     test_serde_rwtable();
     test_value_error();
     test_entry_error();
-=======
->>>>>>> dev/multiple-vms
 }
