@@ -294,14 +294,11 @@ impl Future for WaitFuture<'_> {
     }
 }
 
-type MVar = Arc<Monitor>;
-
 #[derive(From, TryInto)]
 #[try_into(owned, ref, ref_mut)]
 pub enum FileDescriptor {
     File(Box<dyn File>),
     Dir(Box<dyn Dir>),
-    MVar(MVar),
 }
 
 impl From<Object> for FileDescriptor {
@@ -352,25 +349,10 @@ impl FileDescriptor {
         Ok(&mut *b)
     }
 
-    pub fn into_mvar(self) -> Result<MVar> {
-        Ok(self.try_into().map_err(|_| ErrorKind::InvalidInput)?)
-    }
-
-    pub fn as_mvar_ref(&self) -> Result<&MVar> {
-        let b: &MVar = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
-        Ok(b)
-    }
-
-    pub fn as_mvar_mut(&mut self) -> Result<&mut MVar> {
-        let b: &mut MVar = self.try_into().map_err(|_| ErrorKind::InvalidInput)?;
-        Ok(b)
-    }
-
     pub async fn dup(&self) -> Result<Self> {
         Ok(match self {
             FileDescriptor::File(file) => FileDescriptor::File(file.dup().await?),
             FileDescriptor::Dir(dir) => FileDescriptor::Dir(dir.dup().await?),
-            FileDescriptor::MVar(mvar) => FileDescriptor::MVar(mvar.clone()),
         })
     }
 }
