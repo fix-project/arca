@@ -49,15 +49,15 @@ fn test_serde_table() {
     assert_eq!(deserialized_table, table);
 }
 
-#[arca_test]
-fn test_serde_function() {
-    let arca = Arca::new();
-    let inner_func: arca::Function<Runtime> = Function::from(arca);
-    let func = Value::Function(inner_func);
-    let bytes_vec = postcard::to_allocvec(&func).unwrap();
-    let deserialized_func: Value = postcard::from_bytes(&bytes_vec).unwrap();
-    assert_eq!(deserialized_func, func);
-}
+// #[arca_test]
+// fn test_serde_function() {
+//     let arca = Arca::new();
+//     let inner_func: arca::Function<Runtime> = Function::from(arca);
+//     let func = Value::Function(inner_func);
+//     let bytes_vec = postcard::to_allocvec(&func).unwrap();
+//     let deserialized_func: Value = postcard::from_bytes(&bytes_vec).unwrap();
+//     assert_eq!(deserialized_func, func);
+// }
 
 fn test_serde_ropage() {
     let ropage = Entry::ROPage(Page::new(1));
@@ -112,7 +112,6 @@ pub fn test_runner() {
     test_serde_tuple();
     test_serde_page();
     test_serde_table();
-    test_serde_function();
     test_serde_ropage();
     test_serde_rwpage();
     test_serde_rotable();

@@ -1209,7 +1209,7 @@ mod tests {
 
     #[bench]
     fn bench_allocate_free_no_cache(b: &mut Bencher) {
-        let mut allocator = BuddyAllocatorImpl::new(0x100000000);
+        let allocator = BuddyAllocatorImpl::new(0x100000000);
         allocator.set_caching(false);
         b.iter(|| {
             let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
@@ -1246,7 +1246,7 @@ mod tests {
     #[bench]
     #[ignore]
     fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
-        let mut allocator = BuddyAllocatorImpl::new(0x100000000);
+        let allocator = BuddyAllocatorImpl::new(0x100000000);
         allocator.set_caching(false);
         let f = || {
             let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
@@ -1273,7 +1273,7 @@ mod tests {
     #[test]
     fn stress_test() {
         use std::hash::{BuildHasher, Hasher, RandomState};
-        let mut allocator = BuddyAllocatorImpl::new(0x10000000);
+        let allocator = BuddyAllocatorImpl::new(0x10000000);
         allocator.set_caching(false);
         let mut v = vec![];
         let random = |limit: usize| {

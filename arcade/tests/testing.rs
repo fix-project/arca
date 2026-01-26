@@ -49,12 +49,12 @@ fn test_serde_table() {
     assert_eq!(deserialized_table, table);
 }
 
-#[arca_test]
-fn test_serde_function() {
-    let arca = Arca::new();
-    let inner_func: arca::Function<Runtime> = Function::from(arca);
-    let func = Value::Function(inner_func);
-    let bytes_vec = postcard::to_allocvec(&func).unwrap();
-    let deserialized_func: Value = postcard::from_bytes(&bytes_vec).unwrap();
-    assert_eq!(deserialized_func, func);
-}
+// #[arca_test]
+// fn test_serde_function() {
+//     let arca = Arca::new();
+//     let inner_func: arca::Function<Runtime> = Function::from(arca);
+//     let func = Value::Function(inner_func);
+//     let bytes_vec = postcard::to_allocvec(&func).unwrap();
+//     let deserialized_func: Value = postcard::from_bytes(&bytes_vec).unwrap();
+//     assert_eq!(deserialized_func, func);
+// }

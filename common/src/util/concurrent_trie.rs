@@ -273,6 +273,7 @@ impl<const N: usize, V> Default for Trie<N, V> {
 pub type BinaryTrie<V> = Trie<2, V>;
 
 #[cfg(test)]
+#[cfg(not(target_os = "none"))]
 mod tests {
     use std::time::Duration;
 

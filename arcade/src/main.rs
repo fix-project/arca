@@ -13,6 +13,7 @@
 #![cfg_attr(feature = "testing-mode", allow(unused))]
 
 #[cfg(feature = "testing-mode")]
+#[arca_module_test]
 mod testing;
 
 use ::vfs::*;
@@ -36,15 +37,6 @@ use crate::{
 
 use vfs::mem::MemDir;
 
-#[arca_module_test]
-mod testing;
-
-#[arca_module_test]
-mod dummy_testing {
-    #[arca_test]
-    fn test_abc() {}
-}
-
 extern crate alloc;
 
 #[kmain]
@@ -52,7 +44,6 @@ async fn main(argv: &[usize]) {
     #[cfg(feature = "testing-mode")]
     {
         crate::testing::__MODULE_TESTS.run();
-        crate::dummy_testing::__MODULE_TESTS.run();
         return;
     }
     let &[ptr, len] = argv else {
