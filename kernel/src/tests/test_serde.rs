@@ -1,7 +1,7 @@
-use kernel::prelude::*;
+use crate::prelude::*;
 extern crate alloc;
 
-#[arca_test]
+#[test]
 fn test_serde_null() {
     let null = Value::Null(Null::new());
     let bytes_vec = postcard::to_allocvec(&null).unwrap();
@@ -9,7 +9,7 @@ fn test_serde_null() {
     assert_eq!(deserialized_null, null);
 }
 
-#[arca_test]
+#[test]
 fn test_serde_word() {
     let word = Value::Word(1.into());
     let bytes_vec = postcard::to_allocvec(&word).unwrap();
@@ -17,7 +17,7 @@ fn test_serde_word() {
     assert_eq!(deserialized_word, word);
 }
 
-#[arca_test]
+#[test]
 fn test_serde_blob() {
     let blob = Value::Blob("hello, world!".into());
     let bytes_vec = postcard::to_allocvec(&blob).unwrap();
@@ -25,7 +25,7 @@ fn test_serde_blob() {
     assert_eq!(deserialized_blob, blob);
 }
 
-#[arca_test]
+#[test]
 fn test_serde_tuple() {
     let tuple = Value::Tuple((1, 2, 3).into());
     let bytes_vec = postcard::to_allocvec(&tuple).unwrap();
@@ -33,7 +33,7 @@ fn test_serde_tuple() {
     assert_eq!(deserialized_tuple, tuple);
 }
 
-#[arca_test]
+#[test]
 fn test_serde_page() {
     let page = Value::Page(Page::new(1));
     let bytes_vec = postcard::to_allocvec(&page).unwrap();
@@ -41,7 +41,7 @@ fn test_serde_page() {
     assert_eq!(deserialized_page, page);
 }
 
-#[arca_test]
+#[test]
 fn test_serde_table() {
     let table = Value::Table(Table::new(1));
     let bytes_vec = postcard::to_allocvec(&table).unwrap();
@@ -49,7 +49,7 @@ fn test_serde_table() {
     assert_eq!(deserialized_table, table);
 }
 
-// #[arca_test]
+// #[test]
 // fn test_serde_function() {
 //     let arca = Arca::new();
 //     let inner_func: arca::Function<Runtime> = Function::from(arca);
@@ -59,6 +59,7 @@ fn test_serde_table() {
 //     assert_eq!(deserialized_func, func);
 // }
 
+#[test]
 fn test_serde_ropage() {
     let ropage = Entry::ROPage(Page::new(1));
     let bytes_vec = postcard::to_allocvec(&ropage).unwrap();
@@ -66,6 +67,7 @@ fn test_serde_ropage() {
     assert_eq!(deserialized_ropage, ropage);
 }
 
+#[test]
 fn test_serde_rwpage() {
     let rwpage = Entry::RWPage(Page::new(1));
     let bytes_vec = postcard::to_allocvec(&rwpage).unwrap();
@@ -73,6 +75,7 @@ fn test_serde_rwpage() {
     assert_eq!(deserialized_rwpage, rwpage);
 }
 
+#[test]
 fn test_serde_rotable() {
     let rotable = Entry::ROTable(Table::new(1));
     let bytes_vec = postcard::to_allocvec(&rotable).unwrap();
@@ -80,6 +83,7 @@ fn test_serde_rotable() {
     assert_eq!(deserialized_rotable, rotable);
 }
 
+#[test]
 fn test_serde_rwtable() {
     let rwtable = Entry::RWTable(Table::new(1));
     let bytes_vec = postcard::to_allocvec(&rwtable).unwrap();
@@ -87,6 +91,7 @@ fn test_serde_rwtable() {
     assert_eq!(deserialized_rwtable, rwtable);
 }
 
+#[test]
 fn test_value_error() {
     let unknown_variant = [7, 0];
     let deserialized: Result<Value, postcard::Error> = postcard::from_bytes(&unknown_variant);
@@ -96,6 +101,7 @@ fn test_value_error() {
     assert_eq!(deserialized_error, error);
 }
 
+#[test]
 fn test_entry_error() {
     let unknown_variant = [5, 0];
     let deserialized: Result<Entry, postcard::Error> = postcard::from_bytes(&unknown_variant);
@@ -103,19 +109,4 @@ fn test_entry_error() {
     let error =
         serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
     assert_eq!(deserialized_error, error);
-}
-
-pub fn test_runner() {
-    test_serde_null();
-    test_serde_word();
-    test_serde_blob();
-    test_serde_tuple();
-    test_serde_page();
-    test_serde_table();
-    test_serde_ropage();
-    test_serde_rwpage();
-    test_serde_rotable();
-    test_serde_rwtable();
-    test_value_error();
-    test_entry_error();
 }

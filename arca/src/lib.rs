@@ -28,8 +28,10 @@ pub mod prelude {
         function::Continuation, runtime::Runtime, value::RawValue, value::RawValueRef,
         value::Value, value::ValueRef,
     };
+    #[cfg(feature = "serde")]
+    pub(crate) use alloc::format;
     #[cfg(feature = "alloc")]
-    pub(crate) use alloc::{format, vec, vec::Vec};
+    pub(crate) use alloc::{vec, vec::Vec};
 }
 
 pub use prelude::*;

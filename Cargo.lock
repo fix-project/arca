@@ -87,36 +87,8 @@ name = "arca"
 version = "0.1.0"
 dependencies = [
  "log",
- "serde",
-]
-
-[[package]]
-name = "arcade"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arca",
- "arcane",
- "async-lock",
- "async-trait",
- "cc",
- "chrono",
- "chumsky",
- "common",
- "derive_more",
- "futures",
- "hashbrown 0.16.1",
- "kernel",
- "libm",
- "log",
- "ninep",
  "postcard",
- "rand",
  "serde",
- "serde_bytes",
- "trait-variant",
- "user",
- "vfs",
 ]
 
 [[package]]
@@ -248,17 +220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
-name = "async-trait"
-version = "0.1.89"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "atomic-polyfill"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -330,9 +291,6 @@ name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "block2"
@@ -441,6 +399,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
 dependencies = [
  "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
@@ -453,6 +412,18 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.5.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0b5487afeab2deb2ff4e03a807ad1a03ac532ff5a2cee5d86884440c7f7671"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -716,7 +687,6 @@ dependencies = [
  "autotools",
  "cc",
  "chrono",
- "chumsky",
  "cmake",
  "common",
  "derive_more",
@@ -724,13 +694,11 @@ dependencies = [
  "include_directory",
  "kernel",
  "log",
- "ninep",
  "postcard",
  "serde",
  "serde_bytes",
  "trait-variant",
  "user",
- "vfs",
 ]
 
 [[package]]
@@ -738,12 +706,6 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "foldhash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "futures"
@@ -882,7 +844,7 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash 0.1.5",
+ "foldhash",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
 ]
@@ -892,11 +854,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash 0.2.0",
-]
 
 [[package]]
 name = "heapless"
@@ -1011,6 +968,8 @@ dependencies = [
  "hashbrown 0.15.5",
  "log",
  "macros",
+ "postcard",
+ "serde",
  "spin 0.10.0",
  "talc",
  "time",
@@ -1052,12 +1011,6 @@ dependencies = [
  "cfg-if",
  "windows-link 0.2.1",
 ]
-
-[[package]]
-name = "libm"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "linux-raw-sys"
@@ -1136,24 +1089,6 @@ checksum = "02a2dfb3559d53e90b709376af1c379462f7fb3085a0177deb73e6ea0d99eff4"
 dependencies = [
  "mime",
  "unicase",
-]
-
-[[package]]
-name = "ninep"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "bitflags 2.10.0",
- "chrono",
- "common",
- "derive_more",
- "either",
- "futures",
- "log",
- "serde",
- "serde_bytes",
- "trait-variant",
- "vfs",
 ]
 
 [[package]]
@@ -1878,26 +1813,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "vfs"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bitflags 2.10.0",
- "common",
- "derive_more",
- "either",
- "futures",
- "log",
- "trait-variant",
-]
-
-[[package]]
 name = "vmm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "arca",
- "arcade",
  "bindgen",
  "chumsky",
  "clap",
@@ -1908,13 +1828,11 @@ dependencies = [
  "elevate",
  "elf",
  "env_logger",
- "fix",
  "futures",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
  "log",
- "ninep",
  "nix",
  "regex",
  "rlimit",
@@ -1922,7 +1840,6 @@ dependencies = [
  "smol",
  "thread-priority",
  "tokio-stream",
- "vfs",
  "vmm-sys-util",
  "vsock",
 ]

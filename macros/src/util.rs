@@ -28,7 +28,7 @@ pub fn kmain(_: TokenStream, item: TokenStream) -> TokenStream {
 
             #kernel::rt::spawn(async {
                 #ident(slice).await;
-                shutdown();
+                #kernel::shutdown();
             });
 
         }

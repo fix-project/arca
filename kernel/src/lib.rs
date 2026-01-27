@@ -10,6 +10,9 @@
 #![feature(never_type)]
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
+#![feature(custom_test_frameworks)]
+#![test_runner(testing::harness)]
+#![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
 
@@ -45,14 +48,16 @@ mod registers;
 mod rsstart;
 mod tss;
 
+#[cfg(test)]
+mod testing;
+#[cfg(test)]
+mod tests;
+
 pub use common::util::initcell;
 pub use common::util::spinlock;
 pub use lapic::LAPIC;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-
-#[cfg(feature = "testing-mode")]
-pub mod testing;
 
 #[no_mangle]
 static mut EXIT_CODE: u8 = 0;

@@ -4,6 +4,6 @@ bindeps = true
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-Cforce-frame-pointers=on"]
 
-
 [target.x86_64-unknown-none]
 rustflags = ["-Cforce-frame-pointers=on"]
+runner = "cargo run -p vmm --"

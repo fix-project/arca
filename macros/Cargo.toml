@@ -14,4 +14,3 @@ proc-macro = true
 
 [features]
 default = []
-testing-mode = []

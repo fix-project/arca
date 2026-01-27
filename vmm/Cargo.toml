@@ -3,22 +3,11 @@ name = "vmm"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-klog-trace = ["arcade/klog-trace"]
-klog-debug = ["arcade/klog-debug"]
-klog-info = ["arcade/klog-info"]
-klog-warn = ["arcade/klog-warn"]
-klog-error = ["arcade/klog-error"]
-klog-off = ["arcade/klog-off"]
-debugcon = ["arcade/debugcon"]
-
 [dependencies]
 kvm-bindings = { version = "0.13.0" }
 kvm-ioctls = "0.23.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
-arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none" }
-fix = { path = "../fix", artifact = "bin", target = "x86_64-unknown-none" }
 elf = "0.7.4"
 env_logger = "0.11.6"
 log = "0.4.25"
@@ -27,11 +16,9 @@ anyhow = "1.0.97"
 libc = "0.2.174"
 vmm-sys-util = "0.14.0"
 ctrlc = "3.4.7"
-ninep = { version = "0.1.0", path = "../ninep" }
 regex = "1.11.1"
 either = "1.15.0"
 chumsky = "0.10.1"
-vfs = { version = "0.1.0", path = "../vfs" }
 futures = "0.3.31"
 tokio-stream = { version = "0.1.17", features = ["full"] }
 smol = "2.0.2"
@@ -39,7 +26,7 @@ nix = { version = "0.30.1", features = ["mman", "socket"] }
 vsock = "0.5.1"
 thread-priority = "3.0.0"
 elevate = "0.6.1"
-clap = "4.5.48"
+clap = { version = "4.5.48", features = ["derive"] }
 rlimit = "0.10.2"
 core_affinity = "0.8.3"
 
@@ -47,5 +34,5 @@ core_affinity = "0.8.3"
 anyhow = "1.0.97"
 bindgen = "0.72.0"
 
-[dev-dependencies]
-arcade = { path = "../arcade", artifact = "bin", target = "x86_64-unknown-none", features = ["testing-mode"]}
+# [dev-dependencies]
+# kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }

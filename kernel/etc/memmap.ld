@@ -14,6 +14,7 @@ SECTIONS {
     *(.text*)
     . = ALIGN(16);
     _etext = .;
+    . = ALIGN(16);
   } > upper 
   .rodata :
   {
