@@ -35,10 +35,19 @@ Building Fix-on-Arca additionally requires installing [the GCC multilib package
 
 ## Running
 
-Arca can be run using the standard Cargo build commands.
+Arca's general test suite can be run using the standard Cargo build commands.
 
 ```sh
 cargo build
-cargo run
 cargo test
+```
+
+Kernel-specific tests can be run using:
+```sh
+cargo test -p kernel --target=x86_64-unknown-none
+```
+
+Arca-powered kernels (such as Fix) can be run using:
+```sh
+cargo run -p fix --target=x86_64-unknown-none
 ```
