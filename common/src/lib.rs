@@ -1,5 +1,4 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(alloc_layout_extra)]
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
 #![feature(fn_traits)]
