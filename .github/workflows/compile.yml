@@ -58,3 +58,6 @@ jobs:
     - name: Test
       run: |
         sudo -su $USER /home/runner/.cargo/bin/cargo test --verbose
+    - name: Test Kernel
+      run: |
+        sudo -su $USER /home/runner/.cargo/bin/cargo test -p kernel --target=x86_64-unknown-none --verbose
