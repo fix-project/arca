@@ -21,6 +21,8 @@ use vmm_sys_util::eventfd::EventFd;
 
 use crate::vhost::VSockBackend;
 
+const MEM_BASE: u64 = 0x1_0000_0000;
+
 fn new_cpu<'scope>(
     i: usize,
     scope: &'scope Scope<'scope, '_>,
@@ -40,7 +42,7 @@ fn new_cpu<'scope>(
 
     let mut pml4: Box<[u64; 0x200], BuddyAllocator> =
         unsafe { Box::new_zeroed_in(BuddyAllocator).assume_init() };
-    pml4[256] = BuddyAllocator.to_offset(Box::leak(pdpt)) as u64 | 3;
+    pml4[256] = (BuddyAllocator.to_offset(Box::leak(pdpt)) as u64 + MEM_BASE) | 3;
     let pml4 = Box::leak(pml4);
 
     vcpu_sregs.idt = kvm_bindings::kvm_dtable {
@@ -51,7 +53,7 @@ fn new_cpu<'scope>(
     use common::controlreg::*;
     vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP | ControlReg0::WP;
     vcpu_sregs.cr0 &= !ControlReg0::EM;
-    vcpu_sregs.cr3 = BuddyAllocator.to_offset(pml4) as u64;
+    vcpu_sregs.cr3 = BuddyAllocator.to_offset(pml4) as u64 + MEM_BASE;
     vcpu_sregs.cr4 = ControlReg4::PAE
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
@@ -119,7 +121,7 @@ fn new_cpu<'scope>(
     let initial_stack = unsafe {
         Box::<[u8; STACK_SIZE], BuddyAllocator>::new_uninit_in(BuddyAllocator).assume_init()
     };
-    let stack_start = BuddyAllocator.to_offset(&*initial_stack);
+    let stack_start = BuddyAllocator.to_offset(&*initial_stack) + MEM_BASE as usize;
     Box::leak(initial_stack);
 
     let pa2ka = |p: usize| p | 0xFFFF800000000000;
@@ -195,7 +197,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                         }
                         hypercall::LOG => {
                             let record: *const common::LogRecord =
-                                BuddyAllocator.from_offset(args[0] as usize);
+                                BuddyAllocator.from_offset(args[0] as usize - MEM_BASE as usize);
                             unsafe {
                                 let common::LogRecord {
                                     level,
@@ -207,23 +209,23 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 } = *record;
                                 let level = log::Level::iter().nth(level as usize - 1).unwrap();
                                 let target = std::str::from_raw_parts(
-                                    BuddyAllocator.from_offset::<u8>(target.0),
+                                    BuddyAllocator.from_offset::<u8>(target.0 - MEM_BASE as usize),
                                     target.1,
                                 );
                                 let file = file.map(|x| {
                                     std::str::from_raw_parts(
-                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        BuddyAllocator.from_offset::<u8>(x.0 - MEM_BASE as usize),
                                         x.1,
                                     )
                                 });
                                 let module_path = module_path.map(|x| {
                                     std::str::from_raw_parts(
-                                        BuddyAllocator.from_offset::<u8>(x.0),
+                                        BuddyAllocator.from_offset::<u8>(x.0 - MEM_BASE as usize),
                                         x.1,
                                     )
                                 });
                                 let message = std::str::from_raw_parts(
-                                    BuddyAllocator.from_offset::<u8>(message.0),
+                                    BuddyAllocator.from_offset::<u8>(message.0 - MEM_BASE as usize),
                                     message.1,
                                 );
 
@@ -300,15 +302,15 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     );
                 }
             },
-            VcpuExit::MmioRead(addr, _) => {
-                println!("Received an MMIO Read Request for the address {addr:#x}.",);
-            }
-            VcpuExit::MmioWrite(addr, data) => {
-                println!(
-                    "Received an MMIO Write Request to the address {:#x}: {:x}.",
-                    addr, data[0]
-                );
-            }
+            // VcpuExit::MmioRead(addr, _) => {
+            //     println!("Received an MMIO Read Request for the address {addr:#x}.",);
+            // }
+            // VcpuExit::MmioWrite(addr, data) => {
+            //     println!(
+            //         "Received an MMIO Write Request to the address {:#x}: {:x}.",
+            //         addr, data[0]
+            //     );
+            // }
             r => {
                 let error = format!("{r:?}");
                 let regs = vcpu_fd.get_regs().unwrap();
@@ -341,7 +343,7 @@ impl Runtime {
 
         let mem_region = kvm_userspace_memory_region {
             slot: 0,
-            guest_phys_addr: 0,
+            guest_phys_addr: MEM_BASE,
             memory_size: BuddyAllocator.len() as u64,
             userspace_addr: BuddyAllocator.base() as u64,
             flags: 0,
@@ -401,8 +403,11 @@ impl Runtime {
         let mut reserved = HashMap::new();
         let mut reserve = |addr: usize| -> *mut () {
             let addr = align_down(4096, addr);
+            if addr < MEM_BASE as usize {
+                panic!("kernel wants to be loaded below {MEM_BASE:#x}");
+            }
             *reserved.entry(addr).or_insert_with(|| {
-                let result = BuddyAllocator.reserve_raw(addr, 4096);
+                let result = BuddyAllocator.reserve_raw(addr - MEM_BASE as usize, 4096);
                 assert!(!result.is_null(), "could not reserve {addr:x}");
                 result
             })

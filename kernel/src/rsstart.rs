@@ -96,9 +96,9 @@ unsafe extern "C" fn _start(
         } else {
             log::set_max_level(LevelFilter::Info);
         }
-        let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr);
+        let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr + 0x1_0000_0000);
         let mut raw = *ptr;
-        raw.base = vm::pa2ka(0);
+        raw.base = vm::pa2ka(0x1_0000_0000);
         common::buddy::import(raw);
         BuddyAllocator.set_caching(false);
 

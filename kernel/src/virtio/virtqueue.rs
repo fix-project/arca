@@ -64,9 +64,18 @@ impl VirtQueue {
     /// match those available in this driver. The VirtQueue must not be attached to any other
     /// driver.
     pub unsafe fn new(name: &'static str, info: VirtQueueMetadata) -> Self {
-        let desc = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.desc), info.descriptors);
-        let used = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.used), info.descriptors);
-        let avail = core::ptr::from_raw_parts_mut(vm::pa2ka::<()>(info.avail), info.descriptors);
+        let desc = core::ptr::from_raw_parts_mut(
+            vm::pa2ka::<()>(BuddyAllocator.from_offset::<()>(info.desc) as usize),
+            info.descriptors,
+        );
+        let used = core::ptr::from_raw_parts_mut(
+            vm::pa2ka::<()>(BuddyAllocator.from_offset::<()>(info.used) as usize),
+            info.descriptors,
+        );
+        let avail = core::ptr::from_raw_parts_mut(
+            vm::pa2ka::<()>(BuddyAllocator.from_offset::<()>(info.avail) as usize),
+            info.descriptors,
+        );
         let mut notifications = vec![];
         notifications.resize_with(info.descriptors, Default::default);
         VirtQueue {

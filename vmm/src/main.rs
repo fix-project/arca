@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let smp = args
         .smp
-        .or_else(|| std::thread::available_parallelism().ok().map(|x| x.get()))
+        // .or_else(|| std::thread::available_parallelism().ok().map(|x| x.get()))
         .unwrap_or(1);
     let cid = args.cid;
 
