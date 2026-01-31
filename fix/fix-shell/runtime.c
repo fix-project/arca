@@ -16,7 +16,7 @@ static size_t bytes_to_wasm_pages(size_t bytes) {
 
 wasm_rt_externref_t w2c_fixpoint_create_blob_i64(struct w2c_fixpoint *instance,
                                                  uint64_t val) {
-  return (wasm_rt_externref_t)fixpoint_create_blob_i64(val);
+  return (wasm_rt_externref_t)u8x32_from_bytes32(fixpoint_create_blob_i64(val));
 }
 
 void w2c_fixpoint_attach_blob(struct w2c_fixpoint *instance, uint32_t index,
@@ -27,7 +27,7 @@ void w2c_fixpoint_attach_blob(struct w2c_fixpoint *instance, uint32_t index,
   wasm_rt_memory_t *memory = WASM_MEMORIES[index];
   // `addr` is the beginning address of this wasm memory in the address space
   void *addr = (void *)(memory->data);
-  uint64_t nbytes = fixpoint_attach_blob(addr, (__m256i)handle);
+  uint64_t nbytes = fixpoint_attach_blob(addr, bytes32_from_u8x32(handle));
 
   size_t npages = bytes_to_wasm_pages(nbytes);
   memory->size = nbytes;
@@ -44,7 +44,7 @@ void w2c_fixpoint_attach_tree(struct w2c_fixpoint *instance, uint32_t index,
   wasm_rt_externref_table_t *table = WASM_TABLES[index];
   // `addr` is the beginning address of this wasm memory in the address space
   void *addr = (void *)(table->data);
-  uint64_t nelems = fixpoint_attach_tree(addr, (__m256i)handle);
+  uint64_t nelems = fixpoint_attach_tree(addr, bytes32_from_u8x32(handle));
   table->size = nelems;
   return;
 }

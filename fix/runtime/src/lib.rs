@@ -2,8 +2,8 @@
 #![feature(portable_simd)]
 #![allow(dead_code)]
 
-mod bottom;
-mod data;
+pub mod bottom;
+pub mod data;
 pub mod fixruntime;
 pub mod runtime;
-mod storage;
+pub mod storage;

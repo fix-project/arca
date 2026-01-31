@@ -30,7 +30,7 @@ impl RawData {
     fn create(data: &[u8]) -> Self {
         let mut inner = RawData::new(data.len());
         let pagesize = inner.data.len() / 512;
-        for i in 0..(data.len() + 1) / pagesize {
+        for i in 0..(data.len() + pagesize - 1) / pagesize {
             let mut page = Runtime::create_page(pagesize);
             Runtime::write_page(&mut page, 0, &data[i * pagesize..]);
             Runtime::set_table(&mut inner.data, i, arca::Entry::ROPage(page))
@@ -55,7 +55,7 @@ impl RawData {
                     Runtime::read_page(
                         &page,
                         curr_start % pagesize,
-                        &mut buf[curr_start..curr_end],
+                        &mut buf[curr_start - start..curr_end - start],
                     );
                 }
                 arca::Entry::ROTable(_) => todo!(),
@@ -126,7 +126,7 @@ impl TreeData {
         let mut buffer = vec![0u8; data.len() * 32];
         for (idx, i) in data.iter().enumerate() {
             let raw = i.pack();
-            buffer.as_mut_slice()[idx * 32..].copy_from_slice(raw.as_array());
+            buffer.as_mut_slice()[idx * 32..(idx + 1) * 32].copy_from_slice(raw.as_array());
         }
 
         let inner = RawData::create(&buffer);

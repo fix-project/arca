@@ -2,13 +2,30 @@
 
 #include <immintrin.h>
 #include <stdint.h>
+#include <string.h>
 
-__m256i fixpoint_create_blob_i64(uint64_t val);
+typedef struct { uint8_t bytes[32]; } bytes32;
+typedef unsigned char __attribute__((vector_size(32))) u8x32;
 
-uint64_t fixpoint_attach_blob(void *addr, __m256i handle);
+static inline bytes32 bytes32_from_u8x32(u8x32 v) {
+    bytes32 out;
+    // memcpy is safest: no alignment assumptions
+    memcpy(out.bytes, &v, 32);
+    return out;
+}
 
-uint64_t fixpoint_attach_tree(void *addr, __m256i handle);
+static inline u8x32 u8x32_from_bytes32(bytes32 b) {
+    u8x32 out;
+    memcpy(&out, b.bytes, 32);
+    return out;
+}
 
-__m256i arca_blob_to_handle(int64_t h);
+bytes32 fixpoint_create_blob_i64(uint64_t val);
 
-int64_t handle_to_arca_blob(__m256i h);
+uint64_t fixpoint_attach_blob(void *addr, bytes32 handle);
+
+uint64_t fixpoint_attach_tree(void *addr, bytes32 handle);
+
+bytes32 arca_blob_to_handle(int64_t h);
+
+int64_t handle_to_arca_blob(bytes32 h);

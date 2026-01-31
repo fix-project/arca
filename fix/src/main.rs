@@ -7,8 +7,8 @@
 #![feature(never_type)]
 #![feature(portable_simd)]
 #![feature(custom_test_frameworks)]
-#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))] 
-#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")] 
+#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]
+#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 #![allow(dead_code)]
 
 use kernel::prelude::*;
@@ -16,9 +16,12 @@ use kernel::prelude::*;
 #[cfg(feature = "testing-mode")]
 mod testing;
 
-//use crate::{
-//    handle::handle::FixRuntime, runtime::DeterministicEquivRuntime, runtime::ExecutionRuntime,
-//};
+use fixruntime::{
+    data::{BlobData, TreeData},
+    fixruntime::FixRuntime,
+    runtime::{DeterministicEquivRuntime, Executor},
+    storage::ObjectStore,
+};
 
 extern crate alloc;
 
@@ -28,21 +31,24 @@ const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 
 #[kmain]
 async fn main(_: &[usize]) {
-    //let dummy = FixRuntime::create_blob_i64(0xcafeb0ba);
-    //let function = FixRuntime::create_blob(Value::Blob(Runtime::create_blob(MODULE)));
+    log::info!("running fix kernel");
+    let mut store = ObjectStore::new();
+    let mut runtime = FixRuntime::new(&mut store);
 
-    //let mut tree = FixRuntime::create_scrach_tree(4);
-    //let _ = FixRuntime::set_tree_entry(&mut tree, 0, &dummy);
-    //let _ = FixRuntime::set_tree_entry(&mut tree, 1, &function);
-    //let _ = FixRuntime::set_tree_entry(&mut tree, 2, &FixRuntime::create_blob_i64(7));
-    //let _ = FixRuntime::set_tree_entry(&mut tree, 3, &FixRuntime::create_blob_i64(1024));
-    //let combination = FixRuntime::create_tree(tree);
-    //let result = FixRuntime::execute(&combination).expect("Failed to execute");
+    let dummy = runtime.create_blob_i64(0xcafeb0ba);
+    let function = runtime.create_blob(BlobData::create(MODULE));
+    let addend1 = runtime.create_blob_i64(7);
+    let addend2 = runtime.create_blob_i64(1024);
 
-    //let mut arr = [0u8; 8];
-    //let result_blob = FixRuntime::get_blob(&result).expect("Add did not return a Blob");
-    //arr[..result_blob.len()].copy_from_slice(result_blob);
-    //let num = u64::from_le_bytes(arr);
-    //log::info!("{:?}", num);
-    //assert_eq!(num, 1031);
+    let scratch = vec![dummy, function, addend1, addend2];
+    let combination = runtime.create_tree(TreeData::create(&scratch));
+    let result = runtime.execute(&combination);
+    let result_blob = runtime
+        .get_blob(&result)
+        .expect("Add did not return a Blob");
+    let mut arr = [0u8; 8];
+    result_blob.get(&mut arr);
+    let num = u64::from_le_bytes(arr);
+    log::info!("{:?}", num);
+    assert_eq!(num, 1031);
 }

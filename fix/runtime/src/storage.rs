@@ -54,7 +54,7 @@ pub struct ObjectStore {
 }
 
 impl ObjectStore {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 }

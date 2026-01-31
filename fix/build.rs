@@ -124,8 +124,9 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             // "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
-            "-mavx2",
-            "-march=native"
+            //"-mavx",
+            //"-mavx2",
+            //"-march=native"
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;

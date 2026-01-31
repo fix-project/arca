@@ -2,8 +2,9 @@
 #![allow(non_camel_case_types)]
 
 use crate::{
+    bottom::FixShellBottom,
     data::{BlobData, TreeData},
-    runtime::DeterministicEquivRuntime,
+    runtime::{DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
@@ -28,7 +29,7 @@ pub struct FixRuntime<'a> {
 }
 
 impl<'a> FixRuntime<'a> {
-    fn new(store: &'a mut ObjectStore) -> Self {
+    pub fn new(store: &'a mut ObjectStore) -> Self {
         Self { store }
     }
 }
@@ -94,5 +95,12 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
                 .map_err(Error::from)
                 .and_then(|h| h.try_unwrap_tree_name_ref().map_err(Error::from))
                 .is_ok()
+    }
+}
+
+impl<'a> Executor for FixRuntime<'a> {
+    fn execute(&mut self, combination: &FixHandle) -> FixHandle {
+        let mut bottom = FixShellBottom { parent: self };
+        bottom.execute(combination)
     }
 }

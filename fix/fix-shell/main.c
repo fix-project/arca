@@ -16,7 +16,9 @@
 [[noreturn]] void fmain(void) {
   w2c_module module;
   wasm2c_module_instantiate(&module, (struct w2c_fixpoint *)&module);
-  wasm_rt_externref_t argument = (wasm_rt_externref_t)(arca_blob_to_handle(arca_argument()));
+  arca_log("Done instantiating");
+  bytes32 out = arca_blob_to_handle(arca_argument());
+  wasm_rt_externref_t argument = (wasm_rt_externref_t)u8x32_from_bytes32(out);
   wasm_rt_externref_t result = w2c_module_0x5Ffixpoint_apply(&module, argument);
-  arca_exit(handle_to_arca_blob((__m256i)(result)));
+  arca_exit(handle_to_arca_blob(bytes32_from_u8x32(result)));
 }

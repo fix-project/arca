@@ -35,11 +35,11 @@ fn unpack_handle(blob: &ArcaBlob) -> FixHandle {
     FixHandle::unpack(u8x32::from_array(buf))
 }
 
-pub struct FixShellBottom<'a> {
-    parent: &'a mut FixRuntime<'a>,
+pub struct FixShellBottom<'a, 'b> {
+    pub parent: &'b mut FixRuntime<'a>,
 }
 
-impl<'a> DeterministicEquivRuntime for FixShellBottom<'a> {
+impl<'a, 'b> DeterministicEquivRuntime for FixShellBottom<'a, 'b> {
     type BlobData = BlobData;
     type TreeData = TreeData;
     type Handle = ArcaBlob;
@@ -78,7 +78,7 @@ impl<'a> DeterministicEquivRuntime for FixShellBottom<'a> {
     }
 }
 
-impl<'a> FixShellBottom<'a> {
+impl<'a, 'b> FixShellBottom<'a, 'b> {
     fn run(&mut self, mut f: Function) -> FixHandle {
         loop {
             let result = f.force();
@@ -150,14 +150,17 @@ impl<'a> FixShellBottom<'a> {
                         };
                         k.apply(Runtime::create_word(Self::is_tree(&b) as u64))
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        log::info!("{:?}", &*effect);
+                        unreachable!();
+                    }
                 };
             }
         }
     }
 }
 
-impl<'a> Executor for FixShellBottom<'a> {
+impl<'a, 'b> Executor for FixShellBottom<'a, 'b> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let tree = self.parent.get_tree(combination).unwrap();
         let function_handle = tree.get(1);

@@ -16,6 +16,7 @@
 
 #include "wasm-rt-impl.h"
 #include <arca/sys.h>
+#include <arca/arca.h>
 #include "wasm-rt.h"
 
 #include <assert.h>
@@ -73,10 +74,10 @@ void wasm_rt_free(void) {}
 void wasm_rt_allocate_memory(wasm_rt_memory_t *memory, uint64_t initial_pages,
                              uint64_t max_pages, bool is64) {
   size_t n = WASM_MEMORIES_N++;
+
   assert(n < 128);
   WASM_MEMORIES[n] = memory;
-
-  assert(max_pages <= (1ul << 32) / PAGE_SIZE);
+  assert(max_pages <= ((1ul << 32) / PAGE_SIZE));
 
   memory->data = (void *)(n << 32);
   uint64_t byte_length = initial_pages * PAGE_SIZE;
@@ -149,6 +150,9 @@ void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t *table,
   assert(n < 128);
   WASM_TABLES[n] = table;
 
+  if (max_elements > ((1ull << 32) / sizeof(wasm_rt_externref_t)) ) {
+    max_elements = (1ull << 32) / sizeof(wasm_rt_externref_t);
+  }
   assert(max_elements * sizeof(wasm_rt_externref_t) <= (1ull << 32));
 
   // tables are after the memories in the address space
