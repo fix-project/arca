@@ -1,0 +1,20 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "fixshell"
+version = "0.1.0"
+edition = "2024"
+forced-target = "x86_64-unknown-none"
+
+[lib]
+name = "fixshell"
+crate-type = ["staticlib"]
+
+[dependencies]
+arca = { path = "../../arca" }
+user = { path = "../../user" }
+arcane = { path = "../../arcane/"}
+fixhandle = { path = "../handle", default-features = false}
+
+[build-dependencies]
+anyhow = "1.0.100"

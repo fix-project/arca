@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 
+mod bitpack;
 mod core_local;
 mod testing;
 mod util;
@@ -32,4 +33,9 @@ pub fn arca_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
     util::kmain(attr, item)
+}
+
+#[proc_macro_derive(BitPack)]
+pub fn bitpack(input: TokenStream) -> TokenStream {
+    bitpack::bitpack(input)
 }

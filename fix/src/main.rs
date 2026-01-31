@@ -5,28 +5,50 @@
 #![feature(iterator_try_collect)]
 #![feature(box_patterns)]
 #![feature(never_type)]
+#![feature(portable_simd)]
+#![feature(custom_test_frameworks)]
+#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]
+#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 #![allow(dead_code)]
 
-use arca::Runtime;
 use kernel::prelude::*;
 
+#[cfg(feature = "testing-mode")]
+mod testing;
+
+use fixruntime::{
+    data::{BlobData, TreeData},
+    fixruntime::FixRuntime,
+    runtime::{DeterministicEquivRuntime, Executor},
+    storage::ObjectStore,
+};
+
 extern crate alloc;
+
+//use crate::runtime::handle;
 
 const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 
 #[kmain]
 async fn main(_: &[usize]) {
-    let f = common::elfloader::load_elf(MODULE).expect("Failed to load elf");
-    let mut tree = Runtime::create_tuple(4);
-    let dummy = Runtime::create_word(0xcafeb0ba);
+    log::info!("running fix kernel");
+    let mut store = ObjectStore::new();
+    let mut runtime = FixRuntime::new(&mut store);
 
-    tree.set(0, dummy);
-    tree.set(1, dummy);
-    tree.set(2, Runtime::create_word(7));
-    tree.set(3, Runtime::create_word(1024));
+    let dummy = runtime.create_blob_i64(0xcafeb0ba);
+    let function = runtime.create_blob(BlobData::create(MODULE));
+    let addend1 = runtime.create_blob_i64(7);
+    let addend2 = runtime.create_blob_i64(1024);
 
-    let f = Runtime::apply_function(f, arca::Value::Tuple(tree));
-    let word: Word = f.force().try_into().unwrap();
-    log::info!("{:?}", word.read());
-    assert_eq!(word.read(), 1031);
+    let scratch = vec![dummy, function, addend1, addend2];
+    let combination = runtime.create_tree(TreeData::create(&scratch));
+    let result = runtime.execute(&combination);
+    let result_blob = runtime
+        .get_blob(&result)
+        .expect("Add did not return a Blob");
+    let mut arr = [0u8; 8];
+    result_blob.get(&mut arr);
+    let num = u64::from_le_bytes(arr);
+    log::info!("{:?}", num);
+    assert_eq!(num, 1031);
 }

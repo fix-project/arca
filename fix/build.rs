@@ -94,6 +94,9 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
         }
     }
 
+    let shell_top = env::var_os("CARGO_STATICLIB_FILE_FIXSHELL_fixshell").unwrap();
+    src.push(PathBuf::from(shell_top));
+
     println!("{src:?}");
 
     let mut o_file = INTERMEDIATEOUT.get().unwrap().clone();
@@ -116,11 +119,14 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-frounding-math",
             // "-fsignaling-nans",
             "-ffreestanding",
-            // "-nostdlib",
+            "-nostdlib",
             "-nostartfiles",
-            "-mcmodel=large",
+            // "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
+            //"-mavx",
+            //"-mavx2",
+            //"-march=native"
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
@@ -149,8 +155,8 @@ fn main() -> Result<()> {
     }
 
     let prefix = autotools::Config::new("../modules/arca-musl")
-        .cflag("-mcmodel=large")
-        .cxxflag("-mcmodel=large")
+        // .cflag("-mcmodel=large")
+        // .cxxflag("-mcmodel=large")
         .out_dir(prefix)
         .build();
 
@@ -190,9 +196,10 @@ fn main() -> Result<()> {
         std::fs::write(dst, elf)?;
     }
 
-    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo::rerun-if-changed={dir}/etc/memmap.ld");
-    println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
+    let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+
+    println!("cargo::rerun-if-changed={cwd}/etc/memmap.ld");
+    println!("cargo::rustc-link-arg=-T{cwd}/etc/memmap.ld");
     println!("cargo::rustc-link-arg=-no-pie");
 
     Ok(())
