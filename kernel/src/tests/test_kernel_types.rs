@@ -3,12 +3,12 @@
 mod tests {
     extern crate alloc;
 
-    use alloc::vec;
     use crate::types::internal as ktypes;
     use crate::types::{
         Blob as ArcaBlob, Entry as ArcaEntry, Null as ArcaNull, Table as ArcaTable,
         Tuple as ArcaTuple, Value as ArcaValue, Word as ArcaWord,
     };
+    use alloc::vec;
 
     // Verifies internal word read/write semantics.
     #[test]

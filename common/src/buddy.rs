@@ -1206,7 +1206,7 @@ mod tests {
     fn test_too_small_allocation() {
         let allocator = BuddyAllocatorImpl::new(1 << 20);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        let used_before = allocator.used_size();     
+        let used_before = allocator.used_size();
         let ptr = allocator.allocate_raw(size);
     }
 
@@ -1215,7 +1215,7 @@ mod tests {
     fn test_allocate_raw_and_used_size() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        let used_before = allocator.used_size();     
+        let used_before = allocator.used_size();
         let ptr = allocator.allocate_raw(size);
         assert!(!ptr.is_null());
         assert_eq!(allocator.used_size(), used_before + size);
@@ -1333,12 +1333,12 @@ mod tests {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let small_size = BuddyAllocatorImpl::MIN_ALLOCATION;
         let large_size = small_size * 4;
-        
+
         // Allocate and free a large block
         let large_ptr = allocator.allocate_raw(large_size);
         assert!(!large_ptr.is_null());
         allocator.free_raw(large_ptr, large_size);
-        
+
         // Now allocate multiple small blocks - should split the large one
         let mut small_ptrs = vec![];
         for _ in 0..4 {
@@ -1346,7 +1346,7 @@ mod tests {
             assert!(!ptr.is_null());
             small_ptrs.push(ptr);
         }
-        
+
         // Clean up
         for ptr in small_ptrs {
             allocator.free_raw(ptr, small_size);
@@ -1381,15 +1381,15 @@ mod tests {
     fn test_reserve_overlapping_regions() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         // Reserve a block
         let ptr1 = allocator.reserve_raw(size * 5, size);
         assert!(!ptr1.is_null());
-        
+
         // Try to reserve a larger block that would overlap
         let ptr2 = allocator.reserve_raw(size * 4, size * 4);
         assert!(ptr2.is_null()); // Should fail because it overlaps with ptr1
-        
+
         allocator.free_raw(ptr1, size);
     }
 
@@ -1399,7 +1399,7 @@ mod tests {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
         let mut ptrs = vec![];
-        
+
         // Allocate until we can't anymore
         loop {
             let ptr = allocator.allocate_raw(size);
@@ -1408,19 +1408,19 @@ mod tests {
             }
             ptrs.push(ptr);
         }
-        
+
         // Verify we actually allocated something
         assert!(!ptrs.is_empty());
-        
+
         // Try one more allocation - should fail
         let ptr = allocator.allocate_raw(size);
         assert!(ptr.is_null());
-        
+
         // Free everything
         for ptr in ptrs {
             allocator.free_raw(ptr, size);
         }
-        
+
         // Should be able to allocate again
         let ptr = allocator.allocate_raw(size);
         assert!(!ptr.is_null());
@@ -1431,21 +1431,21 @@ mod tests {
     // Test mixed allocation sizes
     fn test_mixed_allocation_sizes() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
-        
+
         let small = BuddyAllocatorImpl::MIN_ALLOCATION;
         let medium = small * 4;
         let large = small * 16;
-        
+
         let ptr1 = allocator.allocate_raw(small);
         let ptr2 = allocator.allocate_raw(large);
         let ptr3 = allocator.allocate_raw(medium);
         let ptr4 = allocator.allocate_raw(small);
-        
+
         assert!(!ptr1.is_null());
         assert!(!ptr2.is_null());
         assert!(!ptr3.is_null());
         assert!(!ptr4.is_null());
-        
+
         // Verify they're all different
         let ptrs = [ptr1, ptr2, ptr3, ptr4];
         for i in 0..ptrs.len() {
@@ -1453,7 +1453,7 @@ mod tests {
                 assert_ne!(ptrs[i], ptrs[j]);
             }
         }
-        
+
         allocator.free_raw(ptr2, large);
         allocator.free_raw(ptr1, small);
         allocator.free_raw(ptr4, small);
@@ -1465,21 +1465,21 @@ mod tests {
     fn test_free_reverse_order() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let mut ptrs = vec![];
         for _ in 0..10 {
             let ptr = allocator.allocate_raw(size);
             assert!(!ptr.is_null());
             ptrs.push(ptr);
         }
-        
+
         let used_peak = allocator.used_size();
-        
+
         // Free in reverse order
         for ptr in ptrs.iter().rev() {
             allocator.free_raw(*ptr, size);
         }
-        
+
         assert!(allocator.used_size() < used_peak);
     }
 
@@ -1492,10 +1492,10 @@ mod tests {
     fn test_double_free_panics() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let ptr = allocator.allocate_raw(size);
         assert!(!ptr.is_null());
-        
+
         allocator.free_raw(ptr, size);
         allocator.free_raw(ptr, size); // Should panic
     }
@@ -1506,14 +1506,14 @@ mod tests {
         let a = BuddyAllocatorImpl::new(1 << 24);
 
         // Request sizes that aren't powers of 2
-        let ptr1 = a.allocate_raw(5000);  // Should round to 8192
-        let ptr2 = a.allocate_raw(1000);  // Should round to 4096
+        let ptr1 = a.allocate_raw(5000); // Should round to 8192
+        let ptr2 = a.allocate_raw(1000); // Should round to 4096
         let ptr3 = a.allocate_raw(10000); // Should round to 16384
-        
+
         assert!(!ptr1.is_null());
         assert!(!ptr2.is_null());
         assert!(!ptr3.is_null());
-        
+
         a.free_raw(ptr1, 5000);
         a.free_raw(ptr2, 1000);
         a.free_raw(ptr3, 10000);
@@ -1531,7 +1531,7 @@ mod tests {
     // Confirm there is no overlap between levels
     fn test_offset_calculation() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
-        
+
         let mut ranges = vec![];
         for level in allocator.inner.meta.level_range.clone() {
             let offset = allocator.inner.offset_of_level_words(level);
@@ -1551,15 +1551,20 @@ mod tests {
     // Test bitmap boundaries
     fn test_bitmap_boundaries() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
-        
+
         for level in allocator.inner.meta.level_range.clone() {
             let bits = allocator.inner.size_of_level_bits(level);
             let words = allocator.inner.size_of_level_words(level);
-            
+
             // Verify words is enough to hold bits
-            assert!(words * 64 >= bits, 
-                "Level {} needs {} bits but only has {} words ({} bits)", 
-                level, bits, words, words * 64);
+            assert!(
+                words * 64 >= bits,
+                "Level {} needs {} bits but only has {} words ({} bits)",
+                level,
+                bits,
+                words,
+                words * 64
+            );
         }
     }
 
@@ -1568,13 +1573,13 @@ mod tests {
     fn test_try_allocate_many_no_contention() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let mut ptrs = [core::ptr::null_mut(); 10];
         let result = allocator.try_allocate_many_raw(size, &mut ptrs);
-        
+
         assert_eq!(result, Some(10));
         assert!(ptrs.iter().all(|p| !p.is_null()));
-        
+
         allocator.free_many_raw(size, &ptrs);
     }
 
@@ -1585,25 +1590,25 @@ mod tests {
     fn test_allocate_many_partial_success() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         // Request more blocks than available
         let mut ptrs = [core::ptr::null_mut(); 10000];
         let count = allocator.allocate_many_raw(size, &mut ptrs);
-        
+
         // Should have allocated some but not all
         assert!(count > 0);
         assert!(count < ptrs.len());
-        
+
         // All allocated pointers should be non-null
         for i in 0..count {
             assert!(!ptrs[i].is_null());
         }
-        
+
         // Remaining should be null
         for i in count..ptrs.len() {
             assert!(ptrs[i].is_null());
         }
-        
+
         // Clean up
         allocator.free_many_raw(size, &ptrs[0..count]);
     }
@@ -1612,23 +1617,23 @@ mod tests {
     // Test that refcnt works for different allocation addresses
     fn test_refcnt_different_addresses() {
         use core::sync::atomic::Ordering;
-        
+
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let ptr1 = allocator.allocate_raw(size);
         let ptr2 = allocator.allocate_raw(size);
-        
+
         let refcnt1 = allocator.refcnt(ptr1);
         let refcnt2 = allocator.refcnt(ptr2);
-        
+
         // Should be different refcnt locations
         assert_ne!(refcnt1, refcnt2);
-        
+
         // Both should be 0
         assert_eq!(unsafe { (*refcnt1).load(Ordering::SeqCst) }, 0);
         assert_eq!(unsafe { (*refcnt2).load(Ordering::SeqCst) }, 0);
-        
+
         allocator.free_raw(ptr1, size);
         allocator.free_raw(ptr2, size);
     }
@@ -1646,16 +1651,16 @@ mod tests {
     fn test_usage_calculation() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let initial_usage = allocator.usage();
-        
+
         let ptr = allocator.allocate_raw(size);
         let usage_after = allocator.usage();
-        
+
         assert!(usage_after > initial_usage);
         assert!(usage_after <= 1.0);
         assert!(usage_after >= 0.0);
-        
+
         allocator.free_raw(ptr, size);
     }
 
@@ -1664,17 +1669,17 @@ mod tests {
     fn test_request_counting() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        
+
         let mut before = [0; 64];
         let mut after = [0; 64];
-        
+
         allocator.requests(&mut before);
-        
+
         let ptr = allocator.allocate_raw(size);
         allocator.free_raw(ptr, size);
-        
+
         allocator.requests(&mut after);
-        
+
         // Should have incremented request count for the size level
         let level = size.next_power_of_two().ilog2() as usize;
         assert!(after[level] > before[level]);
@@ -1684,27 +1689,32 @@ mod tests {
     fn test_alignment_requirements() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
         let base = allocator.base() as usize;
-    
+
         for power in 12..20 {
             let size = 1 << power;
             let ptr = allocator.allocate_raw(size);
             assert!(!ptr.is_null());
-    
+
             let addr = ptr as usize;
-            assert_eq!((addr - base) % size, 0, "Allocation of size {} not aligned within arena", size);
-    
+            assert_eq!(
+                (addr - base) % size,
+                0,
+                "Allocation of size {} not aligned within arena",
+                size
+            );
+
             allocator.free_raw(ptr, size);
         }
-    }    
+    }
 
     #[test]
     // Test clone and drop behavior
     fn test_clone_and_drop() {
         let allocator = BuddyAllocatorImpl::new(1 << 24);
-        
+
         let ptr1 = allocator.allocate_raw(4096);
         assert!(!ptr1.is_null());
-        
+
         {
             let clone = allocator.clone();
             let ptr2 = clone.allocate_raw(4096);
@@ -1712,11 +1722,11 @@ mod tests {
             clone.free_raw(ptr2, 4096);
             // clone drops here
         }
-        
+
         // Original should still work
         let ptr3 = allocator.allocate_raw(4096);
         assert!(!ptr3.is_null());
-        
+
         allocator.free_raw(ptr1, 4096);
         allocator.free_raw(ptr3, 4096);
     }
@@ -1756,7 +1766,7 @@ mod tests {
     fn split_large_block_into_smaller_blocks() {
         let a = BuddyAllocatorImpl::new(1 << 24);
 
-        let big = 1usize << 16;   // 64KiB
+        let big = 1usize << 16; // 64KiB
         let small = 1usize << 12; // 4KiB
         let factor = big / small;
 
@@ -1785,7 +1795,7 @@ mod tests {
         let a = BuddyAllocatorImpl::new(1 << 24);
 
         let parent = 1usize << 14; // 16KiB
-        let child  = 1usize << 13; // 8KiB
+        let child = 1usize << 13; // 8KiB
 
         // Create a known free parent block at a known offset.
         let p = a.allocate_raw(parent);
@@ -1804,7 +1814,10 @@ mod tests {
 
         // Now reserving the parent at 'off' should succeed.
         let p2 = a.reserve_raw(off, parent);
-        assert!(!p2.is_null(), "parent block did not reappear after coalescing");
+        assert!(
+            !p2.is_null(),
+            "parent block did not reappear after coalescing"
+        );
         assert_eq!(a.to_offset(p2), off);
 
         a.free_raw(p2, parent);
@@ -1816,7 +1829,7 @@ mod tests {
         let a = BuddyAllocatorImpl::new(1 << 24);
 
         let parent = 1usize << 14; // 16KiB
-        let child  = 1usize << 13; // 8KiB
+        let child = 1usize << 13; // 8KiB
 
         let p = a.allocate_raw(parent);
         assert!(!p.is_null());
@@ -1832,7 +1845,10 @@ mod tests {
 
         // Parent must NOT be reservable while the other buddy is still held.
         let parent_try = a.reserve_raw(off, parent);
-        assert!(parent_try.is_null(), "parent became available with one buddy still reserved");
+        assert!(
+            parent_try.is_null(),
+            "parent became available with one buddy still reserved"
+        );
 
         // Cleanup
         a.free_raw(c1, child);
@@ -1848,7 +1864,7 @@ mod tests {
     fn coalesce_is_order_independent() {
         let a = BuddyAllocatorImpl::new(1 << 24);
         let parent = 1usize << 15; // 32KiB
-        let child  = 1usize << 14; // 16KiB
+        let child = 1usize << 14; // 16KiB
 
         let p = a.allocate_raw(parent);
         assert!(!p.is_null());
@@ -1874,7 +1890,7 @@ mod tests {
 
         let grand = 1usize << 15; // 32KiB
         let child = 1usize << 13; // 8KiB
-        let n = grand / child;    // 4
+        let n = grand / child; // 4
 
         let p = a.allocate_raw(grand);
         assert!(!p.is_null());
@@ -1894,7 +1910,10 @@ mod tests {
         }
 
         let g = a.reserve_raw(off, grand);
-        assert!(!g.is_null(), "expected full cascade coalesce to grand block");
+        assert!(
+            !g.is_null(),
+            "expected full cascade coalesce to grand block"
+        );
         a.free_raw(g, grand);
     }
 
@@ -1939,11 +1958,15 @@ mod tests {
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
 
         // Manually lock allocator and ensure try_* fails.
-        unsafe { a.inner.lock(); }
+        unsafe {
+            a.inner.lock();
+        }
         let mut ptrs = [core::ptr::null_mut(); 4];
         let r = a.try_allocate_many_raw(size, &mut ptrs);
         assert_eq!(r, None);
-        unsafe { a.inner.unlock(); }
+        unsafe {
+            a.inner.unlock();
+        }
 
         // Now it should work
         let r2 = a.try_allocate_many_raw(size, &mut ptrs);
@@ -1960,7 +1983,7 @@ mod tests {
 
         let grand = 1usize << 15; // 32KiB
         let parent = 1usize << 14; // 16KiB
-        let child  = 1usize << 13; // 8KiB
+        let child = 1usize << 13; // 8KiB
 
         // Known free 32KiB region
         let g = a.allocate_raw(grand);
@@ -1979,8 +2002,14 @@ mod tests {
         a.free_raw(b0, child);
         a.free_raw(c0, child);
 
-        assert!(a.reserve_raw(off + 0 * parent, parent).is_null(), "AB parent should not exist yet");
-        assert!(a.reserve_raw(off + 1 * parent, parent).is_null(), "CD parent should not exist yet");
+        assert!(
+            a.reserve_raw(off + 0 * parent, parent).is_null(),
+            "AB parent should not exist yet"
+        );
+        assert!(
+            a.reserve_raw(off + 1 * parent, parent).is_null(),
+            "CD parent should not exist yet"
+        );
 
         // Free A -> AB should coalesce to first 16KiB parent at off
         a.free_raw(a0, child);
@@ -1996,7 +2025,10 @@ mod tests {
 
         // Now both 16KiB parents are free -> should coalesce into 32KiB grandparent at off
         let g2 = a.reserve_raw(off, grand);
-        assert!(!g2.is_null(), "two free 16KiB parents should coalesce to 32KiB");
+        assert!(
+            !g2.is_null(),
+            "two free 16KiB parents should coalesce to 32KiB"
+        );
         a.free_raw(g2, grand);
     }
 
@@ -2006,9 +2038,9 @@ mod tests {
     fn fragmentation_blocks_full_coalesce_until_obstacle_removed() {
         let a = BuddyAllocatorImpl::new(1 << 24);
 
-        let big = 1usize << 16;   // 64KiB region we control
-        let leaf = 1usize << 12;  // 4KiB
-        let n = big / leaf;       // 16 leaves
+        let big = 1usize << 16; // 64KiB region we control
+        let leaf = 1usize << 12; // 4KiB
+        let n = big / leaf; // 16 leaves
 
         // Known free 64KiB region
         let p = a.allocate_raw(big);
@@ -2026,17 +2058,25 @@ mod tests {
 
         let obstacle = leaves[7]; // arbitrary leaf to hold
         for (i, q) in leaves.iter().enumerate() {
-            if *q == obstacle { continue; }
+            if *q == obstacle {
+                continue;
+            }
             a.free_raw(*q, leaf);
         }
 
         // With one 4KiB still reserved, the full 64KiB block must NOT be available.
-        assert!(a.reserve_raw(off, big).is_null(), "should not fully coalesce with an obstacle leaf reserved");
+        assert!(
+            a.reserve_raw(off, big).is_null(),
+            "should not fully coalesce with an obstacle leaf reserved"
+        );
 
         // Now free the obstacle leaf -> full coalesce should become possible.
         a.free_raw(obstacle, leaf);
         let big2 = a.reserve_raw(off, big);
-        assert!(!big2.is_null(), "after removing obstacle, should fully coalesce back to 64KiB");
+        assert!(
+            !big2.is_null(),
+            "after removing obstacle, should fully coalesce back to 64KiB"
+        );
         a.free_raw(big2, big);
     }
 
@@ -2045,30 +2085,32 @@ mod tests {
     // if one buddy is permanently reserved (held), the parent must not become available.
     fn reserved_block_prevents_coalescing() {
         let a = BuddyAllocatorImpl::new(1 << 24);
-    
+
         let parent = 1usize << 14; // 16KiB
-        let child  = 1usize << 13; // 8KiB
-    
+        let child = 1usize << 13; // 8KiB
+
         // Known free parent region
         let p = a.allocate_raw(parent);
         assert!(!p.is_null());
         let off = a.to_offset(p);
         a.free_raw(p, parent);
-    
+
         // Reserve both children, but "reserve" one as a held block (simulate reservation that shouldn't coalesce).
         let held = a.reserve_raw(off, child);
         let other = a.reserve_raw(off + child, child);
         assert!(!held.is_null() && !other.is_null());
-    
+
         // Free only the other -> parent must not appear
         a.free_raw(other, child);
-        assert!(a.reserve_raw(off, parent).is_null(), "parent should not coalesce while one child is held/reserved");
-    
+        assert!(
+            a.reserve_raw(off, parent).is_null(),
+            "parent should not coalesce while one child is held/reserved"
+        );
+
         // Once held is freed too, parent should become available
         a.free_raw(held, child);
         let p2 = a.reserve_raw(off, parent);
         assert!(!p2.is_null());
         a.free_raw(p2, parent);
-    }    
-
+    }
 }
