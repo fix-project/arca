@@ -115,8 +115,10 @@ mod tests {
         let unknown_variant = [5, 0];
         let deserialized: Result<Entry, postcard::Error> = postcard::from_bytes(&unknown_variant);
         let deserialized_error = deserialized.expect_err("should have been err");
-        let error =
-            serde::de::Error::unknown_variant("5", &["Null", "ROPage", "RWPage", "ROTable", "RWTable"]);
+        let error = serde::de::Error::unknown_variant(
+            "5",
+            &["Null", "ROPage", "RWPage", "ROTable", "RWTable"],
+        );
         assert_eq!(deserialized_error, error);
     }
 
@@ -216,7 +218,8 @@ mod tests {
 
         let result = <crate::types::Runtime as arca::Runtime>::get_tuple(&tuple, 3);
         assert!(matches!(result, Err(Error::InvalidIndex(3))));
-        let result = <crate::types::Runtime as arca::Runtime>::set_tuple(&mut tuple, 3, 5u64.into());
+        let result =
+            <crate::types::Runtime as arca::Runtime>::set_tuple(&mut tuple, 3, 5u64.into());
         assert!(matches!(result, Err(Error::InvalidIndex(3))));
     }
 
