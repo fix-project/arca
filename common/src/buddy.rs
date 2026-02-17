@@ -413,6 +413,13 @@ impl AllocatorInner {
                 size: 1 << size_log2,
             });
         }
+        // Check if index is within valid range for this level
+        if index >= self.size_of_level_bits(size_log2) {
+            return Err(AllocationError::InvalidReservation {
+                index,
+                size: 1 << size_log2,
+            });
+        }
         self.with_level(base, size_log2, |level: &mut AllocatorLevel<'_>| {
             if level.reserve(index) {
                 Ok(index)
@@ -553,12 +560,15 @@ impl BuddyAllocatorImpl {
 
         // prevent physical zero page from being allocated
         assert_eq!(temp.to_offset(temp.reserve_raw(0, 4096)), 0);
-        // reserve kernel pages
+        // reserve kernel pages (only if within range)
         let mut pages = alloc::vec![];
         for i in 0..8 {
-            let p = temp.reserve_raw(0x100000 * (i + 1), 0x100000);
-            assert!(!p.is_null());
-            pages.push(p);
+            let addr = 0x100000 * (i + 1);
+            if addr + 0x100000 <= size {
+                let p = temp.reserve_raw(addr, 0x100000);
+                assert!(!p.is_null());
+                pages.push(p);
+            }
         }
 
         let new_inner = AllocatorInner::new_in(slice, &temp);
@@ -681,6 +691,7 @@ impl BuddyAllocatorImpl {
             for (i, item) in ptrs.iter_mut().enumerate() {
                 let result = self.allocate_raw_unchecked(size);
                 if result.is_null() {
+                    self.inner.unlock();
                     return Some(i);
                 }
                 *item = result;
@@ -696,6 +707,7 @@ impl BuddyAllocatorImpl {
             for (i, item) in ptrs.iter_mut().enumerate() {
                 let result = self.allocate_raw_unchecked(size);
                 if result.is_null() {
+                    self.inner.unlock();
                     return i;
                 }
                 *item = result;
@@ -1584,7 +1596,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     // Testing allocating more pointers than space available, making sure bulk alloc stops cleanly when space out,
     // and partial success allowed, reported successes are valid. Currently hanging
     fn test_allocate_many_partial_success() {
@@ -1930,7 +1941,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     // Testing allocate_many_raw where partial failure does not poison the lock
     // Currently hanging because partial failures is not working, test after that is fixed
     fn allocate_many_partial_failure_does_not_poison_lock() {
