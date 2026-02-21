@@ -56,6 +56,7 @@ fn new_cpu<'scope>(
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
         | ControlReg4::OSXMMEXCPT
+        | ControlReg4::OSXSAVE // Enable XSAVE feature set for AVX support
         | ControlReg4::FSGSBASE
         | ControlReg4::SMAP
         | ControlReg4::SMEP;
@@ -113,6 +114,21 @@ fn new_cpu<'scope>(
 
     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
 
+    unsafe {
+        // Enable SSE and AVX state in XCR0 after setting CR4.OSXSAVE
+        // XCR0[0] = x87 state (always 1)
+        // XCR0[1] = SSE state
+        // XCR0[2] = AVX state (enables 256-bit SIMD)
+        let mut xsave = vcpu_fd.get_xsave().unwrap();
+        // XCR0 is stored at offset 464 in the XSAVE area
+        // Set bits: 0 (x87), 1 (SSE), 2 (AVX) = 0x07
+        let xcr0_offset = 464 / 4;
+        let xcr0_value: u64 = 0x07;
+        xsave.region[xcr0_offset] = (xcr0_value & 0xFFFFFFFF) as u32;
+        xsave.region[xcr0_offset + 1] = (xcr0_value >> 32) as u32;
+        vcpu_fd.set_xsave(&xsave).unwrap();
+    }
+    
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = elf.ehdr.e_entry;
     const STACK_SIZE: usize = 2 * 0x400 * 0x400;

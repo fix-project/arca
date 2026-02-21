@@ -13,6 +13,7 @@ pub struct Arca {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     fsbase: u64,
+    xsave_area: Box<[u8]>,  // NEW: Stores x87, SSE, AVX state – 832 bytes so currently using 1024 bytes
     // rlimit: Resources,
 }
 
@@ -26,6 +27,7 @@ impl Arca {
         let page_table = Table::from_inner(internal::Table::default());
         let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
+        let xsave_area = alloc::vec![0u8; 1024].into_boxed_slice();
         // let rlimit = Resources { memory: 1 << 21 };
 
         Arca {
@@ -33,6 +35,7 @@ impl Arca {
             register_file,
             descriptors,
             fsbase: 0,
+            xsave_area,
             // rlimit,
         }
     }
@@ -44,6 +47,7 @@ impl Arca {
         _rlimit: Tuple,
     ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner().into_inner()).into();
+        let xsave_area = alloc::vec![0u8; 1024].into_boxed_slice();
 
         // let mem_limit = Word::try_from(rlimit.get(0).clone()).unwrap().read() as usize;
         // let rlimit = Resources { memory: mem_limit };
@@ -53,6 +57,7 @@ impl Arca {
             register_file: register_file.into(),
             descriptors,
             fsbase: 0,
+            xsave_area,
             // rlimit,
         }
     }
@@ -71,13 +76,19 @@ impl Arca {
             core::arch::asm! {
                 "wrfsbase {base}", base=in(reg) self.fsbase
             };
+
+            // NEW: Restore extended state (x87, SSE, AVX registers)
+            // The mask 0x07 = bits 0,1,2 = x87 + SSE + AVX
+            core::arch::x86_64::_xrstor(self.xsave_area.as_ptr(), 0x07);
         }
+
         // let rusage = Resources { memory };
         // assert!(rusage.memory <= self.rlimit.memory);
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
+            xsave_area: self.xsave_area,  // NEW: Move it to LoadedArca
             // rlimit: self.rlimit,
             // rusage,
         }
@@ -135,6 +146,7 @@ pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
+    xsave_area: Box<[u8]>,  // NEW: Stores x87, SSE, AVX state – 832 bytes so currently using 1024 bytes
     // rlimit: Resources,
     // rusage: Resources,
 }
@@ -187,12 +199,19 @@ impl<'a> LoadedArca<'a> {
     }
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
+        // add SIMD support here?
         let page_table = Table::from_inner(self.cpu.deactivate_address_space());
         let mut fsbase: u64;
+        let mut xsave_area = self.xsave_area;  // NEW: Take ownership
+
         unsafe {
             core::arch::asm! {
                 "rdfsbase {base}", base=out(reg) fsbase
             };
+
+            // NEW: Save extended state (x87, SSE, AVX registers)
+            // The mask 0x07 = bits 0,1,2 = x87 + SSE + AVX
+            core::arch::x86_64::_xsave(xsave_area.as_mut_ptr(), 0x07);
         }
 
         (
@@ -201,6 +220,7 @@ impl<'a> LoadedArca<'a> {
                 descriptors: self.descriptors,
                 page_table,
                 fsbase,
+                xsave_area,
                 // rlimit: self.rlimit,
             },
             self.cpu,
@@ -214,8 +234,16 @@ impl<'a> LoadedArca<'a> {
         let mut fsbase: u64;
         unsafe {
             core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
+
+            // NEW: Save current arca's extended state
+            core::arch::x86_64::_xsave(self.xsave_area.as_mut_ptr(), 0x07);
+            
+            // NEW: Restore other arca's extended state
+            core::arch::x86_64::_xrstor(other.xsave_area.as_ptr(), 0x07);
         }
         other.fsbase = fsbase;
+        core::mem::swap(&mut self.xsave_area, &mut other.xsave_area);
+
         self.cpu.swap_address_space(other.page_table.inner_mut());
     }
 
