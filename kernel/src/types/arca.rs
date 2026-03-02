@@ -7,13 +7,210 @@ use super::Value;
 
 use crate::types::internal;
 
+/// Layout of a compacted XSAVE area for x87 + SSE + AVX (XCR0 bits 0..=2):
+///
+///   [  0 ..  512)  Legacy region  – x87 state (108 B) + SSE XMM/MXCSR (416 B)
+///   [512 ..  576)  XSAVE header   – 64-byte XSTATE_BV / XCOMP_BV bitmap
+///   [576 ..  832)  AVX component  – 16 × 16 B YMM_Hi128 registers
+///
+/// Total: 832 bytes.  Rounded up to 1024 for headroom.
+/// Confirmed sufficient by `xstate::assert_buffer_adequate()` at runtime.
+const XSAVE_AREA_BYTES: usize = 1024;
+
+#[repr(C, align(64))]
+#[derive(Clone, Eq, PartialEq)]
+pub struct XsaveArea([u8; XSAVE_AREA_BYTES]);
+
+impl XsaveArea {
+    fn new_boxed() -> Box<Self> {
+        // Rust's allocator contract requires respecting the type's alignment,
+        // but we assert here to catch any non-conformant allocators early.
+        let b = Box::new(Self([0u8; XSAVE_AREA_BYTES]));
+        debug_assert_eq!(
+            b.0.as_ptr() as usize % 64,
+            0,
+            "XsaveArea heap allocation is not 64-byte aligned; \
+             global allocator does not honour over-alignment"
+        );
+        b
+    }
+
+    fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
+    fn as_mut_ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() }
+}
+
+impl core::fmt::Debug for XsaveArea {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("XsaveArea")
+            .field(&format_args!("[...; {}]", XSAVE_AREA_BYTES))
+            .finish()
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod xstate {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+
+    // ── Feature detection ────────────────────────────────────────────────────
+
+    /// Returns `true` if the OS has set `CR4.OSXSAVE`, making `XGETBV`/`XSAVE`
+    /// safe to execute.  Must be verified before any other function in this module.
+    #[inline(always)]
+    pub fn osxsave_enabled() -> bool {
+        // CPUID.01H:ECX bit 27 = OSXSAVE
+        let r = __cpuid(0x1);
+        (r.ecx >> 27) & 1 == 1
+    }
+
+    /// Returns `true` if the OS has enabled AVX state saving in XCR0 (bit 2).
+    ///
+    /// Gate any AVX-specific code on this rather than assuming AVX is always
+    /// present just because the CPU supports it.
+    // #[inline(always)]
+    // pub fn avx_enabled() -> bool {
+    //     xcr0() & 0x4 != 0
+    // }
+
+    /// Returns `true` if XSAVEOPT is available (CPUID.(EAX=0Dh,ECX=1h).EAX bit 0).
+    ///
+    /// XSAVEOPT skips saving components whose state has not changed since the
+    /// last XRSTOR, making context-switch saves cheaper when xstate is clean.
+    #[inline(always)]
+    pub fn xsaveopt_available() -> bool {
+        let r = __cpuid_count(0xD, 1);
+        r.eax & 1 == 1
+    }
+
+    /// Return XCR0 bits (OS-enabled xfeatures).
+    ///
+    /// # Safety
+    /// OSXSAVE must be set; otherwise `XGETBV` raises `#UD`.
+    #[inline(always)]
+    pub fn xcr0() -> u64 {
+        unsafe { core::arch::x86_64::_xgetbv(0) }
+    }
+
+    /// Save mask: x87 (bit 0) + SSE (bit 1) + AVX if OS-enabled (bit 2).
+    ///
+    /// Bits beyond 2 (MPX, AVX-512, …) are intentionally excluded; they require
+    /// a larger XSAVE area than this module manages.
+    #[inline(always)]
+    pub fn save_mask() -> u64 {
+        xcr0() & 0x7
+    }
+
+    // ── Buffer-size validation ───────────────────────────────────────────────
+
+    /// Compute required XSAVE buffer bytes for the given mask.
+    ///
+    /// For mask = xcr0 & 0x7 (x87 + SSE + AVX only), bits 0 and 1 always
+    /// fit in the 576-byte legacy+header region.  Only bit 2 (AVX / YMM_Hi128)
+    /// adds beyond that, so we only need to query sub-leaf 2.
+    ///
+    /// CPUID.(0xD, n):
+    ///   EAX = size   of component n in bytes
+    ///   EBX = offset of component n from start of XSAVE area
+    pub fn required_bytes_for_mask(mask: u64) -> usize {
+        // Legacy x87+SSE region (512 B) + XSAVE header (64 B), always required.
+        let mut needed: usize = 512 + 64;
+
+        // Only check components that are actually in our mask.
+        // For mask & 0x7 this is at most bit 2 (AVX).
+        for bit in 2u32..64 {
+            if mask & (1u64 << bit) == 0 {
+                continue;
+            }
+            let r = __cpuid_count(0xD, bit);
+            let size   = r.eax as usize; // ← was r.ebx, wrong
+            let offset = r.ebx as usize; // ← was r.ecx, wrong
+            needed = needed.max(offset + size);
+        }
+
+        needed
+    }
+
+    /// Assert that `buf_bytes` is sufficient for the current `save_mask()` and
+    /// that OSXSAVE is set.  Call once during `Arca::new()`.
+    pub fn assert_buffer_adequate(buf_bytes: usize) {
+        assert!(
+            osxsave_enabled(),
+            "OSXSAVE is not set in CR4; XSAVE instructions will #UD"
+        );
+
+        let mask  = save_mask();
+        let needed = required_bytes_for_mask(mask);
+        assert!(
+            needed <= buf_bytes,
+            "XSAVE buffer too small: mask {:#x} needs {} bytes, have {}",
+            mask, needed, buf_bytes,
+        );
+    }
+
+    // ── Save / restore ───────────────────────────────────────────────────────
+
+    /// Save xstate for `mask` into `dst`.
+    ///
+    /// Uses XSAVEOPT when available (skips unmodified components), falling back
+    /// to plain XSAVE otherwise.
+    ///
+    /// # Safety
+    /// - `dst` must be 64-byte aligned and at least `required_bytes_for_mask(mask)` bytes.
+    /// - The buffer must already contain a valid prior XSAVE image (XSTATE_BV set).
+    ///   Use `snapshot_current_xstate` to initialise it.
+    /// - OSXSAVE must be set.
+    #[inline(always)]
+    pub unsafe fn save_xstate(dst: *mut u8, mask: u64) {
+        if xsaveopt_available() {
+            core::arch::x86_64::_xsaveopt(dst, mask);
+        } else {
+            core::arch::x86_64::_xsave(dst, mask);
+        }
+    }
+
+    /// Restore xstate for `mask` from `src`.
+    ///
+    /// # Safety
+    /// - `src` must be 64-byte aligned and contain a valid XSAVE image for `mask`.
+    /// - OSXSAVE must be set.
+    #[inline(always)]
+    pub unsafe fn restore_xstate(src: *const u8, mask: u64) {
+        core::arch::x86_64::_xrstor(src, mask);
+    }
+
+    /// Snapshot the *current* CPU xstate into `dst` using plain XSAVE.
+    ///
+    /// Always uses plain XSAVE (never XSAVEOPT) so all component fields are
+    /// unconditionally written and XSTATE_BV is fully populated, making the
+    /// buffer safe for a subsequent `save_xstate` (XSAVEOPT) / `restore_xstate`.
+    ///
+    /// # Safety
+    /// Same alignment/size requirements as `save_xstate`.
+    #[inline(always)]
+    pub unsafe fn snapshot_current_xstate(dst: *mut u8, mask: u64) {
+        core::arch::x86_64::_xsave(dst, mask);
+    }
+
+    /// Zero the AVX (YMM_Hi128) region in an XSAVE buffer.
+    ///
+    /// Layout: [576 .. 832) = 16 × 16 B YMM_Hi128. Leaves x87, SSE, and header intact
+    /// so XRSTOR still validates. Use when initialising a fresh Arca so it does not
+    /// inherit the previous context's SIMD state from `snapshot_current_xstate`.
+    ///
+    /// # Safety
+    /// `dst` must be a valid XSAVE buffer with at least 832 bytes, 64-byte aligned.
+    #[inline(always)]
+    pub unsafe fn zero_avx_region(dst: *mut u8) {
+        core::ptr::write_bytes(dst.add(576), 0, 256);
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: Table,
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     fsbase: u64,
-    xsave_area: Box<[u8]>,  // NEW: Stores x87, SSE, AVX state – 832 bytes so currently using 1024 bytes
+    xsave_area: Box<XsaveArea>,
     // rlimit: Resources,
 }
 
@@ -27,8 +224,23 @@ impl Arca {
         let page_table = Table::from_inner(internal::Table::default());
         let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
-        let xsave_area = alloc::vec![0u8; 1024].into_boxed_slice();
+        let mut xsave_area = XsaveArea::new_boxed();
         // let rlimit = Resources { memory: 1 << 21 };
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        xstate::assert_buffer_adequate(XSAVE_AREA_BYTES);
+
+        let mask = xstate::save_mask();
+        // Initialise with a valid image rather than all-zeros.
+        // An all-zeros buffer fails XRSTOR validation under KVM because
+        // XSTATE_BV and XCOMP_BV are not correctly set.
+        unsafe { xstate::snapshot_current_xstate(xsave_area.as_mut_ptr(), mask) };
+        // Zero YMM so a fresh Arca does not inherit the previous context's SIMD state.
+        if mask & 0x4 != 0 {
+            unsafe { xstate::zero_avx_region(xsave_area.as_mut_ptr()) };
+        }
+    }
 
         Arca {
             page_table,
@@ -47,7 +259,17 @@ impl Arca {
         _rlimit: Tuple,
     ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner().into_inner()).into();
-        let xsave_area = alloc::vec![0u8; 1024].into_boxed_slice();
+        let mut xsave_area = XsaveArea::new_boxed();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            xstate::assert_buffer_adequate(XSAVE_AREA_BYTES);
+            let mask = xstate::save_mask();
+            unsafe { xstate::snapshot_current_xstate(xsave_area.as_mut_ptr(), mask) };
+            if mask & 0x4 != 0 {
+                unsafe { xstate::zero_avx_region(xsave_area.as_mut_ptr()) };
+            }
+        }
 
         // let mem_limit = Word::try_from(rlimit.get(0).clone()).unwrap().read() as usize;
         // let rlimit = Resources { memory: mem_limit };
@@ -74,12 +296,17 @@ impl Arca {
         cpu.activate_address_space(self.page_table.into_inner());
         unsafe {
             core::arch::asm! {
-                "wrfsbase {base}", base=in(reg) self.fsbase
+                "wrfsbase {base}",
+                base = in(reg) self.fsbase,
+                options(nostack, preserves_flags)
             };
 
-            // NEW: Restore extended state (x87, SSE, AVX registers)
-            // The mask 0x07 = bits 0,1,2 = x87 + SSE + AVX
-            core::arch::x86_64::_xrstor(self.xsave_area.as_ptr(), 0x07);
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mask = xstate::save_mask();
+                // Restore x87, SSE, and AVX (if bit 2 is set in mask) onto the CPU.
+                xstate::restore_xstate(self.xsave_area.as_ptr(), mask);
+            }
         }
 
         // let rusage = Resources { memory };
@@ -88,7 +315,7 @@ impl Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
-            xsave_area: self.xsave_area,  // NEW: Move it to LoadedArca
+            xsave_area: self.xsave_area,
             // rlimit: self.rlimit,
             // rusage,
         }
@@ -141,12 +368,22 @@ impl Default for Arca {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn required_bytes_for_avx_mask() -> usize {
+    xstate::required_bytes_for_mask(0x7)
+}
+
+#[cfg(test)]
+pub(crate) fn xsave_area_alignment() -> usize {
+    core::mem::align_of::<XsaveArea>()
+}
+
 #[derive(Debug)]
 pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
-    xsave_area: Box<[u8]>,  // NEW: Stores x87, SSE, AVX state – 832 bytes so currently using 1024 bytes
+    xsave_area: Box<XsaveArea>,
     // rlimit: Resources,
     // rusage: Resources,
 }
@@ -202,16 +439,22 @@ impl<'a> LoadedArca<'a> {
         // add SIMD support here?
         let page_table = Table::from_inner(self.cpu.deactivate_address_space());
         let mut fsbase: u64;
-        let mut xsave_area = self.xsave_area;  // NEW: Take ownership
+        let mut xsave_area = self.xsave_area;
 
         unsafe {
             core::arch::asm! {
-                "rdfsbase {base}", base=out(reg) fsbase
+                "rdfsbase {base}",
+                base = out(reg) fsbase,
+                options(nostack, preserves_flags)
             };
 
-            // NEW: Save extended state (x87, SSE, AVX registers)
-            // The mask 0x07 = bits 0,1,2 = x87 + SSE + AVX
-            core::arch::x86_64::_xsave(xsave_area.as_mut_ptr(), 0x07);
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mask = xstate::save_mask();
+                // XSAVEOPT skips components unmodified since the last XRSTOR,
+                // reducing save cost on clean context switches.
+                xstate::save_xstate(xsave_area.as_mut_ptr(), mask);
+            }
         }
 
         (
@@ -233,13 +476,32 @@ impl<'a> LoadedArca<'a> {
         // core::mem::swap(&mut self.rlimit, &mut other.rlimit);
         let mut fsbase: u64;
         unsafe {
-            core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
+            core::arch::asm!(
+                "rdfsbase {old}; wrfsbase {new}",
+                old = out(reg) fsbase,
+                new = in(reg) other.fsbase,
+                options(nostack, preserves_flags)
+            );
 
-            // NEW: Save current arca's extended state
-            core::arch::x86_64::_xsave(self.xsave_area.as_mut_ptr(), 0x07);
-            
-            // NEW: Restore other arca's extended state
-            core::arch::x86_64::_xrstor(other.xsave_area.as_ptr(), 0x07);
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mask = xstate::save_mask();
+
+                // Step 1 – save the currently-live (self) xstate into self's buffer.
+                //           The buffer was initialised by snapshot_current_xstate and
+                //           kept valid by prior save/restore pairs, so XSAVEOPT is safe.
+                xstate::save_xstate(self.xsave_area.as_mut_ptr(), mask);
+
+                // Step 2 – load other's saved xstate onto the CPU.
+                xstate::restore_xstate(other.xsave_area.as_ptr(), mask);
+
+                // At this point the buffers are intentionally asymmetric:
+                //   self.xsave_area  holds self's just-captured state
+                //   other.xsave_area holds other's prior saved state
+                // The mem::swap below corrects ownership so after it:
+                //   self.xsave_area  owns other's saved state (now live on CPU)
+                //   other.xsave_area owns self's captured state
+            }
         }
         other.fsbase = fsbase;
         core::mem::swap(&mut self.xsave_area, &mut other.xsave_area);
