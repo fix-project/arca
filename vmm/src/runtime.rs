@@ -59,7 +59,7 @@ fn new_cpu<'scope>(
         | ControlReg4::OSFXSR
         | ControlReg4::OSXMMEXCPT
         | ControlReg4::FSGSBASE
-        | ControlReg4::SMAP
+        // | ControlReg4::SMAP
         | ControlReg4::SMEP;
     vcpu_sregs.efer |= ExtendedFeatureEnableReg::LME
         | ExtendedFeatureEnableReg::LMA
