@@ -128,7 +128,7 @@ fn new_cpu<'scope>(
         xsave.region[xcr0_offset + 1] = (xcr0_value >> 32) as u32;
         vcpu_fd.set_xsave(&xsave).unwrap();
     }
-    
+
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = elf.ehdr.e_entry;
     const STACK_SIZE: usize = 2 * 0x400 * 0x400;

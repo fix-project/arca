@@ -35,8 +35,12 @@ impl XsaveArea {
         b
     }
 
-    fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
-    fn as_mut_ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() }
+    fn as_ptr(&self) -> *const u8 {
+        self.0.as_ptr()
+    }
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.0.as_mut_ptr()
+    }
 }
 
 impl core::fmt::Debug for XsaveArea {
@@ -54,7 +58,7 @@ mod xstate {
     // ── Feature detection ────────────────────────────────────────────────────
 
     /// Returns `true` if the OS has set `CR4.OSXSAVE`, making `XGETBV`/`XSAVE`
-    /// safe to execute.  Must be verified before any other function in this module.
+    // safe to execute.  Must be verified before any other function in this module.
     #[inline(always)]
     pub fn osxsave_enabled() -> bool {
         // CPUID.01H:ECX bit 27 = OSXSAVE
@@ -121,7 +125,7 @@ mod xstate {
                 continue;
             }
             let r = __cpuid_count(0xD, bit);
-            let size   = r.eax as usize; // ← was r.ebx, wrong
+            let size = r.eax as usize; // ← was r.ebx, wrong
             let offset = r.ebx as usize; // ← was r.ecx, wrong
             needed = needed.max(offset + size);
         }
@@ -137,12 +141,14 @@ mod xstate {
             "OSXSAVE is not set in CR4; XSAVE instructions will #UD"
         );
 
-        let mask  = save_mask();
+        let mask = save_mask();
         let needed = required_bytes_for_mask(mask);
         assert!(
             needed <= buf_bytes,
             "XSAVE buffer too small: mask {:#x} needs {} bytes, have {}",
-            mask, needed, buf_bytes,
+            mask,
+            needed,
+            buf_bytes,
         );
     }
 
@@ -227,20 +233,20 @@ impl Arca {
         let mut xsave_area = XsaveArea::new_boxed();
         // let rlimit = Resources { memory: 1 << 21 };
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        xstate::assert_buffer_adequate(XSAVE_AREA_BYTES);
+        #[cfg(target_arch = "x86_64")]
+        {
+            xstate::assert_buffer_adequate(XSAVE_AREA_BYTES);
 
-        let mask = xstate::save_mask();
-        // Initialise with a valid image rather than all-zeros.
-        // An all-zeros buffer fails XRSTOR validation under KVM because
-        // XSTATE_BV and XCOMP_BV are not correctly set.
-        unsafe { xstate::snapshot_current_xstate(xsave_area.as_mut_ptr(), mask) };
-        // Zero YMM so a fresh Arca does not inherit the previous context's SIMD state.
-        if mask & 0x4 != 0 {
-            unsafe { xstate::zero_avx_region(xsave_area.as_mut_ptr()) };
+            let mask = xstate::save_mask();
+            // Initialise with a valid image rather than all-zeros.
+            // An all-zeros buffer fails XRSTOR validation under KVM because
+            // XSTATE_BV and XCOMP_BV are not correctly set.
+            unsafe { xstate::snapshot_current_xstate(xsave_area.as_mut_ptr(), mask) };
+            // Zero YMM so a fresh Arca does not inherit the previous context's SIMD state.
+            if mask & 0x4 != 0 {
+                unsafe { xstate::zero_avx_region(xsave_area.as_mut_ptr()) };
+            }
         }
-    }
 
         Arca {
             page_table,

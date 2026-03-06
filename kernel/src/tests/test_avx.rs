@@ -81,9 +81,9 @@ fn test_cpuid_xsave_avx_exposed() {
         let leaf1 = __cpuid(1);
         let ecx = leaf1.ecx;
 
-        let xsave   = (ecx >> 26) & 1 == 1;
+        let xsave = (ecx >> 26) & 1 == 1;
         let osxsave = (ecx >> 27) & 1 == 1;
-        let avx     = (ecx >> 28) & 1 == 1;
+        let avx = (ecx >> 28) & 1 == 1;
 
         log::info!("CPUID.1:ECX = {:#010x}", ecx);
         log::info!("  XSAVE   (ECX[26]) = {}", xsave);
@@ -95,7 +95,8 @@ fn test_cpuid_xsave_avx_exposed() {
             // If your kernel already uses AVX successfully, it's likely set,
             // but logging this helps catch mismatches.
             let xcr0 = _xgetbv(0);
-            log::info!("XCR0 = {:#x} (x87={}, sse={}, avx={})",
+            log::info!(
+                "XCR0 = {:#x} (x87={}, sse={}, avx={})",
                 xcr0,
                 (xcr0 & 0x1) != 0,
                 (xcr0 & 0x2) != 0,
@@ -131,9 +132,8 @@ fn test_avx_work_on_host() {
         }
 
         log::info!("AVX 256-bit addition passed");
-
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use core::arch::x86_64::*;
@@ -293,7 +293,10 @@ fn test_fsbase_preservation() {
             options(nostack, preserves_flags)
         );
 
-        assert_eq!(actual, EXPECTED_FSBASE, "fsbase not preserved across load/unload");
+        assert_eq!(
+            actual, EXPECTED_FSBASE,
+            "fsbase not preserved across load/unload"
+        );
 
         let _ = loaded.unload();
         log::info!("fsbase preservation verified");
@@ -309,29 +312,36 @@ fn test_xstate_stable_across_multiple_cycles() {
 
         let mut cpu = CPU.borrow_mut();
 
-        let arca = Arca::new();
-        let mut loaded = arca.load(&mut cpu);
+        let pat_a = ymm_pattern_sequential(1);
+        let pat_b = ymm_pattern_sequential(200);
 
-        let pattern = ymm_pattern_sequential(1);
-        ymm_all_load(&pattern);
+        let mut arca_a = Arca::new();
+        let mut arca_b = Arca::new();
 
-        let mut arca = loaded.unload();
+        // Prime both arcas with distinct patterns
+        let mut loaded = arca_a.load(&mut cpu);
+        ymm_all_load(&pat_a);
+        arca_a = loaded.unload();
 
-        // Unload/reload cycle × 5 (arca stays on the stack, we just load/unload repeatedly)
-        for _ in 0..5 {
-            loaded = arca.load(&mut cpu);
-            arca = loaded.unload();
+        loaded = arca_b.load(&mut cpu);
+        ymm_all_load(&pat_b);
+        arca_b = loaded.unload();
+
+        // Alternate between arca_a and arca_b for 5 full cycles
+        let mut got = [0u8; YMM_ALL_BYTES];
+        for i in 0..5 {
+            loaded = arca_a.load(&mut cpu);
+            ymm_all_store(&mut got);
+            assert_eq!(got, pat_a, "Arca A lost YMM state on cycle {}", i);
+            arca_a = loaded.unload();
+
+            loaded = arca_b.load(&mut cpu);
+            ymm_all_store(&mut got);
+            assert_eq!(got, pat_b, "Arca B lost YMM state on cycle {}", i);
+            arca_b = loaded.unload();
         }
 
-        // Final reload and verify all YMMs unchanged
-        loaded = arca.load(&mut cpu);
-        let mut got = [0u8; YMM_ALL_BYTES];
-        ymm_all_store(&mut got);
-
-        assert_eq!(got, pattern, "YMM state corrupted across multiple load/unload cycles");
-
-        let _ = loaded.unload();
-        log::info!("All 16 YMMs stable across 5 load/unload cycles");
+        log::info!("All 16 YMMs stable for both Arcas across 5 alternating load/unload cycles");
     }
 }
 
@@ -364,7 +374,10 @@ fn test_xsave_area_alignment() {
         use crate::types::arca;
 
         let align = arca::xsave_area_alignment();
-        assert_eq!(align, 64, "XsaveArea must be 64-byte aligned for XSAVE/XRSTOR");
+        assert_eq!(
+            align, 64,
+            "XsaveArea must be 64-byte aligned for XSAVE/XRSTOR"
+        );
         log::info!("XsaveArea alignment = {} bytes", align);
     }
 }
@@ -374,10 +387,7 @@ fn test_xsave_area_alignment() {
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 unsafe fn ymm0_simd_double_bytes() {
-    core::arch::asm!(
-        "vpaddb ymm0, ymm0, ymm0",
-        options(nostack, preserves_flags)
-    );
+    core::arch::asm!("vpaddb ymm0, ymm0, ymm0", options(nostack, preserves_flags));
 }
 
 #[test]
@@ -459,7 +469,10 @@ fn test_avx_state_isolation_between_arcas() {
         let mut a_seen = [0u8; YMM_ALL_BYTES];
         ymm_all_store(&mut a_seen);
 
-        assert_eq!(a_seen, secret, "Arca A did not retain its YMM state after reload");
+        assert_eq!(
+            a_seen, secret,
+            "Arca A did not retain its YMM state after reload"
+        );
 
         let _ = loaded_a.unload();
         let _ = arca_b;
