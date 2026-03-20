@@ -1,13 +1,7 @@
 #![allow(clippy::double_parens)]
-use core::simd::{u8x32, u16x16, u64x4};
+pub use common::bitpack::BitPack;
+use core::simd::{u8x32, u64x4};
 use derive_more::{From, TryInto, TryUnwrap, Unwrap};
-use macros::BitPack;
-
-pub trait BitPack {
-    const TAGBITS: u32;
-    fn pack(&self) -> u8x32;
-    fn unpack(content: u8x32) -> Self;
-}
 
 const fn ceil_log2(n: u32) -> u32 {
     if n <= 1 {

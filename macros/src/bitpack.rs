@@ -1,6 +1,17 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use proc_macro2::Span;
+use proc_macro_crate::{crate_name, FoundCrate};
+use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DataEnum, DeriveInput, Ident};
+
+fn common_ident() -> Ident {
+    let found_crate = crate_name("common").expect("common is present in `Cargo.toml`");
+
+    match found_crate {
+        FoundCrate::Itself => format_ident!("crate"),
+        FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
+    }
+}
 
 pub fn bitpack(input: TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -36,6 +47,7 @@ struct Variant {
 }
 
 fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
+    let common = common_ident();
     let mut variants = Vec::new();
     for (index, v) in de.variants.iter().enumerate() {
         let ident = v.ident.clone();
@@ -101,9 +113,10 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
         let pat = &v.pat;
         quote! {
             #pat => {
+                use #common::bitpack::BitPack;
                 let mut result = inner.pack();
                 result &= !Self::TAGMASK;
-                let field: &mut u16x16 = unsafe { core::mem::transmute( &mut result ) };
+                let field: &mut core::simd::u16x16 = unsafe { core::mem::transmute( &mut result ) };
                 field[15] |= (#index << (Self::TAGBITS - 240 - 1)) as u16;
                 result
             }
@@ -112,21 +125,21 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
 
     let output = quote! {
         impl #name {
-            const TAGMASK: u8x32 = #tag_mask;
+            const TAGMASK: core::simd::u8x32 = #tag_mask;
         }
 
-        impl BitPack for #name {
+        impl #common::bitpack::BitPack for #name {
             const TAGBITS: u32 = #tag_bits;
 
-            fn pack(&self) -> u8x32 {
+            fn pack(&self) -> core::simd::u8x32 {
                 match self {
                     #(#pack_arms)*
                 }
             }
 
-            fn unpack(content: u8x32) -> Self {
+            fn unpack(content: core::simd::u8x32) -> Self {
                 let tag = content & Self::TAGMASK;
-                let field: &u16x16 = unsafe { core::mem::transmute( &tag ) };
+                let field: &core::simd::u16x16 = unsafe { core::mem::transmute( &tag ) };
                 let tag = field[15] >> (Self::TAGBITS - 240 - 1);
                 match tag as u64 {
                     #(#unpack_arms)*

@@ -6,6 +6,7 @@
 #![feature(maybe_uninit_as_bytes)]
 #![feature(negative_impls)]
 #![feature(new_range_api)]
+#![feature(portable_simd)]
 #![feature(ptr_metadata)]
 #![feature(slice_from_ptr_range)]
 #![feature(sync_unsafe_cell)]
@@ -19,6 +20,7 @@ pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod arrayvec;
+pub mod bitpack;
 pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;

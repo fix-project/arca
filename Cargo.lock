@@ -728,8 +728,8 @@ dependencies = [
 name = "fixhandle"
 version = "0.1.0"
 dependencies = [
+ "common",
  "derive_more",
- "macros",
 ]
 
 [[package]]
