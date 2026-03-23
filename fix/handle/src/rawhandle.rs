@@ -1,6 +1,5 @@
 #![allow(clippy::double_parens)]
 pub use common::bitpack::BitPack;
-use core::simd::{u8x32, u64x4};
 use derive_more::{From, TryInto, TryUnwrap, Unwrap};
 
 const fn ceil_log2(n: u32) -> u32 {
@@ -11,7 +10,7 @@ const fn ceil_log2(n: u32) -> u32 {
     }
 }
 
-const fn bitmask256<const I: u32, const WIDTH: u32>() -> u8x32 {
+const fn bitmask256<const I: u32, const WIDTH: u32>() -> [u8; 32] {
     assert!(I + WIDTH <= 256);
     let mut out = [0u8; 32];
     let mut i = I;
@@ -26,16 +25,16 @@ const fn bitmask256<const I: u32, const WIDTH: u32>() -> u8x32 {
 
         i += 1;
     }
-    u8x32::from_array(out)
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RawHandle {
-    content: u8x32,
+    content: [u8; 32],
 }
 
 impl RawHandle {
-    fn new(content: u8x32) -> Self {
+    fn new(content: [u8; 32]) -> Self {
         Self { content }
     }
 }
@@ -48,22 +47,18 @@ struct MachineHandle {
 impl MachineHandle {
     fn new(payload: u64, size: u64) -> Self {
         assert!(size & 0xffff000000000000 == 0);
-        let field = unsafe {
-            core::mem::transmute::<core::simd::Simd<u64, 4>, core::simd::Simd<u8, 32>>(
-                u64x4::from_array([payload, 0, 0, size]),
-            )
-        };
+        let field = unsafe { core::mem::transmute::<[u64; 4], [u8; 32]>([payload, 0, 0, size]) };
         let inner = RawHandle::new(field);
         Self { inner }
     }
 
     fn get_payload(&self) -> u64 {
-        let field: &u64x4 = unsafe { core::mem::transmute(&self.inner.content) };
+        let field: &[u64; 4] = unsafe { core::mem::transmute(&self.inner.content) };
         field[0]
     }
 
     fn get_size(&self) -> u64 {
-        let field: &u64x4 = unsafe { core::mem::transmute(&self.inner.content) };
+        let field: &[u64; 4] = unsafe { core::mem::transmute(&self.inner.content) };
         field[3] & 0xffffffffffff
     }
 }
@@ -71,12 +66,12 @@ impl MachineHandle {
 impl BitPack for MachineHandle {
     const TAGBITS: u32 = 240;
 
-    fn unpack(content: u8x32) -> Self {
+    fn unpack(content: [u8; 32]) -> Self {
         let inner = RawHandle::new(content);
         Self { inner }
     }
 
-    fn pack(&self) -> u8x32 {
+    fn pack(&self) -> [u8; 32] {
         self.inner.content
     }
 }
@@ -88,12 +83,12 @@ pub struct VirtualHandle {
 
 impl BitPack for VirtualHandle {
     const TAGBITS: u32 = MachineHandle::TAGBITS;
-    fn unpack(content: u8x32) -> Self {
+    fn unpack(content: [u8; 32]) -> Self {
         let inner = MachineHandle::unpack(content);
         Self { inner }
     }
 
-    fn pack(&self) -> u8x32 {
+    fn pack(&self) -> [u8; 32] {
         self.inner.pack()
     }
 }
@@ -125,12 +120,12 @@ pub struct PhysicalHandle {
 
 impl BitPack for PhysicalHandle {
     const TAGBITS: u32 = MachineHandle::TAGBITS;
-    fn unpack(content: u8x32) -> Self {
+    fn unpack(content: [u8; 32]) -> Self {
         let inner = MachineHandle::unpack(content);
         Self { inner }
     }
 
-    fn pack(&self) -> u8x32 {
+    fn pack(&self) -> [u8; 32] {
         self.inner.pack()
     }
 }

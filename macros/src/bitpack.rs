@@ -115,8 +115,10 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
             #pat => {
                 use #common::bitpack::BitPack;
                 let mut result = inner.pack();
-                result &= !Self::TAGMASK;
-                let field: &mut core::simd::u16x16 = unsafe { core::mem::transmute( &mut result ) };
+                for i in 0..32 {
+                    result[i] &= !Self::TAGMASK[i];
+                }
+                let field: &mut [u16; 16] = unsafe { core::mem::transmute( &mut result ) };
                 field[15] |= (#index << (Self::TAGBITS - 240 - 1)) as u16;
                 result
             }
@@ -125,21 +127,24 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
 
     let output = quote! {
         impl #name {
-            const TAGMASK: core::simd::u8x32 = #tag_mask;
+            const TAGMASK: [u8; 32] = #tag_mask;
         }
 
         impl #common::bitpack::BitPack for #name {
             const TAGBITS: u32 = #tag_bits;
 
-            fn pack(&self) -> core::simd::u8x32 {
+            fn pack(&self) -> [u8; 32] {
                 match self {
                     #(#pack_arms)*
                 }
             }
 
-            fn unpack(content: core::simd::u8x32) -> Self {
-                let tag = content & Self::TAGMASK;
-                let field: &core::simd::u16x16 = unsafe { core::mem::transmute( &tag ) };
+            fn unpack(content: [u8; 32]) -> Self {
+                let mut tag = content;
+                for i in 0..32 {
+                    tag[i] &= Self::TAGMASK[i];
+                }
+                let field: &[u16; 16] = unsafe { core::mem::transmute( &tag ) };
                 let tag = field[15] >> (Self::TAGBITS - 240 - 1);
                 match tag as u64 {
                     #(#unpack_arms)*

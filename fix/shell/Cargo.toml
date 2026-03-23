@@ -18,3 +18,4 @@ fixhandle = { path = "../handle", default-features = false}
 
 [build-dependencies]
 anyhow = "1.0.100"
+cc = "1.2.57"

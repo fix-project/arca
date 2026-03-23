@@ -7,8 +7,6 @@ use crate::{
     runtime::{DeterministicEquivRuntime, Executor},
 };
 
-use core::simd::u8x32;
-
 use arca::Runtime;
 use fixhandle::rawhandle::{BitPack, FixHandle};
 use kernel::prelude::vec;
@@ -24,7 +22,7 @@ pub enum Error {
 
 fn pack_handle(handle: &FixHandle) -> ArcaBlob {
     let raw = handle.pack();
-    Runtime::create_blob(raw.as_array())
+    Runtime::create_blob(&raw)
 }
 
 fn unpack_handle(blob: &ArcaBlob) -> FixHandle {
@@ -32,7 +30,7 @@ fn unpack_handle(blob: &ArcaBlob) -> FixHandle {
     if Runtime::read_blob(blob, 0, &mut buf) != 32 {
         panic!("Failed to parse Arca Blob to Fix Handle")
     }
-    FixHandle::unpack(u8x32::from_array(buf))
+    FixHandle::unpack(buf)
 }
 
 pub struct FixShellBottom<'a, 'b> {
@@ -82,10 +80,13 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
     fn run(&mut self, mut f: Function) -> FixHandle {
         loop {
             let result = f.force();
+            log::info!("got: {result:?}");
             if let Value::Blob(b) = result {
                 return unpack_handle(&b);
             } else {
-                let Value::Function(g) = result else { panic!() };
+                let Value::Function(g) = result else {
+                    panic!("expected Fix program to return a handle or an effect")
+                };
                 let data = g.into_inner().read();
                 let Value::Tuple(mut data) = data else {
                     unreachable!()
@@ -96,7 +97,7 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
                 let args: Tuple = data.take(2).try_into().unwrap();
                 let mut args: Vec<Value> = args.into_iter().collect();
                 let Some(Value::Function(k)) = args.pop() else {
-                    panic!()
+                    panic!("unexpected non-effect return");
                 };
 
                 f = match &*effect {

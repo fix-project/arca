@@ -1,5 +1,4 @@
 use std::env;
-use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -11,10 +10,10 @@ use cmake::Config;
 
 use include_directory::{Dir, include_directory};
 
-static FIX_SHELL: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/fix-shell");
+static FIX_SHELL_INC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/shell/inc");
+static FIX_SHELL_ETC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/shell/etc");
 
 static INTERMEDIATEOUT: OnceLock<PathBuf> = OnceLock::new();
-static ARCAPREFIX: OnceLock<PathBuf> = OnceLock::new();
 static WASM2C: OnceLock<PathBuf> = OnceLock::new();
 static WAT2WASM: OnceLock<PathBuf> = OnceLock::new();
 
@@ -72,7 +71,11 @@ fn wasm2c(wasm: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
 }
 
 fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
-    FIX_SHELL.extract(INTERMEDIATEOUT.get().unwrap())?;
+    FIX_SHELL_INC.extract(INTERMEDIATEOUT.get().unwrap())?;
+    FIX_SHELL_ETC.extract(INTERMEDIATEOUT.get().unwrap())?;
+
+    let mut wasm_rt = INTERMEDIATEOUT.get().unwrap().clone();
+    wasm_rt.push("wasm-rt.c");
 
     let mut c_file = INTERMEDIATEOUT.get().unwrap().clone();
     c_file.push("module.c");
@@ -80,19 +83,12 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     let mut h_file = INTERMEDIATEOUT.get().unwrap().clone();
     h_file.push("module.h");
 
-    std::fs::write(c_file, c)?;
+    std::fs::write(c_file.clone(), c)?;
     std::fs::write(h_file, h)?;
 
-    let mut src = vec![];
-    let exts = [OsStr::new("c"), OsStr::new("S")];
-    for f in std::fs::read_dir(INTERMEDIATEOUT.get().unwrap())? {
-        let f = f?;
-        if let Some(ext) = f.path().extension()
-            && exts.contains(&ext)
-        {
-            src.push(f.path());
-        }
-    }
+    let mut src = vec![
+        // c_file, wasm_rt
+    ];
 
     let shell_top = env::var_os("CARGO_STATICLIB_FILE_FIXSHELL_fixshell").unwrap();
     src.push(PathBuf::from(shell_top));
@@ -105,10 +101,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     let mut memmap = INTERMEDIATEOUT.get().unwrap().clone();
     memmap.push("memmap.ld");
 
-    let prefix = ARCAPREFIX.get().unwrap();
-    let gcc = prefix.join("bin/musl-gcc");
-
-    let cc = Command::new(gcc)
+    let cc = Command::new("gcc")
         .args([
             "-o",
             o_file.to_str().unwrap(),
@@ -124,9 +117,6 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             // "-mcmodel=large",
             "--verbose",
             "-Wl,-no-pie",
-            //"-mavx",
-            //"-mavx2",
-            //"-march=native"
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;
@@ -142,25 +132,11 @@ fn main() -> Result<()> {
 
     let mut intermediateout: PathBuf = out_dir.clone().into();
     intermediateout.push("inter-out");
-    if !intermediateout.exists() {
-        create_dir_all(&intermediateout)?
+    if intermediateout.exists() {
+        std::fs::remove_dir_all(&intermediateout)?;
     }
+    create_dir_all(&intermediateout)?;
     INTERMEDIATEOUT.set(intermediateout).unwrap();
-
-    let mut prefix: PathBuf = out_dir.clone().into();
-    prefix.push("arca-musl-large");
-
-    if !prefix.exists() {
-        create_dir_all(&prefix)?
-    }
-
-    let prefix = autotools::Config::new("../modules/arca-musl")
-        // .cflag("-mcmodel=large")
-        // .cxxflag("-mcmodel=large")
-        .out_dir(prefix)
-        .build();
-
-    ARCAPREFIX.set(prefix).unwrap();
 
     let mut dst: PathBuf = out_dir.clone().into();
     dst.push("wabt");
@@ -172,8 +148,6 @@ fn main() -> Result<()> {
         .define("BUILD_TESTS", "OFF")
         .define("BUILD_LIBWASM", "OFF")
         .define("BUILD_TOOLS", "ON")
-        .cflag("-fPIE")
-        .cxxflag("-fPIE")
         .out_dir(dst)
         .build();
 

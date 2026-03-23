@@ -102,6 +102,8 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
         }
     }
 
+    log::info!("start: {start_address:#x}");
+
     let mut registers = R::create_tuple(20);
     registers.set(16, Word::from(start_address));
 

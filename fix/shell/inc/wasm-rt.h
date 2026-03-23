@@ -130,7 +130,9 @@ static const wasm_rt_funcref_t wasm_rt_funcref_null_value;
 
 /** The type of an external reference (opaque to WebAssembly). */
 typedef unsigned char __attribute__((vector_size(32))) u8x32;
-typedef u8x32 wasm_rt_externref_t;
+typedef struct {
+  uint8_t bytes[32];
+} wasm_rt_externref_t;
 
 /** Default (null) value of an externref */
 static const wasm_rt_externref_t wasm_rt_externref_null_value = {0};

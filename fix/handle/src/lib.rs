@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(portable_simd)]
+#![allow(unused_features)]
 #![feature(custom_test_frameworks)]
 #![allow(dead_code)]
 #![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]

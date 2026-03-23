@@ -76,7 +76,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
 
         _ => {
             log::error!("invalid syscall {num}");
-            panic!("invalid syscall @ {:#x}", regs[Register::RIP]);
+            panic!("invalid syscall @ {:#x} ({args:#x?})", regs[Register::RIP]);
             // Err(SyscallError::BadSyscall)
         }
     };

@@ -1,7 +1,6 @@
 use arca::Runtime as _;
 use core::cmp;
 use core::panic;
-use core::simd::u8x32;
 use fixhandle::rawhandle::BitPack;
 use fixhandle::rawhandle::FixHandle;
 use kernel::prelude::*;
@@ -126,7 +125,7 @@ impl TreeData {
         let mut buffer = vec![0u8; data.len() * 32];
         for (idx, i) in data.iter().enumerate() {
             let raw = i.pack();
-            buffer.as_mut_slice()[idx * 32..(idx + 1) * 32].copy_from_slice(raw.as_array());
+            buffer.as_mut_slice()[idx * 32..(idx + 1) * 32].copy_from_slice(&raw);
         }
 
         let inner = RawData::create(&buffer);
@@ -140,7 +139,7 @@ impl TreeData {
     pub fn get(&self, idx: usize) -> FixHandle {
         let mut buffer = [0u8; 32];
         self.inner.get(idx * 32, &mut buffer);
-        FixHandle::unpack(u8x32::from_array(buffer))
+        FixHandle::unpack(buffer)
     }
 }
 
