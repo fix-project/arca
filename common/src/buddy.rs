@@ -1155,8 +1155,6 @@ mod tests {
     extern crate test;
 
     use super::*;
-    use test::Bencher;
-
     #[test]
     // Setting/clearing individual bits in u64 words to check that the bit manipulation works
     fn test_bitref() {
@@ -1218,8 +1216,8 @@ mod tests {
     fn test_too_small_allocation() {
         let allocator = BuddyAllocatorImpl::new(1 << 20);
         let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-        let used_before = allocator.used_size();
-        let ptr = allocator.allocate_raw(size);
+        let _used_before = allocator.used_size();
+        let _ptr = allocator.allocate_raw(size);
     }
 
     #[test]
@@ -1496,23 +1494,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "assertion failed")]
-    #[ignore]
-    // After looking more closely after writing this, I realized that panicking here is not an expected behavior.
-    // Also, free raw could merge into a larger block, complicating this test.
-    // Keeping this test for now, in case we decide to support this behavior later.
-    fn test_double_free_panics() {
-        let allocator = BuddyAllocatorImpl::new(1 << 24);
-        let size = BuddyAllocatorImpl::MIN_ALLOCATION;
-
-        let ptr = allocator.allocate_raw(size);
-        assert!(!ptr.is_null());
-
-        allocator.free_raw(ptr, size);
-        allocator.free_raw(ptr, size); // Should panic
-    }
-
-    #[test]
     // Test allocation size rounding. Test after exhausting, allocator should still be usable -- no lock leak
     fn allocation_rounds_up_to_pow2_and_min() {
         let a = BuddyAllocatorImpl::new(1 << 24);
@@ -1553,7 +1534,7 @@ mod tests {
         ranges.sort_by_key(|(start, _, _)| *start);
 
         for w in ranges.windows(2) {
-            let (s1, e1, l1) = w[0];
+            let (_s1, e1, l1) = w[0];
             let (s2, _e2, l2) = w[1];
             assert!(e1 <= s2, "overlap between level {} and level {}", l1, l2);
         }
@@ -2067,7 +2048,7 @@ mod tests {
         }
 
         let obstacle = leaves[7]; // arbitrary leaf to hold
-        for (i, q) in leaves.iter().enumerate() {
+        for (_i, q) in leaves.iter().enumerate() {
             if *q == obstacle {
                 continue;
             }
