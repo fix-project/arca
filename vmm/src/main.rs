@@ -1,6 +1,3 @@
-#![feature(allocator_api)]
-#![feature(thread_sleep_until)]
-#![feature(future_join)]
 
 use std::path::PathBuf;
 
