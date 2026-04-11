@@ -4,6 +4,7 @@
 #![feature(layout_for_ptr)]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
+#![feature(test)]
 #![feature(unboxed_closures)]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
