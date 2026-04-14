@@ -2,17 +2,16 @@
 #![allow(non_camel_case_types)]
 
 use crate::{
-    data::{BlobData, RawData, TreeData},
+    // data::{BlobData, RawData, TreeData},
     fixruntime::FixRuntime,
     runtime::{DeterministicEquivRuntime, Executor},
 };
 
 use arca::Runtime;
 use fixhandle::rawhandle::{BitPack, FixHandle};
-use kernel::prelude::vec;
 use kernel::{
     prelude::vec::Vec,
-    types::{Blob as ArcaBlob, Function, Tuple, Value},
+    types::{Blob, Function, Tuple, Value},
 };
 
 #[derive(Debug)]
@@ -20,12 +19,12 @@ pub enum Error {
     FixRuntimeError,
 }
 
-fn pack_handle(handle: &FixHandle) -> ArcaBlob {
+fn pack_handle(handle: &FixHandle) -> Blob {
     let raw = handle.pack();
     Runtime::create_blob(&raw)
 }
 
-fn unpack_handle(blob: &ArcaBlob) -> FixHandle {
+fn unpack_handle(blob: &Blob) -> FixHandle {
     let mut buf = [0u8; 32];
     if Runtime::read_blob(blob, 0, &mut buf) != 32 {
         panic!("Failed to parse Arca Blob to Fix Handle")
@@ -38,9 +37,9 @@ pub struct FixShellBottom<'a, 'b> {
 }
 
 impl<'a, 'b> DeterministicEquivRuntime for FixShellBottom<'a, 'b> {
-    type BlobData = BlobData;
-    type TreeData = TreeData;
-    type Handle = ArcaBlob;
+    type BlobData = Blob;
+    type TreeData = Tuple;
+    type Handle = Blob;
     type Error = Error;
 
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle {
@@ -80,7 +79,6 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
     fn run(&mut self, mut f: Function) -> FixHandle {
         loop {
             let result = f.force();
-            log::info!("got: {result:?}");
             if let Value::Blob(b) = result {
                 return unpack_handle(&b);
             } else {
@@ -91,9 +89,9 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
                 let Value::Tuple(mut data) = data else {
                     unreachable!()
                 };
-                let t: ArcaBlob = data.take(0).try_into().unwrap();
+                let t: Blob = data.take(0).try_into().unwrap();
                 assert_eq!(&*t, b"Symbolic");
-                let effect: ArcaBlob = data.take(1).try_into().unwrap();
+                let effect: Blob = data.take(1).try_into().unwrap();
                 let args: Tuple = data.take(2).try_into().unwrap();
                 let mut args: Vec<Value> = args.into_iter().collect();
                 let Some(Value::Function(k)) = args.pop() else {
@@ -108,36 +106,30 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
                         k.apply(self.create_blob_i64(w.read()))
                     }
                     b"create_blob" => {
-                        let Some(Value::Table(t)) = args.pop() else {
+                        let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let Some(Value::Word(w)) = args.pop() else {
-                            panic!()
-                        };
-                        k.apply(self.create_blob(BlobData::new(t, w.read() as usize)))
+                        k.apply(self.create_blob(b))
                     }
                     b"create_tree" => {
-                        let Some(Value::Table(t)) = args.pop() else {
+                        let Some(Value::Tuple(t)) = args.pop() else {
                             panic!()
                         };
-                        let Some(Value::Word(w)) = args.pop() else {
-                            panic!()
-                        };
-                        k.apply(self.create_tree(TreeData::new(t, w.read() as usize)))
+                        k.apply(self.create_tree(t))
                     }
                     b"get_blob" => {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let t: RawData = self.get_blob(&b).expect("").into();
-                        k.apply(Value::Table(t.into()))
+                        let b = self.get_blob(&b).expect("");
+                        k.apply(b)
                     }
                     b"get_tree" => {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let t: RawData = self.get_tree(&b).expect("").into();
-                        k.apply(Value::Table(t.into()))
+                        let t = self.get_tree(&b).expect("");
+                        k.apply(t)
                     }
                     b"is_blob" => {
                         let Some(Value::Blob(b)) = args.pop() else {
@@ -165,12 +157,13 @@ impl<'a, 'b> Executor for FixShellBottom<'a, 'b> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let tree = self.parent.get_tree(combination).unwrap();
         let function_handle = tree.get(1);
+        let function_handle = Blob::try_from(function_handle).unwrap();
+        let mut bytes = [0; 32];
+        function_handle.read(0, &mut bytes);
+        let function_handle = FixHandle::unpack(bytes);
         let elf = self.parent.get_blob(&function_handle).unwrap();
 
-        let mut buffer = vec![0u8; elf.len()];
-        elf.get(&mut buffer);
-
-        let f = common::elfloader::load_elf(&buffer).expect("Failed to load elf");
+        let f = common::elfloader::load_elf(&elf).expect("Failed to load elf");
         let f = Runtime::apply_function(f, Value::from(pack_handle(combination)));
 
         self.run(f)

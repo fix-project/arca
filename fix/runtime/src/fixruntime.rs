@@ -3,13 +3,14 @@
 
 use crate::{
     bottom::FixShellBottom,
-    data::{BlobData, TreeData},
+    // data::{BlobData, TreeData},
     runtime::{DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
 use derive_more::TryUnwrapError;
 use fixhandle::rawhandle::{FixHandle, Object};
+use kernel::types::{Blob, Tuple};
 
 #[derive(Debug)]
 pub enum Error {
@@ -35,21 +36,21 @@ impl<'a> FixRuntime<'a> {
 }
 
 impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
-    type BlobData = BlobData;
-    type TreeData = TreeData;
+    type BlobData = Blob;
+    type TreeData = Tuple;
     type Handle = FixHandle;
     type Error = Error;
 
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle {
         let buf = bytes_of(&data);
-        Object::from(self.store.create_blob(BlobData::create(buf))).into()
+        Object::from(self.store.create_blob(buf.into())).into()
     }
 
-    fn create_blob(&mut self, data: Self::BlobData) -> Self::Handle {
+    fn create_blob(&mut self, data: Blob) -> Self::Handle {
         Object::from(self.store.create_blob(data)).into()
     }
 
-    fn create_tree(&mut self, data: Self::TreeData) -> Self::Handle {
+    fn create_tree(&mut self, data: Tuple) -> Self::Handle {
         Object::from(self.store.create_tree(data)).into()
     }
 

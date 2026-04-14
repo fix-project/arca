@@ -1,4 +1,4 @@
-use crate::data::{BlobData, RawData, TreeData};
+// use crate::data::{BlobData, RawData, TreeData};
 use fixhandle::rawhandle::{BlobName, Handle, PhysicalHandle, TreeName};
 use kernel::prelude::*;
 
@@ -42,15 +42,15 @@ impl<Data: Clone> RawObjectStore<Data> {
 }
 
 pub trait Storage {
-    fn create_blob(&mut self, data: BlobData) -> BlobName;
-    fn create_tree(&mut self, data: TreeData) -> TreeName;
-    fn get_blob(&self, handle: &BlobName) -> BlobData;
-    fn get_tree(&self, handle: &TreeName) -> TreeData;
+    fn create_blob(&mut self, data: Blob) -> BlobName;
+    fn create_tree(&mut self, data: Tuple) -> TreeName;
+    fn get_blob(&self, handle: &BlobName) -> Blob;
+    fn get_tree(&self, handle: &TreeName) -> Tuple;
 }
 
 #[derive(Default, Debug)]
 pub struct ObjectStore {
-    store: RawObjectStore<RawData>,
+    store: RawObjectStore<Value>,
 }
 
 impl ObjectStore {
@@ -60,36 +60,40 @@ impl ObjectStore {
 }
 
 impl Storage for ObjectStore {
-    fn create_blob(&mut self, data: BlobData) -> BlobName {
+    fn create_blob(&mut self, data: Blob) -> BlobName {
         let len = data.len();
         let local_id = self.store.create(data.into());
         BlobName::Blob(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)))
     }
 
-    fn create_tree(&mut self, data: TreeData) -> TreeName {
+    fn create_tree(&mut self, data: Tuple) -> TreeName {
         let len = data.len();
         let local_id = self.store.create(data.into());
         TreeName::NotTag(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)))
     }
 
-    fn get_blob(&self, handle: &BlobName) -> BlobData {
+    fn get_blob(&self, handle: &BlobName) -> Blob {
         match handle {
             BlobName::Blob(h) => match h {
                 Handle::VirtualHandle(_) => todo!(),
-                Handle::PhysicalHandle(physical_handle) => {
-                    self.store.get(physical_handle.local_id()).into()
-                }
+                Handle::PhysicalHandle(physical_handle) => self
+                    .store
+                    .get(physical_handle.local_id())
+                    .try_into()
+                    .unwrap(),
             },
         }
     }
 
-    fn get_tree(&self, handle: &TreeName) -> TreeData {
+    fn get_tree(&self, handle: &TreeName) -> Tuple {
         match handle {
             TreeName::NotTag(t) | TreeName::Tag(t) => match t {
                 Handle::VirtualHandle(_) => todo!(),
-                Handle::PhysicalHandle(physical_handle) => {
-                    self.store.get(physical_handle.local_id()).into()
-                }
+                Handle::PhysicalHandle(physical_handle) => self
+                    .store
+                    .get(physical_handle.local_id())
+                    .try_into()
+                    .unwrap(),
             },
         }
     }

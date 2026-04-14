@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 pub mod bottom;
-pub mod data;
+// pub mod data;
 pub mod fixruntime;
 pub mod runtime;
 pub mod storage;

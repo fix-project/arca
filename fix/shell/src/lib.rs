@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(unused)]
 #![feature(slice_from_ptr_range)]
+#![feature(atomic_ptr_null)]
 
 use core::{
     arch::{asm, global_asm},
@@ -10,6 +11,13 @@ use core::{
 
 use user::{error, os, prelude::*};
 
+use crate::{
+    fixpoint::w2c_fixpoint,
+    rt::{wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_size},
+};
+
+mod fixpoint;
+mod rt;
 mod runtime;
 pub mod shell;
 
@@ -21,22 +29,29 @@ global_asm!(
 .globl _start
 _start:
   lea rsp, __stack_top[rip]
-  mov rbx, 0
   call _rsstart
 .halt:
   int3
   jmp .halt
+.globl bail
+bail:
+  mov rdi, 0
+  mov rax, 3
+  syscall
+  int3
 .section .text
 "#
 );
 
-#[repr(C)]
-pub struct ExternRef(pub [u8; 32]);
-
 unsafe extern "C" {
     static mut _sbss: c_void;
     static mut _ebss: c_void;
-    fn w2c_module_0x5Ffixpoint_apply(module: *const c_void, combination: ExternRef);
+    fn wasm2c_module_instantiate(module: *mut c_void, combination: *const w2c_fixpoint);
+    fn wasm2c_module_free(module: *mut c_void);
+    fn w2c_module_0x5Ffixpoint_apply(
+        module: *const c_void,
+        combination: wasm_rt_externref_t,
+    ) -> wasm_rt_externref_t;
 }
 
 #[unsafe(no_mangle)]
@@ -46,6 +61,7 @@ pub unsafe extern "C" fn _rsstart() -> ! {
             start: &raw mut _sbss as *mut u8,
             end: &raw mut _ebss as *mut u8,
         });
+
         bss.fill(0);
     }
 
@@ -53,33 +69,23 @@ pub unsafe extern "C" fn _rsstart() -> ! {
 }
 
 pub fn main() -> ! {
-    let handle = os::argument();
-    error::log("within the fix shell");
-    // unsafe {
-    //     w2c_module_0x5Ffixpoint_apply(todo!(), todo!());
-    // }
-    os::exit(handle);
-}
-
-#[repr(C)]
-pub struct Fixpoint {}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fixpoint_attach_blob(
-    fixpoint: *mut Fixpoint,
-    memory_idx: u32,
-    handle: ExternRef,
-) {
-    unsafe {
-        let addr = (1usize << 32) * memory_idx as usize;
-        shell::fixpoint_attach_blob(addr as *mut c_void, handle.0);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fixpoint_create_blob_i64(
-    fixpoint: *mut Fixpoint,
-    value: u64,
-) -> ExternRef {
-    ExternRef(unsafe { shell::fixpoint_create_blob_i64(value) })
+    let combination = os::argument();
+    let combination =
+        Blob::try_from(combination).expect("fix programs must receive a handle as input");
+    let mut handle = [0; 32];
+    combination.read(0, &mut handle);
+    let result = unsafe {
+        wasm_rt_init();
+        let module_size = wasm_rt_module_size();
+        let result = alloca::with_alloca_zeroed(module_size, |module_buf| {
+            let module = &raw mut module_buf[0] as *mut c_void;
+            wasm2c_module_instantiate(module, core::ptr::null());
+            let wasm_rt_externref_t { bytes: result } =
+                w2c_module_0x5Ffixpoint_apply(module, wasm_rt_externref_t { bytes: handle });
+            result
+        });
+        wasm_rt_free();
+        result
+    };
+    os::exit(&result[..]);
 }

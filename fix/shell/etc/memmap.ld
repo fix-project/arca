@@ -28,6 +28,7 @@ SECTIONS {
     . = ALIGN(16);
     _sgot = .;
     *(.got*)
+    *(.got.plt)
     . = ALIGN(16);
     _egot = .;
   } > memory 

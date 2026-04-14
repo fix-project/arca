@@ -144,6 +144,34 @@ impl<'a> LoadedArca<'a> {
         unsafe { self.cpu.run(&mut self.register_file) }
     }
 
+    pub fn single_step(&mut self) -> ExitReason {
+        self.register_file[Register::RFLAGS] |= 0x100;
+        let result = self.run();
+        self.register_file[Register::RFLAGS] &= !0x100;
+        result
+    }
+
+    pub fn single_step_with(&mut self, mut f: impl FnMut(&mut Self)) -> ExitReason {
+        loop {
+            let step = self.single_step();
+            if step == ExitReason::Debug {
+                f(self);
+            } else {
+                return step;
+            }
+        }
+    }
+
+    pub fn trace(&mut self) -> ExitReason {
+        self.single_step_with(|this| {
+            log::info!(
+                "@{:#x} -> {:#x?}",
+                this.register_file[Register::RIP],
+                this.register_file
+            );
+        })
+    }
+
     pub fn registers(&self) -> &RegisterFile {
         &self.register_file
     }

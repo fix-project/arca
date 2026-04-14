@@ -486,7 +486,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             p += Page2MB::SIZE;
             continue;
         }
-        if p.is_multiple_of(Page4KB::SIZE) && len >= Page4KB::SIZE {
+        if p.is_multiple_of(Page4KB::SIZE) {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page4KB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -498,7 +498,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             p += Page4KB::SIZE;
             continue;
         }
-        panic!("unaligned mmap or bad size");
+        panic!("unaligned mmap or bad size: {p:#x}+{len:#x}");
     }
     Ok(p - addr)
 }

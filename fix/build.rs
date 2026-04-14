@@ -86,9 +86,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     std::fs::write(c_file.clone(), c)?;
     std::fs::write(h_file, h)?;
 
-    let mut src = vec![
-        // c_file, wasm_rt
-    ];
+    let mut src = vec![c_file, wasm_rt];
 
     let shell_top = env::var_os("CARGO_STATICLIB_FILE_FIXSHELL_fixshell").unwrap();
     src.push(PathBuf::from(shell_top));
@@ -114,9 +112,12 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-ffreestanding",
             "-nostdlib",
             "-nostartfiles",
-            // "-mcmodel=large",
             "--verbose",
-            "-Wl,-no-pie",
+            "-mcmodel=large",
+            // "-fno-pic",
+            // "-fno-pie",
+            // "-Wl,-no-pie",
+            // "-static",
         ])
         .args(src)
         .status().map_err(|e| if let ErrorKind::NotFound = e.kind() {anyhow!("Compilation failed. Please make sure you have installed gcc-multilib if you are on Ubuntu.")} else {e.into()})?;

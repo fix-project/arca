@@ -15,7 +15,9 @@ arca = { path = "../../arca" }
 user = { path = "../../user" }
 arcane = { path = "../../arcane/"}
 fixhandle = { path = "../handle", default-features = false}
+alloca = "0.4.0"
 
 [build-dependencies]
 anyhow = "1.0.100"
+bindgen = "0.72.1"
 cc = "1.2.57"
