@@ -22,7 +22,7 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_blob(
         let len = shell::fixpoint_attach_blob(addr as *mut c_void, handle.bytes);
         // TODO: this math is wrong
         (*memory).pages = (len as u64 / PAGE_SIZE as u64) + 1;
-        (*memory).max_pages = (1u64 << 32) as u64 / PAGE_SIZE as u64;
+        (*memory).max_pages = (1u64 << 32) / PAGE_SIZE as u64;
         (*memory).size = len as u64;
     }
 }

@@ -47,7 +47,7 @@ async fn main(_: &[usize]) {
     scratch.set(2, Blob::new(addend1.pack()));
     scratch.set(3, Blob::new(addend2.pack()));
     log::info!("creating combination");
-    let combination = runtime.create_tree(scratch.into());
+    let combination = runtime.create_tree(scratch);
     log::info!("about to execute combination");
     let result = runtime.execute(&combination);
     log::info!("result is: {result:?}");

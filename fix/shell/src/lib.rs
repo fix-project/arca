@@ -54,6 +54,12 @@ unsafe extern "C" {
     ) -> wasm_rt_externref_t;
 }
 
+/// The Rust entrypoint for Fix-on-Arca programs.  This function performs the minimal runtime setup
+/// to ensure other Rust code can run correctly.
+///
+/// # Safety
+///
+/// This function must be called exactly once, before any other Rust code has run.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _rsstart() -> ! {
     unsafe {

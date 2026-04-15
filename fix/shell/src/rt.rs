@@ -86,7 +86,7 @@ pub extern "C" fn wasm_rt_grow_memory(memory: *mut wasm_rt_memory_t, pages: u64)
     unsafe {
         arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
         memory.pages += pages;
-        memory.size += size as u64;
+        memory.size += size;
     }
     current as u32
 }
