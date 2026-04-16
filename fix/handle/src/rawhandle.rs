@@ -223,8 +223,6 @@ pub enum Value {
 
 #[cfg(feature = "testing-mode")]
 mod tests {
-    use super::*;
-
     #[test_case]
     fn test_tag_gits() {
         assert_eq!(Handle::TAGBITS, 241);
