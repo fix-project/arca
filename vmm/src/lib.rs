@@ -1,3 +1,4 @@
+#![allow(stable_features, unused_features)]
 #![feature(allocator_api)]
 #![feature(ptr_metadata)]
 #![feature(str_from_raw_parts)]

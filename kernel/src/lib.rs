@@ -1,5 +1,6 @@
 #![no_main]
 #![no_std]
+#![allow(stable_features)]
 #![feature(allocator_api)]
 #![feature(bigint_helper_methods)]
 #![feature(box_as_ptr)]
