@@ -62,3 +62,33 @@ macro_rules! impl_value_from {
 
 foreach_type_item! {impl_tryfrom_value}
 foreach_type_item! {impl_value_from}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies Word -> Value -> Word conversion round-trips correctly.
+    #[test]
+    fn test_word_roundtrip() {
+        let word = Word::new(99);
+        let value: Value = word.clone().into();
+        let roundtrip = Word::try_from(value).unwrap();
+        assert_eq!(roundtrip, word);
+    }
+
+    /// Verifies Blob -> Value -> Blob conversion round-trips correctly.
+    #[test]
+    fn test_blob_roundtrip() {
+        let blob = Blob::new(b"data".to_vec());
+        let value: Value = blob.clone().into();
+        let roundtrip = Blob::try_from(value).unwrap();
+        assert_eq!(roundtrip, blob);
+    }
+
+    /// Ensures TryFrom fails when converting to the wrong variant type.
+    #[test]
+    fn test_mismatched_conversion_fails() {
+        let value: Value = Word::new(1).into();
+        assert!(Blob::try_from(value).is_err());
+    }
+}

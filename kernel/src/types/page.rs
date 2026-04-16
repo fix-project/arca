@@ -120,3 +120,38 @@ impl DerefMut for Page {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies page size selection at tier boundaries (4KB, 2MB, 1GB).
+    #[test]
+    fn test_size_tiers() {
+        let small = Page::new(1);
+        assert_eq!(small.size(), 1 << 12);
+
+        let mid = Page::new((1 << 12) + 1);
+        assert_eq!(mid.size(), 1 << 21);
+
+        let large = Page::new((1 << 21) + 1);
+        assert_eq!(large.size(), 1 << 30);
+    }
+
+    /// Verifies DerefMut write and Deref read on page bytes.
+    #[test]
+    fn test_write_and_read_back() {
+        let mut page = Page::new(1);
+        page[0] = 7;
+        assert_eq!(page[0], 7);
+    }
+
+    /// Ensures shared() preserves written content.
+    #[test]
+    fn test_shared_preserves_content() {
+        let mut page = Page::new(1);
+        page[0] = 42;
+        let shared = page.shared();
+        assert_eq!(shared[0], 42);
+    }
+}

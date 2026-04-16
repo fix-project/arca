@@ -1,11 +1,18 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(allocator_api)]
+#![feature(box_as_ptr)]
 #![feature(fn_traits)]
 #![feature(layout_for_ptr)]
+#![feature(maybe_uninit_as_bytes)]
 #![feature(negative_impls)]
+#![feature(new_range_api)]
 #![feature(ptr_metadata)]
+#![feature(slice_from_ptr_range)]
+#![feature(sync_unsafe_cell)]
+#![feature(try_trait_v2)]
 #![cfg_attr(test, feature(test))]
 #![feature(unboxed_closures)]
+#![cfg_attr(feature = "std", feature(thread_id_value))]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
 pub mod buddy;

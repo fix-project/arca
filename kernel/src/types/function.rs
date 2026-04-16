@@ -166,3 +166,51 @@ impl Function {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies symbolic function parsing and read round-trip.
+    #[test]
+    fn test_symbolic_parse_and_read() {
+        let args = Tuple::from((1u64, "two"));
+        let value = Value::Tuple(Tuple::from((
+            Blob::from("Symbolic"),
+            Value::Word(Word::new(5)),
+            Value::Tuple(args),
+        )));
+        let func = Function::new(value.clone()).expect("symbolic parse failed");
+        assert!(!func.is_arcane());
+        assert_eq!(func.read(), value);
+    }
+
+    /// Ensures unrecognized function tags are rejected.
+    #[test]
+    fn test_invalid_tag_rejected() {
+        let value = Value::Tuple(Tuple::from((Blob::from("Other"), Value::Null(Null::new()))));
+        assert!(Function::new(value).is_none());
+    }
+
+    /// Verifies arcane function parsing accepts a valid register/memory layout.
+    #[test]
+    fn test_arcane_parse_valid_layout() {
+        let mut registers = Tuple::new(18);
+        for i in 0..18 {
+            registers.set(i, Value::Null(Null::new()));
+        }
+        let mut data = Tuple::new(4);
+        data.set(0, Value::Tuple(registers));
+        data.set(1, Value::Table(Table::new(1)));
+        data.set(2, Value::Tuple(Tuple::new(0)));
+        data.set(3, Value::Tuple(Tuple::new(0)));
+
+        let value = Value::Tuple(Tuple::from((
+            Blob::from("Arcane"),
+            Value::Tuple(data),
+            Value::Tuple(Tuple::new(0)),
+        )));
+        let func = Function::new(value).expect("arcane parse failed");
+        assert!(func.is_arcane());
+    }
+}

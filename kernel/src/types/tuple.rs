@@ -42,3 +42,28 @@ impl FromIterator<Value> for Tuple {
         Tuple::new(v)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies new_with_len creates a tuple filled with Null values.
+    #[test]
+    fn test_new_with_len_defaults_to_null() {
+        let tuple = Tuple::new_with_len(2);
+        assert_eq!(tuple.len(), 2);
+        assert!(matches!(tuple[0], Value::Null(_)));
+        assert!(matches!(tuple[1], Value::Null(_)));
+    }
+
+    /// Verifies FromIterator collects values into a correctly sized tuple.
+    #[test]
+    fn test_from_iter() {
+        let values: alloc::vec::Vec<Value> =
+            alloc::vec![Value::Word(1u64.into()), Value::Blob("x".into()),];
+        let tuple: Tuple = values.clone().into_iter().collect();
+        assert_eq!(tuple.len(), 2);
+        assert_eq!(tuple[0], values[0]);
+        assert_eq!(tuple[1], values[1]);
+    }
+}

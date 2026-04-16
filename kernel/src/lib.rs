@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 #![feature(allocator_api)]
-#![feature(widening_mul)]
+#![feature(bigint_helper_methods)]
 #![feature(box_as_ptr)]
 #![feature(box_into_inner)]
 #![feature(maybe_uninit_array_assume_init)]
