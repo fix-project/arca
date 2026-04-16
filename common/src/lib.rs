@@ -1,5 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(stable_features)]
+#![allow(stable_features, unused_features)]
 #![feature(allocator_api)]
 #![feature(box_as_ptr)]
 #![feature(fn_traits)]
