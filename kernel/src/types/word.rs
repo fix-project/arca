@@ -36,3 +36,31 @@ impl AsMut<u64> for Word {
         &mut self.value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies Word::read returns the value passed to new.
+    #[test]
+    fn test_read() {
+        let word = Word::new(123);
+        assert_eq!(word.read(), 123);
+    }
+
+    /// Verifies From<u64> and Into<u64> round-trip correctly.
+    #[test]
+    fn test_from_u64_roundtrip() {
+        let word = Word::from(0xdeadbeef_u64);
+        assert_eq!(u64::from(word), 0xdeadbeef);
+    }
+
+    /// Verifies AsRef and AsMut provide access to the inner value.
+    #[test]
+    fn test_as_ref_as_mut() {
+        let mut word = Word::new(42);
+        assert_eq!(*word.as_ref(), 42);
+        *word.as_mut() = 99;
+        assert_eq!(word.read(), 99);
+    }
+}

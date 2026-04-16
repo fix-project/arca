@@ -49,5 +49,10 @@ cargo test -p kernel --target=x86_64-unknown-none
 
 Arca-powered kernels (such as Fix) can be run using:
 ```sh
+cargo run -p kernel --bin hello --target=x86_64-unknown-none
+```
+for small demo kernels (located in `kernel/src/bin`), or using:
+```sh
 cargo run -p fix --target=x86_64-unknown-none
 ```
+for standalone kernels.

@@ -1,11 +1,9 @@
+#![allow(stable_features, unused_features)]
 #![feature(allocator_api)]
 #![feature(ptr_metadata)]
-#![feature(box_into_inner)]
 #![feature(str_from_raw_parts)]
-#![feature(negative_impls)]
 #![feature(exitcode_exit_method)]
 #![feature(cstr_display)]
-#![feature(test)]
 
 pub mod runtime;
 pub mod vhost;
