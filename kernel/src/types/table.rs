@@ -29,7 +29,7 @@ impl Table {
         } else if size <= Table512GB::SIZE {
             Table::Table512GB(Default::default())
         } else {
-            panic!();
+            panic!("attempted to create table with size {size}");
         }
     }
 }

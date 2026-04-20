@@ -6,7 +6,8 @@ fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     println!("cargo::rustc-link-arg=-T{dir}/etc/memmap.ld");
 
-    let prefix = autotools::build("../modules/arca-musl")
+    let prefix = autotools::Config::new("../modules/arca-musl")
+        .build()
         .as_os_str()
         .to_string_lossy()
         .into_owned();

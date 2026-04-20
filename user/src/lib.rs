@@ -80,15 +80,15 @@ impl Drop for Ref {
 }
 
 impl Ref {
-    fn from_raw(idx: u32) -> Self {
+    pub fn from_raw(idx: u32) -> Self {
         Ref { idx: Some(idx) }
     }
 
-    fn into_raw(mut self) -> u32 {
+    pub fn into_raw(mut self) -> u32 {
         self.idx.take().unwrap()
     }
 
-    fn as_raw(&self) -> u32 {
+    pub fn as_raw(&self) -> u32 {
         self.idx.unwrap()
     }
 }
