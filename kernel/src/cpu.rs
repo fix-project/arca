@@ -152,7 +152,7 @@ pub struct ExitStatus {
     pub error: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ExitReason {
     DivisionByZero,
     Debug,

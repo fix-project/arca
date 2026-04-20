@@ -138,7 +138,8 @@ pub unsafe fn init() {
 
     lapic.set_spurious_interrupt_vector(0xff);
     lapic.set_apic_enabled(true);
-    lapic.set_divide_configuration(TimerDivider::One);
+    // TODO: why is this crashing?
+    // lapic.set_divide_configuration(TimerDivider::One);
     lapic.set_timer(
         TimerConfig::new()
             .with_mask(false)
