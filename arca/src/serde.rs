@@ -333,7 +333,7 @@ impl<'de, R: Runtime> Visitor<'de> for TableVisitor<R> {
     where
         A: serde::de::MapAccess<'de>,
     {
-        let (first_key, first_value): (alloc::string::String, usize) =
+        let (first_key, first_value): (&str, usize) =
             map.next_entry()?.expect("at least one element needed");
         assert_eq!(first_key, "len");
         let mut table = Table::new(first_value);

@@ -87,3 +87,40 @@ impl From<&str> for Blob {
         Blob::from(value.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies len() and into_inner() return correct content.
+    #[test]
+    fn test_len_and_into_inner() {
+        let blob = Blob::new(b"hello".to_vec());
+        assert_eq!(blob.len(), 5);
+        assert_eq!(&*blob.into_inner(), b"hello");
+    }
+
+    /// Verifies DerefMut allows in-place byte mutation.
+    #[test]
+    fn test_mutation() {
+        let mut blob = Blob::new(b"hello".to_vec());
+        blob[0] = b'j';
+        assert_eq!(&*blob.into_inner(), b"jello");
+    }
+
+    /// Ensures invalid UTF-8 bytes are preserved as raw data.
+    #[test]
+    fn test_invalid_utf8_preserved() {
+        let bytes = vec![0xffu8, 0xfeu8, 0xfdu8];
+        let blob = Blob::new(bytes.clone());
+        assert_eq!(&*blob.into_inner(), &bytes[..]);
+    }
+
+    /// Verifies From<&str> constructs a blob with matching content.
+    #[test]
+    fn test_from_str() {
+        let blob = Blob::from("test");
+        assert_eq!(blob.len(), 4);
+        assert_eq!(&*blob, b"test");
+    }
+}

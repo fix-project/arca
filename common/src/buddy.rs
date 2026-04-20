@@ -413,6 +413,13 @@ impl AllocatorInner {
                 size: 1 << size_log2,
             });
         }
+        // Check if index is within valid range for this level
+        if index >= self.size_of_level_bits(size_log2) {
+            return Err(AllocationError::InvalidReservation {
+                index,
+                size: 1 << size_log2,
+            });
+        }
         self.with_level(base, size_log2, |level: &mut AllocatorLevel<'_>| {
             if level.reserve(index) {
                 Ok(index)
@@ -553,12 +560,15 @@ impl BuddyAllocatorImpl {
 
         // prevent physical zero page from being allocated
         assert_eq!(temp.to_offset(temp.reserve_raw(0, 4096)), 0);
-        // reserve kernel pages
+        // reserve kernel pages (only if within range)
         let mut pages = alloc::vec![];
         for i in 0..8 {
-            let p = temp.reserve_raw(0x100000 * (i + 1), 0x100000);
-            assert!(!p.is_null());
-            pages.push(p);
+            let addr = 0x100000 * (i + 1);
+            if addr + 0x100000 <= size {
+                let p = temp.reserve_raw(addr, 0x100000);
+                assert!(!p.is_null());
+                pages.push(p);
+            }
         }
 
         let new_inner = AllocatorInner::new_in(slice, &temp);
@@ -681,6 +691,7 @@ impl BuddyAllocatorImpl {
             for (i, item) in ptrs.iter_mut().enumerate() {
                 let result = self.allocate_raw_unchecked(size);
                 if result.is_null() {
+                    self.inner.unlock();
                     return Some(i);
                 }
                 *item = result;
@@ -696,6 +707,7 @@ impl BuddyAllocatorImpl {
             for (i, item) in ptrs.iter_mut().enumerate() {
                 let result = self.allocate_raw_unchecked(size);
                 if result.is_null() {
+                    self.inner.unlock();
                     return i;
                 }
                 *item = result;
@@ -1139,163 +1151,4 @@ unsafe impl Allocator for BuddyAllocator {
 }
 
 #[cfg(test)]
-mod tests {
-    extern crate test;
-
-    use super::*;
-    use test::Bencher;
-
-    #[test]
-    fn test_bitref() {
-        let mut word = 10;
-
-        let mut r0 = BitRef::new(&mut word, 0);
-        r0.set();
-
-        let mut r1 = BitRef::new(&mut word, 1);
-        r1.clear();
-
-        let mut r2 = BitRef::new(&mut word, 2);
-        r2.write(false);
-
-        let mut r3 = BitRef::new(&mut word, 3);
-        r3.write(true);
-
-        assert_eq!(word, 9);
-    }
-
-    #[test]
-    fn test_bitslice() {
-        let mut words = [0; 2];
-        let mut slice = BitSlice::new(128, &mut words);
-        let mut r0 = slice.bit(0);
-        r0.set();
-
-        let mut r1 = slice.bit(1);
-        r1.set();
-
-        let mut r127 = slice.bit(127);
-        r127.set();
-
-        assert_eq!(words[0], 3);
-        assert_eq!(
-            words[127 / (core::mem::size_of::<u64>() * 8)],
-            1 << (127 % (core::mem::size_of::<u64>() * 8))
-        );
-    }
-
-    #[test]
-    fn test_buddy_allocator() {
-        let allocator = BuddyAllocatorImpl::new(0x10000000);
-
-        let test = Box::new_in(10, allocator.clone());
-        assert_eq!(*test, 10);
-
-        let mut v = Vec::new_in(allocator.clone());
-        for i in 0..10000 {
-            v.push(i);
-        }
-    }
-
-    #[bench]
-    fn bench_allocate_free(b: &mut Bencher) {
-        let allocator = BuddyAllocatorImpl::new(0x100000000);
-        b.iter(|| {
-            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
-                Box::new_uninit_slice_in(128, allocator.clone());
-            core::mem::drop(x);
-        });
-    }
-
-    #[bench]
-    fn bench_allocate_free_no_cache(b: &mut Bencher) {
-        let allocator = BuddyAllocatorImpl::new(0x100000000);
-        allocator.set_caching(false);
-        b.iter(|| {
-            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
-                Box::new_uninit_slice_in(128, allocator.clone());
-            core::mem::drop(x);
-        });
-    }
-
-    #[bench]
-    fn bench_contended_allocate_free(b: &mut Bencher) {
-        let allocator = BuddyAllocatorImpl::new(0x100000000);
-        let f = || {
-            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
-                Box::new_uninit_slice_in(128, allocator.clone());
-            core::mem::drop(x);
-        };
-        use core::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        std::thread::scope(|s| {
-            let flag = Arc::new(AtomicBool::new(true));
-            for _ in 0..16 {
-                let flag = flag.clone();
-                s.spawn(move || {
-                    while flag.load(Ordering::SeqCst) {
-                        f();
-                    }
-                });
-            }
-            b.iter(f);
-            flag.store(false, Ordering::SeqCst);
-        });
-    }
-
-    #[bench]
-    #[ignore]
-    fn bench_contended_allocate_free_no_cache(b: &mut Bencher) {
-        let allocator = BuddyAllocatorImpl::new(0x100000000);
-        allocator.set_caching(false);
-        let f = || {
-            let x: Box<[MaybeUninit<u8>], BuddyAllocatorImpl> =
-                Box::new_uninit_slice_in(128, allocator.clone());
-            core::mem::drop(x);
-        };
-        use core::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        std::thread::scope(|s| {
-            let flag = Arc::new(AtomicBool::new(true));
-            for _ in 0..16 {
-                let flag = flag.clone();
-                s.spawn(move || {
-                    while flag.load(Ordering::SeqCst) {
-                        f();
-                    }
-                });
-            }
-            b.iter(f);
-            flag.store(false, Ordering::SeqCst);
-        });
-    }
-
-    #[test]
-    fn stress_test() {
-        use std::hash::{BuildHasher, Hasher, RandomState};
-        let allocator = BuddyAllocatorImpl::new(0x10000000);
-        allocator.set_caching(false);
-        let mut v = vec![];
-        let random = |limit: usize| {
-            let x: u64 = RandomState::new().build_hasher().finish();
-            x as usize % limit
-        };
-        for _ in 0..100000 {
-            let used_before = allocator.used_size();
-            let remaining = allocator.total_size() - used_before;
-            let size = random(core::cmp::min(1 << 21, remaining / 2));
-            let alloc =
-                Box::<[u8], BuddyAllocatorImpl>::new_uninit_slice_in(size, allocator.clone());
-            let used_after = allocator.used_size();
-            assert!(used_after >= used_before + size);
-            if !v.is_empty() && size % 3 == 0 {
-                let number = random(v.len());
-                for _ in 0..number {
-                    let index = random(v.len());
-                    v.remove(index);
-                }
-            }
-            v.push(alloc);
-        }
-    }
-}
+mod tests;

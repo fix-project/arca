@@ -206,3 +206,36 @@ impl TryFrom<Table> for CowPage<Table512GB> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies table size selection at tier boundaries (2MB, 1GB).
+    #[test]
+    fn test_size_tiers() {
+        let small = Table::new(1);
+        assert_eq!(small.size(), 1 << 21);
+
+        let large = Table::new((1 << 21) + 1);
+        assert_eq!(large.size(), 1 << 30);
+    }
+
+    /// Ensures empty table slots return the correct default Null entry.
+    #[test]
+    fn test_get_returns_default_null() {
+        let table = Table::new(1);
+        let entry = table.get(10);
+        assert_eq!(entry, arca::Entry::Null(1 << 12));
+    }
+
+    /// Verifies set replaces the default entry and get retrieves it back.
+    #[test]
+    fn test_set_and_get_roundtrip() {
+        let mut table = Table::new(1);
+        let entry = arca::Entry::RWPage(arca::Page::from_inner(Page::new(1)));
+        let old = table.set(0, entry.clone()).unwrap();
+        assert_eq!(old, arca::Entry::Null(1 << 12));
+        assert_eq!(table.get(0), entry);
+    }
+}
