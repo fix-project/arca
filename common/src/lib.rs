@@ -61,4 +61,5 @@ pub mod hypercall {
     pub const FILE_CLOSE: u64 = 12;
     pub const FILE_READ: u64 = 13;
     pub const FILE_WRITE: u64 = 14;
+    pub const FILE_SEEK: u64 = 15;
 }
