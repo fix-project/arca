@@ -10,6 +10,10 @@ forced-target = "x86_64-unknown-none"
 name = "hello"
 test = false
 
+[[bin]]
+name = "webserver"
+test = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]

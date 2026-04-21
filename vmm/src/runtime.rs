@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
-    io::{self, Read},
+    io::{self, Read, Write},
+    net::SocketAddr,
     process::ExitCode,
+    slice,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -17,6 +19,7 @@ use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
+use std::net::{TcpListener, TcpStream};
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::vhost::VSockBackend;
@@ -285,6 +288,47 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 mem.fill(0);
                                 regs.rax = mem.as_ptr() as u64;
                             }
+                        }
+                        hypercall::TCP_LISTEN => {
+                            let ip = u32::to_ne_bytes(args[0] as u32);
+                            let port = args[1] as u16;
+                            let listener =
+                                Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap());
+                            let listener_ptr = Box::into_raw(listener);
+                            regs.rax = listener_ptr as u64;
+                        }
+                        hypercall::TCP_ACCEPT => {
+                            let listener_ptr = args[0] as usize as *mut TcpListener;
+                            let listener = unsafe { &mut *listener_ptr };
+                            let (stream, _) = listener.accept().unwrap();
+                            regs.rax = Box::into_raw(Box::new(stream)) as usize as u64;
+                        }
+                        hypercall::TCP_SEND => {
+                            let stream_ptr = args[0] as usize as *mut TcpStream;
+                            let stream = unsafe { &mut *stream_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(args[1] as usize),
+                                args[2] as usize,
+                            );
+                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
+                            let len = stream.write(slice).unwrap();
+                            regs.rax = len as u64;
+                        }
+                        hypercall::TCP_RECV => {
+                            let stream_ptr = args[0] as usize as *mut TcpStream;
+                            let stream = unsafe { &mut *stream_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(args[1] as usize),
+                                args[2] as usize,
+                            );
+                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
+                            let len = stream.read(slice).unwrap();
+                            regs.rax = len as u64;
+                        }
+                        hypercall::TCP_CLOSE => {
+                            let stream_ptr = args[0] as usize as *mut TcpStream;
+                            let stream = *unsafe { Box::from_raw(stream_ptr) };
+                            let _ = stream;
                         }
                         x => unimplemented!("hypercall {x}"),
                     };

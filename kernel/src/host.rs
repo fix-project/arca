@@ -92,26 +92,84 @@ pub fn memclr(region: *mut [u8]) {
     }
 }
 
-pub fn server_read(region: *mut [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::SERVERREAD, p as u64, n as u64) as usize }
-}
+pub mod net {
+    use common::{hypercall, BuddyAllocator};
 
-pub fn server_write(region: *const [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::SERVERWRITE, p as u64, n as u64) as usize }
-}
+    pub struct TcpListener {
+        id: usize,
+    }
 
-pub fn client_read(region: *mut [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::CLIENTREAD, p as u64, n as u64) as usize }
-}
+    pub struct TcpStream {
+        id: usize,
+    }
 
-pub fn client_write(region: *const [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::CLIENTWRITE, p as u64, n as u64) as usize }
+    impl TcpListener {
+        pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            TcpListener {
+                id: unsafe {
+                    crate::io::hypercall2(
+                        hypercall::TCP_LISTEN,
+                        u32::from_ne_bytes(*ip) as u64,
+                        port as u64,
+                    ) as usize
+                },
+            }
+        }
+
+        pub fn accept(&self) -> TcpStream {
+            TcpStream {
+                id: unsafe {
+                    crate::io::hypercall1(hypercall::TCP_ACCEPT, self.id as u64) as usize
+                },
+            }
+        }
+    }
+
+    impl TcpStream {
+        pub fn connect(ip: &[u8; 4], port: u16) -> TcpStream {
+            TcpStream {
+                id: unsafe {
+                    crate::io::hypercall2(
+                        hypercall::TCP_CONNECT,
+                        u32::from_ne_bytes(*ip) as u64,
+                        port as u64,
+                    ) as usize
+                },
+            }
+        }
+
+        pub fn send(&self, bytes: &[u8]) -> usize {
+            unsafe {
+                crate::io::hypercall3(
+                    hypercall::TCP_SEND,
+                    self.id as u64,
+                    BuddyAllocator.to_offset(bytes.as_ptr()) as usize as u64,
+                    bytes.len() as u64,
+                ) as usize
+            }
+        }
+
+        pub fn recv(&self, bytes: &[u8]) -> usize {
+            unsafe {
+                crate::io::hypercall3(
+                    hypercall::TCP_RECV,
+                    self.id as u64,
+                    BuddyAllocator.to_offset(bytes.as_ptr()) as usize as u64,
+                    bytes.len() as u64,
+                ) as usize
+            }
+        }
+
+        pub fn close(self) {
+            let _ = self;
+        }
+    }
+
+    impl Drop for TcpStream {
+        fn drop(&mut self) {
+            unsafe {
+                crate::io::hypercall1(hypercall::TCP_CLOSE, self.id as u64);
+            }
+        }
+    }
 }
