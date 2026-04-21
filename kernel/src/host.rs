@@ -116,7 +116,7 @@ pub mod net {
             }
         }
 
-        pub fn accept(&self) -> TcpStream {
+        pub fn accept(&mut self) -> TcpStream {
             TcpStream {
                 id: unsafe {
                     crate::io::hypercall1(hypercall::TCP_ACCEPT, self.id as u64) as usize
@@ -138,23 +138,23 @@ pub mod net {
             }
         }
 
-        pub fn send(&self, bytes: &[u8]) -> usize {
+        pub fn send(&mut self, bytes: &[u8]) -> usize {
             unsafe {
                 crate::io::hypercall3(
                     hypercall::TCP_SEND,
                     self.id as u64,
-                    BuddyAllocator.to_offset(bytes.as_ptr()) as usize as u64,
+                    BuddyAllocator.to_offset(bytes.as_ptr()) as u64,
                     bytes.len() as u64,
                 ) as usize
             }
         }
 
-        pub fn recv(&self, bytes: &[u8]) -> usize {
+        pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
             unsafe {
                 crate::io::hypercall3(
                     hypercall::TCP_RECV,
                     self.id as u64,
-                    BuddyAllocator.to_offset(bytes.as_ptr()) as usize as u64,
+                    BuddyAllocator.to_offset(bytes.as_ptr()) as u64,
                     bytes.len() as u64,
                 ) as usize
             }
@@ -170,6 +170,98 @@ pub mod net {
             unsafe {
                 crate::io::hypercall1(hypercall::TCP_CLOSE, self.id as u64);
             }
+        }
+    }
+
+    impl core::fmt::Write for TcpStream {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let mut s = s.as_bytes();
+            while !s.is_empty() {
+                let len = self.send(s);
+                s = &s[len..];
+            }
+            Ok(())
+        }
+    }
+}
+
+pub mod fs {
+    use common::{hypercall, BuddyAllocator};
+
+    pub struct File {
+        id: u64,
+    }
+
+    impl File {
+        pub fn open(
+            path: &str,
+            read: bool,
+            write: bool,
+            create: bool,
+            append: bool,
+            truncate: bool,
+        ) -> Option<File> {
+            let mode = read as u64
+                | (write as u64) << 1
+                | (create as u64) << 2
+                | (append as u64) << 3
+                | (truncate as u64) << 4;
+            let ptr = BuddyAllocator.to_offset(path.as_ptr());
+            let len = path.len();
+            let id = unsafe {
+                crate::io::hypercall3(hypercall::FILE_OPEN, ptr as u64, len as u64, mode)
+            };
+            if id != 0 {
+                Some(File { id })
+            } else {
+                None
+            }
+        }
+
+        pub fn close(self) {}
+
+        pub fn read(&mut self, buf: &mut [u8]) -> usize {
+            let ptr = BuddyAllocator.to_offset(buf.as_ptr());
+            let len = buf.len();
+            unsafe {
+                crate::io::hypercall3(hypercall::FILE_READ, self.id, ptr as u64, len as u64)
+                    as usize
+            }
+        }
+
+        pub fn write(&mut self, buf: &[u8]) -> usize {
+            let ptr = BuddyAllocator.to_offset(buf.as_ptr());
+            let len = buf.len();
+            unsafe {
+                crate::io::hypercall3(hypercall::FILE_WRITE, self.id, ptr as u64, len as u64)
+                    as usize
+            }
+        }
+
+        pub fn seek(&mut self, offset: isize, whence: i64) -> usize {
+            unsafe {
+                crate::io::hypercall3(hypercall::FILE_SEEK, self.id, offset as u64, whence as u64)
+                    as usize
+            }
+        }
+    }
+
+    impl Drop for File {
+        fn drop(&mut self) {
+            unsafe {
+                crate::io::hypercall1(hypercall::FILE_CLOSE, self.id);
+            }
+        }
+    }
+
+    impl core::fmt::Write for File {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let mut s = s.as_bytes();
+            while !s.is_empty() {
+                let len = self.write(s);
+                s = &s[len..];
+            }
+            Ok(())
         }
     }
 }
