@@ -326,7 +326,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                         }
                         hypercall::TCP_CLOSE => {
                             let stream_ptr = args[0] as usize as *mut TcpStream;
-                            let stream = *unsafe { Box::from_raw(stream_ptr) };
+                            let mut stream = *unsafe { Box::from_raw(stream_ptr) };
+                            stream.flush().unwrap();
                             let _ = stream;
                         }
                         hypercall::FILE_OPEN => {
@@ -577,10 +578,10 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                let args_offset = if args.len() != 0 {
-                    BuddyAllocator.to_offset(args.as_ptr())
-                } else {
+                let args_offset = if args.is_empty() {
                     0
+                } else {
+                    BuddyAllocator.to_offset(args.as_ptr())
                 };
                 cpus.push(new_cpu(
                     i,
