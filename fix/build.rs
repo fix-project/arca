@@ -114,6 +114,7 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
             "-nostartfiles",
             "--verbose",
             "-mcmodel=large",
+            "-static",
             // "-fno-pic",
             // "-fno-pie",
             // "-Wl,-no-pie",

@@ -74,6 +74,8 @@ pub unsafe extern "C" fn _rsstart() -> ! {
     main();
 }
 
+static mut MODULE_BUF: [u8; 1024] = [0; 1024];
+
 pub fn main() -> ! {
     let combination = os::argument();
     let combination =
@@ -83,13 +85,13 @@ pub fn main() -> ! {
     let result = unsafe {
         wasm_rt_init();
         let module_size = wasm_rt_module_size();
-        let result = alloca::with_alloca_zeroed(module_size, |module_buf| {
-            let module = &raw mut module_buf[0] as *mut c_void;
-            wasm2c_module_instantiate(module, core::ptr::null());
-            let wasm_rt_externref_t { bytes: result } =
-                w2c_module_0x5Ffixpoint_apply(module, wasm_rt_externref_t { bytes: handle });
-            result
-        });
+        let module = unsafe {
+            assert!(module_size <= 1024);
+            &raw mut MODULE_BUF[0] as *mut c_void
+        };
+        wasm2c_module_instantiate(module, core::ptr::null());
+        let wasm_rt_externref_t { bytes: result } =
+            w2c_module_0x5Ffixpoint_apply(module, wasm_rt_externref_t { bytes: handle });
         wasm_rt_free();
         result
     };
