@@ -58,7 +58,7 @@ pub fn exited() -> bool {
     CURRENT_THREAD.borrow().exited
 }
 
-pub unsafe fn init() {
+pub fn init() {
     LazyLock::force(&SCHEDULER_THREAD);
     LazyLock::force(&CURRENT_THREAD);
 }
@@ -72,7 +72,12 @@ pub fn spawn(f: impl FnOnce()) {
     let tid = next_tid();
     let stack = Box::<Page2MB>::new_uninit();
     let base = Box::into_raw(stack);
-    let stack: &mut [MaybeUninit<u64>; (1 << 21) / 8] = unsafe { core::mem::transmute(base) };
+    let stack = unsafe {
+        &mut *core::mem::transmute::<
+            *mut MaybeUninit<Page2MB>,
+            *mut [MaybeUninit<u64>; (1 << 21) / 8],
+        >(base)
+    };
     stack[stack.len() - 1].write(f as u64); // data ptr
     stack[stack.len() - 2].write(start_thread as *const () as u64); // function ptr (aligned)
     stack[stack.len() - 3].write(kthread_init as *const () as u64); // return address
@@ -95,9 +100,17 @@ pub fn spawn(f: impl FnOnce()) {
     q.push_back(thread);
 }
 
-pub unsafe fn run_scheduler() {
+/**
+ * Waits for tasks to be scheduled, then runs tasks until there are none left.
+ *
+ * # Safety
+ *
+ * This function should only be called from rsstart; its calls should never be nested.
+ */
+pub(crate) unsafe fn run_scheduler() {
     while OUTSTANDING.load(Ordering::SeqCst) == 0 {
         // wait for something to be scheduled
+        core::hint::spin_loop();
     }
     while OUTSTANDING.load(Ordering::SeqCst) != 0 {
         let Some(next) = THREAD_QUEUE.lock().pop_front() else {
