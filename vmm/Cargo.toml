@@ -26,7 +26,7 @@ nix = { version = "0.30.1", features = ["mman", "socket"] }
 vsock = "0.5.1"
 thread-priority = "3.0.0"
 elevate = "0.6.1"
-clap = { version = "4.5.48", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive", "env"] }
 rlimit = "0.10.2"
 core_affinity = "0.8.3"
 

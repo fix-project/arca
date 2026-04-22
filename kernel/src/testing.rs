@@ -8,6 +8,6 @@ pub(crate) fn harness(tests: &[&dyn Fn()]) {
 }
 
 #[kmain]
-async fn main(_: &[usize]) {
+fn main(_: &[usize]) {
     super::test_main();
 }

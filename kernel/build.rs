@@ -7,6 +7,8 @@ fn main() -> Result<()> {
     println!("cargo::rerun-if-changed=src/interrupts.S");
     cc::Build::new().file("src/util.S").compile("util");
     println!("cargo::rerun-if-changed=src/util.S");
+    cc::Build::new().file("src/cswitch.S").compile("cswitch");
+    println!("cargo::rerun-if-changed=src/cswitch.S");
 
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     println!("cargo::rerun-if-changed=etc/memmap.ld");

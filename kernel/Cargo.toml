@@ -11,6 +11,10 @@ name = "hello"
 test = false
 
 [[bin]]
+name = "threads"
+test = false
+
+[[bin]]
 name = "webserver"
 test = false
 

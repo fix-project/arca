@@ -80,10 +80,12 @@ pub fn critical<T>(f: impl FnOnce() -> T) -> T {
     y
 }
 
+#[allow(unused)]
 pub fn must_be_enabled() {
     assert!(enabled());
 }
 
+#[allow(unused)]
 pub fn must_be_disabled() {
     assert!(!enabled());
 }
@@ -91,12 +93,6 @@ pub fn must_be_disabled() {
 #[no_mangle]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     must_be_disabled();
-    if registers.isr == 0x30 {
-        // log::warn!("got interrupt from virtio");
-        INTERRUPTED.store(true, Ordering::Relaxed);
-        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
-        return;
-    }
     if registers.isr == 0x31 {
         INTERRUPTED.store(true, Ordering::Relaxed);
         if kvmclock::time_since_boot() > Duration::from_secs(1) {
@@ -116,11 +112,8 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
             });
             let _ = writeln!(&mut *console, "------ PROFILE ------");
             crate::iprofile::log(20);
-            let _ = writeln!(&mut *console, "------ RUNTIME ------");
-            crate::rt::profile();
             let _ = writeln!(&mut *console, "---------------------");
             crate::iprofile::reset();
-            crate::rt::reset_stats();
         }
         // crate::shutdown();
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();

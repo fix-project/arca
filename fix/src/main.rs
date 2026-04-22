@@ -26,7 +26,7 @@ extern crate alloc;
 const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 
 #[kmain]
-async fn main(_: &[usize]) {
+fn main(_: &[usize]) {
     log::info!("creating object store");
     let mut store = ObjectStore::new();
     log::info!("creating fix runtime");
