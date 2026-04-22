@@ -94,7 +94,7 @@ fn show_coupon(runtime: &mut FixRuntime, handle: &FixHandle) {
 }
 
 #[kmain]
-async fn main(_: &[usize]) {
+fn main(_: &[usize]) {
     log::info!("creating object store");
     let mut store = ObjectStore::new();
     log::info!("creating fix runtime");

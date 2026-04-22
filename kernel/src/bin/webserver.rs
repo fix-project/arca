@@ -6,10 +6,9 @@ use core::fmt::Write;
 use kernel::host::fs::File;
 use kernel::host::net::TcpListener;
 use kernel::prelude::*;
-use kernel::rt;
 
 #[kmain]
-async fn main(_: &[usize]) {
+fn main(_: &[usize]) {
     let mut listener = TcpListener::bind(&[0, 0, 0, 0], 8080);
     loop {
         let mut stream = listener.accept();

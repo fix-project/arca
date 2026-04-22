@@ -6,4 +6,3 @@
 #![feature(cstr_display)]
 
 pub mod runtime;
-pub mod vhost;

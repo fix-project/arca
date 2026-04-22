@@ -23,8 +23,6 @@ use libc::EFD_NONBLOCK;
 use std::net::{TcpListener, TcpStream};
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::vhost::VSockBackend;
-
 const MEM_BASE: u64 = 0x1_0000_0000;
 
 fn new_cpu<'scope>(
@@ -434,13 +432,12 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 pub struct Runtime {
     kvm: Kvm,
     vm: VmFd,
-    vsock: VSockBackend,
     cores: usize,
     elf: Arc<[u8]>,
 }
 
 impl Runtime {
-    pub fn new(cid: usize, cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
+    pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
@@ -482,12 +479,9 @@ impl Runtime {
         })
         .unwrap();
 
-        let vsock = VSockBackend::new(cid as u64, 1024, kick, call).unwrap();
-
         let mut x = Self {
             kvm,
             vm,
-            vsock,
             cores,
             elf: elf.clone(),
         };
@@ -555,7 +549,6 @@ impl Runtime {
     }
 
     pub fn run(&mut self, args: &[usize]) {
-        self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
@@ -563,11 +556,7 @@ impl Runtime {
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
-        // let args = args.to_vec_in(BuddyAllocator);
-        let mut inner_args = Vec::new_in(BuddyAllocator);
-        let vsock_meta = Box::new_in(self.vsock.metadata(), BuddyAllocator);
-        inner_args.push(BuddyAllocator.to_offset(Box::into_raw_with_allocator(vsock_meta).0));
-        inner_args.extend_from_slice(args);
+        let args = args.to_vec_in(BuddyAllocator);
 
         std::thread::scope(|s| {
             let mut cpus = vec![];
@@ -588,8 +577,11 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                assert!(!inner_args.is_empty());
-                let inner_args_offset = BuddyAllocator.to_offset(inner_args.as_ptr());
+                let args_offset = if args.len() != 0 {
+                    BuddyAllocator.to_offset(args.as_ptr())
+                } else {
+                    0
+                };
                 cpus.push(new_cpu(
                     i,
                     s,
@@ -598,8 +590,8 @@ impl Runtime {
                     &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
-                        inner_args.len() as u64,
-                        inner_args_offset as u64,
+                        args.len() as u64,
+                        args_offset as u64,
                         0,
                         0,
                     ],
@@ -610,9 +602,5 @@ impl Runtime {
                 cpu.join().unwrap();
             }
         });
-    }
-
-    pub fn cid(&self) -> u64 {
-        self.vsock.cid()
     }
 }
