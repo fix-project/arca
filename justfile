@@ -12,16 +12,17 @@ build-all:
   cargo build {{release}}
   cargo build -p kernel {{release}}
   cargo build -p fix {{release}}
+  cargo build -p user {{release}}
 
 test:
   cargo test
   cargo test -p kernel --target={{target}}
 
 build bin:
-  cargo build -p kernel --bin={{bin}} --target={{target}} {{release}}
+  cargo build -p kernel --example={{bin}} --target={{target}} {{release}}
 
 run bin:
-  cargo run -p kernel --bin={{bin}} --target={{target}} {{release}}
+  cargo run -p kernel --example={{bin}} --target={{target}} {{release}}
 
 fix:
   cargo run -p fix --target={{target}} {{release}}
@@ -30,8 +31,10 @@ fmt:
   cargo fmt
   cargo fmt -p kernel
   cargo fmt -p fix
+  cargo fmt -p user
 
 lint:
   cargo clippy
   cargo clippy -p kernel
   cargo clippy -p fix
+  cargo clippy -p user
