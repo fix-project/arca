@@ -47,6 +47,36 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_tree(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_tree(
+    fixpoint: *mut w2c_fixpoint,
+    table_idx: u32,
+) -> wasm_rt_externref_t {
+    assert!(table_idx < 63);
+    unsafe {
+        let table = crate::rt::TABLES[table_idx as usize];
+        let addr = (1usize << 32) * (64 + table_idx as usize);
+        wasm_rt_externref_t {
+            bytes: shell::fixpoint_create_tree(addr as *const c_void, (*table).size as usize)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_tag(
+    fixpoint: *mut w2c_fixpoint,
+    table_idx: u32,
+) -> wasm_rt_externref_t {
+    assert!(table_idx < 63);
+    unsafe {
+        let table = crate::rt::TABLES[table_idx as usize];
+        let addr = (1usize << 32) * (64 + table_idx as usize);
+        wasm_rt_externref_t {
+            bytes: shell::fixpoint_create_tree(addr as *const c_void, (*table).size as usize)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fixpoint_create_blob_i64(
     fixpoint: *mut w2c_fixpoint,
     value: u64,
@@ -54,4 +84,46 @@ pub unsafe extern "C" fn w2c_fixpoint_create_blob_i64(
     wasm_rt_externref_t {
         bytes: unsafe { shell::fixpoint_create_blob_i64(value) },
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_blob_i32(
+    fixpoint: *mut w2c_fixpoint,
+    value: u32,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: unsafe { shell::fixpoint_create_blob_i32(value) },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_is_blob_obj(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> i32 {
+    shell::fixpoint_is_blob_obj(handle.bytes)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_is_object(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> i32 {
+    shell::fixpoint_is_object(handle.bytes)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_is_data(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> i32 {
+    shell::fixpoint_is_data(handle.bytes)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_is_tag(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> i32 {
+    shell::fixpoint_is_tag(handle.bytes)
 }

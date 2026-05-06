@@ -42,6 +42,10 @@ impl<'a, 'b> DeterministicEquivRuntime for FixShellBottom<'a, 'b> {
     type Handle = Blob;
     type Error = Error;
 
+    fn create_blob_i32(&mut self, data: u32) -> Self::Handle {
+        pack_handle(&self.parent.create_blob_i32(data))
+    }
+
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle {
         pack_handle(&self.parent.create_blob_i64(data))
     }

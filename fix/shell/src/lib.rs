@@ -10,10 +10,13 @@ use core::{
 };
 
 use user::{error, os, prelude::*};
+use user::error::log as arca_log;
+use user::Runtime;
 
 use crate::{
     fixpoint::w2c_fixpoint,
     rt::{wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_size},
+    runtime::DeterministicEquivRuntime,
 };
 
 mod fixpoint;
@@ -42,6 +45,8 @@ bail:
 .section .text
 "#
 );
+    
+pub static mut _PROCEDURE: [u8; 32] = [0; 32];
 
 unsafe extern "C" {
     static mut _sbss: c_void;
@@ -90,6 +95,22 @@ pub fn main() -> ! {
             &raw mut MODULE_BUF[0] as *mut c_void
         };
         wasm2c_module_instantiate(module, core::ptr::null());
+
+
+        /// Read procdeure handle from combination
+        {
+            let result = shell::FixShell::get_tree(handle);
+  
+            let Ok(tree) = result else {
+                arca_log("prelogue: failed to get TreeData");
+                panic!()
+            };
+
+            let procedure: Blob = tree.get(1).try_into().unwrap();
+            let procedure_ref = &raw mut _PROCEDURE;
+            procedure.read(0, &mut *procedure_ref);
+        }
+
         let wasm_rt_externref_t { bytes: result } =
             w2c_module_0x5Ffixpoint_apply(module, wasm_rt_externref_t { bytes: handle });
         wasm_rt_free();

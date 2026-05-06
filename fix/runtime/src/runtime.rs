@@ -9,6 +9,7 @@ pub trait DeterministicEquivRuntime {
     type Handle: Clone + core::fmt::Debug;
     type Error;
 
+    fn create_blob_i32(&mut self, data: u32) -> Self::Handle;
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle;
     fn create_blob(&mut self, data: Self::BlobData) -> Self::Handle;
     fn create_tree(&mut self, data: Self::TreeData) -> Self::Handle;

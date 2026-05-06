@@ -41,6 +41,11 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
     type Handle = FixHandle;
     type Error = Error;
 
+    fn create_blob_i32(&mut self, data: u32) -> Self::Handle {
+        let buf = bytes_of(&data);
+        Object::from(self.store.create_blob(buf.into())).into()
+    }
+
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle {
         let buf = bytes_of(&data);
         Object::from(self.store.create_blob(buf.into())).into()
