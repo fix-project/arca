@@ -221,9 +221,13 @@ pub enum Value {
     Thunk(Thunk),
 }
 
-#[cfg(feature = "testing-mode")]
+#[cfg(test)]
 mod tests {
-    #[test_case]
+
+    use crate::rawhandle::*;
+    use core::simd::*;
+
+    #[test]
     fn test_tag_gits() {
         assert_eq!(Handle::TAGBITS, 241);
         assert_eq!(BlobName::TAGBITS, 241);
@@ -232,22 +236,22 @@ mod tests {
         assert_eq!(Thunk::TAGBITS, 245);
     }
 
-    #[test_case]
+    #[test]
     fn test_tag_masks() {
-        assert_eq!(Handle::TAGMASK.as_array()[30], 0b00000001);
-        assert_eq!(Handle::TAGMASK.as_array()[31], 0b00000000);
+        assert_eq!(Handle::TAGMASK.as_array::<32>().unwrap()[30], 0b00000001);
+        assert_eq!(Handle::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
         let field: u16x16 = unsafe { core::mem::transmute(Handle::TAGMASK) };
         assert_eq!(field[15], 0b0000000000000001);
 
-        assert_eq!(TreeName::TAGMASK.as_array()[30], 0b00000010);
-        assert_eq!(TreeName::TAGMASK.as_array()[31], 0b00000000);
+        assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[30], 0b00000010);
+        assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
-        assert_eq!(Thunk::TAGMASK.as_array()[30], 0b00011000);
-        assert_eq!(Thunk::TAGMASK.as_array()[31], 0b00000000);
+        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[30], 0b00011000);
+        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
     }
 
-    #[test_case]
+    #[test]
     fn test_pack() {
         let h: Handle = PhysicalHandle::new(42, 10086).into();
         let res = h.pack();
@@ -260,7 +264,7 @@ mod tests {
         assert_eq!(field[15], 0b0000000000000011);
     }
 
-    #[test_case]
+    #[test]
     fn test_round_trip() {
         let h: Handle = PhysicalHandle::new(42, 10086).into();
         let res = Handle::unpack(h.pack())
