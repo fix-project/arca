@@ -17,9 +17,11 @@ unsafe extern "C" {
 
 pub static mut MEMORY_IDX: usize = 0;
 pub static mut TABLE_IDX: usize = 0;
+pub static mut FUNCREF_TABLE_IDX: usize = 0;
 
 pub static mut MEMORIES: [*mut wasm_rt_memory_t; 64] = [core::ptr::null_mut(); 64];
-pub static mut TABLES: [*mut wasm_rt_externref_table_t; 64] = [core::ptr::null_mut(); 64];
+pub static mut TABLES: [*mut wasm_rt_externref_table_t; 32] = [core::ptr::null_mut(); 32];
+pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; 32] = [core::ptr::null_mut(); 32];
 
 /**
  * Initialize a Memory object with an initial page size of `initial_pages` and
@@ -105,7 +107,7 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
     unsafe {
         let idx = TABLE_IDX;
         TABLE_IDX += 1;
-        assert!(idx < 63);
+        assert!(idx < 31);
         TABLES[idx] = table;
         if max_elements > (1 << (32 - 5)) {
             max_elements = 1 << (32 - 5);
@@ -113,6 +115,58 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
         let data = ((1 << 32) * (64 + idx)) as *mut u8;
         arca_compat_mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
         table.write(wasm_rt_externref_table_t {
+            data: data as *mut _,
+            size: elements,
+            max_size: max_elements,
+        });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_rt_grow_externref_table(
+    table: *mut wasm_rt_externref_table_t,
+    delta: u32,
+    init: wasm_rt_externref_t
+) -> u32
+{
+    let table = unsafe { &mut *table };
+    let current = table.size;
+    if current + delta > table.max_size {
+        return u32::MAX;
+    }
+
+    let start = unsafe { table.data.byte_add(current as usize * 32 ) };
+    let size = delta * 32;
+    unsafe {
+        arca_compat_mmap( start as *mut _, size as usize, __MODE_read_write );
+        table.size += delta;
+    }
+    current
+
+}
+
+/**
+ * Initialize an funcref Table object with an element count
+ * of `elements` and a maximum size of `max_elements`.
+ * Usage as per wasm_rt_allocate_funcref_table.
+ */
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_rt_allocate_funcref_table(
+    table: *mut wasm_rt_funcref_table_t,
+    elements: u32,
+    mut max_elements: u32,
+) {
+    unsafe {
+        let idx = FUNCREF_TABLE_IDX;
+        FUNCREF_TABLE_IDX += 1;
+        assert!(idx < 31);
+        FUNCREF_TABLES[idx] = table;
+        if max_elements > (1 << (32 - 5)) {
+            max_elements = 1 << (32 - 5);
+        }
+        let data = ((1 << 32) * (64 + 32 + idx)) as *mut u8;
+        arca_compat_mmap(data as *mut _, (elements as usize * core::mem::size_of::<wasm_rt_funcref_t>()) as usize, __MODE_read_write);
+        table.write(wasm_rt_funcref_table_t {
             data: data as *mut _,
             size: elements,
             max_size: max_elements,
@@ -133,6 +187,14 @@ pub extern "C" fn wasm_rt_free_memory(memory: *mut wasm_rt_memory_t) {
  */
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_rt_free_externref_table(table: *mut wasm_rt_externref_table_t) {
+    todo!();
+}
+
+/**
+ * Free an externref Table object.
+ */
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_rt_free_funcref_table(table: *mut wasm_rt_funcref_table_t) {
     todo!();
 }
 

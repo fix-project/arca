@@ -19,6 +19,8 @@ pub trait DeterministicEquivRuntime {
 
     fn is_blob(handle: &Self::Handle) -> bool;
     fn is_tree(handle: &Self::Handle) -> bool;
+
+    fn is_equal(lhs: &Self::Handle, rhs: &Self::Handle) -> bool;
 }
 
 pub trait ExecutionRuntime: DeterministicEquivRuntime {

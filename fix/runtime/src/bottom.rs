@@ -77,6 +77,10 @@ impl<'a, 'b> DeterministicEquivRuntime for FixShellBottom<'a, 'b> {
     fn is_tree(handle: &Self::Handle) -> bool {
         FixRuntime::is_tree(&unpack_handle(handle))
     }
+
+    fn is_equal(lhs: &Self::Handle, rhs: &Self::Handle) -> bool {
+        FixRuntime::is_equal(&unpack_handle(lhs), &unpack_handle(rhs))
+    }
 }
 
 impl<'a, 'b> FixShellBottom<'a, 'b> {
@@ -146,6 +150,15 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
                             panic!()
                         };
                         k.apply(Runtime::create_word(Self::is_tree(&b) as u64))
+                    }
+                    b"is_equal" => {
+                        let Some(Value::Blob(lhs)) = args.pop() else {
+                            panic!()
+                        };
+                        let Some(Value::Blob(rhs)) = args.pop() else {
+                            panic!()
+                        };
+                        k.apply(Runtime::create_word(Self::is_equal(&lhs, &rhs) as u64))
                     }
                     _ => {
                         log::info!("{:?}", &*effect);

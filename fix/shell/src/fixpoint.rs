@@ -127,3 +127,32 @@ pub unsafe extern "C" fn w2c_fixpoint_is_tag(
 ) -> i32 {
     shell::fixpoint_is_tag(handle.bytes)
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_is_equal(
+    fixpoint: *mut w2c_fixpoint,
+    lhs: wasm_rt_externref_t,
+    rhs: wasm_rt_externref_t,
+) -> i32 {
+    shell::fixpoint_is_equal(lhs.bytes, rhs.bytes)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_application_thunk(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_application_thunk(handle.bytes)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_strict_encode(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_strict_encode(handle.bytes)
+    }
+}

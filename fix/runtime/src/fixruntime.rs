@@ -8,6 +8,7 @@ use crate::{
     storage::{ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
+use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
 use fixhandle::rawhandle::{FixHandle, Object};
 use kernel::types::{Blob, Tuple};
@@ -101,6 +102,10 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
                 .map_err(Error::from)
                 .and_then(|h| h.try_unwrap_tree_name_ref().map_err(Error::from))
                 .is_ok()
+    }
+
+    fn is_equal(lhs: &Self::Handle, rhs: &Self::Handle) -> bool {
+        lhs.pack() == rhs.pack()
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::runtime::DeterministicEquivRuntime;
 use crate::_PROCEDURE;
-use arca::{Blob, Function, Table};
+use arca::{Word, Blob, Function, Table};
 use arca::{Runtime as _, Tuple};
 use arcane::{
     __MODE_read_only, __MODE_read_write, __NR_length, __TYPE_table, arca_argument,
@@ -10,7 +10,7 @@ use arcane::{
 
 use core::arch::x86_64::*;
 use core::ffi::c_void;
-use fixhandle::rawhandle::{BitPack, FixHandle, Handle, TreeName, Object};
+use fixhandle::rawhandle::{BitPack, FixHandle, Handle, TreeName, Object, Thunk, Encode};
 use user::ArcaError;
 use user::Ref;
 use user::Runtime;
@@ -104,6 +104,17 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         Ok(result)
     }
 
+    fn is_equal(lhs: Self::Handle, rhs: Self::Handle) -> bool {
+        let result: Word<Runtime> = Function::symbolic("is_equal")
+            .apply(Runtime::create_blob(&lhs))
+            .apply(Runtime::create_blob(&rhs))
+            .call_with_current_continuation()
+            .try_into().expect("is_equal: return type is not a word");
+        
+        let result = result.read();
+        result == 1
+    }
+
     fn is_blob_obj(handle: Self::Handle) -> bool {
         let handle = FixHandle::unpack(handle);
         handle
@@ -173,6 +184,39 @@ impl DeterministicEquivRuntime for FixShellPhysical {
             );
 
         res.unwrap_or_default()
+    }
+
+    fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
+        let handle = FixHandle::unpack(handle);
+
+        let result = handle
+            .try_unwrap_object_ref()
+            .map_err(|_| ArcaError::BadType)
+            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
+            .or_else(|_| handle
+                .try_unwrap_ref_ref()
+                .map_err(|_| ArcaError::BadType)
+                .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType)));
+
+        if let Ok(tree) = result {
+           FixHandle::Thunk(Thunk::Application(*tree)).pack()
+        } else {
+            arca_log ("create_application_thunk: input handle is not a TreeObj or TreeRef");
+            panic!()
+        }
+    }
+
+    fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
+        let handle = FixHandle::unpack(handle);
+
+        let result = handle.try_unwrap_thunk();
+
+        if let Ok(thunk) = result {
+            FixHandle::Encode(Encode::Strict(thunk)).pack()
+        } else {
+            arca_log ("create_strict_encode: input handle is not a Thunk");
+            panic!()
+        }
     }
 
     fn len(handle: Self::Handle) -> usize {
@@ -249,6 +293,10 @@ impl DeterministicEquivRuntime for FixShell {
         FixShellPhysical::is_object(handle)
     }
 
+    fn is_equal(lhs: Self::Handle, rhs: Self::Handle) -> bool {
+        FixShellPhysical::is_equal(lhs, rhs)
+    }
+
     fn is_data(handle: Self::Handle) -> bool {
         FixShellPhysical::is_data(handle)
     }
@@ -259,6 +307,14 @@ impl DeterministicEquivRuntime for FixShell {
 
     fn len(handle: Self::Handle) -> usize {
         FixShellPhysical::len(handle)
+    }
+
+    fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
+        FixShellPhysical::create_application_thunk(handle)
+    }
+
+    fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
+        FixShellPhysical::create_strict_encode(handle)
     }
 }
 
@@ -385,4 +441,16 @@ pub fn fixpoint_is_data(handle: [u8; 32]) -> i32 {
 
 pub fn fixpoint_is_tag(handle: [u8; 32]) -> i32 {
     FixShell::is_tag(handle) as i32
+}
+
+pub fn fixpoint_is_equal(lhs: [u8; 32], rhs: [u8; 32]) -> i32 {
+    FixShell::is_equal(lhs, rhs) as i32
+}
+
+pub fn fixpoint_create_application_thunk(handle: [u8;32]) -> [u8;32] {
+    FixShell::create_application_thunk(handle)
+}
+
+pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8;32] {
+    FixShell::create_strict_encode(handle)
 }

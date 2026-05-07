@@ -15,6 +15,9 @@ pub trait DeterministicEquivRuntime {
     fn create_tree(data: Self::TreeData) -> Self::Handle;
     fn create_tag(data: Self::TreeData) -> Self::Handle;
 
+    fn create_application_thunk(handle: Self::Handle) -> Self::Handle;
+    fn create_strict_encode(handle: Self::Handle) -> Self::Handle;
+
     fn get_blob(handle: Self::Handle) -> Result<Self::BlobData, Self::Error>;
     fn get_tree(handle: Self::Handle) -> Result<Self::TreeData, Self::Error>;
 
@@ -24,5 +27,8 @@ pub trait DeterministicEquivRuntime {
     fn is_tag(handle: Self::Handle) -> bool;
     fn is_object(handle: Self::Handle) -> bool;
     fn is_data(handle: Self::Handle) -> bool;
+
+    fn is_equal(lhs: Self::Handle, rhs: Self::Handle) -> bool;
+
     fn len(handle: Self::Handle) -> usize;
 }
