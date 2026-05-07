@@ -6,6 +6,7 @@
 #![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 #![allow(dead_code)]
 
+use fixhandle::rawhandle::FixHandle;
 use kernel::prelude::*;
 
 #[cfg(feature = "testing-mode")]
@@ -24,13 +25,14 @@ extern crate alloc;
 //use crate::runtime::handle;
 
 const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
+const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 
 #[kmain]
 async fn main(_: &[usize]) {
     log::info!("creating object store");
     let mut store = ObjectStore::new();
     log::info!("creating fix runtime");
-    let mut runtime = FixRuntime::new(&mut store);
+    let mut runtime = FixRuntime::new(&mut store, COUPON);
 
     log::info!("creating resource limits");
     let dummy = runtime.create_blob_i64(0xcafeb0ba);
@@ -51,9 +53,21 @@ async fn main(_: &[usize]) {
     log::info!("about to execute combination");
     let result = runtime.execute(&combination);
     log::info!("result is: {result:?}");
+
+    let mut result_handle: [u8; 32] = [0; 32];
+    let result_blob: Blob = runtime
+        .get_tree(&result)
+        .expect("Add did not return a Tree")
+        .get(3)
+        .try_into()
+        .expect("The result entry is not an Arca Blob");
+    result_blob.read(0, &mut result_handle);
+    let result_handle = FixHandle::unpack(result_handle);
+    log::info!("result handle is: {result_handle:?}");
     let result_blob = runtime
-        .get_blob(&result)
-        .expect("Add did not return a Blob");
+        .get_blob(&result_handle)
+        .expect("The result is not a Blob");
+
     let mut arr = [0u8; 8];
     result_blob.read(0, &mut arr);
     let num = u64::from_le_bytes(arr);

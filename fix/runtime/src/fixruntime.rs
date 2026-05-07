@@ -10,7 +10,7 @@ use crate::{
 use bytemuck::bytes_of;
 use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
-use fixhandle::rawhandle::{FixHandle, Object};
+use fixhandle::rawhandle::{FixHandle, Object, TreeName};
 use kernel::types::{Blob, Tuple};
 
 #[derive(Debug)]
@@ -28,11 +28,13 @@ impl<T> From<TryUnwrapError<T>> for Error {
 #[derive(Debug)]
 pub struct FixRuntime<'a> {
     store: &'a mut ObjectStore,
+    coupon: FixHandle,
 }
 
 impl<'a> FixRuntime<'a> {
-    pub fn new(store: &'a mut ObjectStore) -> Self {
-        Self { store }
+    pub fn new(store: &'a mut ObjectStore, coupon: &[u8] ) -> Self {
+        let coupon = Object::from(store.create_blob(coupon.into())).into();
+        Self { store, coupon }
     }
 }
 
@@ -112,6 +114,15 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
 impl<'a> Executor for FixRuntime<'a> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let mut bottom = FixShellBottom { parent: self };
-        bottom.execute(combination)
+        let res = bottom.execute(combination);
+        let mut apply_coupon: Tuple = Tuple::new(4);
+        apply_coupon.set(0, Blob::new(self.coupon.pack())); 
+        apply_coupon.set(1, Blob::new(self.create_blob_i32(2).pack()));
+        apply_coupon.set(2, Blob::new(combination.pack()));
+        apply_coupon.set(3, Blob::new(res.pack()));
+        Object::from(TreeName::Tag(self.create_tree(apply_coupon)
+          .unwrap_object()
+          .unwrap_tree_name()
+          .unwrap_not_tag())).into()
     }
 }
