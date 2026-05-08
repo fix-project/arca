@@ -93,71 +93,115 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod net {
-    use common::{hypercall, BuddyAllocator};
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use common::{
+        hypercall::{self, TcpInfo},
+        BuddyAllocator,
+    };
+
+    use crate::kthread;
 
     pub struct TcpListener {
-        id: usize,
+        id: u64,
     }
 
     pub struct TcpStream {
-        id: usize,
+        id: u64,
     }
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            let info = TcpInfo {
+                ip: u32::from_ne_bytes(*ip),
+                port,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_LISTEN,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
             TcpListener {
-                id: unsafe {
-                    crate::io::hypercall2(
-                        hypercall::TCP_LISTEN,
-                        u32::from_ne_bytes(*ip) as u64,
-                        port as u64,
-                    ) as usize
-                },
+                id: info.id.load(Ordering::SeqCst),
             }
         }
 
         pub fn accept(&mut self) -> TcpStream {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_ACCEPT,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
             TcpStream {
-                id: unsafe {
-                    crate::io::hypercall1(hypercall::TCP_ACCEPT, self.id as u64) as usize
-                },
+                id: info.id.load(Ordering::SeqCst),
             }
         }
     }
 
     impl TcpStream {
         pub fn connect(ip: &[u8; 4], port: u16) -> TcpStream {
+            let info = TcpInfo {
+                ip: u32::from_ne_bytes(*ip),
+                port,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_CONNECT,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
             TcpStream {
-                id: unsafe {
-                    crate::io::hypercall2(
-                        hypercall::TCP_CONNECT,
-                        u32::from_ne_bytes(*ip) as u64,
-                        port as u64,
-                    ) as usize
-                },
+                id: info.id.load(Ordering::SeqCst),
             }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
+                len: AtomicUsize::new(bytes.len()),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall3(
-                    hypercall::TCP_SEND,
-                    self.id as u64,
-                    BuddyAllocator.to_offset(bytes.as_ptr()) as u64,
-                    bytes.len() as u64,
-                ) as usize
+                crate::io::hypercall1(hypercall::TCP_SEND, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
+            info.len.load(Ordering::SeqCst)
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
+                len: AtomicUsize::new(bytes.len()),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall3(
-                    hypercall::TCP_RECV,
-                    self.id as u64,
-                    BuddyAllocator.to_offset(bytes.as_ptr()) as u64,
-                    bytes.len() as u64,
-                ) as usize
+                crate::io::hypercall1(hypercall::TCP_RECV, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
+            info.len.load(Ordering::SeqCst)
         }
 
         pub fn close(self) {
@@ -167,8 +211,15 @@ pub mod net {
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall1(hypercall::TCP_CLOSE, self.id as u64);
+                crate::io::hypercall1(hypercall::TCP_CLOSE, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
         }
     }

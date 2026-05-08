@@ -9,7 +9,9 @@ const HANDLER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_webserver"));
 
 #[kmain]
 fn main(_: &[usize]) {
+    kthread::wfi();
     let mut listener = TcpListener::bind(&[0, 0, 0, 0], 8080);
+    log::info!("listening on port 8080");
     let handler: Function = elfloader::load_elf(HANDLER).unwrap();
     loop {
         let mut stream = listener.accept();

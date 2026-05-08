@@ -7,15 +7,17 @@ use core::{
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
 use common::util::{initcell::LazyLock, spinlock::SpinLock};
 
-use crate::page::Page2MB;
+use crate::{interrupts::INTERRUPTED, page::Page2MB};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct KThread {
     tid: usize,
     rsp: *const u8,
     base: *mut MaybeUninit<Page2MB>,
     scheduler: bool,
     exited: bool,
+    wfi: bool,
+    next: Option<Box<KThread>>,
 }
 
 unsafe impl Send for KThread {}
@@ -27,6 +29,8 @@ unsafe extern "C" {
 
 static CURRENT_TID: AtomicUsize = AtomicUsize::new(0);
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
+
+static WFI: SpinLock<Option<Box<KThread>>> = SpinLock::new(None);
 
 fn next_tid() -> usize {
     CURRENT_TID.fetch_add(1, Ordering::SeqCst)
@@ -40,11 +44,13 @@ pub static SCHEDULER_THREAD: LazyLock<RefCell<KThread>> = LazyLock::new(|| {
         base: core::ptr::null_mut(),
         scheduler: true,
         exited: false,
+        wfi: false,
+        next: None,
     })
 });
 
 #[core_local]
-pub static CURRENT_THREAD: LazyLock<RefCell<KThread>> = LazyLock::new(RefCell::default);
+pub static CURRENT_THREAD: LazyLock<RefCell<Box<KThread>>> = LazyLock::new(RefCell::default);
 
 pub fn tid() -> usize {
     CURRENT_THREAD.borrow().tid
@@ -63,7 +69,7 @@ pub fn init() {
     LazyLock::force(&CURRENT_THREAD);
 }
 
-pub static THREAD_QUEUE: LazyLock<SpinLock<VecDeque<KThread>>> =
+pub static THREAD_QUEUE: LazyLock<SpinLock<VecDeque<Box<KThread>>>> =
     LazyLock::new(|| SpinLock::new(VecDeque::new()));
 
 pub fn spawn(f: impl FnOnce()) {
@@ -94,10 +100,12 @@ pub fn spawn(f: impl FnOnce()) {
         base,
         scheduler: false,
         exited: false,
+        wfi: false,
+        next: None,
     };
     let mut q = THREAD_QUEUE.lock();
     OUTSTANDING.fetch_add(1, Ordering::SeqCst);
-    q.push_back(thread);
+    q.push_back(thread.into());
 }
 
 /**
@@ -115,6 +123,16 @@ pub(crate) unsafe fn run_scheduler() {
     while OUTSTANDING.load(Ordering::SeqCst) != 0 {
         let Some(next) = THREAD_QUEUE.lock().pop_front() else {
             sleep();
+            if INTERRUPTED.swap(false, Ordering::SeqCst) {
+                let mut wfi = WFI.lock();
+                let mut head = core::mem::take(&mut *wfi);
+                let mut q = THREAD_QUEUE.lock();
+                while let Some(mut current) = head {
+                    head = core::mem::take(&mut current.next);
+                    log::trace!("awakening {}", current.tid);
+                    q.push_back(current);
+                }
+            }
             continue;
         };
         log::trace!("scheduling thread {}", next.tid);
@@ -124,7 +142,7 @@ pub(crate) unsafe fn run_scheduler() {
         core::mem::drop(scheduler);
         let new_rsp = CURRENT_THREAD.borrow_mut().rsp;
         cswitch(new_rsp, old_rsp);
-        let next = CURRENT_THREAD.take();
+        let mut next = CURRENT_THREAD.take();
         if next.exited {
             log::trace!("thread {} exited", next.tid);
             let old_stack = next.base;
@@ -132,6 +150,11 @@ pub(crate) unsafe fn run_scheduler() {
             core::mem::drop(ptr);
             let left = OUTSTANDING.fetch_sub(1, Ordering::SeqCst) - 1;
             log::trace!("{left} threads outstanding");
+        } else if next.wfi {
+            log::trace!("thread {} is waiting", next.tid);
+            let mut wfi = WFI.lock();
+            next.next = core::mem::take(&mut *wfi);
+            wfi.replace(next);
         } else {
             log::trace!("thread {} yielded", next.tid);
             THREAD_QUEUE.lock().push_back(next);
@@ -159,6 +182,11 @@ fn sleep() {
 
 fn exit() {
     CURRENT_THREAD.borrow_mut().exited = true;
+    yield_now();
+}
+
+pub fn wfi() {
+    CURRENT_THREAD.borrow_mut().wfi = true;
     yield_now();
 }
 

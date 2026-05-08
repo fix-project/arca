@@ -9,6 +9,7 @@
 #![feature(negative_impls)]
 #![feature(never_type)]
 #![feature(ptr_metadata)]
+#![feature(atomic_ptr_null)]
 #![feature(custom_test_frameworks)]
 #![test_runner(testing::harness)]
 #![reexport_test_harness_main = "test_main"]

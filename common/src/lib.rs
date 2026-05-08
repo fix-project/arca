@@ -45,6 +45,8 @@ pub struct SymtabRecord {
 }
 
 pub mod hypercall {
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+
     pub const EXIT: u64 = 0;
     pub const LOG: u64 = 1;
     pub const SYMNAME: u64 = 2;
@@ -61,4 +63,14 @@ pub mod hypercall {
     pub const FILE_READ: u64 = 13;
     pub const FILE_WRITE: u64 = 14;
     pub const FILE_SEEK: u64 = 15;
+
+    #[derive(Debug, Default)]
+    pub struct TcpInfo {
+        pub ip: u32,
+        pub port: u16,
+        pub id: AtomicU64,
+        pub buf: usize,
+        pub len: AtomicUsize,
+        pub done: AtomicBool,
+    }
 }
