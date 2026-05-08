@@ -9,9 +9,9 @@ use core::{
     ops::Range,
 };
 
-use user::{error, os, prelude::*};
-use user::error::log as arca_log;
 use user::Runtime;
+use user::error::log as arca_log;
+use user::{error, os, prelude::*};
 
 use crate::{
     fixpoint::w2c_fixpoint,
@@ -45,7 +45,7 @@ bail:
 .section .text
 "#
 );
-    
+
 pub static mut _PROCEDURE: [u8; 32] = [0; 32];
 
 unsafe extern "C" {
@@ -96,11 +96,10 @@ pub fn main() -> ! {
         };
         wasm2c_module_instantiate(module, core::ptr::null());
 
-
         /// Read procdeure handle from combination
         {
             let result = shell::FixShell::get_tree(handle);
-  
+
             let Ok(tree) = result else {
                 arca_log("prelogue: failed to get TreeData");
                 panic!()

@@ -66,7 +66,9 @@ impl MachineHandle {
 impl BitPack for MachineHandle {
     const TAGBITS: u32 = 240;
 
-    fn unpack(content: [u8; 32]) -> Self {
+    fn unpack(mut content: [u8; 32]) -> Self {
+        content[30] = 0;
+        content[31] = 0;
         let inner = RawHandle::new(content);
         Self { inner }
     }
@@ -150,10 +152,53 @@ impl PhysicalHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CanonicalHandle {
+    inner: RawHandle,
+}
+
+impl CanonicalHandle {
+    pub fn new(hash: [u8; 32], size: u64) -> Self {
+        assert!(size & 0xffff000000000000 == 0);
+        let hash_64: &[u64; 4] = unsafe { core::mem::transmute(&hash) };
+        let field = unsafe {
+            core::mem::transmute::<[u64; 4], [u8; 32]>([hash_64[0], hash_64[1], hash_64[2], size])
+        };
+        let inner = RawHandle::new(field);
+        Self { inner }
+    }
+
+    pub fn len(&self) -> usize {
+        let field: &[u64; 4] = unsafe { core::mem::transmute(&self.inner.content) };
+        (field[3] & 0xffffffffffff).try_into().unwrap()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl BitPack for CanonicalHandle {
+    const TAGBITS: u32 = 240;
+
+    fn unpack(mut content: [u8; 32]) -> Self {
+        content[30] = 0;
+        content[31] = 0;
+        let inner = RawHandle::new(content);
+        Self { inner }
+    }
+
+    fn pack(&self) -> [u8; 32] {
+        self.inner.content
+    }
+}
+
 #[derive(BitPack, Debug, Clone, Copy, From, TryUnwrap)]
 pub enum Handle {
     VirtualHandle(VirtualHandle),
     PhysicalHandle(PhysicalHandle),
+    CanonicalHandle(CanonicalHandle),
 }
 
 #[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
@@ -180,15 +225,15 @@ impl From<TreeName> for Handle {
 #[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
 #[try_unwrap(ref)]
 pub enum Ref {
-    BlobName(BlobName),
-    TreeName(TreeName),
+    BlobRef(BlobName),
+    TreeRef(TreeName),
 }
 
 #[derive(BitPack, Debug, TryUnwrap, Unwrap, From, Clone, Copy)]
 #[try_unwrap(ref)]
 pub enum Object {
-    BlobName(BlobName),
-    TreeName(TreeName),
+    BlobObj(BlobName),
+    TreeObj(TreeName),
 }
 
 #[derive(BitPack, Debug, Unwrap, Clone, Copy)]
@@ -228,27 +273,36 @@ mod tests {
     use core::simd::*;
 
     #[test]
-    fn test_tag_gits() {
-        assert_eq!(Handle::TAGBITS, 241);
-        assert_eq!(BlobName::TAGBITS, 241);
-        assert_eq!(TreeName::TAGBITS, 242);
-        assert_eq!(Object::TAGBITS, 243);
-        assert_eq!(Thunk::TAGBITS, 245);
+    fn test_tag_bits() {
+        assert_eq!(Handle::TAGBITS, 242);
+        assert_eq!(BlobName::TAGBITS, 242);
+        assert_eq!(TreeName::TAGBITS, 243);
+        assert_eq!(Object::TAGBITS, 244);
+        assert_eq!(Ref::TAGBITS, 244);
+        assert_eq!(Thunk::TAGBITS, 246);
+        assert_eq!(Encode::TAGBITS, 247);
+        assert_eq!(FixHandle::TAGBITS, 249);
     }
 
     #[test]
     fn test_tag_masks() {
-        assert_eq!(Handle::TAGMASK.as_array::<32>().unwrap()[30], 0b00000001);
+        assert_eq!(Handle::TAGMASK.as_array::<32>().unwrap()[30], 0b00000011);
         assert_eq!(Handle::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
         let field: u16x16 = unsafe { core::mem::transmute(Handle::TAGMASK) };
-        assert_eq!(field[15], 0b0000000000000001);
+        assert_eq!(field[15], 0b0000000000000011);
 
-        assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[30], 0b00000010);
+        assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[30], 0b00000100);
         assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
-        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[30], 0b00011000);
+        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[30], 0b00110000);
         assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
+
+        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[30], 0b01000000);
+        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
+
+        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[30], 0b10000000);
+        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[31], 0b00000001);
     }
 
     #[test]
@@ -261,7 +315,21 @@ mod tests {
         let h: TreeName = TreeName::Tag(PhysicalHandle::new(42, 10086).into());
         let res = h.pack();
         let field: &u16x16 = unsafe { core::mem::transmute(&res) };
-        assert_eq!(field[15], 0b0000000000000011);
+        assert_eq!(field[15], 0b0000000000000101);
+
+        let h: Encode = Encode::Shallow(Thunk::Selection(TreeName::NotTag(
+            PhysicalHandle::new(42, 10086).into(),
+        )));
+        let res = h.pack();
+        let field: &u16x16 = unsafe { core::mem::transmute(&res) };
+        assert_eq!(field[15], 0b0000000001100001);
+
+        let h: FixHandle = FixHandle::Encode(Encode::Shallow(Thunk::Selection(TreeName::NotTag(
+            PhysicalHandle::new(42, 10086).into(),
+        ))));
+        let res = h.pack();
+        let field: &u16x16 = unsafe { core::mem::transmute(&res) };
+        assert_eq!(field[15], 0b0000000111100001);
     }
 
     #[test]
@@ -273,15 +341,32 @@ mod tests {
         assert_eq!(res.local_id(), 42);
         assert_eq!(res.len(), 10086);
 
-        let h: FixHandle = FixHandle::Object(Object::BlobName(BlobName::Blob(
+        let h: FixHandle = FixHandle::Object(Object::BlobObj(BlobName::Blob(
             PhysicalHandle::new(42, 10086).into(),
         )));
         let res = FixHandle::unpack(h.pack())
             .try_unwrap_object()
             .expect("Failed to unwrap to Object")
-            .try_unwrap_blob_name()
+            .try_unwrap_blob_obj()
             .expect("Failed to unwrap to BlobName")
             .unwrap_blob()
+            .try_unwrap_physical_handle()
+            .expect("Failed to unwrap to PhysicalHandle");
+
+        assert_eq!(res.local_id(), 42);
+        assert_eq!(res.len(), 10086);
+    }
+
+    #[test]
+    fn test_thunk_round_trip() {
+        let h: FixHandle = FixHandle::Thunk(Thunk::Application(TreeName::NotTag(
+            PhysicalHandle::new(42, 10086).into(),
+        )));
+        let res = FixHandle::unpack(h.pack())
+            .try_unwrap_thunk()
+            .expect("Failed to unwrap to Thunk")
+            .unwrap_application()
+            .unwrap_not_tag()
             .try_unwrap_physical_handle()
             .expect("Failed to unwrap to PhysicalHandle");
 

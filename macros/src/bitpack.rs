@@ -119,7 +119,7 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
                     result[i] &= !Self::TAGMASK[i];
                 }
                 let field: &mut [u16; 16] = unsafe { core::mem::transmute( &mut result ) };
-                field[15] |= (#index << (Self::TAGBITS - 240 - 1)) as u16;
+                field[15] |= (#index << (#max_child_widths - 240)) as u16;
                 result
             }
         }
@@ -145,7 +145,7 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
                     tag[i] &= Self::TAGMASK[i];
                 }
                 let field: &[u16; 16] = unsafe { core::mem::transmute( &tag ) };
-                let tag = field[15] >> (Self::TAGBITS - 240 - 1);
+                let tag = field[15] >> (#max_child_widths - 240);
                 match tag as u64 {
                     #(#unpack_arms)*
                     _ => todo!()

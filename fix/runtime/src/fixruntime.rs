@@ -4,7 +4,7 @@
 use crate::{
     bottom::FixShellBottom,
     // data::{BlobData, TreeData},
-    runtime::{DeterministicEquivRuntime, Executor},
+    runtime::{CouponCollector, CouponTrades, DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
@@ -32,7 +32,7 @@ pub struct FixRuntime<'a> {
 }
 
 impl<'a> FixRuntime<'a> {
-    pub fn new(store: &'a mut ObjectStore, coupon: &[u8] ) -> Self {
+    pub fn new(store: &'a mut ObjectStore, coupon: &[u8]) -> Self {
         let coupon = Object::from(store.create_blob(coupon.into())).into();
         Self { store, coupon }
     }
@@ -66,7 +66,7 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
         let b = handle
             .try_unwrap_object_ref()
             .map_err(Error::from)?
-            .try_unwrap_blob_name_ref()
+            .try_unwrap_blob_obj_ref()
             .map_err(|_| Error::TypeMismatch)?;
         Ok(self.store.get_blob(b))
     }
@@ -75,7 +75,7 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
         let t = handle
             .try_unwrap_object_ref()
             .map_err(Error::from)?
-            .try_unwrap_tree_name_ref()
+            .try_unwrap_tree_obj_ref()
             .map_err(Error::from)?;
         Ok(self.store.get_tree(t))
     }
@@ -84,12 +84,12 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
         handle
             .try_unwrap_object_ref()
             .map_err(Error::from)
-            .and_then(|h| h.try_unwrap_blob_name_ref().map_err(Error::from))
+            .and_then(|h| h.try_unwrap_blob_obj_ref().map_err(Error::from))
             .is_ok()
             || handle
                 .try_unwrap_ref_ref()
                 .map_err(Error::from)
-                .and_then(|h| h.try_unwrap_blob_name_ref().map_err(Error::from))
+                .and_then(|h| h.try_unwrap_blob_ref_ref().map_err(Error::from))
                 .is_ok()
     }
 
@@ -97,12 +97,12 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
         handle
             .try_unwrap_object_ref()
             .map_err(Error::from)
-            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(Error::from))
+            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(Error::from))
             .is_ok()
             || handle
                 .try_unwrap_ref_ref()
                 .map_err(Error::from)
-                .and_then(|h| h.try_unwrap_tree_name_ref().map_err(Error::from))
+                .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(Error::from))
                 .is_ok()
     }
 
@@ -116,13 +116,38 @@ impl<'a> Executor for FixRuntime<'a> {
         let mut bottom = FixShellBottom { parent: self };
         let res = bottom.execute(combination);
         let mut apply_coupon: Tuple = Tuple::new(4);
-        apply_coupon.set(0, Blob::new(self.coupon.pack())); 
+        apply_coupon.set(0, Blob::new(self.coupon.pack()));
         apply_coupon.set(1, Blob::new(self.create_blob_i32(2).pack()));
         apply_coupon.set(2, Blob::new(combination.pack()));
         apply_coupon.set(3, Blob::new(res.pack()));
-        Object::from(TreeName::Tag(self.create_tree(apply_coupon)
-          .unwrap_object()
-          .unwrap_tree_name()
-          .unwrap_not_tag())).into()
+        Object::from(TreeName::Tag(
+            self.create_tree(apply_coupon)
+                .unwrap_object()
+                .unwrap_tree_obj()
+                .unwrap_not_tag(),
+        ))
+        .into()
+    }
+}
+
+impl<'a> CouponCollector for FixRuntime<'a> {
+    fn trade(
+        &mut self,
+        trade_type: CouponTrades,
+        coupons: FixHandle,
+        lhs: FixHandle,
+        rhs: FixHandle,
+    ) -> FixHandle {
+        let mut combination = Tuple::new(6);
+        combination.set(0, Blob::new(self.create_blob_i32(0).pack()));
+        combination.set(1, Blob::new(self.coupon.pack()));
+        combination.set(2, Blob::new(self.create_blob_i32(trade_type as u32).pack()));
+        combination.set(3, Blob::new(coupons.pack()));
+        combination.set(4, Blob::new(lhs.pack()));
+        combination.set(5, Blob::new(rhs.pack()));
+
+        let combination = self.create_tree(combination);
+        let mut bottom = FixShellBottom { parent: self };
+        bottom.execute(&combination)
     }
 }

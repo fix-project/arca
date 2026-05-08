@@ -107,6 +107,12 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
                 };
 
                 f = match &*effect {
+                    b"create_blob_i32" => {
+                        let Some(Value::Word(w)) = args.pop() else {
+                            panic!()
+                        };
+                        k.apply(self.create_blob_i32(w.read() as u32))
+                    }
                     b"create_blob_i64" => {
                         let Some(Value::Word(w)) = args.pop() else {
                             panic!()

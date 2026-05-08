@@ -1,6 +1,6 @@
-use crate::runtime::DeterministicEquivRuntime;
 use crate::_PROCEDURE;
-use arca::{Word, Blob, Function, Table};
+use crate::runtime::DeterministicEquivRuntime;
+use arca::{Blob, Function, Table, Word};
 use arca::{Runtime as _, Tuple};
 use arcane::{
     __MODE_read_only, __MODE_read_write, __NR_length, __TYPE_table, arca_argument,
@@ -10,7 +10,7 @@ use arcane::{
 
 use core::arch::x86_64::*;
 use core::ffi::c_void;
-use fixhandle::rawhandle::{BitPack, FixHandle, Handle, TreeName, Object, Thunk, Encode};
+use fixhandle::rawhandle::{BitPack, Encode, FixHandle, Handle, Object, Thunk, TreeName};
 use user::ArcaError;
 use user::Ref;
 use user::Runtime;
@@ -109,8 +109,9 @@ impl DeterministicEquivRuntime for FixShellPhysical {
             .apply(Runtime::create_blob(&lhs))
             .apply(Runtime::create_blob(&rhs))
             .call_with_current_continuation()
-            .try_into().expect("is_equal: return type is not a word");
-        
+            .try_into()
+            .expect("is_equal: return type is not a word");
+
         let result = result.read();
         result == 1
     }
@@ -120,7 +121,7 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_blob_name_ref().map_err(|_| ArcaError::BadType))
+            .and_then(|h| h.try_unwrap_blob_obj_ref().map_err(|_| ArcaError::BadType))
             .is_ok()
     }
 
@@ -129,12 +130,12 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_blob_name_ref().map_err(|_| ArcaError::BadType))
+            .and_then(|h| h.try_unwrap_blob_obj_ref().map_err(|_| ArcaError::BadType))
             .is_ok()
             || handle
                 .try_unwrap_ref_ref()
                 .map_err(|_| ArcaError::BadType)
-                .and_then(|h| h.try_unwrap_blob_name_ref().map_err(|_| ArcaError::BadType))
+                .and_then(|h| h.try_unwrap_blob_ref_ref().map_err(|_| ArcaError::BadType))
                 .is_ok()
     }
 
@@ -144,30 +145,23 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
+            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
             .is_ok()
             || handle
                 .try_unwrap_ref_ref()
                 .map_err(|_| ArcaError::BadType)
-                .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
+                .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(|_| ArcaError::BadType))
                 .is_ok()
     }
 
     fn is_object(handle: Self::Handle) -> bool {
         let handle = FixHandle::unpack(handle);
-        handle
-            .try_unwrap_object_ref()
-            .is_ok()
+        handle.try_unwrap_object_ref().is_ok()
     }
 
     fn is_data(handle: Self::Handle) -> bool {
         let handle = FixHandle::unpack(handle);
-        handle
-            .try_unwrap_object_ref()
-            .is_ok()
-            || handle
-                .try_unwrap_ref_ref()
-                .is_ok()
+        handle.try_unwrap_object_ref().is_ok() || handle.try_unwrap_ref_ref().is_ok()
     }
 
     fn is_tag(handle: Self::Handle) -> bool {
@@ -176,12 +170,11 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         let res = handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
-            .map( |h| match h {
+            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
+            .map(|h| match h {
                 TreeName::Tag(_) => true,
-                TreeName::NotTag(_) => false
-            }
-            );
+                TreeName::NotTag(_) => false,
+            });
 
         res.unwrap_or_default()
     }
@@ -192,16 +185,18 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         let result = handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
-            .or_else(|_| handle
-                .try_unwrap_ref_ref()
-                .map_err(|_| ArcaError::BadType)
-                .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType)));
+            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
+            .or_else(|_| {
+                handle
+                    .try_unwrap_ref_ref()
+                    .map_err(|_| ArcaError::BadType)
+                    .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(|_| ArcaError::BadType))
+            });
 
         if let Ok(tree) = result {
-           FixHandle::Thunk(Thunk::Application(*tree)).pack()
+            FixHandle::Thunk(Thunk::Application(*tree)).pack()
         } else {
-            arca_log ("create_application_thunk: input handle is not a TreeObj or TreeRef");
+            arca_log("create_application_thunk: input handle is not a TreeObj or TreeRef");
             panic!()
         }
     }
@@ -214,7 +209,7 @@ impl DeterministicEquivRuntime for FixShellPhysical {
         if let Ok(thunk) = result {
             FixHandle::Encode(Encode::Strict(thunk)).pack()
         } else {
-            arca_log ("create_strict_encode: input handle is not a Thunk");
+            arca_log("create_strict_encode: input handle is not a Thunk");
             panic!()
         }
     }
@@ -226,10 +221,8 @@ impl DeterministicEquivRuntime for FixShellPhysical {
             .map_err(|_| ArcaError::BadType)
             .map(|h| {
                 let h: &Handle = match h {
-                    fixhandle::rawhandle::Object::BlobName(blob_name) => {
-                        blob_name.unwrap_blob_ref()
-                    }
-                    fixhandle::rawhandle::Object::TreeName(tree_name) => match tree_name {
+                    fixhandle::rawhandle::Object::BlobObj(blob_name) => blob_name.unwrap_blob_ref(),
+                    fixhandle::rawhandle::Object::TreeObj(tree_name) => match tree_name {
                         fixhandle::rawhandle::TreeName::NotTag(handle) => handle,
                         fixhandle::rawhandle::TreeName::Tag(handle) => handle,
                     },
@@ -237,6 +230,7 @@ impl DeterministicEquivRuntime for FixShellPhysical {
                 match h {
                     Handle::VirtualHandle(virtual_handle) => virtual_handle.len(),
                     Handle::PhysicalHandle(physical_handle) => physical_handle.len(),
+                    Handle::CanonicalHandle(canonical_handle) => canonical_handle.len(),
                 }
             });
         len.expect("len: failed to get size")
@@ -278,7 +272,7 @@ impl DeterministicEquivRuntime for FixShell {
     }
 
     fn is_blob_obj(handle: Self::Handle) -> bool {
-       FixShellPhysical::is_blob_obj(handle) 
+        FixShellPhysical::is_blob_obj(handle)
     }
 
     fn is_blob(handle: Self::Handle) -> bool {
@@ -350,7 +344,7 @@ pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize
         arca_compat_mmap(addr, len, __MODE_read_write);
         blob.read(0, core::slice::from_raw_parts_mut(addr as *mut u8, len));
     };
-    user::error::log_int("attached memory", len as u64);
+    // user::error::log_int("attached memory", len as u64);
     len
 }
 
@@ -374,7 +368,7 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     };
 
     let len = FixShell::len(handle);
-    user::error::log_int("attached tree", len as u64);
+    // user::error::log_int("attached tree", len as u64);
 
     unsafe {
         arca_compat_mmap(addr, len * 32, __MODE_read_write);
@@ -387,25 +381,38 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     len
 }
 
+/// Creates a tree from a region of memory.  Returns the handle,
+///
+/// # Safety
+///
+/// [addr] must refer to an region of memory which is large enough for the specified [len];  
+/// Each entry of the tree takes 32 bytes.
 pub unsafe fn fixpoint_create_tree(addr: *const c_void, len: usize) -> [u8; 32] {
-    let mut scratch = Runtime::create_tuple( len );
+    let mut scratch = Runtime::create_tuple(len);
     unsafe {
         let slice = core::slice::from_raw_parts(addr as *const u8, len * 32);
         for i in 0..len {
-            let element = Runtime::create_blob( &slice [i * 32 .. (i + 1) * 32]);
-            scratch.set(i,element); 
+            let element = Runtime::create_blob(&slice[i * 32..(i + 1) * 32]);
+            scratch.set(i, element);
         }
     };
     FixShell::create_tree(scratch)
 }
 
+/// Creates a tag from a region of memory.  Returns the handle,
+///
+/// # Safety
+///
+/// [addr] must refer to an region of memory which is large enough for the specified [len];  
+/// Each entry of the tree takes 32 bytes. _PROCEDURE must be initialized before first invocation
+/// of this function.
 pub unsafe fn fixpoint_create_tag(addr: *const c_void, len: usize) -> [u8; 32] {
     /// Check that the author field matches with current procedure
-    let author_field = unsafe {    core::slice::from_raw_parts(addr as *const u8, 32) };
+    let author_field = unsafe { core::slice::from_raw_parts(addr as *const u8, 32) };
 
     let procedure_ref = &raw mut _PROCEDURE;
 
-    if unsafe { (& *procedure_ref).as_slice() } != author_field  {
+    if unsafe { (&*procedure_ref).as_slice() } != author_field {
         arca_log("create_tag: author does not match current procedure");
         panic!()
     };
@@ -413,18 +420,18 @@ pub unsafe fn fixpoint_create_tag(addr: *const c_void, len: usize) -> [u8; 32] {
     let result = unsafe { fixpoint_create_tree(addr, len) };
     let handle = FixHandle::unpack(result);
 
-    let result: Result<Handle, ArcaError> =    handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_name_ref().map_err(|_| ArcaError::BadType))
-            .map( |h| (*h).into() );
+    let result: Result<Handle, ArcaError> = handle
+        .try_unwrap_object_ref()
+        .map_err(|_| ArcaError::BadType)
+        .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
+        .map(|h| (*h).into());
 
     let Ok(handle) = result else {
         arca_log("create_tag: created not a tree");
         panic!()
     };
 
-    FixHandle::Object(Object::TreeName(TreeName::Tag(handle))).pack()
+    FixHandle::Object(Object::TreeObj(TreeName::Tag(handle))).pack()
 }
 
 pub fn fixpoint_is_blob_obj(handle: [u8; 32]) -> i32 {
@@ -447,10 +454,10 @@ pub fn fixpoint_is_equal(lhs: [u8; 32], rhs: [u8; 32]) -> i32 {
     FixShell::is_equal(lhs, rhs) as i32
 }
 
-pub fn fixpoint_create_application_thunk(handle: [u8;32]) -> [u8;32] {
+pub fn fixpoint_create_application_thunk(handle: [u8; 32]) -> [u8; 32] {
     FixShell::create_application_thunk(handle)
 }
 
-pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8;32] {
+pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
     FixShell::create_strict_encode(handle)
 }

@@ -56,7 +56,7 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
         let table = crate::rt::TABLES[table_idx as usize];
         let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
-            bytes: shell::fixpoint_create_tree(addr as *const c_void, (*table).size as usize)
+            bytes: shell::fixpoint_create_tree(addr as *const c_void, (*table).size as usize),
         }
     }
 }
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tag(
         let table = crate::rt::TABLES[table_idx as usize];
         let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
-            bytes: shell::fixpoint_create_tree(addr as *const c_void, (*table).size as usize)
+            bytes: shell::fixpoint_create_tag(addr as *const c_void, (*table).size as usize),
         }
     }
 }
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn w2c_fixpoint_create_application_thunk(
     handle: wasm_rt_externref_t,
 ) -> wasm_rt_externref_t {
     wasm_rt_externref_t {
-        bytes: shell::fixpoint_create_application_thunk(handle.bytes)
+        bytes: shell::fixpoint_create_application_thunk(handle.bytes),
     }
 }
 
@@ -153,6 +153,6 @@ pub unsafe extern "C" fn w2c_fixpoint_create_strict_encode(
     handle: wasm_rt_externref_t,
 ) -> wasm_rt_externref_t {
     wasm_rt_externref_t {
-        bytes: shell::fixpoint_create_strict_encode(handle.bytes)
+        bytes: shell::fixpoint_create_strict_encode(handle.bytes),
     }
 }

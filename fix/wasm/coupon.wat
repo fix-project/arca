@@ -16,7 +16,9 @@
  (table $coupons 0 externref)
  (table $lhstree 0 externref)
  (table $rhstree 0 externref)
+ (table $output_coupon_scratch 4 externref)
  (memory $mem_0 0)
+ (memory $mem_1 0)
  (global $Eq i32 (i32.const 0))
  (global $Eval i32 (i32.const 1))
  (global $Apply i32 (i32.const 2))
@@ -35,8 +37,8 @@
        (if (result i32)
          (then
            ;; Check if the coupon type matches the input type
-           (call $attach_blob (i32.const 0) (table.get $coupon_scratch (i32.const 1)))
-           (i32.load (memory $mem_0) (i32.const 0))
+           (call $attach_blob (i32.const 1) (table.get $coupon_scratch (i32.const 1)))
+           (i32.load (memory $mem_1) (i32.const 0))
            (local.get $type)
            i32.eq
            (if (result i32)
@@ -69,14 +71,11 @@
    (call $is_coupon (local.get $tag) (global.get $Storage))
  )
  (func $create_coupon (param $type i32) (param $lhs externref) (param $rhs externref) (result externref)
-   ;; grow scratch space
-   (table.grow $coupon_scratch (table.get $encode (i32.const 1)) (i32.const 4))
-   drop
-   (table.set $coupon_scratch (i32.const 0) (table.get $encode (i32.const 1)))
-   (table.set $coupon_scratch (i32.const 1) (call $create_blob_i32 (local.get $type)))
-   (table.set $coupon_scratch (i32.const 2) (local.get $lhs))
-   (table.set $coupon_scratch (i32.const 3) (local.get $rhs))
-   (call $create_tag (i32.const 1))
+   (table.set $output_coupon_scratch (i32.const 0) (table.get $encode (i32.const 1)))
+   (table.set $output_coupon_scratch (i32.const 1) (call $create_blob_i32 (local.get $type)))
+   (table.set $output_coupon_scratch (i32.const 2) (local.get $lhs))
+   (table.set $output_coupon_scratch (i32.const 3) (local.get $rhs))
+   (call $create_tag (i32.const 5))
  )
  (func $create_eq_coupon (param $lhs externref) (param $rhs externref) (result externref)
    (call $create_coupon (global.get $Eq) (local.get $lhs) (local.get $rhs))
@@ -674,10 +673,10 @@
              (table.get $encode (i32.const 3)))
        ;; attach request field
        (call $attach_blob
-             (i32.const 0)
+             (i32.const 1)
              (table.get $encode (i32.const 2)))
        (call $make_coupon
-             (i32.load $mem_0 (i32.const 0))
+             (i32.load $mem_1 (i32.const 0))
              (table.get $encode (i32.const 4))
              (table.get $encode (i32.const 5))
        )

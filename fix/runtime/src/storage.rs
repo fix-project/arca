@@ -76,6 +76,7 @@ impl Storage for ObjectStore {
         match handle {
             BlobName::Blob(h) => match h {
                 Handle::VirtualHandle(_) => todo!(),
+                Handle::CanonicalHandle(_) => todo!(),
                 Handle::PhysicalHandle(physical_handle) => self
                     .store
                     .get(physical_handle.local_id())
@@ -89,6 +90,7 @@ impl Storage for ObjectStore {
         match handle {
             TreeName::NotTag(t) | TreeName::Tag(t) => match t {
                 Handle::VirtualHandle(_) => todo!(),
+                Handle::CanonicalHandle(_) => todo!(),
                 Handle::PhysicalHandle(physical_handle) => self
                     .store
                     .get(physical_handle.local_id())
