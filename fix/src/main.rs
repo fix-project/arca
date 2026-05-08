@@ -204,18 +204,4 @@ async fn main(_: &[usize]) {
     let num = u64::from_le_bytes(arr);
     log::info!("{:?}", num);
     assert_eq!(num, 1031);
-    //
-    //let mut result_handle: [u8; 32] = [0; 32];
-    //let result_blob: Blob = runtime
-    //    .get_tree(&apply_coupon)
-    //    .expect("Add did not return a Tree")
-    //    .get(3)
-    //    .try_into()
-    //    .expect("The result entry is not an Arca Blob");
-    //result_blob.read(0, &mut result_handle);
-    //let result_handle = FixHandle::unpack(result_handle);
-    //log::info!("result handle is: {result_handle:?}");
-    //let result_blob = runtime
-    //    .get_blob(&result_handle)
-    //    .expect("The result is not a Blob");
 }
