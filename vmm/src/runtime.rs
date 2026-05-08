@@ -14,7 +14,7 @@ use std::{
 };
 
 use common::{
-    hypercall::{self, TcpInfo},
+    hypercall::{self, FileInfo, TcpInfo},
     BuddyAllocator,
 };
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
@@ -354,65 +354,77 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             let _ = stream;
                         }
                         hypercall::FILE_OPEN => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
                             let (ptr, len) = (
-                                BuddyAllocator.from_offset(args[0] as usize),
-                                args[1] as usize,
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
                             );
-                            let mode = args[2];
                             let slice = unsafe { slice::from_raw_parts(ptr, len) };
                             let s = str::from_utf8(slice).unwrap();
                             let f = OpenOptions::new()
-                                .read(mode & 0b1 == 0b1)
-                                .write(mode & 0b10 == 0b10)
-                                .create(mode & 0b100 == 0b100)
-                                .append(mode & 0b1000 == 0b1000)
-                                .truncate(mode & 0b10000 == 0b10000)
+                                .read(info.read)
+                                .write(info.write)
+                                .create(info.create)
+                                .append(info.append)
+                                .truncate(info.truncate)
                                 .open(s)
                                 .ok()
                                 .map(Box::new)
                                 .map(Box::into_raw);
-                            regs.rax = f.unwrap_or(core::ptr::null_mut()) as u64;
+                            info.id
+                                .store(f.unwrap_or(core::ptr::null_mut()) as u64, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::FILE_READ => {
-                            let file_ptr = args[0] as usize as *mut File;
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
                             let file = unsafe { &mut *file_ptr };
                             let (ptr, len) = (
-                                BuddyAllocator.from_offset(args[1] as usize),
-                                args[2] as usize,
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
                             );
                             let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
                             let size = file.read(slice).unwrap();
-                            regs.rax = size as u64;
+                            info.len.store(size, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::FILE_WRITE => {
-                            let file_ptr = args[0] as usize as *mut File;
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
                             let file = unsafe { &mut *file_ptr };
                             let (ptr, len) = (
-                                BuddyAllocator.from_offset(args[1] as usize),
-                                args[2] as usize,
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
                             );
                             let slice = unsafe { slice::from_raw_parts(ptr, len) };
                             let size = file.write(slice).unwrap();
-                            regs.rax = size as u64;
+                            info.len.store(size, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::FILE_SEEK => {
-                            let file_ptr = args[0] as usize as *mut File;
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
                             let file = unsafe { &mut *file_ptr };
-                            let offset = args[1] as i64;
-                            let whence = args[2] as i64;
-                            let seek_from = match whence {
-                                0 => SeekFrom::Start(offset as u64),
-                                1 => SeekFrom::Current(offset),
-                                -1 => SeekFrom::End(offset),
-                                _ => panic!("invalid whence: {whence}"),
+                            let seek_from = match info.whence {
+                                0 => SeekFrom::Start(info.offset as u64),
+                                1 => SeekFrom::Current(info.offset as i64),
+                                -1 => SeekFrom::End(info.offset as i64),
+                                _ => panic!("invalid whence: {}", info.whence),
                             };
                             let pos = file.seek(seek_from).unwrap();
-                            regs.rax = pos as u64;
+                            info.len.store(pos as usize, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::FILE_CLOSE => {
-                            let stream_ptr = args[0] as usize as *mut File;
-                            let stream = *unsafe { Box::from_raw(stream_ptr) };
-                            let _ = stream;
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
+                            let file = *unsafe { Box::from_raw(file_ptr) };
+                            let _ = file;
                         }
                         x => unimplemented!("hypercall {x}"),
                     };

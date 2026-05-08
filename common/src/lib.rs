@@ -73,4 +73,19 @@ pub mod hypercall {
         pub len: AtomicUsize,
         pub done: AtomicBool,
     }
+
+    #[derive(Debug, Default)]
+    pub struct FileInfo {
+        pub read: bool,
+        pub write: bool,
+        pub create: bool,
+        pub append: bool,
+        pub truncate: bool,
+        pub buf: usize,
+        pub offset: isize,
+        pub whence: i64,
+        pub len: AtomicUsize,
+        pub id: AtomicU64,
+        pub done: AtomicBool,
+    }
 }

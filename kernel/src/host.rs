@@ -237,7 +237,14 @@ pub mod net {
 }
 
 pub mod fs {
-    use common::{hypercall, BuddyAllocator};
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use common::{
+        hypercall::{self, FileInfo},
+        BuddyAllocator,
+    };
+
+    use crate::kthread;
 
     pub struct File {
         id: u64,
@@ -252,16 +259,23 @@ pub mod fs {
             append: bool,
             truncate: bool,
         ) -> Option<File> {
-            let mode = read as u64
-                | (write as u64) << 1
-                | (create as u64) << 2
-                | (append as u64) << 3
-                | (truncate as u64) << 4;
-            let ptr = BuddyAllocator.to_offset(path.as_ptr());
-            let len = path.len();
-            let id = unsafe {
-                crate::io::hypercall3(hypercall::FILE_OPEN, ptr as u64, len as u64, mode)
+            let info = FileInfo {
+                buf: BuddyAllocator.to_offset(path.as_ptr()),
+                len: AtomicUsize::new(path.len()),
+                read,
+                write,
+                create,
+                append,
+                truncate,
+                ..Default::default()
             };
+            unsafe {
+                crate::io::hypercall1(hypercall::FILE_OPEN, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            let id = info.id.load(Ordering::SeqCst);
             if id != 0 {
                 Some(File { id })
             } else {
@@ -272,35 +286,71 @@ pub mod fs {
         pub fn close(self) {}
 
         pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let ptr = BuddyAllocator.to_offset(buf.as_ptr());
-            let len = buf.len();
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(buf.as_ptr()),
+                len: AtomicUsize::new(buf.len()),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall3(hypercall::FILE_READ, self.id, ptr as u64, len as u64)
-                    as usize
+                crate::io::hypercall1(hypercall::FILE_READ, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
+            info.len.load(Ordering::SeqCst)
         }
 
         pub fn write(&mut self, buf: &[u8]) -> usize {
-            let ptr = BuddyAllocator.to_offset(buf.as_ptr());
-            let len = buf.len();
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(buf.as_ptr()),
+                len: AtomicUsize::new(buf.len()),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall3(hypercall::FILE_WRITE, self.id, ptr as u64, len as u64)
-                    as usize
+                crate::io::hypercall1(
+                    hypercall::FILE_WRITE,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
+            info.len.load(Ordering::SeqCst)
         }
 
         pub fn seek(&mut self, offset: isize, whence: i64) -> usize {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                offset,
+                whence,
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall3(hypercall::FILE_SEEK, self.id, offset as u64, whence as u64)
-                    as usize
+                crate::io::hypercall1(hypercall::FILE_SEEK, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
+            info.len.load(Ordering::SeqCst)
         }
     }
 
     impl Drop for File {
         fn drop(&mut self) {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
             unsafe {
-                crate::io::hypercall1(hypercall::FILE_CLOSE, self.id);
+                crate::io::hypercall1(
+                    hypercall::FILE_CLOSE,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
             }
         }
     }
