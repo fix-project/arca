@@ -14,7 +14,7 @@ pub extern "C" fn _rsstart() -> ! {
     let mut bytes: [u8; 1024] = [0; 1024];
     stdin.read(&mut bytes).unwrap();
 
-    let message = "<h1>Hello, World!</h1>";
+    let message = "hello, world";
     let len = message.len();
 
     print!("HTTP/1.1 200 OK\r\n");

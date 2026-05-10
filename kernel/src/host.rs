@@ -131,7 +131,7 @@ pub mod net {
             }
         }
 
-        pub fn accept(&mut self) -> TcpStream {
+        pub fn accept(&self) -> TcpStream {
             let info = TcpInfo {
                 id: AtomicU64::new(self.id),
                 ..Default::default()
@@ -223,6 +223,8 @@ pub mod net {
             }
         }
     }
+
+    impl !Sync for TcpStream {}
 
     impl core::fmt::Write for TcpStream {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -365,4 +367,6 @@ pub mod fs {
             Ok(())
         }
     }
+
+    impl !Sync for File {}
 }

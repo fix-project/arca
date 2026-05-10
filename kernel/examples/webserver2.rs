@@ -5,19 +5,19 @@ use common::elfloader;
 use kernel::host::net::TcpListener;
 use kernel::{kthread, prelude::*};
 
-const HANDLER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_webserver"));
+const HANDLER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_webserver2"));
 
 #[kmain]
 fn main(_: &[usize]) {
     kthread::wfi();
-    let listener = TcpListener::bind(&[0, 0, 0, 0], 8080);
-    log::info!("listening on port 8080");
-    let handler: Function = elfloader::load_elf(HANDLER).unwrap();
-    loop {
-        let handler = handler.clone();
-        let mut stream = listener.accept();
+    let listener = Arc::new(TcpListener::bind(&[0, 0, 0, 0], 8081));
+    log::info!("listening on port 8081");
+
+    for _ in 0..kernel::ncores() {
+        let listener = listener.clone();
         kthread::spawn(move || {
-            let mut handler = handler;
+            let mut handler: Function = elfloader::load_elf(HANDLER).unwrap();
+            let mut current = None;
             loop {
                 let effect: Function = handler
                     .force()
@@ -37,19 +37,32 @@ fn main(_: &[usize]) {
                     .and_then(|x| x.try_into().ok())
                     .expect("could not find continuation");
                 handler = match (&*effect, &*args) {
-                    (b"read", &[Value::Word(fd), Value::Word(len)]) => {
-                        assert_eq!(fd.read(), 0);
-                        let mut v = vec![0; len.read() as usize];
-                        let len = stream.recv(&mut v);
-                        v.truncate(len);
-                        k.apply(Blob::new(v))
+                    (b"accept", &[]) => {
+                        current = Some(listener.accept());
+                        k.apply(None)
                     }
-                    (b"write", &[Value::Word(fd), Value::Blob(ref data)]) => {
-                        assert_eq!(fd.read(), 1);
-                        let len = stream.send(&*data);
-                        k.apply(Word::new(len as u64))
+                    (b"recv", &[Value::Word(len)]) => {
+                        if let Some(ref mut stream) = current {
+                            let mut v = vec![0; len.read() as usize];
+                            let len = stream.recv(&mut v);
+                            v.truncate(len);
+                            k.apply(Blob::new(v))
+                        } else {
+                            k.apply(None)
+                        }
                     }
-                    (b"close", &[Value::Word(_)]) => k.apply(None),
+                    (b"send", &[Value::Blob(ref data)]) => {
+                        if let Some(ref mut stream) = current {
+                            let len = stream.send(&*data);
+                            k.apply(Word::new(len as u64))
+                        } else {
+                            k.apply(None)
+                        }
+                    }
+                    (b"hangup", &[]) => {
+                        current.take();
+                        k.apply(None)
+                    }
                     (b"exit", &[Value::Word(_)]) => {
                         break;
                     }

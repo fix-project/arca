@@ -308,7 +308,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
                             let listener_ptr =
                                 info.id.load(Ordering::SeqCst) as usize as *mut TcpListener;
-                            let listener = unsafe { &mut *listener_ptr };
+                            let listener = unsafe { &*listener_ptr };
                             let (stream, _) = listener.accept().unwrap();
                             info.id
                                 .store(Box::into_raw(Box::new(stream)) as u64, Ordering::SeqCst);
@@ -325,7 +325,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 info.len.load(Ordering::SeqCst),
                             );
                             let slice = unsafe { slice::from_raw_parts(ptr, len) };
-                            let len = stream.write(slice).unwrap();
+                            let len = stream.write(slice).unwrap_or(0);
+                            // assert_eq!(len, slice.len());
                             info.len.store(len, Ordering::SeqCst);
                             info.done.store(true, Ordering::SeqCst);
                         }
@@ -352,6 +353,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             let mut stream = *unsafe { Box::from_raw(stream_ptr) };
                             stream.flush().unwrap();
                             let _ = stream;
+                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::FILE_OPEN => {
                             let info: &FileInfo =
