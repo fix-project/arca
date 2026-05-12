@@ -30,7 +30,7 @@ pub struct FixShell;
 
 impl DeterministicEquivRuntime for FixShellPhysical {
     type BlobData = Blob<Runtime>;
-    type TreeData = Tuple<Runtime>;
+    type TreeData = Blob<Runtime>;
     type Handle = [u8; 32];
     type Error = ArcaError;
 
@@ -99,7 +99,7 @@ impl DeterministicEquivRuntime for FixShellPhysical {
     }
 
     fn get_tree(handle: Self::Handle) -> Result<Self::TreeData, Self::Error> {
-        let result: Tuple<Runtime> = Function::symbolic("get_tree")
+        let result: Blob<Runtime> = Function::symbolic("get_tree")
             .apply(Runtime::create_blob(&handle))
             .call_with_current_continuation()
             .try_into()
@@ -230,7 +230,7 @@ impl DeterministicEquivRuntime for FixShellPhysical {
 
 impl DeterministicEquivRuntime for FixShell {
     type BlobData = Blob<Runtime>;
-    type TreeData = Tuple<Runtime>;
+    type TreeData = Blob<Runtime>;
     type Handle = [u8; 32];
     type Error = ArcaError;
 
@@ -364,10 +364,7 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     unsafe {
         arca_compat_mmap(addr, len * 32, __MODE_read_write);
         let slice = core::slice::from_raw_parts_mut(addr as *mut u8, len * 32);
-        for i in 0..len {
-            let element: Blob<Runtime> = tree.get(i).try_into().unwrap();
-            element.read(0, &mut slice[i * 32..(i + 1) * 32]);
-        }
+        tree.read(0, slice)
     };
     len
 }
@@ -379,15 +376,10 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
 /// Each entry of the tree takes 32 bytes.
 pub unsafe fn fixpoint_create_tree(addr: *const c_void, len: usize) -> [u8; 32] {
-    let mut scratch = Runtime::create_tuple(len);
     unsafe {
         let slice = core::slice::from_raw_parts(addr as *const u8, len * 32);
-        for i in 0..len {
-            let element = Runtime::create_blob(&slice[i * 32..(i + 1) * 32]);
-            scratch.set(i, element);
-        }
-    };
-    FixShell::create_tree(scratch)
+        FixShell::create_tree(Blob::new(slice))
+    }
 }
 
 /// Creates a tag from a region of memory.  Returns the handle,

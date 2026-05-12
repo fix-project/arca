@@ -1,8 +1,9 @@
 use core::clone::Clone;
 use core::result::Result;
 
-use fixhandle::rawhandle::FixHandle;
+use fixhandle::rawhandle::{FixHandle, Encode, Thunk, Object};
 
+#[allow(unused)]
 pub trait DeterministicEquivRuntime {
     type BlobData: Clone + core::fmt::Debug;
     type TreeData: Clone + core::fmt::Debug;
@@ -23,14 +24,17 @@ pub trait DeterministicEquivRuntime {
     fn is_equal(lhs: &Self::Handle, rhs: &Self::Handle) -> bool;
 }
 
+#[allow(unused)]
 pub trait ExecutionRuntime: DeterministicEquivRuntime {
     fn request_execution(&mut self, combination: &Self::Handle) -> Result<(), Self::Error>;
 }
 
+#[allow(unused)]
 pub trait Executor {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle;
 }
 
+#[allow(unused)]
 #[repr(u32)]
 pub enum CouponTrades {
     EqTree = 0,
@@ -48,9 +52,11 @@ pub enum CouponTrades {
     EqSelf = 12,
 }
 
+#[allow(unused)]
 pub trait CouponHelper: DeterministicEquivRuntime {
     fn read_blob(blob: &Self::BlobData, offset: usize, buf: &mut [u8]) -> usize;
     fn get_tree_entry(tree: &Self::TreeData, offset: usize) -> Self::Handle;
+    fn get_tree_len(tree: &Self::TreeData) -> usize;
 
     fn trade(
         &mut self,
@@ -100,5 +106,39 @@ pub trait CouponHelper: DeterministicEquivRuntime {
     fn get_coupon_rhs(&mut self, coupon: &Self::Handle) -> Self::Handle {
         let coupon_content = self.get_tree(coupon).expect("Coupon not a tree");
         Self::get_tree_entry(&coupon_content, 3)
+    }
+}
+
+#[allow(unused)]
+pub trait Visitor : CouponHelper<Handle=FixHandle> {
+    fn visit<F>(&mut self, handle: FixHandle, callback: &mut F)
+    where F: FnMut(&mut Self, &FixHandle), 
+    {
+        match handle {
+            FixHandle::Encode(e) => {
+                match e {
+                    Encode::Strict(t) | Encode::Shallow(t) => self.visit(FixHandle::Thunk(t), callback)
+                }
+            },
+            FixHandle::Ref(_) => todo!(),
+            FixHandle::Thunk(t) => {
+                match t {
+                    Thunk::Application(tree) => self.visit(FixHandle::Object(Object::from(tree)), callback),
+                    _ => todo!()
+                }
+            },
+            FixHandle::Object(obj) => {
+                match obj {
+                    Object::BlobObj(_) => {},
+                    Object::TreeObj(_) => {
+                        let tree_data = self.get_tree(&handle).unwrap();
+                        for i in 0..Self::get_tree_len(&tree_data) {
+                            self.visit(Self::get_tree_entry(&tree_data, i), callback);
+                        }
+                    }
+                }
+            }
+        };
+        callback(self, &handle);
     }
 }

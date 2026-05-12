@@ -11,7 +11,8 @@ use bytemuck::bytes_of;
 use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
 use fixhandle::rawhandle::{FixHandle, Object, TreeName};
-use kernel::types::{Blob, Tuple};
+use kernel::types::{Blob};
+use kernel::prelude::*;
 
 #[derive(Debug)]
 pub enum Error {
@@ -40,7 +41,7 @@ impl<'a> FixRuntime<'a> {
 
 impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
     type BlobData = Blob;
-    type TreeData = Tuple;
+    type TreeData = Blob;
     type Handle = FixHandle;
     type Error = Error;
 
@@ -58,7 +59,7 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
         Object::from(self.store.create_blob(data)).into()
     }
 
-    fn create_tree(&mut self, data: Tuple) -> Self::Handle {
+    fn create_tree(&mut self, data: Blob) -> Self::Handle {
         Object::from(self.store.create_tree(data)).into()
     }
 
@@ -115,13 +116,15 @@ impl<'a> Executor for FixRuntime<'a> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let mut bottom = FixShellBottom { parent: self };
         let res = bottom.execute(combination);
-        let mut apply_coupon: Tuple = Tuple::new(4);
-        apply_coupon.set(0, Blob::new(self.coupon.pack()));
-        apply_coupon.set(1, Blob::new(self.create_blob_i32(2).pack()));
-        apply_coupon.set(2, Blob::new(combination.pack()));
-        apply_coupon.set(3, Blob::new(res.pack()));
+
+        let mut apply_coupon = Vec::with_capacity(32 * 4);
+        apply_coupon.extend_from_slice(&self.coupon.pack());
+        apply_coupon.extend_from_slice(&self.create_blob_i32(2).pack());
+        apply_coupon.extend_from_slice(&combination.pack());
+        apply_coupon.extend_from_slice(&res.pack());
+
         Object::from(TreeName::Tag(
-            self.create_tree(apply_coupon)
+            self.create_tree(Blob::new(apply_coupon))
                 .unwrap_object()
                 .unwrap_tree_obj()
                 .unwrap_not_tag(),
@@ -137,9 +140,12 @@ impl<'a> CouponHelper for FixRuntime<'a> {
 
     fn get_tree_entry(tree: &Self::TreeData, offset: usize) -> Self::Handle {
         let mut scratch: [u8; 32] = [0; 32];
-        let entry: Blob = tree.get(offset).try_into().expect("tree entry not a blob");
-        entry.read(0, &mut scratch);
+        tree.read(offset * 32, &mut scratch);
         FixHandle::unpack(scratch)
+    }
+
+    fn get_tree_len(tree: &Self::TreeData) -> usize {
+        tree.len() / 32
     }
 
     fn trade(
@@ -149,15 +155,15 @@ impl<'a> CouponHelper for FixRuntime<'a> {
         lhs: FixHandle,
         rhs: FixHandle,
     ) -> FixHandle {
-        let mut combination = Tuple::new(6);
-        combination.set(0, Blob::new(self.create_blob_i32(0).pack()));
-        combination.set(1, Blob::new(self.coupon.pack()));
-        combination.set(2, Blob::new(self.create_blob_i32(trade_type as u32).pack()));
-        combination.set(3, Blob::new(coupons.pack()));
-        combination.set(4, Blob::new(lhs.pack()));
-        combination.set(5, Blob::new(rhs.pack()));
+        let mut combination = Vec::with_capacity(32 * 6);
+        combination.extend_from_slice(&self.create_blob_i32(0).pack());
+        combination.extend_from_slice(&self.coupon.pack());
+        combination.extend_from_slice(&self.create_blob_i32(trade_type as u32).pack());
+        combination.extend_from_slice(&coupons.pack());
+        combination.extend_from_slice(&lhs.pack());
+        combination.extend_from_slice(&rhs.pack());
 
-        let combination = self.create_tree(combination);
+        let combination = self.create_tree(Blob::new(combination));
         let mut bottom = FixShellBottom { parent: self };
         bottom.execute(&combination)
     }

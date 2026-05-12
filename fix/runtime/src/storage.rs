@@ -43,9 +43,9 @@ impl<Data: Clone> RawObjectStore<Data> {
 
 pub trait Storage {
     fn create_blob(&mut self, data: Blob) -> BlobName;
-    fn create_tree(&mut self, data: Tuple) -> TreeName;
+    fn create_tree(&mut self, data: Blob) -> TreeName;
     fn get_blob(&self, handle: &BlobName) -> Blob;
-    fn get_tree(&self, handle: &TreeName) -> Tuple;
+    fn get_tree(&self, handle: &TreeName) -> Blob;
 }
 
 #[derive(Default, Debug)]
@@ -66,8 +66,8 @@ impl Storage for ObjectStore {
         BlobName::Blob(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)))
     }
 
-    fn create_tree(&mut self, data: Tuple) -> TreeName {
-        let len = data.len();
+    fn create_tree(&mut self, data: Blob) -> TreeName {
+        let len = data.len() / 32;
         let local_id = self.store.create(data.into());
         TreeName::NotTag(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)))
     }
@@ -86,7 +86,7 @@ impl Storage for ObjectStore {
         }
     }
 
-    fn get_tree(&self, handle: &TreeName) -> Tuple {
+    fn get_tree(&self, handle: &TreeName) -> Blob {
         match handle {
             TreeName::NotTag(t) | TreeName::Tag(t) => match t {
                 Handle::VirtualHandle(_) => todo!(),

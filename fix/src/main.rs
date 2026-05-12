@@ -47,21 +47,23 @@ async fn main(_: &[usize]) {
     log::info!("creating addend 1024");
     let addend3 = runtime.create_blob_i64(1024);
 
-    let mut scratch = Tuple::new(4);
-    scratch.set(0, Blob::new(dummy.pack()));
-    scratch.set(1, Blob::new(function.pack()));
-    scratch.set(2, Blob::new(addend1.pack()));
-    scratch.set(3, Blob::new(addend2.pack()));
-    let combination = runtime.create_tree(scratch);
+    let mut scratch = Vec::with_capacity(4 * 32);
+
+    scratch.extend_from_slice(&dummy.pack());
+    scratch.extend_from_slice(&function.pack());
+    scratch.extend_from_slice(&addend1.pack());
+    scratch.extend_from_slice(&addend2.pack());
+
+    let combination = runtime.create_tree(Blob::new(scratch));
     let application = create_application_thunk(&combination).unwrap();
     let encode = create_strict_encode(&application).unwrap();
 
-    let mut scratch = Tuple::new(4);
-    scratch.set(0, Blob::new(dummy.pack()));
-    scratch.set(1, Blob::new(function.pack()));
-    scratch.set(2, Blob::new(encode.pack()));
-    scratch.set(3, Blob::new(addend3.pack()));
-    let combination = runtime.create_tree(scratch);
+    let mut scratch = Vec::with_capacity(4 * 32);
+    scratch.extend_from_slice(&dummy.pack());
+    scratch.extend_from_slice(&function.pack());
+    scratch.extend_from_slice(&encode.pack());
+    scratch.extend_from_slice(&addend3.pack());
+    let combination = runtime.create_tree(Blob::new(scratch));
     let application = create_application_thunk(&combination).unwrap();
     let encode = create_strict_encode(&application).unwrap();
 

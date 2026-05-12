@@ -105,9 +105,8 @@ pub fn main() -> ! {
                 panic!()
             };
 
-            let procedure: Blob = tree.get(1).try_into().unwrap();
             let procedure_ref = &raw mut _PROCEDURE;
-            procedure.read(0, &mut *procedure_ref);
+            tree.read(32, &mut *procedure_ref);
         }
 
         let wasm_rt_externref_t { bytes: result } =
