@@ -2,6 +2,11 @@
 pub use common::bitpack::BitPack;
 use derive_more::{From, TryInto, TryUnwrap, Unwrap};
 
+#[derive(Copy, Clone, Debug)]
+pub enum Error {
+    Unwrap,
+}
+
 const fn ceil_log2(n: u32) -> u32 {
     if n <= 1 {
         0
@@ -264,6 +269,27 @@ pub enum Value {
     Ref(Ref),
     Object(Object),
     Thunk(Thunk),
+}
+
+pub fn create_application_thunk(handle: &FixHandle) -> Result<FixHandle, Error> {
+    let result = handle
+        .try_unwrap_object_ref()
+        .map_err(|_| Error::Unwrap)
+        .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| Error::Unwrap))
+        .or_else(|_| {
+            handle
+                .try_unwrap_ref_ref()
+                .map_err(|_| Error::Unwrap)
+                .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(|_| Error::Unwrap))
+        })?;
+
+    Ok(FixHandle::Thunk(Thunk::Application(*result)))
+}
+
+pub fn create_strict_encode(handle: &FixHandle) -> Result<FixHandle, Error> {
+    let result = handle.try_unwrap_thunk().map_err(|_| Error::Unwrap)?;
+
+    Ok(FixHandle::Encode(Encode::Strict(result)))
 }
 
 #[cfg(test)]

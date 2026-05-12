@@ -10,7 +10,10 @@ use arcane::{
 
 use core::arch::x86_64::*;
 use core::ffi::c_void;
-use fixhandle::rawhandle::{BitPack, Encode, FixHandle, Handle, Object, Thunk, TreeName};
+use fixhandle::rawhandle::{
+    BitPack, Encode, FixHandle, Handle, Object, Thunk, TreeName, create_application_thunk,
+    create_strict_encode,
+};
 use user::ArcaError;
 use user::Ref;
 use user::Runtime;
@@ -181,20 +184,9 @@ impl DeterministicEquivRuntime for FixShellPhysical {
 
     fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
         let handle = FixHandle::unpack(handle);
-
-        let result = handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
-            .or_else(|_| {
-                handle
-                    .try_unwrap_ref_ref()
-                    .map_err(|_| ArcaError::BadType)
-                    .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(|_| ArcaError::BadType))
-            });
-
-        if let Ok(tree) = result {
-            FixHandle::Thunk(Thunk::Application(*tree)).pack()
+        let result = create_application_thunk(&handle);
+        if let Ok(thunk) = result {
+            thunk.pack()
         } else {
             arca_log("create_application_thunk: input handle is not a TreeObj or TreeRef");
             panic!()
@@ -203,11 +195,10 @@ impl DeterministicEquivRuntime for FixShellPhysical {
 
     fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
         let handle = FixHandle::unpack(handle);
+        let result = create_strict_encode(&handle);
 
-        let result = handle.try_unwrap_thunk();
-
-        if let Ok(thunk) = result {
-            FixHandle::Encode(Encode::Strict(thunk)).pack()
+        if let Ok(encode) = result {
+            encode.pack()
         } else {
             arca_log("create_strict_encode: input handle is not a Thunk");
             panic!()

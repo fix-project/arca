@@ -4,7 +4,7 @@
 use crate::{
     bottom::FixShellBottom,
     // data::{BlobData, TreeData},
-    runtime::{CouponCollector, CouponTrades, DeterministicEquivRuntime, Executor},
+    runtime::{CouponHelper, CouponTrades, DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
@@ -130,7 +130,18 @@ impl<'a> Executor for FixRuntime<'a> {
     }
 }
 
-impl<'a> CouponCollector for FixRuntime<'a> {
+impl<'a> CouponHelper for FixRuntime<'a> {
+    fn read_blob(blob: &Self::BlobData, offset: usize, buf: &mut [u8]) -> usize {
+        blob.read(offset, buf)
+    }
+
+    fn get_tree_entry(tree: &Self::TreeData, offset: usize) -> Self::Handle {
+        let mut scratch: [u8; 32] = [0; 32];
+        let entry: Blob = tree.get(offset).try_into().expect("tree entry not a blob");
+        entry.read(0, &mut scratch);
+        FixHandle::unpack(scratch)
+    }
+
     fn trade(
         &mut self,
         trade_type: CouponTrades,

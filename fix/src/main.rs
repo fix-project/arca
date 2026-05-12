@@ -6,7 +6,7 @@
 #![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 #![allow(dead_code)]
 
-use fixhandle::rawhandle::{Encode, FixHandle, Thunk};
+use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
 use kernel::prelude::*;
 
 #[cfg(feature = "testing-mode")]
@@ -17,10 +17,11 @@ mod evaluator;
 use common::bitpack::BitPack;
 
 use fixruntime::{
-    fixruntime::FixRuntime, runtime::DeterministicEquivRuntime, storage::ObjectStore,
+    fixruntime::FixRuntime, runtime::CouponHelper, runtime::DeterministicEquivRuntime,
+    storage::ObjectStore,
 };
 
-use crate::evaluator::{eval, get_coupon_rhs, show_coupon};
+use crate::evaluator::eval;
 
 extern crate alloc;
 
@@ -52,10 +53,8 @@ async fn main(_: &[usize]) {
     scratch.set(2, Blob::new(addend1.pack()));
     scratch.set(3, Blob::new(addend2.pack()));
     let combination = runtime.create_tree(scratch);
-    let application = FixHandle::Thunk(Thunk::Application(
-        combination.unwrap_object().unwrap_tree_obj(),
-    ));
-    let encode = FixHandle::Encode(Encode::Strict(application.unwrap_thunk()));
+    let application = create_application_thunk(&combination).unwrap();
+    let encode = create_strict_encode(&application).unwrap();
 
     let mut scratch = Tuple::new(4);
     scratch.set(0, Blob::new(dummy.pack()));
@@ -63,16 +62,14 @@ async fn main(_: &[usize]) {
     scratch.set(2, Blob::new(encode.pack()));
     scratch.set(3, Blob::new(addend3.pack()));
     let combination = runtime.create_tree(scratch);
-    let application = FixHandle::Thunk(Thunk::Application(
-        combination.unwrap_object().unwrap_tree_obj(),
-    ));
-    let encode = FixHandle::Encode(Encode::Strict(application.unwrap_thunk()));
+    let application = create_application_thunk(&combination).unwrap();
+    let encode = create_strict_encode(&application).unwrap();
 
     let eval_coupon = eval(&mut runtime, encode);
 
-    show_coupon(&mut runtime, &eval_coupon);
+    runtime.show_coupon(&eval_coupon);
 
-    let result_blob = get_coupon_rhs(&mut runtime, &eval_coupon);
+    let result_blob = runtime.get_coupon_rhs(&eval_coupon);
     let result_blob = runtime
         .get_blob(&result_blob)
         .expect("Result is not a Blob");
