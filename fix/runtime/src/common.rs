@@ -18,7 +18,7 @@ pub enum CouponTrades {
 
 impl TryFrom<usize> for CouponTrades {
     type Error = ();
-     
+
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(CouponTrades::EqTree),
@@ -34,7 +34,7 @@ impl TryFrom<usize> for CouponTrades {
             10 => Ok(CouponTrades::EqSym),
             11 => Ok(CouponTrades::EqTrans),
             12 => Ok(CouponTrades::EqSelf),
-            _ => Err(())
+            _ => Err(()),
         }
     }
 }
@@ -49,13 +49,13 @@ pub enum FixOp {
 
 impl TryFrom<usize> for FixOp {
     type Error = ();
-     
+
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(FixOp::Eval),
             1 => Ok(FixOp::Trade),
             2 => Ok(FixOp::Apply),
-            _ => Err(())
+            _ => Err(()),
         }
     }
 }

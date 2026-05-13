@@ -115,10 +115,14 @@ impl ObjectStore {
     }
 
     pub fn from_raw_parts<T>(offset: usize, len: usize) -> Box<[T]> {
-        let data = BuddyAllocator.from_offset(offset);
-        unsafe {
-            let slice = slice::from_raw_parts_mut(data, len);
-            Box::from_raw(slice)
+        if len == 0 {
+            Vec::with_capacity(0).into_boxed_slice()
+        } else {
+            let data = BuddyAllocator.from_offset(offset);
+            unsafe {
+                let slice = slice::from_raw_parts_mut(data, len);
+                Box::from_raw(slice)
+            }
         }
     }
 

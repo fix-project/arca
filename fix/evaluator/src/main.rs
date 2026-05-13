@@ -2,8 +2,8 @@
 #![feature(ptr_metadata)]
 #![feature(result_option_map_or_default)]
 
-use crate::vmcommon::CouponTrades;
 use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
+use crate::vmcommon::CouponTrades;
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
 use std::path::PathBuf;
@@ -100,7 +100,15 @@ fn test_trade(smp: usize, cid: usize, bin: Arc<[u8]>) {
     let scratch = Vec::with_capacity(0);
     let coupons = rt.create_tree(scratch.as_slice());
 
-    rt.trade(CouponTrades::EvalBlobObj, coupons, addend, addend);
+    let result = rt.trade(CouponTrades::EvalBlobObj, coupons, addend, addend);
+    rt.show_coupon(&result);
+
+    let result_blob = rt.get_coupon_rhs(&result);
+    let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(result_blob);
+    let num = u64::from_le_bytes(arr);
+    assert_eq!(num, 3);
 }
 
 fn main() -> anyhow::Result<()> {
@@ -119,7 +127,7 @@ fn main() -> anyhow::Result<()> {
         "eval" => test_eval(smp, cid, bin, module.as_slice()),
         "trade" => test_trade(smp, cid, bin),
         "apply" => test_apply(smp, cid, bin, module.as_slice()),
-        _ => panic!("Unknown test")
+        _ => panic!("Unknown test"),
     }
 
     Ok(())

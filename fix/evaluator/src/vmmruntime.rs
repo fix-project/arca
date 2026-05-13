@@ -8,7 +8,7 @@ use fixhandle::rawhandle::{BlobName, FixHandle, Handle, Object, PhysicalHandle, 
 use vmm::runtime::Runtime;
 
 use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
-use crate::vmcommon::{FixOp, CouponTrades};
+use crate::vmcommon::{CouponTrades, FixOp};
 
 pub struct VmmRuntime {
     runtime: Runtime,
@@ -94,15 +94,23 @@ impl VmmRuntime {
     fn into_raw_parts<T>(input: Box<[T], BuddyAllocator>) -> (usize, usize) {
         let (data, _) = Box::into_raw_with_allocator(input);
         let len = ptr::metadata(data);
-        let offset = BuddyAllocator.to_offset(data);
+        let offset = if len > 0 {
+            BuddyAllocator.to_offset(data)
+        } else {
+            0
+        };
         (offset, len)
     }
 
     fn from_raw_parts<T>(offset: usize, len: usize) -> Box<[T], BuddyAllocator> {
-        let data = BuddyAllocator.from_offset(offset);
-        unsafe {
-            let slice = slice::from_raw_parts_mut(data, len);
-            Box::from_raw_in(slice, BuddyAllocator)
+        if len == 0 {
+            Vec::with_capacity_in(0, BuddyAllocator).into_boxed_slice()
+        } else {
+            let data = BuddyAllocator.from_offset(offset);
+            unsafe {
+                let slice = slice::from_raw_parts_mut(data, len);
+                Box::from_raw_in(slice, BuddyAllocator)
+            }
         }
     }
 
@@ -124,7 +132,12 @@ impl VmmRuntime {
         }
     }
 
-    fn run(&mut self, opcode: FixOp, coupon_trade: Option<CouponTrades>, handle: FixHandle) -> FixHandle {
+    fn run(
+        &mut self,
+        opcode: FixOp,
+        coupon_trade: Option<CouponTrades>,
+        handle: FixHandle,
+    ) -> FixHandle {
         let handle_scratch: Box<[u8], _> = Box::new_in(handle.pack(), BuddyAllocator);
         let output_store: Box<[usize], _> = Box::new_in([0; 2], BuddyAllocator);
 
@@ -168,20 +181,17 @@ impl VmmRuntime {
 impl CouponHelper for VmmRuntime {}
 
 impl Operator for VmmRuntime {
-    fn eval (
-            &mut self,
-            handle: FixHandle
-        ) -> FixHandle {
+    fn eval(&mut self, handle: FixHandle) -> FixHandle {
         self.run(FixOp::Eval, None, handle)
     }
 
     fn trade(
-            &mut self,
-            trade_type: CouponTrades,
-            coupons: FixHandle,
-            lhs: FixHandle,
-            rhs: FixHandle,
-        ) -> FixHandle {
+        &mut self,
+        trade_type: CouponTrades,
+        coupons: FixHandle,
+        lhs: FixHandle,
+        rhs: FixHandle,
+    ) -> FixHandle {
         let mut scratch = Vec::with_capacity(3 * 32);
         scratch.extend_from_slice(&coupons.pack());
         scratch.extend_from_slice(&lhs.pack());
@@ -191,11 +201,7 @@ impl Operator for VmmRuntime {
         self.run(FixOp::Trade, Some(trade_type), scratch)
     }
 
-    fn apply (
-            &mut self,
-            handle: FixHandle
-        ) -> FixHandle {
+    fn apply(&mut self, handle: FixHandle) -> FixHandle {
         self.run(FixOp::Apply, None, handle)
     }
-
 }

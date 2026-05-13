@@ -96,15 +96,9 @@ pub trait Operator {
         rhs: FixHandle,
     ) -> FixHandle;
 
-    fn eval (
-        &mut self,
-        handle: FixHandle
-    ) -> FixHandle;
+    fn eval(&mut self, handle: FixHandle) -> FixHandle;
 
-    fn apply (
-        &mut self,
-        handle: FixHandle
-    ) -> FixHandle;
+    fn apply(&mut self, handle: FixHandle) -> FixHandle;
 }
 
 #[allow(unused)]
