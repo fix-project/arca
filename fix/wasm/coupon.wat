@@ -33,7 +33,7 @@
        ;; Attach the tag
        (call $attach_tree (i32.const 1) (local.get $tag))
        ;; Check if the tag was authored by us
-       (call $is_equal (table.get $encode (i32.const 1)) (table.get $coupon_scratch (i32.const 0)))
+       (call $is_equal (table.get $encode (i32.const 0)) (table.get $coupon_scratch (i32.const 0)))
        (if (result i32)
          (then
            ;; Check if the coupon type matches the input type
@@ -71,7 +71,7 @@
    (call $is_coupon (local.get $tag) (global.get $Storage))
  )
  (func $create_coupon (param $type i32) (param $lhs externref) (param $rhs externref) (result externref)
-   (table.set $output_coupon_scratch (i32.const 0) (table.get $encode (i32.const 1)))
+   (table.set $output_coupon_scratch (i32.const 0) (table.get $encode (i32.const 0)))
    (table.set $output_coupon_scratch (i32.const 1) (call $create_blob_i32 (local.get $type)))
    (table.set $output_coupon_scratch (i32.const 2) (local.get $lhs))
    (table.set $output_coupon_scratch (i32.const 3) (local.get $rhs))
@@ -670,15 +670,15 @@
        ;; attach coupons
        (call $attach_tree
              (i32.const 2)
-             (table.get $encode (i32.const 3)))
+             (table.get $encode (i32.const 2)))
        ;; attach request field
        (call $attach_blob
              (i32.const 1)
-             (table.get $encode (i32.const 2)))
+             (table.get $encode (i32.const 1)))
        (call $make_coupon
              (i32.load $mem_1 (i32.const 0))
+             (table.get $encode (i32.const 3))
              (table.get $encode (i32.const 4))
-             (table.get $encode (i32.const 5))
        )
  )
  (export "coupons" (table $coupons))

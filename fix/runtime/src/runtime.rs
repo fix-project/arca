@@ -1,8 +1,8 @@
 use core::clone::Clone;
 use core::result::Result;
 
-use fixhandle::rawhandle::{Encode, FixHandle, Object, Thunk};
 use crate::common::CouponTrades;
+use fixhandle::rawhandle::{Encode, FixHandle, Object, Thunk};
 
 #[allow(unused)]
 pub trait DeterministicEquivRuntime {

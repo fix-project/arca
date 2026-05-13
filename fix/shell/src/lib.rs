@@ -106,7 +106,7 @@ pub fn main() -> ! {
             };
 
             let procedure_ref = &raw mut _PROCEDURE;
-            tree.read(32, &mut *procedure_ref);
+            tree.read(0, &mut *procedure_ref);
         }
 
         let wasm_rt_externref_t { bytes: result } =

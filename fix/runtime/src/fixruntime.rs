@@ -3,10 +3,10 @@
 
 use crate::{
     bottom::FixShellBottom,
+    common::CouponTrades,
     // data::{BlobData, TreeData},
     runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
-    common::CouponTrades,
 };
 use bytemuck::bytes_of;
 use common::bitpack::BitPack;
@@ -156,8 +156,7 @@ impl<'a> CouponHelper for FixRuntime<'a> {
         lhs: FixHandle,
         rhs: FixHandle,
     ) -> FixHandle {
-        let mut combination = Vec::with_capacity(32 * 6);
-        combination.extend_from_slice(&self.create_blob_i32(0).pack());
+        let mut combination = Vec::with_capacity(32 * 5);
         combination.extend_from_slice(&self.coupon.pack());
         combination.extend_from_slice(&self.create_blob_i32(trade_type as u32).pack());
         combination.extend_from_slice(&coupons.pack());

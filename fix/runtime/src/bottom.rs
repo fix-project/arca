@@ -179,7 +179,7 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
 impl<'a, 'b> Executor for FixShellBottom<'a, 'b> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let tree = self.parent.get_tree(combination).unwrap();
-        let function_handle = FixRuntime::<'_>::get_tree_entry(&tree, 1);
+        let function_handle = FixRuntime::<'_>::get_tree_entry(&tree, 0);
         let elf = self.parent.get_blob(&function_handle).unwrap();
 
         let f = common::elfloader::load_elf(&elf).expect("Failed to load elf");

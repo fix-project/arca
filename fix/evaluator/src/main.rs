@@ -37,14 +37,12 @@ fn main() -> anyhow::Result<()> {
 
     let mut rt = VmmRuntime::new(smp, cid, bin);
 
-    let dummy = rt.create_blob_i64(0xcafeb0ba);
     let function = rt.create_blob(module.as_slice());
     let addend1 = rt.create_blob_i64(3);
     let addend2 = rt.create_blob_i64(4);
     let addend3 = rt.create_blob_i64(1024);
 
-    let mut scratch = Vec::with_capacity(4 * 32);
-    scratch.extend_from_slice(&dummy.pack());
+    let mut scratch = Vec::with_capacity(3 * 32);
     scratch.extend_from_slice(&function.pack());
     scratch.extend_from_slice(&addend1.pack());
     scratch.extend_from_slice(&addend2.pack());
@@ -53,8 +51,7 @@ fn main() -> anyhow::Result<()> {
     let application = create_application_thunk(&combination).unwrap();
     let encode = create_strict_encode(&application).unwrap();
 
-    let mut scratch = Vec::with_capacity(4 * 32);
-    scratch.extend_from_slice(&dummy.pack());
+    let mut scratch = Vec::with_capacity(3 * 32);
     scratch.extend_from_slice(&function.pack());
     scratch.extend_from_slice(&encode.pack());
     scratch.extend_from_slice(&addend3.pack());
