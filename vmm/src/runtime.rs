@@ -193,8 +193,12 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     let args = &[regs.rdi, regs.rsi, regs.rcx, regs.r10, regs.r8, regs.r9];
                     match code {
                         hypercall::EXIT => {
-                            return;
-                            // ExitCode::from(args[0] as u8).exit_process();
+                            let code = args[0] as u8;
+                            if code == 0 {
+                                return;
+                            } else {
+                                ExitCode::from(args[0] as u8).exit_process();
+                            }
                         }
                         hypercall::LOG => {
                             let record: *const common::LogRecord =

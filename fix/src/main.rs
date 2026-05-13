@@ -7,6 +7,10 @@
 #![allow(dead_code)]
 
 use fixhandle::rawhandle::FixHandle;
+use fixruntime::{
+    common::{CouponTrades, FixOp},
+    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
+};
 use kernel::prelude::*;
 
 #[cfg(feature = "testing-mode")]
@@ -29,10 +33,11 @@ const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coupon"));
 
 #[kmain]
 async fn main(args: &[usize]) {
-    let args: &[usize; 6] = args.try_into().unwrap();
-    let (handle_scratch_offset, handle_scratch_len) = (args[0], args[1]);
-    let (store_offset, store_len) = (args[2], args[3]);
-    let (output_store_offset, output_store_len) = (args[4], args[5]);
+    let args: &[usize; 8] = args.try_into().unwrap();
+    let opcode = FixOp::try_from(args[0]).expect("Failed to parse opcode");
+    let (handle_scratch_offset, handle_scratch_len) = (args[2], args[3]);
+    let (store_offset, store_len) = (args[4], args[5]);
+    let (output_store_offset, output_store_len) = (args[6], args[7]);
 
     let mut handle_scratch: Box<[u8]> =
         ObjectStore::from_raw_parts(handle_scratch_offset, handle_scratch_len);
@@ -47,7 +52,22 @@ async fn main(args: &[usize]) {
     store.load(input_store);
     let mut runtime = FixRuntime::new(&mut store, COUPON);
 
-    let eval_coupon = eval(&mut runtime, input_handle);
+    let result = match opcode {
+        FixOp::Eval => eval(&mut runtime, input_handle),
+        FixOp::Apply => runtime.execute(&input_handle),
+        FixOp::Trade => {
+            let trade_type = CouponTrades::try_from(args[1]).expect("Failed to parse coupon trade");
+
+            let input_tree = runtime
+                .get_tree(&input_handle)
+                .expect("Input handle is not a tree");
+            let coupons = FixRuntime::<'_>::get_tree_entry(&input_tree, 0);
+            let lhs = FixRuntime::<'_>::get_tree_entry(&input_tree, 1);
+            let rhs = FixRuntime::<'_>::get_tree_entry(&input_tree, 2);
+
+            runtime.trade(trade_type, coupons, lhs, rhs)
+        }
+    };
 
     let output_store_slice: &mut [usize; 2] = output_store
         .as_mut()
@@ -56,5 +76,5 @@ async fn main(args: &[usize]) {
     let (output_store_offset, output_store_len) = ObjectStore::into_raw_parts(store.unload());
     output_store_slice[0] = output_store_offset;
     output_store_slice[1] = output_store_len;
-    handle_slice.copy_from_slice(&eval_coupon.pack());
+    handle_slice.copy_from_slice(&result.pack());
 }

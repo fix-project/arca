@@ -4,6 +4,8 @@ use core::{clone::Clone, panic};
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{Encode, FixHandle, Object, Thunk};
 
+use crate::vmcommon::CouponTrades;
+
 #[allow(unused)]
 pub trait DeterministicEquivRuntime {
     type Handle: Clone + core::fmt::Debug;
@@ -16,24 +18,6 @@ pub trait DeterministicEquivRuntime {
 
     fn get_blob(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error>;
     fn get_tree(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error>;
-}
-
-#[allow(unused)]
-#[repr(u32)]
-pub enum CouponTrades {
-    EqTree = 0,
-    EqApplication = 1,
-    ForceResultEq = 2,
-    EqStrictEncode = 3,
-    ThinkApplication = 4,
-    ThinkToForce = 5,
-    ForceToEncodeStric = 6,
-    EvalEq = 7,
-    EvalBlobObj = 8,
-    EvalTreeObj = 9,
-    EqSym = 10,
-    EqTrans = 11,
-    EqSelf = 12,
 }
 
 #[allow(unused)]
@@ -103,13 +87,23 @@ pub trait CouponHelper: DeterministicEquivRuntime<Handle = FixHandle> {
 }
 
 #[allow(unused)]
-pub trait CouponCollector {
+pub trait Operator {
     fn trade(
         &mut self,
         trade_type: CouponTrades,
         coupons: FixHandle,
         lhs: FixHandle,
         rhs: FixHandle,
+    ) -> FixHandle;
+
+    fn eval (
+        &mut self,
+        handle: FixHandle
+    ) -> FixHandle;
+
+    fn apply (
+        &mut self,
+        handle: FixHandle
     ) -> FixHandle;
 }
 
