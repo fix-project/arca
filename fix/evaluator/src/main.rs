@@ -1,22 +1,15 @@
 #![feature(allocator_api)]
 #![feature(ptr_metadata)]
 #![feature(result_option_map_or_default)]
-
-use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
-use crate::vmcommon::CouponTrades;
 use common::bitpack::BitPack;
+use evaluator::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
 use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::vmmruntime::VmmRuntime;
 use clap::Parser;
-
-#[path = "../../runtime/src/common.rs"]
-mod vmcommon;
-
-mod fixruntime;
-mod vmmruntime;
+use evaluator::vmcommon::CouponTrades;
+use evaluator::vmmruntime::VmmRuntime;
 
 #[derive(Parser, Debug)]
 struct Args {

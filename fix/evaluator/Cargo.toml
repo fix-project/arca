@@ -14,6 +14,16 @@ env_logger = "0.11.10"
 log = "0.4.29"
 common = { path = "../../common" }
 bytemuck = "1.25.0"
+blake3 = "1.8.5"
 
 [build-dependencies]
 anyhow = "1.0.97"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fix-cli"
+path = "src/bin/cli.rs"
+
+default-run = "fix-cli"

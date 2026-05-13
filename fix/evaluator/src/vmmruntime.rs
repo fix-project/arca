@@ -9,7 +9,7 @@ use fixhandle::rawhandle::{
 };
 use vmm::runtime::Runtime;
 
-use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
+use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError};
 use crate::vmcommon::{CouponTrades, FixOp};
 
 pub struct VmmRuntime {
@@ -44,20 +44,22 @@ impl VmmRuntime {
 }
 
 impl DeterministicEquivRuntime for VmmRuntime {
+    type BlobData<'a> = &'a [u8];
+    type TreeData<'a> = &'a [u8];
     type Handle = FixHandle;
-    type Error = ();
+    type Error = RuntimeError;
 
     fn create_blob_i32(&mut self, data: u32) -> FixHandle {
-        let x = data.to_le_bytes().to_vec().into_boxed_slice();
-        self.create_blob(&x)
+        let bytes = data.to_le_bytes();
+        self.create_blob(&bytes)
     }
 
     fn create_blob_i64(&mut self, data: u64) -> FixHandle {
-        let x = data.to_le_bytes().to_vec().into_boxed_slice();
-        self.create_blob(&x)
+        let bytes = data.to_le_bytes();
+        self.create_blob(&bytes)
     }
 
-    fn create_blob(&mut self, data: &[u8]) -> FixHandle {
+    fn create_blob(&mut self, data: Self::BlobData<'_>) -> FixHandle {
         let len = data.len();
         if len <= 30 {
             let literal = LiteralHandle::new(data);
@@ -69,19 +71,19 @@ impl DeterministicEquivRuntime for VmmRuntime {
         }
     }
 
-    fn create_tree(&mut self, data: &[u8]) -> FixHandle {
+    fn create_tree(&mut self, data: Self::TreeData<'_>) -> FixHandle {
         let len = data.len() / 32;
         let local_id = self.create(data.to_vec_in(BuddyAllocator).into_boxed_slice());
         let tree = TreeName::NotTag(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)));
         Object::from(tree).into()
     }
 
-    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<&'a [u8], Self::Error> {
+    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::BlobData<'a>, Self::Error> {
         let b = handle
             .try_unwrap_object_ref()
-            .map_err(|_| ())?
+            .map_err(|_| RuntimeError::TypeMismatch)?
             .try_unwrap_blob_obj_ref()
-            .map_err(|_| ())?;
+            .map_err(|_| RuntimeError::TypeMismatch)?;
 
         match b {
             BlobName::Blob(h) => Ok(self.get_by_handle(*h)),
@@ -89,12 +91,12 @@ impl DeterministicEquivRuntime for VmmRuntime {
         }
     }
 
-    fn get_tree(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error> {
+    fn get_tree<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::TreeData<'a>, Self::Error> {
         let t = handle
             .try_unwrap_object_ref()
-            .map_err(|_| ())?
+            .map_err(|_| RuntimeError::TypeMismatch)?
             .try_unwrap_tree_obj_ref()
-            .map_err(|_| ())?;
+            .map_err(|_| RuntimeError::TypeMismatch)?;
         match t {
             TreeName::NotTag(tree) | TreeName::Tag(tree) => Ok(self.get_by_handle(*tree)),
         }
