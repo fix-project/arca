@@ -164,12 +164,12 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
             coupons.extend_from_slice(&eval_coupon.pack());
             coupons.extend_from_slice(&eq_coupon.pack());
             let coupons = runtime.create_tree(Blob::new(coupons));
-            return runtime.trade(
+            runtime.trade(
                 fixruntime::runtime::CouponTrades::EvalEq,
                 coupons,
                 handle,
                 result,
-            );
+            )
         }
     }
 }

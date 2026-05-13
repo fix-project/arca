@@ -4,7 +4,7 @@
 use crate::{
     // data::{BlobData, RawData, TreeData},
     fixruntime::FixRuntime,
-    runtime::{DeterministicEquivRuntime, Executor, CouponHelper},
+    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
 };
 
 use arca::Runtime;

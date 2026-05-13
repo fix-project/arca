@@ -11,8 +11,8 @@ use bytemuck::bytes_of;
 use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
 use fixhandle::rawhandle::{FixHandle, Object, TreeName};
-use kernel::types::{Blob};
 use kernel::prelude::*;
+use kernel::types::Blob;
 
 #[derive(Debug)]
 pub enum Error {

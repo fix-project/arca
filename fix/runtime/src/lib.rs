@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(dead_code)]
+#![feature(ptr_metadata)]
 
 pub mod bottom;
 // pub mod data;

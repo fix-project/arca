@@ -6,7 +6,7 @@
 #![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 #![allow(dead_code)]
 
-use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
+use fixhandle::rawhandle::FixHandle;
 use kernel::prelude::*;
 
 #[cfg(feature = "testing-mode")]
@@ -16,10 +16,7 @@ mod evaluator;
 
 use common::bitpack::BitPack;
 
-use fixruntime::{
-    fixruntime::FixRuntime, runtime::CouponHelper, runtime::DeterministicEquivRuntime,
-    storage::ObjectStore,
-};
+use fixruntime::{fixruntime::FixRuntime, storage::ObjectStore};
 
 use crate::evaluator::eval;
 
@@ -31,53 +28,33 @@ const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coupon"));
 
 #[kmain]
-async fn main(_: &[usize]) {
+async fn main(args: &[usize]) {
+    let args: &[usize; 6] = args.try_into().unwrap();
+    let (handle_scratch_offset, handle_scratch_len) = (args[0], args[1]);
+    let (store_offset, store_len) = (args[2], args[3]);
+    let (output_store_offset, output_store_len) = (args[4], args[5]);
+
+    let mut handle_scratch: Box<[u8]> =
+        ObjectStore::from_raw_parts(handle_scratch_offset, handle_scratch_len);
+    let handle_slice: &mut [u8; 32] = handle_scratch.as_mut().try_into().unwrap();
+    let input_handle = FixHandle::unpack(*handle_slice);
+
+    let input_store: Box<[(usize, usize)]> = ObjectStore::from_raw_parts(store_offset, store_len);
+    let mut output_store: Box<[usize]> =
+        ObjectStore::from_raw_parts(output_store_offset, output_store_len);
+
     let mut store = ObjectStore::new();
+    store.load(input_store);
     let mut runtime = FixRuntime::new(&mut store, COUPON);
 
-    log::info!("runnning + (+ 3 4) 1024");
-    log::info!("creating resource limits");
-    let dummy = runtime.create_blob_i64(0xcafeb0ba);
-    log::info!("creating function");
-    let function = runtime.create_blob(MODULE.into());
-    log::info!("creating addend 3");
-    let addend1 = runtime.create_blob_i64(3);
-    log::info!("creating addend 4");
-    let addend2 = runtime.create_blob_i64(4);
-    log::info!("creating addend 1024");
-    let addend3 = runtime.create_blob_i64(1024);
+    let eval_coupon = eval(&mut runtime, input_handle);
 
-    let mut scratch = Vec::with_capacity(4 * 32);
-
-    scratch.extend_from_slice(&dummy.pack());
-    scratch.extend_from_slice(&function.pack());
-    scratch.extend_from_slice(&addend1.pack());
-    scratch.extend_from_slice(&addend2.pack());
-
-    let combination = runtime.create_tree(Blob::new(scratch));
-    let application = create_application_thunk(&combination).unwrap();
-    let encode = create_strict_encode(&application).unwrap();
-
-    let mut scratch = Vec::with_capacity(4 * 32);
-    scratch.extend_from_slice(&dummy.pack());
-    scratch.extend_from_slice(&function.pack());
-    scratch.extend_from_slice(&encode.pack());
-    scratch.extend_from_slice(&addend3.pack());
-    let combination = runtime.create_tree(Blob::new(scratch));
-    let application = create_application_thunk(&combination).unwrap();
-    let encode = create_strict_encode(&application).unwrap();
-
-    let eval_coupon = eval(&mut runtime, encode);
-
-    runtime.show_coupon(&eval_coupon);
-
-    let result_blob = runtime.get_coupon_rhs(&eval_coupon);
-    let result_blob = runtime
-        .get_blob(&result_blob)
-        .expect("Result is not a Blob");
-    let mut arr = [0u8; 8];
-    result_blob.read(0, &mut arr);
-    let num = u64::from_le_bytes(arr);
-    log::info!("{:?}", num);
-    assert_eq!(num, 1031);
+    let output_store_slice: &mut [usize; 2] = output_store
+        .as_mut()
+        .try_into()
+        .expect("Failed to convert output store back");
+    let (output_store_offset, output_store_len) = ObjectStore::into_raw_parts(store.unload());
+    output_store_slice[0] = output_store_offset;
+    output_store_slice[1] = output_store_len;
+    handle_slice.copy_from_slice(&eval_coupon.pack());
 }
