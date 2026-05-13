@@ -3,6 +3,7 @@ use fixhandle::rawhandle::{Encode, FixHandle, Object, Ref, Thunk, TreeName};
 use fixruntime::{
     fixruntime::FixRuntime,
     runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
+    common::CouponTrades,
 };
 
 use common::bitpack::BitPack;
@@ -49,7 +50,7 @@ fn think(runtime: &mut FixRuntime, thunk: &Thunk) -> FixHandle {
             let coupons = runtime.create_tree(Blob::new(coupons));
             let result = runtime.get_coupon_rhs(&apply_coupon);
             runtime.trade(
-                fixruntime::runtime::CouponTrades::ThinkApplication,
+                CouponTrades::ThinkApplication,
                 coupons,
                 FixHandle::Thunk(*thunk),
                 result,
@@ -68,7 +69,7 @@ fn force(runtime: &mut FixRuntime, thunk: &Thunk) -> FixHandle {
             let coupons = runtime.create_tree(Blob::new(coupons));
 
             runtime.trade(
-                fixruntime::runtime::CouponTrades::ThinkToForce,
+                CouponTrades::ThinkToForce,
                 coupons,
                 FixHandle::Thunk(*thunk),
                 result,
@@ -90,7 +91,7 @@ fn encode(runtime: &mut FixRuntime, encode: &Encode) -> FixHandle {
             let coupons = runtime.create_tree(Blob::new(coupons));
 
             runtime.trade(
-                fixruntime::runtime::CouponTrades::ForceToEncodeStric,
+                CouponTrades::ForceToEncodeStric,
                 coupons,
                 FixHandle::Encode(*encode),
                 result,
@@ -118,7 +119,7 @@ fn eval_tree(runtime: &mut FixRuntime, handle: &TreeName) -> FixHandle {
     let new_tree = runtime.create_tree(Blob::new(new_tree));
 
     runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalTreeObj,
+        CouponTrades::EvalTreeObj,
         coupons,
         tree_handle,
         new_tree,
@@ -133,7 +134,7 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
                 let coupons = vec![0u8; 0];
                 let coupons = runtime.create_tree(Blob::new(coupons));
                 runtime.trade(
-                    fixruntime::runtime::CouponTrades::EvalBlobObj,
+                    CouponTrades::EvalBlobObj,
                     coupons,
                     handle,
                     handle,
@@ -153,7 +154,7 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
             coupons.extend_from_slice(&eq_coupon.pack());
             let coupons = runtime.create_tree(Blob::new(coupons));
             let eq_coupon = runtime.trade(
-                fixruntime::runtime::CouponTrades::EqSym,
+                CouponTrades::EqSym,
                 coupons,
                 eq_rhs,
                 eq_lhs,
@@ -165,7 +166,7 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
             coupons.extend_from_slice(&eq_coupon.pack());
             let coupons = runtime.create_tree(Blob::new(coupons));
             runtime.trade(
-                fixruntime::runtime::CouponTrades::EvalEq,
+                CouponTrades::EvalEq,
                 coupons,
                 handle,
                 result,

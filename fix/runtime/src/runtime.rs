@@ -2,6 +2,7 @@ use core::clone::Clone;
 use core::result::Result;
 
 use fixhandle::rawhandle::{Encode, FixHandle, Object, Thunk};
+use crate::common::CouponTrades;
 
 #[allow(unused)]
 pub trait DeterministicEquivRuntime {
@@ -32,24 +33,6 @@ pub trait ExecutionRuntime: DeterministicEquivRuntime {
 #[allow(unused)]
 pub trait Executor {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle;
-}
-
-#[allow(unused)]
-#[repr(u32)]
-pub enum CouponTrades {
-    EqTree = 0,
-    EqApplication = 1,
-    ForceResultEq = 2,
-    EqStrictEncode = 3,
-    ThinkApplication = 4,
-    ThinkToForce = 5,
-    ForceToEncodeStric = 6,
-    EvalEq = 7,
-    EvalBlobObj = 8,
-    EvalTreeObj = 9,
-    EqSym = 10,
-    EqTrans = 11,
-    EqSelf = 12,
 }
 
 #[allow(unused)]

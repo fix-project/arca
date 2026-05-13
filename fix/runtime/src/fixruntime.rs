@@ -4,8 +4,9 @@
 use crate::{
     bottom::FixShellBottom,
     // data::{BlobData, TreeData},
-    runtime::{CouponHelper, CouponTrades, DeterministicEquivRuntime, Executor},
+    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
     storage::{ObjectStore, Storage},
+    common::CouponTrades,
 };
 use bytemuck::bytes_of;
 use common::bitpack::BitPack;
