@@ -1,5 +1,6 @@
 #![allow(clippy::double_parens)]
 pub use common::bitpack::BitPack;
+use core::fmt;
 use derive_more::{From, TryInto, TryUnwrap, Unwrap};
 
 #[derive(Copy, Clone, Debug)]
@@ -120,7 +121,7 @@ impl VirtualHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct PhysicalHandle {
     inner: MachineHandle,
 }
@@ -157,7 +158,13 @@ impl PhysicalHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+impl fmt::Debug for PhysicalHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "local_id: {}", self.local_id())
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct CanonicalHandle {
     inner: RawHandle,
 }
@@ -184,6 +191,18 @@ impl CanonicalHandle {
     }
 }
 
+impl fmt::Debug for CanonicalHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x")?;
+
+        for i in self.inner.content.iter() {
+            write!(f, "{:02x}", i)?;
+        }
+
+        Ok(())
+    }
+}
+
 impl BitPack for CanonicalHandle {
     const TAGBITS: u32 = 240;
 
@@ -199,7 +218,7 @@ impl BitPack for CanonicalHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LiteralHandle {
     inner: RawHandle,
 }
@@ -227,6 +246,28 @@ impl LiteralHandle {
     pub fn content(&self) -> &[u8] {
         let len = self.len();
         &self.inner.content[..len]
+    }
+}
+
+impl fmt::Debug for LiteralHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let content = self.content();
+
+        if content.len() == 8 {
+            let data = u64::from_le_bytes(content.try_into().unwrap());
+            write!(f, "0d{}", data)?;
+        } else if content.len() == 4 {
+            let data = u32::from_le_bytes(content.try_into().unwrap());
+            write!(f, "0d{}", data)?;
+        } else {
+            write!(f, "[")?;
+            for i in content.iter() {
+                write!(f, "0d{}, ", i)?;
+            }
+            write!(f, "]")?;
+        }
+
+        Ok(())
     }
 }
 

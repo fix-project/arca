@@ -63,7 +63,6 @@ fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let mut arr = [0u8; 8];
     arr.copy_from_slice(result_blob);
     let num = u64::from_le_bytes(arr);
-    log::info!("{:?}", num);
     assert_eq!(num, 1031);
 }
 
@@ -89,7 +88,6 @@ fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let mut arr = [0u8; 8];
     arr.copy_from_slice(result_blob);
     let num = u64::from_le_bytes(arr);
-    log::info!("{:?}", num);
     assert_eq!(num, 7);
 }
 
