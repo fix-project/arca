@@ -4,7 +4,9 @@ use std::{mem, ptr};
 
 use common::BuddyAllocator;
 use common::bitpack::BitPack;
-use fixhandle::rawhandle::{BlobName, FixHandle, Handle, Object, PhysicalHandle, TreeName};
+use fixhandle::rawhandle::{
+    BlobName, FixHandle, Handle, LiteralHandle, Object, PhysicalHandle, TreeName,
+};
 use vmm::runtime::Runtime;
 
 use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
@@ -57,9 +59,14 @@ impl DeterministicEquivRuntime for VmmRuntime {
 
     fn create_blob(&mut self, data: &[u8]) -> FixHandle {
         let len = data.len();
-        let local_id = self.create(data.to_vec_in(BuddyAllocator).into_boxed_slice());
-        let blob = BlobName::Blob(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)));
-        Object::from(blob).into()
+        if len <= 30 {
+            let literal = LiteralHandle::new(data);
+            Object::from(BlobName::Literal(literal)).into()
+        } else {
+            let local_id = self.create(data.to_vec_in(BuddyAllocator).into_boxed_slice());
+            let blob = BlobName::Blob(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)));
+            Object::from(blob).into()
+        }
     }
 
     fn create_tree(&mut self, data: &[u8]) -> FixHandle {
@@ -69,15 +76,19 @@ impl DeterministicEquivRuntime for VmmRuntime {
         Object::from(tree).into()
     }
 
-    fn get_blob(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error> {
+    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<&'a [u8], Self::Error> {
         let b = handle
             .try_unwrap_object_ref()
             .map_err(|_| ())?
             .try_unwrap_blob_obj_ref()
-            .map_err(|_| ())?
-            .unwrap_blob();
-        Ok(self.get_by_handle(b))
+            .map_err(|_| ())?;
+
+        match b {
+            BlobName::Blob(h) => Ok(self.get_by_handle(*h)),
+            BlobName::Literal(l) => Ok(l.content()),
+        }
     }
+
     fn get_tree(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error> {
         let t = handle
             .try_unwrap_object_ref()

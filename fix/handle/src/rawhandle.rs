@@ -199,6 +199,52 @@ impl BitPack for CanonicalHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LiteralHandle {
+    inner: RawHandle,
+}
+
+impl LiteralHandle {
+    pub fn new(content: &[u8]) -> Self {
+        assert!(content.len() <= 30);
+
+        let mut field = [0u8; 32];
+        field[..content.len()].copy_from_slice(content);
+        field[30] = content.len().try_into().expect("size larger than 30");
+        let inner = RawHandle::new(field);
+        Self { inner }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.content[30] as usize
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn content(&self) -> &[u8] {
+        let len = self.len();
+        &self.inner.content[..len]
+    }
+}
+
+impl BitPack for LiteralHandle {
+    const TAGBITS: u32 = 245;
+
+    fn unpack(mut content: [u8; 32]) -> Self {
+        content[30] &= 0b00011111;
+        content[31] = 0;
+        let inner = RawHandle::new(content);
+        Self { inner }
+    }
+
+    fn pack(&self) -> [u8; 32] {
+        self.inner.content
+    }
+}
+
 #[derive(BitPack, Debug, Clone, Copy, From, TryUnwrap)]
 pub enum Handle {
     VirtualHandle(VirtualHandle),
@@ -211,6 +257,7 @@ pub enum Handle {
 #[try_unwrap(ref)]
 pub enum BlobName {
     Blob(Handle),
+    Literal(LiteralHandle),
 }
 
 #[derive(BitPack, Debug, Unwrap, Clone, Copy)]
@@ -301,13 +348,13 @@ mod tests {
     #[test]
     fn test_tag_bits() {
         assert_eq!(Handle::TAGBITS, 242);
-        assert_eq!(BlobName::TAGBITS, 242);
+        assert_eq!(BlobName::TAGBITS, 246);
         assert_eq!(TreeName::TAGBITS, 243);
-        assert_eq!(Object::TAGBITS, 244);
-        assert_eq!(Ref::TAGBITS, 244);
-        assert_eq!(Thunk::TAGBITS, 246);
-        assert_eq!(Encode::TAGBITS, 247);
-        assert_eq!(FixHandle::TAGBITS, 249);
+        assert_eq!(Object::TAGBITS, 247);
+        assert_eq!(Ref::TAGBITS, 247);
+        assert_eq!(Thunk::TAGBITS, 249);
+        assert_eq!(Encode::TAGBITS, 250);
+        assert_eq!(FixHandle::TAGBITS, 252);
     }
 
     #[test]
@@ -321,14 +368,40 @@ mod tests {
         assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[30], 0b00000100);
         assert_eq!(TreeName::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
-        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[30], 0b00110000);
-        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
+        assert_eq!(BlobName::TAGMASK.as_array::<32>().unwrap()[30], 0b00100000);
+        assert_eq!(BlobName::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
 
-        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[30], 0b01000000);
-        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[31], 0b00000000);
+        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[30], 0b10000000);
+        assert_eq!(Thunk::TAGMASK.as_array::<32>().unwrap()[31], 0b00000001);
 
-        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[30], 0b10000000);
-        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[31], 0b00000001);
+        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[30], 0b00000000);
+        assert_eq!(Encode::TAGMASK.as_array::<32>().unwrap()[31], 0b00000010);
+
+        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[30], 0b00000000);
+        assert_eq!(FixHandle::TAGMASK.as_array::<32>().unwrap()[31], 0b00001100);
+    }
+
+    #[test]
+    fn test_literal() {
+        let content: usize = 3;
+        let content = content.to_le_bytes();
+        let literal = LiteralHandle::new(&content);
+
+        assert_eq!(literal.len(), 8);
+        let content = literal.content();
+        let x = usize::from_le_bytes(content.try_into().unwrap());
+        assert_eq!(x, 3);
+
+        let handle = FixHandle::Ref(Ref::BlobRef(BlobName::Literal(literal)));
+        let literal = FixHandle::unpack(handle.pack())
+            .unwrap_ref()
+            .unwrap_blob_ref()
+            .unwrap_literal();
+
+        assert_eq!(literal.len(), 8);
+        let content = literal.content();
+        let x = usize::from_le_bytes(content.try_into().unwrap());
+        assert_eq!(x, 3);
     }
 
     #[test]
@@ -348,14 +421,14 @@ mod tests {
         )));
         let res = h.pack();
         let field: &u16x16 = unsafe { core::mem::transmute(&res) };
-        assert_eq!(field[15], 0b0000000001100001);
+        assert_eq!(field[15], 0b0000001100000001);
 
         let h: FixHandle = FixHandle::Encode(Encode::Shallow(Thunk::Selection(TreeName::NotTag(
             PhysicalHandle::new(42, 10086).into(),
         ))));
         let res = h.pack();
         let field: &u16x16 = unsafe { core::mem::transmute(&res) };
-        assert_eq!(field[15], 0b0000000111100001);
+        assert_eq!(field[15], 0b0000111100000001);
     }
 
     #[test]
@@ -378,6 +451,23 @@ mod tests {
             .unwrap_blob()
             .try_unwrap_physical_handle()
             .expect("Failed to unwrap to PhysicalHandle");
+
+        let h: FixHandle = FixHandle::Object(Object::TreeObj(TreeName::NotTag(
+            PhysicalHandle::new(42, 10086).into(),
+        )));
+        let new_h = FixHandle::unpack(h.pack());
+        assert_eq!(
+            new_h
+                .try_unwrap_object()
+                .unwrap()
+                .try_unwrap_tree_obj()
+                .unwrap()
+                .unwrap_not_tag()
+                .try_unwrap_physical_handle()
+                .unwrap()
+                .local_id(),
+            42
+        );
 
         assert_eq!(res.local_id(), 42);
         assert_eq!(res.len(), 10086);

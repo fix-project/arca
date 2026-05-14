@@ -16,7 +16,7 @@ pub trait DeterministicEquivRuntime {
     fn create_blob(&mut self, data: &[u8]) -> Self::Handle;
     fn create_tree(&mut self, data: &[u8]) -> Self::Handle;
 
-    fn get_blob(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error>;
+    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<&'a [u8], Self::Error>;
     fn get_tree(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error>;
 }
 

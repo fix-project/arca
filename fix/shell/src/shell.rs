@@ -11,8 +11,8 @@ use arcane::{
 use core::arch::x86_64::*;
 use core::ffi::c_void;
 use fixhandle::rawhandle::{
-    BitPack, Encode, FixHandle, Handle, Object, Thunk, TreeName, create_application_thunk,
-    create_strict_encode,
+    BitPack, BlobName, Encode, FixHandle, Handle, LiteralHandle, Object, Thunk, TreeName,
+    create_application_thunk, create_strict_encode,
 };
 use user::ArcaError;
 use user::Ref;
@@ -35,25 +35,15 @@ impl DeterministicEquivRuntime for FixShellPhysical {
     type Error = ArcaError;
 
     fn create_blob_i32(data: u32) -> Self::Handle {
-        let result: Blob<Runtime> = Function::symbolic("create_blob_i32")
-            .apply(data)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_blob_i32 failed");
-        let mut buf = [0u8; 32];
-        Runtime::read_blob(&result, 0, &mut buf);
-        buf
+        let literal = LiteralHandle::new(&data.to_le_bytes());
+        let handle: FixHandle = Object::from(BlobName::from(literal)).into();
+        handle.pack()
     }
 
     fn create_blob_i64(data: u64) -> Self::Handle {
-        let result: Blob<Runtime> = Function::symbolic("create_blob_i64")
-            .apply(data)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_blob_i64 failed");
-        let mut buf = [0u8; 32];
-        Runtime::read_blob(&result, 0, &mut buf);
-        buf
+        let literal = LiteralHandle::new(&data.to_le_bytes());
+        let handle: FixHandle = Object::from(BlobName::from(literal)).into();
+        handle.pack()
     }
 
     fn create_blob(data: Self::BlobData) -> Self::Handle {
@@ -207,22 +197,24 @@ impl DeterministicEquivRuntime for FixShellPhysical {
 
     fn len(handle: Self::Handle) -> usize {
         let handle = FixHandle::unpack(handle);
+        let len = |h: &Handle| match h {
+            Handle::VirtualHandle(virtual_handle) => virtual_handle.len(),
+            Handle::PhysicalHandle(physical_handle) => physical_handle.len(),
+            Handle::CanonicalHandle(canonical_handle) => canonical_handle.len(),
+        };
+
         let len = handle
             .try_unwrap_object_ref()
             .map_err(|_| ArcaError::BadType)
-            .map(|h| {
-                let h: &Handle = match h {
-                    fixhandle::rawhandle::Object::BlobObj(blob_name) => blob_name.unwrap_blob_ref(),
-                    fixhandle::rawhandle::Object::TreeObj(tree_name) => match tree_name {
-                        fixhandle::rawhandle::TreeName::NotTag(handle) => handle,
-                        fixhandle::rawhandle::TreeName::Tag(handle) => handle,
-                    },
-                };
-                match h {
-                    Handle::VirtualHandle(virtual_handle) => virtual_handle.len(),
-                    Handle::PhysicalHandle(physical_handle) => physical_handle.len(),
-                    Handle::CanonicalHandle(canonical_handle) => canonical_handle.len(),
-                }
+            .map(|h| match h {
+                fixhandle::rawhandle::Object::BlobObj(blob_name) => match blob_name {
+                    fixhandle::rawhandle::BlobName::Blob(handle) => len(handle),
+                    fixhandle::rawhandle::BlobName::Literal(literal) => literal.len(),
+                },
+                fixhandle::rawhandle::Object::TreeObj(tree_name) => match tree_name {
+                    fixhandle::rawhandle::TreeName::NotTag(handle) => len(handle),
+                    fixhandle::rawhandle::TreeName::Tag(handle) => len(handle),
+                },
             });
         len.expect("len: failed to get size")
     }

@@ -84,6 +84,7 @@ impl Storage for ObjectStore {
                     .try_into()
                     .unwrap(),
             },
+            BlobName::Literal(h) => Blob::new(h.content()),
         }
     }
 
