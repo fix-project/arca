@@ -1,10 +1,13 @@
 use crate::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, RuntimeError},
+    fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
     storageruntime::StorageRuntime,
+    vmcommon::CouponTrades,
     vmmruntime::VmmRuntime,
 };
 use common::bitpack::BitPack;
-use fixhandle::rawhandle::{BlobName, FixHandle, Object};
+use fixhandle::rawhandle::{
+    BlobName, Encode, FixHandle, Object, Thunk, create_application_thunk, create_strict_encode,
+};
 use std::{collections::HashMap, sync::Arc};
 
 pub struct HybridRuntime {
@@ -46,21 +49,33 @@ impl HybridRuntime {
             FixHandle::Object(Object::TreeObj(_)) => {
                 let tree = self.vmm_runtime.get_tree(&handle)?;
                 let mut children = Vec::with_capacity(Self::get_tree_len(tree));
-
                 for i in 0..Self::get_tree_len(tree) {
                     let child = Self::get_tree_entry(tree, i);
                     children.push(child);
                 }
-
                 let mut bytes = Vec::with_capacity(tree.len());
                 for child in children {
                     let flushed = self.flush_handle(child)?;
                     bytes.extend_from_slice(&flushed);
                 }
-
                 self.storage_runtime.create_tree(&bytes).pack()
             }
-            _ => todo!(),
+            FixHandle::Encode(Encode::Strict(tree)) => {
+                let inner = self.flush_handle(FixHandle::Thunk(tree))?;
+                create_strict_encode(&FixHandle::unpack(inner))
+                    .expect("strict encode flush failed")
+                    .pack()
+            }
+            FixHandle::Encode(Encode::Shallow(_tree)) => todo!(""),
+            FixHandle::Thunk(Thunk::Application(tree)) => {
+                let tree_handle = FixHandle::Object(Object::from(tree));
+                let flushed_tree = FixHandle::unpack(self.flush_handle(tree_handle)?);
+                create_application_thunk(&flushed_tree)
+                    .expect("application thunk flush failed")
+                    .pack()
+            }
+            FixHandle::Thunk(_) => todo!(""),
+            FixHandle::Ref(_) => todo!(""),
         };
 
         self.flushed.insert(packed_handle, canonical_handle);
@@ -79,8 +94,6 @@ impl Drop for HybridRuntime {
         self.flush();
     }
 }
-
-impl CouponHelper for HybridRuntime {}
 
 impl DeterministicEquivRuntime for HybridRuntime {
     type BlobData<'a> = &'a [u8];
@@ -117,8 +130,32 @@ impl DeterministicEquivRuntime for HybridRuntime {
     fn get_tree<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::TreeData<'a>, Self::Error> {
         self.vmm_runtime.get_tree(handle)
     }
+}
 
-    fn apply(&mut self, handle: &Self::Handle) -> Result<Self::Handle, RuntimeError> {
-        self.vmm_runtime.apply(handle)
+impl CouponHelper for HybridRuntime {}
+
+impl Operator for HybridRuntime {
+    fn eval(&mut self, handle: FixHandle) -> FixHandle {
+        let output_handle = self.vmm_runtime.eval(handle);
+        self.store.push(output_handle);
+        output_handle
+    }
+
+    fn trade(
+        &mut self,
+        trade_type: CouponTrades,
+        coupons: FixHandle,
+        lhs: FixHandle,
+        rhs: FixHandle,
+    ) -> FixHandle {
+        let output_handle = self.vmm_runtime.trade(trade_type, coupons, lhs, rhs);
+        self.store.push(output_handle);
+        output_handle
+    }
+
+    fn apply(&mut self, handle: FixHandle) -> FixHandle {
+        let output_handle = self.vmm_runtime.apply(handle);
+        self.store.push(output_handle);
+        output_handle
     }
 }

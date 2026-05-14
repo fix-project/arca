@@ -1,6 +1,3 @@
-#![feature(allocator_api)]
-#![feature(ptr_metadata)]
-#![feature(result_option_map_or_default)]
 use common::bitpack::BitPack;
 use evaluator::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
 use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
@@ -8,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use evaluator::hybridruntime::HybridRuntime;
 use evaluator::vmcommon::CouponTrades;
-use evaluator::vmmruntime::VmmRuntime;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -23,7 +20,7 @@ struct Args {
 }
 
 fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
-    let mut rt = VmmRuntime::new(smp, cid, bin);
+    let mut rt = HybridRuntime::new(smp, cid, bin);
 
     let function = rt.create_blob(module);
     let addend1 = rt.create_blob_i64(3);
@@ -60,7 +57,7 @@ fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
 }
 
 fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
-    let mut rt = VmmRuntime::new(smp, cid, bin);
+    let mut rt = HybridRuntime::new(smp, cid, bin);
 
     let function = rt.create_blob(module);
     let addend1 = rt.create_blob_i64(3);
@@ -85,7 +82,7 @@ fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
 }
 
 fn test_trade(smp: usize, cid: usize, bin: Arc<[u8]>) {
-    let mut rt = VmmRuntime::new(smp, cid, bin);
+    let mut rt = HybridRuntime::new(smp, cid, bin);
 
     let addend = rt.create_blob_i64(3);
     let scratch = Vec::with_capacity(0);

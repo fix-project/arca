@@ -23,11 +23,6 @@ pub trait DeterministicEquivRuntime {
 
     fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::BlobData<'a>, Self::Error>;
     fn get_tree<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::TreeData<'a>, Self::Error>;
-
-    // Placeholder
-    fn apply(&mut self, handle: &Self::Handle) -> Result<Self::Handle, RuntimeError> {
-        Ok(handle.clone())
-    }
 }
 
 #[allow(unused)]

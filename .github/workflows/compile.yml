@@ -64,6 +64,6 @@ jobs:
     - name: Test Fix
       run: |
         sudo -su $USER /home/runner/.cargo/bin/cargo build -p fix --target=x86_64-unknown-none
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) eval
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) apply
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) trade
+        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) eval
+        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) apply
+        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix $(find . -name "addblob" | tail -n 1) trade

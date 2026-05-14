@@ -1,6 +1,6 @@
 use common::bitpack::BitPack;
 use evaluator::{
-    fixruntime::{DeterministicEquivRuntime, Expr, Statement, Value},
+    fixruntime::{DeterministicEquivRuntime, Expr, Operator, Statement, Value},
     hybridruntime::HybridRuntime,
     lexer::Lexer,
     mockruntime::MockRuntime,
@@ -95,7 +95,7 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 
 fn run<R>(mut runtime: R, commands: &str) -> Result<(), String>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle>,
+    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
     <R as DeterministicEquivRuntime>::Error: fmt::Debug,
     for<'a> R::BlobData<'a>: AsRef<[u8]>,
     for<'a> R::TreeData<'a>: AsRef<[u8]>,
@@ -126,7 +126,7 @@ fn read_commands(args: Vec<String>) -> Result<String, String> {
 
 pub fn evaluate_commands<R>(runtime: &mut R, commands: &str) -> Result<String, String>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle>,
+    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
     <R as DeterministicEquivRuntime>::Error: fmt::Debug,
     for<'a> R::BlobData<'a>: Clone + fmt::Debug,
     for<'a> R::TreeData<'a>: Clone + fmt::Debug,
@@ -153,7 +153,7 @@ struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle>> {
 
 impl<'a, R> Evaluator<'a, R>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle>,
+    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
     <R as DeterministicEquivRuntime>::Error: fmt::Debug,
     for<'b> R::BlobData<'b>: Clone + fmt::Debug,
     for<'b> R::TreeData<'b>: Clone + fmt::Debug,
@@ -233,10 +233,7 @@ where
             "apply" => {
                 let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
                 let handle = self.make_handle(name, expr)?;
-                let apply_handle = self
-                    .runtime
-                    .apply(&handle)
-                    .map_err(|e| format!("{name}: {e:?}"))?;
+                let apply_handle = self.runtime.apply(handle);
                 Ok(Value::Handle(apply_handle))
             }
             "print" => self.evaluate_expr(self.get_arg(name, &args)?.clone()),
