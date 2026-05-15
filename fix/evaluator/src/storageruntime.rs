@@ -1,10 +1,11 @@
 use crate::fixruntime::{DeterministicEquivRuntime, RuntimeError};
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{BlobName, CanonicalHandle, FixHandle, Handle, Object, TreeName};
-use std::{fmt::Write, fs, path::PathBuf};
+use std::{fmt::Write, fs, os::unix::fs::symlink, path::PathBuf};
 
 pub struct StorageRuntime {
     objects_dir: PathBuf,
+    tags_dir: PathBuf,
 }
 
 impl Default for StorageRuntime {
@@ -16,8 +17,10 @@ impl Default for StorageRuntime {
 impl StorageRuntime {
     pub fn new() -> Self {
         let objects_dir = PathBuf::from(".fix/objects");
+        let tags_dir = PathBuf::from(".fix/tags");
         fs::create_dir_all(&objects_dir).expect("failed to create objects directory");
-        Self { objects_dir }
+        fs::create_dir_all(&tags_dir).expect("failed to create objects directory");
+        Self { objects_dir, tags_dir }
     }
 
     fn read(&self, handle: &[u8]) -> Result<Box<[u8]>, RuntimeError> {
@@ -88,5 +91,22 @@ impl DeterministicEquivRuntime for StorageRuntime {
             return Err(Self::Error::OOB);
         }
         Ok(data)
+    }
+}
+
+impl StorageRuntime {
+    pub fn create_tag(&mut self, handle: &TreeName) -> Result<(), RuntimeError> {
+        match handle {
+            TreeName::NotTag(_) => Err(RuntimeError::TypeMismatch),
+            TreeName::Tag(Handle::CanonicalHandle(canonical)) => {
+                let tree_handle: FixHandle = Object::from(TreeName::NotTag(Handle::CanonicalHandle(*canonical))).into();
+                let tree_path = self.objects_dir.join(Self::hexadecimal_encode(&tree_handle.pack()));
+                let tag_path = self.tags_dir.join(Self::hexadecimal_encode(&handle.pack()));
+                let tree_path = PathBuf::from("../../").join(tree_path);
+                let _ = fs::remove_file(&tag_path);
+                symlink(tree_path, tag_path).map_err(|_| RuntimeError::FileError)
+            },
+            TreeName::Tag(_) =>  Err(RuntimeError::TypeMismatch),
+        }
     }
 }

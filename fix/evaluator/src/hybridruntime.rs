@@ -67,7 +67,11 @@ impl HybridRuntime {
                     .unwrap_tree_obj()
                     .unwrap_not_tag();
                 let treename = match in_treename {
-                    TreeName::Tag(_) => TreeName::Tag(treename),
+                    TreeName::Tag(_) => { 
+                        let result = TreeName::Tag(treename);
+                        self.storage_runtime.create_tag(&result).expect("Failed to create tag");
+                        result
+                    },
                     TreeName::NotTag(_) => TreeName::NotTag(treename),
                 };
                 FixHandle::Object(Object::TreeObj(treename))
@@ -90,16 +94,11 @@ impl HybridRuntime {
         Ok(canonical_handle)
     }
 
+    #[allow(unused)]
     fn flush(&mut self) {
         for handle in self.store.clone() {
             let _ = self.flush_handle(handle);
         }
-    }
-}
-
-impl Drop for HybridRuntime {
-    fn drop(&mut self) {
-        self.flush();
     }
 }
 
