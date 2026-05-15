@@ -45,7 +45,7 @@ fn main() {
     let (runtime_args, command_args) = split_args(args.collect());
     let result = match runtime_name.as_str() {
         "mock" => match read_commands(command_args) {
-            Ok(commands) => run(MockRuntime::new(), &commands),
+            Ok(commands) => MockRuntime::new().run(&commands),
             Err(error) => {
                 eprintln!("Error - {error}");
                 process::exit(1);
@@ -74,7 +74,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            run(HybridRuntime::new(smp, cid, bin), &commands)
+            HybridRuntime::new(smp, cid, bin).run(&commands)
         }
         // "storage" => run(StorageRuntime::new(), &commands),
         other => Err(format!("expected 'mock|hybrid' but got '{other}'")),
@@ -93,19 +93,37 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
     }
 }
 
-fn run<R>(mut runtime: R, commands: &str) -> Result<(), String>
-where
-    R: CouponHelper + Operator,
-    <R as DeterministicEquivRuntime>::Error: fmt::Debug,
-    for<'a> R::BlobData<'a>: AsRef<[u8]>,
-    for<'a> R::TreeData<'a>: AsRef<[u8]>,
+trait Run {
+  fn run(&mut self, commands: &str) -> Result<(), String>
+  where
+    Self: CouponHelper + Operator,
+    <Self as DeterministicEquivRuntime>::Error: fmt::Debug,
+    for<'a> Self::BlobData<'a>: AsRef<[u8]>,
+    for<'a> Self::TreeData<'a>: AsRef<[u8]>,
 {
-    let (output, output_handle) = evaluate_commands(&mut runtime, commands)?;
+    let (output, output_handle) = Evaluator::new(self).evaluate_commands(commands)?;
     print!("{output}");
     if let Some(h) = output_handle {
         println!("{h:?}");
     }
     Ok(())
+}
+}
+
+impl Run for MockRuntime {}
+
+impl Run for HybridRuntime {
+    fn run(&mut self, commands: &str) -> Result<(), String> {
+      let (output, output_handle) = Evaluator::new(self).evaluate_commands(commands)?;
+      print!("{output}");
+      if let Some(h) = output_handle {
+        let flushed = self.flush_handle(h).map_err(|e| format!("{e:?}"))?;
+            let h = flushed;
+          println!("{h:?}");
+      }
+      Ok(())
+    }
+
 }
 
 fn read_commands(args: Vec<String>) -> Result<String, String> {
@@ -127,38 +145,14 @@ fn read_commands(args: Vec<String>) -> Result<String, String> {
     }
 }
 
-pub fn evaluate_commands<R>(runtime: &mut R, commands: &str) -> Result<(String, Option<FixHandle>), String>
-where
-    R: Operator + CouponHelper,
-    for<'a> R::BlobData<'a>: AsRef<[u8]>,
-    for<'a> R::TreeData<'a>: AsRef<[u8]>,
-{
-    let tokens = Lexer::new(commands).tokenize()?;
-    let program = ExprParser::new(&tokens).parse_program()?;
-    let mut evaluator = Evaluator::new(runtime);
-
-    let mut output = String::new();
-    let mut output_handle: Option<FixHandle> = None;
-    for statement in program {
-        if let Some(text) = evaluator.evaluate_statement(statement)? {
-            match text {
-                Value::String(s) => { output.push_str(&s); output.push('\n') },
-                Value::Handle(h) => output_handle = Some(h),
-                _ => todo!()
-            };
-        }
-    }
-    Ok((output, output_handle))
-}
-
 type RuntimeValue = Value<FixHandle, Vec<u8>, Vec<u8>>;
 
-struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle>> {
+struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle> + ?Sized> {
     runtime: &'a mut R,
     variables: BTreeMap<String, RuntimeValue>,
 }
 
-impl<'a, R> Evaluator<'a, R>
+impl<'a, R: ?Sized> Evaluator<'a, R>
 where
     R: CouponHelper + Operator,
     for<'b> R::BlobData<'b>: AsRef<[u8]>,
@@ -170,6 +164,26 @@ where
             variables: BTreeMap::new(),
         }
     }
+
+    fn evaluate_commands(&mut self, commands: &str) -> Result<(String, Option<FixHandle>), String>
+{
+    let tokens = Lexer::new(commands).tokenize()?;
+    let program = ExprParser::new(&tokens).parse_program()?;
+
+    let mut output = String::new();
+    let mut output_handle: Option<FixHandle> = None;
+    for statement in program {
+        if let Some(text) = self.evaluate_statement(statement)? {
+            match text {
+                Value::String(s) => { output.push_str(&s); output.push('\n') },
+                Value::Handle(h) => output_handle = Some(h),
+                _ => todo!()
+            };
+        }
+    }
+    Ok((output, output_handle))
+}
+
 
     fn evaluate_statement(&mut self, statement: Statement) -> Result<Option<RuntimeValue>, String> 
     {

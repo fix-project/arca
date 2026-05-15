@@ -1,6 +1,6 @@
 use crate::fixruntime::{DeterministicEquivRuntime, RuntimeError};
 use common::bitpack::BitPack;
-use fixhandle::rawhandle::CanonicalHandle;
+use fixhandle::rawhandle::{BlobName, TreeName, CanonicalHandle, FixHandle, Object, Handle};
 use std::{fmt::Write, fs, path::PathBuf};
 
 pub struct StorageRuntime {
@@ -18,15 +18,6 @@ impl StorageRuntime {
         let objects_dir = PathBuf::from(".fix/objects");
         fs::create_dir_all(&objects_dir).expect("failed to create objects directory");
         Self { objects_dir }
-    }
-
-    fn write(&self, data: &[u8]) -> CanonicalHandle {
-        let handle = CanonicalHandle::new(Self::hash(data), data.len() as u64);
-        let path = self
-            .objects_dir
-            .join(Self::hexadecimal_encode(&handle.pack()));
-        fs::write(&path, data).expect("failed to write runtime object");
-        handle
     }
 
     fn read(&self, handle: &[u8]) -> Result<Box<[u8]>, RuntimeError> {
@@ -54,7 +45,7 @@ impl StorageRuntime {
 impl DeterministicEquivRuntime for StorageRuntime {
     type BlobData<'a> = Box<[u8]>;
     type TreeData<'a> = Box<[u8]>;
-    type Handle = CanonicalHandle;
+    type Handle = FixHandle;
     type Error = RuntimeError;
 
     fn create_blob_i32(&mut self, data: u32) -> Self::Handle {
@@ -66,11 +57,23 @@ impl DeterministicEquivRuntime for StorageRuntime {
     }
 
     fn create_blob(&mut self, data: &[u8]) -> Self::Handle {
-        self.write(data)
+        let handle = CanonicalHandle::new(Self::hash(data), data.len() as u64);
+        let handle: FixHandle = Object::from(BlobName::Blob(Handle::CanonicalHandle(handle))).into();
+        let path = self
+            .objects_dir
+            .join(Self::hexadecimal_encode(&handle.pack()));
+        fs::write(&path, data).expect("failed to write runtime object");
+        handle
     }
 
     fn create_tree(&mut self, data: &[u8]) -> Self::Handle {
-        self.write(data)
+        let handle = CanonicalHandle::new(Self::hash(data), data.len() as u64);
+        let handle: FixHandle = Object::from(TreeName::NotTag(Handle::CanonicalHandle(handle))).into();
+        let path = self
+            .objects_dir
+            .join(Self::hexadecimal_encode(&handle.pack()));
+        fs::write(&path, data).expect("failed to write runtime object");
+        handle
     }
 
     fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::BlobData<'a>, Self::Error> {

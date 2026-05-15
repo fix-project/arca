@@ -6,7 +6,7 @@ use crate::{
 };
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
-    BlobName, Encode, FixHandle, Object, Thunk, create_application_thunk, create_strict_encode,
+    BlobName, TreeName, Encode, FixHandle, Object, Thunk, create_application_thunk, create_strict_encode
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -28,25 +28,25 @@ impl HybridRuntime {
         }
     }
 
-    fn flush_handle(&mut self, handle: FixHandle) -> Result<[u8; 32], RuntimeError> {
+    pub fn flush_handle(&mut self, handle: FixHandle) -> Result<FixHandle, RuntimeError> {
         let packed_handle = handle.pack();
 
         if let Some(flushed_handle) = self.flushed.get(&packed_handle) {
-            return Ok(*flushed_handle);
+            return Ok(FixHandle::unpack(*flushed_handle));
         }
 
         let canonical_handle = match handle {
             FixHandle::Object(Object::BlobObj(blob_name)) => match blob_name {
                 // Store packed handle for literals
-                BlobName::Literal(_) => packed_handle,
+                BlobName::Literal(_) => handle,
                 // Write non-literals to storage
                 BlobName::Blob(_) => {
                     let blob_handle = FixHandle::Object(Object::BlobObj(blob_name));
                     let blob = self.vmm_runtime.get_blob(&blob_handle)?;
-                    self.storage_runtime.create_blob(blob).pack()
+                    self.storage_runtime.create_blob(blob)
                 }
             },
-            FixHandle::Object(Object::TreeObj(_)) => {
+            FixHandle::Object(Object::TreeObj(in_treename)) => {
                 let tree = self.vmm_runtime.get_tree(&handle)?;
                 let mut children = Vec::with_capacity(Self::get_tree_len(tree));
                 for i in 0..Self::get_tree_len(tree) {
@@ -56,29 +56,33 @@ impl HybridRuntime {
                 let mut bytes = Vec::with_capacity(tree.len());
                 for child in children {
                     let flushed = self.flush_handle(child)?;
-                    bytes.extend_from_slice(&flushed);
+                    bytes.extend_from_slice(&flushed.pack());
                 }
-                self.storage_runtime.create_tree(&bytes).pack()
+
+                let treename = self.storage_runtime.create_tree(&bytes).unwrap_object().unwrap_tree_obj().unwrap_not_tag();
+                let treename = match in_treename {
+                    TreeName::Tag(_) => TreeName::Tag(treename),
+                    TreeName::NotTag(_) => TreeName::NotTag(treename)
+                };
+                FixHandle::Object(Object::TreeObj(treename))
             }
             FixHandle::Encode(Encode::Strict(tree)) => {
                 let inner = self.flush_handle(FixHandle::Thunk(tree))?;
-                create_strict_encode(&FixHandle::unpack(inner))
+                create_strict_encode(&inner)
                     .expect("strict encode flush failed")
-                    .pack()
             }
             FixHandle::Encode(Encode::Shallow(_tree)) => todo!(""),
             FixHandle::Thunk(Thunk::Application(tree)) => {
                 let tree_handle = FixHandle::Object(Object::from(tree));
-                let flushed_tree = FixHandle::unpack(self.flush_handle(tree_handle)?);
+                let flushed_tree = self.flush_handle(tree_handle)?;
                 create_application_thunk(&flushed_tree)
                     .expect("application thunk flush failed")
-                    .pack()
             }
             FixHandle::Thunk(_) => todo!(""),
             FixHandle::Ref(_) => todo!(""),
         };
 
-        self.flushed.insert(packed_handle, canonical_handle);
+        self.flushed.insert(packed_handle, canonical_handle.pack());
         Ok(canonical_handle)
     }
 
