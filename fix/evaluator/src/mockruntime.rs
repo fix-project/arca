@@ -1,5 +1,5 @@
 use crate::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, RuntimeError, Operator},
+    fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
     memoryruntime::MemoryRuntime,
     vmcommon::CouponTrades,
 };
@@ -58,12 +58,12 @@ impl CouponHelper for MockRuntime {}
 
 impl Operator for MockRuntime {
     fn trade(
-            &mut self,
-            _trade_type: CouponTrades,
-            _coupons: FixHandle,
-            _lhs: FixHandle,
-            _rhs: FixHandle,
-        ) -> FixHandle {
+        &mut self,
+        _trade_type: CouponTrades,
+        _coupons: FixHandle,
+        _lhs: FixHandle,
+        _rhs: FixHandle,
+    ) -> FixHandle {
         todo!()
     }
 
@@ -86,14 +86,18 @@ impl Operator for MockRuntime {
         }
 
         let left_bytes: [u8; 8] = self
-            .get_blob(&Self::get_tree_entry(span, 1)).unwrap()
+            .get_blob(&Self::get_tree_entry(span, 1))
+            .unwrap()
             .try_into()
-            .map_err(|_| RuntimeError::OOB).unwrap();
+            .map_err(|_| RuntimeError::OOB)
+            .unwrap();
         let left = u64::from_le_bytes(left_bytes);
         let right_bytes: [u8; 8] = self
-            .get_blob(&Self::get_tree_entry(span, 2)).unwrap()
+            .get_blob(&Self::get_tree_entry(span, 2))
+            .unwrap()
             .try_into()
-            .map_err(|_| RuntimeError::OOB).unwrap();
+            .map_err(|_| RuntimeError::OOB)
+            .unwrap();
         let right = u64::from_le_bytes(right_bytes);
 
         self.create_blob_i64(left + right)

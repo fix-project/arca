@@ -1,12 +1,13 @@
 use crate::{
     fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
     storageruntime::StorageRuntime,
-    vmmruntime::VmmRuntime,
     vmcommon::CouponTrades,
+    vmmruntime::VmmRuntime,
 };
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
-    BlobName, TreeName, Encode, FixHandle, Object, Thunk, create_application_thunk, create_strict_encode
+    BlobName, Encode, FixHandle, Object, Thunk, TreeName, create_application_thunk,
+    create_strict_encode,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -59,24 +60,27 @@ impl HybridRuntime {
                     bytes.extend_from_slice(&flushed.pack());
                 }
 
-                let treename = self.storage_runtime.create_tree(&bytes).unwrap_object().unwrap_tree_obj().unwrap_not_tag();
+                let treename = self
+                    .storage_runtime
+                    .create_tree(&bytes)
+                    .unwrap_object()
+                    .unwrap_tree_obj()
+                    .unwrap_not_tag();
                 let treename = match in_treename {
                     TreeName::Tag(_) => TreeName::Tag(treename),
-                    TreeName::NotTag(_) => TreeName::NotTag(treename)
+                    TreeName::NotTag(_) => TreeName::NotTag(treename),
                 };
                 FixHandle::Object(Object::TreeObj(treename))
             }
             FixHandle::Encode(Encode::Strict(tree)) => {
                 let inner = self.flush_handle(FixHandle::Thunk(tree))?;
-                create_strict_encode(&inner)
-                    .expect("strict encode flush failed")
+                create_strict_encode(&inner).expect("strict encode flush failed")
             }
             FixHandle::Encode(Encode::Shallow(_tree)) => todo!(""),
             FixHandle::Thunk(Thunk::Application(tree)) => {
                 let tree_handle = FixHandle::Object(Object::from(tree));
                 let flushed_tree = self.flush_handle(tree_handle)?;
-                create_application_thunk(&flushed_tree)
-                    .expect("application thunk flush failed")
+                create_application_thunk(&flushed_tree).expect("application thunk flush failed")
             }
             FixHandle::Thunk(_) => todo!(""),
             FixHandle::Ref(_) => todo!(""),
@@ -144,12 +148,12 @@ impl Operator for HybridRuntime {
     }
 
     fn trade(
-            &mut self,
-            _trade_type: CouponTrades,
-            _coupons: FixHandle,
-            _lhs: FixHandle,
-            _rhs: FixHandle,
-        ) -> FixHandle {
+        &mut self,
+        _trade_type: CouponTrades,
+        _coupons: FixHandle,
+        _lhs: FixHandle,
+        _rhs: FixHandle,
+    ) -> FixHandle {
         todo!()
     }
 }

@@ -4,6 +4,7 @@ cargo-features = ["per-package-target"]
 name = "evaluator"
 version = "0.1.0"
 edition = "2024"
+default-run = "evaluator"
 
 [dependencies]
 fixhandle = { path = "../handle" }
@@ -25,5 +26,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "fix-cli"
 path = "src/bin/cli.rs"
-
-default-run = "fix-cli"

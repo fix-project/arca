@@ -1,6 +1,6 @@
 use crate::fixruntime::{DeterministicEquivRuntime, RuntimeError};
 use common::bitpack::BitPack;
-use fixhandle::rawhandle::{BlobName, TreeName, CanonicalHandle, FixHandle, Object, Handle};
+use fixhandle::rawhandle::{BlobName, CanonicalHandle, FixHandle, Handle, Object, TreeName};
 use std::{fmt::Write, fs, path::PathBuf};
 
 pub struct StorageRuntime {
@@ -58,7 +58,8 @@ impl DeterministicEquivRuntime for StorageRuntime {
 
     fn create_blob(&mut self, data: &[u8]) -> Self::Handle {
         let handle = CanonicalHandle::new(Self::hash(data), data.len() as u64);
-        let handle: FixHandle = Object::from(BlobName::Blob(Handle::CanonicalHandle(handle))).into();
+        let handle: FixHandle =
+            Object::from(BlobName::Blob(Handle::CanonicalHandle(handle))).into();
         let path = self
             .objects_dir
             .join(Self::hexadecimal_encode(&handle.pack()));
@@ -68,7 +69,8 @@ impl DeterministicEquivRuntime for StorageRuntime {
 
     fn create_tree(&mut self, data: &[u8]) -> Self::Handle {
         let handle = CanonicalHandle::new(Self::hash(data), data.len() as u64);
-        let handle: FixHandle = Object::from(TreeName::NotTag(Handle::CanonicalHandle(handle))).into();
+        let handle: FixHandle =
+            Object::from(TreeName::NotTag(Handle::CanonicalHandle(handle))).into();
         let path = self
             .objects_dir
             .join(Self::hexadecimal_encode(&handle.pack()));
