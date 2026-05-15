@@ -37,6 +37,14 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RParen, "expected ')' for print")?;
                 Ok(Statement::Print(expr))
             }
+            (Some(Token::Identifier(name)), Some(Token::LParen)) if name == "show_coupon" => {
+                // consume 'show_coupon''('
+                self.advance();
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.expect(&Token::RParen, "expected ')' for show_coupon")?;
+                Ok(Statement::ShowCoupon(expr))
+            }
             (Some(Token::Identifier(name)), Some(Token::Equals)) => {
                 let name = name.clone();
                 // consume 'identifier' '='

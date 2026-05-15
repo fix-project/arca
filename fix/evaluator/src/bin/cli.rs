@@ -1,12 +1,12 @@
 use common::bitpack::BitPack;
 use evaluator::{
-    fixruntime::{DeterministicEquivRuntime, Expr, Operator, Statement, Value},
+    fixruntime::{DeterministicEquivRuntime, Expr, Statement, Value, CouponHelper, Operator},
     hybridruntime::HybridRuntime,
     lexer::Lexer,
     mockruntime::MockRuntime,
     parser::Parser as ExprParser,
 };
-use fixhandle::rawhandle::FixHandle;
+use fixhandle::rawhandle::{FixHandle, create_application_thunk, create_strict_encode};
 use std::{
     collections::BTreeMap,
     env, fmt, fs,
@@ -95,13 +95,16 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 
 fn run<R>(mut runtime: R, commands: &str) -> Result<(), String>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
+    R: CouponHelper + Operator,
     <R as DeterministicEquivRuntime>::Error: fmt::Debug,
     for<'a> R::BlobData<'a>: AsRef<[u8]>,
     for<'a> R::TreeData<'a>: AsRef<[u8]>,
 {
-    let output = evaluate_commands(&mut runtime, commands)?;
+    let (output, output_handle) = evaluate_commands(&mut runtime, commands)?;
     print!("{output}");
+    if let Some(h) = output_handle {
+        println!("{h:?}");
+    }
     Ok(())
 }
 
@@ -124,24 +127,28 @@ fn read_commands(args: Vec<String>) -> Result<String, String> {
     }
 }
 
-pub fn evaluate_commands<R>(runtime: &mut R, commands: &str) -> Result<String, String>
+pub fn evaluate_commands<R>(runtime: &mut R, commands: &str) -> Result<(String, Option<FixHandle>), String>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
-    <R as DeterministicEquivRuntime>::Error: fmt::Debug,
-    for<'a> R::BlobData<'a>: Clone + fmt::Debug,
-    for<'a> R::TreeData<'a>: Clone + fmt::Debug,
+    R: Operator + CouponHelper,
+    for<'a> R::BlobData<'a>: AsRef<[u8]>,
+    for<'a> R::TreeData<'a>: AsRef<[u8]>,
 {
     let tokens = Lexer::new(commands).tokenize()?;
     let program = ExprParser::new(&tokens).parse_program()?;
     let mut evaluator = Evaluator::new(runtime);
 
     let mut output = String::new();
+    let mut output_handle: Option<FixHandle> = None;
     for statement in program {
         if let Some(text) = evaluator.evaluate_statement(statement)? {
-            output.push_str(&text);
+            match text {
+                Value::String(s) => { output.push_str(&s); output.push('\n') },
+                Value::Handle(h) => output_handle = Some(h),
+                _ => todo!()
+            };
         }
     }
-    Ok(output)
+    Ok((output, output_handle))
 }
 
 type RuntimeValue = Value<FixHandle, Vec<u8>, Vec<u8>>;
@@ -153,10 +160,9 @@ struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle>> {
 
 impl<'a, R> Evaluator<'a, R>
 where
-    R: DeterministicEquivRuntime<Handle = FixHandle> + Operator,
-    <R as DeterministicEquivRuntime>::Error: fmt::Debug,
-    for<'b> R::BlobData<'b>: Clone + fmt::Debug,
-    for<'b> R::TreeData<'b>: Clone + fmt::Debug,
+    R: CouponHelper + Operator,
+    for<'b> R::BlobData<'b>: AsRef<[u8]>,
+    for<'b> R::TreeData<'b>: AsRef<[u8]>,
 {
     fn new(runtime: &'a mut R) -> Self {
         Self {
@@ -165,17 +171,26 @@ where
         }
     }
 
-    fn evaluate_statement(&mut self, statement: Statement) -> Result<Option<String>, String> {
+    fn evaluate_statement(&mut self, statement: Statement) -> Result<Option<RuntimeValue>, String> 
+    {
         match statement {
             Statement::Assign { name, expr } => {
                 let value = self.evaluate_expr(expr)?;
                 self.variables.insert(name, value);
                 Ok(None)
             }
-            Statement::Print(expr) => Ok(Some(format!("result: {}\n", self.evaluate_expr(expr)?))),
+            Statement::Print(expr) => Ok(Some(Value::String(format!("result: {}\n", self.evaluate_expr(expr)?)))),
+            Statement::ShowCoupon(expr) => {
+                if let Value::Handle(h) = self.evaluate_expr(expr)? {
+                    Ok(Some(Value::String(self.runtime.show_coupon(&h))))
+
+                } else {
+                    Err("not a coupon to show".to_string())
+                }
+            }
             Statement::Expr(expr) => {
-                self.evaluate_expr(expr)?;
-                Ok(None)
+                let result = self.evaluate_expr(expr)?;
+                Ok(Some(result))
             }
         }
     }
@@ -212,6 +227,18 @@ where
                 }
                 Ok(Value::Handle(self.runtime.create_tree(&bytes)))
             }
+            "create_application_thunk" => {
+                let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
+                let handle = self.make_handle(name, expr)?;
+                let handle = create_application_thunk(&handle).map_err(|_| "Failed to create application thunk")?;
+                Ok(Value::Handle(handle))
+            }
+            "create_strict_encode" => {
+                let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
+                let handle = self.make_handle(name, expr)?;
+                let handle = create_strict_encode(&handle).map_err(|_| "Failed to create strict encode")?;
+                Ok(Value::Handle(handle))
+            }
             "get_blob" => {
                 let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
                 let handle = self.make_handle(name, expr)?;
@@ -233,8 +260,18 @@ where
             "apply" => {
                 let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
                 let handle = self.make_handle(name, expr)?;
-                let apply_handle = self.runtime.apply(handle);
+                let apply_handle = self
+                    .runtime
+                    .apply(handle);
                 Ok(Value::Handle(apply_handle))
+            }
+            "eval" => {
+                let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
+                let handle = self.make_handle(name, expr)?;
+                let eval_handle = self
+                    .runtime
+                    .eval(handle);
+                Ok(Value::Handle(eval_handle))
             }
             "print" => self.evaluate_expr(self.get_arg(name, &args)?.clone()),
             "mock" | "hybrid" => {
@@ -258,7 +295,7 @@ where
         };
         match self.evaluate_expr(inner.clone())? {
             Value::Int(number) if name == "Int" => {
-                Ok(self.runtime.create_blob(&number.to_le_bytes()))
+                Ok(self.runtime.create_blob_i64(number as u64))
             }
             Value::String(string) if name == "String" => {
                 Ok(self.runtime.create_blob(string.as_bytes()))

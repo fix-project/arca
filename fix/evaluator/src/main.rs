@@ -1,3 +1,8 @@
+#![allow(unused)]
+#![feature(allocator_api)]
+#![feature(ptr_metadata)]
+#![feature(result_option_map_or_default)]
+
 use common::bitpack::BitPack;
 use evaluator::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
 use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
@@ -5,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use evaluator::hybridruntime::HybridRuntime;
 use evaluator::vmcommon::CouponTrades;
+use evaluator::vmmruntime::VmmRuntime;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -20,7 +25,7 @@ struct Args {
 }
 
 fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
-    let mut rt = HybridRuntime::new(smp, cid, bin);
+    let mut rt = VmmRuntime::new(smp, cid, bin);
 
     let function = rt.create_blob(module);
     let addend1 = rt.create_blob_i64(3);
@@ -46,7 +51,7 @@ fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let encode = create_strict_encode(&application).unwrap();
 
     let result = rt.eval(encode);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");
@@ -57,7 +62,7 @@ fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
 }
 
 fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
-    let mut rt = HybridRuntime::new(smp, cid, bin);
+    let mut rt = VmmRuntime::new(smp, cid, bin);
 
     let function = rt.create_blob(module);
     let addend1 = rt.create_blob_i64(3);
@@ -71,7 +76,7 @@ fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let combination = rt.create_tree(scratch.as_slice());
 
     let result = rt.apply(combination);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");
@@ -82,14 +87,14 @@ fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
 }
 
 fn test_trade(smp: usize, cid: usize, bin: Arc<[u8]>) {
-    let mut rt = HybridRuntime::new(smp, cid, bin);
+    let mut rt = VmmRuntime::new(smp, cid, bin);
 
     let addend = rt.create_blob_i64(3);
     let scratch = Vec::with_capacity(0);
     let coupons = rt.create_tree(scratch.as_slice());
 
     let result = rt.trade(CouponTrades::EvalBlobObj, coupons, addend, addend);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");

@@ -1,5 +1,5 @@
 use crate::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
+    fixruntime::{CouponHelper, DeterministicEquivRuntime, RuntimeError, Operator},
     memoryruntime::MemoryRuntime,
     vmcommon::CouponTrades,
 };
@@ -58,12 +58,12 @@ impl CouponHelper for MockRuntime {}
 
 impl Operator for MockRuntime {
     fn trade(
-        &mut self,
-        _trade_type: CouponTrades,
-        _coupons: FixHandle,
-        _lhs: FixHandle,
-        _rhs: FixHandle,
-    ) -> FixHandle {
+            &mut self,
+            _trade_type: CouponTrades,
+            _coupons: FixHandle,
+            _lhs: FixHandle,
+            _rhs: FixHandle,
+        ) -> FixHandle {
         todo!()
     }
 
@@ -72,30 +72,28 @@ impl Operator for MockRuntime {
     }
 
     fn apply(&mut self, handle: FixHandle) -> FixHandle {
-        let span = self.get_tree(&handle).expect("Tree exists");
+        let span = self.get_tree(&handle).unwrap();
         if span.len() < 3 {
-            panic!("Tree OOB");
+            panic!()
+            // return Err(RuntimeError::OOB);
         }
 
         let tree_entry = Self::get_tree_entry(span, 0);
-        let function = self
-            .get_blob(&tree_entry)
-            .expect("Tree has addition function");
+        let function = self.get_blob(&tree_entry).unwrap();
         if function != b"+" {
-            panic!("First element not additon");
+            panic!()
+            // return Err(RuntimeError::UnexpectedFunction);
         }
 
         let left_bytes: [u8; 8] = self
-            .get_blob(&Self::get_tree_entry(span, 1))
-            .expect("Left i64 OOB")
+            .get_blob(&Self::get_tree_entry(span, 1)).unwrap()
             .try_into()
-            .expect("Left i64 improper size");
+            .map_err(|_| RuntimeError::OOB).unwrap();
         let left = u64::from_le_bytes(left_bytes);
         let right_bytes: [u8; 8] = self
-            .get_blob(&Self::get_tree_entry(span, 2))
-            .expect("Right i64 OOB")
+            .get_blob(&Self::get_tree_entry(span, 2)).unwrap()
             .try_into()
-            .expect("Right i64 improper size");
+            .map_err(|_| RuntimeError::OOB).unwrap();
         let right = u64::from_le_bytes(right_bytes);
 
         self.create_blob_i64(left + right)

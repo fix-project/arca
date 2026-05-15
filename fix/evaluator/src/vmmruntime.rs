@@ -15,6 +15,7 @@ use crate::vmcommon::{CouponTrades, FixOp};
 pub struct VmmRuntime {
     runtime: Runtime,
     store: Vec<Box<[u8], BuddyAllocator>>,
+    executed: bool,
 }
 
 impl VmmRuntime {
@@ -22,6 +23,7 @@ impl VmmRuntime {
         Self {
             runtime: Runtime::new(cid, smp, 1 << 34, bin),
             store: Vec::new(),
+            executed: false,
         }
     }
 
@@ -151,6 +153,12 @@ impl VmmRuntime {
         coupon_trade: Option<CouponTrades>,
         handle: FixHandle,
     ) -> FixHandle {
+        if self.executed {
+            panic!("Multiple apply/eval/trade not supported yet.")
+        }
+
+        self.executed = true;
+
         let handle_scratch: Box<[u8], _> = Box::new_in(handle.pack(), BuddyAllocator);
         let output_store: Box<[usize], _> = Box::new_in([0; 2], BuddyAllocator);
 

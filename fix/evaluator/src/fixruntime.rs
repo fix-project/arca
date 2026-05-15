@@ -68,14 +68,12 @@ where
         }
     }
 
-    fn show_coupon(&mut self, handle: &Self::Handle) {
+    fn show_coupon(&mut self, handle: &Self::Handle) -> String {
         let ctype = self.get_coupon_type(handle);
         let lhs = self.get_coupon_lhs(handle);
         let rhs = self.get_coupon_rhs(handle);
 
-        log::info!("type is: {ctype:?}");
-        log::info!("lhs is: {lhs:?}");
-        log::info!("rhs is: {rhs:?}");
+        format!("{lhs:?} --{ctype}-- {rhs:?}")
     }
 
     fn get_coupon_type(&self, coupon: &Self::Handle) -> &'static str {
@@ -180,6 +178,7 @@ pub enum Expr {
 pub enum Statement {
     Assign { name: String, expr: Expr },
     Print(Expr),
+    ShowCoupon(Expr),
     Expr(Expr),
 }
 

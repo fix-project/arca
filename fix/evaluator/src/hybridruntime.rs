@@ -1,8 +1,8 @@
 use crate::{
     fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
     storageruntime::StorageRuntime,
-    vmcommon::CouponTrades,
     vmmruntime::VmmRuntime,
+    vmcommon::CouponTrades,
 };
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
@@ -112,15 +112,11 @@ impl DeterministicEquivRuntime for HybridRuntime {
     }
 
     fn create_blob(&mut self, data: &[u8]) -> Self::Handle {
-        let handle = self.vmm_runtime.create_blob(data);
-        self.store.push(handle);
-        handle
+        self.vmm_runtime.create_blob(data)
     }
 
     fn create_tree(&mut self, data: &[u8]) -> Self::Handle {
-        let handle = self.vmm_runtime.create_tree(data);
-        self.store.push(handle);
-        handle
+        self.vmm_runtime.create_tree(data)
     }
 
     fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::BlobData<'a>, Self::Error> {
@@ -135,27 +131,21 @@ impl DeterministicEquivRuntime for HybridRuntime {
 impl CouponHelper for HybridRuntime {}
 
 impl Operator for HybridRuntime {
+    fn apply(&mut self, handle: FixHandle) -> FixHandle {
+        self.vmm_runtime.apply(handle)
+    }
+
     fn eval(&mut self, handle: FixHandle) -> FixHandle {
-        let output_handle = self.vmm_runtime.eval(handle);
-        self.store.push(output_handle);
-        output_handle
+        self.vmm_runtime.eval(handle)
     }
 
     fn trade(
-        &mut self,
-        trade_type: CouponTrades,
-        coupons: FixHandle,
-        lhs: FixHandle,
-        rhs: FixHandle,
-    ) -> FixHandle {
-        let output_handle = self.vmm_runtime.trade(trade_type, coupons, lhs, rhs);
-        self.store.push(output_handle);
-        output_handle
-    }
-
-    fn apply(&mut self, handle: FixHandle) -> FixHandle {
-        let output_handle = self.vmm_runtime.apply(handle);
-        self.store.push(output_handle);
-        output_handle
+            &mut self,
+            _trade_type: CouponTrades,
+            _coupons: FixHandle,
+            _lhs: FixHandle,
+            _rhs: FixHandle,
+        ) -> FixHandle {
+        todo!()
     }
 }
