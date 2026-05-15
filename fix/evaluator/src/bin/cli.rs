@@ -1,6 +1,8 @@
 use common::bitpack::BitPack;
 use evaluator::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, Expr, Operator, Statement, Value},
+    fixruntime::{
+        CouponHelper, DeterministicEquivRuntime, ExpandHandle, Expr, Operator, Statement, Value,
+    },
     hybridruntime::HybridRuntime,
     lexer::Lexer,
     mockruntime::MockRuntime,
@@ -97,7 +99,7 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 trait Run {
     fn run(&mut self, commands: &str) -> Result<(), String>
     where
-        Self: CouponHelper + Operator,
+        Self: CouponHelper + Operator + ExpandHandle,
         <Self as DeterministicEquivRuntime>::Error: fmt::Debug,
         for<'a> Self::BlobData<'a>: AsRef<[u8]>,
         for<'a> Self::TreeData<'a>: AsRef<[u8]>,
@@ -154,7 +156,7 @@ struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle> + ?Sized> 
 
 impl<'a, R: ?Sized> Evaluator<'a, R>
 where
-    R: CouponHelper + Operator,
+    R: CouponHelper + Operator + ExpandHandle,
     for<'b> R::BlobData<'b>: AsRef<[u8]>,
     for<'b> R::TreeData<'b>: AsRef<[u8]>,
 {
@@ -289,10 +291,13 @@ where
             }
             "trade" => {
                 assert!(args.len() == 4);
-                let coupon_trade= self.evaluate_expr(args[0].clone()).map_err(|_| "Failed to evaluate coupon trade")?;
+                let coupon_trade = self
+                    .evaluate_expr(args[0].clone())
+                    .map_err(|_| "Failed to evaluate coupon trade")?;
                 let coupon_trade: CouponTrades = match coupon_trade {
-                    Value::String(inner) => CouponTrades::try_from(inner.as_str()).map_err(|_| String::from("Invalid coupon trade")),
-                    _ => Err(String::from("Expected string for coupon trade"))
+                    Value::String(inner) => CouponTrades::try_from(inner.as_str())
+                        .map_err(|_| String::from("Invalid coupon trade")),
+                    _ => Err(String::from("Expected string for coupon trade")),
                 }?;
 
                 let coupons = self.evaluate_expr(args[1].clone())?;
@@ -307,6 +312,46 @@ where
                 let result = self.runtime.trade(coupon_trade, coupons, lhs, rhs);
 
                 Ok(Value::Handle(result))
+            }
+            "coupon_lhs" => {
+                let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
+                let handle = self.make_handle(name, expr)?;
+                let result = self.runtime.get_coupon_lhs(&handle);
+                Ok(Value::Handle(result))
+            }
+            "coupon_rhs" => {
+                let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
+                let handle = self.make_handle(name, expr)?;
+                let result = self.runtime.get_coupon_rhs(&handle);
+                Ok(Value::Handle(result))
+            }
+            "handle" => {
+                assert!(args.len() == 1);
+                let handle = self
+                    .evaluate_expr(args[0].clone())
+                    .map_err(|_| "Failed to evaluate shortened handle string")?;
+                match handle {
+                    Value::String(inner) => Ok(Value::Handle(
+                        self.runtime
+                            .get_handle(inner.as_str())
+                            .map_err(|_| "Failed to expand handle")?,
+                    )),
+                    _ => Err(String::from("Expected string for coupon trade")),
+                }
+            }
+            "tag" => {
+                assert!(args.len() == 1);
+                let handle = self
+                    .evaluate_expr(args[0].clone())
+                    .map_err(|_| "Failed to evaluate shortened handle string")?;
+                match handle {
+                    Value::String(inner) => Ok(Value::Handle(
+                        self.runtime
+                            .get_tag(inner.as_str())
+                            .map_err(|_| "Failed to expand tag")?,
+                    )),
+                    _ => Err(String::from("Expected string for coupon trade")),
+                }
             }
             "print" => self.evaluate_expr(self.get_arg(name, &args)?.clone()),
             "mock" | "hybrid" => {

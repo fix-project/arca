@@ -50,14 +50,14 @@ impl TryFrom<&str> for CouponTrades {
             "EqStrictEncode" => Ok(CouponTrades::EqStrictEncode),
             "ThinkApplication" => Ok(CouponTrades::ThinkApplication),
             "ThinkToForce" => Ok(CouponTrades::ThinkToForce),
-            "ForceToEncodeStric" => Ok(CouponTrades::ForceToEncodeStric),
+            "ForceToEncodeStrict" => Ok(CouponTrades::ForceToEncodeStric),
             "EvalEq" => Ok(CouponTrades::EvalEq),
             "EvalBlobObj" => Ok(CouponTrades::EvalBlobObj),
             "EvalTreeObj" => Ok(CouponTrades::EvalTreeObj),
             "EqSym" => Ok(CouponTrades::EqSym),
             "EqTrans" => Ok(CouponTrades::EqTrans),
             "EqSelf" => Ok(CouponTrades::EqSelf),
-            _ => Err(())
+            _ => Err(()),
         }
     }
 }

@@ -1,12 +1,12 @@
 use crate::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
+    fixruntime::{CouponHelper, DeterministicEquivRuntime, ExpandHandle, Operator, RuntimeError},
     storageruntime::StorageRuntime,
     vmcommon::CouponTrades,
     vmmruntime::VmmRuntime,
 };
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
-    BlobName, Encode, FixHandle, Object, Thunk, TreeName, create_application_thunk,
+    BlobName, Encode, FixHandle, Handle, Object, Thunk, TreeName, create_application_thunk,
     create_strict_encode,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -41,13 +41,24 @@ impl HybridRuntime {
                 // Store packed handle for literals
                 BlobName::Literal(_) => handle,
                 // Write non-literals to storage
-                BlobName::Blob(_) => {
-                    let blob_handle = FixHandle::Object(Object::BlobObj(blob_name));
-                    let blob = self.vmm_runtime.get_blob(&blob_handle)?;
-                    self.storage_runtime.create_blob(blob)
-                }
+                BlobName::Blob(h) => match h {
+                    Handle::CanonicalHandle(_) => handle,
+                    _ => {
+                        let blob_handle = FixHandle::Object(Object::BlobObj(blob_name));
+                        let blob = self.vmm_runtime.get_blob(&blob_handle)?;
+                        self.storage_runtime.create_blob(blob)
+                    }
+                },
             },
             FixHandle::Object(Object::TreeObj(in_treename)) => {
+                let h = match in_treename {
+                    TreeName::Tag(h) | TreeName::NotTag(h) => h,
+                };
+
+                if let Handle::CanonicalHandle(_) = h {
+                    return Ok(handle);
+                }
+
                 let tree = self.vmm_runtime.get_tree(&handle)?;
                 let mut children = Vec::with_capacity(Self::get_tree_len(tree));
                 for i in 0..Self::get_tree_len(tree) {
@@ -67,11 +78,13 @@ impl HybridRuntime {
                     .unwrap_tree_obj()
                     .unwrap_not_tag();
                 let treename = match in_treename {
-                    TreeName::Tag(_) => { 
+                    TreeName::Tag(_) => {
                         let result = TreeName::Tag(treename);
-                        self.storage_runtime.create_tag(&result).expect("Failed to create tag");
+                        self.storage_runtime
+                            .create_tag(&result)
+                            .expect("Failed to create tag");
                         result
-                    },
+                    }
                     TreeName::NotTag(_) => TreeName::NotTag(treename),
                 };
                 FixHandle::Object(Object::TreeObj(treename))
@@ -147,12 +160,40 @@ impl Operator for HybridRuntime {
     }
 
     fn trade(
-            &mut self,
-            trade_type: CouponTrades,
-            coupons: FixHandle,
-            lhs: FixHandle,
-            rhs: FixHandle,
-        ) -> FixHandle {
+        &mut self,
+        trade_type: CouponTrades,
+        coupons: FixHandle,
+        lhs: FixHandle,
+        rhs: FixHandle,
+    ) -> FixHandle {
         self.vmm_runtime.trade(trade_type, coupons, lhs, rhs)
+    }
+}
+
+impl ExpandHandle for HybridRuntime {
+    type Error = RuntimeError;
+
+    fn get_handle(&mut self, handle: &str) -> Result<FixHandle, Self::Error> {
+        let full_handle = self.storage_runtime.get_handle(handle)?;
+        match full_handle {
+            FixHandle::Object(Object::BlobObj(_)) => {
+                let blob = self.storage_runtime.get_blob(&full_handle)?;
+                Ok(self.create_blob(&blob))
+            }
+            FixHandle::Object(Object::TreeObj(_)) => {
+                let tree = self.storage_runtime.get_tree(&full_handle)?;
+                Ok(self.create_tree(&tree))
+            }
+            _ => Err(RuntimeError::TypeMismatch),
+        }
+    }
+
+    fn get_tag(&mut self, handle: &str) -> Result<FixHandle, Self::Error> {
+        let full_handle = self.storage_runtime.get_tag_handle(handle)?;
+        let tag_content = self.storage_runtime.get_tag(&full_handle)?;
+        let result = self.create_tree(&tag_content);
+        Ok(FixHandle::Object(Object::TreeObj(TreeName::Tag(
+            result.unwrap_object().unwrap_tree_obj().unwrap_not_tag(),
+        ))))
     }
 }

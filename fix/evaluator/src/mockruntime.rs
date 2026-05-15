@@ -1,5 +1,5 @@
 use crate::{
-    fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError},
+    fixruntime::{CouponHelper, DeterministicEquivRuntime, ExpandHandle, Operator, RuntimeError},
     memoryruntime::MemoryRuntime,
     vmcommon::CouponTrades,
 };
@@ -101,6 +101,18 @@ impl Operator for MockRuntime {
         let right = u64::from_le_bytes(right_bytes);
 
         self.create_blob_i64(left + right)
+    }
+}
+
+impl ExpandHandle for MockRuntime {
+    type Error = ();
+
+    fn get_handle(&mut self, _handle: &str) -> Result<FixHandle, Self::Error> {
+        todo!()
+    }
+
+    fn get_tag(&mut self, _handle: &str) -> Result<FixHandle, Self::Error> {
+        todo!()
     }
 }
 

@@ -11,7 +11,7 @@ use crate::{
 use bytemuck::bytes_of;
 use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
-use fixhandle::rawhandle::{FixHandle, Object, TreeName};
+use fixhandle::rawhandle::{BlobName, CanonicalHandle, FixHandle, Handle, Object, TreeName};
 use kernel::prelude::*;
 use kernel::types::Blob;
 
@@ -30,13 +30,22 @@ impl<T> From<TryUnwrapError<T>> for Error {
 #[derive(Debug)]
 pub struct FixRuntime<'a> {
     store: &'a mut ObjectStore,
-    coupon: FixHandle,
+    coupon_canonical: FixHandle,
+    coupon_physical: FixHandle,
 }
 
 impl<'a> FixRuntime<'a> {
     pub fn new(store: &'a mut ObjectStore, coupon: &[u8]) -> Self {
-        let coupon = Object::from(store.create_blob(coupon.into())).into();
-        Self { store, coupon }
+        let hash = blake3::hash(coupon);
+        let handle = CanonicalHandle::new(*hash.as_bytes(), coupon.len() as u64);
+        let coupon_canonical: FixHandle =
+            Object::from(BlobName::Blob(Handle::CanonicalHandle(handle))).into();
+        let coupon_physical = Object::from(store.create_blob(coupon.into())).into();
+        Self {
+            store,
+            coupon_canonical,
+            coupon_physical,
+        }
     }
 }
 
@@ -65,6 +74,12 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
     }
 
     fn get_blob(&self, handle: &Self::Handle) -> Result<Self::BlobData, Self::Error> {
+        let handle = if handle.pack() == self.coupon_canonical.pack() {
+            self.coupon_physical
+        } else {
+            *handle
+        };
+
         let b = handle
             .try_unwrap_object_ref()
             .map_err(Error::from)?
@@ -79,7 +94,11 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
             .map_err(Error::from)?
             .try_unwrap_tree_obj_ref()
             .map_err(Error::from)?;
-        Ok(self.store.get_tree(t))
+        let tree = self.store.get_tree(t);
+
+        let mut scratch: [u8; 32] = [0; 32];
+        tree.read(0 * 32, &mut scratch);
+        Ok(tree)
     }
 
     fn is_blob(handle: &Self::Handle) -> bool {
@@ -119,7 +138,7 @@ impl<'a> Executor for FixRuntime<'a> {
         let res = bottom.execute(combination);
 
         let mut apply_coupon = Vec::with_capacity(32 * 4);
-        apply_coupon.extend_from_slice(&self.coupon.pack());
+        apply_coupon.extend_from_slice(&self.coupon_canonical.pack());
         apply_coupon.extend_from_slice(&self.create_blob_i32(2).pack());
         apply_coupon.extend_from_slice(&combination.pack());
         apply_coupon.extend_from_slice(&res.pack());
@@ -157,7 +176,7 @@ impl<'a> CouponHelper for FixRuntime<'a> {
         rhs: FixHandle,
     ) -> FixHandle {
         let mut combination = Vec::with_capacity(32 * 5);
-        combination.extend_from_slice(&self.coupon.pack());
+        combination.extend_from_slice(&self.coupon_canonical.pack());
         combination.extend_from_slice(&self.create_blob_i32(trade_type as u32).pack());
         combination.extend_from_slice(&coupons.pack());
         combination.extend_from_slice(&lhs.pack());

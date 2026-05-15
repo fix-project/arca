@@ -144,6 +144,13 @@ where
     }
 }
 
+#[allow(unused)]
+pub trait ExpandHandle {
+    type Error: fmt::Debug;
+    fn get_handle(&mut self, handle: &str) -> Result<FixHandle, Self::Error>;
+    fn get_tag(&mut self, handle: &str) -> Result<FixHandle, Self::Error>;
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
     OOB,
