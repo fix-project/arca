@@ -95,9 +95,6 @@ impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
             .try_unwrap_tree_obj_ref()
             .map_err(Error::from)?;
         let tree = self.store.get_tree(t);
-
-        let mut scratch: [u8; 32] = [0; 32];
-        tree.read(0 * 32, &mut scratch);
         Ok(tree)
     }
 

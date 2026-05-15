@@ -105,7 +105,7 @@ trait Run {
         for<'a> Self::TreeData<'a>: AsRef<[u8]>,
     {
         let (output, output_handle) = Evaluator::new(self).evaluate_commands(commands)?;
-        print!("{output}");
+        println!("{output}");
         if let Some(h) = output_handle {
             println!("{h:?}");
         }
@@ -118,7 +118,7 @@ impl Run for MockRuntime {}
 impl Run for HybridRuntime {
     fn run(&mut self, commands: &str) -> Result<(), String> {
         let (output, output_handle) = Evaluator::new(self).evaluate_commands(commands)?;
-        print!("{output}");
+        println!("{output}");
         if let Some(h) = output_handle {
             let flushed = self.flush_handle(h).map_err(|e| format!("{e:?}"))?;
             let h = flushed;
@@ -147,7 +147,37 @@ fn read_commands(args: Vec<String>) -> Result<String, String> {
     }
 }
 
-type RuntimeValue = Value<FixHandle, Vec<u8>, Vec<u8>>;
+#[derive(Clone)]
+struct RuntimeTree {
+    inner: Vec<u8>,
+}
+
+impl fmt::Debug for RuntimeTree {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let d = self.inner.as_slice();
+        let len = HybridRuntime::get_tree_len(d);
+        write!(f, "[")?;
+        for i in 0..len {
+            let e = HybridRuntime::get_tree_entry(d, i);
+            write!(f, "{e:?}")?;
+
+            if i != len - 1 {
+                writeln!(f, ",")?;
+            } else {
+                write!(f, "]")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl From<Vec<u8>> for RuntimeTree {
+    fn from(value: Vec<u8>) -> Self {
+        Self { inner: value }
+    }
+}
+
+type RuntimeValue = Value<FixHandle, Vec<u8>, RuntimeTree>;
 
 struct Evaluator<'a, R: DeterministicEquivRuntime<Handle = FixHandle> + ?Sized> {
     runtime: &'a mut R,
@@ -177,8 +207,10 @@ where
             if let Some(text) = self.evaluate_statement(statement)? {
                 match text {
                     Value::String(s) => {
+                        if !output.is_empty() {
+                            output.push('\n')
+                        }
                         output.push_str(&s);
-                        output.push('\n')
                     }
                     Value::Handle(h) => output_handle = Some(h),
                     _ => todo!(),
@@ -196,7 +228,7 @@ where
                 Ok(None)
             }
             Statement::Print(expr) => Ok(Some(Value::String(format!(
-                "result: {}\n",
+                "{}",
                 self.evaluate_expr(expr)?
             )))),
             Statement::ShowCoupon(expr) => {
@@ -275,7 +307,7 @@ where
                     .runtime
                     .get_tree(&handle)
                     .map_err(|e| format!("{name}: {e:?}"))?;
-                Ok(Value::TreeData(tree.as_ref().to_vec()))
+                Ok(Value::TreeData(tree.as_ref().to_vec().into()))
             }
             "apply" => {
                 let expr = self.evaluate_expr(self.get_arg(name, &args)?.clone())?;
