@@ -148,12 +148,12 @@ impl Operator for HybridRuntime {
     }
 
     fn trade(
-        &mut self,
-        _trade_type: CouponTrades,
-        _coupons: FixHandle,
-        _lhs: FixHandle,
-        _rhs: FixHandle,
-    ) -> FixHandle {
-        todo!()
+            &mut self,
+            trade_type: CouponTrades,
+            coupons: FixHandle,
+            lhs: FixHandle,
+            rhs: FixHandle,
+        ) -> FixHandle {
+        self.vmm_runtime.trade(trade_type, coupons, lhs, rhs)
     }
 }

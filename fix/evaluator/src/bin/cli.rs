@@ -5,6 +5,7 @@ use evaluator::{
     lexer::Lexer,
     mockruntime::MockRuntime,
     parser::Parser as ExprParser,
+    vmcommon::CouponTrades,
 };
 use fixhandle::rawhandle::{FixHandle, create_application_thunk, create_strict_encode};
 use std::{
@@ -285,6 +286,27 @@ where
                 let handle = self.make_handle(name, expr)?;
                 let eval_handle = self.runtime.eval(handle);
                 Ok(Value::Handle(eval_handle))
+            }
+            "trade" => {
+                assert!(args.len() == 4);
+                let coupon_trade= self.evaluate_expr(args[0].clone()).map_err(|_| "Failed to evaluate coupon trade")?;
+                let coupon_trade: CouponTrades = match coupon_trade {
+                    Value::String(inner) => CouponTrades::try_from(inner.as_str()).map_err(|_| String::from("Invalid coupon trade")),
+                    _ => Err(String::from("Expected string for coupon trade"))
+                }?;
+
+                let coupons = self.evaluate_expr(args[1].clone())?;
+                let coupons = self.make_handle(name, coupons)?;
+
+                let lhs = self.evaluate_expr(args[2].clone())?;
+                let lhs = self.make_handle(name, lhs)?;
+
+                let rhs = self.evaluate_expr(args[3].clone())?;
+                let rhs = self.make_handle(name, rhs)?;
+
+                let result = self.runtime.trade(coupon_trade, coupons, lhs, rhs);
+
+                Ok(Value::Handle(result))
             }
             "print" => self.evaluate_expr(self.get_arg(name, &args)?.clone()),
             "mock" | "hybrid" => {

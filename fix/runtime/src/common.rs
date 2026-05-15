@@ -39,6 +39,29 @@ impl TryFrom<usize> for CouponTrades {
     }
 }
 
+impl TryFrom<&str> for CouponTrades {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "EqTree" => Ok(CouponTrades::EqTree),
+            "EqApplication" => Ok(CouponTrades::EqApplication),
+            "ForceResultEq" => Ok(CouponTrades::ForceResultEq),
+            "EqStrictEncode" => Ok(CouponTrades::EqStrictEncode),
+            "ThinkApplication" => Ok(CouponTrades::ThinkApplication),
+            "ThinkToForce" => Ok(CouponTrades::ThinkToForce),
+            "ForceToEncodeStric" => Ok(CouponTrades::ForceToEncodeStric),
+            "EvalEq" => Ok(CouponTrades::EvalEq),
+            "EvalBlobObj" => Ok(CouponTrades::EvalBlobObj),
+            "EvalTreeObj" => Ok(CouponTrades::EvalTreeObj),
+            "EqSym" => Ok(CouponTrades::EqSym),
+            "EqTrans" => Ok(CouponTrades::EqTrans),
+            "EqSelf" => Ok(CouponTrades::EqSelf),
+            _ => Err(())
+        }
+    }
+}
+
 #[allow(unused)]
 #[repr(usize)]
 pub enum FixOp {
