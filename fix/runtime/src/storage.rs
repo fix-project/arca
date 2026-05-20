@@ -21,7 +21,9 @@ impl<T> RefCnt<T> {
 pub trait FixData: From<Value> {
     fn inner(self) -> Value;
     fn len(&self) -> u64;
-    fn is_empty(&self) -> bool { self.len() == 0 }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug)]
@@ -121,7 +123,9 @@ impl<FixBlobData: FixData + AsRef<[u8]>, FixTreeData: FixData + AsRef<[u8]>>
     }
 }
 
-impl<FixBlobData: FixData + AsRef<[u8]>, FixTreeData: FixData + AsRef<[u8]>> Default for ObjectStore<FixBlobData, FixTreeData> {
+impl<FixBlobData: FixData + AsRef<[u8]>, FixTreeData: FixData + AsRef<[u8]>> Default
+    for ObjectStore<FixBlobData, FixTreeData>
+{
     fn default() -> Self {
         Self::new()
     }
