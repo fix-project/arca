@@ -180,6 +180,13 @@ impl CanonicalHandle {
         Self { inner }
     }
 
+    pub fn hash(&self) -> [u8; 32] {
+        let hash_64: &[u64; 4] = unsafe { core::mem::transmute(&self.inner.content) };
+        unsafe {
+            core::mem::transmute::<[u64; 4], [u8; 32]>([hash_64[0], hash_64[1], hash_64[2], 0])
+        }
+    }
+
     pub fn len(&self) -> usize {
         let field: &[u64; 4] = unsafe { core::mem::transmute(&self.inner.content) };
         (field[3] & 0xffffffffffff).try_into().unwrap()

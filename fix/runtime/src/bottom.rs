@@ -3,8 +3,8 @@
 
 use crate::{
     // data::{BlobData, RawData, TreeData},
-    fixruntime::FixRuntime,
-    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
+    fixruntime::{FixBlobData, FixRuntime, FixTreeData},
+    runtime::{DeterministicEquivRuntime, Executor},
 };
 
 use arca::Runtime;
@@ -51,23 +51,25 @@ impl<'a, 'b> DeterministicEquivRuntime for FixShellBottom<'a, 'b> {
     }
 
     fn create_blob(&mut self, data: Self::BlobData) -> Self::Handle {
-        pack_handle(&self.parent.create_blob(data))
+        pack_handle(&self.parent.create_blob(FixBlobData::new(data)))
     }
 
     fn create_tree(&mut self, data: Self::TreeData) -> Self::Handle {
-        pack_handle(&self.parent.create_tree(data))
+        pack_handle(&self.parent.create_tree(FixTreeData::new(data)))
     }
 
     fn get_blob(&self, handle: &Self::Handle) -> Result<Self::BlobData, Self::Error> {
         self.parent
             .get_blob(&unpack_handle(handle))
             .map_err(|_| Error::FixRuntimeError)
+            .map(|d| d.into())
     }
 
     fn get_tree(&self, handle: &Self::Handle) -> Result<Self::TreeData, Self::Error> {
         self.parent
             .get_tree(&unpack_handle(handle))
             .map_err(|_| Error::FixRuntimeError)
+            .map(|d| d.into())
     }
 
     fn is_blob(handle: &Self::Handle) -> bool {
@@ -179,8 +181,8 @@ impl<'a, 'b> FixShellBottom<'a, 'b> {
 impl<'a, 'b> Executor for FixShellBottom<'a, 'b> {
     fn execute(&mut self, combination: &FixHandle) -> FixHandle {
         let tree = self.parent.get_tree(combination).unwrap();
-        let function_handle = FixRuntime::<'_>::get_tree_entry(&tree, 0);
-        let elf = self.parent.get_blob(&function_handle).unwrap();
+        let function_handle = tree.get(0);
+        let elf: Blob = self.parent.get_blob(&function_handle).unwrap().into();
 
         let f = common::elfloader::load_elf(&elf).expect("Failed to load elf");
         let f = Runtime::apply_function(f, Value::from(pack_handle(combination)));

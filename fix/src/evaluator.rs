@@ -2,8 +2,9 @@ use fixhandle::rawhandle::{Encode, FixHandle, Object, Ref, Thunk, TreeName};
 
 use fixruntime::{
     common::CouponTrades,
-    fixruntime::FixRuntime,
-    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
+    fixruntime::{FixRuntime, FixTreeData},
+    runtime::{DeterministicEquivRuntime, Executor},
+    storage::FixData,
 };
 
 use common::bitpack::BitPack;
@@ -47,7 +48,7 @@ fn think(runtime: &mut FixRuntime, thunk: &Thunk) -> FixHandle {
             let mut coupons = Vec::with_capacity(32 * 2);
             coupons.extend_from_slice(&eval_coupon.pack());
             coupons.extend_from_slice(&apply_coupon.pack());
-            let coupons = runtime.create_tree(Blob::new(coupons));
+            let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
             let result = runtime.get_coupon_rhs(&apply_coupon);
             runtime.trade(
                 CouponTrades::ThinkApplication,
@@ -66,7 +67,7 @@ fn force(runtime: &mut FixRuntime, thunk: &Thunk) -> FixHandle {
         FixHandle::Object(_) | FixHandle::Ref(_) => {
             let mut coupons = Vec::with_capacity(32);
             coupons.extend_from_slice(&think_coupon.pack());
-            let coupons = runtime.create_tree(Blob::new(coupons));
+            let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
 
             runtime.trade(
                 CouponTrades::ThinkToForce,
@@ -88,7 +89,7 @@ fn encode(runtime: &mut FixRuntime, encode: &Encode) -> FixHandle {
 
             let mut coupons = Vec::with_capacity(32);
             coupons.extend_from_slice(&force_coupon.pack());
-            let coupons = runtime.create_tree(Blob::new(coupons));
+            let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
 
             runtime.trade(
                 CouponTrades::ForceToEncodeStric,
@@ -104,19 +105,19 @@ fn encode(runtime: &mut FixRuntime, encode: &Encode) -> FixHandle {
 fn eval_tree(runtime: &mut FixRuntime, handle: &TreeName) -> FixHandle {
     let tree_handle = FixHandle::from(Object::from(*handle));
     let tree = runtime.get_tree(&tree_handle).unwrap();
-    let tree_len = FixRuntime::<'_>::get_tree_len(&tree);
+    let tree_len = tree.len() as usize;
 
     let mut coupons = Vec::with_capacity(tree_len * 32);
     let mut new_tree = Vec::with_capacity(tree_len * 32);
 
     for i in 0..tree_len {
-        let eval_coupon = eval(runtime, FixRuntime::<'_>::get_tree_entry(&tree, i));
+        let eval_coupon = eval(runtime, tree.get(i));
         coupons.extend_from_slice(&eval_coupon.pack());
         new_tree.extend_from_slice(&runtime.get_coupon_rhs(&eval_coupon).pack());
     }
 
-    let coupons = runtime.create_tree(Blob::new(coupons));
-    let new_tree = runtime.create_tree(Blob::new(new_tree));
+    let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
+    let new_tree = runtime.create_tree(FixTreeData::new(Blob::new(new_tree)));
 
     runtime.trade(CouponTrades::EvalTreeObj, coupons, tree_handle, new_tree)
 }
@@ -127,7 +128,7 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
         FixHandle::Object(obj) => match obj {
             Object::BlobObj(_) => {
                 let coupons = vec![0u8; 0];
-                let coupons = runtime.create_tree(Blob::new(coupons));
+                let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
                 runtime.trade(CouponTrades::EvalBlobObj, coupons, handle, handle)
             }
             Object::TreeObj(tree) => eval_tree(runtime, &tree),
@@ -142,14 +143,14 @@ pub fn eval(runtime: &mut FixRuntime, handle: FixHandle) -> FixHandle {
 
             let mut coupons = Vec::with_capacity(32);
             coupons.extend_from_slice(&eq_coupon.pack());
-            let coupons = runtime.create_tree(Blob::new(coupons));
+            let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
             let eq_coupon = runtime.trade(CouponTrades::EqSym, coupons, eq_rhs, eq_lhs);
             let result = runtime.get_coupon_rhs(&eval_coupon);
 
             let mut coupons = Vec::with_capacity(2 * 32);
             coupons.extend_from_slice(&eval_coupon.pack());
             coupons.extend_from_slice(&eq_coupon.pack());
-            let coupons = runtime.create_tree(Blob::new(coupons));
+            let coupons = runtime.create_tree(FixTreeData::new(Blob::new(coupons)));
             runtime.trade(CouponTrades::EvalEq, coupons, handle, result)
         }
     }

@@ -5,83 +5,163 @@ use std::{mem, ptr};
 use common::BuddyAllocator;
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
-    BlobName, FixHandle, Handle, LiteralHandle, Object, PhysicalHandle, TreeName,
+    BlobName, CanonicalHandle, FixHandle, Handle, LiteralHandle, Object, TreeName,
 };
+use hashbrown::HashMap;
 use vmm::runtime::Runtime;
 
-use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
+use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator, RuntimeError};
 use crate::vmcommon::{CouponTrades, FixOp};
 
 pub struct VmmRuntime {
     runtime: Runtime,
-    store: Vec<Box<[u8], BuddyAllocator>>,
+    store: HashMap<[u8; 32], Box<[u8], BuddyAllocator>>,
+    executed: bool,
+}
+
+pub trait FixData: From<Box<[u8], BuddyAllocator>> {
+    fn inner(self) -> Box<[u8], BuddyAllocator>;
+    fn len(&self) -> u64;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl VmmRuntime {
     pub fn new(smp: usize, cid: usize, bin: Arc<[u8]>) -> Self {
         Self {
             runtime: Runtime::new(cid, smp, 1 << 34, bin),
-            store: Vec::new(),
+            store: HashMap::new(),
+            executed: false,
         }
     }
 
-    fn create(&mut self, data: Box<[u8], BuddyAllocator>) -> usize {
-        let idx = self.store.len();
-        self.store.push(data);
-        idx
+    fn create_raw(&mut self, data: Box<[u8], BuddyAllocator>) -> [u8; 32] {
+        let hash = blake3::hash(data.as_ref());
+        let canonical = CanonicalHandle::new(*hash.as_bytes(), 0);
+        self.store.insert(canonical.hash(), data);
+        canonical.hash()
     }
 
-    fn get(&self, idx: usize) -> &[u8] {
-        &self.store[idx]
+    fn create<T: FixData>(&mut self, data: T) -> CanonicalHandle {
+        let len = data.len();
+        let hash = self.create_raw(data.inner());
+        CanonicalHandle::new(hash, len)
+    }
+
+    fn get(&self, key: &[u8; 32]) -> &[u8] {
+        self.store
+            .get(key)
+            .expect("Failed to retrieve data")
+            .as_ref()
     }
 
     fn get_by_handle(&self, handle: Handle) -> &[u8] {
         match handle {
-            Handle::VirtualHandle(_) | Handle::CanonicalHandle(_) => todo!(),
-            Handle::PhysicalHandle(physical_handle) => self.get(physical_handle.local_id()),
+            Handle::VirtualHandle(_) | Handle::PhysicalHandle(_) => todo!(),
+            Handle::CanonicalHandle(c) => self.get(&c.hash()),
         }
     }
 }
 
+#[derive(Debug)]
+pub struct FixBlobData {
+    inner: Box<[u8], BuddyAllocator>,
+}
+
+impl FixData for FixBlobData {
+    fn inner(self) -> Box<[u8], BuddyAllocator> {
+        self.inner
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.len() as u64
+    }
+}
+
+impl From<Box<[u8], BuddyAllocator>> for FixBlobData {
+    fn from(value: Box<[u8], BuddyAllocator>) -> Self {
+        Self { inner: value }
+    }
+}
+
+#[derive(Debug)]
+pub struct FixTreeData {
+    inner: Box<[u8], BuddyAllocator>,
+}
+
+impl FixData for FixTreeData {
+    fn inner(self) -> Box<[u8], BuddyAllocator> {
+        self.inner
+    }
+
+    fn len(&self) -> u64 {
+        (self.inner.len() / 32) as u64
+    }
+}
+
+impl From<Box<[u8], BuddyAllocator>> for FixTreeData {
+    fn from(value: Box<[u8], BuddyAllocator>) -> Self {
+        Self { inner: value }
+    }
+}
+
+impl FixTreeData {
+    pub fn get(&self, offset: usize) -> FixHandle {
+        let mut scratch: [u8; 32] = [0; 32];
+        if offset < self.len() as usize {
+            scratch.copy_from_slice(&self.inner[offset * 32..(offset + 1) * 32]);
+        } else {
+            panic!();
+        }
+
+        FixHandle::unpack(scratch)
+    }
+}
+
 impl DeterministicEquivRuntime for VmmRuntime {
+    type BlobData<'a> = &'a [u8];
+    type TreeData<'a> = &'a [u8];
     type Handle = FixHandle;
-    type Error = ();
+    type Error = RuntimeError;
 
     fn create_blob_i32(&mut self, data: u32) -> FixHandle {
-        let x = data.to_le_bytes().to_vec().into_boxed_slice();
-        self.create_blob(&x)
+        let bytes = data.to_le_bytes();
+        self.create_blob(&bytes)
     }
 
     fn create_blob_i64(&mut self, data: u64) -> FixHandle {
-        let x = data.to_le_bytes().to_vec().into_boxed_slice();
-        self.create_blob(&x)
+        let bytes = data.to_le_bytes();
+        self.create_blob(&bytes)
     }
 
-    fn create_blob(&mut self, data: &[u8]) -> FixHandle {
+    fn create_blob(&mut self, data: Self::BlobData<'_>) -> FixHandle {
         let len = data.len();
         if len <= 30 {
             let literal = LiteralHandle::new(data);
             Object::from(BlobName::Literal(literal)).into()
         } else {
-            let local_id = self.create(data.to_vec_in(BuddyAllocator).into_boxed_slice());
-            let blob = BlobName::Blob(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)));
+            let data = data.to_vec_in(BuddyAllocator).into_boxed_slice();
+            let data: FixBlobData = data.into();
+            let canonical = self.create(data);
+            let blob = BlobName::Blob(Handle::CanonicalHandle(canonical));
             Object::from(blob).into()
         }
     }
 
-    fn create_tree(&mut self, data: &[u8]) -> FixHandle {
-        let len = data.len() / 32;
-        let local_id = self.create(data.to_vec_in(BuddyAllocator).into_boxed_slice());
-        let tree = TreeName::NotTag(Handle::PhysicalHandle(PhysicalHandle::new(local_id, len)));
-        Object::from(tree).into()
+    fn create_tree(&mut self, data: Self::TreeData<'_>) -> FixHandle {
+        let data = data.to_vec_in(BuddyAllocator).into_boxed_slice();
+        let data: FixTreeData = data.into();
+        let canonical = self.create(data);
+        Object::from(TreeName::NotTag(Handle::CanonicalHandle(canonical))).into()
     }
 
-    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<&'a [u8], Self::Error> {
+    fn get_blob<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::BlobData<'a>, Self::Error> {
         let b = handle
             .try_unwrap_object_ref()
-            .map_err(|_| ())?
+            .map_err(|_| RuntimeError::TypeMismatch)?
             .try_unwrap_blob_obj_ref()
-            .map_err(|_| ())?;
+            .map_err(|_| RuntimeError::TypeMismatch)?;
 
         match b {
             BlobName::Blob(h) => Ok(self.get_by_handle(*h)),
@@ -89,12 +169,12 @@ impl DeterministicEquivRuntime for VmmRuntime {
         }
     }
 
-    fn get_tree(&self, handle: &Self::Handle) -> Result<&[u8], Self::Error> {
+    fn get_tree<'a>(&'a self, handle: &'a Self::Handle) -> Result<Self::TreeData<'a>, Self::Error> {
         let t = handle
             .try_unwrap_object_ref()
-            .map_err(|_| ())?
+            .map_err(|_| RuntimeError::TypeMismatch)?
             .try_unwrap_tree_obj_ref()
-            .map_err(|_| ())?;
+            .map_err(|_| RuntimeError::TypeMismatch)?;
         match t {
             TreeName::NotTag(tree) | TreeName::Tag(tree) => Ok(self.get_by_handle(*tree)),
         }
@@ -130,8 +210,8 @@ impl VmmRuntime {
 
         let v = mem::take(&mut self.store);
 
-        for entry in v.into_iter() {
-            res.push(Self::into_raw_parts(entry));
+        for (_key, value) in v.into_iter() {
+            res.push(Self::into_raw_parts(value));
         }
 
         res.into_boxed_slice()
@@ -139,7 +219,8 @@ impl VmmRuntime {
 
     fn unload(&mut self, input: Box<[(usize, usize)], BuddyAllocator>) {
         for (offset, len) in input.into_iter() {
-            self.store.push(Self::from_raw_parts(offset, len));
+            let x = Self::from_raw_parts(offset, len);
+            self.create_raw(x);
         }
     }
 
@@ -149,6 +230,12 @@ impl VmmRuntime {
         coupon_trade: Option<CouponTrades>,
         handle: FixHandle,
     ) -> FixHandle {
+        if self.executed {
+            panic!("Multiple apply/eval/trade not supported yet.")
+        }
+
+        self.executed = true;
+
         let handle_scratch: Box<[u8], _> = Box::new_in(handle.pack(), BuddyAllocator);
         let output_store: Box<[usize], _> = Box::new_in([0; 2], BuddyAllocator);
 

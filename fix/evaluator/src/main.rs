@@ -1,22 +1,17 @@
+#![allow(unused)]
 #![feature(allocator_api)]
 #![feature(ptr_metadata)]
 #![feature(result_option_map_or_default)]
 
-use crate::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
-use crate::vmcommon::CouponTrades;
 use common::bitpack::BitPack;
+use evaluator::fixruntime::{CouponHelper, DeterministicEquivRuntime, Operator};
 use fixhandle::rawhandle::{create_application_thunk, create_strict_encode};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::vmmruntime::VmmRuntime;
 use clap::Parser;
-
-#[path = "../../runtime/src/common.rs"]
-mod vmcommon;
-
-mod fixruntime;
-mod vmmruntime;
+use evaluator::vmcommon::CouponTrades;
+use evaluator::vmmruntime::VmmRuntime;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -56,7 +51,7 @@ fn test_eval(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let encode = create_strict_encode(&application).unwrap();
 
     let result = rt.eval(encode);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");
@@ -81,7 +76,7 @@ fn test_apply(smp: usize, cid: usize, bin: Arc<[u8]>, module: &[u8]) {
     let combination = rt.create_tree(scratch.as_slice());
 
     let result = rt.apply(combination);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");
@@ -99,7 +94,7 @@ fn test_trade(smp: usize, cid: usize, bin: Arc<[u8]>) {
     let coupons = rt.create_tree(scratch.as_slice());
 
     let result = rt.trade(CouponTrades::EvalBlobObj, coupons, addend, addend);
-    rt.show_coupon(&result);
+    log::info!("{}", rt.show_coupon(&result));
 
     let result_blob = rt.get_coupon_rhs(&result);
     let result_blob = rt.get_blob(&result_blob).expect("Result is not a Blob");

@@ -1,0 +1,5 @@
+a = create_blob(Int(2)); 
+b = create_blob(Int(2)); 
+c = trade("EvalBlobObj", create_tree(), a, b);
+show_coupon(c);
+c
