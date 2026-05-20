@@ -5,13 +5,13 @@ use crate::{
     bottom::FixShellBottom,
     common::CouponTrades,
     // data::{BlobData, TreeData},
-    runtime::{CouponHelper, DeterministicEquivRuntime, Executor},
-    storage::{ObjectStore, Storage},
+    runtime::{DeterministicEquivRuntime, Executor},
+    storage::{FixData, ObjectStore, Storage},
 };
 use bytemuck::bytes_of;
 use common::bitpack::BitPack;
 use derive_more::TryUnwrapError;
-use fixhandle::rawhandle::{BlobName, CanonicalHandle, FixHandle, Handle, Object, TreeName};
+use fixhandle::rawhandle::{FixHandle, Object, TreeName};
 use kernel::prelude::*;
 use kernel::types::Blob;
 
@@ -27,59 +27,140 @@ impl<T> From<TryUnwrapError<T>> for Error {
     }
 }
 
-#[derive(Debug)]
-pub struct FixRuntime<'a> {
-    store: &'a mut ObjectStore,
-    coupon_canonical: FixHandle,
-    coupon_physical: FixHandle,
+#[derive(Debug, Clone)]
+pub struct FixBlobData {
+    inner: Blob,
 }
 
-impl<'a> FixRuntime<'a> {
-    pub fn new(store: &'a mut ObjectStore, coupon: &[u8]) -> Self {
-        let hash = blake3::hash(coupon);
-        let handle = CanonicalHandle::new(*hash.as_bytes(), coupon.len() as u64);
-        let coupon_canonical: FixHandle =
-            Object::from(BlobName::Blob(Handle::CanonicalHandle(handle))).into();
-        let coupon_physical = Object::from(store.create_blob(coupon.into())).into();
-        Self {
-            store,
-            coupon_canonical,
-            coupon_physical,
+impl FixData for FixBlobData {
+    fn inner(self) -> Value {
+        self.inner.into()
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.len() as u64
+    }
+}
+
+impl From<Value> for FixBlobData {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Blob(b) => FixBlobData { inner: b },
+            _ => todo!(),
         }
     }
 }
 
+impl AsRef<[u8]> for FixBlobData {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.as_ref()
+    }
+}
+
+impl FixBlobData {
+    pub fn new(inner: Blob) -> Self {
+        Self { inner }
+    }
+
+    pub fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
+        self.inner.read(offset, buf)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FixTreeData {
+    inner: Blob,
+}
+
+impl FixData for FixTreeData {
+    fn inner(self) -> Value {
+        self.inner.into()
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.len() as u64 / 32
+    }
+}
+
+impl From<Value> for FixTreeData {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Blob(b) => FixTreeData { inner: b },
+            _ => todo!(),
+        }
+    }
+}
+
+impl AsRef<[u8]> for FixTreeData {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.as_ref()
+    }
+}
+
+impl FixTreeData {
+    pub fn new(inner: Blob) -> Self {
+        Self { inner }
+    }
+
+    pub fn get(&self, offset: usize) -> FixHandle {
+        let mut scratch: [u8; 32] = [0; 32];
+        self.inner.read(offset * 32, &mut scratch);
+        FixHandle::unpack(scratch)
+    }
+}
+
+impl From<FixBlobData> for Blob {
+    fn from(val: FixBlobData) -> Self {
+        val.inner
+    }
+}
+
+impl From<FixTreeData> for Blob {
+    fn from(val: FixTreeData) -> Self {
+        val.inner
+    }
+}
+
+#[derive(Debug)]
+pub struct FixRuntime<'a> {
+    store: &'a mut ObjectStore<FixBlobData, FixTreeData>,
+    coupon: FixHandle,
+}
+
+impl<'a> FixRuntime<'a> {
+    pub fn new(store: &'a mut ObjectStore<FixBlobData, FixTreeData>, coupon: &[u8]) -> Self {
+        let coupon = Object::from(store.create_blob(FixBlobData::new(coupon.into()))).into();
+        Self { store, coupon }
+    }
+}
+
 impl<'a> DeterministicEquivRuntime for FixRuntime<'a> {
-    type BlobData = Blob;
-    type TreeData = Blob;
+    type BlobData = FixBlobData;
+    type TreeData = FixTreeData;
     type Handle = FixHandle;
     type Error = Error;
 
     fn create_blob_i32(&mut self, data: u32) -> Self::Handle {
         let buf = bytes_of(&data);
-        Object::from(self.store.create_blob(buf.into())).into()
+        let blob = Blob::new(buf);
+        Object::from(self.store.create_blob(FixBlobData::new(blob))).into()
     }
 
     fn create_blob_i64(&mut self, data: u64) -> Self::Handle {
         let buf = bytes_of(&data);
-        Object::from(self.store.create_blob(buf.into())).into()
+        let blob = Blob::new(buf);
+        Object::from(self.store.create_blob(FixBlobData::new(blob))).into()
     }
 
-    fn create_blob(&mut self, data: Blob) -> Self::Handle {
+    fn create_blob(&mut self, data: FixBlobData) -> Self::Handle {
         Object::from(self.store.create_blob(data)).into()
     }
 
-    fn create_tree(&mut self, data: Blob) -> Self::Handle {
+    fn create_tree(&mut self, data: FixTreeData) -> Self::Handle {
         Object::from(self.store.create_tree(data)).into()
     }
 
     fn get_blob(&self, handle: &Self::Handle) -> Result<Self::BlobData, Self::Error> {
-        let handle = if handle.pack() == self.coupon_canonical.pack() {
-            self.coupon_physical
-        } else {
-            *handle
-        };
-
         let b = handle
             .try_unwrap_object_ref()
             .map_err(Error::from)?
@@ -135,13 +216,13 @@ impl<'a> Executor for FixRuntime<'a> {
         let res = bottom.execute(combination);
 
         let mut apply_coupon = Vec::with_capacity(32 * 4);
-        apply_coupon.extend_from_slice(&self.coupon_canonical.pack());
+        apply_coupon.extend_from_slice(&self.coupon.pack());
         apply_coupon.extend_from_slice(&self.create_blob_i32(2).pack());
         apply_coupon.extend_from_slice(&combination.pack());
         apply_coupon.extend_from_slice(&res.pack());
 
         Object::from(TreeName::Tag(
-            self.create_tree(Blob::new(apply_coupon))
+            self.create_tree(FixTreeData::new(Blob::new(apply_coupon)))
                 .unwrap_object()
                 .unwrap_tree_obj()
                 .unwrap_not_tag(),
@@ -150,22 +231,8 @@ impl<'a> Executor for FixRuntime<'a> {
     }
 }
 
-impl<'a> CouponHelper for FixRuntime<'a> {
-    fn read_blob(blob: &Self::BlobData, offset: usize, buf: &mut [u8]) -> usize {
-        blob.read(offset, buf)
-    }
-
-    fn get_tree_entry(tree: &Self::TreeData, offset: usize) -> Self::Handle {
-        let mut scratch: [u8; 32] = [0; 32];
-        tree.read(offset * 32, &mut scratch);
-        FixHandle::unpack(scratch)
-    }
-
-    fn get_tree_len(tree: &Self::TreeData) -> usize {
-        tree.len() / 32
-    }
-
-    fn trade(
+impl FixRuntime<'_> {
+    pub fn trade(
         &mut self,
         trade_type: CouponTrades,
         coupons: FixHandle,
@@ -173,14 +240,56 @@ impl<'a> CouponHelper for FixRuntime<'a> {
         rhs: FixHandle,
     ) -> FixHandle {
         let mut combination = Vec::with_capacity(32 * 5);
-        combination.extend_from_slice(&self.coupon_canonical.pack());
+        combination.extend_from_slice(&self.coupon.pack());
         combination.extend_from_slice(&self.create_blob_i32(trade_type as u32).pack());
         combination.extend_from_slice(&coupons.pack());
         combination.extend_from_slice(&lhs.pack());
         combination.extend_from_slice(&rhs.pack());
 
-        let combination = self.create_tree(Blob::new(combination));
+        let combination = self.create_tree(FixTreeData::new(Blob::new(combination)));
         let mut bottom = FixShellBottom { parent: self };
         bottom.execute(&combination)
+    }
+
+    fn coupon_type(&mut self, handle: &FixHandle) -> &'static str {
+        let mut arr = [0u8; 4];
+        let blob = self.get_blob(handle).expect("Coupon type not a blob");
+        blob.read(0, &mut arr);
+        let num = u32::from_le_bytes(arr);
+        match num {
+            0 => "Eq",
+            1 => "Eval",
+            2 => "Apply",
+            3 => "Force",
+            4 => "Think",
+            5 => "Storage",
+            _ => panic!(),
+        }
+    }
+
+    pub fn show_coupon(&mut self, handle: &FixHandle) {
+        let ctype = self.get_coupon_type(handle);
+        let lhs = self.get_coupon_lhs(handle);
+        let rhs = self.get_coupon_rhs(handle);
+
+        log::info!("type is: {ctype:?}");
+        log::info!("lhs is: {lhs:?}");
+        log::info!("rhs is: {rhs:?}");
+    }
+
+    fn get_coupon_type(&mut self, coupon: &FixHandle) -> &'static str {
+        let coupon_content = self.get_tree(coupon).expect("Coupon not a tree");
+        let handle = coupon_content.get(1);
+        self.coupon_type(&handle)
+    }
+
+    pub fn get_coupon_lhs(&mut self, coupon: &FixHandle) -> FixHandle {
+        let coupon_content = self.get_tree(coupon).expect("Coupon not a tree");
+        coupon_content.get(2)
+    }
+
+    pub fn get_coupon_rhs(&mut self, coupon: &FixHandle) -> FixHandle {
+        let coupon_content = self.get_tree(coupon).expect("Coupon not a tree");
+        coupon_content.get(3)
     }
 }

@@ -6,5 +6,4 @@ e = create_blob(Int(1));
 f = create_strict_encode(create_application_thunk(d))
 g = create_tree(c, e, f);
 h = eval(create_strict_encode(create_application_thunk(g))); 
-show_coupon(h);
 h

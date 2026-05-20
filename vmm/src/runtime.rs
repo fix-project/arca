@@ -234,7 +234,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                     message.1,
                                 );
 
-                                println!("{message}");
                                 log::logger().log(
                                     &log::Record::builder()
                                         .level(level)

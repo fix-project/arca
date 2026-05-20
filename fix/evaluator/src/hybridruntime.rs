@@ -6,7 +6,7 @@ use crate::{
 };
 use common::bitpack::BitPack;
 use fixhandle::rawhandle::{
-    BlobName, Encode, FixHandle, Handle, Object, Thunk, TreeName, create_application_thunk,
+    BlobName, Encode, FixHandle, Object, Thunk, TreeName, create_application_thunk,
     create_strict_encode,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -41,24 +41,12 @@ impl HybridRuntime {
                 // Store packed handle for literals
                 BlobName::Literal(_) => handle,
                 // Write non-literals to storage
-                BlobName::Blob(h) => match h {
-                    Handle::CanonicalHandle(_) => handle,
-                    _ => {
-                        let blob_handle = FixHandle::Object(Object::BlobObj(blob_name));
-                        let blob = self.vmm_runtime.get_blob(&blob_handle)?;
-                        self.storage_runtime.create_blob(blob)
-                    }
-                },
+                BlobName::Blob(_) => {
+                    let blob = self.vmm_runtime.get_blob(&handle)?;
+                    self.storage_runtime.create_blob(blob)
+                }
             },
             FixHandle::Object(Object::TreeObj(in_treename)) => {
-                let h = match in_treename {
-                    TreeName::Tag(h) | TreeName::NotTag(h) => h,
-                };
-
-                if let Handle::CanonicalHandle(_) = h {
-                    return Ok(handle);
-                }
-
                 let tree = self.vmm_runtime.get_tree(&handle)?;
                 let mut children = Vec::with_capacity(Self::get_tree_len(tree));
                 for i in 0..Self::get_tree_len(tree) {
