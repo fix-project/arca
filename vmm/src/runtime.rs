@@ -321,7 +321,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
                             let stream = unsafe { &mut *stream_ptr };
                             let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf as usize),
+                                BuddyAllocator.from_offset(info.buf),
                                 info.len.load(Ordering::SeqCst),
                             );
                             let slice = unsafe { slice::from_raw_parts(ptr, len) };
@@ -337,7 +337,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
                             let stream = unsafe { &mut *stream_ptr };
                             let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf as usize),
+                                BuddyAllocator.from_offset(info.buf),
                                 info.len.load(Ordering::SeqCst),
                             );
                             let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
