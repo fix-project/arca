@@ -3,21 +3,6 @@
 version = 4
 
 [[package]]
-name = "arca-control"
-version = "0.1.0"
-dependencies = [
- "arca-pipe",
-]
-
-[[package]]
-name = "arca-monitor"
-version = "0.1.0"
-dependencies = [
- "arca-control",
- "arca-pipe",
-]
-
-[[package]]
 name = "arca-pipe"
 version = "0.1.0"
 

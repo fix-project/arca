@@ -1,2 +1,51 @@
-/target
-.build
+# Rust build output
+/target/
+**/target/
+
+# Cargo
+# keep Cargo.lock for binaries (you are building executables, so keep it)
+# If this were a library, you might ignore it.
+# /Cargo.lock
+
+# Backup / temp files
+*~
+*.swp
+*.swo
+*.tmp
+
+# macOS / Linux junk
+.DS_Store
+Thumbs.db
+
+# VSCode / editors
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Binary outputs / test artifacts
+*.bin
+*.out
+out.bin
+[out.bin]
+
+# Your specific generated files
+/latency/out*
+/throughput/out*
+
+# Python cache (for your bench script)
+__pycache__/
+*.pyc
+
+# Coverage / profiling
+*.prof
+*.data
+
+# OS stuff
+*.pid
+*.seed
+
+# Misc
+*.bak
+

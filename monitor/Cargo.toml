@@ -1,0 +1,8 @@
+[package]
+name = "arca-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arca-control = { path = "../control" }
+arca-pipe = { path = "../pipe" }

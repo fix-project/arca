@@ -1,58 +1,20 @@
-#![cfg_attr(not(feature = "std"), no_std)]
-#![allow(stable_features, unused_features)]
-#![feature(allocator_api)]
-#![feature(fn_traits)]
-#![cfg_attr(feature = "std", feature(layout_for_ptr))]
-#![feature(negative_impls)]
-#![feature(ptr_metadata)]
-#![cfg_attr(test, feature(test))]
-#![feature(unboxed_closures)]
-#![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
-
-pub mod buddy;
-pub mod refcnt;
-pub use buddy::BuddyAllocator;
-pub mod arrayvec;
-pub mod bitpack;
-pub mod controlreg;
-pub mod elfloader;
-pub mod ipaddr;
-pub mod sendable;
-pub mod util;
-pub mod vhost;
-
-#[cfg(feature = "std")]
-pub mod mmap;
+use std::arch::x86_64::{_mm_lfence, _mm_mfence, _rdtsc};
+use std::sync::atomic::{AtomicU64, AtomicU32};
 
 #[repr(C)]
-#[derive(Debug)]
-pub struct LogRecord {
-    pub level: u8,
-    pub target: (usize, usize),
-    pub file: Option<(usize, usize)>,
-    pub line: Option<u32>,
-    pub module_path: Option<(usize, usize)>,
-    pub message: (usize, usize),
+pub struct ShmHeader {
+    pub start_index: AtomicU64,
+    pub end_index: AtomicU64,
+    pub transfer_started: AtomicU32,
 }
 
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct SymtabRecord {
-    pub addr: usize,
-    pub offset: usize,
-    pub found: bool,
-    pub file_buffer: (usize, usize),
-    pub file_len: usize,
-}
-
-pub mod hypercall {
-    pub const EXIT: u64 = 0;
-    pub const LOG: u64 = 1;
-    pub const SYMNAME: u64 = 2;
-    pub const MEMSET: u64 = 3;
-    pub const MEMCLR: u64 = 4;
-    pub const SERVERREAD: u64 = 5;
-    pub const SERVERWRITE: u64 = 6;
-    pub const CLIENTREAD: u64 = 7;
-    pub const CLIENTWRITE: u64 = 8;
+#[inline]
+pub fn read_tsc() -> u64 {
+    unsafe {
+        _mm_mfence();
+        _mm_lfence();
+        let tsc = _rdtsc();
+        _mm_lfence();
+        tsc
+    }
 }

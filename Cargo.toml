@@ -1,8 +1,9 @@
 [workspace]
-members = [ "common", "vmm", "kernel", "macros" , "user", "arca" , "arcane", "fix", "fix/runtime", "fix/handle", "fix/shell" ]
-default-members = [ "common", "vmm", "macros", "arca", "fix/handle" ]
-
 resolver = "2"
-
-[profile.release]
-debug = true
+members = [
+    "pipe",
+    "control",
+    "monitor",
+    "data-pipe",
+    "test",
+]
