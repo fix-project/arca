@@ -34,11 +34,15 @@ impl<'a> BidirectionalPipe<'a> {
     /// created per region.
     pub fn new(region: &'a SharedMemoryRegion, ring_size: u64, side: Side) -> Self {
         assert!(region.len() >= Self::required_size(ring_size));
-        assert!(ring_size % core::mem::align_of::<RingHeader>() as u64 == 0,
-            "ring_size must be a multiple of 8 for header alignment");
+        assert!(
+            ring_size.is_multiple_of(core::mem::align_of::<RingHeader>() as u64),
+            "ring_size must be a multiple of 8 for header alignment"
+        );
         let base = region.as_ptr();
-        assert!(base.align_offset(core::mem::align_of::<RingHeader>()) == 0,
-            "shared memory region must be 8-byte aligned");
+        assert!(
+            base.align_offset(core::mem::align_of::<RingHeader>()) == 0,
+            "shared memory region must be 8-byte aligned"
+        );
 
         // Layout: [HeaderA (16)] [DataA (ring_size)] [HeaderB (16)] [DataB (ring_size)]
         // Interleaved so each header is adjacent to its data (cache locality)
@@ -116,9 +120,8 @@ mod tests {
     macro_rules! pipe_pair {
         ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
             let mut $mem = Aligned([0u8; BidirectionalPipe::required_size($ring as u64) as usize]);
-            let region = unsafe {
-                SharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64)
-            };
+            let region =
+                unsafe { SharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64) };
             let mut $a = BidirectionalPipe::new(&region, $ring, Side::A);
             let mut $b = BidirectionalPipe::new(&region, $ring, Side::B);
         };
@@ -199,5 +202,4 @@ mod tests {
         a.read(&mut out).unwrap();
         assert_eq!(&out, b"bbdd");
     }
-
 }

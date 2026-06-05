@@ -18,7 +18,7 @@ impl<'a> RingProducer<'a> {
     /// Uses Acquire on read_cursor so this can be called cross-thread safely.
     pub fn bytes_pending(&self) -> u64 {
         let write = self.header.write_cursor.load(Ordering::Relaxed);
-        let read  = self.header.read_cursor.load(Ordering::Acquire);
+        let read = self.header.read_cursor.load(Ordering::Acquire);
         write.wrapping_sub(read)
     }
 
@@ -41,7 +41,9 @@ impl<'a> RingProducer<'a> {
 
 impl<'a> traits::Write for RingProducer<'a> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let free = self.header.free_space(self.data.size());
         if free == 0 {
             return Err(PipeError::WouldBlock);
@@ -53,7 +55,9 @@ impl<'a> traits::Write for RingProducer<'a> {
 
         // No standalone fence needed, release on the store guarantees the
         // preceding write_at is visible before the cursor update
-        self.header.write_cursor.store(cursor + n as u64, Ordering::Release);
+        self.header
+            .write_cursor
+            .store(cursor + n as u64, Ordering::Release);
         Ok(n)
     }
 }

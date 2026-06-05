@@ -20,7 +20,7 @@ impl RingHeader {
         let read = self.read_cursor.load(Ordering::Relaxed);
 
         // Cursors are monotonically increasing and never reset, but they can
-        // overflow u64. wrapping_sub gives the correct delta regardless, 
+        // overflow u64. wrapping_sub gives the correct delta regardless,
         // also avoids panic on debug-mode subtraction overflow
         write.wrapping_sub(read)
     }

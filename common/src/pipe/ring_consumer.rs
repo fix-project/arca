@@ -33,7 +33,9 @@ impl<'a> RingConsumer<'a> {
 
 impl<'a> traits::Read for RingConsumer<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let used = self.header.used_space();
         if used == 0 {
             return Err(PipeError::WouldBlock);
@@ -45,7 +47,9 @@ impl<'a> traits::Read for RingConsumer<'a> {
 
         // No standalone fence needed, release on the store guarantees the
         // preceding read_at is visible before the cursor update
-        self.header.read_cursor.store(cursor + n as u64, Ordering::Release);
+        self.header
+            .read_cursor
+            .store(cursor + n as u64, Ordering::Release);
         Ok(n)
     }
 }
@@ -130,6 +134,4 @@ mod tests {
         let mut out = [0u8; 0];
         assert_eq!(c.read(&mut out).unwrap(), 0);
     }
-
-
 }

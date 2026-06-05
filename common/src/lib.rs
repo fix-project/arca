@@ -17,9 +17,9 @@ pub mod bitpack;
 pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;
+pub mod pipe;
 pub mod sendable;
 pub mod util;
-pub mod pipe;
 
 #[cfg(feature = "std")]
 pub mod mmap;
