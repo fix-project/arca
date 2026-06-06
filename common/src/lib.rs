@@ -19,6 +19,7 @@ pub mod elfloader;
 pub mod ipaddr;
 pub mod pipe;
 pub mod sendable;
+pub mod sync_stream;
 pub mod util;
 
 #[cfg(feature = "std")]
