@@ -1,18 +1,18 @@
-use crate::pipe::{BidirectionalPipe, PipeError, Read, Write};
+use crate::pipe::{BidirectionalPipe, DoorBell, PipeError, Read, Write};
 
 #[derive(Debug)]
 pub enum StreamError {
     WriteClosed,
 }
 
-pub struct SyncStream<'a> {
+pub struct SyncStream<'a, D: DoorBell> {
     /// BuddyAllocator offset of the SHM region backing this pipe.
     pub shm_offset: u64,
-    pipe: BidirectionalPipe<'a>,
+    pipe: BidirectionalPipe<'a, D>,
 }
 
-impl<'a> SyncStream<'a> {
-    pub fn from_pipe(shm_offset: u64, pipe: BidirectionalPipe<'a>) -> Self {
+impl<'a, D: DoorBell> SyncStream<'a, D> {
+    pub fn from_pipe(shm_offset: u64, pipe: BidirectionalPipe<'a, D>) -> Self {
         Self { shm_offset, pipe }
     }
 
@@ -51,7 +51,7 @@ impl<'a> SyncStream<'a> {
     }
 }
 
-fn read_exact(pipe: &mut crate::pipe::BidirectionalPipe, buf: &mut [u8]) -> usize {
+fn read_exact<D: DoorBell>(pipe: &mut crate::pipe::BidirectionalPipe<D>, buf: &mut [u8]) -> usize {
     let mut filled = 0;
     while filled < buf.len() {
         match pipe.read(&mut buf[filled..]) {
@@ -69,18 +69,16 @@ fn read_exact(pipe: &mut crate::pipe::BidirectionalPipe, buf: &mut [u8]) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arca_pipe::{BidirectionalPipe, SharedMemoryRegion, Side};
+    use crate::pipe::test_utils::pipe_pair;
+    use crate::pipe::test_utils::TestDoorBell;
+    use crate::pipe::{BidirectionalPipe, SharedMemoryRegion, Side};
 
     #[repr(align(8))]
     struct Aligned<const N: usize>([u8; N]);
 
     macro_rules! stream_pair {
         ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
-            let mut $mem = Aligned([0u8; BidirectionalPipe::required_size($ring as u64) as usize]);
-            let region =
-                unsafe { SharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64) };
-            let pipe_a = BidirectionalPipe::new(&region, $ring, Side::A);
-            let pipe_b = BidirectionalPipe::new(&region, $ring, Side::B);
+            pipe_pair!($ring, $mem, pipe_a, pipe_b);
             let mut $a = SyncStream::from_pipe(0, pipe_a);
             let mut $b = SyncStream::from_pipe(0, pipe_b);
         };

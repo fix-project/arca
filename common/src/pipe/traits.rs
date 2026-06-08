@@ -33,3 +33,18 @@ pub trait Write {
         }
     }
 }
+
+/// Notify the waiter on newly available event (readable/writable)
+///
+/// ring blocks until it's possible to ring
+pub trait DoorBell {
+    fn ring(&self);
+}
+
+/// Wait for an event.
+///
+/// DoorBellWaiter on the arca-side is handled by kthreads wfi
+#[cfg(feature = "std")]
+pub trait DoorBellWaiter {
+    fn wait(&mut self);
+}
