@@ -3,7 +3,7 @@ use crate::pipe::ring::{RingData, RingHeader};
 use crate::pipe::ring_consumer::RingConsumer;
 use crate::pipe::ring_producer::RingProducer;
 use crate::pipe::shared_memory_region::SharedMemoryRegion;
-use crate::pipe::traits::{self, OwnedSplit};
+use crate::pipe::traits::{self, DoorBell, OwnedSplit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -22,24 +22,28 @@ pub enum Side {
 /// whenever `R: Send`.
 ///
 /// Memory layout: `[HeaderA][Ring A->B data][HeaderB][Ring B->A data]`.
-pub struct BidirectionalPipe<R: SharedMemoryRegion> {
+pub struct BidirectionalPipe<R: SharedMemoryRegion, D: DoorBell> {
     writer: RingProducer<R>,
     reader: RingConsumer<R>,
+    read_available_doorbell: D,
+    write_available_doorbell: D,
 }
 
 #[allow(unused)]
-pub struct BidirectionalPipeWriteEnd<R: SharedMemoryRegion> {
+pub struct BidirectionalPipeWriteEnd<R: SharedMemoryRegion, D: DoorBell> {
     writer: RingProducer<R>,
+    read_available_doorbell: D,
 }
 
 #[allow(unused)]
-pub struct BidirectionalPipeReadEnd<R: SharedMemoryRegion> {
+pub struct BidirectionalPipeReadEnd<R: SharedMemoryRegion, D: DoorBell> {
     reader: RingConsumer<R>,
+    write_available_doorbell: D,
 }
 
 const HEADER_SIZE: u64 = core::mem::size_of::<RingHeader>() as u64;
 
-impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
+impl<R: SharedMemoryRegion, D: DoorBell> BidirectionalPipe<R, D> {
     /// Total bytes of shared memory needed for a given `ring_size`.
     pub const fn required_size(ring_size: u64) -> u64 {
         2 * (HEADER_SIZE + ring_size)
@@ -51,7 +55,13 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     /// each keep the mapping alive on their own. Caller must ensure the region
     /// is zero-initialized before the first side is constructed, and that
     /// exactly one `Side::A` and one `Side::B` are created per region.
-    pub fn new(region: R, ring_size: u64, side: Side) -> Self {
+    pub fn new(
+        region: R,
+        ring_size: u64,
+        side: Side,
+        read_available_doorbell: D,
+        write_available_doorbell: D,
+    ) -> Self {
         assert!(region.len() >= Self::required_size(ring_size));
         assert!(
             ring_size.is_multiple_of(core::mem::align_of::<RingHeader>() as u64),
@@ -82,7 +92,12 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
         let reader = RingConsumer::new(region, reader_header, unsafe {
             RingData::new(reader_data, ring_size)
         });
-        Self { writer, reader }
+        Self {
+            writer,
+            reader,
+            read_available_doorbell,
+            write_available_doorbell,
+        }
     }
 
     /// Consume the pipe and split it into independent, owned read and write
@@ -91,13 +106,20 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     /// Each end already owns its own clone of the region handle, so the two can
     /// be moved to separate threads / async tasks and each independently keeps
     /// the shared mapping alive.
-    pub fn split(self) -> (BidirectionalPipeReadEnd<R>, BidirectionalPipeWriteEnd<R>) {
+    pub fn split(
+        self,
+    ) -> (
+        BidirectionalPipeReadEnd<R, D>,
+        BidirectionalPipeWriteEnd<R, D>,
+    ) {
         (
             BidirectionalPipeReadEnd {
                 reader: self.reader,
+                write_available_doorbell: self.write_available_doorbell,
             },
             BidirectionalPipeWriteEnd {
                 writer: self.writer,
+                read_available_doorbell: self.read_available_doorbell,
             },
         )
     }
@@ -128,31 +150,49 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     }
 }
 
-impl<R: SharedMemoryRegion> traits::Read for BidirectionalPipe<R> {
+impl<R: SharedMemoryRegion, D: DoorBell> traits::Read for BidirectionalPipe<R, D> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
-        self.reader.read(buf)
+        let res = self.reader.read(buf);
+        if let Ok(s) = res {
+            self.write_available_doorbell.ring();
+            if s > 0 {}
+        }
+        res
     }
 }
 
-impl<R: SharedMemoryRegion> traits::Read for BidirectionalPipeReadEnd<R> {
+impl<R: SharedMemoryRegion, D: DoorBell> traits::Read for BidirectionalPipeReadEnd<R, D> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
-        self.reader.read(buf)
+        let res = self.reader.read(buf);
+        if let Ok(s) = res {
+            self.write_available_doorbell.ring();
+            if s > 0 {}
+        }
+        res
     }
 }
 
-impl<R: SharedMemoryRegion> traits::Write for BidirectionalPipe<R> {
+impl<R: SharedMemoryRegion, D: traits::DoorBell> traits::Write for BidirectionalPipe<R, D> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
+        let res = self.writer.write(buf);
+        if let Ok(s) = res {
+            if s > 0 {
+                self.read_available_doorbell.ring();
+            }
+        }
+        res
+    }
+}
+
+impl<R: SharedMemoryRegion, D: DoorBell> traits::Write for BidirectionalPipeWriteEnd<R, D> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
         self.writer.write(buf)
     }
 }
 
-impl<R: SharedMemoryRegion> traits::Write for BidirectionalPipeWriteEnd<R> {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
-        self.writer.write(buf)
-    }
-}
-
-impl<R: SharedMemoryRegion + Send + 'static> OwnedSplit for BidirectionalPipe<R> {
+impl<R: SharedMemoryRegion + Send + 'static, D: DoorBell + Send + 'static> OwnedSplit
+    for BidirectionalPipe<R, D>
+{
     fn split(
         self,
     ) -> (
@@ -164,37 +204,75 @@ impl<R: SharedMemoryRegion + Send + 'static> OwnedSplit for BidirectionalPipe<R>
 }
 
 #[cfg(test)]
+pub(crate) mod test_utils {
+    use crate::pipe::DoorBell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    pub struct TestDoorBell {
+        count: AtomicUsize,
+    }
+
+    impl DoorBell for TestDoorBell {
+        fn ring(&self) {
+            self.count.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    impl TestDoorBell {
+        pub fn new() -> Self {
+            Self {
+                count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[macro_export]
+    macro_rules! pipe_pair {
+        ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
+            let mut $mem = Aligned(
+                [0u8; BidirectionalPipe::<RawSharedMemoryRegion, TestDoorBell>::required_size(
+                    $ring as u64,
+                ) as usize],
+            );
+            let region = unsafe {
+                RawSharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64)
+            };
+            #[allow(unused_mut)]
+            let mut $a = BidirectionalPipe::new(
+                region,
+                $ring,
+                Side::A,
+                TestDoorBell::new(),
+                TestDoorBell::new(),
+            );
+            #[allow(unused_mut)]
+            let mut $b = BidirectionalPipe::new(
+                region,
+                $ring,
+                Side::B,
+                TestDoorBell::new(),
+                TestDoorBell::new(),
+            );
+        };
+    }
+
+    pub(crate) use pipe_pair;
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipe::shared_memory_region::RawSharedMemoryRegion;
     use crate::pipe::traits::{Read, Write};
+    use crate::pipe::{RawSharedMemoryRegion, RingConsumer, RingProducer};
+    use test_utils::{pipe_pair, TestDoorBell};
 
     #[repr(align(8))]
     struct Aligned<const N: usize>([u8; N]);
 
-    macro_rules! pipe_pair {
-        ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
-            let mut $mem = Aligned(
-                [0u8; BidirectionalPipe::<RawSharedMemoryRegion>::required_size($ring as u64)
-                    as usize],
-            );
-            // A `RawSharedMemoryRegion` is a `Copy` handle, so each side gets its
-            // own owned clone pointing at the same backing bytes.
-            let region = unsafe {
-                RawSharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64)
-            };
-            // `mut` is needed by tests that read/write; split-only tests don't.
-            #[allow(unused_mut)]
-            let mut $a = BidirectionalPipe::new(region, $ring, Side::A);
-            #[allow(unused_mut)]
-            let mut $b = BidirectionalPipe::new(region, $ring, Side::B);
-        };
-    }
-
     #[test]
     fn required_size_matches_layout() {
         assert_eq!(
-            BidirectionalPipe::<RawSharedMemoryRegion>::required_size(64),
+            BidirectionalPipe::<RawSharedMemoryRegion, TestDoorBell>::required_size(64),
             2 * (24 + 64)
         );
     }
@@ -220,7 +298,7 @@ mod tests {
         // The whole point of dropping the lifetime: owned, `Send` endpoints
         // that can move to other threads / async tasks.
         fn assert_send<T: Send>() {}
-        assert_send::<BidirectionalPipe<RawSharedMemoryRegion>>();
+        assert_send::<BidirectionalPipe<RawSharedMemoryRegion, TestDoorBell>>();
         assert_send::<RingConsumer<RawSharedMemoryRegion>>();
         assert_send::<RingProducer<RawSharedMemoryRegion>>();
     }

@@ -23,4 +23,10 @@ pub use ring::{RingData, RingHeader};
 pub use ring_consumer::RingConsumer;
 pub use ring_producer::RingProducer;
 pub use shared_memory_region::{RawSharedMemoryRegion, SharedMemoryRegion};
-pub use traits::{Read, Write};
+pub use traits::{DoorBell, Read, Write};
+
+#[cfg(feature = "std")]
+pub use traits::DoorBellWaiter;
+
+#[cfg(test)]
+pub(crate) use bidirectional_pipe::test_utils;

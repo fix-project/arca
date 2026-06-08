@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(stable_features, unused_features)]
 #![feature(allocator_api)]
+#![feature(new_range_api)]
 #![feature(fn_traits)]
 #![cfg_attr(feature = "std", feature(layout_for_ptr))]
 #![feature(negative_impls)]

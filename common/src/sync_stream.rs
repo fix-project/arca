@@ -1,16 +1,17 @@
-use crate::pipe::{BidirectionalPipe, PipeError, Read, SharedMemoryRegion, Write};
+use crate::pipe::{BidirectionalPipe, DoorBell, PipeError, Read, SharedMemoryRegion, Write};
 
 #[derive(Debug)]
 pub enum StreamError {
     WriteClosed,
 }
 
-pub struct SyncStream<R: SharedMemoryRegion> {
-    pipe: BidirectionalPipe<R>,
+pub struct SyncStream<R: SharedMemoryRegion, D: DoorBell> {
+    /// BuddyAllocator offset of the SHM region backing this pipe.
+    pipe: BidirectionalPipe<R, D>,
 }
 
-impl<R: SharedMemoryRegion> SyncStream<R> {
-    pub fn from_pipe(pipe: BidirectionalPipe<R>) -> Self {
+impl<R: SharedMemoryRegion, D: DoorBell> SyncStream<R, D> {
+    pub fn from_pipe(pipe: BidirectionalPipe<R, D>) -> Self {
         Self { pipe }
     }
 
@@ -53,7 +54,10 @@ impl<R: SharedMemoryRegion> SyncStream<R> {
     }
 }
 
-fn read_exact<R: SharedMemoryRegion>(pipe: &mut BidirectionalPipe<R>, buf: &mut [u8]) -> usize {
+fn read_exact<R: SharedMemoryRegion, D: DoorBell>(
+    pipe: &mut BidirectionalPipe<R, D>,
+    buf: &mut [u8],
+) -> usize {
     let mut filled = 0;
     while filled < buf.len() {
         match pipe.read(&mut buf[filled..]) {
@@ -72,6 +76,8 @@ fn read_exact<R: SharedMemoryRegion>(pipe: &mut BidirectionalPipe<R>, buf: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipe::test_utils::pipe_pair;
+    use crate::pipe::test_utils::TestDoorBell;
     use crate::pipe::{BidirectionalPipe, RawSharedMemoryRegion, Side};
 
     #[repr(align(8))]
@@ -79,17 +85,7 @@ mod tests {
 
     macro_rules! stream_pair {
         ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
-            let mut $mem = Aligned(
-                [0u8; BidirectionalPipe::<RawSharedMemoryRegion>::required_size($ring as u64)
-                    as usize],
-            );
-            // A `RawSharedMemoryRegion` is a `Copy` handle, so each side gets its
-            // own owned clone pointing at the same backing bytes.
-            let region = unsafe {
-                RawSharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64)
-            };
-            let pipe_a = BidirectionalPipe::new(region, $ring, Side::A);
-            let pipe_b = BidirectionalPipe::new(region, $ring, Side::B);
+            pipe_pair!($ring, $mem, pipe_a, pipe_b);
             let mut $a = SyncStream::from_pipe(pipe_a);
             let mut $b = SyncStream::from_pipe(pipe_b);
         };
