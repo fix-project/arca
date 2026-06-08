@@ -19,7 +19,6 @@ pub mod elfloader;
 pub mod ipaddr;
 pub mod sendable;
 pub mod util;
-pub mod vhost;
 
 #[cfg(feature = "std")]
 pub mod mmap;
@@ -46,13 +45,47 @@ pub struct SymtabRecord {
 }
 
 pub mod hypercall {
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+
     pub const EXIT: u64 = 0;
     pub const LOG: u64 = 1;
     pub const SYMNAME: u64 = 2;
     pub const MEMSET: u64 = 3;
     pub const MEMCLR: u64 = 4;
-    pub const SERVERREAD: u64 = 5;
-    pub const SERVERWRITE: u64 = 6;
-    pub const CLIENTREAD: u64 = 7;
-    pub const CLIENTWRITE: u64 = 8;
+    pub const TCP_CONNECT: u64 = 5;
+    pub const TCP_LISTEN: u64 = 6;
+    pub const TCP_ACCEPT: u64 = 7;
+    pub const TCP_CLOSE: u64 = 8;
+    pub const TCP_SEND: u64 = 9;
+    pub const TCP_RECV: u64 = 10;
+    pub const FILE_OPEN: u64 = 11;
+    pub const FILE_CLOSE: u64 = 12;
+    pub const FILE_READ: u64 = 13;
+    pub const FILE_WRITE: u64 = 14;
+    pub const FILE_SEEK: u64 = 15;
+
+    #[derive(Debug, Default)]
+    pub struct TcpInfo {
+        pub ip: u32,
+        pub port: u16,
+        pub id: AtomicU64,
+        pub buf: usize,
+        pub len: AtomicUsize,
+        pub done: AtomicBool,
+    }
+
+    #[derive(Debug, Default)]
+    pub struct FileInfo {
+        pub read: bool,
+        pub write: bool,
+        pub create: bool,
+        pub append: bool,
+        pub truncate: bool,
+        pub buf: usize,
+        pub offset: isize,
+        pub whence: i64,
+        pub len: AtomicUsize,
+        pub id: AtomicU64,
+        pub done: AtomicBool,
+    }
 }

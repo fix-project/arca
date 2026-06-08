@@ -92,26 +92,281 @@ pub fn memclr(region: *mut [u8]) {
     }
 }
 
-pub fn server_read(region: *mut [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::SERVERREAD, p as u64, n as u64) as usize }
+pub mod net {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use common::{
+        hypercall::{self, TcpInfo},
+        BuddyAllocator,
+    };
+
+    use crate::kthread;
+
+    pub struct TcpListener {
+        id: u64,
+    }
+
+    pub struct TcpStream {
+        id: u64,
+    }
+
+    impl TcpListener {
+        pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            let info = TcpInfo {
+                ip: u32::from_ne_bytes(*ip),
+                port,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_LISTEN,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            TcpListener {
+                id: info.id.load(Ordering::SeqCst),
+            }
+        }
+
+        pub fn accept(&self) -> TcpStream {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_ACCEPT,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            TcpStream {
+                id: info.id.load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    impl TcpStream {
+        pub fn connect(ip: &[u8; 4], port: u16) -> TcpStream {
+            let info = TcpInfo {
+                ip: u32::from_ne_bytes(*ip),
+                port,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::TCP_CONNECT,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            TcpStream {
+                id: info.id.load(Ordering::SeqCst),
+            }
+        }
+
+        pub fn send(&mut self, bytes: &[u8]) -> usize {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
+                len: AtomicUsize::new(bytes.len()),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::TCP_SEND, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            info.len.load(Ordering::SeqCst)
+        }
+
+        pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
+                len: AtomicUsize::new(bytes.len()),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::TCP_RECV, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            info.len.load(Ordering::SeqCst)
+        }
+
+        pub fn close(self) {
+            let _ = self;
+        }
+    }
+
+    impl Drop for TcpStream {
+        fn drop(&mut self) {
+            let info = TcpInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::TCP_CLOSE, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+        }
+    }
+
+    impl !Sync for TcpStream {}
+
+    impl core::fmt::Write for TcpStream {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let mut s = s.as_bytes();
+            while !s.is_empty() {
+                let len = self.send(s);
+                s = &s[len..];
+            }
+            Ok(())
+        }
+    }
 }
 
-pub fn server_write(region: *const [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::SERVERWRITE, p as u64, n as u64) as usize }
-}
+pub mod fs {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-pub fn client_read(region: *mut [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::CLIENTREAD, p as u64, n as u64) as usize }
-}
+    use common::{
+        hypercall::{self, FileInfo},
+        BuddyAllocator,
+    };
 
-pub fn client_write(region: *const [u8]) -> usize {
-    let (p, n) = region.to_raw_parts();
-    let p = vm::ka2pa(p);
-    unsafe { crate::io::hypercall2(hypercall::CLIENTWRITE, p as u64, n as u64) as usize }
+    use crate::kthread;
+
+    pub struct File {
+        id: u64,
+    }
+
+    impl File {
+        pub fn open(
+            path: &str,
+            read: bool,
+            write: bool,
+            create: bool,
+            append: bool,
+            truncate: bool,
+        ) -> Option<File> {
+            let info = FileInfo {
+                buf: BuddyAllocator.to_offset(path.as_ptr()),
+                len: AtomicUsize::new(path.len()),
+                read,
+                write,
+                create,
+                append,
+                truncate,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::FILE_OPEN, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            let id = info.id.load(Ordering::SeqCst);
+            if id != 0 {
+                Some(File { id })
+            } else {
+                None
+            }
+        }
+
+        pub fn close(self) {}
+
+        pub fn read(&mut self, buf: &mut [u8]) -> usize {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(buf.as_ptr()),
+                len: AtomicUsize::new(buf.len()),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::FILE_READ, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            info.len.load(Ordering::SeqCst)
+        }
+
+        pub fn write(&mut self, buf: &[u8]) -> usize {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                buf: BuddyAllocator.to_offset(buf.as_ptr()),
+                len: AtomicUsize::new(buf.len()),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::FILE_WRITE,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            info.len.load(Ordering::SeqCst)
+        }
+
+        pub fn seek(&mut self, offset: isize, whence: i64) -> usize {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                offset,
+                whence,
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(hypercall::FILE_SEEK, BuddyAllocator.to_offset(&info) as u64)
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+            info.len.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for File {
+        fn drop(&mut self) {
+            let info = FileInfo {
+                id: AtomicU64::new(self.id),
+                ..Default::default()
+            };
+            unsafe {
+                crate::io::hypercall1(
+                    hypercall::FILE_CLOSE,
+                    BuddyAllocator.to_offset(&info) as u64,
+                )
+            };
+            while !info.done.load(Ordering::SeqCst) {
+                kthread::wfi();
+            }
+        }
+    }
+
+    impl core::fmt::Write for File {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let mut s = s.as_bytes();
+            while !s.is_empty() {
+                let len = self.write(s);
+                s = &s[len..];
+            }
+            Ok(())
+        }
+    }
+
+    impl !Sync for File {}
 }

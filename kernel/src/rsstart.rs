@@ -1,7 +1,7 @@
 use core::{
     arch::asm,
     ptr::{addr_of, addr_of_mut, NonNull},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::Ordering,
 };
 
 use alloc::boxed::Box;
@@ -18,7 +18,7 @@ use crate::{
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, vhost::VSockMetadata, BuddyAllocator};
+use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
 
 extern "C" {
     fn kmain(argc: usize, argv: *const usize);
@@ -56,8 +56,6 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         }
         pdpt.into()
     });
-
-static START_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 unsafe extern "C" fn _start(
@@ -112,7 +110,6 @@ unsafe extern "C" fn _start(
     crate::tsc::init();
     crate::kvmclock::init();
     crate::iprofile::init();
-    crate::aprofile::init();
 
     let gdtr = GdtDescriptor::new(&**crate::gdt::GDT);
 
@@ -138,29 +135,17 @@ unsafe extern "C" fn _start(
     set_pt(vm::ka2pa(Box::leak(pml4)));
 
     core::arch::asm!("sti");
+    crate::kthread::init();
     if id == 0 {
         let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
         let argv = NonNull::new(argv).unwrap();
 
-        let vsock_info = argv.as_ptr().read();
-        let vsock_info: *const VSockMetadata = BuddyAllocator.from_offset(vsock_info);
-        let vsock = &crate::virtio::vsock::DRIVER;
-        assert!(vsock
-            .set(crate::virtio::vsock::Driver::new(vsock_info.read()))
-            .is_ok());
-        let argv = argv.add(1);
-        let argc = argc - 1;
-
         BuddyAllocator.set_caching(true);
-        kmain(argc, argv.as_ptr());
-        START_RUNTIME.store(true, Ordering::Release);
-    } else {
-        while !START_RUNTIME.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
+        crate::kthread::spawn(|| {
+            kmain(argc, argv.as_ptr());
+        });
     }
-    crate::rt::run();
-
+    crate::kthread::run_scheduler();
     crate::shutdown();
 }
 

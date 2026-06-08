@@ -9,6 +9,7 @@
 #![feature(negative_impls)]
 #![feature(never_type)]
 #![feature(ptr_metadata)]
+#![feature(atomic_ptr_null)]
 #![feature(custom_test_frameworks)]
 #![test_runner(testing::harness)]
 #![reexport_test_harness_main = "test_main"]
@@ -22,20 +23,18 @@ use common::hypercall;
 pub use macros::core_local;
 
 pub mod allocator;
-pub mod aprofile;
 pub mod cpu;
 pub mod debugcon;
 pub mod host;
 pub mod io;
 pub mod iprofile;
+pub mod kthread;
 pub mod kvmclock;
 pub mod page;
 pub mod paging;
 pub mod prelude;
-pub mod rt;
 pub mod tsc;
 pub mod types;
-pub mod virtio;
 pub mod vm;
 
 mod gdt;
