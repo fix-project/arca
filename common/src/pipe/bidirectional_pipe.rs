@@ -112,7 +112,7 @@ impl<'a> traits::Write for BidirectionalPipe<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{Read, Write};
+    use crate::pipe::traits::{Read, Write};
 
     #[repr(align(8))]
     struct Aligned<const N: usize>([u8; N]);
