@@ -17,6 +17,7 @@ pub mod bitpack;
 pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;
+pub mod message;
 pub mod pipe;
 pub mod sendable;
 pub mod sync_stream;
