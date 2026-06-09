@@ -17,7 +17,7 @@ mod ring_producer;
 mod shared_memory_region;
 mod traits;
 
-pub use bidirectional_pipe::{BidirectionalPipe, Side};
+pub use bidirectional_pipe::{BidirectionalPipe, ARCA_SIDE, HOST_SIDE};
 pub use error::PipeError;
 pub use ring::{RingData, RingHeader};
 pub use ring_consumer::RingConsumer;
@@ -29,4 +29,4 @@ pub use traits::{DoorBell, Read, Write};
 pub use traits::DoorBellWaiter;
 
 #[cfg(test)]
-pub(crate) use bidirectional_pipe::test_utils;
+pub(crate) use bidirectional_pipe::{test_utils, Side};

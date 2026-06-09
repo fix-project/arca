@@ -38,6 +38,7 @@ impl<const MAX_FRAME_PAYLOAD: usize> Frame<MAX_FRAME_PAYLOAD> {
 /// Keeps partial bytes until a full frame is available; supports multiple
 /// frames read in one chunk.
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct FrameReadBuf<const MAX_FRAME_PAYLOAD: usize> {
     header_storage: [u8; 2],
     payload_storage: [u8; MAX_FRAME_PAYLOAD],
@@ -51,6 +52,7 @@ impl<const MAX_FRAME_PAYLOAD: usize> Default for FrameReadBuf<MAX_FRAME_PAYLOAD>
     }
 }
 
+#[allow(unused)]
 impl<const MAX_FRAME_PAYLOAD: usize> FrameReadBuf<MAX_FRAME_PAYLOAD> {
     pub const fn new() -> Self {
         Self {
@@ -108,6 +110,7 @@ impl<const MAX_FRAME_PAYLOAD: usize> FrameReadBuf<MAX_FRAME_PAYLOAD> {
 
 /// Incremental frame writer for non-blocking transports.
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct FrameWriteBuf {
     written_len: usize,
     frame: Option<Box<[u8]>>,
@@ -119,6 +122,7 @@ impl Default for FrameWriteBuf {
     }
 }
 
+#[allow(unused)]
 impl FrameWriteBuf {
     pub const fn new() -> Self {
         Self {
