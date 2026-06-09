@@ -259,6 +259,9 @@ pub(crate) mod test_utils {
     pub(crate) use pipe_pair;
 }
 
+pub const HOST_SIDE: Side = Side::A;
+pub const ARCA_SIDE: Side = Side::B;
+
 #[cfg(test)]
 mod tests {
     use super::*;
