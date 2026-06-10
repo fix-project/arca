@@ -58,13 +58,13 @@ struct VMToHostDoorBellPair {
 fn new_vm_to_host_door_bell_pair(
     vm: &VmFd,
     addr: IoEventAddress,
-    stream_id: u64,
+    pipe_id: u64,
 ) -> VMToHostDoorBellPair {
-    assert!(stream_id < u64::MAX / 2);
+    assert!(pipe_id < u64::MAX / 2);
     let (read_available_bell_info, read_bell_waiter) =
-        new_vm_to_host_door_bell(vm, addr, stream_id * 2);
+        new_vm_to_host_door_bell(vm, addr, pipe_id * 2);
     let (write_available_bell_info, write_bell_waiter) =
-        new_vm_to_host_door_bell(vm, addr, stream_id * 2 + 1);
+        new_vm_to_host_door_bell(vm, addr, pipe_id * 2 + 1);
     VMToHostDoorBellPair {
         read_available_bell_info,
         write_available_bell_info,
@@ -77,7 +77,7 @@ fn new_pipe(
     vm: &VmFd,
     addr: IoEventAddress,
     ring_size: u64,
-    stream_id: u64,
+    pipe_id: u64,
 ) -> (
     VmmPipeWrapper,
     VMToHostDoorBellWaiter,
@@ -87,7 +87,7 @@ fn new_pipe(
     let host_read_door_bell = new_host_to_vm_door_bell(vm);
     let host_write_door_bell = new_host_to_vm_door_bell(vm);
 
-    let vm_to_host = new_vm_to_host_door_bell_pair(vm, addr, stream_id);
+    let vm_to_host = new_vm_to_host_door_bell_pair(vm, addr, pipe_id);
 
     let shm_len = VmmPipe::required_size(ring_size) as usize;
     let mut shm = Vec::with_capacity_in(shm_len, BuddyAllocator);
@@ -112,6 +112,7 @@ fn new_pipe(
     let pipe_info = DataPipeInfo {
         shm_offset: BuddyAllocator.to_offset(shm_ptr) as u64,
         ring_size,
+        pipe_id,
     };
     let reply = Reply {
         pipe_info,

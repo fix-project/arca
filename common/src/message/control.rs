@@ -107,19 +107,21 @@ pub struct DataPipeInfo {
     /// Per-direction ring capacity in bytes (same value passed to
     /// [`BidirectionalPipe::new`]).
     pub ring_size: u64,
+    pub pipe_id: u64,
 }
 
 impl DataPipeInfo {
-    pub fn new(shm_offset: u64, ring_size: u64) -> Self {
+    pub fn new(shm_offset: u64, ring_size: u64, pipe_id: u64) -> Self {
         Self {
             shm_offset,
             ring_size,
+            pipe_id,
         }
     }
 }
 
 impl FixedMsg for DataPipeInfo {
-    const SIZE: usize = u64::SIZE + u64::SIZE;
+    const SIZE: usize = u64::SIZE + u64::SIZE + u64::SIZE;
 
     fn encode(&self, out: &mut [u8]) -> Result<(), MessageCodecError> {
         if out.len() != Self::SIZE {
@@ -127,7 +129,9 @@ impl FixedMsg for DataPipeInfo {
         } else {
             let (buf, rest) = out.split_at_mut(u64::SIZE);
             self.shm_offset.encode(buf)?;
-            self.ring_size.encode(rest)
+            let (buf, rest) = rest.split_at_mut(u64::SIZE);
+            self.ring_size.encode(buf)?;
+            self.pipe_id.encode(rest)
         }
     }
 
@@ -137,11 +141,14 @@ impl FixedMsg for DataPipeInfo {
         } else {
             let (buf, rest) = input.split_at(u64::SIZE);
             let shm_offset = u64::decode(buf)?;
-            let ring_size = u64::decode(rest)?;
+            let (buf, rest) = rest.split_at(u64::SIZE);
+            let ring_size = u64::decode(buf)?;
+            let pipe_id = u64::decode(rest)?;
 
             Ok(Self {
                 shm_offset,
                 ring_size,
+                pipe_id,
             })
         }
     }
@@ -217,6 +224,7 @@ mod tests {
         let pipe_info = DataPipeInfo {
             shm_offset: 10086,
             ring_size: 7474747,
+            pipe_id: 201199,
         };
 
         TestPipeReply {

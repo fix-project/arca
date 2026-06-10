@@ -38,6 +38,7 @@ pub mod types;
 pub mod vm;
 
 mod arca_pipe;
+mod control_pipe;
 mod doorbell;
 mod gdt;
 mod idt;
