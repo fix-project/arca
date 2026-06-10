@@ -7,8 +7,9 @@ use crate::doorbell::{
 };
 use common::{
     message::{
-        control::{DataPipeInfo, Error as CodecError, NewPipeReply, NewPipeRequest},
+        control::{DataPipeInfo, NewPipeReply, NewPipeRequest},
         traits::FixedMsg,
+        traits::Error as CodecError,
     },
     pipe::{BidirectionalPipe, SharedMemoryRegion, HOST_SIDE},
     BuddyAllocator,

@@ -15,52 +15,29 @@
 //! from semantics (what the message means), so the incremental decoder
 //! in [`crate::codec`] never needs to understand payloads.
 
-use crate::message::frame_codec::Error as FrameCodecError;
-use crate::message::traits::Error as MessageCodecError;
+use crate::message::traits::Error;
 
 use crate::message::frame_codec::Frame;
 use crate::message::traits::FixedMsg;
 
-/// Errors from parsing them into semantically meaningful messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    /// Failed to parse message
-    ParserError,
-    /// Failed to serialize message
-    SerializerError,
-    /// FrameCodecError
-    FrameCodecError(FrameCodecError),
-}
-
-impl From<MessageCodecError> for Error {
-    fn from(value: MessageCodecError) -> Self {
-        match value {
-            MessageCodecError::ParserError => Self::ParserError,
-            MessageCodecError::SerializerError => Self::SerializerError,
-        }
-    }
-}
-
 impl FixedMsg for u64 {
     const SIZE: usize = 8;
 
-    fn encode(&self, out: &mut [u8]) -> Result<(), MessageCodecError> {
+    fn encode(&self, out: &mut [u8]) -> Result<(), Error> {
         if out.len() != Self::SIZE {
-            Err(MessageCodecError::SerializerError)
+            Err(Error::SerializerError)
         } else {
             out.copy_from_slice(&self.to_le_bytes());
             Ok(())
         }
     }
 
-    fn decode(input: &[u8]) -> Result<Self, MessageCodecError> {
+    fn decode(input: &[u8]) -> Result<Self, Error> {
         if input.len() != Self::SIZE {
-            Err(MessageCodecError::ParserError)
+            Err(Error::ParserError)
         } else {
             Ok(u64::from_le_bytes(
-                input
-                    .try_into()
-                    .map_err(|_| MessageCodecError::ParserError)?,
+                input.try_into().map_err(|_| Error::ParserError)?,
             ))
         }
     }
@@ -74,11 +51,11 @@ pub struct NewPipeRequest {
 impl FixedMsg for NewPipeRequest {
     const SIZE: usize = u64::SIZE;
 
-    fn encode(&self, out: &mut [u8]) -> Result<(), MessageCodecError> {
+    fn encode(&self, out: &mut [u8]) -> Result<(), Error> {
         self.ring_size.encode(out)
     }
 
-    fn decode(input: &[u8]) -> Result<Self, MessageCodecError> {
+    fn decode(input: &[u8]) -> Result<Self, Error> {
         let ring_size = u64::decode(input)?;
         Ok(Self { ring_size })
     }
@@ -91,7 +68,7 @@ impl<const MAX_FRAME_PAYLOAD: usize> TryFrom<&Frame<MAX_FRAME_PAYLOAD>> for NewP
         if MAX_FRAME_PAYLOAD < Self::SIZE {
             Err(Error::ParserError)
         } else {
-            Self::decode(f.as_slice()).map_err(|e| e.into())
+            Self::decode(f.as_slice())
         }
     }
 }
@@ -123,9 +100,9 @@ impl DataPipeInfo {
 impl FixedMsg for DataPipeInfo {
     const SIZE: usize = u64::SIZE + u64::SIZE + u64::SIZE;
 
-    fn encode(&self, out: &mut [u8]) -> Result<(), MessageCodecError> {
+    fn encode(&self, out: &mut [u8]) -> Result<(), Error> {
         if out.len() != Self::SIZE {
-            Err(MessageCodecError::SerializerError)
+            Err(Error::SerializerError)
         } else {
             let (buf, rest) = out.split_at_mut(u64::SIZE);
             self.shm_offset.encode(buf)?;
@@ -135,9 +112,9 @@ impl FixedMsg for DataPipeInfo {
         }
     }
 
-    fn decode(input: &[u8]) -> Result<Self, MessageCodecError> {
+    fn decode(input: &[u8]) -> Result<Self, Error> {
         if input.len() != Self::SIZE {
-            Err(MessageCodecError::ParserError)
+            Err(Error::ParserError)
         } else {
             let (buf, rest) = input.split_at(u64::SIZE);
             let shm_offset = u64::decode(buf)?;
@@ -167,9 +144,9 @@ pub struct NewPipeReply<DoorBellInfo: FixedMsg> {
 impl<DoorBellInfo: FixedMsg> FixedMsg for NewPipeReply<DoorBellInfo> {
     const SIZE: usize = DataPipeInfo::SIZE + DoorBellInfo::SIZE + DoorBellInfo::SIZE;
 
-    fn encode(&self, out: &mut [u8]) -> Result<(), MessageCodecError> {
+    fn encode(&self, out: &mut [u8]) -> Result<(), Error> {
         if out.len() != Self::SIZE {
-            Err(MessageCodecError::SerializerError)
+            Err(Error::SerializerError)
         } else {
             let (buf, rest) = out.split_at_mut(DataPipeInfo::SIZE);
             self.pipe_info.encode(buf)?;
@@ -179,9 +156,9 @@ impl<DoorBellInfo: FixedMsg> FixedMsg for NewPipeReply<DoorBellInfo> {
         }
     }
 
-    fn decode(input: &[u8]) -> Result<Self, MessageCodecError> {
+    fn decode(input: &[u8]) -> Result<Self, Error> {
         if input.len() != Self::SIZE {
-            Err(MessageCodecError::ParserError)
+            Err(Error::ParserError)
         } else {
             let (buf, rest) = input.split_at(DataPipeInfo::SIZE);
             let pipe_info = DataPipeInfo::decode(buf)?;
@@ -207,7 +184,7 @@ impl<const MAX_FRAME_PAYLOAD: usize, DoorBellInfo: FixedMsg> TryFrom<&Frame<MAX_
         if MAX_FRAME_PAYLOAD < Self::SIZE {
             Err(Error::ParserError)
         } else {
-            Self::decode(f.as_slice()).map_err(|e| e.into())
+            Self::decode(f.as_slice())
         }
     }
 }

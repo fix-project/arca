@@ -2,11 +2,11 @@
 
 //! Arca-side wrappers over the control pipe.
 //!
-use common::message::control::Error as MessageCodecError;
 use common::message::control::NewPipeReply;
 use common::message::control::NewPipeRequest;
 use common::message::frame_codec::Error as FrameCodecError;
 use common::message::frame_codec::{Frame, FrameReadBuf, FrameWriteBuf};
+use common::message::traits::Error as MessageCodecError;
 use common::message::traits::FixedMsg;
 
 use crate::arca_pipe::ArcaPipeWrapper;
