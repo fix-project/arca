@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use common::{
+    message::traits::FixedMsg,
     pipe::{DoorBell, DoorBellWaiter, PipeError},
     BuddyAllocator,
 };
@@ -49,9 +50,13 @@ impl DoorBellWaiter for VMToHostDoorBellWaiter {
     }
 }
 
-pub struct VMToHostDoorBell {
+struct VMToHostDoorBell {
     addr: IoEventAddress,
     datamatch: u64,
+}
+
+pub struct VMToHostDoorBellInfo {
+    inner: (u64, u64),
 }
 
 impl VMToHostDoorBell {
@@ -59,7 +64,7 @@ impl VMToHostDoorBell {
         Self { addr, datamatch }
     }
 
-    fn into_raw_parts(self) -> (u64, u64) {
+    fn into_raw_parts(self) -> VMToHostDoorBellInfo {
         let addr = match self.addr {
             IoEventAddress::Pio(_) => todo!(),
             IoEventAddress::Mmio(addr) => addr,
@@ -67,7 +72,34 @@ impl VMToHostDoorBell {
 
         let addr = BuddyAllocator.to_offset(addr as usize as *const ());
 
-        (addr as u64, self.datamatch)
+        VMToHostDoorBellInfo {
+            inner: (addr as u64, self.datamatch),
+        }
+    }
+}
+
+impl FixedMsg for VMToHostDoorBellInfo {
+    const SIZE: usize = u64::SIZE + u64::SIZE;
+
+    fn encode(&self, out: &mut [u8]) -> Result<(), common::message::traits::Error> {
+        if out.len() != Self::SIZE {
+            Err(common::message::traits::Error::SerializerError)
+        } else {
+            let (a, b) = out.split_at_mut(u64::SIZE);
+            self.inner.0.encode(a)?;
+            self.inner.1.encode(b)
+        }
+    }
+
+    fn decode(input: &[u8]) -> Result<Self, common::message::traits::Error> {
+        if input.len() != Self::SIZE {
+            Err(common::message::traits::Error::ParserError)
+        } else {
+            let (a, b) = input.split_at(u64::SIZE);
+            Ok(Self {
+                inner: (u64::decode(a)?, u64::decode(b)?),
+            })
+        }
     }
 }
 
@@ -75,8 +107,8 @@ pub fn new_vm_to_host_door_bell(
     vm: &VmFd,
     addr: IoEventAddress,
     datamatch: u64,
-) -> (VMToHostDoorBell, VMToHostDoorBellWaiter) {
+) -> (VMToHostDoorBellInfo, VMToHostDoorBellWaiter) {
     let doorbellwaiter = VMToHostDoorBellWaiter::new(vm, &addr, datamatch);
-    let doorbell = VMToHostDoorBell::new(addr, datamatch);
+    let doorbell = VMToHostDoorBell::new(addr, datamatch).into_raw_parts();
     (doorbell, doorbellwaiter)
 }

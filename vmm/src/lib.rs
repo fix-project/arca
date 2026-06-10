@@ -5,5 +5,6 @@
 #![feature(exitcode_exit_method)]
 #![feature(cstr_display)]
 
+mod control_pipe_monitor;
 mod doorbell;
 pub mod runtime;
