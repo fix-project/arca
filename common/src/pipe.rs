@@ -17,13 +17,15 @@ mod ring_producer;
 mod shared_memory_region;
 mod traits;
 
-pub use bidirectional_pipe::{BidirectionalPipe, ARCA_SIDE, HOST_SIDE};
+pub use bidirectional_pipe::{
+    BidirectionalPipe, BidirectionalPipeReadEnd, BidirectionalPipeWriteEnd, ARCA_SIDE, HOST_SIDE,
+};
 pub use error::PipeError;
 pub use ring::{RingData, RingHeader};
 pub use ring_consumer::RingConsumer;
 pub use ring_producer::RingProducer;
 pub use shared_memory_region::SharedMemoryRegion;
-pub use traits::{DoorBell, Read, Write};
+pub use traits::{DoorBell, OwnedSplit, Read, Write};
 
 #[cfg(feature = "std")]
 pub use traits::DoorBellWaiter;

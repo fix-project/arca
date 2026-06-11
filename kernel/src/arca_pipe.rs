@@ -51,12 +51,6 @@ impl ArcaPipeWrapper {
     }
 }
 
-pub fn to_frame<T: FixedMsg>(msg: T) -> Box<[u8]> {
-    let mut buf = vec![0; T::SIZE];
-    msg.encode(&mut buf).unwrap();
-    buf.into_boxed_slice()
-}
-
 // TODO: we may need to eventually support splitting into individual read end and write end
 pub fn write_one_frame(
     pipe: &mut ArcaPipeWrapper,

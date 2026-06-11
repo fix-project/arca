@@ -48,3 +48,7 @@ pub trait DoorBell {
 pub trait DoorBellWaiter {
     fn wait(&mut self);
 }
+
+pub trait OwnedSplit {
+    fn split(self) -> (impl Read + Send + 'static, impl Write + Send + 'static);
+}

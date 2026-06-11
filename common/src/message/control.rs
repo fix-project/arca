@@ -73,6 +73,18 @@ impl<const MAX_FRAME_PAYLOAD: usize> TryFrom<&Frame<MAX_FRAME_PAYLOAD>> for NewP
     }
 }
 
+impl<const MAX_FRAME_PAYLOAD: usize> TryFrom<Frame<MAX_FRAME_PAYLOAD>> for NewPipeRequest {
+    type Error = Error;
+
+    fn try_from(f: Frame<MAX_FRAME_PAYLOAD>) -> Result<Self, Error> {
+        if MAX_FRAME_PAYLOAD < Self::SIZE {
+            Err(Error::ParserError)
+        } else {
+            Self::decode(f.as_slice())
+        }
+    }
+}
+
 /// How Arca finds the per-connection data pipe.
 ///
 /// Layout on the wire (16 bytes): `shm_offset` (u64 LE) then `ring_size` (u64 LE).
@@ -181,6 +193,19 @@ impl<const MAX_FRAME_PAYLOAD: usize, DoorBellInfo: FixedMsg> TryFrom<&Frame<MAX_
     type Error = Error;
 
     fn try_from(f: &Frame<MAX_FRAME_PAYLOAD>) -> Result<Self, Error> {
+        if MAX_FRAME_PAYLOAD < Self::SIZE {
+            Err(Error::ParserError)
+        } else {
+            Self::decode(f.as_slice())
+        }
+    }
+}
+impl<const MAX_FRAME_PAYLOAD: usize, DoorBellInfo: FixedMsg> TryFrom<Frame<MAX_FRAME_PAYLOAD>>
+    for NewPipeReply<DoorBellInfo>
+{
+    type Error = Error;
+
+    fn try_from(f: Frame<MAX_FRAME_PAYLOAD>) -> Result<Self, Error> {
         if MAX_FRAME_PAYLOAD < Self::SIZE {
             Err(Error::ParserError)
         } else {

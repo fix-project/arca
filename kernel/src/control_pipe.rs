@@ -8,12 +8,12 @@ use common::message::frame_codec::Error as FrameCodecError;
 use common::message::frame_codec::{Frame, FrameReadBuf, FrameWriteBuf};
 use common::message::traits::Error as MessageCodecError;
 use common::message::traits::FixedMsg;
+use common::message::traits::IntoBytes;
 
 use crate::arca_pipe::ArcaPipeWrapper;
 use crate::doorbell::VMToHostDoorBellInfo;
 
 use crate::arca_pipe::read_one_frame;
-use crate::arca_pipe::to_frame;
 use crate::arca_pipe::write_one_frame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl ArcaSession {
 
     pub fn new_stream(&mut self, ring_size: u64) -> Result<ArcaPipeWrapper, Error> {
         let request = Request { ring_size };
-        let frame = to_frame(request);
+        let frame = request.into_boxed_slice();
 
         self.frame_writer.load(frame).unwrap();
         write_one_frame(&mut self.transport, &mut self.frame_writer)?;

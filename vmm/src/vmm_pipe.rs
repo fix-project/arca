@@ -6,43 +6,29 @@ use crate::doorbell::{
     new_vm_to_host_door_bell, HostToVMDoorBell, VMToHostDoorBellInfo, VMToHostDoorBellWaiter,
 };
 use common::{
-    message::{
-        control::{DataPipeInfo, NewPipeReply, NewPipeRequest},
-        traits::FixedMsg,
-        traits::Error as CodecError,
+    message::control::{DataPipeInfo, NewPipeReply},
+    pipe::{
+        BidirectionalPipe, BidirectionalPipeReadEnd, BidirectionalPipeWriteEnd, SharedMemoryRegion,
+        HOST_SIDE,
     },
-    pipe::{BidirectionalPipe, SharedMemoryRegion, HOST_SIDE},
     BuddyAllocator,
 };
 use kvm_ioctls::{IoEventAddress, VmFd};
 use ouroboros::self_referencing;
 
-#[derive(Debug)]
-pub enum Error {
-    Codec(CodecError),
-}
-
-impl From<CodecError> for Error {
-    fn from(value: CodecError) -> Self {
-        Self::Codec(value)
-    }
-}
-
-type Request = NewPipeRequest;
-type Reply = NewPipeReply<VMToHostDoorBellInfo>;
 type VmmPipe<'a> = BidirectionalPipe<'a, HostToVMDoorBell>;
+pub type VmmPipeReadEnd<'a, 'b> = BidirectionalPipeReadEnd<'a, 'b, HostToVMDoorBell>;
+pub type VmmPipeWriteEnd<'a, 'b> = BidirectionalPipeWriteEnd<'a, 'b, HostToVMDoorBell>;
 
 #[self_referencing]
-struct VmmPipeWrapper {
+pub struct VmmPipeWrapper {
     shm: SharedMemoryRegion,
 
     #[borrows(shm)]
     #[covariant]
-    pipe: VmmPipe<'this>,
+    pub pipe: VmmPipe<'this>,
 }
 
-const REQ_FRAME_SIZE: usize = Request::SIZE;
-const REPLY_FRAME_SIZE: usize = Reply::SIZE;
 const HOST_TO_VM_GSI: u32 = 2;
 
 fn new_host_to_vm_door_bell(vm: &VmFd) -> HostToVMDoorBell {
@@ -74,7 +60,7 @@ fn new_vm_to_host_door_bell_pair(
     }
 }
 
-fn new_pipe(
+pub(crate) fn new_pipe(
     vm: &VmFd,
     addr: IoEventAddress,
     ring_size: u64,
@@ -83,7 +69,7 @@ fn new_pipe(
     VmmPipeWrapper,
     VMToHostDoorBellWaiter,
     VMToHostDoorBellWaiter,
-    Reply,
+    NewPipeReply<VMToHostDoorBellInfo>,
 ) {
     let host_read_door_bell = new_host_to_vm_door_bell(vm);
     let host_write_door_bell = new_host_to_vm_door_bell(vm);
@@ -115,7 +101,7 @@ fn new_pipe(
         ring_size,
         pipe_id,
     };
-    let reply = Reply {
+    let reply = NewPipeReply::<VMToHostDoorBellInfo> {
         pipe_info,
         read_available_door_bell_info: vm_to_host.read_available_bell_info,
         write_available_door_bell_info: vm_to_host.write_available_bell_info,
@@ -127,30 +113,4 @@ fn new_pipe(
         vm_to_host.write_bell_waiter,
         reply,
     )
-}
-
-/// Linux-side state machine.
-pub struct Monitor {
-    vm: VmFd,
-    addr: IoEventAddress,
-    next_stream_id: u64,
-}
-
-impl Monitor {
-    pub fn new(vm: VmFd, addr: IoEventAddress) -> Self {
-        Self {
-            vm,
-            addr,
-            // 0 is reserved for the control pipe
-            next_stream_id: 1,
-        }
-    }
-
-    /// Translate one Arca → Linux request frame into the reply we owe Arca.
-    pub fn dispatch_request(&mut self, req: Request) -> Result<Reply, Error> {
-        let (vmm_pipe, read_available_bell, write_available_bell, reply) =
-            new_pipe(&self.vm, self.addr, req.ring_size, self.next_stream_id);
-        self.next_stream_id += 1;
-        Ok(reply)
-    }
 }

@@ -21,6 +21,16 @@ pub struct BidirectionalPipe<'a, D: traits::DoorBell> {
     write_available_doorbell: D,
 }
 
+pub struct BidirectionalPipeReadEnd<'a, 'b, D: traits::DoorBell> {
+    reader: &'b mut RingConsumer<'a>,
+    write_available_doorbell: &'b mut D,
+}
+
+pub struct BidirectionalPipeWriteEnd<'a, 'b, D: traits::DoorBell> {
+    writer: &'b mut RingProducer<'a>,
+    read_available_doorbell: &'b mut D,
+}
+
 const HEADER_SIZE: u64 = core::mem::size_of::<RingHeader>() as u64;
 
 impl<'a, D: traits::DoorBell> BidirectionalPipe<'a, D> {
@@ -80,8 +90,23 @@ impl<'a, D: traits::DoorBell> BidirectionalPipe<'a, D> {
     }
 
     /// Split into independent read and write halves (like `TcpStream::split`).
-    pub fn split(&mut self) -> (&mut RingConsumer<'a>, &mut RingProducer<'a>) {
-        (&mut self.reader, &mut self.writer)
+    pub fn split<'b>(
+        &'b mut self,
+    ) -> (
+        BidirectionalPipeReadEnd<'a, 'b, D>,
+        BidirectionalPipeWriteEnd<'a, 'b, D>,
+    ) {
+        let read_end = BidirectionalPipeReadEnd {
+            reader: &mut self.reader,
+            write_available_doorbell: &mut self.write_available_doorbell,
+        };
+
+        let write_end = BidirectionalPipeWriteEnd {
+            writer: &mut self.writer,
+            read_available_doorbell: &mut self.read_available_doorbell,
+        };
+
+        (read_end, write_end)
     }
 
     /// Close this side's outgoing (write) direction.
@@ -122,7 +147,31 @@ impl<'a, D: traits::DoorBell> traits::Read for BidirectionalPipe<'a, D> {
     }
 }
 
+impl<'a, 'b, D: traits::DoorBell> traits::Read for BidirectionalPipeReadEnd<'a, 'b, D> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
+        let res = self.reader.read(buf);
+        if let Ok(s) = res {
+            if s > 0 {
+                self.write_available_doorbell.ring();
+            }
+        }
+        res
+    }
+}
+
 impl<'a, D: traits::DoorBell> traits::Write for BidirectionalPipe<'a, D> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
+        let res = self.writer.write(buf);
+        if let Ok(s) = res {
+            if s > 0 {
+                self.read_available_doorbell.ring();
+            }
+        }
+        res
+    }
+}
+
+impl<'a, 'b, D: traits::DoorBell> traits::Write for BidirectionalPipeWriteEnd<'a, 'b, D> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
         let res = self.writer.write(buf);
         if let Ok(s) = res {

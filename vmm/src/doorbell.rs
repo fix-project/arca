@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+use std::os::fd::{AsRawFd, RawFd};
+
 use common::{
     message::traits::FixedMsg,
     pipe::{DoorBell, DoorBellWaiter, PipeError},
@@ -31,6 +33,18 @@ pub struct VMToHostDoorBellWaiter {
     fd: EventFd,
 }
 
+impl From<VMToHostDoorBellWaiter> for EventFd {
+    fn from(val: VMToHostDoorBellWaiter) -> Self {
+        val.fd
+    }
+}
+
+impl AsRawFd for VMToHostDoorBellWaiter {
+    fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
 impl VMToHostDoorBellWaiter {
     /// Each eventfd needs to have a unique {addr, datamatch} pair, and it is
     /// allowed to have multiple eventfds registered at the same address with
@@ -41,6 +55,12 @@ impl VMToHostDoorBellWaiter {
         vm.register_ioevent(&evtfd, addr, datamatch)
             .expect("Failed to register ioevent");
         Self { fd: evtfd }
+    }
+
+    pub fn drain(&mut self) -> std::io::Result<()> {
+        loop {
+            self.fd.read()?;
+        }
     }
 }
 
