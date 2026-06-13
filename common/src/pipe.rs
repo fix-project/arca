@@ -22,5 +22,5 @@ pub use error::PipeError;
 pub use ring::{RingData, RingHeader};
 pub use ring_consumer::RingConsumer;
 pub use ring_producer::RingProducer;
-pub use shared_memory_region::SharedMemoryRegion;
+pub use shared_memory_region::{RawSharedMemoryRegion, SharedMemoryRegion};
 pub use traits::{Read, Write};

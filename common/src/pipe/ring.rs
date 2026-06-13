@@ -39,6 +39,10 @@ impl RingHeader {
 ///
 /// Owns `(ptr, size)` together so call sites don't juggle them.
 /// Wrap-around is handled inside `write_at` / `read_at`.
+///
+/// Holds a raw `*mut u8`, so it is `!Send` by default. `Send` for the enclosing
+/// ring ends (`RingProducer`/`RingConsumer`) is provided by a manual
+/// `unsafe impl` there, justified by SPSC discipline — not by auto-derivation.
 pub struct RingData {
     ptr: *mut u8,
     size: u64,

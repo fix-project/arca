@@ -13,26 +13,35 @@ pub enum Side {
 
 /// One endpoint of a bidirectional pipe.
 ///
+/// Owns a [`RingProducer`] and [`RingConsumer`], each of which holds its own
+/// clone of the [`SharedMemoryRegion`] handle — so the pipe carries no lifetime
+/// and is not tied to a borrowed region. [`split`](Self::split) hands those two
+/// ends back as fully owned, `Send` values.
+///
+/// The pipe (and the ends returned by [`split`](Self::split)) are `Send`
+/// whenever `R: Send`.
+///
 /// Memory layout: `[HeaderA][Ring A->B data][HeaderB][Ring B->A data]`.
-pub struct BidirectionalPipe<'a> {
-    writer: RingProducer<'a>,
-    reader: RingConsumer<'a>,
+pub struct BidirectionalPipe<R: SharedMemoryRegion> {
+    writer: RingProducer<R>,
+    reader: RingConsumer<R>,
 }
 
 const HEADER_SIZE: u64 = core::mem::size_of::<RingHeader>() as u64;
 
-impl<'a> BidirectionalPipe<'a> {
+impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     /// Total bytes of shared memory needed for a given `ring_size`.
     pub const fn required_size(ring_size: u64) -> u64 {
         2 * (HEADER_SIZE + ring_size)
     }
 
-    /// Create a pipe endpoint over a shared memory region.
+    /// Create a pipe endpoint that takes ownership of a shared memory region.
     ///
-    /// Caller must ensure the region is zero-initialized before the first side
-    /// is constructed, and that exactly one `Side::A` and one `Side::B` are
-    /// created per region.
-    pub fn new(region: &'a SharedMemoryRegion, ring_size: u64, side: Side) -> Self {
+    /// The region handle is cloned into each ring end so the reader and writer
+    /// each keep the mapping alive on their own. Caller must ensure the region
+    /// is zero-initialized before the first side is constructed, and that
+    /// exactly one `Side::A` and one `Side::B` are created per region.
+    pub fn new(region: R, ring_size: u64, side: Side) -> Self {
         assert!(region.len() >= Self::required_size(ring_size));
         assert!(
             ring_size.is_multiple_of(core::mem::align_of::<RingHeader>() as u64),
@@ -44,12 +53,12 @@ impl<'a> BidirectionalPipe<'a> {
             "shared memory region must be 8-byte aligned"
         );
 
-        // Layout: [HeaderA (16)] [DataA (ring_size)] [HeaderB (16)] [DataB (ring_size)]
+        // Layout: [HeaderA (24)] [DataA (ring_size)] [HeaderB (24)] [DataB (ring_size)]
         // Interleaved so each header is adjacent to its data (cache locality)
         // and headers are separated by ring_size (avoids false sharing).
-        let header_a = unsafe { &*(base as *const RingHeader) };
+        let header_a = base as *const RingHeader;
         let data_a = unsafe { base.add(HEADER_SIZE as usize) };
-        let header_b = unsafe { &*(data_a.add(ring_size as usize) as *const RingHeader) };
+        let header_b = unsafe { data_a.add(ring_size as usize) as *const RingHeader };
         let data_b = unsafe { data_a.add(ring_size as usize + HEADER_SIZE as usize) };
 
         let (writer_header, writer_data, reader_header, reader_data) = match side {
@@ -57,18 +66,23 @@ impl<'a> BidirectionalPipe<'a> {
             Side::B => (header_b, data_b, header_a, data_a),
         };
 
-        let writer = RingProducer::new(writer_header, unsafe {
+        let writer = RingProducer::new(region.clone(), writer_header, unsafe {
             RingData::new(writer_data, ring_size)
         });
-        let reader = RingConsumer::new(reader_header, unsafe {
+        let reader = RingConsumer::new(region, reader_header, unsafe {
             RingData::new(reader_data, ring_size)
         });
         Self { writer, reader }
     }
 
-    /// Split into independent read and write halves (like `TcpStream::split`).
-    pub fn split(&mut self) -> (&mut RingConsumer<'a>, &mut RingProducer<'a>) {
-        (&mut self.reader, &mut self.writer)
+    /// Consume the pipe and split it into independent, owned read and write
+    /// ends (like `TcpStream::into_split`).
+    ///
+    /// Each end already owns its own clone of the region handle, so the two can
+    /// be moved to separate threads / async tasks and each independently keeps
+    /// the shared mapping alive.
+    pub fn split(self) -> (RingConsumer<R>, RingProducer<R>) {
+        (self.reader, self.writer)
     }
 
     /// Close this side's outgoing (write) direction.
@@ -97,13 +111,13 @@ impl<'a> BidirectionalPipe<'a> {
     }
 }
 
-impl<'a> traits::Read for BidirectionalPipe<'a> {
+impl<R: SharedMemoryRegion> traits::Read for BidirectionalPipe<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
         self.reader.read(buf)
     }
 }
 
-impl<'a> traits::Write for BidirectionalPipe<'a> {
+impl<R: SharedMemoryRegion> traits::Write for BidirectionalPipe<R> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
         self.writer.write(buf)
     }
@@ -112,6 +126,7 @@ impl<'a> traits::Write for BidirectionalPipe<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipe::shared_memory_region::RawSharedMemoryRegion;
     use crate::pipe::traits::{Read, Write};
 
     #[repr(align(8))]
@@ -119,17 +134,55 @@ mod tests {
 
     macro_rules! pipe_pair {
         ($ring:expr, $mem:ident, $a:ident, $b:ident) => {
-            let mut $mem = Aligned([0u8; BidirectionalPipe::required_size($ring as u64) as usize]);
-            let region =
-                unsafe { SharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64) };
-            let mut $a = BidirectionalPipe::new(&region, $ring, Side::A);
-            let mut $b = BidirectionalPipe::new(&region, $ring, Side::B);
+            let mut $mem = Aligned(
+                [0u8; BidirectionalPipe::<RawSharedMemoryRegion>::required_size($ring as u64)
+                    as usize],
+            );
+            // A `RawSharedMemoryRegion` is a `Copy` handle, so each side gets its
+            // own owned clone pointing at the same backing bytes.
+            let region = unsafe {
+                RawSharedMemoryRegion::from_raw($mem.0.as_mut_ptr(), $mem.0.len() as u64)
+            };
+            // `mut` is needed by tests that read/write; split-only tests don't.
+            #[allow(unused_mut)]
+            let mut $a = BidirectionalPipe::new(region, $ring, Side::A);
+            #[allow(unused_mut)]
+            let mut $b = BidirectionalPipe::new(region, $ring, Side::B);
         };
     }
 
     #[test]
     fn required_size_matches_layout() {
-        assert_eq!(BidirectionalPipe::required_size(64), 2 * (24 + 64));
+        assert_eq!(
+            BidirectionalPipe::<RawSharedMemoryRegion>::required_size(64),
+            2 * (24 + 64)
+        );
+    }
+
+    #[test]
+    fn owned_split_round_trip() {
+        pipe_pair!(32, mem, a, b);
+        let (mut a_rx, mut a_tx) = a.split();
+        let (mut b_rx, mut b_tx) = b.split();
+
+        a_tx.write(b"hi").unwrap();
+        let mut out = [0u8; 2];
+        b_rx.read(&mut out).unwrap();
+        assert_eq!(&out, b"hi");
+
+        b_tx.write(b"yo").unwrap();
+        a_rx.read(&mut out).unwrap();
+        assert_eq!(&out, b"yo");
+    }
+
+    #[test]
+    fn split_halves_and_pipe_are_send() {
+        // The whole point of dropping the lifetime: owned, `Send` endpoints
+        // that can move to other threads / async tasks.
+        fn assert_send<T: Send>() {}
+        assert_send::<BidirectionalPipe<RawSharedMemoryRegion>>();
+        assert_send::<RingConsumer<RawSharedMemoryRegion>>();
+        assert_send::<RingProducer<RawSharedMemoryRegion>>();
     }
 
     #[test]
