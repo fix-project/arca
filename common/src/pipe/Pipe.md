@@ -54,13 +54,15 @@ is full or empty.
 
 **`RingProducer::write(buf)`**
 - Writes `min(buf.len(), writable_len)` bytes into the ring.
-- Returns the number of bytes actually written OR returns `WouldBlock` 
-  if the ring is full (`writable_len == 0`).
+- Returns the number of bytes written, `Err(WouldBlock)` if the ring is full
+  (`writable_len == 0`), or `Err(Closed)` if the reader has closed its end
+  (broken pipe — the write can never be consumed).
 
 **`RingConsumer::read(buf)`**
 - Reads `min(buf.len(), readable_len)` bytes from the ring.
-- Returns the number of bytes actually read OR returns `WouldBlock` if the 
-  ring is empty (`readable_len == 0`).
+- Returns the number of bytes read; `Ok(0)` for end-of-stream once the ring is
+  drained **and** the writer has closed (matching `std::io::Read`); or
+  `Err(WouldBlock)` if the ring is momentarily empty but the writer is still open.
 
 Callers that need blocking behavior loop on `WouldBlock` (see §3).
 
@@ -89,6 +91,14 @@ Layout: `[HeaderA][DataA: ring_size][HeaderB][DataB: ring_size]`
 Side A's producer writes to Ring A; Side B's consumer reads from Ring A, 
 and vice versa for Ring B.
 
+**Ownership.** `BidirectionalPipe<R>` owns its shared region through the
+`SharedMemoryRegion` trait (`R`) rather than borrowing it, so it carries no
+lifetime. The Arca side uses `RawSharedMemoryRegion` (a `(ptr, len)` handle with
+a no-op `Drop`); the host side can supply an `mmap`/`Arc`-backed `R` that unmaps
+on last drop. `split(self) -> (RingConsumer<R>, RingProducer<R>)` consumes the
+pipe into two independently owned, `Send` ends (each holds its own region clone),
+suitable for moving to separate threads / async tasks.
+
 **Close API on `BidirectionalPipe`:**
 
 | Method                   | What it does                                               |
@@ -105,12 +115,14 @@ and vice versa for Ring B.
 
 ```
 arca/common/src/
-├── pipe/                   # ring buffers, BidirectionalPipe
-│   └── src/
-│       ├── Pipe.md
-│       ├── traits.rs       #   Read, Write traits; Write::write_all default
-│       ├── ring.rs         #   RingHeader (cursors + close flags), RingData
-│       ├── ring_producer.rs#   RingProducer — write, close_writer, is_reader_closed
-│       ├── ring_consumer.rs#   RingConsumer — read, close_reader, is_writer_closed
-│       └── bidirectional_pipe.rs  # BidirectionalPipe — close_write/read, is_closed
+├── pipe.rs                 # module root, re-exports
+└── pipe/                   # ring buffers, BidirectionalPipe
+    ├── Pipe.md
+    ├── traits.rs              # Read, Write traits; Write::write_all default
+    ├── error.rs              # PipeError { WouldBlock, Closed }
+    ├── shared_memory_region.rs # SharedMemoryRegion trait + RawSharedMemoryRegion
+    ├── ring.rs               # RingHeader (cursors, close flags, readable_len/writable_len, is_closed), RingData
+    ├── ring_producer.rs      # RingProducer<R> — write, readable_len, close_writer, is_reader_closed
+    ├── ring_consumer.rs      # RingConsumer<R> — read, close_reader, is_writer_closed
+    └── bidirectional_pipe.rs # BidirectionalPipe<R> — split, close_write/read, is_closed
 ```
