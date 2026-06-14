@@ -23,13 +23,17 @@ pub trait Write {
     /// or `Err(WouldBlock)` if the ring is currently full.
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError>;
 
-    /// Write all bytes in `src`, spinning on `WouldBlock` until every byte is written.
-    fn write_all(&mut self, mut src: &[u8]) {
+    /// Write all bytes in `src`, spinning on `WouldBlock` until every byte is
+    /// written. Returns `Err(Closed)` if the reader closes before all bytes are
+    /// written (some bytes may already have been written).
+    fn write_all(&mut self, mut src: &[u8]) -> Result<(), PipeError> {
         while !src.is_empty() {
             match self.write(src) {
                 Ok(n) => src = &src[n..],
                 Err(PipeError::WouldBlock) => core::hint::spin_loop(),
+                Err(PipeError::Closed) => return Err(PipeError::Closed),
             }
         }
+        Ok(())
     }
 }

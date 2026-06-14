@@ -255,4 +255,25 @@ mod tests {
         a.read(&mut out).unwrap();
         assert_eq!(&out, b"bbdd");
     }
+
+    #[test]
+    fn read_sees_eof_after_peer_closes_write() {
+        pipe_pair!(16, mem, a, b);
+        a.write(b"bye").unwrap();
+        a.close_write();
+        let mut out = [0u8; 8];
+        // Buffered bytes drain first...
+        assert_eq!(b.read(&mut out).unwrap(), 3);
+        assert_eq!(&out[..3], b"bye");
+        // ...then EOF as Ok(0).
+        assert_eq!(b.read(&mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn write_errs_after_peer_closes_read() {
+        pipe_pair!(16, mem, a, b);
+        // B abandons the A->B direction; A's writes can never be consumed.
+        b.close_read();
+        assert!(matches!(a.write(b"x"), Err(PipeError::Closed)));
+    }
 }

@@ -70,9 +70,20 @@ impl<R: SharedMemoryRegion> traits::Read for RingConsumer<R> {
         if buf.is_empty() {
             return Ok(0);
         }
+        // Observe `writer_closed` BEFORE the cursors. If the writer has closed,
+        // its final `write_cursor` store happened-before the close store
+        // (Acquire here synchronizes-with that Release), so the `used_space`
+        // load below is guaranteed to see every byte written. This prevents
+        // reporting EOF while unread bytes are still in flight.
+        let writer_closed = self.header().writer_closed.load(Ordering::Acquire);
         let used = self.header().used_space();
         if used == 0 {
-            return Err(PipeError::WouldBlock);
+            // Empty: EOF once the writer is done, otherwise nothing yet.
+            return if writer_closed {
+                Ok(0)
+            } else {
+                Err(PipeError::WouldBlock)
+            };
         }
 
         let n = core::cmp::min(buf.len() as u64, used) as usize;
@@ -153,6 +164,33 @@ mod tests {
         let mut c = RingConsumer::new(raw(&mut mem), &h, data);
         let mut out = [0u8; 4];
         assert!(matches!(c.read(&mut out), Err(PipeError::WouldBlock)));
+    }
+
+    #[test]
+    fn eof_when_writer_closed_and_empty() {
+        let mut mem = [0u8; 4];
+        let h = header(0, 0);
+        h.writer_closed.store(true, Ordering::Release);
+        let data = unsafe { RingData::new(mem.as_mut_ptr(), 4) };
+        let mut c = RingConsumer::new(raw(&mut mem), &h, data);
+        let mut out = [0u8; 4];
+        // Drained + writer closed = EOF, reported as Ok(0) (not WouldBlock).
+        assert_eq!(c.read(&mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn drains_remaining_then_eof() {
+        let mut mem = *b"hi..";
+        let h = header(0, 2);
+        h.writer_closed.store(true, Ordering::Release);
+        let data = unsafe { RingData::new(mem.as_mut_ptr(), 4) };
+        let mut c = RingConsumer::new(raw(&mut mem), &h, data);
+        let mut out = [0u8; 4];
+        // Pending bytes are still delivered even though the writer has closed...
+        assert_eq!(c.read(&mut out).unwrap(), 2);
+        assert_eq!(&out[..2], b"hi");
+        // ...and only then is EOF reported.
+        assert_eq!(c.read(&mut out).unwrap(), 0);
     }
 
     #[test]

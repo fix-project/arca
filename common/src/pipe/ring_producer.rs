@@ -84,6 +84,11 @@ impl<R: SharedMemoryRegion> traits::Write for RingProducer<R> {
         if buf.is_empty() {
             return Ok(0);
         }
+        // Broken pipe: the reader has gone away, so no write can ever be
+        // consumed. Surface this rather than silently buffering into a dead ring.
+        if self.header().reader_closed.load(Ordering::Acquire) {
+            return Err(PipeError::Closed);
+        }
         let free = self.header().free_space(self.data.size());
         if free == 0 {
             return Err(PipeError::WouldBlock);
@@ -167,6 +172,17 @@ mod tests {
         let data = unsafe { RingData::new(mem.as_mut_ptr(), 4) };
         let mut p = RingProducer::new(raw(&mut mem), &h, data);
         assert!(matches!(p.write(b"x"), Err(PipeError::WouldBlock)));
+    }
+
+    #[test]
+    fn write_to_reader_closed_errs() {
+        let h = header();
+        h.reader_closed.store(true, Ordering::Release);
+        let mut mem = [0u8; 8];
+        let data = unsafe { RingData::new(mem.as_mut_ptr(), 8) };
+        let mut p = RingProducer::new(raw(&mut mem), &h, data);
+        // Reader gone: broken pipe, not a transient WouldBlock.
+        assert!(matches!(p.write(b"x"), Err(PipeError::Closed)));
     }
 
     #[test]
