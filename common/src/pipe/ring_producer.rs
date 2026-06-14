@@ -80,8 +80,7 @@ impl<R: SharedMemoryRegion> RingProducer<R> {
 
     /// True when both ends of this ring are closed.
     pub fn is_closed(&self) -> bool {
-        self.header().writer_closed.load(Ordering::Acquire)
-            && self.header().reader_closed.load(Ordering::Acquire)
+        self.header().is_closed()
     }
 }
 

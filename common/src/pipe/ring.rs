@@ -52,6 +52,11 @@ impl RingHeader {
         // See readable_len — wrapping_sub handles cursor overflow correctly
         capacity - write.wrapping_sub(read)
     }
+
+    /// True when both ends of this ring are closed (orderly full shutdown).
+    pub fn is_closed(&self) -> bool {
+        self.writer_closed.load(Ordering::Acquire) && self.reader_closed.load(Ordering::Acquire)
+    }
 }
 
 /// Raw data region of a single SPSC ring buffer.
