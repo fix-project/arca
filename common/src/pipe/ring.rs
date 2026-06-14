@@ -5,6 +5,21 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Cursors are monotonically increasing logical offsets. Physical positions
 /// are `cursor % ring_size`. The close flags signal orderly shutdown: the
 /// producer sets `writer_closed`; the consumer sets `reader_closed`.
+///
+/// # Memory ordering
+/// This is single-producer/single-consumer, and crucially each cursor has
+/// exactly one writer: the **producer** is the only side that mutates
+/// `write_cursor`, the **consumer** the only side that mutates `read_cursor`.
+/// All the `Ordering` choices below follow from that:
+/// - A side loads its **own** cursor with `Relaxed` — it is the sole writer, so
+///   no cross-thread synchronization is needed to read back its own value.
+/// - A side loads the **peer's** cursor with `Acquire`, which synchronizes-with
+///   the peer's `Release` store of that cursor. That release/acquire edge is
+///   what makes the bytes the cursor guards visible: the producer writes data
+///   then `Release`-stores `write_cursor`; the consumer `Acquire`-loads
+///   `write_cursor` then reads those bytes (and symmetrically for free space).
+/// - The same applies to the close flags: the setter uses `Release`, the peer's
+///   observer uses `Acquire`.
 #[repr(C)]
 pub struct RingHeader {
     pub read_cursor: AtomicU64,
@@ -14,7 +29,9 @@ pub struct RingHeader {
 }
 
 impl RingHeader {
-    /// Bytes available to read. Called by the consumer.
+    /// Bytes available to read. Called by the consumer (sole writer of
+    /// `read_cursor`), so its own cursor is `Relaxed` and the producer's
+    /// `write_cursor` is `Acquire`.
     pub fn readable_len(&self) -> u64 {
         let write = self.write_cursor.load(Ordering::Acquire);
         let read = self.read_cursor.load(Ordering::Relaxed);
@@ -25,7 +42,9 @@ impl RingHeader {
         write.wrapping_sub(read)
     }
 
-    /// Bytes available to write. Called by the producer.
+    /// Bytes available to write. Called by the producer (sole writer of
+    /// `write_cursor`), so its own cursor is `Relaxed` and the consumer's
+    /// `read_cursor` is `Acquire`.
     pub fn writable_len(&self, capacity: u64) -> u64 {
         let write = self.write_cursor.load(Ordering::Relaxed);
         let read = self.read_cursor.load(Ordering::Acquire);
