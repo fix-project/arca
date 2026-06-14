@@ -53,13 +53,16 @@ impl<R: SharedMemoryRegion> RingProducer<R> {
         unsafe { &*self.header }
     }
 
-    /// Bytes written by this producer that the consumer has not yet read.
-    /// Uses Acquire on read_cursor so this can be called cross-thread safely.
-    pub fn bytes_pending(&self) -> u64 {
-        let header = self.header();
-        let write = header.write_cursor.load(Ordering::Relaxed);
-        let read = header.read_cursor.load(Ordering::Acquire);
-        write.wrapping_sub(read)
+    /// Bytes available to read (ring occupancy) — the producer-side counterpart
+    /// of [`RingHeader::readable_len`].
+    ///
+    /// Derived as `capacity - writable_len` rather than calling
+    /// `RingHeader::readable_len` directly, because the producer must load the
+    /// peer's `read_cursor` with Acquire (which `writable_len` does), whereas
+    /// `RingHeader::readable_len` uses the consumer-side ordering.
+    pub fn readable_len(&self) -> u64 {
+        let capacity = self.data.size();
+        capacity - self.header().writable_len(capacity)
     }
 
     /// Signal that this producer will write no more bytes.
@@ -209,32 +212,32 @@ mod tests {
     }
 
     #[test]
-    fn bytes_pending_empty() {
+    fn readable_len_empty() {
         let h = header();
         let mut mem = [0u8; 8];
         let data = unsafe { RingData::new(mem.as_mut_ptr(), 8) };
         let p = RingProducer::new(raw(&mut mem), &h, data);
-        assert_eq!(p.bytes_pending(), 0);
+        assert_eq!(p.readable_len(), 0);
     }
 
     #[test]
-    fn bytes_pending_after_write() {
+    fn readable_len_after_write() {
         let h = header();
         let mut mem = [0u8; 8];
         let data = unsafe { RingData::new(mem.as_mut_ptr(), 8) };
         let mut p = RingProducer::new(raw(&mut mem), &h, data);
         p.write(b"hello").unwrap();
-        assert_eq!(p.bytes_pending(), 5);
+        assert_eq!(p.readable_len(), 5);
     }
 
     #[test]
-    fn bytes_pending_zero_after_full_read() {
+    fn readable_len_zero_after_full_read() {
         let h = header();
         let mut mem = [0u8; 8];
         let data = unsafe { RingData::new(mem.as_mut_ptr(), 8) };
         let mut p = RingProducer::new(raw(&mut mem), &h, data);
         p.write(b"hello").unwrap();
         h.read_cursor.store(5, Ordering::Release);
-        assert_eq!(p.bytes_pending(), 0);
+        assert_eq!(p.readable_len(), 0);
     }
 }
