@@ -15,7 +15,7 @@ pub struct RingHeader {
 
 impl RingHeader {
     /// Bytes available to read. Called by the consumer.
-    pub fn used_space(&self) -> u64 {
+    pub fn readable_len(&self) -> u64 {
         let write = self.write_cursor.load(Ordering::Acquire);
         let read = self.read_cursor.load(Ordering::Relaxed);
 
@@ -26,11 +26,11 @@ impl RingHeader {
     }
 
     /// Bytes available to write. Called by the producer.
-    pub fn free_space(&self, capacity: u64) -> u64 {
+    pub fn writable_len(&self, capacity: u64) -> u64 {
         let write = self.write_cursor.load(Ordering::Relaxed);
         let read = self.read_cursor.load(Ordering::Acquire);
 
-        // See used_space — wrapping_sub handles cursor overflow correctly
+        // See readable_len — wrapping_sub handles cursor overflow correctly
         capacity - write.wrapping_sub(read)
     }
 }
@@ -113,22 +113,22 @@ mod tests {
     #[test]
     fn empty_ring() {
         let h = header_with(0, 0);
-        assert_eq!(h.used_space(), 0);
-        assert_eq!(h.free_space(64), 64);
+        assert_eq!(h.readable_len(), 0);
+        assert_eq!(h.writable_len(64), 64);
     }
 
     #[test]
     fn partial_fill() {
         let h = header_with(10, 40);
-        assert_eq!(h.used_space(), 30);
-        assert_eq!(h.free_space(64), 34);
+        assert_eq!(h.readable_len(), 30);
+        assert_eq!(h.writable_len(64), 34);
     }
 
     #[test]
     fn full_ring() {
         let h = header_with(100, 164);
-        assert_eq!(h.used_space(), 64);
-        assert_eq!(h.free_space(64), 0);
+        assert_eq!(h.readable_len(), 64);
+        assert_eq!(h.writable_len(64), 0);
     }
 
     #[test]

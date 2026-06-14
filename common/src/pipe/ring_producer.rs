@@ -63,7 +63,10 @@ impl<R: SharedMemoryRegion> RingProducer<R> {
     }
 
     /// Signal that this producer will write no more bytes.
-    pub fn close_writer(&self) {
+    ///
+    /// Takes `&mut self`: there is exactly one producer, so closing is an
+    /// exclusive operation and cannot race with a concurrent write on this end.
+    pub fn close_writer(&mut self) {
         self.header().writer_closed.store(true, Ordering::Release);
     }
 
@@ -89,7 +92,7 @@ impl<R: SharedMemoryRegion> traits::Write for RingProducer<R> {
         if self.header().reader_closed.load(Ordering::Acquire) {
             return Err(PipeError::Closed);
         }
-        let free = self.header().free_space(self.data.size());
+        let free = self.header().writable_len(self.data.size());
         if free == 0 {
             return Err(PipeError::WouldBlock);
         }

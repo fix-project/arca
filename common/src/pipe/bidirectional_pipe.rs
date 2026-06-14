@@ -86,12 +86,12 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     }
 
     /// Close this side's outgoing (write) direction.
-    pub fn close_write(&self) {
+    pub fn close_write(&mut self) {
         self.writer.close_writer();
     }
 
     /// Close this side's incoming (read) direction.
-    pub fn close_read(&self) {
+    pub fn close_read(&mut self) {
         self.reader.close_reader();
     }
 

@@ -53,14 +53,14 @@ Both operations are **non-blocking**, return immediately if the ring
 is full or empty.
 
 **`RingProducer::write(buf)`**
-- Writes `min(buf.len(), free_space)` bytes into the ring.
+- Writes `min(buf.len(), writable_len)` bytes into the ring.
 - Returns the number of bytes actually written OR returns `WouldBlock` 
-  if the ring is full (`free_space == 0`).
+  if the ring is full (`writable_len == 0`).
 
 **`RingConsumer::read(buf)`**
-- Reads `min(buf.len(), used_space)` bytes from the ring.
+- Reads `min(buf.len(), readable_len)` bytes from the ring.
 - Returns the number of bytes actually read OR returns `WouldBlock` if the 
-  ring is empty (`used_space == 0`).
+  ring is empty (`readable_len == 0`).
 
 Callers that need blocking behavior loop on `WouldBlock` (see §3).
 

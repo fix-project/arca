@@ -49,7 +49,10 @@ impl<R: SharedMemoryRegion> RingConsumer<R> {
     }
 
     /// Signal that this consumer will read no more bytes.
-    pub fn close_reader(&self) {
+    ///
+    /// Takes `&mut self`: there is exactly one consumer, so closing is an
+    /// exclusive operation and cannot race with a concurrent read on this end.
+    pub fn close_reader(&mut self) {
         self.header().reader_closed.store(true, Ordering::Release);
     }
 
@@ -72,11 +75,11 @@ impl<R: SharedMemoryRegion> traits::Read for RingConsumer<R> {
         }
         // Observe `writer_closed` BEFORE the cursors. If the writer has closed,
         // its final `write_cursor` store happened-before the close store
-        // (Acquire here synchronizes-with that Release), so the `used_space`
+        // (Acquire here synchronizes-with that Release), so the `readable_len`
         // load below is guaranteed to see every byte written. This prevents
         // reporting EOF while unread bytes are still in flight.
         let writer_closed = self.header().writer_closed.load(Ordering::Acquire);
-        let used = self.header().used_space();
+        let used = self.header().readable_len();
         if used == 0 {
             // Empty: EOF once the writer is done, otherwise nothing yet.
             return if writer_closed {
