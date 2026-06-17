@@ -3,7 +3,7 @@ use crate::pipe::ring::{RingData, RingHeader};
 use crate::pipe::ring_consumer::RingConsumer;
 use crate::pipe::ring_producer::RingProducer;
 use crate::pipe::shared_memory_region::SharedMemoryRegion;
-use crate::pipe::traits;
+use crate::pipe::traits::{self, OwnedSplit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -24,6 +24,16 @@ pub enum Side {
 /// Memory layout: `[HeaderA][Ring A->B data][HeaderB][Ring B->A data]`.
 pub struct BidirectionalPipe<R: SharedMemoryRegion> {
     writer: RingProducer<R>,
+    reader: RingConsumer<R>,
+}
+
+#[allow(unused)]
+pub struct BidirectionalPipeWriteEnd<R: SharedMemoryRegion> {
+    writer: RingProducer<R>,
+}
+
+#[allow(unused)]
+pub struct BidirectionalPipeReadEnd<R: SharedMemoryRegion> {
     reader: RingConsumer<R>,
 }
 
@@ -81,8 +91,15 @@ impl<R: SharedMemoryRegion> BidirectionalPipe<R> {
     /// Each end already owns its own clone of the region handle, so the two can
     /// be moved to separate threads / async tasks and each independently keeps
     /// the shared mapping alive.
-    pub fn split(self) -> (RingConsumer<R>, RingProducer<R>) {
-        (self.reader, self.writer)
+    pub fn split(self) -> (BidirectionalPipeReadEnd<R>, BidirectionalPipeWriteEnd<R>) {
+        (
+            BidirectionalPipeReadEnd {
+                reader: self.reader,
+            },
+            BidirectionalPipeWriteEnd {
+                writer: self.writer,
+            },
+        )
     }
 
     /// Close this side's outgoing (write) direction.
@@ -117,9 +134,32 @@ impl<R: SharedMemoryRegion> traits::Read for BidirectionalPipe<R> {
     }
 }
 
+impl<R: SharedMemoryRegion> traits::Read for BidirectionalPipeReadEnd<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PipeError> {
+        self.reader.read(buf)
+    }
+}
+
 impl<R: SharedMemoryRegion> traits::Write for BidirectionalPipe<R> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
         self.writer.write(buf)
+    }
+}
+
+impl<R: SharedMemoryRegion> traits::Write for BidirectionalPipeWriteEnd<R> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, PipeError> {
+        self.writer.write(buf)
+    }
+}
+
+impl<R: SharedMemoryRegion + Send + 'static> OwnedSplit for BidirectionalPipe<R> {
+    fn split(
+        self,
+    ) -> (
+        impl traits::Read + Send + 'static,
+        impl traits::Write + Send + 'static,
+    ) {
+        self.split()
     }
 }
 

@@ -37,3 +37,8 @@ pub trait Write {
         Ok(())
     }
 }
+
+#[allow(unused)]
+pub trait OwnedSplit {
+    fn split(self) -> (impl Read + Send + 'static, impl Write + Send + 'static);
+}
