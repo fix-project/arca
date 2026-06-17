@@ -6,14 +6,12 @@ pub enum StreamError {
 }
 
 pub struct SyncStream<R: SharedMemoryRegion> {
-    /// BuddyAllocator offset of the SHM region backing this pipe.
-    pub shm_offset: u64,
     pipe: BidirectionalPipe<R>,
 }
 
 impl<R: SharedMemoryRegion> SyncStream<R> {
-    pub fn from_pipe(shm_offset: u64, pipe: BidirectionalPipe<R>) -> Self {
-        Self { shm_offset, pipe }
+    pub fn from_pipe(pipe: BidirectionalPipe<R>) -> Self {
+        Self { pipe }
     }
 
     /// Write all of `buf` into the pipe, spinning if the ring is full; returns `Err(WriteClosed)` if the peer closed their read side.
@@ -92,8 +90,8 @@ mod tests {
             };
             let pipe_a = BidirectionalPipe::new(region, $ring, Side::A);
             let pipe_b = BidirectionalPipe::new(region, $ring, Side::B);
-            let mut $a = SyncStream::from_pipe(0, pipe_a);
-            let mut $b = SyncStream::from_pipe(0, pipe_b);
+            let mut $a = SyncStream::from_pipe(pipe_a);
+            let mut $b = SyncStream::from_pipe(pipe_b);
         };
     }
 
