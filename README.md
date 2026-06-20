@@ -56,3 +56,9 @@ for small demo kernels (located in `kernel/src/bin`), or using:
 cargo run -p fix --target=x86_64-unknown-none
 ```
 for standalone kernels.
+
+# License
+
+This codebase is licensed under the GNU Lesser General Public License v2.1 or
+later (LGPL-2.1-or-later).  See [LICENSE](LICENSE)
+for more information.

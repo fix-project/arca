@@ -34,7 +34,7 @@ const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
 const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coupon"));
 
 #[kmain]
-async fn main(args: &[usize]) {
+fn main(args: &[usize]) {
     let args: &[usize; 8] = args.try_into().unwrap();
     let opcode = FixOp::try_from(args[0]).expect("Failed to parse opcode");
     let (handle_scratch_offset, handle_scratch_len) = (args[2], args[3]);

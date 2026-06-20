@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
-    io::{self, Read},
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    net::SocketAddr,
     process::ExitCode,
+    slice,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -10,16 +13,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{hypercall, BuddyAllocator};
+use common::{
+    hypercall::{self, FileInfo, TcpInfo},
+    BuddyAllocator,
+};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
+use std::net::{TcpListener, TcpStream};
 use vmm_sys_util::eventfd::EventFd;
-
-use crate::vhost::VSockBackend;
 
 const MEM_BASE: u64 = 0x1_0000_0000;
 
@@ -291,6 +296,143 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 regs.rax = mem.as_ptr() as u64;
                             }
                         }
+                        hypercall::TCP_LISTEN => {
+                            let info: &TcpInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let ip = u32::to_ne_bytes(info.ip);
+                            let port = info.port;
+                            let listener =
+                                Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap());
+                            let listener_ptr = Box::into_raw(listener);
+                            info.id.store(listener_ptr as u64, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                            regs.rax = listener_ptr as u64;
+                        }
+                        hypercall::TCP_ACCEPT => {
+                            let info: &TcpInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let listener_ptr =
+                                info.id.load(Ordering::SeqCst) as usize as *mut TcpListener;
+                            let listener = unsafe { &*listener_ptr };
+                            let (stream, _) = listener.accept().unwrap();
+                            info.id
+                                .store(Box::into_raw(Box::new(stream)) as u64, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::TCP_SEND => {
+                            let info: &TcpInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let stream_ptr =
+                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
+                            let stream = unsafe { &mut *stream_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
+                            );
+                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
+                            let len = stream.write(slice).unwrap_or(0);
+                            // assert_eq!(len, slice.len());
+                            info.len.store(len, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::TCP_RECV => {
+                            let info: &TcpInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let stream_ptr =
+                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
+                            let stream = unsafe { &mut *stream_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
+                            );
+                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
+                            let len = stream.read(slice).unwrap();
+                            info.len.store(len, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::TCP_CLOSE => {
+                            let info: &TcpInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let stream_ptr =
+                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
+                            let mut stream = *unsafe { Box::from_raw(stream_ptr) };
+                            stream.flush().unwrap();
+                            let _ = stream;
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::FILE_OPEN => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
+                            );
+                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
+                            let s = str::from_utf8(slice).unwrap();
+                            let f = OpenOptions::new()
+                                .read(info.read)
+                                .write(info.write)
+                                .create(info.create)
+                                .append(info.append)
+                                .truncate(info.truncate)
+                                .open(s)
+                                .ok()
+                                .map(Box::new)
+                                .map(Box::into_raw);
+                            info.id
+                                .store(f.unwrap_or(core::ptr::null_mut()) as u64, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::FILE_READ => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
+                            let file = unsafe { &mut *file_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
+                            );
+                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
+                            let size = file.read(slice).unwrap();
+                            info.len.store(size, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::FILE_WRITE => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
+                            let file = unsafe { &mut *file_ptr };
+                            let (ptr, len) = (
+                                BuddyAllocator.from_offset(info.buf),
+                                info.len.load(Ordering::SeqCst),
+                            );
+                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
+                            let size = file.write(slice).unwrap();
+                            info.len.store(size, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::FILE_SEEK => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
+                            let file = unsafe { &mut *file_ptr };
+                            let seek_from = match info.whence {
+                                0 => SeekFrom::Start(info.offset as u64),
+                                1 => SeekFrom::Current(info.offset as i64),
+                                -1 => SeekFrom::End(info.offset as i64),
+                                _ => panic!("invalid whence: {}", info.whence),
+                            };
+                            let pos = file.seek(seek_from).unwrap();
+                            info.len.store(pos as usize, Ordering::SeqCst);
+                            info.done.store(true, Ordering::SeqCst);
+                        }
+                        hypercall::FILE_CLOSE => {
+                            let info: &FileInfo =
+                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
+                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
+                            let file = *unsafe { Box::from_raw(file_ptr) };
+                            let _ = file;
+                        }
                         x => unimplemented!("hypercall {x}"),
                     };
                     vcpu_fd.set_regs(&regs).unwrap();
@@ -333,13 +475,12 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 pub struct Runtime {
     kvm: Kvm,
     vm: VmFd,
-    vsock: VSockBackend,
     cores: usize,
     elf: Arc<[u8]>,
 }
 
 impl Runtime {
-    pub fn new(cid: usize, cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
+    pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
@@ -381,12 +522,9 @@ impl Runtime {
         })
         .unwrap();
 
-        let vsock = VSockBackend::new(cid as u64, 1024, kick, call).unwrap();
-
         let mut x = Self {
             kvm,
             vm,
-            vsock,
             cores,
             elf: elf.clone(),
         };
@@ -454,7 +592,6 @@ impl Runtime {
     }
 
     pub fn run(&mut self, args: &[usize]) {
-        self.vsock.set_running(true).unwrap();
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
@@ -462,11 +599,7 @@ impl Runtime {
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
-        // let args = args.to_vec_in(BuddyAllocator);
-        let mut inner_args = Vec::new_in(BuddyAllocator);
-        let vsock_meta = Box::new_in(self.vsock.metadata(), BuddyAllocator);
-        inner_args.push(BuddyAllocator.to_offset(Box::into_raw_with_allocator(vsock_meta).0));
-        inner_args.extend_from_slice(args);
+        let args = args.to_vec_in(BuddyAllocator);
 
         std::thread::scope(|s| {
             let mut cpus = vec![];
@@ -487,8 +620,11 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                assert!(!inner_args.is_empty());
-                let inner_args_offset = BuddyAllocator.to_offset(inner_args.as_ptr());
+                let args_offset = if args.is_empty() {
+                    0
+                } else {
+                    BuddyAllocator.to_offset(args.as_ptr())
+                };
                 cpus.push(new_cpu(
                     i,
                     s,
@@ -497,8 +633,8 @@ impl Runtime {
                     &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
-                        inner_args.len() as u64,
-                        inner_args_offset as u64,
+                        args.len() as u64,
+                        args_offset as u64,
                         0,
                         0,
                     ],
@@ -509,9 +645,5 @@ impl Runtime {
                 cpu.join().unwrap();
             }
         });
-    }
-
-    pub fn cid(&self) -> u64 {
-        self.vsock.cid()
     }
 }

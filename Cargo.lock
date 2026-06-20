@@ -1534,6 +1534,7 @@ dependencies = [
  "spin 0.10.0",
  "talc",
  "time",
+ "user",
 ]
 
 [[package]]

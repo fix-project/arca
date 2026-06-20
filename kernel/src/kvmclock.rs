@@ -108,10 +108,8 @@ fn info_and_tsc_to_duration(info: CpuTimeInfo, tsc: u64) -> Duration {
         time >> -info.tsc_shift
     };
     let time = time.widening_mul(info.tsc_to_system_mul as u64);
-    let time = (time as u64, (time >> 64) as u64);
-    let time = (time.0 >> 32) | (time.1 << 32);
-    let time = time.wrapping_add(info.system_time);
-    Duration::from_nanos(time)
+    let time = time.wrapping_add(info.system_time as u128);
+    Duration::from_nanos(time as u64)
 }
 
 #[inline]
