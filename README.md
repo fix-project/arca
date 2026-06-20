@@ -5,7 +5,7 @@ kernel.
 
 ## Build
 
-Requires Linux x86-64, Bazelisk, GCC/G++, binutils, CMake, Make,
+Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
 Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
 `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 

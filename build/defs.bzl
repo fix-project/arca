@@ -158,7 +158,7 @@ def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility 
         srcs = [name + "/module.c", name + "/module.h", "//fix/shell:headers", "//fix/shell:wasm_rt", "//fix/shell:memmap", "//fix/shell:shell"],
         tools = ["@local_tools//:gcc"],
         outs = [name + ".elf"],
-        cmd = "$(execpath @local_tools//:gcc) -o $@ -T $(location //fix/shell:memmap) -O2 -fno-optimize-sibling-calls -frounding-math -ffreestanding -nostdlib -nostartfiles -mcmodel=large -static -Ifix/shell/inc " +
+        cmd = "$(execpath @local_tools//:gcc) -o $@ -T $(location //fix/shell:memmap) -O2 -fno-optimize-sibling-calls -frounding-math -ffreestanding -nostdlib -nostartfiles -mcmodel=large -mno-red-zone -march=x86-64-v3 -static -Ifix/shell/inc " +
               "-I$$(dirname $(location " + name + "/module.h)) $(location " + name + "/module.c) $(location //fix/shell:wasm_rt) $(location //fix/shell:shell)",
         visibility = visibility,
     )

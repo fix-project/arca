@@ -21,6 +21,7 @@ package(default_visibility = ["//visibility:public"])
         "io",
         "map",
         "null",
+        "simd",
         "webserver",
         "webserver2",
     ]

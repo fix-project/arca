@@ -23,6 +23,7 @@ GUEST = [
     "io",
     "map",
     "null",
+    "simd",
     "webserver",
     "webserver2",
 ]] + ["//programs/arca:" + name + "_image" for name in [

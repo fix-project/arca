@@ -49,6 +49,8 @@ guest_binary(
     link_deps = [":assembly"],
     linker_script = "etc/memmap.ld",
     proc_macro_deps = PROC_MACROS,
+    compile_data = ["//programs/arca:simd_elf"],
+    rustc_env = {"ARCA_SIMD_PROGRAM": "$(execpath //programs/arca:simd_elf)"},
     rustc_flags = ["--test"],
     deps = DEPS,
 )

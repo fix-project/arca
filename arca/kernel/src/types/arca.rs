@@ -5,7 +5,7 @@ use crate::{cpu::ExitReason, prelude::*};
 
 use super::Value;
 
-use crate::types::internal;
+use crate::{types::internal, xstate::XState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
@@ -13,6 +13,7 @@ pub struct Arca {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     fsbase: u64,
+    xstate: Box<XState>,
     // rlimit: Resources,
 }
 
@@ -33,6 +34,7 @@ impl Arca {
             register_file,
             descriptors,
             fsbase: 0,
+            xstate: Box::default(),
             // rlimit,
         }
     }
@@ -42,6 +44,8 @@ impl Arca {
         page_table: Table,
         descriptors: Tuple,
         _rlimit: Tuple,
+        fsbase: u64,
+        xstate: XState,
     ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner().into_inner()).into();
 
@@ -52,7 +56,8 @@ impl Arca {
             page_table,
             register_file: register_file.into(),
             descriptors,
-            fsbase: 0,
+            fsbase,
+            xstate: Box::new(xstate),
             // rlimit,
         }
     }
@@ -67,6 +72,7 @@ impl Arca {
         //         .unwrap();
 
         cpu.activate_address_space(self.page_table.into_inner());
+        self.xstate.restore();
         unsafe {
             core::arch::asm! {
                 "wrfsbase {base}", base=in(reg) self.fsbase
@@ -78,6 +84,7 @@ impl Arca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
+            xstate: self.xstate,
             // rlimit: self.rlimit,
             // rusage,
         }
@@ -107,11 +114,13 @@ impl Arca {
         &mut self.descriptors
     }
 
-    pub fn read(self) -> (RegisterFile, Table, Tuple) {
+    pub fn read(self) -> (RegisterFile, Table, Tuple, u64, XState) {
         (
             *self.register_file,
             self.page_table,
             Tuple::from_inner(internal::Tuple::new(Vec::from(self.descriptors))),
+            self.fsbase,
+            *self.xstate,
         )
     }
 
@@ -135,6 +144,7 @@ pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
+    xstate: Box<XState>,
     // rlimit: Resources,
     // rusage: Resources,
 }
@@ -215,6 +225,8 @@ impl<'a> LoadedArca<'a> {
     }
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
+        let mut xstate = self.xstate;
+        xstate.save();
         let page_table = Table::from_inner(self.cpu.deactivate_address_space());
         let mut fsbase: u64;
         unsafe {
@@ -229,6 +241,7 @@ impl<'a> LoadedArca<'a> {
                 descriptors: self.descriptors,
                 page_table,
                 fsbase,
+                xstate,
                 // rlimit: self.rlimit,
             },
             self.cpu,
@@ -244,6 +257,9 @@ impl<'a> LoadedArca<'a> {
             core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
         }
         other.fsbase = fsbase;
+        self.xstate.save();
+        other.xstate.restore();
+        core::mem::swap(&mut self.xstate, &mut other.xstate);
         self.cpu.swap_address_space(other.page_table.inner_mut());
     }
 

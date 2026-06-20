@@ -49,6 +49,7 @@ mod pipe;
 mod registers;
 mod rsstart;
 mod tss;
+mod xstate;
 
 #[cfg(test)]
 mod testing;
