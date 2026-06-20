@@ -72,6 +72,26 @@ impl<R: Runtime, A: Into<Value<R>>, B: Into<Value<R>>, C: Into<Value<R>>, D: Int
     }
 }
 
+impl<
+    R: Runtime,
+    A: Into<Value<R>>,
+    B: Into<Value<R>>,
+    C: Into<Value<R>>,
+    D: Into<Value<R>>,
+    E: Into<Value<R>>,
+> From<(A, B, C, D, E)> for Tuple<R>
+{
+    fn from(value: (A, B, C, D, E)) -> Self {
+        let mut tuple = Tuple::new(4);
+        tuple.set(0, value.0);
+        tuple.set(1, value.1);
+        tuple.set(2, value.2);
+        tuple.set(3, value.3);
+        tuple.set(4, value.4);
+        tuple
+    }
+}
+
 impl<R: Runtime> From<&mut [Value<R>]> for Tuple<R> {
     fn from(value: &mut [Value<R>]) -> Self {
         let mut tuple = Tuple::new(value.len());

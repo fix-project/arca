@@ -26,7 +26,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
     ];
 
     let result = match num as u32 {
-        arcane::__NR_nop => Ok(0),
+        arcane::__NR_nop => sys_nop(args, arca),
         arcane::__NR_drop => sys_drop(args, arca),
         arcane::__NR_clone => sys_clone(args, arca),
 
@@ -89,6 +89,13 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         Err(e) => -(e as i64) as u64,
     };
     ControlFlow::Continue(())
+}
+
+pub fn sys_nop(_: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
+    let mut unloaded = Arca::default();
+    arca.swap(&mut unloaded);
+    arca.swap(&mut unloaded);
+    Ok(0)
 }
 
 pub fn sys_drop(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
