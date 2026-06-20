@@ -47,7 +47,8 @@ impl Function {
             let registers: Tuple = data.get(0).try_into().ok()?;
             let memory: Table = data.get(1).try_into().ok()?;
             let descriptors: Tuple = data.get(2).try_into().ok()?;
-            let rlimit: Tuple = data.get(3).try_into().ok()?;
+            let fsbase: Word = data.get(3).try_into().unwrap_or(0.into());
+            let xsave: Option<Blob> = data.get(4).try_into().ok();
 
             let registers = registers.into_inner();
             let mut register_file = RegisterFile::new();
@@ -62,7 +63,14 @@ impl Function {
                 };
                 register_file[i] = w.read();
             }
-            let arca = Arca::new_with(register_file, memory, descriptors, rlimit);
+            let xsave = if let Some(xsave) = xsave {
+                let mut data = XSaveData::default();
+                xsave.read(0, &mut data.bytes);
+                data
+            } else {
+                XSaveData::default()
+            };
+            let arca = Arca::new_with(register_file, memory, descriptors, fsbase, xsave);
             Function::arcane_with_args(arca, args)
         } else if symbolic {
             Function::symbolic_with_args(data, args)
@@ -82,12 +90,19 @@ impl Function {
             Definition::Arcane(arca) => Value::Tuple(Tuple::from((
                 Blob::from("Arcane"),
                 Tuple::from({
-                    let (r, t, d) = arca.read();
+                    let (r, t, d, f, x) = arca.read();
                     let mut rr = Tuple::new(18);
                     for i in 0..18 {
                         rr.set(i, Value::Word(Word::new(r[i])));
                     }
-                    (Value::Tuple(rr), Value::Table(t), Value::Tuple(d))
+                    let xx = Blob::new(x.bytes);
+                    (
+                        Value::Tuple(rr),
+                        Value::Table(t),
+                        Value::Tuple(d),
+                        Value::Word(f),
+                        Value::Blob(xx),
+                    )
                 }),
                 args,
             ))),
@@ -199,11 +214,12 @@ mod tests {
         for i in 0..18 {
             registers.set(i, Value::Null(Null::new()));
         }
-        let mut data = Tuple::new(4);
+        let mut data = Tuple::new(5);
         data.set(0, Value::Tuple(registers));
         data.set(1, Value::Table(Table::new(1)));
         data.set(2, Value::Tuple(Tuple::new(0)));
-        data.set(3, Value::Tuple(Tuple::new(0)));
+        data.set(3, Value::Word(Word::new(0)));
+        data.set(4, Value::Null(Null::new()));
 
         let value = Value::Tuple(Tuple::from((
             Blob::from("Arcane"),

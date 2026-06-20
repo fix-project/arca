@@ -110,11 +110,12 @@ pub fn load_elf<R: arca::Runtime>(elf: &[u8]) -> Result<Function<R>, Error> {
     let mut rlimit = R::create_tuple(1);
     rlimit.set(0, Word::from(1 << 21));
 
-    let mut data = R::create_tuple(4);
+    let mut data = R::create_tuple(5);
     data.set(0, Value::Tuple(registers));
     data.set(1, Value::Table(table));
     data.set(2, Value::Tuple(descriptors));
-    data.set(3, Value::Tuple(rlimit));
+    data.set(3, R::create_word(0));
+    data.set(4, R::create_null());
 
     let args = R::create_tuple(0);
     R::create_function(Tuple::from(("Arcane", data, args)).into()).map_err(|_| Error::Runtime)

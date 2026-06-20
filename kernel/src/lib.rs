@@ -11,6 +11,8 @@
 #![feature(ptr_metadata)]
 #![feature(atomic_ptr_null)]
 #![feature(custom_test_frameworks)]
+#![feature(portable_simd)]
+#![feature(const_block_items)]
 #![test_runner(testing::harness)]
 #![reexport_test_harness_main = "test_main"]
 
@@ -45,6 +47,7 @@ mod msr;
 mod registers;
 mod rsstart;
 mod tss;
+mod xstate;
 
 #[cfg(test)]
 mod testing;

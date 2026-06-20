@@ -18,6 +18,10 @@ test = false
 name = "webserver"
 test = false
 
+[[example]]
+name = "simd"
+test = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]

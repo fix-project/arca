@@ -63,6 +63,7 @@ fn new_cpu<'scope>(
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
         | ControlReg4::OSXMMEXCPT
+        | ControlReg4::OSXSAVE
         | ControlReg4::FSGSBASE
         | ControlReg4::SMAP
         | ControlReg4::SMEP;
@@ -119,6 +120,10 @@ fn new_cpu<'scope>(
     vcpu_fd.set_cpuid2(cpuid).unwrap();
 
     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
+
+    let mut xcrs = vcpu_fd.get_xcrs().unwrap();
+    xcrs.xcrs[0].xcr |= 0x07;
+    vcpu_fd.set_xcrs(&xcrs).unwrap();
 
     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
     vcpu_regs.rip = elf.ehdr.e_entry;

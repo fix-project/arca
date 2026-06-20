@@ -7,18 +7,20 @@ use super::Value;
 
 use crate::types::internal;
 
+mod xstate;
+
+use xstate::XSaveArea;
+pub use xstate::XSaveData;
+
+const STATE_MASK: u64 = 0x7;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arca {
     page_table: Table,
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     fsbase: u64,
-    // rlimit: Resources,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Resources {
-    pub memory: usize,
+    xsave: Box<XSaveArea>,
 }
 
 impl Arca {
@@ -26,14 +28,14 @@ impl Arca {
         let page_table = Table::from_inner(internal::Table::default());
         let register_file = RegisterFile::new().into();
         let descriptors = Descriptors::new();
-        // let rlimit = Resources { memory: 1 << 21 };
+        let xsave = XSaveArea::default().into();
 
         Arca {
             page_table,
             register_file,
             descriptors,
             fsbase: 0,
-            // rlimit,
+            xsave,
         }
     }
 
@@ -41,45 +43,37 @@ impl Arca {
         register_file: impl Into<Box<RegisterFile>>,
         page_table: Table,
         descriptors: Tuple,
-        _rlimit: Tuple,
+        fsbase: impl Into<u64>,
+        xsave: impl Into<Box<XSaveArea>>,
     ) -> Arca {
         let descriptors = Vec::from(descriptors.into_inner().into_inner()).into();
-
-        // let mem_limit = Word::try_from(rlimit.get(0).clone()).unwrap().read() as usize;
-        // let rlimit = Resources { memory: mem_limit };
 
         Arca {
             page_table,
             register_file: register_file.into(),
             descriptors,
-            fsbase: 0,
-            // rlimit,
+            fsbase: fsbase.into(),
+            xsave: xsave.into(),
         }
     }
 
     pub fn load(self, cpu: &mut Cpu) -> LoadedArca<'_> {
-        // let memory = ValueRef::Table(&self.page_table).byte_size()
-        //     + self
-        //         .descriptors
-        //         .iter()
-        //         .map(|x| x.byte_size())
-        //         .reduce(|x, y| x + y)
-        //         .unwrap();
-
         cpu.activate_address_space(self.page_table.into_inner());
         unsafe {
             core::arch::asm! {
-                "wrfsbase {base}", base=in(reg) self.fsbase
+                "wrfsbase {base}",
+                base = in(reg) self.fsbase,
+                options(nostack, preserves_flags)
             };
+
+            core::arch::x86_64::_xrstor(self.xsave.as_ptr(), STATE_MASK);
         }
-        // let rusage = Resources { memory };
-        // assert!(rusage.memory <= self.rlimit.memory);
+
         LoadedArca {
             register_file: self.register_file,
             descriptors: self.descriptors,
             cpu,
-            // rlimit: self.rlimit,
-            // rusage,
+            xsave: self.xsave,
         }
     }
 
@@ -107,21 +101,15 @@ impl Arca {
         &mut self.descriptors
     }
 
-    pub fn read(self) -> (RegisterFile, Table, Tuple) {
+    pub fn read(self) -> (RegisterFile, Table, Tuple, Word, XSaveData) {
         (
             *self.register_file,
             self.page_table,
             Tuple::from_inner(internal::Tuple::new(Vec::from(self.descriptors))),
+            self.fsbase.into(),
+            (*self.xsave).into(),
         )
     }
-
-    // pub fn rlimit(&self) -> &Resources {
-    //     &self.rlimit
-    // }
-
-    // pub fn rlimit_mut(&mut self) -> &mut Resources {
-    //     &mut self.rlimit
-    // }
 }
 
 impl Default for Arca {
@@ -135,8 +123,7 @@ pub struct LoadedArca<'a> {
     register_file: Box<RegisterFile>,
     descriptors: Descriptors,
     cpu: &'a mut Cpu,
-    // rlimit: Resources,
-    // rusage: Resources,
+    xsave: Box<XSaveArea>,
 }
 
 impl<'a> LoadedArca<'a> {
@@ -188,22 +175,6 @@ impl<'a> LoadedArca<'a> {
         DescriptorsProxy { arca: self }
     }
 
-    // pub fn rlimit(&self) -> &Resources {
-    //     &self.rlimit
-    // }
-
-    // pub fn rlimit_mut(&mut self) -> &mut Resources {
-    //     &mut self.rlimit
-    // }
-
-    // pub fn rusage(&self) -> &Resources {
-    //     &self.rusage
-    // }
-
-    // pub fn rusage_mut(&mut self) -> &mut Resources {
-    //     &mut self.rusage
-    // }
-
     pub fn unload(self) -> Arca {
         self.unload_with_cpu().0
     }
@@ -215,12 +186,19 @@ impl<'a> LoadedArca<'a> {
     }
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
+        // add SIMD support here?
         let page_table = Table::from_inner(self.cpu.deactivate_address_space());
         let mut fsbase: u64;
+        let mut xsave = self.xsave;
+
         unsafe {
             core::arch::asm! {
-                "rdfsbase {base}", base=out(reg) fsbase
+                "rdfsbase {base}",
+                base = out(reg) fsbase,
+                options(nostack, preserves_flags)
             };
+
+            core::arch::x86_64::_xsave(xsave.as_mut_ptr(), STATE_MASK);
         }
 
         (
@@ -229,7 +207,7 @@ impl<'a> LoadedArca<'a> {
                 descriptors: self.descriptors,
                 page_table,
                 fsbase,
-                // rlimit: self.rlimit,
+                xsave,
             },
             self.cpu,
         )
@@ -238,12 +216,21 @@ impl<'a> LoadedArca<'a> {
     pub fn swap(&mut self, other: &mut Arca) {
         core::mem::swap(&mut self.register_file, &mut other.register_file);
         core::mem::swap(&mut self.descriptors, &mut other.descriptors);
-        // core::mem::swap(&mut self.rlimit, &mut other.rlimit);
         let mut fsbase: u64;
         unsafe {
-            core::arch::asm!("rdfsbase {old}; wrfsbase {new}", old=out(reg) fsbase, new=in(reg) other.fsbase);
+            core::arch::asm!(
+                "rdfsbase {old}; wrfsbase {new}",
+                old = out(reg) fsbase,
+                new = in(reg) other.fsbase,
+                options(nostack, preserves_flags)
+            );
+
+            core::arch::x86_64::_xsave(self.xsave.as_mut_ptr(), STATE_MASK);
+            core::arch::x86_64::_xrstor(other.xsave.as_ptr(), STATE_MASK);
+            core::mem::swap(&mut self.xsave, &mut other.xsave);
         }
         other.fsbase = fsbase;
+
         self.cpu.swap_address_space(other.page_table.inner_mut());
     }
 
@@ -373,18 +360,11 @@ pub struct DescriptorsProxy<'a, 'cpu> {
 
 impl<'a> DescriptorsProxy<'a, '_> {
     pub fn insert(self, value: Value) -> core::result::Result<usize, SyscallError> {
-        // let size = value.byte_size();
-        // if self.arca.rusage().memory + size > self.arca.rlimit().memory {
-        //     return Err(SyscallError::OutOfMemory);
-        // }
-        // self.arca.rusage_mut().memory += size;
         Ok(self.arca.descriptors.insert(value))
     }
 
     pub fn take(self, index: usize) -> core::result::Result<Value, SyscallError> {
         let value = self.arca.descriptors.take(index)?;
-        // let size = value.byte_size();
-        // self.arca.rusage_mut().memory -= size;
         Ok(value)
     }
 
@@ -407,19 +387,7 @@ impl<'a> CpuProxy<'a, '_> {
         address: usize,
         entry: Entry,
     ) -> core::result::Result<Entry, SyscallError> {
-        // let limit = self.arca.rlimit().memory;
-        // let new_size = entry.byte_size();
-        // let old = self.arca.cpu.map(address, Entry::Null(new_size))?;
-        // let old_size = old.byte_size();
-        // let usage = &mut self.arca.rusage_mut().memory;
-        // *usage -= old_size;
-        // if *usage + new_size > limit {
-        //     self.arca.cpu.map(address, old)?;
-        //     self.arca.rusage_mut().memory += old_size;
-        //     return Err(SyscallError::OutOfMemory);
-        // }
         let old = self.arca.cpu.map(address, entry)?;
-        // self.arca.rusage_mut().memory += new_size;
         Ok(old)
     }
 }
