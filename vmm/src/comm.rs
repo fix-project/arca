@@ -1,19 +1,33 @@
-use crate::pipe::GuestPipe;
-use common::protocol::*;
+use crate::pipe::{ControlPipe, FilePipe, ListenerPipe, StreamPipe};
+use common::protocol::{control::PipeData};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::net::{TcpStream, TcpListener, SocketAddr};
+use common::BuddyAllocator;
+use std::sync::Arc;
 
-pub fn communication_thread(argv: Vec<String>, mut pipe: GuestPipe) {
+fn decompose_pipe(pipe: common::pipe::Pipe) -> PipeData {
+    let (rx, tx) = pipe.into_inner();
+    let rx = rx.into_inner();
+    let tx = tx.into_inner();
+    let (rx_ptr, rx_len) = Arc::into_raw_with_allocator(rx).0.to_raw_parts();
+    let rx_ptr = BuddyAllocator.to_offset(rx_ptr);
+    let (tx_ptr, tx_len) = Arc::into_raw_with_allocator(tx).0.to_raw_parts();
+    let tx_ptr = BuddyAllocator.to_offset(tx_ptr);
+    PipeData {
+        rx_ptr,
+        rx_len,
+        tx_ptr,
+        tx_len,
+    }
+}
+
+pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
+    use common::protocol::control::*;
     loop {
-        let mut length = [0; 8];
-        pipe.read_exact(&mut length).unwrap();
-        let length = usize::from_le_bytes(length);
-        let mut bytes = vec![0; length];
-        pipe.read_exact(&mut bytes).unwrap();
-        let response: Result<Response, Error> = match postcard::from_bytes(&bytes).unwrap() {
+        let response = match pipe.recv() {
             Request::GetArgs => {
-                Ok(Response::Args(argv.clone()))
+                Response::Args(argv.clone())
             }
             Request::Exit(code) => {
                 std::process::exit(code)
@@ -25,86 +39,112 @@ pub fn communication_thread(argv: Vec<String>, mut pipe: GuestPipe) {
                     .create(mode.create)
                     .append(mode.append)
                     .truncate(mode.truncate)
-                    .open(path)
-                    .map(Box::new)
-                    .map(Box::into_raw);
+                    .open(path);
                 match f {
-                    Ok(p) => Ok(Response::File(FileDescriptor(p as usize))),
+                    Ok(f) => {
+                        let (p, q) = common::pipe::pipe(1024);
+                        std::thread::spawn(move || {
+                            let pipe = crate::pipe::GuestPipe::new(q);
+                            file_thread(f, FilePipe::new(pipe));
+                        });
+                        Response::Pipe(decompose_pipe(p))
+                    }
                     Err(x) => todo!("open: {x:?}")
                 }
             }
-            Request::Close(FileDescriptor(p)) => {
-                unsafe {
-                    let _ = Box::from_raw(p as *mut File);
-                }
-                Ok(Response::Ack)
+            Request::Listen { ip, port } => {
+                let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
+                let (p, q) = common::pipe::pipe(1024);
+                std::thread::spawn(move || {
+                    let pipe = crate::pipe::GuestPipe::new(q);
+                    listener_thread(listener, ListenerPipe::new(pipe));
+                });
+                Response::Pipe(decompose_pipe(p))
             }
-            Request::Read(FileDescriptor(p), len) => {
-                let f = unsafe { &mut *(p as *mut File) };
+            Request::Connect { host, port } => {
+                let stream = TcpStream::connect((host.as_str(), port)).unwrap();
+                let (p, q) = common::pipe::pipe(1024);
+                std::thread::spawn(move || {
+                    let pipe = crate::pipe::GuestPipe::new(q);
+                    stream_thread(stream, StreamPipe::new(pipe));
+                });
+                Response::Pipe(decompose_pipe(p))
+            }
+        };
+        pipe.send(&response);
+    }
+}
+
+pub fn file_thread(mut file: File, mut pipe: FilePipe) {
+    use common::protocol::file::*;
+    loop {
+        let response = match pipe.recv() {
+            Request::Read(len) => {
                 let mut buf = vec![0; len];
-                let len = f.read(&mut buf).unwrap();
+                let len = file.read(&mut buf).unwrap();
                 buf.truncate(len);
-                Ok(Response::Bytes(buf))
+                Response::Bytes(buf)
             }
-            Request::Write(FileDescriptor(p), bytes) => {
-                let f = unsafe { &mut *(p as *mut File) };
-                let len = f.write(&bytes).unwrap();
-                Ok(Response::Length(len))
+            Request::Write(bytes) => {
+                let len = file.write(&bytes).unwrap();
+                Response::Length(len)
             }
-            Request::Seek(FileDescriptor(p), whence) => {
-                let f = unsafe { &mut *(p as *mut File) };
+            Request::Seek(whence) => {
                 let from = match whence {
                     Whence::Start(x) => SeekFrom::Start(x),
                     Whence::Current(x) => SeekFrom::Current(x),
                     Whence::End(x) => SeekFrom::End(x),
                 };
-                let offset = f.seek(from).unwrap();
-                Ok(Response::Offset(offset))
+                let offset = file.seek(from).unwrap();
+                Response::Offset(offset)
             }
-            Request::Listen { ip, port } => {
-                let listener = Box::into_raw(Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap()));
-                Ok(Response::Listener(ListenerDescriptor(listener as usize)))
-            }
-            Request::Accept(ListenerDescriptor(l)) => {
-                let listener = unsafe { &mut *(l as *mut TcpListener) };
-                let (stream, _) = listener.accept().unwrap();
-                let stream = Box::into_raw(Box::new(stream));
-                Ok(Response::Stream(StreamDescriptor(stream as usize)))
-            }
-            Request::StopListening(ListenerDescriptor(p)) => {
-                unsafe {
-                    let _ = Box::from_raw(p as *mut TcpListener);
-                }
-                Ok(Response::Ack)
-            }
-            Request::Connect { host, port } => {
-                let stream = TcpStream::connect((host.as_str(), port));
-                let stream = Box::into_raw(Box::new(stream));
-                Ok(Response::Stream(StreamDescriptor(stream as usize)))
-            }
-            Request::Disconnect(StreamDescriptor(p)) => {
-                unsafe {
-                    let _ = Box::from_raw(p as *mut TcpStream);
-                }
-                Ok(Response::Ack)
-            }
-            Request::Receive(StreamDescriptor(p), len) => {
-                let f = unsafe { &mut *(p as *mut TcpStream) };
-                let mut buf = vec![0; len];
-                let len = f.read(&mut buf).unwrap();
-                buf.truncate(len);
-                Ok(Response::Bytes(buf))
-            }
-            Request::Send(StreamDescriptor(p), bytes) => {
-                let f = unsafe { &mut *(p as *mut TcpStream) };
-                let len = f.write(&bytes).unwrap();
-                Ok(Response::Length(len))
+            Request::Close => {
+                return;
             }
         };
-        // TODO: with the right trait impls, we could avoid allocating here
-        let bytes = postcard::to_allocvec(&response).unwrap();
-        let length = bytes.len().to_le_bytes();
-        pipe.write_exact(&length).unwrap();
-        pipe.write_exact(&bytes).unwrap();
+        pipe.send(&response);
+    }
+}
+
+pub fn listener_thread(listener: TcpListener, mut pipe: ListenerPipe) {
+    use common::protocol::listener::*;
+    loop {
+        let response = match pipe.recv() {
+            Request::Accept => {
+                let (stream, _) = listener.accept().unwrap();
+                let (p, q) = common::pipe::pipe(1024);
+                std::thread::spawn(move || {
+                    let pipe = crate::pipe::GuestPipe::new(q);
+                    stream_thread(stream, StreamPipe::new(pipe));
+                });
+                Response::Pipe(decompose_pipe(p))
+            }
+            Request::Close => {
+                return;
+            }
+        };
+        pipe.send(&response);
+    }
+}
+
+pub fn stream_thread(mut stream: TcpStream, mut pipe: StreamPipe) {
+    use common::protocol::stream::*;
+    loop {
+        let response = match pipe.recv() {
+            Request::Receive(len) => {
+                let mut buf = vec![0; len];
+                let len = stream.read(&mut buf).unwrap();
+                buf.truncate(len);
+                Response::Bytes(buf)
+            }
+            Request::Send(bytes) => {
+                let len = stream.write(&bytes).unwrap();
+                Response::Length(len)
+            }
+            Request::Close => {
+                return;
+            }
+        };
+        pipe.send(&response);
     }
 }

@@ -3,9 +3,9 @@ use common::pipe::Pipe as RawPipe;
 pub use common::pipe::{Result as PipeResult};
 use crate::kthread;
 use core::cell::OnceCell;
-use common::protocol::*;
+use core::marker::PhantomData;
 
-pub static HOST: KMutex<OnceCell<Host>> = KMutex::new(OnceCell::new());
+pub static HOST: KMutex<OnceCell<ControlPipe>> = KMutex::new(OnceCell::new());
 
 #[derive(Debug)]
 pub struct HostPipe {
@@ -69,16 +69,18 @@ impl HostPipe {
 }
 
 #[derive(Debug)]
-pub struct Host {
+pub struct TypedPipe<S, R> {
     pipe: HostPipe,
+    _send: PhantomData<S>,
+    _recv: PhantomData<R>,
 }
 
-impl Host {
+impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     pub fn new(pipe: HostPipe) -> Self {
-        Self { pipe }
+        Self { pipe, _send: PhantomData, _recv: PhantomData }
     }
 
-    pub fn request(&mut self, request: &Request) -> Result<Response, Error> {
+    pub fn request(&mut self, request: &S) -> R {
         let bytes = postcard::to_allocvec(request).unwrap();
         let length = bytes.len().to_le_bytes();
         self.pipe.write_exact(&length).unwrap();
@@ -91,3 +93,8 @@ impl Host {
         postcard::from_bytes(&bytes).unwrap()
     }
 }
+
+pub type ControlPipe = TypedPipe<common::protocol::control::Request, common::protocol::control::Response>;
+pub type FilePipe = TypedPipe<common::protocol::file::Request, common::protocol::file::Response>;
+pub type ListenerPipe = TypedPipe<common::protocol::listener::Request, common::protocol::listener::Response>;
+pub type StreamPipe = TypedPipe<common::protocol::stream::Request, common::protocol::stream::Response>;

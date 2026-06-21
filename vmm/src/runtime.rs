@@ -458,10 +458,10 @@ impl Runtime {
             let (p, q) = common::pipe::pipe(8192);
             let read = EventFd::new(0).unwrap();
             let write = EventFd::new(0).unwrap();
-            let read_fd = read.try_clone().unwrap();
-            let write_fd = write.try_clone().unwrap();
+            // let read_fd = read.try_clone().unwrap();
+            // let write_fd = write.try_clone().unwrap();
             let comm = s.spawn(move || {
-                crate::comm::communication_thread(argv, crate::pipe::GuestPipe::new(read_fd, write_fd, q));
+                crate::comm::control_thread(argv, crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)));
             });
 
             let (rx, tx) = p.into_inner();

@@ -1,19 +1,15 @@
 use common::pipe::Pipe as RawPipe;
 pub use common::pipe::{Error, Result};
-use vmm_sys_util::eventfd::EventFd;
+use std::marker::PhantomData;
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct GuestPipe {
-    read_fd: EventFd,
-    write_fd: EventFd,
     inner: RawPipe,
 }
 
 impl GuestPipe {
-    pub fn new(read_fd: EventFd, write_fd: EventFd, pipe: RawPipe) -> Self {
+    pub fn new(pipe: RawPipe) -> Self {
         Self {
-            read_fd,
-            write_fd,
             inner: pipe
         }
     }
@@ -62,3 +58,37 @@ impl GuestPipe {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct TypedPipe<S, R> {
+    pipe: GuestPipe,
+    _send: PhantomData<S>,
+    _recv: PhantomData<R>,
+}
+
+impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
+    pub fn new(pipe: GuestPipe) -> Self {
+        Self { pipe, _send: PhantomData, _recv: PhantomData }
+    }
+
+    pub fn recv(&mut self) -> R {
+        let mut length = [0; 8];
+        self.pipe.read_exact(&mut length).unwrap();
+        let length = usize::from_le_bytes(length);
+        let mut bytes = vec![0; length];
+        self.pipe.read_exact(&mut bytes).unwrap();
+        postcard::from_bytes(&bytes).unwrap()
+    }
+
+    pub fn send(&mut self, request: &S) {
+        let bytes = postcard::to_allocvec(request).unwrap();
+        let length = bytes.len().to_le_bytes();
+        self.pipe.write_exact(&length).unwrap();
+        self.pipe.write_exact(&bytes).unwrap();
+    }
+}
+
+pub type ControlPipe = TypedPipe<common::protocol::control::Response, common::protocol::control::Request>;
+pub type FilePipe = TypedPipe<common::protocol::file::Response, common::protocol::file::Request>;
+pub type ListenerPipe = TypedPipe<common::protocol::listener::Response, common::protocol::listener::Request>;
+pub type StreamPipe = TypedPipe<common::protocol::stream::Response, common::protocol::stream::Request>;

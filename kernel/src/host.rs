@@ -99,24 +99,40 @@ pub mod os {
     pub fn argv() -> Vec<String> {
         let mut binding = crate::pipe::HOST.lock();
         let host = binding.get_mut().unwrap();
-        let Response::Args(args) = host.request(&Request::GetArgs).unwrap() else {
+        let control::Response::Args(args) = host.request(&control::Request::GetArgs) else {
             panic!("bad response");
         };
         args
     }
 }
 
+use super::pipe::HostPipe;
+unsafe fn get_pipe(data: common::protocol::control::PipeData) -> HostPipe {
+    use common::pipe::{Reader, Writer, Pipe};
+    let rxp: *const u8 = BuddyAllocator.from_offset(data.rx_ptr);
+    let txp: *const u8 = BuddyAllocator.from_offset(data.tx_ptr);
+    let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, data.rx_len), BuddyAllocator);
+    let rx = Reader::from_inner(rx);
+    let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, data.tx_len), BuddyAllocator);
+    let tx = Writer::from_inner(tx);
+    let pipe = Pipe::from_inner(rx, tx);
+    HostPipe::new(pipe)
+}
+
 pub mod net {
+    use super::get_pipe;
     use common::{
         protocol::*,
     };
+    use crate::pipe::*;
+    use crate::prelude::*;
 
     pub struct TcpListener {
-        id: ListenerDescriptor,
+        pipe: KMutex<ListenerPipe>,
     }
 
     pub struct TcpStream {
-        id: StreamDescriptor,
+        pipe: StreamPipe,
     }
 
     impl TcpListener {
@@ -124,27 +140,29 @@ pub mod net {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
             let ip = *ip;
-            let Response::Listener(id) = host.request(&Request::Listen { ip, port }).unwrap() else {
+            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port }) else {
                 todo!();
             };
-            TcpListener { id }
+            unsafe {
+                TcpListener { pipe: KMutex::new(ListenerPipe::new(get_pipe(id))) }
+            }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Stream(id) = host.request(&Request::Accept(self.id.clone())).unwrap() else {
+            let mut pipe = self.pipe.lock();
+            let listener::Response::Pipe(id) = pipe.request(&listener::Request::Accept) else {
                 todo!();
             };
-            TcpStream { id }
+            unsafe {
+                TcpStream { pipe: StreamPipe::new(get_pipe(id)) }
+            }
         }
     }
 
     impl Drop for TcpListener {
         fn drop(&mut self) {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Ack = host.request(&Request::Accept(self.id.clone())).unwrap() else {
+            let mut pipe = self.pipe.lock();
+            let listener::Response::Ack = pipe.request(&listener::Request::Close) else {
                 todo!();
             };
         }
@@ -154,25 +172,23 @@ pub mod net {
         pub fn connect(hostname: &str, port: u16) -> TcpStream {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
-            let Response::Stream(id) = host.request(&Request::Connect{host: hostname.into(), port}).unwrap() else {
+            let control::Response::Pipe(id) = host.request(&control::Request::Connect{host: hostname.into(), port}) else {
                 todo!();
             };
-            TcpStream { id }
+            unsafe {
+                TcpStream { pipe: StreamPipe::new(get_pipe(id)) }
+            }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Length(len) = host.request(&Request::Send(self.id.clone(), bytes.into())).unwrap() else {
+            let stream::Response::Length(len) = self.pipe.request(&stream::Request::Send(bytes.into())) else {
                 panic!("bad response");
             };
             len
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Bytes(buf) = host.request(&Request::Receive(self.id.clone(), bytes.len())).unwrap() else {
+            let stream::Response::Bytes(buf) = self.pipe.request(&stream::Request::Receive(bytes.len())) else {
                 panic!("bad response");
             };
             bytes[..buf.len()].copy_from_slice(&buf);
@@ -186,9 +202,7 @@ pub mod net {
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Ack = host.request(&Request::Disconnect(self.id.clone())).unwrap() else {
+            let stream::Response::Ack = self.pipe.request(&stream::Request::Close) else {
                 panic!("bad response");
             };
         }
@@ -209,12 +223,16 @@ pub mod net {
 }
 
 pub mod fs {
+    use super::get_pipe;
     use common::{
         protocol::*,
+        protocol::control::FileMode,
+        protocol::file::Whence,
     };
+    use crate::pipe::*;
 
     pub struct File {
-        id: FileDescriptor,
+        pipe: FilePipe,
     }
 
     impl File {
@@ -228,24 +246,24 @@ pub mod fs {
         ) -> Option<File> {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
-            let Response::File(id) = host.request(&Request::Open(path.into(), FileMode {
+            let control::Response::Pipe(id) = host.request(&control::Request::Open(path.into(), FileMode {
                 read,
                 write,
                 create,
                 append,
                 truncate,
-            })).unwrap() else {
+            })) else {
                 return None;
             };
-            Some(File { id })
+            unsafe {
+            Some(File { pipe: FilePipe::new(get_pipe(id)) })
+            }
         }
 
         pub fn close(self) { }
 
         pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Bytes(bytes) = host.request(&Request::Read(self.id.clone(), buf.len())).unwrap() else {
+            let file::Response::Bytes(bytes) = self.pipe.request(&file::Request::Read(buf.len())) else {
                 panic!("bad response");
             };
             buf[..bytes.len()].copy_from_slice(&bytes);
@@ -253,18 +271,14 @@ pub mod fs {
         }
 
         pub fn write(&mut self, buf: &[u8]) -> usize {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Length(len) = host.request(&Request::Write(self.id.clone(), buf.into())).unwrap() else {
+            let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into())) else {
                 panic!("bad response");
             };
             len
         }
 
         pub fn seek(&mut self, whence: Whence) -> u64 {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Offset(offset) = host.request(&Request::Seek(self.id.clone(), whence)).unwrap() else {
+            let file::Response::Offset(offset) = self.pipe.request(&file::Request::Seek(whence)) else {
                 panic!("bad response");
             };
             offset
@@ -273,9 +287,7 @@ pub mod fs {
 
     impl Drop for File {
         fn drop(&mut self) {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let Response::Ack = host.request(&Request::Close(self.id.clone())).unwrap() else {
+            let file::Response::Ack = self.pipe.request(&file::Request::Close) else {
                 panic!("bad response");
             };
         }

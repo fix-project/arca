@@ -140,7 +140,7 @@ unsafe extern "C" fn _start(
     crate::kthread::init();
     if id == 0 {
         use common::pipe::{Pipe as RawPipe, Reader, Writer};
-        use crate::pipe::{HostPipe, Host};
+        use crate::pipe::{HostPipe, ControlPipe};
         let rxp: *const u8 = BuddyAllocator.from_offset(rxp);
         let txp: *const u8 = BuddyAllocator.from_offset(txp);
         let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, rxn), BuddyAllocator);
@@ -150,7 +150,7 @@ unsafe extern "C" fn _start(
         let pipe = RawPipe::from_inner(rx, tx);
         let pipe = HostPipe::new(pipe);
         let host = crate::pipe::HOST.lock();
-        host.set(Host::new(pipe)).unwrap();
+        host.set(ControlPipe::new(pipe)).unwrap();
 
         BuddyAllocator.set_caching(true);
         crate::kthread::spawn(|| {

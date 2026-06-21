@@ -1909,6 +1909,7 @@ dependencies = [
  "regex",
  "rlimit",
  "rustc-demangle",
+ "serde",
  "smol",
  "thread-priority",
  "tokio-stream",
