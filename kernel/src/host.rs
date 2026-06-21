@@ -94,10 +94,15 @@ pub fn memclr(region: *mut [u8]) {
 
 pub mod os {
     use crate::prelude::*;
+    use common::protocol::*;
 
     pub fn argv() -> Vec<String> {
-        let mut host = crate::pipe::HOST.lock();
-        host.get_mut().unwrap().get_args()
+        let mut binding = crate::pipe::HOST.lock();
+        let host = binding.get_mut().unwrap();
+        let Response::Args(args) = host.request(&Request::GetArgs).unwrap() else {
+            panic!("bad response");
+        };
+        args
     }
 }
 
@@ -248,17 +253,12 @@ pub mod net {
 }
 
 pub mod fs {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
     use common::{
-        hypercall::{self, FileInfo},
-        BuddyAllocator,
+        protocol::*,
     };
 
-    use crate::kthread;
-
     pub struct File {
-        id: u64,
+        id: FileDescriptor,
     }
 
     impl File {
@@ -270,99 +270,58 @@ pub mod fs {
             append: bool,
             truncate: bool,
         ) -> Option<File> {
-            let info = FileInfo {
-                buf: BuddyAllocator.to_offset(path.as_ptr()),
-                len: AtomicUsize::new(path.len()),
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::File(id) = host.request(&Request::Open(path.into(), FileMode {
                 read,
                 write,
                 create,
                 append,
                 truncate,
-                ..Default::default()
+            })).unwrap() else {
+                return None;
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::FILE_OPEN, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            let id = info.id.load(Ordering::SeqCst);
-            if id != 0 {
-                Some(File { id })
-            } else {
-                None
-            }
+            Some(File { id })
         }
 
-        pub fn close(self) {}
+        pub fn close(self) { }
 
         pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(buf.as_ptr()),
-                len: AtomicUsize::new(buf.len()),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Bytes(bytes) = host.request(&Request::Read(self.id.clone(), buf.len())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::FILE_READ, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            bytes.len()
         }
 
         pub fn write(&mut self, buf: &[u8]) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(buf.as_ptr()),
-                len: AtomicUsize::new(buf.len()),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Length(len) = host.request(&Request::Write(self.id.clone(), buf.into())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::FILE_WRITE,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            len
         }
 
-        pub fn seek(&mut self, offset: isize, whence: i64) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                offset,
-                whence,
-                ..Default::default()
+        pub fn seek(&mut self, whence: Whence) -> u64 {
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Offset(offset) = host.request(&Request::Seek(self.id.clone(), whence)).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::FILE_SEEK, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            offset
         }
     }
 
     impl Drop for File {
         fn drop(&mut self) {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Ack = host.request(&Request::Close(self.id.clone())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::FILE_CLOSE,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
         }
     }
 

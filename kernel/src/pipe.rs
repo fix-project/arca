@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use common::pipe::Pipe as RawPipe;
-pub use common::pipe::{Result};
+pub use common::pipe::{Result as PipeResult};
 use crate::kthread;
 use core::cell::OnceCell;
 use common::protocol::*;
@@ -19,7 +19,7 @@ impl HostPipe {
         }
     }
 
-    pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
+    pub fn read(&mut self, bytes: &mut [u8]) -> PipeResult<usize> {
         while !self.inner.can_read() {
             // kthread::wfi();
             kthread::yield_now();
@@ -27,7 +27,7 @@ impl HostPipe {
         self.inner.read(bytes)
     }
 
-    pub fn read_exact(&mut self, mut bytes: &mut [u8]) -> Result<()> {
+    pub fn read_exact(&mut self, mut bytes: &mut [u8]) -> PipeResult<()> {
         while !bytes.is_empty() {
             match self.read(bytes) {
                 Ok(n) => {
@@ -41,7 +41,7 @@ impl HostPipe {
         Ok(())
     }
 
-    pub fn write(&mut self, bytes: &[u8]) -> Result<usize> {
+    pub fn write(&mut self, bytes: &[u8]) -> PipeResult<usize> {
         while !self.inner.can_write() {
             // kthread::wfi();
             kthread::yield_now();
@@ -53,7 +53,7 @@ impl HostPipe {
         n
     }
 
-    pub fn write_exact(&mut self, mut bytes: &[u8]) -> Result<()> {
+    pub fn write_exact(&mut self, mut bytes: &[u8]) -> PipeResult<()> {
         while !bytes.is_empty() {
             match self.write(bytes) {
                 Ok(n) => {
@@ -78,8 +78,8 @@ impl Host {
         Self { pipe }
     }
 
-    pub fn get_args(&mut self) -> Vec<String> {
-        let bytes = postcard::to_allocvec(&ControlRequest::GetArgs).unwrap();
+    pub fn request(&mut self, request: &Request) -> Result<Response, Error> {
+        let bytes = postcard::to_allocvec(request).unwrap();
         let length = bytes.len().to_le_bytes();
         self.pipe.write_exact(&length).unwrap();
         self.pipe.write_exact(&bytes).unwrap();
@@ -88,7 +88,6 @@ impl Host {
         let length = usize::from_le_bytes(length);
         let mut bytes = vec![0; length];
         self.pipe.read_exact(&mut bytes).unwrap();
-        let ControlResponse::Args(args) = postcard::from_bytes(&bytes).unwrap();
-        args
+        postcard::from_bytes(&bytes).unwrap()
     }
 }
