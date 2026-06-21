@@ -1,7 +1,7 @@
 extern crate alloc;
 
-use serde::{Serialize, Deserialize};
 use super::control::PipeData;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {

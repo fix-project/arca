@@ -108,7 +108,7 @@ pub mod os {
 
 use super::pipe::HostPipe;
 unsafe fn get_pipe(data: common::protocol::control::PipeData) -> HostPipe {
-    use common::pipe::{Reader, Writer, Pipe};
+    use common::pipe::{Pipe, Reader, Writer};
     let rxp: *const u8 = BuddyAllocator.from_offset(data.rx_ptr);
     let txp: *const u8 = BuddyAllocator.from_offset(data.tx_ptr);
     let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, data.rx_len), BuddyAllocator);
@@ -121,11 +121,9 @@ unsafe fn get_pipe(data: common::protocol::control::PipeData) -> HostPipe {
 
 pub mod net {
     use super::get_pipe;
-    use common::{
-        protocol::*,
-    };
     use crate::pipe::*;
     use crate::prelude::*;
+    use common::protocol::*;
 
     pub struct TcpListener {
         pipe: KMutex<ListenerPipe>,
@@ -140,11 +138,14 @@ pub mod net {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
             let ip = *ip;
-            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port }) else {
+            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
+            else {
                 todo!();
             };
             unsafe {
-                TcpListener { pipe: KMutex::new(ListenerPipe::new(get_pipe(id))) }
+                TcpListener {
+                    pipe: KMutex::new(ListenerPipe::new(get_pipe(id))),
+                }
             }
         }
 
@@ -154,7 +155,9 @@ pub mod net {
                 todo!();
             };
             unsafe {
-                TcpStream { pipe: StreamPipe::new(get_pipe(id)) }
+                TcpStream {
+                    pipe: StreamPipe::new(get_pipe(id)),
+                }
             }
         }
     }
@@ -172,23 +175,32 @@ pub mod net {
         pub fn connect(hostname: &str, port: u16) -> TcpStream {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
-            let control::Response::Pipe(id) = host.request(&control::Request::Connect{host: hostname.into(), port}) else {
+            let control::Response::Pipe(id) = host.request(&control::Request::Connect {
+                host: hostname.into(),
+                port,
+            }) else {
                 todo!();
             };
             unsafe {
-                TcpStream { pipe: StreamPipe::new(get_pipe(id)) }
+                TcpStream {
+                    pipe: StreamPipe::new(get_pipe(id)),
+                }
             }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
-            let stream::Response::Length(len) = self.pipe.request(&stream::Request::Send(bytes.into())) else {
+            let stream::Response::Length(len) =
+                self.pipe.request(&stream::Request::Send(bytes.into()))
+            else {
                 panic!("bad response");
             };
             len
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
-            let stream::Response::Bytes(buf) = self.pipe.request(&stream::Request::Receive(bytes.len())) else {
+            let stream::Response::Bytes(buf) =
+                self.pipe.request(&stream::Request::Receive(bytes.len()))
+            else {
                 panic!("bad response");
             };
             bytes[..buf.len()].copy_from_slice(&buf);
@@ -224,12 +236,8 @@ pub mod net {
 
 pub mod fs {
     use super::get_pipe;
-    use common::{
-        protocol::*,
-        protocol::control::FileMode,
-        protocol::file::Whence,
-    };
     use crate::pipe::*;
+    use common::{protocol::control::FileMode, protocol::file::Whence, protocol::*};
 
     pub struct File {
         pipe: FilePipe,
@@ -246,24 +254,30 @@ pub mod fs {
         ) -> Option<File> {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
-            let control::Response::Pipe(id) = host.request(&control::Request::Open(path.into(), FileMode {
-                read,
-                write,
-                create,
-                append,
-                truncate,
-            })) else {
+            let control::Response::Pipe(id) = host.request(&control::Request::Open(
+                path.into(),
+                FileMode {
+                    read,
+                    write,
+                    create,
+                    append,
+                    truncate,
+                },
+            )) else {
                 return None;
             };
             unsafe {
-            Some(File { pipe: FilePipe::new(get_pipe(id)) })
+                Some(File {
+                    pipe: FilePipe::new(get_pipe(id)),
+                })
             }
         }
 
-        pub fn close(self) { }
+        pub fn close(self) {}
 
         pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let file::Response::Bytes(bytes) = self.pipe.request(&file::Request::Read(buf.len())) else {
+            let file::Response::Bytes(bytes) = self.pipe.request(&file::Request::Read(buf.len()))
+            else {
                 panic!("bad response");
             };
             buf[..bytes.len()].copy_from_slice(&bytes);
@@ -271,14 +285,16 @@ pub mod fs {
         }
 
         pub fn write(&mut self, buf: &[u8]) -> usize {
-            let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into())) else {
+            let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into()))
+            else {
                 panic!("bad response");
             };
             len
         }
 
         pub fn seek(&mut self, whence: Whence) -> u64 {
-            let file::Response::Offset(offset) = self.pipe.request(&file::Request::Seek(whence)) else {
+            let file::Response::Offset(offset) = self.pipe.request(&file::Request::Seek(whence))
+            else {
                 panic!("bad response");
             };
             offset

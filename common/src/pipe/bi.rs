@@ -1,5 +1,5 @@
+use super::error::Result;
 use super::uni::{channel, Reader, Writer};
-use super::error::{Result};
 
 #[derive(Debug)]
 pub struct Pipe {
@@ -10,16 +10,7 @@ pub struct Pipe {
 pub fn pipe(len: usize) -> (Pipe, Pipe) {
     let (r0, w0) = channel(len);
     let (r1, w1) = channel(len);
-    (
-        Pipe {
-            rx: r0,
-            tx: w1,
-        },
-        Pipe {
-            rx: r1,
-            tx: w0,
-        }
-    )
+    (Pipe { rx: r0, tx: w1 }, Pipe { rx: r1, tx: w0 })
 }
 
 impl Pipe {
@@ -43,11 +34,11 @@ impl Pipe {
         (self.rx, self.tx)
     }
 
+    /// # Safety
+    /// The reader and writer must correspond to the two halves of a pipe, as previously returned
+    /// from into_inner.
     pub unsafe fn from_inner(rx: Reader, tx: Writer) -> Self {
-        Pipe {
-            rx,
-            tx,
-        }
+        Pipe { rx, tx }
     }
 }
 
@@ -56,20 +47,18 @@ mod tests {
     #[test]
     pub fn test_ping_pong() {
         let (mut p, mut q) = super::pipe(1024);
-        std::thread::spawn(move || {
+        std::thread::spawn(move || loop {
+            let mut buf = [0; 8];
             loop {
-                let mut buf = [0; 8];
-                loop {
-                    let result = q.read(&mut buf);
-                    if result.is_ok() {
-                        break;
-                    }
-                    std::thread::yield_now();
+                let result = q.read(&mut buf);
+                if result.is_ok() {
+                    break;
                 }
-                let i = u64::from_le_bytes(buf);
-                buf = u64::to_le_bytes(i + 1);
-                let _ = q.write(&buf);
+                std::thread::yield_now();
             }
+            let i = u64::from_le_bytes(buf);
+            buf = u64::to_le_bytes(i + 1);
+            let _ = q.write(&buf);
         });
         let mut bytes = u64::to_le_bytes(0);
         let mut i = 0;

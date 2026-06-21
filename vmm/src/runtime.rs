@@ -10,10 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{
-    hypercall::self,
-    BuddyAllocator,
-};
+use common::{hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
@@ -28,8 +25,6 @@ fn new_cpu<'scope>(
     i: usize,
     scope: &'scope Scope<'scope, '_>,
     vcpu_fd: VcpuFd,
-    read_fd: EventFd,
-    write_fd: EventFd,
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
@@ -146,12 +141,16 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            run_cpu(vcpu_fd, elf, flag, read_fd, write_fd);
+            run_cpu(vcpu_fd, elf, flag);
         })
         .unwrap()
 }
 
-fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>, read_fd: EventFd, write_fd: EventFd) {
+fn run_cpu(
+    mut vcpu_fd: VcpuFd,
+    elf: &ElfBytes<AnyEndian>,
+    exit: Arc<AtomicBool>,
+) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -290,10 +289,12 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             }
                         }
                         hypercall::NOTIFY_READ => {
-                            read_fd.write(1).unwrap();
+                            todo!();
+                            // read_fd.write(1).unwrap();
                         }
                         hypercall::NOTIFY_WRITE => {
-                            write_fd.write(1).unwrap();
+                            todo!();
+                            // write_fd.write(1).unwrap();
                         }
                         x => unimplemented!("hypercall {x}"),
                     };
@@ -456,12 +457,15 @@ impl Runtime {
             let mut cpus = vec![];
 
             let (p, q) = common::pipe::pipe(8192);
-            let read = EventFd::new(0).unwrap();
-            let write = EventFd::new(0).unwrap();
+            // let read = EventFd::new(0).unwrap();
+            // let write = EventFd::new(0).unwrap();
             // let read_fd = read.try_clone().unwrap();
             // let write_fd = write.try_clone().unwrap();
             let comm = s.spawn(move || {
-                crate::comm::control_thread(argv, crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)));
+                crate::comm::control_thread(
+                    argv,
+                    crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)),
+                );
             });
 
             let (rx, tx) = p.into_inner();
@@ -493,8 +497,8 @@ impl Runtime {
                     i,
                     s,
                     vcpu_fd,
-                    read.try_clone().unwrap(),
-                    write.try_clone().unwrap(),
+                    // read.try_clone().unwrap(),
+                    // write.try_clone().unwrap(),
                     &elf,
                     &[
                         self.cores as u64,

@@ -21,9 +21,9 @@ pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;
 pub mod pipe;
+pub mod protocol;
 pub mod sendable;
 pub mod util;
-pub mod protocol;
 
 #[cfg(feature = "std")]
 pub mod mmap;

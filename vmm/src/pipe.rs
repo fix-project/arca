@@ -9,9 +9,7 @@ pub struct GuestPipe {
 
 impl GuestPipe {
     pub fn new(pipe: RawPipe) -> Self {
-        Self {
-            inner: pipe
-        }
+        Self { inner: pipe }
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
@@ -68,7 +66,11 @@ pub struct TypedPipe<S, R> {
 
 impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     pub fn new(pipe: GuestPipe) -> Self {
-        Self { pipe, _send: PhantomData, _recv: PhantomData }
+        Self {
+            pipe,
+            _send: PhantomData,
+            _recv: PhantomData,
+        }
     }
 
     pub fn recv(&mut self) -> R {
@@ -88,7 +90,10 @@ impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     }
 }
 
-pub type ControlPipe = TypedPipe<common::protocol::control::Response, common::protocol::control::Request>;
+pub type ControlPipe =
+    TypedPipe<common::protocol::control::Response, common::protocol::control::Request>;
 pub type FilePipe = TypedPipe<common::protocol::file::Response, common::protocol::file::Request>;
-pub type ListenerPipe = TypedPipe<common::protocol::listener::Response, common::protocol::listener::Request>;
-pub type StreamPipe = TypedPipe<common::protocol::stream::Response, common::protocol::stream::Request>;
+pub type ListenerPipe =
+    TypedPipe<common::protocol::listener::Response, common::protocol::listener::Request>;
+pub type StreamPipe =
+    TypedPipe<common::protocol::stream::Response, common::protocol::stream::Request>;

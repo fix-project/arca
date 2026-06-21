@@ -1,12 +1,12 @@
 extern crate alloc;
-use alloc::sync::Arc;
-use alloc::boxed::Box;
-use core::alloc::Allocator;
-use core::sync::atomic::Ordering;
-use core::cell::SyncUnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicUsize};
-use core::alloc::Layout;
 use crate::BuddyAllocator;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::alloc::Allocator;
+use core::alloc::Layout;
+use core::cell::SyncUnsafeCell;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 
 use super::error::{Error, Result};
 
@@ -23,14 +23,23 @@ pub struct RingBuffer {
 impl RingBuffer {
     fn new(len: usize) -> Arc<RingBuffer, BuddyAllocator> {
         let layout = Layout::new::<AtomicUsize>()
-            .extend(Layout::new::<AtomicUsize>()).unwrap().0
-            .extend(Layout::new::<AtomicBool>()).unwrap().0
-            .extend(Layout::new::<AtomicBool>()).unwrap().0
-            .extend(Layout::new::<u8>().repeat(len).unwrap().0).unwrap().0
+            .extend(Layout::new::<AtomicUsize>())
+            .unwrap()
+            .0
+            .extend(Layout::new::<AtomicBool>())
+            .unwrap()
+            .0
+            .extend(Layout::new::<AtomicBool>())
+            .unwrap()
+            .0
+            .extend(Layout::new::<u8>().repeat(len).unwrap().0)
+            .unwrap()
+            .0
             .pad_to_align();
         let p: *mut u8 = BuddyAllocator
             .allocate_zeroed(layout)
-            .expect("could not allocate shared memory for ringbuffer").as_mut_ptr();
+            .expect("could not allocate shared memory for ringbuffer")
+            .as_mut_ptr();
         let (base, _) = p.to_raw_parts();
         let p: *mut RingBuffer = core::ptr::from_raw_parts_mut(base, len);
         unsafe {
@@ -51,9 +60,7 @@ impl RingBuffer {
         }
         let len = end - start;
         let base = self.buffer.get() as *const u8;
-        unsafe {
-            core::ptr::slice_from_raw_parts(base.add(start), len)
-        }
+        unsafe { core::ptr::slice_from_raw_parts(base.add(start), len) }
     }
 
     unsafe fn read(&self, bytes: usize) {
@@ -78,15 +85,13 @@ impl RingBuffer {
 
     unsafe fn writeable_bytes(&self) -> *mut [u8] {
         let start = self.write_cursor.load(Ordering::SeqCst) % self.len();
-        let mut end = (self.read_cursor.load(Ordering::SeqCst)  + self.len() - 1) % self.len();
+        let mut end = (self.read_cursor.load(Ordering::SeqCst) + self.len() - 1) % self.len();
         if end < start {
             end = self.len();
         }
         let len = end - start;
         let base = self.buffer.get() as *mut u8;
-        unsafe {
-            core::ptr::slice_from_raw_parts_mut(base.add(start), len)
-        }
+        unsafe { core::ptr::slice_from_raw_parts_mut(base.add(start), len) }
     }
 
     unsafe fn write(&self, bytes: usize) {
@@ -112,12 +117,12 @@ impl RingBuffer {
 
 pub fn channel(len: usize) -> (Reader, Writer) {
     let ring = RingBuffer::new(len);
-    (Reader {
-        ring: Some(ring.clone()),
-    },
-    Writer {
-        ring: Some(ring)
-    })
+    (
+        Reader {
+            ring: Some(ring.clone()),
+        },
+        Writer { ring: Some(ring) },
+    )
 }
 
 #[derive(Debug)]
@@ -143,9 +148,7 @@ impl Reader {
     }
 
     pub fn len(&self) -> usize {
-        unsafe {
-            self.ring.as_ref().unwrap().readable_bytes().len()
-        }
+        unsafe { self.ring.as_ref().unwrap().readable_bytes().len() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -153,19 +156,18 @@ impl Reader {
     }
 
     pub fn is_closed(&self) -> bool {
-        unsafe {
-            !self.ring.as_ref().unwrap().writer_open()
-        }
+        unsafe { !self.ring.as_ref().unwrap().writer_open() }
     }
 
     pub fn into_inner(mut self) -> Arc<RingBuffer, BuddyAllocator> {
         self.ring.take().unwrap()
     }
 
+    /// # Safety
+    /// The provided buffer must be a valid RingBuffer, and must not be in use by any other
+    /// Readers.
     pub unsafe fn from_inner(ring: Arc<RingBuffer, BuddyAllocator>) -> Self {
-        Self {
-            ring: Some(ring)
-        }
+        Self { ring: Some(ring) }
     }
 }
 
@@ -202,9 +204,7 @@ impl Writer {
     }
 
     pub fn len(&self) -> usize {
-        unsafe {
-            self.ring.as_ref().unwrap().writeable_bytes().len()
-        }
+        unsafe { self.ring.as_ref().unwrap().writeable_bytes().len() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -212,19 +212,18 @@ impl Writer {
     }
 
     pub fn is_closed(&self) -> bool {
-        unsafe {
-            !self.ring.as_ref().unwrap().reader_open()
-        }
+        unsafe { !self.ring.as_ref().unwrap().reader_open() }
     }
 
     pub fn into_inner(mut self) -> Arc<RingBuffer, BuddyAllocator> {
         self.ring.take().unwrap()
     }
 
+    /// # Safety
+    /// The provided buffer must be a valid RingBuffer, and must not be in use by any other
+    /// Writers.
     pub unsafe fn from_inner(ring: Arc<RingBuffer, BuddyAllocator>) -> Self {
-        Self {
-            ring: Some(ring)
-        }
+        Self { ring: Some(ring) }
     }
 }
 

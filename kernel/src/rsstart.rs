@@ -139,8 +139,8 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
     crate::kthread::init();
     if id == 0 {
+        use crate::pipe::{ControlPipe, HostPipe};
         use common::pipe::{Pipe as RawPipe, Reader, Writer};
-        use crate::pipe::{HostPipe, ControlPipe};
         let rxp: *const u8 = BuddyAllocator.from_offset(rxp);
         let txp: *const u8 = BuddyAllocator.from_offset(txp);
         let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, rxn), BuddyAllocator);

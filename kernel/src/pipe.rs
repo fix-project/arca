@@ -1,7 +1,7 @@
+use crate::kthread;
 use crate::prelude::*;
 use common::pipe::Pipe as RawPipe;
-pub use common::pipe::{Result as PipeResult};
-use crate::kthread;
+pub use common::pipe::Result as PipeResult;
 use core::cell::OnceCell;
 use core::marker::PhantomData;
 
@@ -14,9 +14,7 @@ pub struct HostPipe {
 
 impl HostPipe {
     pub fn new(pipe: RawPipe) -> Self {
-        Self {
-            inner: pipe
-        }
+        Self { inner: pipe }
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> PipeResult<usize> {
@@ -77,7 +75,11 @@ pub struct TypedPipe<S, R> {
 
 impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     pub fn new(pipe: HostPipe) -> Self {
-        Self { pipe, _send: PhantomData, _recv: PhantomData }
+        Self {
+            pipe,
+            _send: PhantomData,
+            _recv: PhantomData,
+        }
     }
 
     pub fn request(&mut self, request: &S) -> R {
@@ -94,7 +96,10 @@ impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     }
 }
 
-pub type ControlPipe = TypedPipe<common::protocol::control::Request, common::protocol::control::Response>;
+pub type ControlPipe =
+    TypedPipe<common::protocol::control::Request, common::protocol::control::Response>;
 pub type FilePipe = TypedPipe<common::protocol::file::Request, common::protocol::file::Response>;
-pub type ListenerPipe = TypedPipe<common::protocol::listener::Request, common::protocol::listener::Response>;
-pub type StreamPipe = TypedPipe<common::protocol::stream::Request, common::protocol::stream::Response>;
+pub type ListenerPipe =
+    TypedPipe<common::protocol::listener::Request, common::protocol::listener::Response>;
+pub type StreamPipe =
+    TypedPipe<common::protocol::stream::Request, common::protocol::stream::Response>;

@@ -37,12 +37,12 @@ pub mod tsc;
 pub mod types;
 pub mod vm;
 
-mod pipe;
 mod gdt;
 mod idt;
 mod interrupts;
 mod lapic;
 mod msr;
+mod pipe;
 mod registers;
 mod rsstart;
 mod tss;

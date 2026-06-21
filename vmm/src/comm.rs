@@ -1,9 +1,9 @@
 use crate::pipe::{ControlPipe, FilePipe, ListenerPipe, StreamPipe};
-use common::protocol::{control::PipeData};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, Seek, SeekFrom};
-use std::net::{TcpStream, TcpListener, SocketAddr};
+use common::protocol::control::PipeData;
 use common::BuddyAllocator;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 
 fn decompose_pipe(pipe: common::pipe::Pipe) -> PipeData {
@@ -26,12 +26,8 @@ pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
     use common::protocol::control::*;
     loop {
         let response = match pipe.recv() {
-            Request::GetArgs => {
-                Response::Args(argv.clone())
-            }
-            Request::Exit(code) => {
-                std::process::exit(code)
-            }
+            Request::GetArgs => Response::Args(argv.clone()),
+            Request::Exit(code) => std::process::exit(code),
             Request::Open(path, mode) => {
                 let f = OpenOptions::new()
                     .read(mode.read)
@@ -49,7 +45,7 @@ pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
                         });
                         Response::Pipe(decompose_pipe(p))
                     }
-                    Err(x) => todo!("open: {x:?}")
+                    Err(x) => todo!("open: {x:?}"),
                 }
             }
             Request::Listen { ip, port } => {

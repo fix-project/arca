@@ -2,15 +2,15 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     GetArgs,
     Exit(i32),
     Open(String, FileMode),
-    Listen {ip: [u8; 4], port: u16},
-    Connect {host: String, port: u16},
+    Listen { ip: [u8; 4], port: u16 },
+    Connect { host: String, port: u16 },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

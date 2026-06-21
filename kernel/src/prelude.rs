@@ -14,6 +14,7 @@ pub use alloc::{
 
 pub use crate::{
     cpu::{Cpu, Register, RegisterFile, CPU},
+    kthread::KMutex,
     page::{CowPage, Page1GB, Page2MB, Page4KB, SharedPage, UniquePage},
     paging::{
         AugmentedEntry, AugmentedPageTable, AugmentedUnmappedPage, HardwarePage, HardwarePageTable,
@@ -23,7 +24,6 @@ pub use crate::{
     },
     shutdown,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
-    kthread::KMutex,
 };
 
 pub use arca::DataType;
