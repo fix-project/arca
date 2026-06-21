@@ -2,6 +2,7 @@ use crate::pipe::GuestPipe;
 use common::protocol::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
+use std::net::{TcpStream, TcpListener, SocketAddr};
 
 pub fn communication_thread(argv: Vec<String>, mut pipe: GuestPipe) {
     loop {
@@ -60,7 +61,45 @@ pub fn communication_thread(argv: Vec<String>, mut pipe: GuestPipe) {
                 let offset = f.seek(from).unwrap();
                 Ok(Response::Offset(offset))
             }
-            x => todo!("{x:?}")
+            Request::Listen { ip, port } => {
+                let listener = Box::into_raw(Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap()));
+                Ok(Response::Listener(ListenerDescriptor(listener as usize)))
+            }
+            Request::Accept(ListenerDescriptor(l)) => {
+                let listener = unsafe { &mut *(l as *mut TcpListener) };
+                let (stream, _) = listener.accept().unwrap();
+                let stream = Box::into_raw(Box::new(stream));
+                Ok(Response::Stream(StreamDescriptor(stream as usize)))
+            }
+            Request::StopListening(ListenerDescriptor(p)) => {
+                unsafe {
+                    let _ = Box::from_raw(p as *mut TcpListener);
+                }
+                Ok(Response::Ack)
+            }
+            Request::Connect { host, port } => {
+                let stream = TcpStream::connect((host.as_str(), port));
+                let stream = Box::into_raw(Box::new(stream));
+                Ok(Response::Stream(StreamDescriptor(stream as usize)))
+            }
+            Request::Disconnect(StreamDescriptor(p)) => {
+                unsafe {
+                    let _ = Box::from_raw(p as *mut TcpStream);
+                }
+                Ok(Response::Ack)
+            }
+            Request::Receive(StreamDescriptor(p), len) => {
+                let f = unsafe { &mut *(p as *mut TcpStream) };
+                let mut buf = vec![0; len];
+                let len = f.read(&mut buf).unwrap();
+                buf.truncate(len);
+                Ok(Response::Bytes(buf))
+            }
+            Request::Send(StreamDescriptor(p), bytes) => {
+                let f = unsafe { &mut *(p as *mut TcpStream) };
+                let len = f.write(&bytes).unwrap();
+                Ok(Response::Length(len))
+            }
         };
         // TODO: with the right trait impls, we could avoid allocating here
         let bytes = postcard::to_allocvec(&response).unwrap();

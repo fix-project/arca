@@ -57,12 +57,6 @@ pub mod hypercall {
     pub const SYMNAME: u64 = 2;
     pub const MEMSET: u64 = 3;
     pub const MEMCLR: u64 = 4;
-    pub const TCP_CONNECT: u64 = 5;
-    pub const TCP_LISTEN: u64 = 6;
-    pub const TCP_ACCEPT: u64 = 7;
-    pub const TCP_CLOSE: u64 = 8;
-    pub const TCP_SEND: u64 = 9;
-    pub const TCP_RECV: u64 = 10;
 
     pub const NOTIFY_READ: u64 = 16;
     pub const NOTIFY_WRITE: u64 = 17;

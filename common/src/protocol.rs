@@ -15,10 +15,13 @@ pub enum Request {
     Write(FileDescriptor, Vec<u8>),
     Seek(FileDescriptor, Whence),
     // TODO: most of these should be on dedicated TCP pipes
-    Connect {ip: u32, port: u16},
+    Listen {ip: [u8; 4], port: u16},
+    Accept(ListenerDescriptor),
+    StopListening(ListenerDescriptor),
+    Connect {host: String, port: u16},
     Disconnect(StreamDescriptor),
     Send(StreamDescriptor, Vec<u8>),
-    Recv(StreamDescriptor, Vec<u8>),
+    Receive(StreamDescriptor, usize),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -26,6 +29,7 @@ pub enum Response {
     Ack,
     Args(Vec<String>),
     File(FileDescriptor),
+    Listener(ListenerDescriptor),
     Stream(StreamDescriptor),
     Offset(u64),
     Bytes(Vec<u8>),
@@ -45,6 +49,9 @@ pub struct FileDescriptor(pub usize);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StreamDescriptor(pub usize);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ListenerDescriptor(pub usize);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FileMode {

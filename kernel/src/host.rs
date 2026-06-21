@@ -107,115 +107,76 @@ pub mod os {
 }
 
 pub mod net {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
     use common::{
-        hypercall::{self, TcpInfo},
-        BuddyAllocator,
+        protocol::*,
     };
 
-    use crate::kthread;
-
     pub struct TcpListener {
-        id: u64,
+        id: ListenerDescriptor,
     }
 
     pub struct TcpStream {
-        id: u64,
+        id: StreamDescriptor,
     }
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
-            let info = TcpInfo {
-                ip: u32::from_ne_bytes(*ip),
-                port,
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let ip = *ip;
+            let Response::Listener(id) = host.request(&Request::Listen { ip, port }).unwrap() else {
+                todo!();
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_LISTEN,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpListener {
-                id: info.id.load(Ordering::SeqCst),
-            }
+            TcpListener { id }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Stream(id) = host.request(&Request::Accept(self.id.clone())).unwrap() else {
+                todo!();
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_ACCEPT,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
+            TcpStream { id }
+        }
+    }
+
+    impl Drop for TcpListener {
+        fn drop(&mut self) {
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Ack = host.request(&Request::Accept(self.id.clone())).unwrap() else {
+                todo!();
             };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpStream {
-                id: info.id.load(Ordering::SeqCst),
-            }
         }
     }
 
     impl TcpStream {
-        pub fn connect(ip: &[u8; 4], port: u16) -> TcpStream {
-            let info = TcpInfo {
-                ip: u32::from_ne_bytes(*ip),
-                port,
-                ..Default::default()
+        pub fn connect(hostname: &str, port: u16) -> TcpStream {
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Stream(id) = host.request(&Request::Connect{host: hostname.into(), port}).unwrap() else {
+                todo!();
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_CONNECT,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpStream {
-                id: info.id.load(Ordering::SeqCst),
-            }
+            TcpStream { id }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
-                len: AtomicUsize::new(bytes.len()),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Length(len) = host.request(&Request::Send(self.id.clone(), bytes.into())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_SEND, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            len
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
-                len: AtomicUsize::new(bytes.len()),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Bytes(buf) = host.request(&Request::Receive(self.id.clone(), bytes.len())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_RECV, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            bytes[..buf.len()].copy_from_slice(&buf);
+            bytes.len()
         }
 
         pub fn close(self) {
@@ -225,16 +186,11 @@ pub mod net {
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let Response::Ack = host.request(&Request::Disconnect(self.id.clone())).unwrap() else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_CLOSE, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
         }
     }
 

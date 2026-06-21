@@ -1,9 +1,7 @@
 use std::{
     collections::HashMap,
-    io::{self, Read, Write},
-    net::SocketAddr,
+    io::{self, Read},
     process::ExitCode,
-    slice,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,7 +11,7 @@ use std::{
 };
 
 use common::{
-    hypercall::{self, TcpInfo},
+    hypercall::self,
     BuddyAllocator,
 };
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
@@ -22,7 +20,6 @@ use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
-use std::net::{TcpListener, TcpStream};
 use vmm_sys_util::eventfd::EventFd;
 
 const MEM_BASE: u64 = 0x1_0000_0000;
@@ -291,70 +288,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 mem.fill(0);
                                 regs.rax = mem.as_ptr() as u64;
                             }
-                        }
-                        hypercall::TCP_LISTEN => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let ip = u32::to_ne_bytes(info.ip);
-                            let port = info.port;
-                            let listener =
-                                Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap());
-                            let listener_ptr = Box::into_raw(listener);
-                            info.id.store(listener_ptr as u64, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                            regs.rax = listener_ptr as u64;
-                        }
-                        hypercall::TCP_ACCEPT => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let listener_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpListener;
-                            let listener = unsafe { &*listener_ptr };
-                            let (stream, _) = listener.accept().unwrap();
-                            info.id
-                                .store(Box::into_raw(Box::new(stream)) as u64, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_SEND => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let stream = unsafe { &mut *stream_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
-                            let len = stream.write(slice).unwrap_or(0);
-                            // assert_eq!(len, slice.len());
-                            info.len.store(len, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_RECV => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let stream = unsafe { &mut *stream_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
-                            let len = stream.read(slice).unwrap();
-                            info.len.store(len, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_CLOSE => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let mut stream = *unsafe { Box::from_raw(stream_ptr) };
-                            stream.flush().unwrap();
-                            let _ = stream;
-                            info.done.store(true, Ordering::SeqCst);
                         }
                         hypercall::NOTIFY_READ => {
                             read_fd.write(1).unwrap();

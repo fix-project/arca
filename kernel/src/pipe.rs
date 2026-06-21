@@ -5,7 +5,7 @@ use crate::kthread;
 use core::cell::OnceCell;
 use common::protocol::*;
 
-pub static HOST: SpinLock<OnceCell<Host>> = SpinLock::new(OnceCell::new());
+pub static HOST: KMutex<OnceCell<Host>> = KMutex::new(OnceCell::new());
 
 #[derive(Debug)]
 pub struct HostPipe {
