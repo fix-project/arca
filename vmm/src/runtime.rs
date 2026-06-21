@@ -32,6 +32,8 @@ fn new_cpu<'scope>(
     i: usize,
     scope: &'scope Scope<'scope, '_>,
     vcpu_fd: VcpuFd,
+    read_fd: EventFd,
+    write_fd: EventFd,
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
@@ -137,7 +139,7 @@ fn new_cpu<'scope>(
     vcpu_regs.rdx = args[2];
     vcpu_regs.rcx = args[3];
     vcpu_regs.r8 = args[4];
-    vcpu_regs.r8 = args[5];
+    vcpu_regs.r9 = args[5];
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
@@ -148,12 +150,12 @@ fn new_cpu<'scope>(
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
         .spawn_scoped(scope, move || {
-            run_cpu(vcpu_fd, elf, flag);
+            run_cpu(vcpu_fd, elf, flag, read_fd, write_fd);
         })
         .unwrap()
 }
 
-fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
+fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>, read_fd: EventFd, write_fd: EventFd) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -428,6 +430,12 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             let file = *unsafe { Box::from_raw(file_ptr) };
                             let _ = file;
                         }
+                        hypercall::NOTIFY_READ => {
+                            read_fd.write(1).unwrap();
+                        }
+                        hypercall::NOTIFY_WRITE => {
+                            write_fd.write(1).unwrap();
+                        }
                         x => unimplemented!("hypercall {x}"),
                     };
                     vcpu_fd.set_regs(&regs).unwrap();
@@ -444,15 +452,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     );
                 }
             },
-            // VcpuExit::MmioRead(addr, _) => {
-            //     println!("Received an MMIO Read Request for the address {addr:#x}.",);
-            // }
-            // VcpuExit::MmioWrite(addr, data) => {
-            //     println!(
-            //         "Received an MMIO Write Request to the address {:#x}: {:x}.",
-            //         addr, data[0]
-            //     );
-            // }
             r => {
                 let error = format!("{r:?}");
                 let regs = vcpu_fd.get_regs().unwrap();
@@ -586,7 +585,7 @@ impl Runtime {
         }
     }
 
-    pub fn run(&mut self, args: &[usize]) {
+    pub fn run(&mut self, argv: Vec<String>) {
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
@@ -594,10 +593,26 @@ impl Runtime {
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
-        let args = args.to_vec_in(BuddyAllocator);
-
         std::thread::scope(|s| {
             let mut cpus = vec![];
+
+            let (p, q) = common::pipe::pipe(8192);
+            let read = EventFd::new(0).unwrap();
+            let write = EventFd::new(0).unwrap();
+            let read_fd = read.try_clone().unwrap();
+            let write_fd = write.try_clone().unwrap();
+            let comm = s.spawn(move || {
+                crate::comm::communication_thread(argv, crate::pipe::GuestPipe::new(read_fd, write_fd, q));
+            });
+
+            let (rx, tx) = p.into_inner();
+            let rx = rx.into_inner();
+            let tx = tx.into_inner();
+            let (rxp, rxn) = Arc::into_raw_with_allocator(rx).0.to_raw_parts();
+            let rxp = BuddyAllocator.to_offset(rxp);
+            let (txp, txn) = Arc::into_raw_with_allocator(tx).0.to_raw_parts();
+            let txp = BuddyAllocator.to_offset(txp);
+
             for i in 0..self.cores {
                 let vcpu_fd = self.vm.create_vcpu(i as u64).unwrap();
                 // TODO: ensure all needed features are present and disable unneeded ones
@@ -615,23 +630,20 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                let args_offset = if args.is_empty() {
-                    0
-                } else {
-                    BuddyAllocator.to_offset(args.as_ptr())
-                };
                 cpus.push(new_cpu(
                     i,
                     s,
                     vcpu_fd,
+                    read.try_clone().unwrap(),
+                    write.try_clone().unwrap(),
                     &elf,
                     &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
-                        args.len() as u64,
-                        args_offset as u64,
-                        0,
-                        0,
+                        rxp as u64,
+                        rxn as u64,
+                        txp as u64,
+                        txn as u64,
                     ],
                     &kvm_cpuid,
                 ));
@@ -639,6 +651,7 @@ impl Runtime {
             for cpu in cpus {
                 cpu.join().unwrap();
             }
+            comm.join().unwrap();
         });
     }
 }

@@ -1,6 +1,6 @@
 use core::{
     arch::asm,
-    ptr::{addr_of, addr_of_mut, NonNull},
+    ptr::{addr_of, addr_of_mut},
     sync::atomic::Ordering,
 };
 
@@ -21,7 +21,7 @@ use crate::{
 use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
 
 extern "C" {
-    fn kmain(argc: usize, argv: *const usize);
+    fn kmain();
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
     static mut _sbss: u8;
@@ -61,8 +61,10 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
 unsafe extern "C" fn _start(
     cores: usize,
     allocator_data_ptr: usize,
-    argc: usize,
-    argv_offset: usize,
+    rxp: usize,
+    rxn: usize,
+    txp: usize,
+    txn: usize,
 ) -> ! {
     let mut id = 0;
     core::arch::x86_64::__rdtscp(&mut id);
@@ -137,12 +139,22 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
     crate::kthread::init();
     if id == 0 {
-        let argv: *mut usize = BuddyAllocator.from_offset(argv_offset);
-        let argv = NonNull::new(argv).unwrap();
+        use common::pipe::{Pipe as RawPipe, Reader, Writer};
+        use crate::pipe::{HostPipe, Host};
+        let rxp: *const u8 = BuddyAllocator.from_offset(rxp);
+        let txp: *const u8 = BuddyAllocator.from_offset(txp);
+        let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, rxn), BuddyAllocator);
+        let rx = Reader::from_inner(rx);
+        let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, txn), BuddyAllocator);
+        let tx = Writer::from_inner(tx);
+        let pipe = RawPipe::from_inner(rx, tx);
+        let pipe = HostPipe::new(pipe);
+        let host = crate::pipe::HOST.lock();
+        host.set(Host::new(pipe)).unwrap();
 
         BuddyAllocator.set_caching(true);
         crate::kthread::spawn(|| {
-            kmain(argc, argv.as_ptr());
+            kmain();
         });
     }
     crate::kthread::run_scheduler();

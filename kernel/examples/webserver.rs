@@ -8,7 +8,7 @@ use kernel::{kthread, prelude::*};
 const HANDLER: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_USER_webserver"));
 
 #[kmain]
-fn main(_: &[usize]) {
+fn main() {
     kthread::wfi();
     let listener = TcpListener::bind(&[0, 0, 0, 0], 8080);
     log::info!("listening on port 8080");

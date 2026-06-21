@@ -5,5 +5,6 @@
 #![feature(exitcode_exit_method)]
 #![feature(cstr_display)]
 
-mod doorbell;
 pub mod runtime;
+pub mod pipe;
+pub mod comm;

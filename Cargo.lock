@@ -487,6 +487,7 @@ dependencies = [
  "macros",
  "nix",
  "rand",
+ "serde",
  "snafu",
 ]
 
@@ -1904,6 +1905,7 @@ dependencies = [
  "libc",
  "log",
  "nix",
+ "postcard",
  "regex",
  "rlimit",
  "rustc-demangle",

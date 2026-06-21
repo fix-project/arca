@@ -3,6 +3,8 @@
 #![feature(allocator_api)]
 #![feature(new_range_api)]
 #![feature(fn_traits)]
+#![feature(slice_ptr_get)]
+#![feature(sync_unsafe_cell)]
 #![cfg_attr(feature = "std", feature(layout_for_ptr))]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
@@ -18,11 +20,10 @@ pub mod bitpack;
 pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;
-pub mod message;
 pub mod pipe;
 pub mod sendable;
-pub mod sync_stream;
 pub mod util;
+pub mod protocol;
 
 #[cfg(feature = "std")]
 pub mod mmap;
@@ -67,6 +68,9 @@ pub mod hypercall {
     pub const FILE_READ: u64 = 13;
     pub const FILE_WRITE: u64 = 14;
     pub const FILE_SEEK: u64 = 15;
+
+    pub const NOTIFY_READ: u64 = 16;
+    pub const NOTIFY_WRITE: u64 = 17;
 
     #[derive(Debug, Default)]
     pub struct TcpInfo {

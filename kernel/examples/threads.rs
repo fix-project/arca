@@ -7,7 +7,7 @@ use kernel::{
 };
 
 #[kmain]
-fn main(_: &[usize]) {
+fn main() {
     log::info!("about to spawn two threads");
     kthread::spawn(|| {
         for i in 0..5 {

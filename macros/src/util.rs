@@ -7,14 +7,10 @@ pub fn kmain(_: TokenStream, item: TokenStream) -> TokenStream {
     let ident = item.sig.ident.clone();
     quote! {
         #[no_mangle]
-        extern "C" fn kmain(argc: usize, argv: *const usize) {
+        extern "C" fn kmain() {
             #item
 
-            let slice = unsafe {
-                core::slice::from_raw_parts(argv, argc)
-            };
-
-            #ident(slice);
+            #ident();
 
         }
     }

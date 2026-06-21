@@ -92,6 +92,15 @@ pub fn memclr(region: *mut [u8]) {
     }
 }
 
+pub mod os {
+    use crate::prelude::*;
+
+    pub fn argv() -> Vec<String> {
+        let mut host = crate::pipe::HOST.lock();
+        host.get_mut().unwrap().get_args()
+    }
+}
+
 pub mod net {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
