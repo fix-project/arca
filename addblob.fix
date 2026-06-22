@@ -1,0 +1,8 @@
+x = create_blob(Int(2)); 
+y = create_blob(Int(3)); 
+add = create_blob(Path("./target/x86_64-unknown-none/addblob"));
+add_x_y = create_application_thunk(create_tree(add, x, y));
+z = create_blob(Int(1)); 
+sum_x_y = create_strict_encode(add_x_y)
+add_xy_z = create_application_thunk(create_tree(add, sum_x_y, z));
+eval(create_strict_encode(add_xy_z)); 

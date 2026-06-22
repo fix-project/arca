@@ -237,7 +237,8 @@ pub mod net {
 pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
-    use common::{protocol::control::FileMode, protocol::file::Whence, protocol::*};
+    use common::{protocol::control::FileMode, protocol::*};
+    pub use common::protocol::file::Whence;
 
     pub struct File {
         pipe: FilePipe,
@@ -284,12 +285,38 @@ pub mod fs {
             bytes.len()
         }
 
+        pub fn read_exact(&mut self, mut buf: &mut [u8]) -> usize {
+            let mut total = 0;
+            while !buf.is_empty() {
+                let n = self.read(buf);
+                if n == 0 {
+                    break;
+                }
+                buf = &mut buf[n..];
+                total += n;
+            }
+            total
+        }
+
         pub fn write(&mut self, buf: &[u8]) -> usize {
             let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into()))
             else {
                 panic!("bad response");
             };
             len
+        }
+
+        pub fn write_exact(&mut self, mut buf: &[u8]) -> usize {
+            let mut total = 0;
+            while !buf.is_empty() {
+                let n = self.write(buf);
+                if n == 0 {
+                    break;
+                }
+                buf = &buf[n..];
+                total += n;
+            }
+            total
         }
 
         pub fn seek(&mut self, whence: Whence) -> u64 {

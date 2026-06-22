@@ -1,88 +1,145 @@
 #![no_main]
 #![no_std]
-// #![feature(iterator_try_collect)]
-// #![feature(custom_test_frameworks)]
-#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]
-#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
-#![allow(dead_code)]
-
-use fixhandle::rawhandle::FixHandle;
-use fixruntime::{
-    common::{CouponTrades, FixOp},
-    runtime::{DeterministicEquivRuntime, Executor},
-};
 use kernel::prelude::*;
+use kernel::host::os;
+use kernel::host::fs::{File, Whence};
 
-#[cfg(feature = "testing-mode")]
-mod testing;
-
-mod evaluator;
-
-use common::bitpack::BitPack;
-
-use fixruntime::{
-    fixruntime::FixBlobData, fixruntime::FixRuntime, fixruntime::FixTreeData, storage::ObjectStore,
-};
-
-use crate::evaluator::eval;
+use fix::*;
+use fix::parser::*;
+use fix::arca::FixOnArca;
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 
-//use crate::runtime::handle;
-
-const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
-const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coupon"));
+use derive_more::Unwrap;
 
 #[kmain]
-fn main(args: &[usize]) {
-    let args: &[usize; 8] = args.try_into().unwrap();
-    let opcode = FixOp::try_from(args[0]).expect("Failed to parse opcode");
-    let (handle_scratch_offset, handle_scratch_len) = (args[2], args[3]);
-    let (store_offset, store_len) = (args[4], args[5]);
-    let (output_store_offset, output_store_len) = (args[6], args[7]);
+fn main() {
+    let argv = os::argv();
+    let filename = argv.get(1).expect("expected command file");
 
-    let mut handle_scratch: Box<[u8]> = ObjectStore::<FixBlobData, FixTreeData>::from_raw_parts(
-        handle_scratch_offset,
-        handle_scratch_len,
-    );
-    let handle_slice: &mut [u8; 32] = handle_scratch.as_mut().try_into().unwrap();
-    let input_handle = FixHandle::unpack(*handle_slice);
+    let mut file = File::open(filename, true, false, false, false, false).unwrap();
+    let len = file.seek(Whence::End(0)) as usize;
+    file.seek(Whence::Start(0));
+    let mut buf = vec![0; len];
+    file.read_exact(&mut buf);
 
-    let input_store: Box<[(usize, usize)]> =
-        ObjectStore::<FixBlobData, FixTreeData>::from_raw_parts(store_offset, store_len);
-    let mut output_store: Box<[usize]> = ObjectStore::<FixBlobData, FixTreeData>::from_raw_parts(
-        output_store_offset,
-        output_store_len,
-    );
+    let file = core::str::from_utf8(&buf).unwrap();
 
-    let mut store = ObjectStore::new();
-    store.load(input_store);
-    let mut runtime = FixRuntime::new(&mut store, COUPON);
+    let lexer = Lexer::new(&file);
+    let tokens = lexer.tokenize().unwrap();
+    let mut parser = Parser::new(&tokens);
+    let program = parser.parse_program().unwrap();
 
-    let result = match opcode {
-        FixOp::Eval => eval(&mut runtime, input_handle),
-        FixOp::Apply => runtime.execute(&input_handle),
-        FixOp::Trade => {
-            let trade_type = CouponTrades::try_from(args[1]).expect("Failed to parse coupon trade");
+    let runtime = FixOnArca::default();
+    let evaluator = Evaluator::new(runtime);
 
-            let input_tree = runtime
-                .get_tree(&input_handle)
-                .expect("Input handle is not a tree");
-            let coupons = input_tree.get(0);
-            let lhs = input_tree.get(1);
-            let rhs = input_tree.get(2);
-
-            runtime.trade(trade_type, coupons, lhs, rhs)
+    let mut context = BTreeMap::new();
+    for statement in program {
+        match statement {
+            Statement::Assign {name, expr} => {
+                let result = eval(&evaluator, &expr, &mut context);
+                context.insert(name, result);
+            },
+            Statement::Print(expr) | Statement::Expr(expr) => {
+                let x = eval(&evaluator, &expr, &mut context);
+                match x {
+                    Value::Handle(x) => {
+                        log::info!("handle: {x}");
+                        if let Some(blob) = x.try_unwrap_object().ok().and_then(|x| x.try_unwrap_blob().ok()) {
+                            let contents = evaluator.storage().get_blob(blob).unwrap();
+                            log::info!("result is a Blob: {contents:?}");
+                            if contents.len() == 8 {
+                                let bytes: [u8; 8] = (*contents).try_into().unwrap();
+                                let value = u64::from_le_bytes(bytes);
+                                log::info!("as a u64: {value}");
+                            }
+                        }
+                    }
+                    Value::Int(x) => {
+                        log::info!("int: {x}");
+                    }
+                    Value::String(x) => {
+                        log::info!("string: {x}");
+                    }
+                    Value::Path(x) => {
+                        log::info!("path: {x}");
+                    }
+                }
+            },
         }
-    };
+    }
 
-    let output_store_slice: &mut [usize; 2] = output_store
-        .as_mut()
-        .try_into()
-        .expect("Failed to convert output store back");
-    let (output_store_offset, output_store_len) =
-        ObjectStore::<FixBlobData, FixTreeData>::into_raw_parts(store.unload());
-    output_store_slice[0] = output_store_offset;
-    output_store_slice[1] = output_store_len;
-    handle_slice.copy_from_slice(&result.pack());
+    kernel::shutdown();
+}
+
+#[derive(Clone, Debug, Unwrap)]
+#[unwrap(ref)]
+enum Value {
+    Handle(Handle),
+    Int(i64),
+    String(String),
+    Path(String),
+}
+
+fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Value>) -> Value {
+    match e {
+        Expr::Number(x) => {
+            Value::Int(*x)
+        }
+        Expr::Identifier(x) => {
+            ctx.get(x).expect("undefined identifier").clone()
+        }
+        Expr::String(x) => {
+            Value::String(x.clone())
+        }
+        Expr::Call {name, args} => {
+            let args: Vec<Value> = args.into_iter().map(|x| eval(evaluator, x, ctx)).collect();
+            match name.as_str() {
+                "Int" => args[0].clone(),
+                "create_blob" => match args[0] {
+                    Value::Handle(_) => panic!("create blob with handle?"),
+                    Value::Int(x) => {
+                        let bytes = i64::to_le_bytes(x);
+                        Value::Handle(evaluator.storage().add_blob(&bytes).into())
+                    }
+                    Value::String(ref x) => {
+                        Value::Handle(evaluator.storage().add_blob(x.as_bytes()).into())
+                    }
+                    Value::Path(ref x) => {
+                        let mut file = File::open(x, true, false, false, false, false).unwrap();
+                        let len = file.seek(Whence::End(0));
+                        file.seek(Whence::Start(0));
+                        let mut buf = vec![0; len as usize];
+                        file.read_exact(&mut buf);
+                        core::mem::forget(file);
+                        Value::Handle(evaluator.storage().add_blob(&buf).into())
+                    }
+                },
+                "create_tree" => {
+                    let handles: Vec<Handle> = args.into_iter().map(Value::unwrap_handle).collect();
+                    Value::Handle(evaluator.storage().add_tree(&handles).into())
+                },
+                "create_application_thunk" => {
+                    Value::Handle(Thunk::Application(args[0].clone().unwrap_handle().unwrap_object().unwrap_tree()).into())
+                },
+                "create_strict_encode" => {
+                    Value::Handle(Encode::Strict(args[0].clone().unwrap_handle().unwrap_thunk()).into())
+                },
+                "eval" => {
+                    Value::Handle(evaluator.eval(args[0].clone().unwrap_handle()))
+                },
+                "Path" => match args[0] {
+                    Value::String(ref x) => {
+                        Value::Path(x.clone())
+                    }
+                    _ => panic!("bad path"),
+                },
+                name => todo!("call {name} {args:?}")
+            }
+        }
+        Expr::Group(x) => {
+            eval(evaluator, x, ctx)
+        }
+    }
 }

@@ -1,5 +1,4 @@
 use crate::_PROCEDURE;
-use crate::runtime::DeterministicEquivRuntime;
 use arca::{Blob, Function, Table, Word};
 use arca::{Runtime as _, Tuple};
 use arcane::{
@@ -10,297 +9,26 @@ use arcane::{
 
 use core::arch::x86_64::*;
 use core::ffi::c_void;
-use fixhandle::rawhandle::{
-    BitPack, BlobName, Encode, FixHandle, Handle, LiteralHandle, Object, Thunk, TreeName,
-    create_application_thunk, create_strict_encode,
-};
+use fixhandle::*;
+
 use user::ArcaError;
 use user::Ref;
 use user::Runtime;
 use user::error::log as arca_log;
 use user::error::log_int as arca_log_int;
 
-// FixShell top-half that only handles physical handles
-#[derive(Debug, Default)]
-struct FixShellPhysical;
-// FixShell top-half
-
-#[derive(Debug, Default)]
-pub struct FixShell;
-
-impl DeterministicEquivRuntime for FixShellPhysical {
-    type BlobData = Blob<Runtime>;
-    type TreeData = Blob<Runtime>;
-    type Handle = [u8; 32];
-    type Error = ArcaError;
-
-    fn create_blob_i32(data: u32) -> Self::Handle {
-        let literal = LiteralHandle::new(&data.to_le_bytes());
-        let handle: FixHandle = Object::from(BlobName::from(literal)).into();
-        handle.pack()
-    }
-
-    fn create_blob_i64(data: u64) -> Self::Handle {
-        let literal = LiteralHandle::new(&data.to_le_bytes());
-        let handle: FixHandle = Object::from(BlobName::from(literal)).into();
-        handle.pack()
-    }
-
-    fn create_blob(data: Self::BlobData) -> Self::Handle {
-        let result: Blob<Runtime> = Function::symbolic("create_blob")
-            .apply(data)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_blob failed");
-        let mut buf = [0u8; 32];
-        Runtime::read_blob(&result, 0, &mut buf);
-        buf
-    }
-
-    fn create_tree(data: Self::TreeData) -> Self::Handle {
-        let result: Blob<Runtime> = Function::symbolic("create_tree")
-            .apply(data)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_tree failed");
-        let mut buf = [0u8; 32];
-        Runtime::read_blob(&result, 0, &mut buf);
-        buf
-    }
-
-    fn create_tag(data: Self::TreeData) -> Self::Handle {
-        let result: Blob<Runtime> = Function::symbolic("create_tree")
-            .apply(data)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_tree failed");
-        let mut buf = [0u8; 32];
-        Runtime::read_blob(&result, 0, &mut buf);
-        buf
-    }
-
-    fn get_blob(handle: Self::Handle) -> Result<Self::BlobData, Self::Error> {
-        let result: Blob<Runtime> = Function::symbolic("get_blob")
-            .apply(Runtime::create_blob(&handle))
-            .call_with_current_continuation()
-            .try_into()
-            .map_err(|_| ArcaError::BadType)?;
-        Ok(result)
-    }
-
-    fn get_tree(handle: Self::Handle) -> Result<Self::TreeData, Self::Error> {
-        let result: Blob<Runtime> = Function::symbolic("get_tree")
-            .apply(Runtime::create_blob(&handle))
-            .call_with_current_continuation()
-            .try_into()
-            .map_err(|_| ArcaError::BadType)?;
-        Ok(result)
-    }
-
-    fn is_equal(lhs: Self::Handle, rhs: Self::Handle) -> bool {
-        let result: Word<Runtime> = Function::symbolic("is_equal")
-            .apply(Runtime::create_blob(&lhs))
-            .apply(Runtime::create_blob(&rhs))
-            .call_with_current_continuation()
-            .try_into()
-            .expect("is_equal: return type is not a word");
-
-        let result = result.read();
-        result == 1
-    }
-
-    fn is_blob_obj(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-        handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_blob_obj_ref().map_err(|_| ArcaError::BadType))
-            .is_ok()
-    }
-
-    fn is_blob(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-        handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_blob_obj_ref().map_err(|_| ArcaError::BadType))
-            .is_ok()
-            || handle
-                .try_unwrap_ref_ref()
-                .map_err(|_| ArcaError::BadType)
-                .and_then(|h| h.try_unwrap_blob_ref_ref().map_err(|_| ArcaError::BadType))
-                .is_ok()
-    }
-
-    fn is_tree(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-
-        handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
-            .is_ok()
-            || handle
-                .try_unwrap_ref_ref()
-                .map_err(|_| ArcaError::BadType)
-                .and_then(|h| h.try_unwrap_tree_ref_ref().map_err(|_| ArcaError::BadType))
-                .is_ok()
-    }
-
-    fn is_object(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-        handle.try_unwrap_object_ref().is_ok()
-    }
-
-    fn is_data(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-        handle.try_unwrap_object_ref().is_ok() || handle.try_unwrap_ref_ref().is_ok()
-    }
-
-    fn is_tag(handle: Self::Handle) -> bool {
-        let handle = FixHandle::unpack(handle);
-
-        let res = handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
-            .map(|h| match h {
-                TreeName::Tag(_) => true,
-                TreeName::NotTag(_) => false,
-            });
-
-        res.unwrap_or_default()
-    }
-
-    fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
-        let handle = FixHandle::unpack(handle);
-        let result = create_application_thunk(&handle);
-        if let Ok(thunk) = result {
-            thunk.pack()
-        } else {
-            arca_log("create_application_thunk: input handle is not a TreeObj or TreeRef");
-            panic!()
-        }
-    }
-
-    fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
-        let handle = FixHandle::unpack(handle);
-        let result = create_strict_encode(&handle);
-
-        if let Ok(encode) = result {
-            encode.pack()
-        } else {
-            arca_log("create_strict_encode: input handle is not a Thunk");
-            panic!()
-        }
-    }
-
-    fn len(handle: Self::Handle) -> usize {
-        let handle = FixHandle::unpack(handle);
-        let len = |h: &Handle| match h {
-            Handle::VirtualHandle(virtual_handle) => virtual_handle.len(),
-            Handle::PhysicalHandle(physical_handle) => physical_handle.len(),
-            Handle::CanonicalHandle(canonical_handle) => canonical_handle.len(),
-        };
-
-        let len = handle
-            .try_unwrap_object_ref()
-            .map_err(|_| ArcaError::BadType)
-            .map(|h| match h {
-                fixhandle::rawhandle::Object::BlobObj(blob_name) => match blob_name {
-                    fixhandle::rawhandle::BlobName::Blob(handle) => len(handle),
-                    fixhandle::rawhandle::BlobName::Literal(literal) => literal.len(),
-                },
-                fixhandle::rawhandle::Object::TreeObj(tree_name) => match tree_name {
-                    fixhandle::rawhandle::TreeName::NotTag(handle) => len(handle),
-                    fixhandle::rawhandle::TreeName::Tag(handle) => len(handle),
-                },
-            });
-        len.expect("len: failed to get size")
-    }
-}
-
-impl DeterministicEquivRuntime for FixShell {
-    type BlobData = Blob<Runtime>;
-    type TreeData = Blob<Runtime>;
-    type Handle = [u8; 32];
-    type Error = ArcaError;
-
-    fn create_blob_i32(data: u32) -> Self::Handle {
-        FixShellPhysical::create_blob_i32(data)
-    }
-
-    fn create_blob_i64(data: u64) -> Self::Handle {
-        FixShellPhysical::create_blob_i64(data)
-    }
-
-    fn create_blob(data: Self::BlobData) -> Self::Handle {
-        FixShellPhysical::create_blob(data)
-    }
-
-    fn create_tree(data: Self::TreeData) -> Self::Handle {
-        FixShellPhysical::create_tree(data)
-    }
-
-    fn create_tag(data: Self::TreeData) -> Self::Handle {
-        FixShellPhysical::create_tag(data)
-    }
-
-    fn get_blob(handle: Self::Handle) -> Result<Self::BlobData, Self::Error> {
-        FixShellPhysical::get_blob(handle)
-    }
-
-    fn get_tree(handle: Self::Handle) -> Result<Self::TreeData, Self::Error> {
-        FixShellPhysical::get_tree(handle)
-    }
-
-    fn is_blob_obj(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_blob_obj(handle)
-    }
-
-    fn is_blob(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_blob(handle)
-    }
-
-    fn is_tree(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_tree(handle)
-    }
-
-    fn is_object(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_object(handle)
-    }
-
-    fn is_equal(lhs: Self::Handle, rhs: Self::Handle) -> bool {
-        FixShellPhysical::is_equal(lhs, rhs)
-    }
-
-    fn is_data(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_data(handle)
-    }
-
-    fn is_tag(handle: Self::Handle) -> bool {
-        FixShellPhysical::is_tag(handle)
-    }
-
-    fn len(handle: Self::Handle) -> usize {
-        FixShellPhysical::len(handle)
-    }
-
-    fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
-        FixShellPhysical::create_application_thunk(handle)
-    }
-
-    fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
-        FixShellPhysical::create_strict_encode(handle)
-    }
-}
-
 pub fn fixpoint_create_blob_i32(val: u32) -> [u8; 32] {
-    FixShell::create_blob_i32(val)
+    let bytes = val.to_le_bytes();
+    unsafe {
+    fixpoint_create_blob(&bytes)
+    }
 }
 
 pub fn fixpoint_create_blob_i64(val: u64) -> [u8; 32] {
-    FixShell::create_blob_i64(val)
+    let bytes = val.to_le_bytes();
+    unsafe {
+    fixpoint_create_blob(&bytes)
+    }
 }
 
 /// Attaches a blob to a region of memory.  Returns the size (in bytes) of the mapped blob.
@@ -310,18 +38,22 @@ pub fn fixpoint_create_blob_i64(val: u64) -> [u8; 32] {
 /// [addr] must refer to an unused region of memory which is large enough to fit the blob; there
 /// must be no Rust references pointing to this region.
 pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize {
-    if (!FixShell::is_blob(handle)) {
+    if (!fixpoint_is_blob(handle)) {
         arca_log("attach_blob: handle does not refer to a BlobObject");
         panic!()
     }
 
-    let result = FixShell::get_blob(handle);
+    let result: Result<Blob<Runtime>, ArcaError> = Function::symbolic("get_blob")
+        .apply(Runtime::create_blob(&handle))
+        .call_with_current_continuation()
+        .try_into()
+        .map_err(|_| ArcaError::BadType);
 
     let Ok(blob) = result else {
         arca_log("attach_blob: failed to get BlobData");
         panic!()
     };
-    let len = FixShell::len(handle);
+    let len = fixpoint_len(handle);
 
     unsafe {
         arca_compat_mmap(addr, len, __MODE_read_write);
@@ -338,19 +70,23 @@ pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize
 /// [addr] must refer to an unused region of memory which is large enough to fit the tree; there
 /// must be no Rust references pointing to this region.  Each entry of the tree takes 32 bytes.
 pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize {
-    if (!FixShell::is_tree(handle)) {
+    if (!fixpoint_is_tree(handle)) {
         arca_log("attach_tree: handle does not refer to a TreeObject");
         panic!()
     }
 
-    let result = FixShell::get_tree(handle);
+    let result: Result<Blob<Runtime>, ArcaError> = Function::symbolic("get_tree")
+        .apply(Runtime::create_blob(&handle))
+        .call_with_current_continuation()
+        .try_into()
+        .map_err(|_| ArcaError::BadType);
 
     let Ok(tree) = result else {
         arca_log("attach_tree: failed to get TreeData");
         panic!()
     };
 
-    let len = FixShell::len(handle);
+    let len = fixpoint_len(handle);
     // user::error::log_int("attached tree", len as u64);
 
     unsafe {
@@ -361,16 +97,40 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     len
 }
 
+/// Creates a blob from a region of memory.  Returns the handle,
+///
+/// # Safety
+///
+/// [addr] must refer to an region of memory which is large enough for the specified [len];  
+pub unsafe fn fixpoint_create_blob(slice: &[u8]) -> [u8; 32] {
+    unsafe {
+        let result: Blob<Runtime> = Function::symbolic("create_blob")
+            .apply(slice)
+            .call_with_current_continuation()
+            .try_into()
+            .expect("create_tree failed");
+        let mut buf = [0u8; 32];
+        Runtime::read_blob(&result, 0, &mut buf);
+        buf
+    }
+}
+
 /// Creates a tree from a region of memory.  Returns the handle,
 ///
 /// # Safety
 ///
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
 /// Each entry of the tree takes 32 bytes.
-pub unsafe fn fixpoint_create_tree(addr: *const c_void, len: usize) -> [u8; 32] {
+pub unsafe fn fixpoint_create_tree(slice: &[u8]) -> [u8; 32] {
     unsafe {
-        let slice = core::slice::from_raw_parts(addr as *const u8, len * 32);
-        FixShell::create_tree(Blob::new(slice))
+        let result: Blob<Runtime> = Function::symbolic("create_tree")
+            .apply(slice)
+            .call_with_current_continuation()
+            .try_into()
+            .expect("create_tree failed");
+        let mut buf = [0u8; 32];
+        Runtime::read_blob(&result, 0, &mut buf);
+        buf
     }
 }
 
@@ -381,9 +141,9 @@ pub unsafe fn fixpoint_create_tree(addr: *const c_void, len: usize) -> [u8; 32] 
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
 /// Each entry of the tree takes 32 bytes. _PROCEDURE must be initialized before first invocation
 /// of this function.
-pub unsafe fn fixpoint_create_tag(addr: *const c_void, len: usize) -> [u8; 32] {
+pub unsafe fn fixpoint_create_tag(slice: &[u8]) -> [u8; 32] {
     /// Check that the author field matches with current procedure
-    let author_field = unsafe { core::slice::from_raw_parts(addr as *const u8, 32) };
+    let author_field = &slice[..32];
 
     let procedure_ref = &raw mut _PROCEDURE;
 
@@ -392,47 +152,116 @@ pub unsafe fn fixpoint_create_tag(addr: *const c_void, len: usize) -> [u8; 32] {
         panic!()
     };
 
-    let result = unsafe { fixpoint_create_tree(addr, len) };
-    let handle = FixHandle::unpack(result);
+    let result = unsafe { fixpoint_create_tree(slice) };
+    let handle = Handle::unpack(result);
 
-    let result: Result<Handle, ArcaError> = handle
+    let result: Result<TreeName, ArcaError> = handle
         .try_unwrap_object_ref()
         .map_err(|_| ArcaError::BadType)
-        .and_then(|h| h.try_unwrap_tree_obj_ref().map_err(|_| ArcaError::BadType))
-        .map(|h| (*h).into());
+        .and_then(|h| h.try_unwrap_tree_ref().map_err(|_| ArcaError::BadType))
+        .map(|h| match h {
+            Tree::Tree(n) => *n,
+            Tree::Tag(n) => *n,
+        });
 
     let Ok(handle) = result else {
         arca_log("create_tag: created not a tree");
         panic!()
     };
 
-    FixHandle::Object(Object::TreeObj(TreeName::Tag(handle))).pack()
+    Handle::Object(Object::Tree(Tree::Tag(handle))).pack()
 }
 
-pub fn fixpoint_is_blob_obj(handle: [u8; 32]) -> i32 {
-    FixShell::is_blob_obj(handle) as i32
+pub fn fixpoint_is_blob_obj(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+    handle
+        .try_unwrap_object_ref()
+        .map_err(|_| ArcaError::BadType)
+        .and_then(|h| h.try_unwrap_blob_ref().map_err(|_| ArcaError::BadType))
+        .is_ok()
 }
 
-pub fn fixpoint_is_object(handle: [u8; 32]) -> i32 {
-    FixShell::is_object(handle) as i32
+pub fn fixpoint_is_blob(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+    handle
+        .try_unwrap_object_ref()
+        .map_err(|_| ArcaError::BadType)
+        .and_then(|h| h.try_unwrap_blob_ref().map_err(|_| ArcaError::BadType))
+        .is_ok()
+        || handle
+            .try_unwrap_ref_ref()
+            .map_err(|_| ArcaError::BadType)
+            .and_then(|h| h.try_unwrap_blob_ref().map_err(|_| ArcaError::BadType))
+            .is_ok()
 }
 
-pub fn fixpoint_is_data(handle: [u8; 32]) -> i32 {
-    FixShell::is_data(handle) as i32
+pub fn fixpoint_is_tree(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+    handle
+        .try_unwrap_object_ref()
+        .map_err(|_| ArcaError::BadType)
+        .and_then(|h| h.try_unwrap_tree_ref().map_err(|_| ArcaError::BadType))
+        .is_ok()
+        || handle
+            .try_unwrap_ref_ref()
+            .map_err(|_| ArcaError::BadType)
+            .and_then(|h| h.try_unwrap_tree_ref().map_err(|_| ArcaError::BadType))
+            .is_ok()
 }
 
-pub fn fixpoint_is_tag(handle: [u8; 32]) -> i32 {
-    FixShell::is_tag(handle) as i32
+
+pub fn fixpoint_is_object(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+    handle.try_unwrap_object_ref().is_ok()
 }
 
-pub fn fixpoint_is_equal(lhs: [u8; 32], rhs: [u8; 32]) -> i32 {
-    FixShell::is_equal(lhs, rhs) as i32
+pub fn fixpoint_is_data(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+    handle.try_unwrap_object_ref().is_ok() || handle.try_unwrap_ref_ref().is_ok()
+}
+
+pub fn fixpoint_is_tag(handle: [u8; 32]) -> bool {
+    let handle = Handle::unpack(handle);
+
+    let res = handle
+        .try_unwrap_object_ref()
+        .map_err(|_| ArcaError::BadType)
+        .and_then(|h| h.try_unwrap_tree_ref().map_err(|_| ArcaError::BadType))
+        .map(|h| match h {
+            Tree::Tag(_) => true,
+            Tree::Tree(_) => false,
+        });
+
+    res.unwrap_or_default()
+}
+
+pub fn fixpoint_is_equal(lhs: [u8; 32], rhs: [u8; 32]) -> bool {
+    let result: Word<Runtime> = Function::symbolic("is_equal")
+        .apply(Runtime::create_blob(&lhs))
+        .apply(Runtime::create_blob(&rhs))
+        .call_with_current_continuation()
+        .try_into()
+        .expect("is_equal: return type is not a word");
+
+    let result = result.read();
+    result == 1
 }
 
 pub fn fixpoint_create_application_thunk(handle: [u8; 32]) -> [u8; 32] {
-    FixShell::create_application_thunk(handle)
+    let handle = Handle::unpack(handle);
+    // TODO: handle refs
+    let thunk: Handle = Thunk::Application(handle.unwrap_object().unwrap_tree()).into();
+    thunk.pack()
 }
 
 pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
-    FixShell::create_strict_encode(handle)
+    let handle = Handle::unpack(handle);
+    let encode: Handle = Encode::Strict(handle.unwrap_thunk()).into();
+    encode.pack()
+}
+
+fn fixpoint_len(handle: [u8; 32]) -> usize {
+    let mut bytes = [0; 8];
+    bytes[..6].copy_from_slice(&handle[24..30]);
+    usize::from_le_bytes(bytes)
 }

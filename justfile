@@ -24,8 +24,8 @@ build bin:
 run bin *args:
   cargo run -p kernel --example={{bin}} --target={{target}} {{release}} -- {{args}}
 
-fix:
-  cargo run -p fix --target={{target}} {{release}}
+fix *args:
+  cargo run -p fix --target={{target}} {{release}} -- {{args}}
 
 fmt:
   cargo fmt

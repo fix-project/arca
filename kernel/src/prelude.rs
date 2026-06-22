@@ -10,6 +10,7 @@ pub use alloc::{
     sync::{Arc, Weak},
     vec,
     vec::Vec,
+    format
 };
 
 pub use crate::{

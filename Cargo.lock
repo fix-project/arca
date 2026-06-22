@@ -124,6 +124,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "assume"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6f9ca11400f14ef046700eb6401c706c587871303453a5e7586efb82340c3d"
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -325,6 +331,31 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "bitint"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5af51679f7efe6960f19605c73eedc10962cf0b5a33927f8c2ee1d5c92ff75e"
+dependencies = [
+ "assume",
+ "bitint-macros",
+ "num-traits",
+ "paste",
+ "seq-macro",
+]
+
+[[package]]
+name = "bitint-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f90afa834bb07d4648cebdc952942a3c10bf0060de99751ebe60a8cef4322fcb"
+dependencies = [
+ "litrs",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "blake2"
@@ -961,6 +992,7 @@ dependencies = [
  "autotools",
  "bindgen",
  "bitfield-struct 0.11.0",
+ "bitint",
  "blake3",
  "bytemuck",
  "cc",
@@ -969,9 +1001,9 @@ dependencies = [
  "common",
  "derive_more 2.1.1",
  "fixhandle",
- "fixruntime",
  "fixshell",
  "futures",
+ "hex",
  "include_directory",
  "kernel",
  "log",
@@ -997,6 +1029,7 @@ dependencies = [
 name = "fixhandle"
 version = "0.1.0"
 dependencies = [
+ "bitint",
  "common",
  "derive_more 2.1.1",
 ]
@@ -1604,6 +1637,15 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "litrs"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5e54036fe321fd421e10d732f155734c4e4afd610dd556d9a82833ab3ee0bed"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "lock_api"
@@ -2231,6 +2273,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
+name = "seq-macro"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,7 +2709,7 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "log",
- "nix",
+ "nix 0.30.1",
  "postcard",
  "regex",
  "rlimit",

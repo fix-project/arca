@@ -2,11 +2,233 @@
 #![allow(dead_code)]
 #![allow(unused_features)]
 #![feature(portable_simd)]
-#![cfg_attr(feature = "testing-mode", feature(custom_test_frameworks))]
-#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]
-#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
 
-#[cfg(feature = "testing-mode")]
-mod testing;
+use derive_more::{From, Into, TryUnwrap, Unwrap};
+pub use common::bitpack::BitPack;
 
-pub mod rawhandle;
+const fn bitmask256<const I: u32, const WIDTH: u32>() -> [u8; 32] {
+    assert!(I + WIDTH <= 256);
+    let mut out = [0u8; 32];
+    let mut i = I;
+    loop {
+        if i >= I + WIDTH {
+            break;
+        }
+
+        let byte = i / 8;
+        let off = i % 8;
+        out[byte as usize] |= 1u8 << off;
+
+        i += 1;
+    }
+    out
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
+#[try_unwrap(ref)]
+pub enum Handle {
+    Ref(Ref),
+    Object(Object),
+    Thunk(Thunk),
+    Encode(Encode),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
+#[try_unwrap(ref)]
+pub enum Ref {
+    Blob(Blob),
+    Tree(Tree),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
+#[try_unwrap(ref)]
+pub enum Object {
+    Blob(Blob),
+    Tree(Tree),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, Unwrap)]
+pub enum Thunk {
+    Identification(Ref),
+    Application(Tree),
+    Selection(Tree),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
+#[try_unwrap(ref)]
+pub enum Encode {
+    Strict(Thunk),
+    Shallow(Thunk),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
+#[try_unwrap(ref)]
+pub enum Tree {
+    Tree(TreeName),
+    Tag(TreeName),
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
+#[try_unwrap(ref)]
+pub enum Blob {
+    Blob(BlobName),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
+pub struct BlobName(RawName);
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
+pub struct TreeName(RawName);
+
+impl BlobName {
+    pub unsafe fn new(name: RawName) -> Self {
+        Self(name)
+    }
+
+    pub fn name(&self) -> RawName {
+        self.0
+    }
+}
+
+impl TreeName {
+    pub unsafe fn new(name: RawName) -> Self {
+        Self(name)
+    }
+
+    pub fn name(&self) -> RawName {
+        self.0
+    }
+}
+
+impl common::bitpack::BitPack for BlobName {
+    const TAGBITS: u32 = 240;
+
+    fn pack(&self) -> [u8; 32] {
+        self.0.into()
+    }
+
+    fn unpack(content: [u8; 32]) -> Self {
+        unsafe {
+            Self::new(RawName::forge(content))
+        }
+    }
+}
+
+impl common::bitpack::BitPack for TreeName {
+    const TAGBITS: u32 = 240;
+
+    fn pack(&self) -> [u8; 32] {
+        self.0.into()
+    }
+
+    fn unpack(content: [u8; 32]) -> Self {
+        unsafe {
+            Self::new(RawName::forge(content))
+        }
+    }
+}
+
+impl From<Blob> for Handle {
+    fn from(value: Blob) -> Handle {
+        Handle::Object(Object::Blob(value))
+    }
+}
+
+impl From<Tree> for Handle {
+    fn from(value: Tree) -> Handle {
+        Handle::Object(Object::Tree(value))
+    }
+}
+
+impl From<BlobName> for Blob {
+    fn from(value: BlobName) -> Blob {
+        Blob::Blob(value)
+    }
+}
+
+impl From<TreeName> for Tree {
+    fn from(value: TreeName) -> Tree {
+        Tree::Tree(value)
+    }
+}
+
+impl From<Blob> for BlobName {
+    fn from(value: Blob) -> BlobName {
+        match value {
+            Blob::Blob(x) => x,
+        }
+    }
+}
+
+impl From<Tree> for TreeName {
+    fn from(value: Tree) -> TreeName {
+        match value {
+            Tree::Tree(x) => x,
+            Tree::Tag(x) => x,
+        }
+    }
+}
+
+use core::simd::u8x32;
+use core::convert::{From, Into};
+
+use bitint::U48;
+
+/// A raw Fix name. This struct conveys no information about the validity of the contained name.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[repr(C, packed)]
+pub struct RawName {
+    pub name: [u8; 24],
+    pub size: U48,
+    pub meta: u16,
+}
+
+impl RawName {
+    pub fn forge(bytes: [u8; 32]) -> Self {
+        let mut name = [0; 24];
+        name.copy_from_slice(&bytes[..24]);
+        let mut size = [0; 8];
+        size[..6].copy_from_slice(&bytes[24..30]);
+        let size = u64::from_le_bytes(size);
+        let size = U48::new(size).unwrap();
+        let mut meta = [0; 2];
+        meta.copy_from_slice(&bytes[30..32]);
+        let meta = u16::from_le_bytes(meta);
+        Self {
+            name,
+            size,
+            meta
+        }
+    }
+
+    pub fn as_bytes(&self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[0..24].copy_from_slice(&self.name);
+        let size: [u8; 8] = self.size.to_primitive().to_le_bytes();
+        bytes[24..30].copy_from_slice(&size[..6]);
+        bytes[30..32].copy_from_slice(&self.meta.to_le_bytes());
+        bytes
+    }
+}
+
+impl From<RawName> for [u8; 32] {
+    fn from(value: RawName) -> [u8; 32] {
+        value.as_bytes()
+    }
+}
+
+impl From<RawName> for u8x32 {
+    fn from(value: RawName) -> u8x32 {
+        value.as_bytes().into()
+    }
+}
+
+impl core::fmt::Display for Handle {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let bytes = Handle::pack(self);
+        for byte in bytes {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
