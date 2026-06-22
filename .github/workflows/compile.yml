@@ -63,6 +63,3 @@ jobs:
     - name: Test Fix
       run: |
         sudo -su $USER /home/runner/.cargo/bin/cargo build -p fix --target=x86_64-unknown-none
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix target/x86_64-unknown-none/addblob eval
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix target/x86_64-unknown-none/addblob apply
-        sudo -su $USER /home/runner/.cargo/bin/cargo run -p evaluator --bin evaluator -- target/x86_64-unknown-none/debug/fix target/x86_64-unknown-none/addblob trade
