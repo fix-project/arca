@@ -1,5 +1,5 @@
 [workspace]
-members = [ "common", "vmm", "kernel", "macros" , "user", "arca" , "arcane", "fix", "fix/runtime", "fix/handle", "fix/shell" ]
+members = [ "common", "vmm", "kernel", "macros" , "user", "arca" , "arcane", "fix", "fix/handle", "fix/shell" ]
 default-members = [ "common", "vmm", "macros", "arca", "fix/handle" ]
 
 resolver = "2"

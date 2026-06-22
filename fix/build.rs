@@ -1,9 +1,10 @@
-use std::env;
 use std::fs::create_dir_all;
 use std::io::ErrorKind;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::{env, fs};
 
 use anyhow::{Result, anyhow};
 use cmake::Config;
@@ -169,7 +170,11 @@ fn main() -> Result<()> {
         let wasm = wat2wasm(&wat)?;
         let (c, h) = wasm2c(&wasm)?;
         let elf = c2elf(&c, &h)?;
-        std::fs::write(dst, elf)?;
+        std::fs::write(&dst, elf)?;
+
+        let link = Path::new(&out_dir).ancestors().nth(4).unwrap().join(base);
+        let _ = fs::remove_file(&link);
+        symlink(dst, link)?;
     }
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();

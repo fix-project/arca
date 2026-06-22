@@ -1,0 +1,7 @@
+a = create_blob(Int(2)); 
+b = create_blob(Int(3)); 
+c = create_blob(Path("../target/x86_64-unknown-none/addblob"));
+d = create_tree(c, a, b); 
+e = apply(d); 
+show_coupon(e);
+e

@@ -1,0 +1,31 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "evaluator"
+version = "0.1.0"
+edition = "2024"
+default-run = "evaluator"
+
+[dependencies]
+fixhandle = { path = "../handle" }
+vmm = {path = "../../vmm"}
+clap = { version = "4.5.48", features = ["derive"] }
+anyhow = "1.0.97"
+env_logger = "0.11.10"
+log = "0.4.29"
+common = { path = "../../common" }
+bytemuck = "1.25.0"
+blake3 = "1.8.5"
+io = "0.0.2"
+hex = "0.4.3"
+hashbrown = "0.17.1"
+
+[build-dependencies]
+anyhow = "1.0.97"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fix-cli"
+path = "src/bin/cli.rs"

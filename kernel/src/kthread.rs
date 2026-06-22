@@ -9,6 +9,9 @@ use common::util::{initcell::LazyLock, spinlock::SpinLock};
 
 use crate::{interrupts::INTERRUPTED, page::Page2MB};
 
+pub mod kmutex;
+pub use kmutex::{KMutex, KMutexGuard};
+
 #[derive(Default, Debug)]
 pub struct KThread {
     tid: usize,

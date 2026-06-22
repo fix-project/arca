@@ -42,6 +42,7 @@ mod idt;
 mod interrupts;
 mod lapic;
 mod msr;
+mod pipe;
 mod registers;
 mod rsstart;
 mod tss;

@@ -1,10 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
-    net::SocketAddr,
+    io::{self, Read},
     process::ExitCode,
-    slice,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,17 +10,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{
-    hypercall::{self, FileInfo, TcpInfo},
-    BuddyAllocator,
-};
+use common::{hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
-use std::net::{TcpListener, TcpStream};
 use vmm_sys_util::eventfd::EventFd;
 
 const MEM_BASE: u64 = 0x1_0000_0000;
@@ -137,7 +130,7 @@ fn new_cpu<'scope>(
     vcpu_regs.rdx = args[2];
     vcpu_regs.rcx = args[3];
     vcpu_regs.r8 = args[4];
-    vcpu_regs.r8 = args[5];
+    vcpu_regs.r9 = args[5];
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
@@ -198,7 +191,13 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     let args = &[regs.rdi, regs.rsi, regs.rcx, regs.r10, regs.r8, regs.r9];
                     match code {
                         hypercall::EXIT => {
-                            ExitCode::from(args[0] as u8).exit_process();
+                            // let code = args[0] as u8;
+                            std::process::exit(args[0] as i32);
+                            // if code == 0 {
+                            // ExitCode::from(args[0] as u8).exit_process();
+                            // } else {
+                            //     ExitCode::from(args[0] as u8).exit_process();
+                            // }
                         }
                         hypercall::LOG => {
                             let record: *const common::LogRecord =
@@ -291,142 +290,13 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 regs.rax = mem.as_ptr() as u64;
                             }
                         }
-                        hypercall::TCP_LISTEN => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let ip = u32::to_ne_bytes(info.ip);
-                            let port = info.port;
-                            let listener =
-                                Box::new(TcpListener::bind(SocketAddr::from((ip, port))).unwrap());
-                            let listener_ptr = Box::into_raw(listener);
-                            info.id.store(listener_ptr as u64, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                            regs.rax = listener_ptr as u64;
+                        hypercall::NOTIFY_READ => {
+                            todo!();
+                            // read_fd.write(1).unwrap();
                         }
-                        hypercall::TCP_ACCEPT => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let listener_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpListener;
-                            let listener = unsafe { &*listener_ptr };
-                            let (stream, _) = listener.accept().unwrap();
-                            info.id
-                                .store(Box::into_raw(Box::new(stream)) as u64, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_SEND => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let stream = unsafe { &mut *stream_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
-                            let len = stream.write(slice).unwrap_or(0);
-                            // assert_eq!(len, slice.len());
-                            info.len.store(len, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_RECV => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let stream = unsafe { &mut *stream_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
-                            let len = stream.read(slice).unwrap();
-                            info.len.store(len, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::TCP_CLOSE => {
-                            let info: &TcpInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let stream_ptr =
-                                info.id.load(Ordering::SeqCst) as usize as *mut TcpStream;
-                            let mut stream = *unsafe { Box::from_raw(stream_ptr) };
-                            stream.flush().unwrap();
-                            let _ = stream;
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::FILE_OPEN => {
-                            let info: &FileInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
-                            let s = str::from_utf8(slice).unwrap();
-                            let f = OpenOptions::new()
-                                .read(info.read)
-                                .write(info.write)
-                                .create(info.create)
-                                .append(info.append)
-                                .truncate(info.truncate)
-                                .open(s)
-                                .ok()
-                                .map(Box::new)
-                                .map(Box::into_raw);
-                            info.id
-                                .store(f.unwrap_or(core::ptr::null_mut()) as u64, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::FILE_READ => {
-                            let info: &FileInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
-                            let file = unsafe { &mut *file_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
-                            let size = file.read(slice).unwrap();
-                            info.len.store(size, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::FILE_WRITE => {
-                            let info: &FileInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
-                            let file = unsafe { &mut *file_ptr };
-                            let (ptr, len) = (
-                                BuddyAllocator.from_offset(info.buf),
-                                info.len.load(Ordering::SeqCst),
-                            );
-                            let slice = unsafe { slice::from_raw_parts(ptr, len) };
-                            let size = file.write(slice).unwrap();
-                            info.len.store(size, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::FILE_SEEK => {
-                            let info: &FileInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
-                            let file = unsafe { &mut *file_ptr };
-                            let seek_from = match info.whence {
-                                0 => SeekFrom::Start(info.offset as u64),
-                                1 => SeekFrom::Current(info.offset as i64),
-                                -1 => SeekFrom::End(info.offset as i64),
-                                _ => panic!("invalid whence: {}", info.whence),
-                            };
-                            let pos = file.seek(seek_from).unwrap();
-                            info.len.store(pos as usize, Ordering::SeqCst);
-                            info.done.store(true, Ordering::SeqCst);
-                        }
-                        hypercall::FILE_CLOSE => {
-                            let info: &FileInfo =
-                                unsafe { &*BuddyAllocator.from_offset(args[0] as usize) };
-                            let file_ptr = info.id.load(Ordering::SeqCst) as *mut File;
-                            let file = *unsafe { Box::from_raw(file_ptr) };
-                            let _ = file;
+                        hypercall::NOTIFY_WRITE => {
+                            todo!();
+                            // write_fd.write(1).unwrap();
                         }
                         x => unimplemented!("hypercall {x}"),
                     };
@@ -444,15 +314,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     );
                 }
             },
-            // VcpuExit::MmioRead(addr, _) => {
-            //     println!("Received an MMIO Read Request for the address {addr:#x}.",);
-            // }
-            // VcpuExit::MmioWrite(addr, data) => {
-            //     println!(
-            //         "Received an MMIO Write Request to the address {:#x}: {:x}.",
-            //         addr, data[0]
-            //     );
-            // }
             r => {
                 let error = format!("{r:?}");
                 let regs = vcpu_fd.get_regs().unwrap();
@@ -586,7 +447,7 @@ impl Runtime {
         }
     }
 
-    pub fn run(&mut self, args: &[usize]) {
+    pub fn run(&mut self, argv: Vec<String>) {
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
@@ -594,10 +455,29 @@ impl Runtime {
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
-        let args = args.to_vec_in(BuddyAllocator);
-
         std::thread::scope(|s| {
             let mut cpus = vec![];
+
+            let (p, q) = common::pipe::pipe(8192);
+            // let read = EventFd::new(0).unwrap();
+            // let write = EventFd::new(0).unwrap();
+            // let read_fd = read.try_clone().unwrap();
+            // let write_fd = write.try_clone().unwrap();
+            let comm = s.spawn(move || {
+                crate::comm::control_thread(
+                    argv,
+                    crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)),
+                );
+            });
+
+            let (rx, tx) = p.into_inner();
+            let rx = rx.into_inner();
+            let tx = tx.into_inner();
+            let (rxp, rxn) = Arc::into_raw_with_allocator(rx).0.to_raw_parts();
+            let rxp = BuddyAllocator.to_offset(rxp);
+            let (txp, txn) = Arc::into_raw_with_allocator(tx).0.to_raw_parts();
+            let txp = BuddyAllocator.to_offset(txp);
+
             for i in 0..self.cores {
                 let vcpu_fd = self.vm.create_vcpu(i as u64).unwrap();
                 // TODO: ensure all needed features are present and disable unneeded ones
@@ -615,23 +495,20 @@ impl Runtime {
                 vcpu_fd.set_msrs(&msrs).unwrap();
 
                 let allocator_raw_offset = BuddyAllocator.to_offset(allocator_raw);
-                let args_offset = if args.is_empty() {
-                    0
-                } else {
-                    BuddyAllocator.to_offset(args.as_ptr())
-                };
                 cpus.push(new_cpu(
                     i,
                     s,
                     vcpu_fd,
+                    // read.try_clone().unwrap(),
+                    // write.try_clone().unwrap(),
                     &elf,
                     &[
                         self.cores as u64,
                         allocator_raw_offset as u64,
-                        args.len() as u64,
-                        args_offset as u64,
-                        0,
-                        0,
+                        rxp as u64,
+                        rxn as u64,
+                        txp as u64,
+                        txn as u64,
                     ],
                     &kvm_cpuid,
                 ));
@@ -639,6 +516,7 @@ impl Runtime {
             for cpu in cpus {
                 cpu.join().unwrap();
             }
+            comm.join().unwrap();
         });
     }
 }

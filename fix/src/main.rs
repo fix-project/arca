@@ -1,207 +1,144 @@
 #![no_main]
 #![no_std]
-// #![feature(iterator_try_collect)]
-// #![feature(custom_test_frameworks)]
-#![cfg_attr(feature = "testing-mode", test_runner(crate::testing::test_runner))]
-#![cfg_attr(feature = "testing-mode", reexport_test_harness_main = "test_main")]
-#![allow(dead_code)]
-
-use fixhandle::rawhandle::{Encode, FixHandle, Thunk};
+use kernel::host::fs::{File, Whence};
+use kernel::host::os;
 use kernel::prelude::*;
 
-#[cfg(feature = "testing-mode")]
-mod testing;
-
-use common::bitpack::BitPack;
-
-use fixruntime::{
-    fixruntime::FixRuntime,
-    runtime::{CouponCollector, DeterministicEquivRuntime, Executor},
-    storage::ObjectStore,
-};
+use fix::arca::FixOnArca;
+use fix::parser::*;
+use fix::*;
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 
-//use crate::runtime::handle;
-
-const MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/addblob"));
-const COUPON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coupon"));
-
-fn coupon_type(runtime: &mut FixRuntime, handle: &FixHandle) -> &'static str {
-    let mut arr = [0u8; 4];
-    let blob = runtime.get_blob(handle).expect("Coupon type not a blob");
-    blob.read(0, &mut arr);
-    let num = u32::from_le_bytes(arr);
-    match num {
-        0 => "Eq",
-        1 => "Eval",
-        2 => "Apply",
-        3 => "Force",
-        4 => "Think",
-        5 => "Storage",
-        _ => panic!(),
-    }
-}
-
-fn get_coupon_lhs(coupon_content: &Tuple) -> FixHandle {
-    let mut handle_scratch: [u8; 32] = [0; 32];
-    let entry: Blob = coupon_content
-        .get(2)
-        .try_into()
-        .expect("author not a handle");
-    entry.read(0, &mut handle_scratch);
-    FixHandle::unpack(handle_scratch)
-}
-
-fn get_coupon_lhs_h(runtime: &mut FixRuntime, coupon: &FixHandle) -> FixHandle {
-    let coupon_content = runtime.get_tree(coupon).expect("Coupon not a tree");
-    get_coupon_lhs(&coupon_content)
-}
-
-fn get_coupon_rhs(coupon_content: &Tuple) -> FixHandle {
-    let mut handle_scratch: [u8; 32] = [0; 32];
-    let entry: Blob = coupon_content
-        .get(3)
-        .try_into()
-        .expect("author not a handle");
-    entry.read(0, &mut handle_scratch);
-    FixHandle::unpack(handle_scratch)
-}
-
-fn get_coupon_rhs_h(runtime: &mut FixRuntime, coupon: &FixHandle) -> FixHandle {
-    let coupon_content = runtime.get_tree(coupon).expect("Coupon not a tree");
-    get_coupon_rhs(&coupon_content)
-}
-
-fn show_coupon(runtime: &mut FixRuntime, handle: &FixHandle) {
-    let coupon_content = runtime.get_tree(handle).expect("Coupon not a tree");
-
-    let entry: Blob = coupon_content
-        .get(1)
-        .try_into()
-        .expect("author not a handle");
-    let mut handle_scratch: [u8; 32] = [0; 32];
-    entry.read(0, &mut handle_scratch);
-    let handle = FixHandle::unpack(handle_scratch);
-
-    let ctype = coupon_type(runtime, &handle);
-    let lhs = get_coupon_lhs(&coupon_content);
-    let rhs = get_coupon_rhs(&coupon_content);
-
-    log::info!("type is: {ctype:?}");
-    log::info!("lhs is: {lhs:?}");
-    log::info!("rhs is: {rhs:?}");
-}
+use derive_more::Unwrap;
 
 #[kmain]
-fn main(_: &[usize]) {
-    log::info!("creating object store");
-    let mut store = ObjectStore::new();
-    log::info!("creating fix runtime");
-    let mut runtime = FixRuntime::new(&mut store, COUPON);
+fn main() {
+    let argv = os::argv();
+    let filename = argv.get(1).expect("expected command file");
 
-    log::info!("creating resource limits");
-    let dummy = runtime.create_blob_i64(0xcafeb0ba);
-    log::info!("creating function");
-    let function = runtime.create_blob(MODULE.into());
-    log::info!("creating addend 7");
-    let addend1 = runtime.create_blob_i64(7);
-    log::info!("creating addend 1024");
-    let addend2 = runtime.create_blob_i64(1024);
+    let mut file = File::open(filename, true, false, false, false, false).unwrap();
+    let len = file.seek(Whence::End(0)) as usize;
+    file.seek(Whence::Start(0));
+    let mut buf = vec![0; len];
+    file.read_exact(&mut buf);
 
-    let mut scratch = Tuple::new(4);
-    scratch.set(0, Blob::new(dummy.pack()));
-    scratch.set(1, Blob::new(function.pack()));
-    scratch.set(2, Blob::new(addend1.pack()));
-    scratch.set(3, Blob::new(addend2.pack()));
-    let combination = runtime.create_tree(scratch);
-    let apply_coupon = runtime.execute(&combination);
-    let application = FixHandle::Thunk(Thunk::Application(
-        combination.unwrap_object().unwrap_tree_obj(),
-    ));
+    let file = core::str::from_utf8(&buf).unwrap();
 
-    let coupons = runtime.create_tree(Tuple::new(0));
-    let eval_dummy = runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalBlobObj,
-        coupons,
-        dummy,
-        dummy,
-    );
-    let eval_function = runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalBlobObj,
-        coupons,
-        function,
-        function,
-    );
-    let eval_addend1 = runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalBlobObj,
-        coupons,
-        addend1,
-        addend1,
-    );
-    let eval_addend2 = runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalBlobObj,
-        coupons,
-        addend2,
-        addend2,
-    );
+    let lexer = Lexer::new(&file);
+    let tokens = lexer.tokenize().unwrap();
+    let mut parser = Parser::new(&tokens);
+    let program = parser.parse_program().unwrap();
 
-    let mut coupons = Tuple::new(4);
-    coupons.set(0, Blob::new(eval_dummy.pack()));
-    coupons.set(1, Blob::new(eval_function.pack()));
-    coupons.set(2, Blob::new(eval_addend1.pack()));
-    coupons.set(3, Blob::new(eval_addend2.pack()));
-    let coupons = runtime.create_tree(coupons);
+    let runtime = FixOnArca::default();
+    let evaluator = Evaluator::new(runtime);
 
-    let eval_coupon = runtime.trade(
-        fixruntime::runtime::CouponTrades::EvalTreeObj,
-        coupons,
-        combination,
-        combination,
-    );
+    let mut context = BTreeMap::new();
+    for statement in program {
+        match statement {
+            Statement::Assign { name, expr } => {
+                let result = eval(&evaluator, &expr, &mut context);
+                context.insert(name, result);
+            }
+            Statement::Print(expr) | Statement::Expr(expr) => {
+                let x = eval(&evaluator, &expr, &mut context);
+                match x {
+                    Value::Handle(x) => {
+                        println!("handle:    {x}");
+                        if let Some(blob) = x
+                            .try_unwrap_object()
+                            .ok()
+                            .and_then(|x| x.try_unwrap_blob().ok())
+                        {
+                            let contents = evaluator.storage().get_blob(blob).unwrap();
+                            println!("result is a Blob: {contents:?}");
+                            if contents.len() == 8 {
+                                let bytes: [u8; 8] = (*contents).try_into().unwrap();
+                                let value = u64::from_le_bytes(bytes);
+                                println!("\tas a u64: {value}");
+                            }
+                        }
+                    }
+                    Value::Int(x) => {
+                        println!("int: {x}");
+                    }
+                    Value::String(x) => {
+                        println!("string: {x}");
+                    }
+                    Value::Path(x) => {
+                        println!("path: {x}");
+                    }
+                }
+            }
+        }
+    }
 
-    let mut coupons = Tuple::new(2);
-    coupons.set(0, Blob::new(eval_coupon.pack()));
-    coupons.set(1, Blob::new(apply_coupon.pack()));
-    let coupons = runtime.create_tree(coupons);
-    let rhs = get_coupon_rhs_h(&mut runtime, &apply_coupon);
-    let think_coupon = runtime.trade(
-        fixruntime::runtime::CouponTrades::ThinkApplication,
-        coupons,
-        application,
-        rhs,
-    );
+    kernel::shutdown();
+}
 
-    let mut coupons = Tuple::new(1);
-    coupons.set(0, Blob::new(think_coupon.pack()));
-    let coupons = runtime.create_tree(coupons);
-    let force_coupon = runtime.trade(
-        fixruntime::runtime::CouponTrades::ThinkToForce,
-        coupons,
-        application,
-        rhs,
-    );
+#[derive(Clone, Debug, Unwrap)]
+#[unwrap(ref)]
+enum Value {
+    Handle(Handle),
+    Int(i64),
+    String(String),
+    Path(String),
+}
 
-    let encode = FixHandle::Encode(Encode::Strict(application.unwrap_thunk()));
-    let mut coupons = Tuple::new(1);
-    coupons.set(0, Blob::new(force_coupon.pack()));
-    let coupons = runtime.create_tree(coupons);
-    let eq_coupon = runtime.trade(
-        fixruntime::runtime::CouponTrades::ForceToEncodeStric,
-        coupons,
-        encode,
-        rhs,
-    );
-
-    show_coupon(&mut runtime, &eq_coupon);
-
-    let result_blob = get_coupon_rhs_h(&mut runtime, &eq_coupon);
-    let result_blob = runtime
-        .get_blob(&result_blob)
-        .expect("Result is not a Blob");
-    let mut arr = [0u8; 8];
-    result_blob.read(0, &mut arr);
-    let num = u64::from_le_bytes(arr);
-    log::info!("{:?}", num);
-    assert_eq!(num, 1031);
+fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Value>) -> Value {
+    match e {
+        Expr::Number(x) => Value::Int(*x),
+        Expr::Identifier(x) => ctx.get(x).expect("undefined identifier").clone(),
+        Expr::String(x) => Value::String(x.clone()),
+        Expr::Call { name, args } => {
+            let args: Vec<Value> = args.into_iter().map(|x| eval(evaluator, x, ctx)).collect();
+            match name.as_str() {
+                "Int" => args[0].clone(),
+                "create_blob" => match args[0] {
+                    Value::Handle(_) => panic!("create blob with handle?"),
+                    Value::Int(x) => {
+                        let bytes = i64::to_le_bytes(x);
+                        Value::Handle(evaluator.storage().add_blob(&bytes).into())
+                    }
+                    Value::String(ref x) => {
+                        Value::Handle(evaluator.storage().add_blob(x.as_bytes()).into())
+                    }
+                    Value::Path(ref x) => {
+                        let mut file = File::open(x, true, false, false, false, false).unwrap();
+                        let len = file.seek(Whence::End(0));
+                        file.seek(Whence::Start(0));
+                        let mut buf = vec![0; len as usize];
+                        file.read_exact(&mut buf);
+                        core::mem::forget(file);
+                        Value::Handle(evaluator.storage().add_blob(&buf).into())
+                    }
+                },
+                "create_tree" => {
+                    let handles: Vec<Handle> = args.into_iter().map(Value::unwrap_handle).collect();
+                    Value::Handle(evaluator.storage().add_tree(&handles).into())
+                }
+                "create_application_thunk" => Value::Handle(
+                    Thunk::Application(
+                        args[0]
+                            .clone()
+                            .unwrap_handle()
+                            .unwrap_object()
+                            .unwrap_tree(),
+                    )
+                    .into(),
+                ),
+                "create_strict_encode" => Value::Handle(
+                    Encode::Strict(args[0].clone().unwrap_handle().unwrap_thunk()).into(),
+                ),
+                "eval" => Value::Handle(evaluator.eval(args[0].clone().unwrap_handle())),
+                "Path" => match args[0] {
+                    Value::String(ref x) => Value::Path(x.clone()),
+                    _ => panic!("bad path"),
+                },
+                name => todo!("call {name} {args:?}"),
+            }
+        }
+        Expr::Group(x) => eval(evaluator, x, ctx),
+    }
 }

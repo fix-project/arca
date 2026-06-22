@@ -6,6 +6,7 @@ pub(crate) use crate::{
 pub use alloc::{
     borrow::ToOwned,
     boxed::Box,
+    format,
     string::{String, ToString},
     sync::{Arc, Weak},
     vec,
@@ -14,6 +15,7 @@ pub use alloc::{
 
 pub use crate::{
     cpu::{Cpu, Register, RegisterFile, CPU},
+    kthread::KMutex,
     page::{CowPage, Page1GB, Page2MB, Page4KB, SharedPage, UniquePage},
     paging::{
         AugmentedEntry, AugmentedPageTable, AugmentedUnmappedPage, HardwarePage, HardwarePageTable,
@@ -21,7 +23,7 @@ pub use crate::{
         PageTable256TB, PageTable256TBEntry, PageTable2MB, PageTable2MBEntry, PageTable512GB,
         PageTable512GBEntry,
     },
-    shutdown,
+    print, println, shutdown,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
 };
 

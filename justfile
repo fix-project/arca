@@ -21,11 +21,11 @@ test:
 build bin:
   cargo build -p kernel --example={{bin}} --target={{target}} {{release}}
 
-run bin:
-  cargo run -p kernel --example={{bin}} --target={{target}} {{release}}
+run bin *args:
+  cargo run -p kernel --example={{bin}} --target={{target}} {{release}} -- {{args}}
 
-fix:
-  cargo run -p fix --target={{target}} {{release}}
+fix *args:
+  cargo run -p fix --target={{target}} {{release}} -- {{args}}
 
 fmt:
   cargo fmt
@@ -38,3 +38,6 @@ lint:
   cargo clippy -p kernel
   cargo clippy -p fix
   cargo clippy -p user
+
+ctags:
+  ctags -R arca arcane common fix kernel macros user vmm

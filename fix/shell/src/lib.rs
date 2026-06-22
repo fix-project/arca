@@ -16,12 +16,10 @@ use user::{error, os, prelude::*};
 use crate::{
     fixpoint::w2c_fixpoint,
     rt::{wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_size},
-    runtime::DeterministicEquivRuntime,
 };
 
 mod fixpoint;
 mod rt;
-mod runtime;
 pub mod shell;
 
 global_asm!(
@@ -96,18 +94,20 @@ pub fn main() -> ! {
         };
         wasm2c_module_instantiate(module, core::ptr::null());
 
-        /// Read procdeure handle from combination
+        /// Read procedure handle from combination
         {
-            let result = shell::FixShell::get_tree(handle);
+            let result: Result<Blob, _> = Function::symbolic("get_tree")
+                .apply(Blob::new(&handle))
+                .call_with_current_continuation()
+                .try_into();
 
             let Ok(tree) = result else {
                 arca_log("prelogue: failed to get TreeData");
                 panic!()
             };
 
-            let procedure: Blob = tree.get(1).try_into().unwrap();
             let procedure_ref = &raw mut _PROCEDURE;
-            procedure.read(0, &mut *procedure_ref);
+            tree.read(0, &mut *procedure_ref);
         }
 
         let wasm_rt_externref_t { bytes: result } =
