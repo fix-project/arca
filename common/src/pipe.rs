@@ -11,6 +11,8 @@
 
 mod bidirectional_pipe;
 mod error;
+mod file_pipe;
+mod pipe_type;
 mod ring;
 mod ring_consumer;
 mod ring_producer;

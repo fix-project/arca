@@ -13,6 +13,7 @@ cache = []
 nix = ["dep:nix"]
 
 [dependencies]
+bitflags = "2.13.0"
 log = "0.4.22"
 snafu = { version="0.8.5", default-features=false }
 macros = { path = "../macros" }
