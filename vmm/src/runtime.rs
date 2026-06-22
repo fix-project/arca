@@ -146,11 +146,7 @@ fn new_cpu<'scope>(
         .unwrap()
 }
 
-fn run_cpu(
-    mut vcpu_fd: VcpuFd,
-    elf: &ElfBytes<AnyEndian>,
-    exit: Arc<AtomicBool>,
-) {
+fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()

@@ -1,7 +1,7 @@
-use kernel::prelude::*;
 use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
+use kernel::prelude::*;
 
 // use fixhandle::rawhandle::{Encode, Handle, Object, Ref, Thunk, TreeName};
 
@@ -21,7 +21,7 @@ pub struct Evaluator<R: Runtime> {
 
 impl<R: Runtime> Evaluator<R> {
     pub fn new(runtime: R) -> Self {
-        Self {runtime}
+        Self { runtime }
     }
 
     pub fn runtime(&self) -> &R {
@@ -78,18 +78,19 @@ impl<R: Runtime> Evaluator<R> {
 
     fn encode(&self, encode: Encode) -> Handle {
         match encode {
-            Encode::Strict(thunk) => {
-                self.lift(self.force(thunk))
-            }
-            Encode::Shallow(thunk) => {
-                self.lower(self.force(thunk))
-            }
+            Encode::Strict(thunk) => self.lift(self.force(thunk)),
+            Encode::Shallow(thunk) => self.lower(self.force(thunk)),
         }
     }
 
     fn eval_tree(&self, handle: Tree) -> Tree {
         let tree = self.runtime.storage().get_tree(handle).unwrap();
-        let evaled: Vec<Handle> = tree.as_ref().iter().copied().map(|x| self.eval(x)).collect();
+        let evaled: Vec<Handle> = tree
+            .as_ref()
+            .iter()
+            .copied()
+            .map(|x| self.eval(x))
+            .collect();
         self.runtime.storage().add_tree(&evaled)
     }
 
@@ -98,14 +99,10 @@ impl<R: Runtime> Evaluator<R> {
         match handle {
             Handle::Thunk(_) | Handle::Ref(_) => todo!(),
             Handle::Object(obj) => match obj {
-                Object::Blob(x) => { x.into() }
+                Object::Blob(x) => x.into(),
                 Object::Tree(tree) => self.eval_tree(tree).into(),
             },
-            Handle::Encode(e) => {
-                self.eval(self.encode(e))
-
-            }
+            Handle::Encode(e) => self.eval(self.encode(e)),
         }
     }
-
 }

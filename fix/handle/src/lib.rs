@@ -3,9 +3,9 @@
 #![allow(unused_features)]
 #![feature(portable_simd)]
 
-use derive_more::{From, Into, TryUnwrap, Unwrap};
-pub use common::bitpack::BitPack;
 use bitint::U5;
+pub use common::bitpack::BitPack;
+use derive_more::{From, Into, TryUnwrap, Unwrap};
 
 const fn bitmask256<const I: u32, const WIDTH: u32>() -> [u8; 32] {
     assert!(I + WIDTH <= 256);
@@ -174,10 +174,7 @@ impl LiteralName {
         let len = U5::new(contents.len() as u8).unwrap();
         let mut bytes = [0; 30];
         bytes[..contents.len()].copy_from_slice(contents);
-        Self {
-            bytes,
-            len,
-        }
+        Self { bytes, len }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -212,9 +209,7 @@ impl common::bitpack::BitPack for BlobName {
     }
 
     fn unpack(content: [u8; 32]) -> Self {
-        unsafe {
-            Self::new(RawName::forge(content))
-        }
+        unsafe { Self::new(RawName::forge(content)) }
     }
 }
 
@@ -233,10 +228,7 @@ impl common::bitpack::BitPack for LiteralName {
         bytes.copy_from_slice(&content[0..30]);
         let len = content[30] & 0b11111;
         let len = U5::new(len).unwrap();
-        Self {
-            bytes,
-            len
-        }
+        Self { bytes, len }
     }
 }
 
@@ -248,9 +240,7 @@ impl common::bitpack::BitPack for TreeName {
     }
 
     fn unpack(content: [u8; 32]) -> Self {
-        unsafe {
-            Self::new(RawName::forge(content))
-        }
+        unsafe { Self::new(RawName::forge(content)) }
     }
 }
 
@@ -287,8 +277,8 @@ impl From<Tree> for TreeName {
     }
 }
 
-use core::simd::u8x32;
 use core::convert::{From, Into};
+use core::simd::u8x32;
 
 use bitint::U48;
 
@@ -312,11 +302,7 @@ impl RawName {
         let mut meta = [0; 2];
         meta.copy_from_slice(&bytes[30..32]);
         let meta = u16::from_le_bytes(meta);
-        Self {
-            name,
-            size,
-            meta
-        }
+        Self { name, size, meta }
     }
 
     pub fn as_bytes(&self) -> [u8; 32] {

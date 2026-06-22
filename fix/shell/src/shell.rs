@@ -19,16 +19,12 @@ use user::error::log_int as arca_log_int;
 
 pub fn fixpoint_create_blob_i32(val: u32) -> [u8; 32] {
     let bytes = val.to_le_bytes();
-    unsafe {
-    fixpoint_create_blob(&bytes)
-    }
+    unsafe { fixpoint_create_blob(&bytes) }
 }
 
 pub fn fixpoint_create_blob_i64(val: u64) -> [u8; 32] {
     let bytes = val.to_le_bytes();
-    unsafe {
-    fixpoint_create_blob(&bytes)
-    }
+    unsafe { fixpoint_create_blob(&bytes) }
 }
 
 /// Attaches a blob to a region of memory.  Returns the size (in bytes) of the mapped blob.
@@ -208,7 +204,6 @@ pub fn fixpoint_is_tree(handle: [u8; 32]) -> bool {
             .and_then(|h| h.try_unwrap_tree_ref().map_err(|_| ArcaError::BadType))
             .is_ok()
 }
-
 
 pub fn fixpoint_is_object(handle: [u8; 32]) -> bool {
     let handle = Handle::unpack(handle);

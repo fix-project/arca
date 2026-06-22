@@ -1,8 +1,8 @@
 extern crate alloc;
 
 use super::*;
-use core::option::Option;
 use alloc::boxed::Box;
+use core::option::Option;
 
 pub mod memory;
 

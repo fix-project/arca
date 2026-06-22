@@ -1,5 +1,5 @@
-use kernel::prelude::*;
 use super::{Expr, Statement, Token};
+use kernel::prelude::*;
 
 pub struct Parser<'a> {
     tokens: &'a [Token],

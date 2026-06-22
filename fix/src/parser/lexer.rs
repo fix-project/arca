@@ -1,7 +1,7 @@
-use kernel::prelude::*;
 use super::token::Token;
 use core::iter::Peekable;
 use core::str::Chars;
+use kernel::prelude::*;
 
 pub struct Lexer<'a> {
     characters: Peekable<Chars<'a>>,

@@ -1,15 +1,15 @@
 extern crate alloc;
 
 use super::*;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
-use kernel::kthread::KMutex;
+use alloc::vec::Vec;
 use bitint::U48;
+use kernel::kthread::KMutex;
 
 /// An object store which stores its data in RAM.  Names are indices into the tables; the indices
 /// are stored inverted for visual distinctiveness.
 #[derive(Debug, Default)]
-pub struct MemoryStorage{
+pub struct MemoryStorage {
     blobs: KMutex<Vec<Box<[u8]>>>,
     trees: KMutex<Vec<Box<[Handle]>>>,
 }
@@ -32,7 +32,8 @@ impl Storage for MemoryStorage {
                 name,
                 size: U48::new(len as u64).unwrap(),
                 meta: 0,
-            }).into()
+            })
+            .into()
         }
     }
 
@@ -48,7 +49,8 @@ impl Storage for MemoryStorage {
                 name,
                 size: U48::new(len as u64).unwrap(),
                 meta: 0,
-            }).into()
+            })
+            .into()
         }
     }
 

@@ -1,14 +1,14 @@
-use kernel::println;
+use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use crate::storage::memory::MemoryStorage;
-use crate::handle::*;
 use common::bitpack::BitPack;
-use kernel::prelude::{Function, Blob as ArcaBlob, Tuple, Vec, Value};
+use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
+use kernel::println;
 
 #[derive(Debug, Default)]
 pub struct FixOnArca {
-    storage: MemoryStorage
+    storage: MemoryStorage,
 }
 
 impl Runtime for FixOnArca {
@@ -20,7 +20,10 @@ impl Runtime for FixOnArca {
         println!("applying   {}", Handle::from(combination));
         let contents = self.storage().get_tree(combination).unwrap();
         let procedure = contents.get(0).expect("empty combination");
-        let elf = self.storage().get_blob(procedure.unwrap_object().unwrap_blob()).unwrap();
+        let elf = self
+            .storage()
+            .get_blob(procedure.unwrap_object().unwrap_blob())
+            .unwrap();
         let f: Function = common::elfloader::load_elf(&elf).unwrap();
         let blob = pack_handle(combination);
         let f = f.apply(blob);
@@ -57,13 +60,17 @@ impl FixOnArca {
                         let Some(Value::Word(w)) = args.pop() else {
                             panic!()
                         };
-                        k.apply(pack_handle(self.storage().add_blob(&u32::to_le_bytes(w.read() as u32))))
+                        k.apply(pack_handle(
+                            self.storage().add_blob(&u32::to_le_bytes(w.read() as u32)),
+                        ))
                     }
                     b"create_blob_i64" => {
                         let Some(Value::Word(w)) = args.pop() else {
                             panic!()
                         };
-                        k.apply(pack_handle(self.storage().add_blob(&u64::to_le_bytes(w.read()))))
+                        k.apply(pack_handle(
+                            self.storage().add_blob(&u64::to_le_bytes(w.read())),
+                        ))
                     }
                     b"create_blob" => {
                         let Some(Value::Blob(b)) = args.pop() else {
@@ -85,14 +92,20 @@ impl FixOnArca {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let b = self.storage().get_blob(unpack_handle(&b).unwrap_object().unwrap_blob()).unwrap();
+                        let b = self
+                            .storage()
+                            .get_blob(unpack_handle(&b).unwrap_object().unwrap_blob())
+                            .unwrap();
                         k.apply(ArcaBlob::new(b))
                     }
                     b"get_tree" => {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let t = self.storage().get_tree(unpack_handle(&b).unwrap_object().unwrap_tree()).unwrap();
+                        let t = self
+                            .storage()
+                            .get_tree(unpack_handle(&b).unwrap_object().unwrap_tree())
+                            .unwrap();
                         let mut tree = Vec::new();
                         for x in t {
                             tree.extend_from_slice(&Handle::pack(&x));

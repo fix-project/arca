@@ -56,7 +56,10 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
         let table = crate::rt::TABLES[table_idx as usize];
         let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
-            bytes: shell::fixpoint_create_tree(core::slice::from_raw_parts(addr as *const u8, (*table).size as usize)),
+            bytes: shell::fixpoint_create_tree(core::slice::from_raw_parts(
+                addr as *const u8,
+                (*table).size as usize,
+            )),
         }
     }
 }
@@ -71,7 +74,10 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tag(
         let table = crate::rt::TABLES[table_idx as usize];
         let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
-            bytes: shell::fixpoint_create_tag(core::slice::from_raw_parts(addr as *const u8, (*table).size as usize)),
+            bytes: shell::fixpoint_create_tag(core::slice::from_raw_parts(
+                addr as *const u8,
+                (*table).size as usize,
+            )),
         }
     }
 }

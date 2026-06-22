@@ -237,8 +237,8 @@ pub mod net {
 pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
-    use common::{protocol::control::FileMode, protocol::*};
     pub use common::protocol::file::Whence;
+    use common::{protocol::control::FileMode, protocol::*};
 
     pub struct File {
         pipe: FilePipe,

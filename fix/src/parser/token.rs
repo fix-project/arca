@@ -1,5 +1,5 @@
-use kernel::prelude::*;
 use core::{clone::Clone, fmt};
+use kernel::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {

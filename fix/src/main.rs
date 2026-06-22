@@ -1,12 +1,12 @@
 #![no_main]
 #![no_std]
-use kernel::prelude::*;
-use kernel::host::os;
 use kernel::host::fs::{File, Whence};
+use kernel::host::os;
+use kernel::prelude::*;
 
-use fix::*;
-use fix::parser::*;
 use fix::arca::FixOnArca;
+use fix::parser::*;
+use fix::*;
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -37,16 +37,20 @@ fn main() {
     let mut context = BTreeMap::new();
     for statement in program {
         match statement {
-            Statement::Assign {name, expr} => {
+            Statement::Assign { name, expr } => {
                 let result = eval(&evaluator, &expr, &mut context);
                 context.insert(name, result);
-            },
+            }
             Statement::Print(expr) | Statement::Expr(expr) => {
                 let x = eval(&evaluator, &expr, &mut context);
                 match x {
                     Value::Handle(x) => {
                         println!("handle:    {x}");
-                        if let Some(blob) = x.try_unwrap_object().ok().and_then(|x| x.try_unwrap_blob().ok()) {
+                        if let Some(blob) = x
+                            .try_unwrap_object()
+                            .ok()
+                            .and_then(|x| x.try_unwrap_blob().ok())
+                        {
                             let contents = evaluator.storage().get_blob(blob).unwrap();
                             println!("result is a Blob: {contents:?}");
                             if contents.len() == 8 {
@@ -66,7 +70,7 @@ fn main() {
                         println!("path: {x}");
                     }
                 }
-            },
+            }
         }
     }
 
@@ -84,16 +88,10 @@ enum Value {
 
 fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Value>) -> Value {
     match e {
-        Expr::Number(x) => {
-            Value::Int(*x)
-        }
-        Expr::Identifier(x) => {
-            ctx.get(x).expect("undefined identifier").clone()
-        }
-        Expr::String(x) => {
-            Value::String(x.clone())
-        }
-        Expr::Call {name, args} => {
+        Expr::Number(x) => Value::Int(*x),
+        Expr::Identifier(x) => ctx.get(x).expect("undefined identifier").clone(),
+        Expr::String(x) => Value::String(x.clone()),
+        Expr::Call { name, args } => {
             let args: Vec<Value> = args.into_iter().map(|x| eval(evaluator, x, ctx)).collect();
             match name.as_str() {
                 "Int" => args[0].clone(),
@@ -119,27 +117,28 @@ fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, V
                 "create_tree" => {
                     let handles: Vec<Handle> = args.into_iter().map(Value::unwrap_handle).collect();
                     Value::Handle(evaluator.storage().add_tree(&handles).into())
-                },
-                "create_application_thunk" => {
-                    Value::Handle(Thunk::Application(args[0].clone().unwrap_handle().unwrap_object().unwrap_tree()).into())
-                },
-                "create_strict_encode" => {
-                    Value::Handle(Encode::Strict(args[0].clone().unwrap_handle().unwrap_thunk()).into())
-                },
-                "eval" => {
-                    Value::Handle(evaluator.eval(args[0].clone().unwrap_handle()))
-                },
+                }
+                "create_application_thunk" => Value::Handle(
+                    Thunk::Application(
+                        args[0]
+                            .clone()
+                            .unwrap_handle()
+                            .unwrap_object()
+                            .unwrap_tree(),
+                    )
+                    .into(),
+                ),
+                "create_strict_encode" => Value::Handle(
+                    Encode::Strict(args[0].clone().unwrap_handle().unwrap_thunk()).into(),
+                ),
+                "eval" => Value::Handle(evaluator.eval(args[0].clone().unwrap_handle())),
                 "Path" => match args[0] {
-                    Value::String(ref x) => {
-                        Value::Path(x.clone())
-                    }
+                    Value::String(ref x) => Value::Path(x.clone()),
                     _ => panic!("bad path"),
                 },
-                name => todo!("call {name} {args:?}")
+                name => todo!("call {name} {args:?}"),
             }
         }
-        Expr::Group(x) => {
-            eval(evaluator, x, ctx)
-        }
+        Expr::Group(x) => eval(evaluator, x, ctx),
     }
 }

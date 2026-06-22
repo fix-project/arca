@@ -6,11 +6,11 @@ pub(crate) use crate::{
 pub use alloc::{
     borrow::ToOwned,
     boxed::Box,
+    format,
     string::{String, ToString},
     sync::{Arc, Weak},
     vec,
     vec::Vec,
-    format
 };
 
 pub use crate::{
@@ -23,10 +23,8 @@ pub use crate::{
         PageTable256TB, PageTable256TBEntry, PageTable2MB, PageTable2MBEntry, PageTable512GB,
         PageTable512GBEntry,
     },
-    shutdown,
+    print, println, shutdown,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
-    print,
-    println,
 };
 
 pub use arca::DataType;
@@ -41,4 +39,3 @@ pub use common::util::router::Router;
 pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;
 pub use macros::{arca_test, kmain};
-
