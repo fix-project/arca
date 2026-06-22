@@ -45,25 +45,25 @@ fn main() {
                 let x = eval(&evaluator, &expr, &mut context);
                 match x {
                     Value::Handle(x) => {
-                        log::info!("handle: {x}");
+                        println!("handle:    {x}");
                         if let Some(blob) = x.try_unwrap_object().ok().and_then(|x| x.try_unwrap_blob().ok()) {
                             let contents = evaluator.storage().get_blob(blob).unwrap();
-                            log::info!("result is a Blob: {contents:?}");
+                            println!("result is a Blob: {contents:?}");
                             if contents.len() == 8 {
                                 let bytes: [u8; 8] = (*contents).try_into().unwrap();
                                 let value = u64::from_le_bytes(bytes);
-                                log::info!("as a u64: {value}");
+                                println!("\tas a u64: {value}");
                             }
                         }
                     }
                     Value::Int(x) => {
-                        log::info!("int: {x}");
+                        println!("int: {x}");
                     }
                     Value::String(x) => {
-                        log::info!("string: {x}");
+                        println!("string: {x}");
                     }
                     Value::Path(x) => {
-                        log::info!("path: {x}");
+                        println!("path: {x}");
                     }
                 }
             },

@@ -94,6 +94,7 @@ impl<R: Runtime> Evaluator<R> {
     }
 
     pub fn eval(&self, handle: Handle) -> Handle {
+        println!("evaluating {handle}");
         match handle {
             Handle::Thunk(_) | Handle::Ref(_) => todo!(),
             Handle::Object(obj) => match obj {

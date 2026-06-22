@@ -1,3 +1,4 @@
+use kernel::println;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use crate::storage::memory::MemoryStorage;
@@ -16,6 +17,7 @@ impl Runtime for FixOnArca {
     }
 
     fn execute(&self, combination: Tree) -> Handle {
+        println!("applying   {}", Handle::from(combination));
         let contents = self.storage().get_tree(combination).unwrap();
         let procedure = contents.get(0).expect("empty combination");
         let elf = self.storage().get_blob(procedure.unwrap_object().unwrap_blob()).unwrap();

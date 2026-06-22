@@ -25,6 +25,8 @@ pub use crate::{
     },
     shutdown,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
+    print,
+    println,
 };
 
 pub use arca::DataType;
@@ -39,3 +41,4 @@ pub use common::util::router::Router;
 pub use common::util::sorter;
 pub use common::util::spinlock::SpinLock;
 pub use macros::{arca_test, kmain};
+

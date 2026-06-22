@@ -60,3 +60,30 @@ impl log::Log for DebugLogger {
 }
 
 pub static DEBUG: DebugLogger = DebugLogger;
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::core::fmt::Write;
+        let mut debug = ::kernel::debugcon::CONSOLE.lock();
+        ::core::write!(debug, $($arg)*).unwrap();
+    }};
+}
+
+#[macro_export]
+macro_rules! println {
+    () => {
+        {
+        use ::core::fmt::Write;
+        let mut debug = ::kernel::debugcon::CONSOLE.lock();
+        ::core::writeln!(debug).unwrap()
+        }
+    };
+    ($($arg:tt)*) => {
+        {
+        use ::core::fmt::Write;
+        let mut debug = ::kernel::debugcon::CONSOLE.lock();
+        ::core::writeln!(debug, $($arg)*).unwrap()
+        }
+    };
+}
