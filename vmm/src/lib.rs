@@ -5,4 +5,6 @@
 #![feature(exitcode_exit_method)]
 #![feature(cstr_display)]
 
+pub mod comm;
+pub mod pipe;
 pub mod runtime;

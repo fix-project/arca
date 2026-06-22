@@ -569,6 +569,7 @@ dependencies = [
  "macros",
  "nix 0.30.1",
  "rand",
+ "serde",
  "snafu",
 ]
 
@@ -2660,10 +2661,12 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "log",
- "nix 0.30.1",
+ "nix",
+ "postcard",
  "regex",
  "rlimit",
  "rustc-demangle",
+ "serde",
  "smol",
  "thread-priority",
  "tokio-stream",

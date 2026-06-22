@@ -92,116 +92,119 @@ pub fn memclr(region: *mut [u8]) {
     }
 }
 
+pub mod os {
+    use crate::prelude::*;
+    use common::protocol::*;
+
+    pub fn argv() -> Vec<String> {
+        let mut binding = crate::pipe::HOST.lock();
+        let host = binding.get_mut().unwrap();
+        let control::Response::Args(args) = host.request(&control::Request::GetArgs) else {
+            panic!("bad response");
+        };
+        args
+    }
+}
+
+use super::pipe::HostPipe;
+unsafe fn get_pipe(data: common::protocol::control::PipeData) -> HostPipe {
+    use common::pipe::{Pipe, Reader, Writer};
+    let rxp: *const u8 = BuddyAllocator.from_offset(data.rx_ptr);
+    let txp: *const u8 = BuddyAllocator.from_offset(data.tx_ptr);
+    let rx = Arc::from_raw_in(core::ptr::from_raw_parts(rxp, data.rx_len), BuddyAllocator);
+    let rx = Reader::from_inner(rx);
+    let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, data.tx_len), BuddyAllocator);
+    let tx = Writer::from_inner(tx);
+    let pipe = Pipe::from_inner(rx, tx);
+    HostPipe::new(pipe)
+}
+
 pub mod net {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
-    use common::{
-        hypercall::{self, TcpInfo},
-        BuddyAllocator,
-    };
-
-    use crate::kthread;
+    use super::get_pipe;
+    use crate::pipe::*;
+    use crate::prelude::*;
+    use common::protocol::*;
 
     pub struct TcpListener {
-        id: u64,
+        pipe: KMutex<ListenerPipe>,
     }
 
     pub struct TcpStream {
-        id: u64,
+        pipe: StreamPipe,
     }
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
-            let info = TcpInfo {
-                ip: u32::from_ne_bytes(*ip),
-                port,
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let ip = *ip;
+            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
+            else {
+                todo!();
             };
             unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_LISTEN,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpListener {
-                id: info.id.load(Ordering::SeqCst),
+                TcpListener {
+                    pipe: KMutex::new(ListenerPipe::new(get_pipe(id))),
+                }
             }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let mut pipe = self.pipe.lock();
+            let listener::Response::Pipe(id) = pipe.request(&listener::Request::Accept) else {
+                todo!();
             };
             unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_ACCEPT,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpStream {
-                id: info.id.load(Ordering::SeqCst),
+                TcpStream {
+                    pipe: StreamPipe::new(get_pipe(id)),
+                }
             }
         }
     }
 
+    impl Drop for TcpListener {
+        fn drop(&mut self) {
+            let mut pipe = self.pipe.lock();
+            let listener::Response::Ack = pipe.request(&listener::Request::Close) else {
+                todo!();
+            };
+        }
+    }
+
     impl TcpStream {
-        pub fn connect(ip: &[u8; 4], port: u16) -> TcpStream {
-            let info = TcpInfo {
-                ip: u32::from_ne_bytes(*ip),
+        pub fn connect(hostname: &str, port: u16) -> TcpStream {
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let control::Response::Pipe(id) = host.request(&control::Request::Connect {
+                host: hostname.into(),
                 port,
-                ..Default::default()
+            }) else {
+                todo!();
             };
             unsafe {
-                crate::io::hypercall1(
-                    hypercall::TCP_CONNECT,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            TcpStream {
-                id: info.id.load(Ordering::SeqCst),
+                TcpStream {
+                    pipe: StreamPipe::new(get_pipe(id)),
+                }
             }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
-                len: AtomicUsize::new(bytes.len()),
-                ..Default::default()
+            let stream::Response::Length(len) =
+                self.pipe.request(&stream::Request::Send(bytes.into()))
+            else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_SEND, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            len
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(bytes.as_ptr()),
-                len: AtomicUsize::new(bytes.len()),
-                ..Default::default()
+            let stream::Response::Bytes(buf) =
+                self.pipe.request(&stream::Request::Receive(bytes.len()))
+            else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_RECV, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            bytes[..buf.len()].copy_from_slice(&buf);
+            bytes.len()
         }
 
         pub fn close(self) {
@@ -211,16 +214,9 @@ pub mod net {
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let info = TcpInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let stream::Response::Ack = self.pipe.request(&stream::Request::Close) else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::TCP_CLOSE, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
         }
     }
 
@@ -239,17 +235,12 @@ pub mod net {
 }
 
 pub mod fs {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
-    use common::{
-        hypercall::{self, FileInfo},
-        BuddyAllocator,
-    };
-
-    use crate::kthread;
+    use super::get_pipe;
+    use crate::pipe::*;
+    use common::{protocol::control::FileMode, protocol::file::Whence, protocol::*};
 
     pub struct File {
-        id: u64,
+        pipe: FilePipe,
     }
 
     impl File {
@@ -261,99 +252,60 @@ pub mod fs {
             append: bool,
             truncate: bool,
         ) -> Option<File> {
-            let info = FileInfo {
-                buf: BuddyAllocator.to_offset(path.as_ptr()),
-                len: AtomicUsize::new(path.len()),
-                read,
-                write,
-                create,
-                append,
-                truncate,
-                ..Default::default()
+            let mut binding = crate::pipe::HOST.lock();
+            let host = binding.get_mut().unwrap();
+            let control::Response::Pipe(id) = host.request(&control::Request::Open(
+                path.into(),
+                FileMode {
+                    read,
+                    write,
+                    create,
+                    append,
+                    truncate,
+                },
+            )) else {
+                return None;
             };
             unsafe {
-                crate::io::hypercall1(hypercall::FILE_OPEN, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            let id = info.id.load(Ordering::SeqCst);
-            if id != 0 {
-                Some(File { id })
-            } else {
-                None
+                Some(File {
+                    pipe: FilePipe::new(get_pipe(id)),
+                })
             }
         }
 
         pub fn close(self) {}
 
         pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(buf.as_ptr()),
-                len: AtomicUsize::new(buf.len()),
-                ..Default::default()
+            let file::Response::Bytes(bytes) = self.pipe.request(&file::Request::Read(buf.len()))
+            else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::FILE_READ, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            bytes.len()
         }
 
         pub fn write(&mut self, buf: &[u8]) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                buf: BuddyAllocator.to_offset(buf.as_ptr()),
-                len: AtomicUsize::new(buf.len()),
-                ..Default::default()
+            let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into()))
+            else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::FILE_WRITE,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            len
         }
 
-        pub fn seek(&mut self, offset: isize, whence: i64) -> usize {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                offset,
-                whence,
-                ..Default::default()
+        pub fn seek(&mut self, whence: Whence) -> u64 {
+            let file::Response::Offset(offset) = self.pipe.request(&file::Request::Seek(whence))
+            else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(hypercall::FILE_SEEK, BuddyAllocator.to_offset(&info) as u64)
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
-            info.len.load(Ordering::SeqCst)
+            offset
         }
     }
 
     impl Drop for File {
         fn drop(&mut self) {
-            let info = FileInfo {
-                id: AtomicU64::new(self.id),
-                ..Default::default()
+            let file::Response::Ack = self.pipe.request(&file::Request::Close) else {
+                panic!("bad response");
             };
-            unsafe {
-                crate::io::hypercall1(
-                    hypercall::FILE_CLOSE,
-                    BuddyAllocator.to_offset(&info) as u64,
-                )
-            };
-            while !info.done.load(Ordering::SeqCst) {
-                kthread::wfi();
-            }
         }
     }
 
