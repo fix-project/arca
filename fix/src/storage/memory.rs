@@ -6,7 +6,8 @@ use alloc::boxed::Box;
 use kernel::kthread::KMutex;
 use bitint::U48;
 
-/// An object store which stores its data in RAM.
+/// An object store which stores its data in RAM.  Names are indices into the tables; the indices
+/// are stored inverted for visual distinctiveness.
 #[derive(Debug, Default)]
 pub struct MemoryStorage{
     blobs: KMutex<Vec<Box<[u8]>>>,
@@ -18,9 +19,14 @@ impl Storage for MemoryStorage {
         let mut blobs = self.blobs.lock();
         let i = blobs.len();
         let len = data.len();
+        if len < 30 {
+            unsafe {
+                return Blob::Literal(LiteralName::new(data));
+            }
+        }
         blobs.push(data.into());
         let mut name = [0; 24];
-        name[0..8].copy_from_slice(&usize::to_le_bytes(i));
+        name[0..8].copy_from_slice(&usize::to_le_bytes(!i));
         unsafe {
             BlobName::new(RawName {
                 name,
@@ -36,7 +42,7 @@ impl Storage for MemoryStorage {
         let len = data.len();
         trees.push(data.into());
         let mut name = [0; 24];
-        name[0..8].copy_from_slice(&usize::to_le_bytes(i));
+        name[0..8].copy_from_slice(&usize::to_le_bytes(!i));
         unsafe {
             TreeName::new(RawName {
                 name,
@@ -49,8 +55,12 @@ impl Storage for MemoryStorage {
     fn get_blob(&self, name: Blob) -> Option<Box<[u8]>> {
         let blobs = self.blobs.lock();
         let mut i = [0; 8];
+        let name = match name {
+            Blob::Blob(name) => name,
+            Blob::Literal(name) => return Some(name.bytes().into()),
+        };
         i.copy_from_slice(&BlobName::from(name).name().name[0..8]);
-        let i = usize::from_le_bytes(i);
+        let i = !usize::from_le_bytes(i);
         blobs.get(i).cloned()
     }
 
@@ -58,7 +68,7 @@ impl Storage for MemoryStorage {
         let trees = self.trees.lock();
         let mut i = [0; 8];
         i.copy_from_slice(&TreeName::from(name).name().name[0..8]);
-        let i = usize::from_le_bytes(i);
+        let i = !usize::from_le_bytes(i);
         trees.get(i).cloned()
     }
 }

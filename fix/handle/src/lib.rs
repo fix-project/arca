@@ -5,6 +5,7 @@
 
 use derive_more::{From, Into, TryUnwrap, Unwrap};
 pub use common::bitpack::BitPack;
+use bitint::U5;
 
 const fn bitmask256<const I: u32, const WIDTH: u32>() -> [u8; 32] {
     assert!(I + WIDTH <= 256);
@@ -33,11 +34,31 @@ pub enum Handle {
     Encode(Encode),
 }
 
+impl Handle {
+    pub fn len(&self) -> usize {
+        match self {
+            Handle::Ref(x) => x.len(),
+            Handle::Object(x) => x.len(),
+            Handle::Thunk(x) => x.len(),
+            Handle::Encode(x) => x.len(),
+        }
+    }
+}
+
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
 #[try_unwrap(ref)]
 pub enum Ref {
     Blob(Blob),
     Tree(Tree),
+}
+
+impl Ref {
+    pub fn len(&self) -> usize {
+        match self {
+            Ref::Blob(x) => x.len(),
+            Ref::Tree(x) => x.len(),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
@@ -47,11 +68,30 @@ pub enum Object {
     Tree(Tree),
 }
 
+impl Object {
+    pub fn len(&self) -> usize {
+        match self {
+            Object::Blob(x) => x.len(),
+            Object::Tree(x) => x.len(),
+        }
+    }
+}
+
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, Unwrap)]
 pub enum Thunk {
     Identification(Ref),
     Application(Tree),
     Selection(Tree),
+}
+
+impl Thunk {
+    pub fn len(&self) -> usize {
+        match self {
+            Thunk::Identification(x) => x.len(),
+            Thunk::Application(x) => x.len(),
+            Thunk::Selection(x) => x.len(),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
@@ -61,6 +101,15 @@ pub enum Encode {
     Shallow(Thunk),
 }
 
+impl Encode {
+    pub fn len(&self) -> usize {
+        match self {
+            Encode::Strict(x) => x.len(),
+            Encode::Shallow(x) => x.len(),
+        }
+    }
+}
+
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
 #[try_unwrap(ref)]
 pub enum Tree {
@@ -68,14 +117,39 @@ pub enum Tree {
     Tag(TreeName),
 }
 
+impl Tree {
+    pub fn len(&self) -> usize {
+        match self {
+            Tree::Tree(x) => x.len(),
+            Tree::Tag(x) => x.len(),
+        }
+    }
+}
+
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
 #[try_unwrap(ref)]
 pub enum Blob {
     Blob(BlobName),
+    Literal(LiteralName),
+}
+
+impl Blob {
+    pub fn len(&self) -> usize {
+        match self {
+            Blob::Blob(x) => x.len(),
+            Blob::Literal(x) => x.len(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
 pub struct BlobName(RawName);
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
+pub struct LiteralName {
+    bytes: [u8; 30],
+    len: U5,
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
 pub struct TreeName(RawName);
@@ -88,6 +162,32 @@ impl BlobName {
     pub fn name(&self) -> RawName {
         self.0
     }
+
+    pub fn len(&self) -> usize {
+        self.0.size.to_primitive() as usize
+    }
+}
+
+impl LiteralName {
+    pub unsafe fn new(contents: &[u8]) -> Self {
+        assert!(contents.len() <= 30);
+        let len = U5::new(contents.len() as u8).unwrap();
+        let mut bytes = [0; 30];
+        bytes[..contents.len()].copy_from_slice(contents);
+        Self {
+            bytes,
+            len,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        let len = self.len.to_primitive() as usize;
+        &self.bytes[..len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len.to_primitive() as usize
+    }
 }
 
 impl TreeName {
@@ -97,6 +197,10 @@ impl TreeName {
 
     pub fn name(&self) -> RawName {
         self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.size.to_primitive() as usize
     }
 }
 
@@ -110,6 +214,28 @@ impl common::bitpack::BitPack for BlobName {
     fn unpack(content: [u8; 32]) -> Self {
         unsafe {
             Self::new(RawName::forge(content))
+        }
+    }
+}
+
+impl common::bitpack::BitPack for LiteralName {
+    const TAGBITS: u32 = 245;
+
+    fn pack(&self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[0..30].copy_from_slice(&self.bytes);
+        bytes[30] = self.len.to_primitive();
+        bytes
+    }
+
+    fn unpack(content: [u8; 32]) -> Self {
+        let mut bytes = [0; 30];
+        bytes.copy_from_slice(&content[0..30]);
+        let len = content[30] & 0b11111;
+        let len = U5::new(len).unwrap();
+        Self {
+            bytes,
+            len
         }
     }
 }
@@ -149,14 +275,6 @@ impl From<BlobName> for Blob {
 impl From<TreeName> for Tree {
     fn from(value: TreeName) -> Tree {
         Tree::Tree(value)
-    }
-}
-
-impl From<Blob> for BlobName {
-    fn from(value: Blob) -> BlobName {
-        match value {
-            Blob::Blob(x) => x,
-        }
     }
 }
 
@@ -225,6 +343,7 @@ impl From<RawName> for u8x32 {
 
 impl core::fmt::Display for Handle {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        // write!(f, "{self:?}")
         let bytes = Handle::pack(self);
         for byte in bytes {
             write!(f, "{byte:02x}")?;

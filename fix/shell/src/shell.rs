@@ -261,7 +261,6 @@ pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
 }
 
 fn fixpoint_len(handle: [u8; 32]) -> usize {
-    let mut bytes = [0; 8];
-    bytes[..6].copy_from_slice(&handle[24..30]);
-    usize::from_le_bytes(bytes)
+    let handle = Handle::unpack(handle);
+    handle.len()
 }
