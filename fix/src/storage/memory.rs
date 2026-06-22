@@ -20,9 +20,7 @@ impl Storage for MemoryStorage {
         let i = blobs.len();
         let len = data.len();
         if len < 30 {
-            unsafe {
-                return Blob::Literal(LiteralName::new(data));
-            }
+            return Blob::Literal(LiteralName::new(data));
         }
         blobs.push(data.into());
         let mut name = [0; 24];
