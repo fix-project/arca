@@ -1,6 +1,5 @@
 #![feature(allocator_api)]
 #![feature(ptr_metadata)]
-#![feature(result_option_map_or_default)]
 #[path = "../../runtime/src/common.rs"]
 pub mod vmcommon;
 

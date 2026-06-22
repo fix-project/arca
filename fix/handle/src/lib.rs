@@ -43,6 +43,10 @@ impl Handle {
             Handle::Encode(x) => x.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
@@ -59,6 +63,10 @@ impl Ref {
             Ref::Tree(x) => x.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
@@ -74,6 +82,10 @@ impl Object {
             Object::Blob(x) => x.len(),
             Object::Tree(x) => x.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -92,6 +104,10 @@ impl Thunk {
             Thunk::Selection(x) => x.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
@@ -107,6 +123,10 @@ impl Encode {
             Encode::Strict(x) => x.len(),
             Encode::Shallow(x) => x.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -124,6 +144,10 @@ impl Tree {
             Tree::Tag(x) => x.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
@@ -140,6 +164,10 @@ impl Blob {
             Blob::Literal(x) => x.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
@@ -155,6 +183,8 @@ pub struct LiteralName {
 pub struct TreeName(RawName);
 
 impl BlobName {
+    /// # Safety
+    /// This name must be valid within the scope of the storage(s) it'll be used with.
     pub unsafe fn new(name: RawName) -> Self {
         Self(name)
     }
@@ -166,10 +196,14 @@ impl BlobName {
     pub fn len(&self) -> usize {
         self.0.size.to_primitive() as usize
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl LiteralName {
-    pub unsafe fn new(contents: &[u8]) -> Self {
+    pub fn new(contents: &[u8]) -> Self {
         assert!(contents.len() <= 30);
         let len = U5::new(contents.len() as u8).unwrap();
         let mut bytes = [0; 30];
@@ -185,9 +219,15 @@ impl LiteralName {
     pub fn len(&self) -> usize {
         self.len.to_primitive() as usize
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl TreeName {
+    /// # Safety
+    /// This name must be valid within the scope of the storage(s) it'll be used with.
     pub unsafe fn new(name: RawName) -> Self {
         Self(name)
     }
@@ -198,6 +238,10 @@ impl TreeName {
 
     pub fn len(&self) -> usize {
         self.0.size.to_primitive() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
