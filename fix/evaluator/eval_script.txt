@@ -1,9 +1,0 @@
-a = create_blob(Int(2)); 
-b = create_blob(Int(3)); 
-c = create_blob(Path("../target/x86_64-unknown-none/addblob"));
-d = create_tree(c, a, b); 
-e = create_blob(Int(1)); 
-f = create_strict_encode(create_application_thunk(d))
-g = create_tree(c, e, f);
-h = eval(create_strict_encode(create_application_thunk(g))); 
-h
