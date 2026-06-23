@@ -5,4 +5,4 @@ rustflags = [
   "-C", "relocation-model=static",
   # "-C", "target-feature=+crt-static",
 ]
-runner = "cargo run -p evaluator --bin fix-cli -- hybrid"
+runner = "cargo run -p vmm --"
