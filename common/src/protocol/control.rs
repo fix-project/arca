@@ -9,6 +9,7 @@ pub enum Request {
     GetArgs,
     Exit(i32),
     Open(String, FileMode),
+    Mkdir(String),
     Listen { ip: [u8; 4], port: u16 },
     Connect { host: String, port: u16 },
 }
@@ -17,6 +18,7 @@ pub enum Request {
 pub enum Response {
     Args(Vec<String>),
     Pipe(PipeData),
+    Ack,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

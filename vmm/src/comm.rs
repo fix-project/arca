@@ -48,6 +48,10 @@ pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
                     Err(x) => todo!("open: {x:?}"),
                 }
             }
+            Request::Mkdir(path) => match std::fs::create_dir_all(&path) {
+                Ok(()) => Response::Ack,
+                Err(x) => todo!("mkdir: {x:?}"),
+            },
             Request::Listen { ip, port } => {
                 let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
                 let (p, q) = common::pipe::pipe(1024);

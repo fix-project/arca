@@ -244,6 +244,19 @@ pub mod fs {
         pipe: FilePipe,
     }
 
+    /// Recursively creates a directory and all of its parents on the host, like
+    /// `mkdir -p`.  Returns `true` on success.  Mirrors [`File::open`], but the
+    /// host has nothing to stream back so it replies with a bare ack rather than
+    /// a pipe.
+    pub fn mkdir(path: &str) -> bool {
+        let mut binding = crate::pipe::HOST.lock();
+        let host = binding.get_mut().unwrap();
+        matches!(
+            host.request(&control::Request::Mkdir(path.into())),
+            control::Response::Ack
+        )
+    }
+
     impl File {
         pub fn open(
             path: &str,
