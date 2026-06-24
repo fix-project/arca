@@ -45,12 +45,12 @@ pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
                         });
                         Response::Pipe(decompose_pipe(p))
                     }
-                    Err(x) => todo!("open: {x:?}"),
+                    Err(e) => Response::Err(e.kind().into()),
                 }
             }
             Request::Mkdir(path) => match std::fs::create_dir_all(&path) {
                 Ok(()) => Response::Ack,
-                Err(x) => todo!("mkdir: {x:?}"),
+                Err(e) => Response::Err(e.kind().into()),
             },
             Request::Listen { ip, port } => {
                 let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();

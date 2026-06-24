@@ -36,8 +36,9 @@ fn main() {
 /// existing store is harmless (matches git's "reinitialized existing repository").
 fn init() {
     for dir in [".fix/objects", ".fix/labels"] {
-        if !fs::mkdir(dir) {
-            panic!("fix init: failed to create {dir}");
+        if let Err(e) = fs::mkdir(dir) {
+            println!("fix init: failed to create {dir}: {e:?}");
+            kernel::exit(1);
         }
     }
     println!("initialized empty fix store in .fix");
