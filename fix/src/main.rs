@@ -31,12 +31,14 @@ fn main() {
     kernel::shutdown();
 }
 
-/// `fix init`: create the on-disk `.fix` store.
-/// `mkdir` maps to host `create_dir_all`, so re-running on an existing store
-/// is harmless (matches git's "reinitialized existing repository").
+/// `fix init`: create the on-disk `.fix` store with its `objects/` and
+/// `labels/` subdirs. `mkdir` maps to host `create_dir_all`, so re-running on an
+/// existing store is harmless (matches git's "reinitialized existing repository").
 fn init() {
-    if !fs::mkdir(".fix") {
-        panic!("fix init: failed to create .fix");
+    for dir in [".fix/objects", ".fix/labels"] {
+        if !fs::mkdir(dir) {
+            panic!("fix init: failed to create {dir}");
+        }
     }
     println!("initialized empty fix store in .fix");
 }
