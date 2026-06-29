@@ -1,6 +1,6 @@
 #![no_main]
 #![no_std]
-use kernel::host::fs::{File, Whence};
+use kernel::host::fs::{self, File, Whence};
 use kernel::host::os;
 use kernel::prelude::*;
 
@@ -16,8 +16,36 @@ use derive_more::Unwrap;
 #[kmain]
 fn main() {
     let argv = os::argv();
-    let filename = argv.get(1).expect("expected command file");
 
+    // Subcommand dispatch: `fix init` | `fix eval <file>`.
+    match argv.get(1).map(String::as_str) {
+        Some("init") => init(),
+        Some("eval") => {
+            let filename = argv.get(2).expect("fix eval: expected a command file");
+            eval_file(filename);
+        }
+        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file>)"),
+        None => panic!("fix: expected a command (init | eval <file>)"),
+    }
+
+    kernel::shutdown();
+}
+
+/// `fix init`: create the on-disk `.fix` store with its `objects/` and
+/// `labels/` subdirs. `mkdir` maps to host `create_dir_all`, so re-running on an
+/// existing store is harmless (matches git's "reinitialized existing repository").
+fn init() {
+    for dir in [".fix/objects", ".fix/labels"] {
+        if let Err(e) = fs::mkdir(dir) {
+            println!("fix init: failed to create {dir}: {e:?}");
+            kernel::exit(1);
+        }
+    }
+    println!("initialized empty fix store in .fix");
+}
+
+/// `fix eval <file>`: read, parse, and evaluate a command file.
+fn eval_file(filename: &str) {
     let mut file = File::open(filename, true, false, false, false, false).unwrap();
     let len = file.seek(Whence::End(0)) as usize;
     file.seek(Whence::Start(0));
@@ -73,8 +101,6 @@ fn main() {
             }
         }
     }
-
-    kernel::shutdown();
 }
 
 #[derive(Clone, Debug, Unwrap)]

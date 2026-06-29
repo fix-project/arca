@@ -238,10 +238,26 @@ pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
     pub use common::protocol::file::Whence;
-    use common::{protocol::control::FileMode, protocol::*};
+    use common::{
+        protocol::control::{ErrorKind, FileMode},
+        protocol::*,
+    };
 
     pub struct File {
         pipe: FilePipe,
+    }
+
+    /// Recursively creates a directory and all of its parents on the host, like
+    /// `mkdir -p`.  Mirrors [`File::open`], but the host has nothing to stream
+    /// back, so success is a bare ack and failure carries an [`ErrorKind`].
+    pub fn mkdir(path: &str) -> Result<(), ErrorKind> {
+        let mut binding = crate::pipe::HOST.lock();
+        let host = binding.get_mut().unwrap();
+        match host.request(&control::Request::Mkdir(path.into())) {
+            control::Response::Ack => Ok(()),
+            control::Response::Err(e) => Err(e.into()),
+            _ => Err(ErrorKind::Other),
+        }
     }
 
     impl File {
@@ -252,10 +268,10 @@ pub mod fs {
             create: bool,
             append: bool,
             truncate: bool,
-        ) -> Option<File> {
+        ) -> Result<File, ErrorKind> {
             let mut binding = crate::pipe::HOST.lock();
             let host = binding.get_mut().unwrap();
-            let control::Response::Pipe(id) = host.request(&control::Request::Open(
+            match host.request(&control::Request::Open(
                 path.into(),
                 FileMode {
                     read,
@@ -264,13 +280,14 @@ pub mod fs {
                     append,
                     truncate,
                 },
-            )) else {
-                return None;
-            };
-            unsafe {
-                Some(File {
-                    pipe: FilePipe::new(get_pipe(id)),
-                })
+            )) {
+                control::Response::Pipe(id) => unsafe {
+                    Ok(File {
+                        pipe: FilePipe::new(get_pipe(id)),
+                    })
+                },
+                control::Response::Err(e) => Err(e.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
 
