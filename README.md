@@ -64,7 +64,7 @@ just run webserver
 
 To run Fix-on-Arca, run:
 ```sh
-just fix addblob.fix
+just fix eval addblob.fix
 ```
 
 # License
