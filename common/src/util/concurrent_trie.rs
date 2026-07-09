@@ -38,7 +38,7 @@ impl<T> SyncBox<T> {
         unsafe {
             Some(Box::from_raw(
                 self.ptr
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
                         if old.is_null() {
                             None
                         } else {
@@ -54,7 +54,7 @@ impl<T> SyncBox<T> {
         let ptr = Box::into_raw(value);
         unsafe {
             self.ptr
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
                     if old.is_null() {
                         Some(ptr)
                     } else {

@@ -133,17 +133,20 @@ pub struct Reader {
 impl Reader {
     pub fn read(&mut self, data: &mut [u8]) -> Result<usize> {
         unsafe {
+            // Drain any buffered bytes before reporting the writer's hangup, so a
+            // reader still sees data the writer sent immediately before closing
+            // (e.g. a Close-ack the peer wrote just before dropping its end).
+            if self.ring.as_ref().unwrap().can_read() {
+                let bytes = self.ring.as_ref().unwrap().readable_bytes();
+                let len = core::cmp::min(data.len(), bytes.len());
+                data[..len].copy_from_slice(&(&(*bytes))[..len]);
+                self.ring.as_mut().unwrap().read(len);
+                return Ok(len);
+            }
             if self.is_closed() {
                 return Err(Error::Closed);
             }
-            if !self.ring.as_ref().unwrap().can_read() {
-                return Err(Error::WouldBlock);
-            }
-            let bytes = self.ring.as_ref().unwrap().readable_bytes();
-            let len = core::cmp::min(data.len(), bytes.len());
-            data[..len].copy_from_slice(&(&(*bytes))[..len]);
-            self.ring.as_mut().unwrap().read(len);
-            Ok(len)
+            Err(Error::WouldBlock)
         }
     }
 

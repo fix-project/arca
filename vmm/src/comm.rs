@@ -99,6 +99,7 @@ pub fn file_thread(mut file: File, mut pipe: FilePipe) {
                 Response::Offset(offset)
             }
             Request::Close => {
+                pipe.send(&Response::Ack);
                 return;
             }
         };
@@ -120,6 +121,7 @@ pub fn listener_thread(listener: TcpListener, mut pipe: ListenerPipe) {
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Close => {
+                pipe.send(&Response::Ack);
                 return;
             }
         };
@@ -142,6 +144,7 @@ pub fn stream_thread(mut stream: TcpStream, mut pipe: StreamPipe) {
                 Response::Length(len)
             }
             Request::Close => {
+                pipe.send(&Response::Ack);
                 return;
             }
         };
