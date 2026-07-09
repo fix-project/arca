@@ -622,7 +622,7 @@ impl BuddyAllocatorImpl {
     pub fn set_caching(&self, enable: bool) -> bool {
         if cfg!(feature = "cache") {
             self.caching
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(enable))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(enable))
                 .unwrap_or_else(|x| x)
         } else {
             false
