@@ -37,6 +37,7 @@ pub mod tsc;
 pub mod types;
 pub mod vm;
 
+mod doorbell;
 mod gdt;
 mod idt;
 mod interrupts;
