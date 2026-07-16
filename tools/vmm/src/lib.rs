@@ -6,5 +6,6 @@
 #![feature(cstr_display)]
 
 pub mod comm;
+mod doorbell;
 pub mod pipe;
 pub mod runtime;
