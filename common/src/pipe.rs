@@ -1,6 +1,7 @@
 mod bi;
 mod error;
 mod uni;
+mod doorbell;
 
 pub use bi::{pipe, Pipe};
 pub use error::{Error, Result};
