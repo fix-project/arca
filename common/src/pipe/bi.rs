@@ -1,6 +1,6 @@
+use super::doorbell::DoorBell;
 use super::error::Result;
 use super::uni::{channel, Reader, Writer};
-use super::doorbell::DoorBell;
 
 #[derive(Debug)]
 pub struct Pipe<D: DoorBell> {
@@ -10,10 +10,29 @@ pub struct Pipe<D: DoorBell> {
     tx_avail: D,
 }
 
-pub fn pipe<D0: DoorBell, D1: DoorBell>(len: usize, rx_avail0: D0, tx_avail0: D0, rx_avail1: D1, tx_avail1: D1) -> (Pipe<D0>, Pipe<D1>) {
+pub fn pipe<D0: DoorBell, D1: DoorBell>(
+    len: usize,
+    rx_avail0: D0,
+    tx_avail0: D0,
+    rx_avail1: D1,
+    tx_avail1: D1,
+) -> (Pipe<D0>, Pipe<D1>) {
     let (r0, w0) = channel(len);
     let (r1, w1) = channel(len);
-    (Pipe { rx: r0, tx: w1, rx_avail: rx_avail0, tx_avail: tx_avail0 }, Pipe { rx: r1, tx: w0, rx_avail: rx_avail1, tx_avail: tx_avail1 })
+    (
+        Pipe {
+            rx: r0,
+            tx: w1,
+            rx_avail: rx_avail0,
+            tx_avail: tx_avail0,
+        },
+        Pipe {
+            rx: r1,
+            tx: w0,
+            rx_avail: rx_avail1,
+            tx_avail: tx_avail1,
+        },
+    )
 }
 
 impl<D: DoorBell> Pipe<D> {
@@ -45,25 +64,30 @@ impl<D: DoorBell> Pipe<D> {
         !self.tx.is_empty()
     }
 
-    pub fn into_inner(self) -> (Reader, Writer) {
-        (self.rx, self.tx)
+    pub fn into_inner(self) -> (Reader, Writer, D, D) {
+        (self.rx, self.tx, self.rx_avail, self.tx_avail)
     }
 
     /// # Safety
     /// The reader and writer must correspond to the two halves of a pipe, as previously returned
     /// from into_inner.
     pub unsafe fn from_inner(rx: Reader, tx: Writer, rx_avail: D, tx_avail: D) -> Self {
-        Pipe { rx, tx, rx_avail, tx_avail }
+        Pipe {
+            rx,
+            tx,
+            rx_avail,
+            tx_avail,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
     use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     pub struct TestDoorBell {
-        count: AtomicUsize
+        count: AtomicUsize,
     }
 
     impl DoorBell for TestDoorBell {
@@ -82,7 +106,13 @@ mod tests {
 
     #[test]
     pub fn test_ping_pong() {
-        let (mut p, mut q) = super::pipe(1024, TestDoorBell::new(), TestDoorBell::new(), TestDoorBell::new(), TestDoorBell::new());
+        let (mut p, mut q) = super::pipe(
+            1024,
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+        );
         std::thread::spawn(move || loop {
             let mut buf = [0; 8];
             loop {

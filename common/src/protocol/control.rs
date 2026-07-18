@@ -74,11 +74,19 @@ impl From<std::io::ErrorKind> for IoErrorKind {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct VMToHostDoorBellData {
+    pub addr: u64,
+    pub datamatch: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PipeData {
     pub rx_ptr: usize,
     pub rx_len: usize,
     pub tx_ptr: usize,
     pub tx_len: usize,
+    pub rx_avail: VMToHostDoorBellData,
+    pub tx_avail: VMToHostDoorBellData,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

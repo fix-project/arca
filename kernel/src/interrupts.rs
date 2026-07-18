@@ -185,7 +185,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     if registers.isr < 32 {
         panic!("unhandled exception: {:x?}", registers);
     }
-    if registers.isr == 0x20 {
+    if registers.isr == 0x20 || registers.isr == 0x32 {
         INTERRUPTED.store(true, Ordering::Relaxed);
         crate::iprofile::tick(registers);
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();

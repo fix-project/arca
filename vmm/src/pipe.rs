@@ -1,15 +1,26 @@
+use crate::doorbell::{HostToVMDoorBell, VMToHostDoorBellWaiter};
 use common::pipe::Pipe as RawPipe;
 pub use common::pipe::{Error, Result};
 use std::marker::PhantomData;
 
 #[derive(Debug)]
 pub struct GuestPipe {
-    inner: RawPipe,
+    inner: RawPipe<HostToVMDoorBell>,
+    _rx_avail: VMToHostDoorBellWaiter,
+    _tx_avail: VMToHostDoorBellWaiter,
 }
 
 impl GuestPipe {
-    pub fn new(pipe: RawPipe) -> Self {
-        Self { inner: pipe }
+    pub fn new(
+        pipe: RawPipe<HostToVMDoorBell>,
+        rx_avail: VMToHostDoorBellWaiter,
+        tx_avail: VMToHostDoorBellWaiter,
+    ) -> Self {
+        Self {
+            inner: pipe,
+            _rx_avail: rx_avail,
+            _tx_avail: tx_avail,
+        }
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {

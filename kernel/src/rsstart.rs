@@ -9,6 +9,7 @@ use log::LevelFilter;
 
 use crate::{
     debugcon::DEBUG,
+    doorbell::VMToHostDoorBell,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
@@ -18,7 +19,9 @@ use crate::{
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
+use common::{
+    buddy::BuddyAllocatorRawData, protocol::control::VMToHostDoorBellData, BuddyAllocator,
+};
 
 extern "C" {
     fn kmain();
@@ -108,6 +111,8 @@ unsafe extern "C" fn _start(
         init_cpu_tls();
     };
 
+    let ioaddr = 0x1_0000_0000 + BuddyAllocator.len();
+
     // per-cpu init
     crate::tsc::init();
     crate::kvmclock::init();
@@ -147,7 +152,15 @@ unsafe extern "C" fn _start(
         let rx = Reader::from_inner(rx);
         let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, txn), BuddyAllocator);
         let tx = Writer::from_inner(tx);
-        let pipe = RawPipe::from_inner(rx, tx);
+        let rx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData {
+            addr: ioaddr as u64,
+            datamatch: 0,
+        });
+        let tx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData {
+            addr: ioaddr as u64,
+            datamatch: 1,
+        });
+        let pipe = RawPipe::from_inner(rx, tx, rx_avail, tx_avail);
         let pipe = HostPipe::new(pipe);
         let host = crate::pipe::HOST.lock();
         host.set(ControlPipe::new(pipe)).unwrap();

@@ -1,3 +1,4 @@
+use crate::doorbell::VMToHostDoorBell;
 use crate::kthread;
 use crate::prelude::*;
 use common::pipe::Pipe as RawPipe;
@@ -9,11 +10,11 @@ pub static HOST: KMutex<OnceCell<ControlPipe>> = KMutex::new(OnceCell::new());
 
 #[derive(Debug)]
 pub struct HostPipe {
-    inner: RawPipe,
+    inner: RawPipe<VMToHostDoorBell>,
 }
 
 impl HostPipe {
-    pub fn new(pipe: RawPipe) -> Self {
+    pub fn new(pipe: RawPipe<VMToHostDoorBell>) -> Self {
         Self { inner: pipe }
     }
 

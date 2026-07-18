@@ -3,7 +3,7 @@ use std::{
     io::{self, Read},
     process::ExitCode,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread::{Scope, ScopedJoinHandle},
@@ -18,6 +18,8 @@ use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
+
+use crate::comm::new_pipe;
 
 const MEM_BASE: u64 = 0x1_0000_0000;
 
@@ -330,9 +332,11 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 
 pub struct Runtime {
     kvm: Kvm,
-    vm: VmFd,
+    vm: Arc<VmFd>,
     cores: usize,
     elf: Arc<[u8]>,
+    next_pipe_idx: Arc<AtomicUsize>,
+    addr: IoEventAddress,
 }
 
 impl Runtime {
@@ -380,9 +384,11 @@ impl Runtime {
 
         let mut x = Self {
             kvm,
-            vm,
+            vm: Arc::new(vm),
             cores,
             elf: elf.clone(),
+            next_pipe_idx: Arc::new(AtomicUsize::new(0)),
+            addr: IoEventAddress::Mmio(MEM_BASE + BuddyAllocator.len() as u64),
         };
         let elf_bytes =
             ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
@@ -458,19 +464,23 @@ impl Runtime {
         std::thread::scope(|s| {
             let mut cpus = vec![];
 
-            let (p, q) = common::pipe::pipe(8192);
-            // let read = EventFd::new(0).unwrap();
-            // let write = EventFd::new(0).unwrap();
-            // let read_fd = read.try_clone().unwrap();
-            // let write_fd = write.try_clone().unwrap();
+            let (p, q) = new_pipe(&self.vm, self.addr, 8192, &self.next_pipe_idx);
+
+            let vm_cl = self.vm.clone();
+            let next_pipe_cl = self.next_pipe_idx.clone();
+            let addr = self.addr;
+
             let comm = s.spawn(move || {
                 crate::comm::control_thread(
+                    vm_cl,
+                    addr,
+                    next_pipe_cl,
                     argv,
-                    crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)),
+                    crate::pipe::ControlPipe::new(q),
                 );
             });
 
-            let (rx, tx) = p.into_inner();
+            let (rx, tx, _, _) = p.into_inner();
             let rx = rx.into_inner();
             let tx = tx.into_inner();
             let (rxp, rxn) = Arc::into_raw_with_allocator(rx).0.to_raw_parts();
