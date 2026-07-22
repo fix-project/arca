@@ -1,5 +1,5 @@
 use crate::vm;
-use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData};
+use common::{buddy::ioaddr, pipe::DoorBell, protocol::control::VMToHostDoorBellData};
 
 #[derive(Debug)]
 struct SendPtr(*mut u64);
@@ -20,7 +20,7 @@ impl VMToHostDoorBell {
     ///
     /// raw must corresponds to a into_inner call on the vmm side on a VMToHostDoorBell
     pub unsafe fn from_raw_parts(raw: VMToHostDoorBellData) -> Self {
-        let addr: *mut u64 = vm::pa2ka(raw.addr.try_into().unwrap());
+        let addr: *mut u64 = vm::pa2ka(ioaddr() as usize);
         Self {
             addr: SendPtr(addr),
             datamatch: raw.datamatch,

@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{hypercall, BuddyAllocator};
+use common::{buddy::MEM_BASE, hypercall, BuddyAllocator};
 use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
 use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
@@ -20,8 +20,6 @@ use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::comm::new_pipe;
-
-const MEM_BASE: u64 = 0x1_0000_0000;
 
 fn new_cpu<'scope>(
     i: usize,
@@ -328,7 +326,6 @@ pub struct Runtime {
     cores: usize,
     elf: Arc<[u8]>,
     next_pipe_idx: Arc<AtomicUsize>,
-    addr: IoEventAddress,
 }
 
 impl Runtime {
@@ -380,7 +377,6 @@ impl Runtime {
             cores,
             elf: elf.clone(),
             next_pipe_idx: Arc::new(AtomicUsize::new(0)),
-            addr: IoEventAddress::Mmio(MEM_BASE + BuddyAllocator.len() as u64),
         };
         let elf_bytes =
             ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
@@ -456,16 +452,14 @@ impl Runtime {
         std::thread::scope(|s| {
             let mut cpus = vec![];
 
-            let (p, q) = new_pipe(&self.vm, self.addr, 8192, &self.next_pipe_idx);
+            let (p, q) = new_pipe(&self.vm, 8192, &self.next_pipe_idx);
 
             let vm_cl = self.vm.clone();
             let next_pipe_cl = self.next_pipe_idx.clone();
-            let addr = self.addr;
 
             let comm = s.spawn(move || {
                 crate::comm::control_thread(
                     vm_cl,
-                    addr,
                     next_pipe_cl,
                     argv,
                     crate::pipe::ControlPipe::new(q),

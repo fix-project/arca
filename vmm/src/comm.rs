@@ -2,7 +2,6 @@ use crate::doorbell::{new_vm_to_host_door_bell, HostToVMDoorBell, VMToHostDoorBe
 use crate::pipe::{ControlPipe, FilePipe, GuestPipe, ListenerPipe, StreamPipe};
 use common::protocol::control::PipeData;
 use common::BuddyAllocator;
-use kvm_ioctls::IoEventAddress;
 use kvm_ioctls::VmFd;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -30,14 +29,12 @@ fn decompose_pipe(pipe: common::pipe::Pipe<VMToHostDoorBell>) -> PipeData {
 
 pub fn new_pipe(
     vm: &VmFd,
-    addr: IoEventAddress,
     len: usize,
     next_pipe_idx: &Arc<AtomicUsize>,
 ) -> (common::pipe::Pipe<VMToHostDoorBell>, GuestPipe) {
     let pipe_idx = next_pipe_idx.fetch_add(1, std::sync::atomic::Ordering::Release);
-    let (rx_avail_vm, rx_avail_waiter) = new_vm_to_host_door_bell(vm, addr, pipe_idx as u64 * 2);
-    let (tx_avail_vm, tx_avail_waiter) =
-        new_vm_to_host_door_bell(vm, addr, pipe_idx as u64 * 2 + 1);
+    let (rx_avail_vm, rx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2);
+    let (tx_avail_vm, tx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2 + 1);
 
     let rx_avail_host = HostToVMDoorBell::new(vm);
     let tx_avail_host = HostToVMDoorBell::new(vm);
@@ -49,7 +46,6 @@ pub fn new_pipe(
 
 pub fn control_thread(
     vm: Arc<VmFd>,
-    addr: IoEventAddress,
     next_pipe_idx: Arc<AtomicUsize>,
     argv: Vec<String>,
     mut pipe: ControlPipe,
@@ -69,7 +65,7 @@ pub fn control_thread(
                     .open(path);
                 match f {
                     Ok(f) => {
-                        let (p, q) = new_pipe(&vm, addr, 1024, &next_pipe_idx);
+                        let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
                         std::thread::spawn(move || {
                             file_thread(f, FilePipe::new(q));
                         });
@@ -84,17 +80,17 @@ pub fn control_thread(
             },
             Request::Listen { ip, port } => {
                 let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
-                let (p, q) = new_pipe(&vm, addr, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
                 let vm_cl = vm.clone();
                 let next_pipe_cl = next_pipe_idx.clone();
                 std::thread::spawn(move || {
-                    listener_thread(vm_cl, addr, next_pipe_cl, listener, ListenerPipe::new(q));
+                    listener_thread(vm_cl, next_pipe_cl, listener, ListenerPipe::new(q));
                 });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Connect { host, port } => {
                 let stream = TcpStream::connect((host.as_str(), port)).unwrap();
-                let (p, q) = new_pipe(&vm, addr, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });
@@ -139,7 +135,6 @@ pub fn file_thread(mut file: File, mut pipe: FilePipe) {
 
 pub fn listener_thread(
     vm: Arc<VmFd>,
-    addr: IoEventAddress,
     next_pipe_idx: Arc<AtomicUsize>,
     listener: TcpListener,
     mut pipe: ListenerPipe,
@@ -149,7 +144,7 @@ pub fn listener_thread(
         let response = match pipe.recv() {
             Request::Accept => {
                 let (stream, _) = listener.accept().unwrap();
-                let (p, q) = new_pipe(&vm, addr, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });

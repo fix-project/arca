@@ -1,4 +1,4 @@
-use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData};
+use common::{buddy::ioaddr, pipe::DoorBell, protocol::control::VMToHostDoorBellData};
 use kvm_ioctls::{IoEventAddress, VmFd};
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
@@ -43,23 +43,16 @@ impl VMToHostDoorBellWaiter {
 }
 
 pub struct VMToHostDoorBell {
-    addr: IoEventAddress,
     datamatch: u64,
 }
 
 impl VMToHostDoorBell {
-    fn new(addr: IoEventAddress, datamatch: u64) -> Self {
-        Self { addr, datamatch }
+    fn new(datamatch: u64) -> Self {
+        Self { datamatch }
     }
 
     pub fn into_raw_parts(self) -> VMToHostDoorBellData {
-        let addr = match self.addr {
-            IoEventAddress::Pio(_) => todo!(),
-            IoEventAddress::Mmio(addr) => addr,
-        };
-
         VMToHostDoorBellData {
-            addr,
             datamatch: self.datamatch,
         }
     }
@@ -73,10 +66,10 @@ impl DoorBell for VMToHostDoorBell {
 
 pub fn new_vm_to_host_door_bell(
     vm: &VmFd,
-    addr: IoEventAddress,
     datamatch: u64,
 ) -> (VMToHostDoorBell, VMToHostDoorBellWaiter) {
-    let doorbellwaiter = VMToHostDoorBellWaiter::new(vm, &addr, datamatch);
-    let doorbell = VMToHostDoorBell::new(addr, datamatch);
+    let doorbellwaiter =
+        VMToHostDoorBellWaiter::new(vm, &IoEventAddress::Mmio(ioaddr()), datamatch);
+    let doorbell = VMToHostDoorBell::new(datamatch);
     (doorbell, doorbellwaiter)
 }

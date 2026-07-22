@@ -75,7 +75,6 @@ impl From<std::io::ErrorKind> for IoErrorKind {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VMToHostDoorBellData {
-    pub addr: u64,
     pub datamatch: u64,
 }
 

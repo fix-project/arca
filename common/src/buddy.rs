@@ -30,6 +30,8 @@ static BUDDY: LazyLock<BuddyAllocatorImpl> = LazyLock::new(|| {
     }
 });
 
+pub const MEM_BASE: u64 = 0x1_0000_0000;
+
 #[cfg(feature = "std")]
 pub fn init(size: usize) {
     LazyLock::set(&BUDDY, BuddyAllocatorImpl::new(size))
@@ -93,11 +95,7 @@ impl<'a> BitRef<'a> {
     }
 
     pub fn write(&mut self, value: bool) -> bool {
-        if value {
-            self.set()
-        } else {
-            self.clear()
-        }
+        if value { self.set() } else { self.clear() }
     }
 }
 
@@ -935,6 +933,10 @@ pub struct BuddyAllocator;
 
 // Rust requires explicit guarantee that clones of custom memory allocator for Arc can free memory allocated by each other
 unsafe impl AllocatorClone for BuddyAllocator {}
+
+pub fn ioaddr() -> u64 {
+    MEM_BASE + BuddyAllocator.len() as u64
+}
 
 impl BuddyAllocator {
     pub const MIN_ALLOCATION: usize = BuddyAllocatorImpl::MIN_ALLOCATION;

@@ -20,7 +20,9 @@ use crate::{
 };
 
 use common::{
-    buddy::BuddyAllocatorRawData, protocol::control::VMToHostDoorBellData, BuddyAllocator,
+    buddy::{BuddyAllocatorRawData, MEM_BASE},
+    protocol::control::VMToHostDoorBellData,
+    BuddyAllocator,
 };
 
 extern "C" {
@@ -101,7 +103,7 @@ unsafe extern "C" fn _start(
         }
         let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr + 0x1_0000_0000);
         let mut raw = *ptr;
-        raw.base = vm::pa2ka(0x1_0000_0000);
+        raw.base = vm::pa2ka(MEM_BASE as usize);
         common::buddy::import(raw);
         BuddyAllocator.set_caching(false);
 
@@ -110,8 +112,6 @@ unsafe extern "C" fn _start(
         common::buddy::wait();
         init_cpu_tls();
     };
-
-    let ioaddr = 0x1_0000_0000 + BuddyAllocator.len();
 
     // per-cpu init
     crate::tsc::init();
@@ -152,14 +152,8 @@ unsafe extern "C" fn _start(
         let rx = Reader::from_inner(rx);
         let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, txn), BuddyAllocator);
         let tx = Writer::from_inner(tx);
-        let rx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData {
-            addr: ioaddr as u64,
-            datamatch: 0,
-        });
-        let tx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData {
-            addr: ioaddr as u64,
-            datamatch: 1,
-        });
+        let rx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData { datamatch: 0 });
+        let tx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData { datamatch: 1 });
         let pipe = RawPipe::from_inner(rx, tx, rx_avail, tx_avail);
         let pipe = HostPipe::new(pipe);
         let host = crate::pipe::HOST.lock();
