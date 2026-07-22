@@ -292,14 +292,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 regs.rax = mem.as_ptr() as u64;
                             }
                         }
-                        hypercall::NOTIFY_READ => {
-                            todo!();
-                            // read_fd.write(1).unwrap();
-                        }
-                        hypercall::NOTIFY_WRITE => {
-                            todo!();
-                            // write_fd.write(1).unwrap();
-                        }
                         x => unimplemented!("hypercall {x}"),
                     };
                     vcpu_fd.set_regs(&regs).unwrap();

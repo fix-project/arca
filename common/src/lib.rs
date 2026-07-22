@@ -58,9 +58,6 @@ pub mod hypercall {
     pub const MEMSET: u64 = 3;
     pub const MEMCLR: u64 = 4;
 
-    pub const NOTIFY_READ: u64 = 16;
-    pub const NOTIFY_WRITE: u64 = 17;
-
     #[derive(Debug, Default)]
     pub struct TcpInfo {
         pub ip: u32,

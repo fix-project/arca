@@ -1,8 +1,4 @@
-#![allow(unused)]
-
-use std::os::fd::{AsRawFd, RawFd};
-
-use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData, BuddyAllocator};
+use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData};
 use kvm_ioctls::{IoEventAddress, VmFd};
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
@@ -30,19 +26,7 @@ impl DoorBell for HostToVMDoorBell {
 
 #[derive(Debug)]
 pub struct VMToHostDoorBellWaiter {
-    fd: EventFd,
-}
-
-impl From<VMToHostDoorBellWaiter> for EventFd {
-    fn from(val: VMToHostDoorBellWaiter) -> Self {
-        val.fd
-    }
-}
-
-impl AsRawFd for VMToHostDoorBellWaiter {
-    fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
-        self.fd.as_raw_fd()
-    }
+    pub fd: EventFd,
 }
 
 impl VMToHostDoorBellWaiter {
@@ -51,16 +35,10 @@ impl VMToHostDoorBellWaiter {
     /// different datamatch. The caller needs to guarantee that {addr, datamatch}
     /// hasn't been registered before
     fn new(vm: &VmFd, addr: &IoEventAddress, datamatch: u64) -> Self {
-        let evtfd = EventFd::new(EFD_NONBLOCK).unwrap();
+        let evtfd = EventFd::new(0).unwrap();
         vm.register_ioevent(&evtfd, addr, datamatch)
             .expect("Failed to register ioevent");
         Self { fd: evtfd }
-    }
-
-    pub fn drain(&mut self) -> std::io::Result<()> {
-        loop {
-            self.fd.read()?;
-        }
     }
 }
 

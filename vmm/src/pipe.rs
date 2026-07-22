@@ -6,8 +6,8 @@ use std::marker::PhantomData;
 #[derive(Debug)]
 pub struct GuestPipe {
     inner: RawPipe<HostToVMDoorBell>,
-    _rx_avail: VMToHostDoorBellWaiter,
-    _tx_avail: VMToHostDoorBellWaiter,
+    rx_avail: VMToHostDoorBellWaiter,
+    tx_avail: VMToHostDoorBellWaiter,
 }
 
 impl GuestPipe {
@@ -18,15 +18,14 @@ impl GuestPipe {
     ) -> Self {
         Self {
             inner: pipe,
-            _rx_avail: rx_avail,
-            _tx_avail: tx_avail,
+            rx_avail,
+            tx_avail,
         }
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
         while !self.inner.can_read() {
-            // self.read_fd.read().unwrap();
-            std::thread::yield_now();
+            self.rx_avail.fd.read().unwrap();
         }
         self.inner.read(bytes)
     }
@@ -47,8 +46,7 @@ impl GuestPipe {
 
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize> {
         while !self.inner.can_write() {
-            // self.write_fd.read().unwrap();
-            std::thread::yield_now();
+            self.tx_avail.fd.read().unwrap();
         }
         self.inner.write(bytes)
     }

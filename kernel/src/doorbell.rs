@@ -1,7 +1,5 @@
-#![allow(unused)]
-
 use crate::vm;
-use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData, BuddyAllocator};
+use common::{pipe::DoorBell, protocol::control::VMToHostDoorBellData};
 
 #[derive(Debug)]
 struct SendPtr(*mut u64);
