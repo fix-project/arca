@@ -130,6 +130,37 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     Ok(o)
 }
 
+fn generate_coupon() -> Result<()> {
+    let coupon_dir = Path::new("wasm/coupon");
+
+    let script = coupon_dir.join("rewrite-wat.sh");
+    let coupon = coupon_dir.join("fix-proof/coupon.wat");
+    let prologue = coupon_dir.join("prologue.wat");
+    let epilogue = coupon_dir.join("epilogue.wat");
+
+    println!("cargo::rerun-if-changed={}", script.display());
+    println!("cargo::rerun-if-changed={}", coupon.display());
+    println!("cargo::rerun-if-changed={}", prologue.display());
+    println!("cargo::rerun-if-changed={}", epilogue.display());
+
+    let output = Path::new("wasm/coupon.wat");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg(&coupon)
+        .arg(&prologue)
+        .arg(&epilogue)
+        .arg(output)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to run {}: {error}", script.display()));
+
+    if !status.success() {
+        panic!("{} failed with status {status}", script.display());
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let out_dir = env::var_os("OUT_DIR").unwrap();
 
@@ -157,24 +188,30 @@ fn main() -> Result<()> {
     WASM2C.set(dst.join("bin/wasm2c")).unwrap();
     WAT2WASM.set(dst.join("bin/wat2wasm")).unwrap();
 
+    generate_coupon()?;
+
     for f in std::fs::read_dir("wasm")? {
         let f = f?;
-        let path = f.path();
-        let base = path.file_stem().unwrap();
-        let dst = Path::new(&out_dir).join(base);
-        println!(
-            "cargo::rerun-if-changed=wasm/{}",
-            f.file_name().to_str().unwrap()
-        );
-        let wat = std::fs::read(f.path())?;
-        let wasm = wat2wasm(&wat)?;
-        let (c, h) = wasm2c(&wasm)?;
-        let elf = c2elf(&c, &h)?;
-        std::fs::write(&dst, elf)?;
+        if f.file_type()?.is_file() {
+            let path = f.path();
+            let base = path.file_stem().unwrap();
+            let dst = Path::new(&out_dir).join(base);
+            if base != "coupon" {
+                println!(
+                    "cargo::rerun-if-changed=wasm/{}",
+                    f.file_name().to_str().unwrap()
+                );
+            }
+            let wat = std::fs::read(f.path())?;
+            let wasm = wat2wasm(&wat)?;
+            let (c, h) = wasm2c(&wasm)?;
+            let elf = c2elf(&c, &h)?;
+            std::fs::write(&dst, elf)?;
 
-        let link = Path::new(&out_dir).ancestors().nth(4).unwrap().join(base);
-        let _ = fs::remove_file(&link);
-        symlink(dst, link)?;
+            let link = Path::new(&out_dir).ancestors().nth(4).unwrap().join(base);
+            let _ = fs::remove_file(&link);
+            symlink(dst, link)?;
+        }
     }
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();

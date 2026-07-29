@@ -1,3 +1,4 @@
 /target
 .build
 .fix
+fix/wasm/coupon.wat
