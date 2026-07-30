@@ -11,8 +11,6 @@ use fix::*;
 extern crate alloc;
 use alloc::collections::BTreeMap;
 
-use derive_more::Unwrap;
-
 #[kmain]
 fn main() {
     let argv = os::argv();
@@ -71,31 +69,14 @@ fn eval_file(filename: &str) {
             }
             Statement::Print(expr) | Statement::Expr(expr) => {
                 let x = eval(&evaluator, &expr, &mut context);
-                match x {
-                    Value::Handle(x) => {
-                        println!("handle:    {x}");
-                        if let Some(blob) = x
-                            .try_unwrap_object()
-                            .ok()
-                            .and_then(|x| x.try_unwrap_blob().ok())
-                        {
-                            let contents = evaluator.storage().get_blob(blob).unwrap();
-                            println!("result is a Blob: {contents:?}");
-                            if contents.len() == 8 {
-                                let bytes: [u8; 8] = (*contents).try_into().unwrap();
-                                let value = u64::from_le_bytes(bytes);
-                                println!("\tas a u64: {value}");
-                            }
-                        }
-                    }
-                    Value::Int(x) => {
-                        println!("int: {x}");
-                    }
-                    Value::String(x) => {
-                        println!("string: {x}");
-                    }
-                    Value::Path(x) => {
-                        println!("path: {x}");
+                println!("handle:    {x}");
+                if let Handle::Object(Object::Blob(blob)) = x {
+                    let contents = evaluator.storage().get_blob(blob).unwrap();
+                    println!("result is a Blob: {contents:?}");
+                    if contents.len() == 8 {
+                        let bytes: [u8; 8] = (*contents).try_into().unwrap();
+                        let value = u64::from_le_bytes(bytes);
+                        println!("\tas a u64: {value}");
                     }
                 }
             }
@@ -103,68 +84,43 @@ fn eval_file(filename: &str) {
     }
 }
 
-#[derive(Clone, Debug, Unwrap)]
-#[unwrap(ref)]
-enum Value {
-    Handle(Handle),
-    Int(i64),
-    String(String),
-    Path(String),
-}
-
-fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Value>) -> Value {
+fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Handle>) -> Handle {
     match e {
-        Expr::Number(x) => Value::Int(*x),
-        Expr::Identifier(x) => ctx.get(x).expect("undefined identifier").clone(),
-        Expr::String(x) => Value::String(x.clone()),
-        Expr::Call { name, args } => {
-            let args: Vec<Value> = args.into_iter().map(|x| eval(evaluator, x, ctx)).collect();
-            match name.as_str() {
-                "Int" => args[0].clone(),
-                "create_blob" => match args[0] {
-                    Value::Handle(_) => panic!("create blob with handle?"),
-                    Value::Int(x) => {
-                        let bytes = i64::to_le_bytes(x);
-                        Value::Handle(evaluator.storage().add_blob(&bytes).into())
-                    }
-                    Value::String(ref x) => {
-                        Value::Handle(evaluator.storage().add_blob(x.as_bytes()).into())
-                    }
-                    Value::Path(ref x) => {
-                        let mut file = File::open(x, true, false, false, false, false).unwrap();
-                        let len = file.seek(Whence::End(0));
-                        file.seek(Whence::Start(0));
-                        let mut buf = vec![0; len as usize];
-                        file.read_exact(&mut buf);
-                        core::mem::forget(file);
-                        Value::Handle(evaluator.storage().add_blob(&buf).into())
-                    }
-                },
-                "create_tree" => {
-                    let handles: Vec<Handle> = args.into_iter().map(Value::unwrap_handle).collect();
-                    Value::Handle(evaluator.storage().add_tree(&handles).into())
-                }
-                "create_application_thunk" => Value::Handle(
-                    Thunk::Application(
-                        args[0]
-                            .clone()
-                            .unwrap_handle()
-                            .unwrap_object()
-                            .unwrap_tree(),
-                    )
-                    .into(),
-                ),
-                "create_strict_encode" => Value::Handle(
-                    Encode::Strict(args[0].clone().unwrap_handle().unwrap_thunk()).into(),
-                ),
-                "eval" => Value::Handle(evaluator.eval(args[0].clone().unwrap_handle())),
-                "Path" => match args[0] {
-                    Value::String(ref x) => Value::Path(x.clone()),
-                    _ => panic!("bad path"),
-                },
-                name => todo!("call {name} {args:?}"),
+        Expr::Identifier(x) => *ctx.get(x).expect("undefined identifier"),
+        Expr::Call { name, args } => match (name.as_str(), args.as_slice()) {
+            ("create_blob", [Expr::Number(x)]) => {
+                let bytes = i64::to_le_bytes(*x);
+                evaluator.storage().add_blob(&bytes).into()
             }
-        }
+            ("create_blob", [Expr::String(x)]) => {
+                let bytes = x.as_bytes();
+                evaluator.storage().add_blob(bytes).into()
+            }
+            ("create_blob_file", [Expr::String(path)]) => {
+                let mut file = File::open(path, true, false, false, false, false).unwrap();
+                let len = file.seek(Whence::End(0));
+                file.seek(Whence::Start(0));
+                let mut buf = vec![0; len as usize];
+                file.read_exact(&mut buf);
+                core::mem::forget(file);
+                evaluator.storage().add_blob(&buf).into()
+            }
+            _ => {
+                let args: Vec<Handle> = args.iter().map(|x| eval(evaluator, x, ctx)).collect();
+                match name.as_str() {
+                    "create_tree" => evaluator.storage().add_tree(&args).into(),
+                    "create_application_thunk" => {
+                        Thunk::Application(args[0].unwrap_object().unwrap_tree()).into()
+                    }
+                    "create_strict_encode" => Encode::Strict(args[0].unwrap_thunk()).into(),
+                    "eval" => evaluator.eval(args[0]),
+                    name => todo!("call {name} {args:?}"),
+                }
+            }
+        },
         Expr::Group(x) => eval(evaluator, x, ctx),
+        Expr::Number(_) | Expr::String(_) => {
+            panic!("literals can't be evaluated")
+        }
     }
 }
