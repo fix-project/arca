@@ -116,6 +116,19 @@ fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, H
                 name => todo!("call {name} {args:?}"),
             }
         }
+        Expr::IdentificationThunk(x) => {
+            Handle::Thunk(Thunk::Identification(match eval(evaluator, x, ctx) {
+                Handle::Ref(reference) => reference,
+                Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
+                Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
+                _ => panic!("create_identification_thunk: expected a ref or an object"),
+            }))
+        }
+        Expr::Ref(reference) => match eval(evaluator, reference, ctx) {
+            Handle::Object(Object::Blob(blob)) => Handle::Ref(Ref::Blob(blob)),
+            Handle::Object(Object::Tree(tree)) => Handle::Ref(Ref::Tree(tree)),
+            handle => panic!("can't make reference to {handle}"),
+        },
         Expr::Group(x) => eval(evaluator, x, ctx),
     }
 }

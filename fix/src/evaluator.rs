@@ -58,7 +58,7 @@ impl<R: Runtime> Evaluator<R> {
 
     fn think(&self, thunk: Thunk) -> Handle {
         match thunk {
-            Thunk::Identification(_) => todo!(),
+            Thunk::Identification(reference) => self.lift(Handle::Ref(reference)),
             Thunk::Selection(_) => todo!(),
             Thunk::Application(tree) => {
                 let evaled = self.eval_tree(tree);
@@ -97,9 +97,10 @@ impl<R: Runtime> Evaluator<R> {
     pub fn eval(&self, handle: Handle) -> Handle {
         println!("evaluating {handle}");
         match handle {
-            Handle::Thunk(_) | Handle::Ref(_) => todo!(),
+            Handle::Ref(reference) => self.eval(self.lift(Handle::Ref(reference))),
+            Handle::Thunk(_) => todo!(),
             Handle::Object(obj) => match obj {
-                Object::Blob(x) => x.into(),
+                Object::Blob(blob) => blob.into(),
                 Object::Tree(tree) => self.eval_tree(tree).into(),
             },
             Handle::Encode(e) => self.eval(self.encode(e)),
