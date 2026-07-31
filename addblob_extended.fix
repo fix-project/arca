@@ -1,0 +1,31 @@
+a = create_blob(Int(1));
+b = create_blob(Int(2));
+c = create_blob(Int(3));
+d = create_blob(Int(4));
+e = create_blob(Int(5));
+f = create_blob(Int(6));
+g = create_blob(Int(7));
+h = create_blob(Int(8));
+
+add = create_blob(Path("./target/x86_64-unknown-none/addblob"));
+
+ab = create_application_thunk(create_tree(add, a, b));
+cd = create_application_thunk(create_tree(add, c, d));
+ef = create_application_thunk(create_tree(add, e, f));
+gh = create_application_thunk(create_tree(add, g, h));
+
+sum_ab = create_strict_encode(ab);
+sum_cd = create_strict_encode(cd);
+sum_ef = create_strict_encode(ef);
+sum_gh = create_strict_encode(gh);
+
+left = create_application_thunk(create_tree(add, sum_ab, sum_cd));
+right = create_application_thunk(create_tree(add, sum_ef, sum_gh));
+
+sum_left = create_strict_encode(left);
+sum_right = create_strict_encode(right);
+
+final = create_application_thunk(create_tree(add, sum_left, sum_right));
+
+eval(create_strict_encode(final));
+
