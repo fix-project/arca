@@ -1,13 +1,13 @@
-a = create_blob(Int(1));
-b = create_blob(Int(2));
-c = create_blob(Int(3));
-d = create_blob(Int(4));
-e = create_blob(Int(5));
-f = create_blob(Int(6));
-g = create_blob(Int(7));
-h = create_blob(Int(8));
+a = 1;
+b = 2;
+c = 3;
+d = 4;
+e = 5;
+f = 6;
+g = 7;
+h = 8;
 
-add = create_blob(Path("./target/x86_64-unknown-none/addblob"));
+add = create_blob("./target/x86_64-unknown-none/addblob");
 
 ab = create_application_thunk(create_tree(add, a, b));
 cd = create_application_thunk(create_tree(add, c, d));
