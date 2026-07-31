@@ -87,6 +87,8 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RParen, "expected ')' for grouping")?;
                 Ok(Expr::Group(Box::new(expr)))
             }
+            Token::Ampersand => Ok(Expr::Ref(Box::new(self.parse_expr()?))),
+            Token::Asterisk => Ok(Expr::IdentificationThunk(Box::new(self.parse_expr()?))),
             token => Err(format!("unexpected token: {token:?}")),
         }
     }
