@@ -1,4 +1,4 @@
-use core::{clone::Clone, fmt};
+use core::clone::Clone;
 use kernel::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,32 +28,4 @@ pub enum Statement {
     Assign { name: String, expr: Expr },
     Print(Expr),
     Expr(Expr),
-}
-
-#[derive(Debug, Clone)]
-pub enum Value<H, B, T> {
-    Handle(H),
-    BlobData(B),
-    TreeData(T),
-    Int(i64),
-    String(String),
-    Unit,
-}
-
-impl<H, B, T> fmt::Display for Value<H, B, T>
-where
-    H: fmt::Debug,
-    B: fmt::Debug,
-    T: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Handle(handle) => write!(formatter, "{handle:?}"),
-            Self::BlobData(data) => write!(formatter, "{data:?}"),
-            Self::TreeData(data) => write!(formatter, "{data:?}"),
-            Self::Int(value) => write!(formatter, "{value}"),
-            Self::String(value) => write!(formatter, "{value}"),
-            Self::Unit => write!(formatter, "()"),
-        }
-    }
 }

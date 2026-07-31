@@ -538,6 +538,7 @@ dependencies = [
  "async-lock",
  "derive_more",
  "elf",
+ "embedded-io 0.6.1",
  "hashbrown 0.15.5",
  "libc",
  "log",
