@@ -87,40 +87,35 @@ fn eval_file(filename: &str) {
 fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Handle>) -> Handle {
     match e {
         Expr::Identifier(x) => *ctx.get(x).expect("undefined identifier"),
-        Expr::Call { name, args } => match (name.as_str(), args.as_slice()) {
-            ("create_blob", [Expr::Number(x)]) => {
-                let bytes = i64::to_le_bytes(*x);
-                evaluator.storage().add_blob(&bytes).into()
-            }
-            ("create_blob", [Expr::String(x)]) => {
-                let bytes = x.as_bytes();
-                evaluator.storage().add_blob(bytes).into()
-            }
-            ("create_blob_file", [Expr::String(path)]) => {
-                let mut file = File::open(path, true, false, false, false, false).unwrap();
-                let len = file.seek(Whence::End(0));
-                file.seek(Whence::Start(0));
-                let mut buf = vec![0; len as usize];
-                file.read_exact(&mut buf);
-                core::mem::forget(file);
-                evaluator.storage().add_blob(&buf).into()
-            }
-            _ => {
-                let args: Vec<Handle> = args.iter().map(|x| eval(evaluator, x, ctx)).collect();
-                match name.as_str() {
-                    "create_tree" => evaluator.storage().add_tree(&args).into(),
-                    "create_application_thunk" => {
-                        Thunk::Application(args[0].unwrap_object().unwrap_tree()).into()
-                    }
-                    "create_strict_encode" => Encode::Strict(args[0].unwrap_thunk()).into(),
-                    "eval" => evaluator.eval(args[0]),
-                    name => todo!("call {name} {args:?}"),
-                }
-            }
-        },
-        Expr::Group(x) => eval(evaluator, x, ctx),
-        Expr::Number(_) | Expr::String(_) => {
-            panic!("literals can't be evaluated")
+        Expr::Number(x) => {
+            let bytes = i64::to_le_bytes(*x);
+            evaluator.storage().add_blob(&bytes).into()
         }
+        Expr::String(x) => {
+            let bytes = x.as_bytes();
+            evaluator.storage().add_blob(bytes).into()
+        }
+        Expr::Call { name, args } => {
+            let arg_handles: Vec<Handle> = args.iter().map(|x| eval(evaluator, x, ctx)).collect();
+            match name.as_str() {
+                "create_blob" if let Expr::String(path) = &args.get(0).expect("no path") => {
+                    let mut file = File::open(path, true, false, false, false, false).unwrap();
+                    let len = file.seek(Whence::End(0));
+                    file.seek(Whence::Start(0));
+                    let mut buf = vec![0; len as usize];
+                    file.read_exact(&mut buf);
+                    core::mem::forget(file);
+                    evaluator.storage().add_blob(&buf).into()
+                }
+                "create_tree" => evaluator.storage().add_tree(&arg_handles).into(),
+                "create_application_thunk" => {
+                    Thunk::Application(arg_handles[0].unwrap_object().unwrap_tree()).into()
+                }
+                "create_strict_encode" => Encode::Strict(arg_handles[0].unwrap_thunk()).into(),
+                "eval" => evaluator.eval(arg_handles[0]),
+                name => todo!("call {name} {args:?}"),
+            }
+        }
+        Expr::Group(x) => eval(evaluator, x, ctx),
     }
 }
