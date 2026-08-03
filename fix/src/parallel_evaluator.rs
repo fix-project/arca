@@ -24,7 +24,7 @@ use kernel::prelude::*;
 // use common::bitpack::BitPack;
 // use kernel::prelude::*;
 
-const NUM_WORKERS: usize = 2;
+const NUM_WORKERS: usize = 8;
 #[derive(Clone, Copy)]
 enum EvalType {
     Parallel, Serial,
@@ -98,11 +98,12 @@ impl<R: Runtime> Evaluator<R> {
             }
         }
 }
-
+    /*
     pub fn runtime(&self) -> &R {
         &self.runtime
     }
-
+    */
+    
     pub fn storage(&self) -> &dyn Storage {
         self.runtime.storage()
     }
@@ -196,7 +197,7 @@ impl<R: Runtime> Evaluator<R> {
         self.runtime.storage().add_tree(&evaled)
 }
     // elimnate redundancy i think
-    pub fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
+    fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
         println!("evaluating {handle}");
         match handle {
             Handle::Thunk(_) | Handle::Ref(_) => todo!(),

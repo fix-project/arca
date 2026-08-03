@@ -26,7 +26,7 @@ fn main() {
             let filename = argv.get(2).expect("fix eval: expected a command file");
             eval_file(filename);
         },
-        //test to run the parallel evaluator
+        // test to run the parallel evaluator
         Some("parallel_eval") => {
             let filename = argv.get(2).expect("fix eval: expected a command file");
             eval_file_parallel(filename);

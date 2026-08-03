@@ -6,6 +6,14 @@ e = 5;
 f = 6;
 g = 7;
 h = 8;
+i = 9;
+j = 10;
+k = 11;
+l = 12;
+m = 13;
+n = 14;
+o = 15;
+p = 16;
 
 add = create_blob("./target/x86_64-unknown-none/addblob");
 
@@ -13,14 +21,32 @@ ab = create_application_thunk(create_tree(add, a, b));
 cd = create_application_thunk(create_tree(add, c, d));
 ef = create_application_thunk(create_tree(add, e, f));
 gh = create_application_thunk(create_tree(add, g, h));
+ij = create_application_thunk(create_tree(add, i, j));
+kl = create_application_thunk(create_tree(add, k, l));
+mn = create_application_thunk(create_tree(add, m, n));
+op = create_application_thunk(create_tree(add, o, p));
 
 sum_ab = create_strict_encode(ab);
 sum_cd = create_strict_encode(cd);
 sum_ef = create_strict_encode(ef);
 sum_gh = create_strict_encode(gh);
+sum_ij = create_strict_encode(ij);
+sum_kl = create_strict_encode(kl);
+sum_mn = create_strict_encode(mn);
+sum_op = create_strict_encode(op);
 
-left = create_application_thunk(create_tree(add, sum_ab, sum_cd));
-right = create_application_thunk(create_tree(add, sum_ef, sum_gh));
+lefti = create_application_thunk(create_tree(add, sum_ab, sum_cd));
+righti = create_application_thunk(create_tree(add, sum_ef, sum_gh));
+leftr= create_application_thunk(create_tree(add, sum_ij, sum_kl));
+rightr = create_application_thunk(create_tree(add, sum_mn, sum_op));
+
+sum_lefti = create_strict_encode(lefti);
+sum_righti = create_strict_encode(righti);
+sum_leftr = create_strict_encode(leftr);
+sum_rightr = create_strict_encode(rightr);
+
+left = create_application_thunk(create_tree(add, sum_lefti, sum_leftr));
+right = create_application_thunk(create_tree(add, sum_righti, sum_rightr));
 
 sum_left = create_strict_encode(left);
 sum_right = create_strict_encode(right);
