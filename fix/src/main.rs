@@ -1,8 +1,8 @@
 #![no_main]
 #![no_std]
 
-mod scheduler;
 mod parallel_evaluator;
+mod scheduler;
 
 use kernel::host::fs::{self, File, Whence};
 use kernel::host::os;
@@ -25,7 +25,7 @@ fn main() {
         Some("eval") => {
             let filename = argv.get(2).expect("fix eval: expected a command file");
             eval_file(filename);
-        },
+        }
         // test to run the parallel evaluator
         Some("parallel_eval") => {
             let filename = argv.get(2).expect("fix eval: expected a command file");
@@ -133,8 +133,8 @@ fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, H
     }
 }
 
-// Jennifer: tons of redundancy but I just didn't want to change original code, 
-// in case errors showed up 
+// Jennifer: tons of redundancy but I just didn't want to change original code,
+// in case errors showed up
 // the main change is just calling the parallel evaluator and how its passed in
 fn eval_file_parallel(filename: &str) {
     let mut file = File::open(filename, true, false, false, false, false).unwrap();
@@ -177,7 +177,11 @@ fn eval_file_parallel(filename: &str) {
     }
 }
 
-fn eval_parallel(evaluator: &parallel_evaluator::Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Handle>) -> Handle {
+fn eval_parallel(
+    evaluator: &parallel_evaluator::Evaluator<FixOnArca>,
+    e: &Expr,
+    ctx: &mut BTreeMap<String, Handle>,
+) -> Handle {
     match e {
         Expr::Identifier(x) => *ctx.get(x).expect("undefined identifier"),
         Expr::Number(x) => {
@@ -189,7 +193,10 @@ fn eval_parallel(evaluator: &parallel_evaluator::Evaluator<FixOnArca>, e: &Expr,
             evaluator.storage().add_blob(bytes).into()
         }
         Expr::Call { name, args } => {
-            let arg_handles: Vec<Handle> = args.iter().map(|x| eval_parallel(evaluator, x, ctx)).collect();
+            let arg_handles: Vec<Handle> = args
+                .iter()
+                .map(|x| eval_parallel(evaluator, x, ctx))
+                .collect();
             match name.as_str() {
                 "create_blob" if let Expr::String(path) = &args.get(0).expect("no path") => {
                     let mut file = File::open(path, true, false, false, false, false).unwrap();

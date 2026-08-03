@@ -6,9 +6,8 @@ use kernel::{coreid, kthread};
 //use kernel::tsc;
 use crate::scheduler::{Scheduler, Task};
 
-
 use crate::handle::*;
-use crate::runtime::Runtime; 
+use crate::runtime::Runtime;
 use crate::storage::Storage;
 use kernel::prelude::*;
 
@@ -27,7 +26,8 @@ use kernel::prelude::*;
 const NUM_WORKERS: usize = 8;
 #[derive(Clone, Copy)]
 enum EvalType {
-    Parallel, Serial,
+    Parallel,
+    Serial,
 }
 pub struct Evaluator<R: Runtime> {
     runtime: R,
@@ -35,8 +35,7 @@ pub struct Evaluator<R: Runtime> {
 }
 
 impl<R: Runtime> Evaluator<R> {
-    
-    pub fn new(runtime: R) -> Arc<Self>{
+    pub fn new(runtime: R) -> Arc<Self> {
         let evaluator = Arc::new(Self {
             runtime,
             scheduler: Scheduler::new(),
@@ -49,11 +48,10 @@ impl<R: Runtime> Evaluator<R> {
     pub fn start_workers(self: &Arc<Self>, num_workers: usize) {
         for i in 0..num_workers {
             let evaluator = Arc::clone(self);
-            kthread::spawn(move || { 
+            kthread::spawn(move || {
                 println!("worker {} started on core {}", i, coreid());
                 evaluator.worker_loop(i);
-                }
-            )
+            })
         }
     }
 
@@ -61,21 +59,15 @@ impl<R: Runtime> Evaluator<R> {
         loop {
             // eventually make this a queue to handle local queue of work
             if let Some(work) = self.scheduler.get_work() {
-                println!(
-                    "worker {} evaluating task on core {}",
-                    worker_id,
-                    coreid()
-                );
+                println!("worker {} evaluating task on core {}", worker_id, coreid());
 
                 let result = self.eval_test(work.get_handle(), EvalType::Parallel);
                 work.task_complete(result)
-            }
-            else {
+            } else {
                 //change this to condition variable, so it does no busy waiting?
                 kthread::yield_now()
             }
         }
-        
     }
 
     fn wait_while_helping(&self, target: &Arc<Task>) -> Handle {
@@ -84,12 +76,11 @@ impl<R: Runtime> Evaluator<R> {
             if target.is_complete() {
                 return target.take_result();
             }
-    
+
             if let Some(work) = self.scheduler.get_work() {
                 println!("calling thread helping on core {}", coreid());
 
-                let result =
-                    self.eval_test(work.get_handle(), EvalType::Parallel);
+                let result = self.eval_test(work.get_handle(), EvalType::Parallel);
 
                 work.task_complete(result);
             } else {
@@ -97,13 +88,13 @@ impl<R: Runtime> Evaluator<R> {
                 kthread::yield_now();
             }
         }
-}
+    }
     /*
     pub fn runtime(&self) -> &R {
         &self.runtime
     }
     */
-    
+
     pub fn storage(&self) -> &dyn Storage {
         self.runtime.storage()
     }
@@ -137,7 +128,7 @@ impl<R: Runtime> Evaluator<R> {
             Thunk::Identification(_) => todo!(),
             Thunk::Selection(_) => todo!(),
             Thunk::Application(tree) => {
-                let evaled = self.eval_tree(tree,eval_mode);
+                let evaled = self.eval_tree(tree, eval_mode);
                 self.apply(evaled)
             }
         }
@@ -159,14 +150,13 @@ impl<R: Runtime> Evaluator<R> {
         }
     }
 
-    
     fn eval_tree(&self, handle: Tree, eval_mode: EvalType) -> Tree {
         match eval_mode {
             EvalType::Serial => self.eval_tree_seq(handle),
-            EvalType::Parallel => self.eval_tree_parallel(handle)
-        } 
+            EvalType::Parallel => self.eval_tree_parallel(handle),
+        }
     }
-    
+
     fn eval_tree_seq(&self, handle: Tree) -> Tree {
         let tree = self.runtime.storage().get_tree(handle).unwrap();
         let evaled: Vec<Handle> = tree
@@ -179,13 +169,12 @@ impl<R: Runtime> Evaluator<R> {
     }
 
     fn eval_tree_parallel(&self, handle: Tree) -> Tree {
-
         let tree = self.runtime.storage().get_tree(handle).unwrap();
         if tree.len() <= 2 {
-            return self.eval_tree_seq(handle)
+            return self.eval_tree_seq(handle);
         }
         let mut evaled = Vec::with_capacity(tree.len());
-        // evaluate the first 
+        // evaluate the first
         evaled.push(self.eval_test(tree[0], EvalType::Serial));
         let mut tasks = Vec::with_capacity(tree.len() - 1);
         for child in tree[1..].iter().copied() {
@@ -195,7 +184,7 @@ impl<R: Runtime> Evaluator<R> {
             evaled.push(self.wait_while_helping(&task));
         }
         self.runtime.storage().add_tree(&evaled)
-}
+    }
     // elimnate redundancy i think
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
         println!("evaluating {handle}");
@@ -258,5 +247,4 @@ impl<R: Runtime> Evaluator<R> {
         result_tree
     }
     */
-    
 }
