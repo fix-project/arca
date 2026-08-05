@@ -10,6 +10,8 @@ pub enum Token {
     RParen,
     Comma,
     Semicolon,
+    Ampersand,
+    Asterisk,
     Equals,
     Eof,
 }
@@ -21,6 +23,8 @@ pub enum Expr {
     String(String),
     Call { name: String, args: Vec<Expr> },
     Group(Box<Expr>),
+    Ref(Box<Expr>),
+    IdentificationThunk(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]

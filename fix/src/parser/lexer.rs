@@ -40,6 +40,8 @@ impl<'a> Lexer<'a> {
             ')' => Token::RParen,
             ',' => Token::Comma,
             '=' => Token::Equals,
+            '&' => Token::Ampersand,
+            '*' => Token::Asterisk,
             '"' => {
                 let text = self.take(String::new(), |ch| ch != '"');
                 if self.characters.next() != Some('"') {

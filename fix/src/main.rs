@@ -116,6 +116,10 @@ fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, H
                 name => todo!("call {name} {args:?}"),
             }
         }
+        Expr::IdentificationThunk(x) => {
+            Thunk::Identification(eval(evaluator, x, ctx).unwrap_ref()).into()
+        }
+        Expr::Ref(reference) => evaluator.lower(eval(evaluator, reference, ctx)),
         Expr::Group(x) => eval(evaluator, x, ctx),
     }
 }

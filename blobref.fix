@@ -1,0 +1,4 @@
+x = 2; 
+y = &x;
+identify_y = *y;
+eval(create_strict_encode(identify_y));
