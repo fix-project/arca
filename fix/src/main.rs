@@ -19,7 +19,7 @@ use alloc::collections::BTreeMap;
 fn main() {
     let argv = os::argv();
 
-    // Subcommand dispatch: `fix init` | `fix eval <file>`.
+    // Subcommand dispatch: `fix init` | `fix eval <file>` | `fix interpret <file>`.
     match argv.get(1).map(String::as_str) {
         Some("init") => init(),
         Some("eval") => {
@@ -31,8 +31,14 @@ fn main() {
             let filename = argv.get(2).expect("fix eval: expected a command file");
             eval_file_parallel(filename);
         }
-        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file>)"),
-        None => panic!("fix: expected a command (init | eval <file>)"),
+        Some("interpret") => {
+            let filename = argv.get(2).expect("fix interpret: expected a program file");
+            interpret_file(filename);
+        }
+        Some(other) => panic!(
+            "fix: unknown command '{other}' (expected: init | eval <file> | interpret <file>)"
+        ),
+        None => panic!("fix: expected a command (init | eval <file> | interpret <file>)"),
     }
 
     kernel::shutdown();
@@ -142,7 +148,6 @@ fn eval_file_parallel(filename: &str) {
     file.seek(Whence::Start(0));
     let mut buf = vec![0; len];
     file.read_exact(&mut buf);
-
     let file = core::str::from_utf8(&buf).unwrap();
 
     let lexer = Lexer::new(&file);
@@ -222,4 +227,25 @@ fn eval_parallel(
         Expr::Ref(reference) => evaluator.lower(eval_parallel(&evaluator, reference, ctx)),
         Expr::Group(x) => eval_parallel(&evaluator, x, ctx),
     }
+}
+
+fn interpret_file(filename: &str) {
+    let mut file = File::open(filename, true, false, false, false, false).unwrap();
+    let len = file.seek(Whence::End(0)) as usize;
+    file.seek(Whence::Start(0));
+    let mut buf = vec![0; len];
+    file.read_exact(&mut buf);
+
+    let file = core::str::from_utf8(&buf).unwrap();
+
+    let lexer = Lexer::new(&file);
+    let tokens = lexer.tokenize().unwrap();
+    let mut parser = Parser::new(&tokens);
+    let program = parser.parse_program().unwrap();
+
+    let runtime = FixOnArca::default();
+    let evaluator = Evaluator::new(runtime);
+
+    let mut interpreter = Interpreter::new(evaluator.storage());
+    interpreter.interpret_program(program);
 }
