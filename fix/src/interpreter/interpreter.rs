@@ -1,11 +1,8 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 
-use crate::{
-    FixShell, Storage,
-    parser::{Expr, Statement},
-};
-use fixhandle::{Handle, Object};
+use crate::{FixShell, Storage, parser::Expr};
+use fixhandle::*;
 use kernel::prelude::*;
 
 pub struct Interpreter<'a> {
@@ -21,36 +18,30 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    pub fn interpret_program(&mut self, program: Vec<Statement>) {
-        for statement in program {
-            match statement {
-                Statement::Assign { name, expr } => {
-                    let handle = self.interpret(&expr);
-                    self.context.insert(name, handle);
-                }
-                Statement::Print(expr) | Statement::Expr(expr) => {
-                    let handle = self.interpret(&expr);
-                    println!("handle:    {handle}");
-
-                    if Self::is_blob_obj(handle) {
-                        let contents = self.get_blob_data(handle);
-                        println!("result is a Blob: {contents:?}");
-                        if contents.len() == 8 {
-                            let bytes: [u8; 8] = (*contents).try_into().unwrap();
-                            let value = u64::from_le_bytes(bytes);
-                            println!("\tas a u64: {value}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn interpret(&self, expression: &Expr) -> Handle {
+    pub fn interpret(&mut self, expression: &Expr) -> Handle {
         match expression {
             Expr::String(str) => self.create_blob(str.as_bytes()),
             Expr::Number(num) => self.create_blob(&i64::to_le_bytes(*num)),
-            _ => todo!("support more expressions"),
+            Expr::Bytes(bytes) => self.create_blob(bytes),
+            Expr::Identifier(name) => *self.context.get(name).expect("undefined identifier"),
+            Expr::Ref(object) => Self::create_ref(self.interpret(object)),
+            Expr::Tree(handles) => {
+                let handles: Vec<Handle> = handles.iter().map(|x| self.interpret(x)).collect();
+                self.create_tree(&handles)
+            }
+            Expr::Application(tree) => Self::create_application_thunk(self.interpret(tree)),
+            Expr::Identification(tree) => Self::create_identification_thunk(self.interpret(tree)),
+            Expr::StrictEncode(thunk) => Self::create_strict_encode(self.interpret(thunk)),
+            Expr::Let { bindings, body } => {
+                let outer_context = self.context.clone();
+                for (name, expr) in bindings {
+                    let handle = self.interpret(expr);
+                    self.context.insert(name.clone(), handle);
+                }
+                let handle = self.interpret(body);
+                self.context = outer_context;
+                handle
+            }
         }
     }
 }
@@ -66,12 +57,12 @@ impl FixShell for Interpreter<'_> {
         self.storage.add_tree(data).into()
     }
 
-    fn is_blob_obj(handle: Self::Handle) -> bool {
-        matches!(handle, Handle::Object(Object::Blob(_)))
-    }
-
-    fn is_tree_obj(handle: Self::Handle) -> bool {
-        matches!(handle, Handle::Object(Object::Tree(_)))
+    fn create_ref(handle: Self::Handle) -> Self::Handle {
+        match handle {
+            Handle::Object(Object::Blob(blob)) => Handle::Ref(Ref::Blob(blob)),
+            Handle::Object(Object::Tree(tree)) => Handle::Ref(Ref::Tree(tree)),
+            _ => panic!("expected blob or tree handle"),
+        }
     }
 
     fn get_blob_data(&self, handle: Self::Handle) -> Box<[u8]> {
@@ -90,5 +81,29 @@ impl FixShell for Interpreter<'_> {
         self.storage
             .get_tree(tree)
             .expect("tree data exists for handle")
+    }
+
+    fn create_application_thunk(handle: Self::Handle) -> Self::Handle {
+        let Handle::Object(Object::Tree(tree)) = handle else {
+            panic!("expected tree handle for applicaiton")
+        };
+        Thunk::Application(tree).into()
+    }
+
+    fn create_identification_thunk(handle: Self::Handle) -> Self::Handle {
+        Thunk::Identification(match handle {
+            Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
+            Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
+            Handle::Ref(reference) => reference,
+            _ => panic!("expected blob or tree handle"),
+        })
+        .into()
+    }
+
+    fn create_strict_encode(handle: Self::Handle) -> Self::Handle {
+        let Handle::Thunk(thunk) = handle else {
+            panic!("expected thunk for strict encode")
+        };
+        Encode::Strict(thunk).into()
     }
 }

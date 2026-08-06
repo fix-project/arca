@@ -1,11 +1,12 @@
 ```
-H ::= O | K | E             Handle
+A ::= O | K | E | L         Any
     | $atom                 Special/Primitive
+    | @path                 Executable path
 
 B ::= int literal           Blob
     | string literal        Blob
 
-T ::= (H*)                  Tree
+T ::= (A*)                  Tree
 
 R ::= &B | &T               Ref
 
@@ -20,5 +21,8 @@ K ::= ^O                    Thunk (Identify)
 
 E ::= !K                    Encode (Strict)
     | ?K                    Encode (Shallow)
+
+L ::= (let ((name A))      Let
+           (A))
 ```
 
