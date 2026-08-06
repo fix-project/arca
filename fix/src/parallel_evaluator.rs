@@ -34,13 +34,13 @@ impl<R: Runtime> Evaluator<R> {
         for i in 0..num_workers {
             let evaluator = Arc::clone(self);
             kthread::spawn(move || {
-                //println!("worker {} started on core {}", i, coreid());
+                println!("worker {} started on core {}", i, coreid());
                 evaluator.worker_loop(i);
             })
         }
     }
 
-    pub fn worker_loop(self: &Arc<Self>, worker_id: usize) {
+    pub fn worker_loop(self: &Arc<Self>, _worker_id: usize) {
         loop {
             // eventually make this a queue to handle local queue of work
             if let Some(work) = self.scheduler.get_work() {
@@ -83,7 +83,7 @@ impl<R: Runtime> Evaluator<R> {
         self.runtime.execute(combination)
     }
 
-    fn lift(&self, handle: Handle) -> Handle {
+    pub fn lift(&self, handle: Handle) -> Handle {
         match handle {
             Handle::Ref(r) => match r {
                 Ref::Tree(t) => Object::Tree(t).into(),
@@ -93,7 +93,7 @@ impl<R: Runtime> Evaluator<R> {
         }
     }
 
-    fn lower(&self, handle: Handle) -> Handle {
+    pub fn lower(&self, handle: Handle) -> Handle {
         match handle {
             Handle::Object(r) => match r {
                 Object::Tree(t) => Ref::Tree(t).into(),
@@ -105,7 +105,7 @@ impl<R: Runtime> Evaluator<R> {
 
     fn think(&self, thunk: Thunk, eval_mode: EvalType) -> Handle {
         match thunk {
-            Thunk::Identification(_) => todo!(),
+            Thunk::Identification(reference) => self.lift(Handle::Ref(reference)),
             Thunk::Selection(_) => todo!(),
             Thunk::Application(tree) => {
                 let evaled = self.eval_tree(tree, eval_mode);
@@ -169,9 +169,10 @@ impl<R: Runtime> Evaluator<R> {
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
         //println!("evaluating {handle}");
         match handle {
-            Handle::Thunk(_) | Handle::Ref(_) => todo!(),
+            Handle::Ref(reference) => self.eval(self.lift(Handle::Ref(reference))),
+            Handle::Thunk(_) => todo!(),
             Handle::Object(obj) => match obj {
-                Object::Blob(x) => x.into(),
+                Object::Blob(blob) => blob.into(),
                 Object::Tree(tree) => self.eval_tree(tree, eval_mode).into(),
             },
             Handle::Encode(e) => self.eval_test(self.encode(e, eval_mode), eval_mode),

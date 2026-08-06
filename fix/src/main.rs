@@ -216,6 +216,10 @@ fn eval_parallel(
                 name => todo!("call {name} {args:?}"),
             }
         }
-        Expr::Group(x) => eval_parallel(evaluator, x, ctx),
+        Expr::IdentificationThunk(x) => {
+            Thunk::Identification(eval_parallel(&evaluator, x, ctx).unwrap_ref()).into()
+        }
+        Expr::Ref(reference) => evaluator.lower(eval_parallel(&evaluator, reference, ctx)),
+        Expr::Group(x) => eval_parallel(&evaluator, x, ctx),
     }
 }
