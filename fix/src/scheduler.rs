@@ -1,9 +1,7 @@
-//use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use fix::Handle;
 extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
-//use kernel::kthread;
 use kernel::kthread::KMutex;
 
 use crossbeam_queue::SegQueue;

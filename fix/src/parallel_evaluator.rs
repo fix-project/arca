@@ -1,29 +1,14 @@
 extern crate alloc;
-use alloc::sync::Arc;
-//use core::sync::atomic::{AtomicBool, Ordering};
-use kernel::{coreid, kthread};
-//use kernel::kthread::{KMutex, yield_now};
-//use kernel::tsc;
 use crate::scheduler::{Scheduler, Task};
+use alloc::sync::Arc;
+use kernel::{coreid, kthread};
 
 use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use kernel::prelude::*;
 
-// use fixhandle::rawhandle::{Encode, Handle, Object, Ref, Thunk, TreeName};
-
-// use fixruntime::{
-//     common::CouponTrades,
-//     fixruntime::{FixRuntime, FixTreeData},
-//     runtime::{DeterministicEquivRuntime, Executor},
-//     storage::FixData,
-// };
-
-// use common::bitpack::BitPack;
-// use kernel::prelude::*;
-
-const NUM_WORKERS: usize = 8;
+const NUM_WORKERS: usize = 19;
 #[derive(Clone, Copy)]
 enum EvalType {
     Parallel,
@@ -49,7 +34,7 @@ impl<R: Runtime> Evaluator<R> {
         for i in 0..num_workers {
             let evaluator = Arc::clone(self);
             kthread::spawn(move || {
-                println!("worker {} started on core {}", i, coreid());
+                //println!("worker {} started on core {}", i, coreid());
                 evaluator.worker_loop(i);
             })
         }
@@ -59,7 +44,7 @@ impl<R: Runtime> Evaluator<R> {
         loop {
             // eventually make this a queue to handle local queue of work
             if let Some(work) = self.scheduler.get_work() {
-                println!("worker {} evaluating task on core {}", worker_id, coreid());
+                //println!("worker {} evaluating task on core {}", worker_id, coreid());
 
                 let result = self.eval_test(work.get_handle(), EvalType::Parallel);
                 work.task_complete(result)
@@ -78,7 +63,7 @@ impl<R: Runtime> Evaluator<R> {
             }
 
             if let Some(work) = self.scheduler.get_work() {
-                println!("calling thread helping on core {}", coreid());
+                //println!("calling thread helping on core {}", coreid());
 
                 let result = self.eval_test(work.get_handle(), EvalType::Parallel);
 
@@ -89,11 +74,6 @@ impl<R: Runtime> Evaluator<R> {
             }
         }
     }
-    /*
-    pub fn runtime(&self) -> &R {
-        &self.runtime
-    }
-    */
 
     pub fn storage(&self) -> &dyn Storage {
         self.runtime.storage()
@@ -170,7 +150,7 @@ impl<R: Runtime> Evaluator<R> {
 
     fn eval_tree_parallel(&self, handle: Tree) -> Tree {
         let tree = self.runtime.storage().get_tree(handle).unwrap();
-        if tree.len() <= 2 {
+        if tree.len() <= 3 {
             return self.eval_tree_seq(handle);
         }
         let mut evaled = Vec::with_capacity(tree.len());
@@ -187,7 +167,7 @@ impl<R: Runtime> Evaluator<R> {
     }
     // elimnate redundancy i think
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
-        println!("evaluating {handle}");
+        //println!("evaluating {handle}");
         match handle {
             Handle::Thunk(_) | Handle::Ref(_) => todo!(),
             Handle::Object(obj) => match obj {
@@ -199,52 +179,6 @@ impl<R: Runtime> Evaluator<R> {
     }
 
     pub fn eval(&self, handle: Handle) -> Handle {
-        //let start = tsc::read_cycles();
         self.eval_test(handle, EvalType::Parallel)
-        //println!("total_cycles = {}", cycles_since(start));
-        //result
     }
-
-    /*
-    fn eval_tree_seq(&self, handle: Tree) -> Tree {
-        let start = tsc::read_cycles();
-
-        println!(
-            "[timing] eval_tree_seq start on core {}: {:?}",
-            kernel::coreid(),
-            handle
-        );
-
-        let tree = self.runtime.storage().get_tree(handle).unwrap();
-
-        let evaled: Vec<Handle> = tree
-            .as_ref()
-            .iter()
-            .copied()
-            .map(|x| {
-                let child_start = tsc::read_cycles();
-                let result = self.eval(x);
-
-                println!(
-                    "[timing] seq child {:?} -> {:?}, cycles={}",
-                    x,
-                    result,
-                    cycles_since(child_start)
-                );
-
-                result
-            })
-            .collect();
-
-        let result_tree = self.runtime.storage().add_tree(&evaled);
-
-        println!(
-            "[timing] eval_tree_seq done: {:?}, total_cycles={}",
-            handle,
-            cycles_since(start)
-        );
-
-        result_tree
-    }
-    */
 }
