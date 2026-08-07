@@ -1,10 +1,12 @@
 #![no_main]
 #![no_std]
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::testing::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
 mod parallel_evaluator;
 mod scheduler;
-
-use kernel::host::fs::{self, File, Whence};
+use kernel::host::fs;
 use kernel::host::os;
 use kernel::prelude::*;
 
@@ -12,10 +14,17 @@ use fix::arca::FixOnArca;
 use fix::parser::*;
 use fix::*;
 
-extern crate alloc;
-use alloc::collections::BTreeMap;
+#[cfg(test)]
+mod testing;
 
+#[cfg(test)]
 #[kmain]
+fn tests() {
+    test_main();
+}
+
+#[cfg_attr(not(test), kmain)]
+#[cfg_attr(test, allow(dead_code))]
 fn main() {
     let argv = os::argv();
 
@@ -23,16 +32,16 @@ fn main() {
     match argv.get(1).map(String::as_str) {
         Some("init") => init(),
         Some("eval") => {
-            let filename = argv.get(2).expect("fix eval: expected a command file");
-            eval_file(filename);
+            let path = argv.get(2).expect("fix eval: expected a command file");
+            eval_file(path)
         }
         // test to run the parallel evaluator
         Some("parallel_eval") => {
-            let filename = argv.get(2).expect("fix eval: expected a command file");
-            eval_file_parallel(filename);
+            let path = argv.get(2).expect("fix eval: expected a command file");
+            eval_file_parallel(path);
         }
-        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file>)"),
-        None => panic!("fix: expected a command (init | eval <file>)"),
+        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file> )"),
+        None => panic!("fix: expected a command (init | eval <file> "),
     }
 
     kernel::shutdown();
@@ -51,175 +60,117 @@ fn init() {
     println!("initialized empty fix store in .fix");
 }
 
-/// `fix eval <file>`: read, parse, and evaluate a command file.
-fn eval_file(filename: &str) {
-    let mut file = File::open(filename, true, false, false, false, false).unwrap();
-    let len = file.seek(Whence::End(0)) as usize;
-    file.seek(Whence::Start(0));
-    let mut buf = vec![0; len];
-    file.read_exact(&mut buf);
-
-    let file = core::str::from_utf8(&buf).unwrap();
-
-    let lexer = Lexer::new(&file);
-    let tokens = lexer.tokenize().unwrap();
-    let mut parser = Parser::new(&tokens);
-    let program = parser.parse_program().unwrap();
-
-    let runtime = FixOnArca::default();
-    let evaluator = Evaluator::new(runtime);
-
-    let mut context = BTreeMap::new();
-    for statement in program {
-        match statement {
-            Statement::Assign { name, expr } => {
-                let result = eval(&evaluator, &expr, &mut context);
-                context.insert(name, result);
-            }
-            Statement::Print(expr) | Statement::Expr(expr) => {
-                let x = eval(&evaluator, &expr, &mut context);
-                println!("handle:    {x}");
-                if let Handle::Object(Object::Blob(blob)) = x {
-                    let contents = evaluator.storage().get_blob(blob).unwrap();
-                    println!("result is a Blob: {contents:?}");
-                    if contents.len() == 8 {
-                        let bytes: [u8; 8] = (*contents).try_into().unwrap();
-                        let value = u64::from_le_bytes(bytes);
-                        println!("\tas a u64: {value}");
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn eval(evaluator: &Evaluator<FixOnArca>, e: &Expr, ctx: &mut BTreeMap<String, Handle>) -> Handle {
-    match e {
-        Expr::Identifier(x) => *ctx.get(x).expect("undefined identifier"),
-        Expr::Number(x) => {
-            let bytes = i64::to_le_bytes(*x);
-            evaluator.storage().add_blob(&bytes).into()
-        }
-        Expr::String(x) => {
-            let bytes = x.as_bytes();
-            evaluator.storage().add_blob(bytes).into()
-        }
-        Expr::Call { name, args } => {
-            let arg_handles: Vec<Handle> = args.iter().map(|x| eval(evaluator, x, ctx)).collect();
-            match name.as_str() {
-                "create_blob" if let Expr::String(path) = &args.get(0).expect("no path") => {
-                    let mut file = File::open(path, true, false, false, false, false).unwrap();
-                    let len = file.seek(Whence::End(0));
-                    file.seek(Whence::Start(0));
-                    let mut buf = vec![0; len as usize];
-                    file.read_exact(&mut buf);
-                    core::mem::forget(file);
-                    evaluator.storage().add_blob(&buf).into()
-                }
-                "create_tree" => evaluator.storage().add_tree(&arg_handles).into(),
-                "create_application_thunk" => {
-                    Thunk::Application(arg_handles[0].unwrap_object().unwrap_tree()).into()
-                }
-                "create_strict_encode" => Encode::Strict(arg_handles[0].unwrap_thunk()).into(),
-                "eval" => evaluator.eval(arg_handles[0]),
-                name => todo!("call {name} {args:?}"),
-            }
-        }
-        Expr::IdentificationThunk(x) => {
-            Thunk::Identification(eval(evaluator, x, ctx).unwrap_ref()).into()
-        }
-        Expr::Ref(reference) => evaluator.lower(eval(evaluator, reference, ctx)),
-        Expr::Group(x) => eval(evaluator, x, ctx),
-    }
-}
-
 // Jennifer: tons of redundancy but I just didn't want to change original code,
 // in case errors showed up
 // the main change is just calling the parallel evaluator and how its passed in
-fn eval_file_parallel(filename: &str) {
-    let mut file = File::open(filename, true, false, false, false, false).unwrap();
-    let len = file.seek(Whence::End(0)) as usize;
-    file.seek(Whence::Start(0));
-    let mut buf = vec![0; len];
-    file.read_exact(&mut buf);
+fn eval_file_parallel(path: &str) {
+    let file = preprocessor::read_file(path).unwrap();
 
-    let file = core::str::from_utf8(&buf).unwrap();
+    let evaluator = parallel_evaluator::Evaluator::new(FixOnArca::default());
+    let result = eval_parallel_program(core::str::from_utf8(&file).unwrap(), &evaluator);
 
-    let lexer = Lexer::new(&file);
-    let tokens = lexer.tokenize().unwrap();
-    let mut parser = Parser::new(&tokens);
-    let program = parser.parse_program().unwrap();
-
-    let runtime = FixOnArca::default();
-    let evaluator = parallel_evaluator::Evaluator::new(runtime);
-
-    let mut context = BTreeMap::new();
-    for statement in program {
-        match statement {
-            Statement::Assign { name, expr } => {
-                let result = eval_parallel(evaluator.as_ref(), &expr, &mut context);
-                context.insert(name, result);
-            }
-            Statement::Print(expr) | Statement::Expr(expr) => {
-                let x = eval_parallel(evaluator.as_ref(), &expr, &mut context);
-                println!("handle:    {x}");
-                if let Handle::Object(Object::Blob(blob)) = x {
-                    let contents = evaluator.storage().get_blob(blob).unwrap();
-                    println!("result is a Blob: {contents:?}");
-                    if contents.len() == 8 {
-                        let bytes: [u8; 8] = (*contents).try_into().unwrap();
-                        let value = u64::from_le_bytes(bytes);
-                        println!("\tas a u64: {value}");
-                    }
-                }
-            }
+    println!("handle:    {result}");
+    println!("Current handle is: {:?}", result);
+    if let Handle::Object(Object::Blob(blob)) = result {
+        let contents = evaluator.storage().get_blob(blob).unwrap();
+        println!("result is a Blob: {contents:?}");
+        if contents.len() == 8 {
+            let bytes: [u8; 8] = (*contents).try_into().unwrap();
+            println!("\tas a u64: {}", u64::from_le_bytes(bytes));
         }
     }
 }
 
-fn eval_parallel(
-    evaluator: &parallel_evaluator::Evaluator<FixOnArca>,
-    e: &Expr,
-    ctx: &mut BTreeMap<String, Handle>,
+fn eval_parallel_program(
+    source: &str,
+    evaluator: &Arc<parallel_evaluator::Evaluator<FixOnArca>>,
 ) -> Handle {
-    match e {
-        Expr::Identifier(x) => *ctx.get(x).expect("undefined identifier"),
-        Expr::Number(x) => {
-            let bytes = i64::to_le_bytes(*x);
-            evaluator.storage().add_blob(&bytes).into()
+    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let tokens = Lexer::new(&processed).tokenize().unwrap();
+    let program = Parser::new(&tokens).parse_program().unwrap();
+
+    let mut interpreter = Interpreter::new(evaluator.storage());
+    evaluator.eval(interpreter.interpret(&program))
+}
+
+// `fix eval <file>`: read command file and print result.
+fn eval_file(path: &str) {
+    let file = preprocessor::read_file(path).unwrap();
+    let evaluator = Evaluator::new(FixOnArca::default());
+    let result = eval_program(core::str::from_utf8(&file).unwrap(), &evaluator);
+
+    println!("handle:    {result}");
+    println!("Current handle is: {:?}", result);
+    if let Handle::Object(Object::Blob(blob)) = result {
+        let contents = evaluator.storage().get_blob(blob).unwrap();
+        println!("result is a Blob: {contents:?}");
+        if contents.len() == 8 {
+            let bytes: [u8; 8] = (*contents).try_into().unwrap();
+            println!("\tas a u64: {}", u64::from_le_bytes(bytes));
         }
-        Expr::String(x) => {
-            let bytes = x.as_bytes();
-            evaluator.storage().add_blob(bytes).into()
-        }
-        Expr::Call { name, args } => {
-            let arg_handles: Vec<Handle> = args
-                .iter()
-                .map(|x| eval_parallel(evaluator, x, ctx))
-                .collect();
-            match name.as_str() {
-                "create_blob" if let Expr::String(path) = &args.get(0).expect("no path") => {
-                    let mut file = File::open(path, true, false, false, false, false).unwrap();
-                    let len = file.seek(Whence::End(0));
-                    file.seek(Whence::Start(0));
-                    let mut buf = vec![0; len as usize];
-                    file.read_exact(&mut buf);
-                    core::mem::forget(file);
-                    evaluator.storage().add_blob(&buf).into()
-                }
-                "create_tree" => evaluator.storage().add_tree(&arg_handles).into(),
-                "create_application_thunk" => {
-                    Thunk::Application(arg_handles[0].unwrap_object().unwrap_tree()).into()
-                }
-                "create_strict_encode" => Encode::Strict(arg_handles[0].unwrap_thunk()).into(),
-                "eval" => evaluator.eval(arg_handles[0]),
-                name => todo!("call {name} {args:?}"),
+    }
+}
+
+// parse, interpret, and evaluate source text.
+fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
+    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let tokens = Lexer::new(&processed).tokenize().unwrap();
+    let program = Parser::new(&tokens).parse_program().unwrap();
+
+    let mut interpreter = Interpreter::new(evaluator.storage());
+    evaluator.eval(interpreter.interpret(&program))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval_value(source: &str, evaluator: &Evaluator<FixOnArca>) -> Vec<u8> {
+        match eval_program(source, evaluator) {
+            Handle::Object(Object::Blob(blob)) => {
+                evaluator.storage().get_blob(blob).unwrap().into()
             }
+            Handle::Object(Object::Tree(tree)) => tree.len().to_le_bytes().into(),
+            Handle::Ref(Ref::Blob(blob)) => evaluator.storage().get_blob(blob).unwrap().into(),
+            Handle::Ref(Ref::Tree(tree)) => tree.len().to_le_bytes().into(),
+            _ => panic!(),
         }
-        Expr::IdentificationThunk(x) => {
-            Thunk::Identification(eval_parallel(&evaluator, x, ctx).unwrap_ref()).into()
+    }
+
+    #[test_case]
+    fn test_number() {
+        let evaluator = Evaluator::new(FixOnArca::default());
+
+        {
+            assert_eq!(eval_value("42", &evaluator), 42i64.to_le_bytes());
+            assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
+            assert_eq!(eval_value("\"hello\"", &evaluator), b"hello");
+
+            assert_eq!(eval_value("(1 2 3)", &evaluator), 3i64.to_le_bytes());
+            assert_eq!(eval_value("()", &evaluator), 0i64.to_le_bytes());
+
+            assert_eq!(eval_value("&\"hello\"", &evaluator), b"hello");
+            assert_eq!(eval_value("&(1 2 3)", &evaluator), 3i64.to_le_bytes());
+
+            assert_eq!(eval_value("!^&2", &evaluator), 2i64.to_le_bytes());
+
+            assert_eq!(
+                eval_value("(let ((x 42)) x)", &evaluator),
+                42i64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value("(let ((x 1) (y 2)) (x y))", &evaluator),
+                2i64.to_le_bytes()
+            );
+
+            assert_eq!(
+                eval_value("(let ((x 1)) (let ((x 2)) x))", &evaluator),
+                2i64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value("(let ((x 1)) (let ((y (let ((x 2)) x))) x))", &evaluator),
+                1i64.to_le_bytes()
+            );
         }
-        Expr::Ref(reference) => evaluator.lower(eval_parallel(&evaluator, reference, ctx)),
-        Expr::Group(x) => eval_parallel(&evaluator, x, ctx),
     }
 }

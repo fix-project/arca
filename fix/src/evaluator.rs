@@ -98,7 +98,7 @@ impl<R: Runtime> Evaluator<R> {
         println!("evaluating {handle}");
         match handle {
             Handle::Ref(reference) => self.eval(self.lift(Handle::Ref(reference))),
-            Handle::Thunk(_) => todo!(),
+            Handle::Thunk(_) => handle,
             Handle::Object(obj) => match obj {
                 Object::Blob(blob) => blob.into(),
                 Object::Tree(tree) => self.eval_tree(tree).into(),

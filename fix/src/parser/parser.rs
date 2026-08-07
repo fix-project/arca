@@ -1,4 +1,4 @@
-use super::{Expr, Statement, Token};
+use super::{Expr, Token};
 use kernel::prelude::*;
 
 pub struct Parser<'a> {
@@ -14,87 +14,59 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_program(&mut self) -> Result<Vec<Statement>, String> {
-        let mut program = Vec::new();
-        loop {
-            self.skip_separators();
-            if self.peek(self.position) == Some(&Token::Eof) {
-                break;
-            }
-            program.push(self.parse_statement()?);
-            self.skip_separators();
-        }
-        Ok(program)
-    }
-
-    pub fn parse_statement(&mut self) -> Result<Statement, String> {
-        // 'print()' is special built-in
-        match (self.peek(self.position), self.peek(self.position + 1)) {
-            (Some(Token::Identifier(name)), Some(Token::LParen)) if name == "print" => {
-                // consume 'print''('
-                self.advance();
-                self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(&Token::RParen, "expected ')' for print")?;
-                Ok(Statement::Print(expr))
-            }
-            (Some(Token::Identifier(name)), Some(Token::Equals)) => {
-                let name = name.clone();
-                // consume 'identifier' '='
-                self.advance();
-                self.advance();
-                Ok(Statement::Assign {
-                    name,
-                    expr: self.parse_expr()?,
-                })
-            }
-            _ => Ok(Statement::Expr(self.parse_expr()?)),
-        }
-    }
-
-    fn parse_expr(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_primitive()?;
-
-        while self.matches(&Token::LParen) {
-            let Expr::Identifier(name) = expr else {
-                return Err(String::from("functions must be named"));
-            };
-
-            // arguments for function calls
-            let mut args = Vec::new();
-            if self.peek(self.position) != Some(&Token::RParen) {
-                loop {
-                    args.push(self.parse_expr()?);
-                    if !self.matches(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.expect(&Token::RParen, "expected ')' for function call")?;
-            expr = Expr::Call { name, args };
-        }
-
+    pub fn parse_program(&mut self) -> Result<Expr, String> {
+        let expr = self.parse_expr()?;
+        self.expect(&Token::Eof, "expected end of program")?;
         Ok(expr)
     }
 
-    fn parse_primitive(&mut self) -> Result<Expr, String> {
+    fn parse_expr(&mut self) -> Result<Expr, String> {
         match self.advance() {
-            Token::Number(value) => Ok(Expr::Number(value)),
+            Token::Number(number) => Ok(Expr::Number(number)),
+            Token::String(string) => Ok(Expr::String(string)),
+            Token::Bytes(bytes) => Ok(Expr::Bytes(bytes)),
             Token::Identifier(value) => Ok(Expr::Identifier(value)),
-            Token::String(value) => Ok(Expr::String(value)),
-            Token::LParen => {
-                let expr = self.parse_expr()?;
-                self.expect(&Token::RParen, "expected ')' for grouping")?;
-                Ok(Expr::Group(Box::new(expr)))
-            }
             Token::Ampersand => Ok(Expr::Ref(Box::new(self.parse_expr()?))),
-            Token::Asterisk => Ok(Expr::IdentificationThunk(Box::new(self.parse_expr()?))),
+            Token::Caret => Ok(Expr::Identification(Box::new(self.parse_expr()?))),
+            Token::Asterisk => Ok(Expr::Application(Box::new(self.parse_expr()?))),
+            Token::Bang => Ok(Expr::StrictEncode(Box::new(self.parse_expr()?))),
+            Token::LParen => {
+                if let Some(Token::Identifier(token)) = self.peek(self.position)
+                    && token == "let"
+                {
+                    self.advance();
+                    self.parse_let()
+                } else {
+                    Ok(Expr::Tree(self.parse_handles()?))
+                }
+            }
             token => Err(format!("unexpected token: {token:?}")),
         }
     }
 
-    fn skip_separators(&mut self) {
-        while self.matches(&Token::Semicolon) {}
+    fn parse_handles(&mut self) -> Result<Vec<Expr>, String> {
+        let mut handles = Vec::new();
+        while !self.matches(&Token::RParen) {
+            handles.push(self.parse_expr()?);
+        }
+        Ok(handles)
+    }
+
+    fn parse_let(&mut self) -> Result<Expr, String> {
+        self.expect(&Token::LParen, "expected '(' for let bindings")?;
+        let mut bindings = Vec::new();
+        while self.matches(&Token::LParen) {
+            let Token::Identifier(name) = self.advance() else {
+                return Err(String::from("expected name in let binding"));
+            };
+            let value = self.parse_expr()?;
+            self.expect(&Token::RParen, "expected ')' for let binding")?;
+            bindings.push((name, value));
+        }
+        self.expect(&Token::RParen, "expected ')' for let bindings")?;
+        let body = Box::new(self.parse_expr()?);
+        self.expect(&Token::RParen, "expected ')' for let")?;
+        Ok(Expr::Let { bindings, body })
     }
 
     fn expect(&mut self, token: &Token, message: &str) -> Result<(), String> {

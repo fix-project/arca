@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod evaluator;
+pub mod interpreter;
 pub mod parser;
 pub mod runtime;
 pub mod storage;
@@ -11,5 +12,6 @@ pub mod handle {
 
 pub use evaluator::*;
 pub use handle::*;
+pub use interpreter::*;
 pub use runtime::*;
 pub use storage::*;

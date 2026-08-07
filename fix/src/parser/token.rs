@@ -6,30 +6,29 @@ pub enum Token {
     Identifier(String),
     Number(i64),
     String(String),
+    Bytes(Vec<u8>),
     LParen,
     RParen,
-    Comma,
-    Semicolon,
     Ampersand,
+    Caret,
     Asterisk,
-    Equals,
+    Bang,
     Eof,
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
     Number(i64),
-    Identifier(String),
     String(String),
-    Call { name: String, args: Vec<Expr> },
-    Group(Box<Expr>),
+    Bytes(Vec<u8>),
+    Identifier(String),
     Ref(Box<Expr>),
-    IdentificationThunk(Box<Expr>),
-}
-
-#[derive(Debug, Clone)]
-pub enum Statement {
-    Assign { name: String, expr: Expr },
-    Print(Expr),
-    Expr(Expr),
+    Tree(Vec<Expr>),
+    Application(Box<Expr>),
+    Identification(Box<Expr>),
+    StrictEncode(Box<Expr>),
+    Let {
+        bindings: Vec<(String, Expr)>,
+        body: Box<Expr>,
+    },
 }

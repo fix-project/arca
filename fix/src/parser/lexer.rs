@@ -1,6 +1,5 @@
 use super::token::Token;
-use core::iter::Peekable;
-use core::str::Chars;
+use core::{iter::Peekable, str::Chars};
 use kernel::prelude::*;
 
 pub struct Lexer<'a> {
@@ -35,13 +34,12 @@ impl<'a> Lexer<'a> {
         };
 
         let token = match character {
-            ';' => Token::Semicolon,
             '(' => Token::LParen,
             ')' => Token::RParen,
-            ',' => Token::Comma,
-            '=' => Token::Equals,
             '&' => Token::Ampersand,
             '*' => Token::Asterisk,
+            '^' => Token::Caret,
+            '!' => Token::Bang,
             '"' => {
                 let text = self.take(String::new(), |ch| ch != '"');
                 if self.characters.next() != Some('"') {
@@ -49,13 +47,10 @@ impl<'a> Lexer<'a> {
                 }
                 Token::String(text)
             }
-            // Inline comments
-            '/' => {
-                if self.characters.next() == Some('/') {
-                    self.take(String::new(), |ch| ch != '\n');
-                    return self.next_token();
-                }
-                return Err(String::from("unexpected character: '/'"));
+            '0' if self.peek(|character| *character == 'x') => {
+                self.characters.next();
+                let digits = self.take(String::new(), |ch| ch.is_ascii_hexdigit());
+                Token::Bytes(hex::decode(&digits).map_err(|error| error.to_string())?)
             }
             // Negative numbers
             '-' if self.peek(|character| character.is_ascii_digit()) => {
@@ -91,7 +86,7 @@ impl<'a> Lexer<'a> {
         text
     }
 
-    fn is_identifier(character: char) -> bool {
+    pub fn is_identifier(character: char) -> bool {
         character.is_ascii_alphabetic() || character == '_'
     }
 }
