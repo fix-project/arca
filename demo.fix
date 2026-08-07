@@ -1,0 +1,34 @@
+{- 
+    -- The whole file is interpreted as a single expression. Expressions can be comprised of:
+
+    -- Integer Literals
+    42
+
+    -- String Literals
+    "hello"
+
+    -- Trees
+    (1 2 3)
+
+    -- References
+    &"hello"
+
+    -- Identification Thunks
+    ^&4
+
+    -- Application Thunks
+    *(1 2)
+
+    -- Strict Encodes
+    !^&2
+
+    -- Let bindings that tie expressions to variables
+    (let ((x 42)) x)
+
+    -- @ path executables
+    @"./target/x86_64-unknown-none/addblob"
+
+    -- Primitives (To be implemented)
+    $interpret
+
+-}

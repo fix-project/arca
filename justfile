@@ -17,6 +17,7 @@ build-all:
 test:
   cargo test
   cargo test -p kernel --target={{target}}
+  cargo test -p fix --bin fix --target={{target}}
 
 build bin:
   cargo build -p kernel --example={{bin}} --target={{target}} {{release}}

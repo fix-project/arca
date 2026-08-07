@@ -22,7 +22,6 @@ K ::= ^O                    Thunk (Identify)
 E ::= !K                    Encode (Strict)
     | ?K                    Encode (Shallow)
 
-L ::= (let ((name A))      Let
-           (A))
+L ::= (let ((name A)*) A) Let
 ```
 

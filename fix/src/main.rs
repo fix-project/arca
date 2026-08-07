@@ -1,9 +1,11 @@
 #![no_main]
 #![no_std]
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::testing::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
 mod parallel_evaluator;
 mod scheduler;
-
 use kernel::host::fs;
 use kernel::host::os;
 use kernel::prelude::*;
@@ -12,16 +14,26 @@ use fix::arca::FixOnArca;
 use fix::parser::*;
 use fix::*;
 
+#[cfg(test)]
+mod testing;
+
+#[cfg(test)]
 #[kmain]
+fn tests() {
+    test_main();
+}
+
+#[cfg_attr(not(test), kmain)]
+#[cfg_attr(test, allow(dead_code))]
 fn main() {
     let argv = os::argv();
 
-    // Subcommand dispatch: `fix init` | `fix eval <file>` `.
+    // Subcommand dispatch: `fix init` | `fix eval <file>`.
     match argv.get(1).map(String::as_str) {
         Some("init") => init(),
         Some("eval") => {
             let path = argv.get(2).expect("fix eval: expected a command file");
-            eval_file(path);
+            eval_file(path)
         }
         // test to run the parallel evaluator
         Some("parallel_eval") => {
@@ -48,16 +60,14 @@ fn init() {
     println!("initialized empty fix store in .fix");
 }
 
-/// `fix eval <file>`: read, parse, and evaluate a command file.
-fn eval_file(path: &str) {
-    let file = Lexer::read_file(path).unwrap();
-    let file = Lexer::preprocess(core::str::from_utf8(&file).unwrap()).unwrap();
-    let tokens = Lexer::new(&file).tokenize().unwrap();
-    let program = Parser::new(&tokens).parse_program().unwrap();
+// Jennifer: tons of redundancy but I just didn't want to change original code,
+// in case errors showed up
+// the main change is just calling the parallel evaluator and how its passed in
+fn eval_file_parallel(path: &str) {
+    let file = preprocessor::read_file(path).unwrap();
 
-    let evaluator = Evaluator::new(FixOnArca::default());
-    let mut interpreter = Interpreter::new(evaluator.storage());
-    let result = evaluator.eval(interpreter.interpret(&program));
+    let evaluator = parallel_evaluator::Evaluator::new(FixOnArca::default());
+    let result = eval_parallel_program(core::str::from_utf8(&file).unwrap(), &evaluator);
 
     println!("handle:    {result}");
     println!("Current handle is: {:?}", result);
@@ -71,19 +81,23 @@ fn eval_file(path: &str) {
     }
 }
 
-// Jennifer: tons of redundancy but I just didn't want to change original code,
-// in case errors showed up
-// the main change is just calling the parallel evaluator and how its passed in
-fn eval_file_parallel(path: &str) {
-    let file = Lexer::read_file(path).unwrap();
-    let file = Lexer::preprocess(core::str::from_utf8(&file).unwrap()).unwrap();
-    let tokens = Lexer::new(&file).tokenize().unwrap();
+fn eval_parallel_program(
+    source: &str,
+    evaluator: &Arc<parallel_evaluator::Evaluator<FixOnArca>>,
+) -> Handle {
+    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let tokens = Lexer::new(&processed).tokenize().unwrap();
     let program = Parser::new(&tokens).parse_program().unwrap();
 
-    let runtime = FixOnArca::default();
-    let evaluator = parallel_evaluator::Evaluator::new(runtime);
     let mut interpreter = Interpreter::new(evaluator.storage());
-    let result = evaluator.eval(interpreter.interpret(&program));
+    evaluator.eval(interpreter.interpret(&program))
+}
+
+// `fix eval <file>`: read command file and print result.
+fn eval_file(path: &str) {
+    let file = preprocessor::read_file(path).unwrap();
+    let evaluator = Evaluator::new(FixOnArca::default());
+    let result = eval_program(core::str::from_utf8(&file).unwrap(), &evaluator);
 
     println!("handle:    {result}");
     println!("Current handle is: {:?}", result);
@@ -93,6 +107,70 @@ fn eval_file_parallel(path: &str) {
         if contents.len() == 8 {
             let bytes: [u8; 8] = (*contents).try_into().unwrap();
             println!("\tas a u64: {}", u64::from_le_bytes(bytes));
+        }
+    }
+}
+
+// parse, interpret, and evaluate source text.
+fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
+    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let tokens = Lexer::new(&processed).tokenize().unwrap();
+    let program = Parser::new(&tokens).parse_program().unwrap();
+
+    let mut interpreter = Interpreter::new(evaluator.storage());
+    evaluator.eval(interpreter.interpret(&program))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval_value(source: &str, evaluator: &Evaluator<FixOnArca>) -> Vec<u8> {
+        match eval_program(source, evaluator) {
+            Handle::Object(Object::Blob(blob)) => {
+                evaluator.storage().get_blob(blob).unwrap().into()
+            }
+            Handle::Object(Object::Tree(tree)) => tree.len().to_le_bytes().into(),
+            Handle::Ref(Ref::Blob(blob)) => evaluator.storage().get_blob(blob).unwrap().into(),
+            Handle::Ref(Ref::Tree(tree)) => tree.len().to_le_bytes().into(),
+            _ => panic!(),
+        }
+    }
+
+    #[test_case]
+    fn test_number() {
+        let evaluator = Evaluator::new(FixOnArca::default());
+
+        {
+            assert_eq!(eval_value("42", &evaluator), 42i64.to_le_bytes());
+            assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
+            assert_eq!(eval_value("\"hello\"", &evaluator), b"hello");
+
+            assert_eq!(eval_value("(1 2 3)", &evaluator), 3i64.to_le_bytes());
+            assert_eq!(eval_value("()", &evaluator), 0i64.to_le_bytes());
+
+            assert_eq!(eval_value("&\"hello\"", &evaluator), b"hello");
+            assert_eq!(eval_value("&(1 2 3)", &evaluator), 3i64.to_le_bytes());
+
+            assert_eq!(eval_value("!^&2", &evaluator), 2i64.to_le_bytes());
+
+            assert_eq!(
+                eval_value("(let ((x 42)) x)", &evaluator),
+                42i64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value("(let ((x 1) (y 2)) (x y))", &evaluator),
+                2i64.to_le_bytes()
+            );
+
+            assert_eq!(
+                eval_value("(let ((x 1)) (let ((x 2)) x))", &evaluator),
+                2i64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value("(let ((x 1)) (let ((y (let ((x 2)) x))) x))", &evaluator),
+                1i64.to_le_bytes()
+            );
         }
     }
 }

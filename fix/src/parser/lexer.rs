@@ -1,65 +1,16 @@
 use super::token::Token;
-use core::iter::Peekable;
-use core::str::Chars;
-use kernel::host::fs::{File, Whence};
+use core::{iter::Peekable, str::Chars};
 use kernel::prelude::*;
 
 pub struct Lexer<'a> {
     characters: Peekable<Chars<'a>>,
 }
 
-// Temporary placeholder until the standard library format is finalized
-const STDLIB: &str = "./fix/stdlib/";
-
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
             characters: input.chars().peekable(),
         }
-    }
-
-    pub fn preprocess(file: &str) -> Result<String, String> {
-        let mut output = String::new();
-        let mut characters = file.chars().peekable();
-
-        while let Some(character) = characters.next() {
-            match character {
-                '$' => {
-                    let mut name = String::new();
-                    while let Some(character) = characters.next_if(|&ch| Self::is_identifier(ch)) {
-                        name.push(character);
-                    }
-                    let program = Self::read_file(&format!("{STDLIB}/{name}"))?;
-                    output.push_str(&format!("0x{}", hex::encode(program)));
-                }
-                '@' => {
-                    if characters.next() != Some('"') {
-                        return Err(String::from("expected path after '@'"));
-                    }
-                    let mut path = String::new();
-                    while let Some(next) = characters.next_if(|&ch| ch != '"') {
-                        path.push(next);
-                    }
-                    if characters.next() != Some('"') {
-                        return Err(String::from("unterminated path"));
-                    }
-                    let program = Self::read_file(&path)?;
-                    output.push_str(&format!("0x{}", hex::encode(program)));
-                }
-                character => output.push(character),
-            }
-        }
-        Ok(output)
-    }
-
-    pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
-        let mut file = File::open(path, true, false, false, false, false)
-            .map_err(|_| format!("could not open {path}"))?;
-        let len = file.seek(Whence::End(0)) as usize;
-        file.seek(Whence::Start(0));
-        let mut data = vec![0; len];
-        file.read_exact(&mut data);
-        Ok(data)
     }
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, String> {
@@ -95,14 +46,6 @@ impl<'a> Lexer<'a> {
                     return Err(String::from("unterminated string"));
                 }
                 Token::String(text)
-            }
-            // Inline comments
-            '/' => {
-                if self.characters.next() == Some('/') {
-                    self.take(String::new(), |ch| ch != '\n');
-                    return self.next_token();
-                }
-                return Err(String::from("unexpected character: '/'"));
             }
             '0' if self.peek(|character| *character == 'x') => {
                 self.characters.next();
@@ -143,7 +86,7 @@ impl<'a> Lexer<'a> {
         text
     }
 
-    fn is_identifier(character: char) -> bool {
+    pub fn is_identifier(character: char) -> bool {
         character.is_ascii_alphabetic() || character == '_'
     }
 }
