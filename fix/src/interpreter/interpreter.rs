@@ -50,11 +50,17 @@ impl FixShell for Interpreter<'_> {
     type Handle = Handle;
 
     fn create_blob(&self, data: &[u8]) -> Self::Handle {
-        self.storage.add_blob(data).into()
+        self.storage
+            .add_blob(data)
+            .expect("storage failed to create blob")
+            .into()
     }
 
     fn create_tree(&self, data: &[Self::Handle]) -> Self::Handle {
-        self.storage.add_tree(data).into()
+        self.storage
+            .add_tree(data)
+            .expect("storage failed to create tree")
+            .into()
     }
 
     fn create_ref(handle: Self::Handle) -> Self::Handle {

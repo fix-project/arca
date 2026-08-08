@@ -15,41 +15,41 @@ pub struct MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    fn add_blob(&self, data: &[u8]) -> Blob {
+    fn add_blob(&self, data: &[u8]) -> Result<Blob, StorageError> {
         let mut blobs = self.blobs.lock();
         let i = blobs.len();
         let len = data.len();
         if len < 30 {
-            return Blob::Literal(LiteralName::new(data));
+            return Ok(Blob::Literal(LiteralName::new(data)));
         }
         blobs.push(data.into());
         let mut name = [0; 24];
         name[0..8].copy_from_slice(&usize::to_le_bytes(!i));
-        unsafe {
+        Ok(unsafe {
             BlobName::new(RawName {
                 name,
                 size: U48::new(len as u64).unwrap(),
                 meta: RawName::MACHINE_NAME,
             })
             .into()
-        }
+        })
     }
 
-    fn add_tree(&self, data: &[Handle]) -> Tree {
+    fn add_tree(&self, data: &[Handle]) -> Result<Tree, StorageError> {
         let mut trees = self.trees.lock();
         let i = trees.len();
         let len = data.len();
         trees.push(data.into());
         let mut name = [0; 24];
         name[0..8].copy_from_slice(&usize::to_le_bytes(!i));
-        unsafe {
+        Ok(unsafe {
             TreeName::new(RawName {
                 name,
                 size: U48::new(len as u64).unwrap(),
                 meta: RawName::MACHINE_NAME,
             })
             .into()
-        }
+        })
     }
 
     fn get_blob(&self, name: Blob) -> Option<Box<[u8]>> {
@@ -77,5 +77,9 @@ impl Storage for MemoryStorage {
         i.copy_from_slice(&name.name().name[0..8]);
         let i = !usize::from_le_bytes(i);
         trees.get(i).cloned()
+    }
+
+    fn import(&self, _from: &dyn Storage, _handle: Handle) -> Result<Handle, ImportError> {
+        panic!("MemoryStorage::import is not implemented")
     }
 }
