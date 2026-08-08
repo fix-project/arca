@@ -9,6 +9,7 @@ pub use embedded_io::ErrorKind;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     GetArgs,
+    CurrentDir,
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),
@@ -19,6 +20,7 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
     Args(Vec<String>),
+    CurrentDir(String),
     Pipe(PipeData),
     Ack,
     Err(IoErrorKind),

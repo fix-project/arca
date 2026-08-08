@@ -104,6 +104,16 @@ pub mod os {
         };
         args
     }
+
+    pub fn current_dir() -> Result<String, control::ErrorKind> {
+        let mut binding = crate::pipe::HOST.lock();
+        let host = binding.get_mut().unwrap();
+        match host.request(&control::Request::CurrentDir) {
+            control::Response::CurrentDir(path) => Ok(path),
+            control::Response::Err(error) => Err(error.into()),
+            _ => Err(control::ErrorKind::Other),
+        }
+    }
 }
 
 use super::pipe::HostPipe;

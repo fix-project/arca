@@ -27,6 +27,13 @@ pub fn control_thread(argv: Vec<String>, mut pipe: ControlPipe) {
     loop {
         let response = match pipe.recv() {
             Request::GetArgs => Response::Args(argv.clone()),
+            Request::CurrentDir => match std::env::current_dir() {
+                Ok(path) => match path.into_os_string().into_string() {
+                    Ok(path) => Response::CurrentDir(path),
+                    Err(_) => Response::Err(IoErrorKind::InvalidData),
+                },
+                Err(error) => Response::Err(error.kind().into()),
+            },
             Request::Exit(code) => std::process::exit(code),
             Request::Open(path, mode) => {
                 let f = OpenOptions::new()
