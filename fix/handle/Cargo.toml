@@ -9,6 +9,7 @@ edition = "2024"
 derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
 common = { path = "../../common", default-features = false }
 bitint = "0.1.1"
+blake3 = { version = "1.8.5", default-features = false }
 
 [features]
 testing-mode = []

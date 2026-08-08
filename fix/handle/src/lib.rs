@@ -7,6 +7,17 @@ use bitint::U5;
 pub use common::bitpack::BitPack;
 use derive_more::{From, Into, TryUnwrap, Unwrap};
 
+/// Return the storage-independent Fix name of serialized content.
+///
+/// This does not construct a handle; handle construction stays in Fix's
+/// existing Storage/FixOnArca operation path.
+pub fn canonicalize(data: &[u8]) -> [u8; 24] {
+    let hash = blake3::hash(data);
+    let mut name = [0u8; 24];
+    name.copy_from_slice(&hash.as_bytes()[..24]);
+    name
+}
+
 const fn bitmask256<const I: u32, const WIDTH: u32>() -> [u8; 32] {
     assert!(I + WIDTH <= 256);
     let mut out = [0u8; 32];
@@ -47,6 +58,23 @@ impl Handle {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Handle::Object(Object::Blob(Blob::Literal(_))))
+    }
+
+    pub fn is_canonical(&self) -> bool {
+        match self {
+            Handle::Ref(x) => x.is_canonical(),
+            Handle::Object(x) => x.is_canonical(),
+            Handle::Thunk(x) => x.is_canonical(),
+            Handle::Encode(x) => x.is_canonical(),
+        }
+    }
+
+    pub fn is_machine(&self) -> bool {
+        !self.is_canonical()
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
@@ -67,6 +95,13 @@ impl Ref {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Ref::Blob(x) => x.is_canonical(),
+            Ref::Tree(x) => x.is_canonical(),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap, From)]
@@ -86,6 +121,13 @@ impl Object {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Object::Blob(x) => x.is_canonical(),
+            Object::Tree(x) => x.is_canonical(),
+        }
     }
 }
 
@@ -108,6 +150,13 @@ impl Thunk {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Thunk::Identification(x) => x.is_canonical(),
+            Thunk::Application(x) | Thunk::Selection(x) => x.is_canonical(),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
@@ -127,6 +176,12 @@ impl Encode {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Encode::Strict(x) | Encode::Shallow(x) => x.is_canonical(),
+        }
     }
 }
 
@@ -148,6 +203,12 @@ impl Tree {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Tree::Tree(x) | Tree::Tag(x) => x.is_canonical(),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
@@ -167,6 +228,17 @@ impl Blob {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Blob::Literal(_))
+    }
+
+    fn is_canonical(&self) -> bool {
+        match self {
+            Blob::Blob(x) => x.is_canonical(),
+            Blob::Literal(_) => true,
+        }
     }
 }
 
@@ -199,6 +271,14 @@ impl BlobName {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn is_canonical(&self) -> bool {
+        self.0.is_canonical()
+    }
+
+    pub fn is_machine(&self) -> bool {
+        !self.is_canonical()
     }
 }
 
@@ -242,6 +322,14 @@ impl TreeName {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn is_canonical(&self) -> bool {
+        self.0.is_canonical()
+    }
+
+    pub fn is_machine(&self) -> bool {
+        !self.is_canonical()
     }
 }
 
@@ -336,6 +424,13 @@ pub struct RawName {
 }
 
 impl RawName {
+    /// The first high bit left unused by the complete [`Handle`] tag marks a
+    /// named handle canonical. Zero remains machine-compatible with the
+    /// original `MemoryStorage`; process-local names do not cross this ABI.
+    pub const ADDRESS_SHIFT: u32 = Handle::TAGBITS - BlobName::TAGBITS;
+    pub const MACHINE_NAME: u16 = 0;
+    pub const CANONICAL_NAME: u16 = 1 << Self::ADDRESS_SHIFT;
+
     pub fn forge(bytes: [u8; 32]) -> Self {
         let mut name = [0; 24];
         name.copy_from_slice(&bytes[..24]);
@@ -356,6 +451,10 @@ impl RawName {
         bytes[24..30].copy_from_slice(&size[..6]);
         bytes[30..32].copy_from_slice(&self.meta.to_le_bytes());
         bytes
+    }
+
+    pub fn is_canonical(&self) -> bool {
+        self.meta & Self::CANONICAL_NAME != 0
     }
 }
 

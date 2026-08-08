@@ -29,7 +29,7 @@ impl Storage for MemoryStorage {
             BlobName::new(RawName {
                 name,
                 size: U48::new(len as u64).unwrap(),
-                meta: 0,
+                meta: RawName::MACHINE_NAME,
             })
             .into()
         }
@@ -46,7 +46,7 @@ impl Storage for MemoryStorage {
             TreeName::new(RawName {
                 name,
                 size: U48::new(len as u64).unwrap(),
-                meta: 0,
+                meta: RawName::MACHINE_NAME,
             })
             .into()
         }
@@ -59,7 +59,10 @@ impl Storage for MemoryStorage {
             Blob::Blob(name) => name,
             Blob::Literal(name) => return Some(name.bytes().into()),
         };
-        i.copy_from_slice(&BlobName::from(name).name().name[0..8]);
+        if !name.is_machine() {
+            return None;
+        }
+        i.copy_from_slice(&name.name().name[0..8]);
         let i = !usize::from_le_bytes(i);
         blobs.get(i).cloned()
     }
@@ -67,7 +70,11 @@ impl Storage for MemoryStorage {
     fn get_tree(&self, name: Tree) -> Option<Box<[Handle]>> {
         let trees = self.trees.lock();
         let mut i = [0; 8];
-        i.copy_from_slice(&TreeName::from(name).name().name[0..8]);
+        let name = TreeName::from(name);
+        if !name.is_machine() {
+            return None;
+        }
+        i.copy_from_slice(&name.name().name[0..8]);
         let i = !usize::from_le_bytes(i);
         trees.get(i).cloned()
     }

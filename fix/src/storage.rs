@@ -4,6 +4,7 @@ use super::*;
 use alloc::boxed::Box;
 use core::option::Option;
 
+pub mod disk;
 pub mod memory;
 
 /// An object store, capable of saving and retrieving Fix objects.
