@@ -15,7 +15,7 @@ jobs:
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: nightly
-        target: x86_64-unknown-none
+        target: x86_64-unknown-none,wasm32-unknown-unknown
         components: rustfmt
     - name: Check Formatting
       run: cargo fmt --check
@@ -43,7 +43,7 @@ jobs:
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: nightly
-        target: x86_64-unknown-none
+        target: x86_64-unknown-none,wasm32-unknown-unknown
     - name: Setup
       run: |
         sudo apt update && sudo apt install gcc-multilib

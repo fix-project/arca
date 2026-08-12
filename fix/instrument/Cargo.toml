@@ -1,0 +1,10 @@
+[package]
+name = "fixinstrument"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+externref = { version = "0.3.0", default-features = false, features = ["processor"] }
+wasm-encoder = { version = "0.245.1", features = ["wasmparser"] }
+wasmparser = "0.245.1"

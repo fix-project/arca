@@ -7,6 +7,17 @@ resolver = "2"
 [profile.release]
 debug = true
 
+# Need to limit debug information for the externref crate's post processor
+# todo: remove this after implementing custom externref handling
+[profile.release.package.fixutils]
+debug = 1
+[profile.release.package.fixprocedure]
+debug = 1
+[profile.dev.package.fixutils]
+debug = 1
+[profile.dev.package.fixprocedure]
+debug = 1
+
 [workspace.package]
 license = "LGPL-2.1-or-later"
 license-file = "LICENSE"

@@ -45,6 +45,8 @@ crossbeam-queue = {
 
 [build-dependencies]
 fixshell = { path = "shell", artifact="staticlib", target = "x86_64-unknown-none" }
+fixinstrument = { path = "instrument" }
+fixprocedure = { path = "procedure", artifact = "cdylib", target = "wasm32-unknown-unknown" }
 anyhow = "1.0.98"
 bindgen = "0.72.1"
 cc = "1.2.30"

@@ -130,14 +130,25 @@ pub extern "C" fn wasm_rt_grow_externref_table(
 ) -> u32 {
     let table = unsafe { &mut *table };
     let current = table.size;
-    if current + delta > table.max_size {
+    let Some(new_size) = current.checked_add(delta).filter(|&s| s <= table.max_size) else {
         return u32::MAX;
-    }
+    };
 
-    let start = unsafe { table.data.byte_add(current as usize * 32) };
-    let size = delta * 32;
+    let size = core::mem::size_of::<wasm_rt_externref_t>();
+    let mapped = (current as usize * size).next_multiple_of(4096);
+    let required = (new_size as usize * size).next_multiple_of(4096);
+
     unsafe {
-        arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
+        if required > mapped {
+            arca_compat_mmap(
+                table.data.byte_add(mapped) as *mut _,
+                required - mapped,
+                __MODE_read_write,
+            );
+        }
+
+        core::slice::from_raw_parts_mut(table.data.add(current as usize), delta as usize)
+            .fill(init);
         table.size += delta;
     }
     current

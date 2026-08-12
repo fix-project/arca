@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::ErrorKind;
 use std::os::unix::fs::symlink;
@@ -68,7 +69,14 @@ fn wasm2c(wasm: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         ])
         .status()?;
     assert!(wasm2c.success());
-    Ok((std::fs::read(c_file)?, std::fs::read(h_file)?))
+    // The externref crate's ref.is_null makes wasm2c output this check that errors due to wasm_rt_externref_t from pointer to struct
+    // This hacky fix is temporary until custom externref implementation
+    let c = std::fs::read_to_string(c_file)?;
+    let c = c.replace(
+        "(var_e0 == wasm_rt_externref_null_value)",
+        "(memcmp(&var_e0, &wasm_rt_externref_null_value, sizeof(var_e0)) == 0)",
+    );
+    Ok((c.into_bytes(), std::fs::read(h_file)?))
 }
 
 fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
@@ -130,6 +138,18 @@ fn c2elf(c: &[u8], h: &[u8]) -> Result<Vec<u8>> {
     Ok(o)
 }
 
+fn build_module(name: &OsStr, wasm: &[u8], out_dir: &Path) -> Result<()> {
+    let (c, h) = wasm2c(wasm)?;
+    let elf = c2elf(&c, &h)?;
+    let dst = out_dir.join(name);
+    std::fs::write(&dst, elf)?;
+
+    let link = out_dir.ancestors().nth(4).unwrap().join(name);
+    let _ = fs::remove_file(&link);
+    symlink(dst, link)?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let out_dir = env::var_os("OUT_DIR").unwrap();
 
@@ -157,25 +177,25 @@ fn main() -> Result<()> {
     WASM2C.set(dst.join("bin/wasm2c")).unwrap();
     WAT2WASM.set(dst.join("bin/wat2wasm")).unwrap();
 
+    let out_dir = PathBuf::from(out_dir);
+
     for f in std::fs::read_dir("wasm")? {
         let f = f?;
         let path = f.path();
         let base = path.file_stem().unwrap();
-        let dst = Path::new(&out_dir).join(base);
         println!(
             "cargo::rerun-if-changed=wasm/{}",
             f.file_name().to_str().unwrap()
         );
         let wat = std::fs::read(f.path())?;
         let wasm = wat2wasm(&wat)?;
-        let (c, h) = wasm2c(&wasm)?;
-        let elf = c2elf(&c, &h)?;
-        std::fs::write(&dst, elf)?;
-
-        let link = Path::new(&out_dir).ancestors().nth(4).unwrap().join(base);
-        let _ = fs::remove_file(&link);
-        symlink(dst, link)?;
+        build_module(base, &wasm, &out_dir)?;
     }
+
+    let procedure = env::var_os("CARGO_CDYLIB_FILE_FIXPROCEDURE_fixprocedure")
+        .expect("cargo did not build the Rust round-trip procedure");
+    let procedure = fixinstrument::instrument(&std::fs::read(procedure)?)?;
+    build_module(OsStr::new("fixprocedure"), &procedure, &out_dir)?;
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
