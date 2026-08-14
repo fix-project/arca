@@ -203,7 +203,7 @@ fn main() -> Result<()> {
                 );
             }
             let wat = std::fs::read(f.path())?;
-            let wasm = wat2wasm(&wat)?;
+            let wasm = fixpostprocessor::process(&wat2wasm(&wat)?)?;
             let (c, h) = wasm2c(&wasm)?;
             let elf = c2elf(&c, &h)?;
             std::fs::write(&dst, elf)?;

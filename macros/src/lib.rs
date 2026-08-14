@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod bitpack;
 mod core_local;
+mod fix_utils;
 mod testing;
 mod util;
 
@@ -38,4 +39,9 @@ pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(BitPack)]
 pub fn bitpack(input: TokenStream) -> TokenStream {
     bitpack::bitpack(input)
+}
+
+#[proc_macro_attribute]
+pub fn fix_entrypoint(attr: TokenStream, item: TokenStream) -> TokenStream {
+    fix_utils::entrypoint(attr, item)
 }
