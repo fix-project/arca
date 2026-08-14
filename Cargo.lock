@@ -791,15 +791,13 @@ dependencies = [
  "bytemuck",
  "cc",
  "chrono",
- "cmake",
  "common",
  "crossbeam-queue",
  "derive_more",
+ "fix-wasm",
  "fixhandle",
- "fixshell",
  "futures",
  "hex",
- "include_directory",
  "kernel",
  "log",
  "macros",
@@ -808,6 +806,16 @@ dependencies = [
  "serde_bytes",
  "trait-variant",
  "user",
+]
+
+[[package]]
+name = "fix-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cmake",
+ "fixshell",
+ "include_directory",
 ]
 
 [[package]]
@@ -1994,6 +2002,7 @@ dependencies = [
  "elf",
  "env_logger",
  "fix",
+ "fix-wasm",
  "futures",
  "kvm-bindings",
  "kvm-ioctls",

@@ -1,0 +1,10 @@
+[package]
+name = "fix-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+fixshell = { path = "../shell", artifact = "staticlib", target = "x86_64-unknown-none" }
+anyhow = "1.0.98"
+cmake = "0.1.54"
+include_directory = "0.1.1"

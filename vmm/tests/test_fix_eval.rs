@@ -3,11 +3,12 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// Keep the regression input with the test instead of relying on a fixture
-const FIX_PROGRAM: &str = r#"(let ((add @"./target/x86_64-unknown-none/addblob"))
+const EXPECTED_OUTPUT: &str = "as a u64: 6";
+const FIX_GUEST: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FIX_GUEST_fix"));
+const FIX_PROGRAM: &str = r#"(let ((add @"{addblob}"))
     !*(add !*(add 2 3) 1))
 "#;
-const EXPECTED_OUTPUT: &str = "as a u64: 6";
+const GUEST_PROCESS_ENV: &str = "ARCA_FIX_EVAL_GUEST_PROCESS";
 // Time limited so this test doesn't stall the test suite (usually runs in <10s)
 const DEADLOCK_LIMIT: Duration = Duration::from_secs(30);
 // Poll lightly instead of busy-waiting for the child
@@ -15,14 +16,21 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 struct ProgramFile {
     path: PathBuf,
+    addblob_path: PathBuf,
 }
 
 impl ProgramFile {
     fn new() -> Self {
-        // The production CLI requires a path, so materialize the inline program
+        // The CLI requires paths, so materialize the embedded helper and inline program
+        let addblob_path =
+            std::env::temp_dir().join(format!("arca-fix-eval-addblob-{}", std::process::id()));
+        let addblob = fix_wasm::artifact("addblob").expect("find embedded addblob guest");
+        std::fs::write(&addblob_path, addblob).expect("write temporary addblob guest");
+
         let path = std::env::temp_dir().join(format!("arca-fix-eval-{}.fix", std::process::id()));
-        std::fs::write(&path, FIX_PROGRAM).expect("write temporary Fix program");
-        Self { path }
+        let program = FIX_PROGRAM.replace("{addblob}", addblob_path.to_string_lossy().as_ref());
+        std::fs::write(&path, program).expect("write temporary Fix program");
+        Self { path, addblob_path }
     }
 
     fn path(&self) -> &Path {
@@ -34,6 +42,7 @@ impl Drop for ProgramFile {
     fn drop(&mut self) {
         // Clean up the temp file
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.addblob_path);
     }
 }
 
@@ -68,17 +77,28 @@ fn wait_for_output(mut child: Child) -> Output {
 
 #[test]
 fn fix_eval_completes_and_prints_result() {
-    let program = ProgramFile::new();
-    // Resolve the program's addblob helper from the workspace target directory
+    if std::env::var_os(GUEST_PROCESS_ENV).is_some() {
+        let program = ProgramFile::new();
+        let mut runtime = vmm::runtime::Runtime::new(1, 1 << 34, FIX_GUEST.into());
+        runtime.run(vec![
+            "fix".to_owned(),
+            "eval".to_owned(),
+            program.path().to_string_lossy().into_owned(),
+        ]);
+        return;
+    }
+
+    // Run from the workspace so relative Fix paths match normal CLI use.
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("vmm crate is inside the workspace");
 
-    // Cargo supplies both binaries; VMM expects the guest ELF before guest argv
-    let child = Command::new(env!("CARGO_BIN_EXE_vmm"))
-        .arg(env!("CARGO_BIN_FILE_FIX_GUEST_fix"))
-        .arg("eval")
-        .arg(program.path())
+    // Re-run this test binary so the VM can be timed out and its output captured.
+    let child = Command::new(std::env::current_exe().expect("locate Fix-on-Arca test binary"))
+        .arg("--exact")
+        .arg("fix_eval_completes_and_prints_result")
+        .arg("--nocapture")
+        .env(GUEST_PROCESS_ENV, "1")
         .current_dir(workspace)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
