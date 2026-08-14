@@ -12,21 +12,28 @@
 #![feature(unboxed_closures)]
 #![cfg_attr(feature = "thread_local_cache", feature(thread_local))]
 
-pub mod buddy;
-pub mod refcnt;
-pub use buddy::BuddyAllocator;
-pub mod arrayvec;
 pub mod bitpack;
-pub mod controlreg;
-pub mod elfloader;
-pub mod ipaddr;
-pub mod pipe;
-pub mod protocol;
-pub mod sendable;
-pub mod util;
 
-#[cfg(feature = "std")]
-pub mod mmap;
+#[cfg(not(target_family = "wasm"))]
+#[path = "."]
+mod not_wasm {
+    pub mod arrayvec;
+    pub mod buddy;
+    pub mod controlreg;
+    pub mod elfloader;
+    pub mod ipaddr;
+    pub mod pipe;
+    pub mod protocol;
+    pub mod refcnt;
+    pub mod sendable;
+    pub mod util;
+
+    #[cfg(feature = "std")]
+    pub mod mmap;
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use not_wasm::{buddy::BuddyAllocator, *};
 
 #[repr(C)]
 #[derive(Debug)]
