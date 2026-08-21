@@ -2,7 +2,10 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    slice::from_raw_parts_mut,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use arcane::{__MODE_read_write, arca_compat_mmap};
 use user::error;
@@ -16,7 +19,7 @@ unsafe extern "C" {
 }
 
 pub static mut MEMORY_IDX: usize = 0;
-pub static mut TABLE_IDX: usize = 0;
+pub static mut TABLE_IDX: usize = 1;
 pub static mut FUNCREF_TABLE_IDX: usize = 0;
 
 pub static mut MEMORIES: [*mut wasm_rt_memory_t; 64] = [core::ptr::null_mut(); 64];
@@ -116,7 +119,11 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
         }
         let data = ((1 << 32) * (64 + idx)) as *mut u8;
         let memory_size =
-            arca_compat_mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
+            arca_compat_mmap(
+            data as *mut _,
+            (elements * 32).next_multiple_of(PAGE_SIZE) as usize,
+            __MODE_read_write,
+        );
         table.write(wasm_rt_externref_table_t {
             data: data as *mut _,
             memory_size,
