@@ -6,12 +6,14 @@
 
 mod parallel_evaluator;
 mod scheduler;
-use kernel::host::fs;
+use kernel::host::fs::{File, Whence};
 use kernel::host::os;
 use kernel::prelude::*;
 
 use fix::arca::FixOnArca;
 use fix::parser::*;
+use fix::runtime::Runtime;
+use fix::storage::disk::DiskStorage;
 use fix::*;
 
 #[cfg(test)]
@@ -28,9 +30,13 @@ fn tests() {
 fn main() {
     let argv = os::argv();
 
-    // Subcommand dispatch: `fix init` | `fix eval <file>`.
+    // Subcommand dispatch: `fix init` | `fix create-blob <file>` | `fix eval <file>`.
     match argv.get(1).map(String::as_str) {
         Some("init") => init(),
+        Some("create-blob") => {
+            let filename = argv.get(2).expect("fix create-blob: expected a file");
+            create_blob(filename);
+        }
         Some("eval") => {
             let path = argv.get(2).expect("fix eval: expected a command file");
             eval_file(path)
@@ -40,24 +46,64 @@ fn main() {
             let path = argv.get(2).expect("fix eval: expected a command file");
             eval_file_parallel(path);
         }
-        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file> )"),
-        None => panic!("fix: expected a command (init | eval <file> "),
+        Some(other) => panic!(
+            "fix: unknown command '{other}' (expected: init | create-blob <file> | eval <file> | parallel_eval <file>)"
+        ),
+        None => panic!(
+            "fix: expected a command (init | create-blob <file> | eval <file> | parallel_eval <file>)"
+        ),
     }
 
     kernel::shutdown();
 }
 
-/// `fix init`: create the on-disk `.fix` store with its `objects/` and
-/// `labels/` subdirs. `mkdir` maps to host `create_dir_all`, so re-running on an
-/// existing store is harmless (matches git's "reinitialized existing repository").
+/// `fix init`: initialize the on-disk `.fix` store.
 fn init() {
-    for dir in [".fix/objects", ".fix/labels"] {
-        if let Err(e) = fs::mkdir(dir) {
-            println!("fix init: failed to create {dir}: {e:?}");
+    if let Err(error) = DiskStorage::try_new() {
+        println!("fix init: failed to initialize DiskStorage: {error:?}");
+        kernel::exit(1);
+    }
+    let current_dir = match os::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            println!("fix init: cannot resolve the current directory: {error:?}");
+            kernel::exit(1);
+        }
+    };
+    if current_dir == "/" {
+        println!("initialized empty fix store in /.fix");
+    } else {
+        println!("initialized empty fix store in {current_dir}/.fix");
+    }
+}
+
+/// `fix create-blob <file>`: content-address the file's bytes, persist an out-of-line
+/// blob under `.fix/objects`, and print its canonical handle. Small blobs are
+/// represented directly by an inline literal handle and require no object file.
+fn create_blob(filename: &str) {
+    let mut file = File::open(filename, true, false, false, false, false)
+        .unwrap_or_else(|e| panic!("fix create-blob: cannot open {filename}: {e:?}"));
+    let len = file.seek(Whence::End(0)) as usize;
+    file.seek(Whence::Start(0));
+    let mut buf = vec![0; len];
+    file.read_exact(&mut buf);
+
+    let source: FixOnArca = FixOnArca::default();
+    let machine = match source.storage().add_blob(&buf) {
+        Ok(blob) => Handle::from(blob),
+        Err(error) => {
+            println!("fix create-blob: cannot create machine blob: {error:?}");
+            kernel::exit(1);
+        }
+    };
+    let destination = DiskStorage;
+    match destination.import(source.storage(), machine) {
+        Ok(canonical) => println!("{canonical}"),
+        Err(error) => {
+            println!("fix create-blob: export failed: {error:?}");
             kernel::exit(1);
         }
     }
-    println!("initialized empty fix store in .fix");
 }
 
 // Jennifer: tons of redundancy but I just didn't want to change original code,

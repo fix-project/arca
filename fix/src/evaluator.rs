@@ -91,7 +91,10 @@ impl<R: Runtime> Evaluator<R> {
             .copied()
             .map(|x| self.eval(x))
             .collect();
-        self.runtime.storage().add_tree(&evaled)
+        self.runtime
+            .storage()
+            .add_tree(&evaled)
+            .expect("storage failed to create tree")
     }
 
     pub fn eval(&self, handle: Handle) -> Handle {

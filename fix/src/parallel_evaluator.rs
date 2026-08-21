@@ -145,7 +145,10 @@ impl<R: Runtime> Evaluator<R> {
             .copied()
             .map(|x| self.eval_test(x, EvalType::Serial))
             .collect();
-        self.runtime.storage().add_tree(&evaled)
+        self.runtime
+            .storage()
+            .add_tree(&evaled)
+            .expect("storage failed to create tree")
     }
 
     fn eval_tree_parallel(&self, handle: Tree) -> Tree {
@@ -163,7 +166,10 @@ impl<R: Runtime> Evaluator<R> {
         for task in tasks {
             evaled.push(self.wait_while_helping(&task));
         }
-        self.runtime.storage().add_tree(&evaled)
+        self.runtime
+            .storage()
+            .add_tree(&evaled)
+            .expect("storage failed to create tree")
     }
     // elimnate redundancy i think
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {

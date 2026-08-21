@@ -61,7 +61,9 @@ impl FixOnArca {
                             panic!()
                         };
                         k.apply(pack_handle(
-                            self.storage().add_blob(&u32::to_le_bytes(w.read() as u32)),
+                            self.storage()
+                                .add_blob(&u32::to_le_bytes(w.read() as u32))
+                                .expect("storage failed to create blob"),
                         ))
                     }
                     b"create_blob_i64" => {
@@ -69,14 +71,20 @@ impl FixOnArca {
                             panic!()
                         };
                         k.apply(pack_handle(
-                            self.storage().add_blob(&u64::to_le_bytes(w.read())),
+                            self.storage()
+                                .add_blob(&u64::to_le_bytes(w.read()))
+                                .expect("storage failed to create blob"),
                         ))
                     }
                     b"create_blob" => {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        k.apply(pack_handle(self.storage().add_blob(&b)))
+                        k.apply(pack_handle(
+                            self.storage()
+                                .add_blob(&b)
+                                .expect("storage failed to create blob"),
+                        ))
                     }
                     b"create_tree" => {
                         let Some(Value::Blob(t)) = args.pop() else {
@@ -86,7 +94,11 @@ impl FixOnArca {
                         for handle in t.chunks(32) {
                             tree.push(Handle::unpack(handle.try_into().unwrap()));
                         }
-                        k.apply(pack_handle(self.storage().add_tree(&tree)))
+                        k.apply(pack_handle(
+                            self.storage()
+                                .add_tree(&tree)
+                                .expect("storage failed to create tree"),
+                        ))
                     }
                     b"get_blob" => {
                         let Some(Value::Blob(b)) = args.pop() else {
