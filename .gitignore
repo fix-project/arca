@@ -2,3 +2,5 @@
 .build
 .fix
 fix/wasm/coupon-collector.wat
+.vscode
+.DS_Store
