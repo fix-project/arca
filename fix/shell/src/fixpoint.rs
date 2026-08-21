@@ -33,7 +33,7 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_tree(
     table_idx: u32,
     handle: wasm_rt_externref_t,
 ) {
-    assert!(table_idx < 63);
+    assert!(table_idx < 32);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
         if (table.is_null()) {
@@ -50,15 +50,15 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_tree(
 pub unsafe extern "C" fn w2c_fixpoint_create_tree(
     fixpoint: *mut w2c_fixpoint,
     table_idx: u32,
+    length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(table_idx < 63);
+    assert!(table_idx < 32);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
-        let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
             bytes: shell::fixpoint_create_tree(core::slice::from_raw_parts(
-                addr as *const u8,
-                (*table).size as usize,
+                (*table).data.cast::<u8>(),
+                length as usize * 32,
             )),
         }
     }
@@ -68,15 +68,15 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
 pub unsafe extern "C" fn w2c_fixpoint_create_tag(
     fixpoint: *mut w2c_fixpoint,
     table_idx: u32,
+    length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(table_idx < 63);
+    assert!(table_idx < 32);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
-        let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
             bytes: shell::fixpoint_create_tag(core::slice::from_raw_parts(
-                addr as *const u8,
-                (*table).size as usize,
+                (*table).data.cast::<u8>(),
+                length as usize * 32,
             )),
         }
     }
@@ -162,6 +162,26 @@ pub unsafe extern "C" fn w2c_fixpoint_is_equal(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_ref(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_ref(handle.bytes),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_identification_thunk(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_identification_thunk(handle.bytes),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fixpoint_create_application_thunk(
     fixpoint: *mut w2c_fixpoint,
     handle: wasm_rt_externref_t,
@@ -172,12 +192,32 @@ pub unsafe extern "C" fn w2c_fixpoint_create_application_thunk(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_selection_thunk(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_selection_thunk(handle.bytes),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fixpoint_create_strict_encode(
     fixpoint: *mut w2c_fixpoint,
     handle: wasm_rt_externref_t,
 ) -> wasm_rt_externref_t {
     wasm_rt_externref_t {
         bytes: shell::fixpoint_create_strict_encode(handle.bytes),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fixpoint_create_shallow_encode(
+    fixpoint: *mut w2c_fixpoint,
+    handle: wasm_rt_externref_t,
+) -> wasm_rt_externref_t {
+    wasm_rt_externref_t {
+        bytes: shell::fixpoint_create_shallow_encode(handle.bytes),
     }
 }
 
