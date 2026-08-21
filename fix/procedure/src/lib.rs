@@ -1,25 +1,28 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
+#![cfg_attr(target_arch = "wasm32", no_std, feature(asm_experimental_arch))]
 use dlmalloc::GlobalDlmalloc;
 #[global_allocator]
 static ALLOCATOR: GlobalDlmalloc = GlobalDlmalloc;
 use fixutils::*;
 
-extern crate alloc;
-use alloc::vec::Vec;
+num_memories!(1);
+num_tables!(1);
 
 const HELLO: &[u8] = b"hello";
-const WORLD: &[u8] = b" world";
 
 #[fix_entrypoint]
-pub fn _fixpoint_apply(_combination: RustHandle) -> RustHandle {
-    unsafe {
-        let mut blob: Vec<u8> = HELLO.to_vec();
-        memory_1_write(blob.as_ptr() as u32, blob.len());
-        let handle = create_blob(1, blob.len());
-        attach_blob(1, &handle);
-        memory_1_read(blob.as_mut_ptr() as u32, len(&handle));
-        blob.append(&mut WORLD.to_vec());
-        memory_1_write(blob.as_ptr() as u32, blob.len());
-        create_blob(1, blob.len())
-    }
+pub fn _fixpoint_apply(combination: RustHandle<'static>) -> RustHandle<'static> {
+    let memory_1 = Memory::new(1).expect("expected 1 memory");
+    let table_1 = Table::new(1).expect("expected 1 table");
+
+    let num_entries = combination.len();
+    table_1.attach_tree(combination);
+    table_1.grow(1);
+
+    memory_1.write(HELLO);
+    let blob = memory_1.create_blob(HELLO.len());
+    table_1.set(num_entries, blob);
+
+    create_strict_encode(create_identification_thunk(
+        table_1.create_tree(num_entries + 1),
+    ))
 }
