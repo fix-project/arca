@@ -10,7 +10,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 extern crate alloc;
-use alloc::alloc::{AllocError, Allocator};
+use alloc::alloc::{AllocError, Allocator, AllocatorClone};
 
 #[cfg(feature = "std")]
 use alloc::alloc::Global;
@@ -932,6 +932,9 @@ impl Drop for BuddyAllocatorImpl {
 
 #[derive(Copy, Clone, Debug)]
 pub struct BuddyAllocator;
+
+// Rust requires explicit guarantee that clones of custom memory allocator for Arc can free memory allocated by each other
+unsafe impl AllocatorClone for BuddyAllocator {}
 
 impl BuddyAllocator {
     pub const MIN_ALLOCATION: usize = BuddyAllocatorImpl::MIN_ALLOCATION;
