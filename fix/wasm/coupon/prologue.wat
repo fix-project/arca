@@ -1,4 +1,3 @@
-(module
   (import "fixpoint" "is_equal" (func $is_equal (param externref) (param externref) (result i32)))
   (import "fixpoint" "is_tag" (func $is_tag (param externref) (result i32)))
   (import "fixpoint" "attach_blob" (func $attach_blob (param i32) (param externref)))
