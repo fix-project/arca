@@ -57,8 +57,8 @@ impl<T, const N: usize> ArrayVec<T, N> {
 
     pub fn empty(&mut self) {
         unsafe {
-            for i in 0..self.len() {
-                self.data[i].assume_init_drop();
+            for item in self.data.iter_mut().take(self.size) {
+                item.assume_init_drop();
             }
         }
         self.size = 0;
