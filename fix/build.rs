@@ -143,7 +143,7 @@ fn generate_coupon() -> Result<()> {
     println!("cargo::rerun-if-changed={}", prologue.display());
     println!("cargo::rerun-if-changed={}", epilogue.display());
 
-    let output = Path::new("wasm/coupon.wat");
+    let output = Path::new("wasm/coupon-collector.wat");
 
     let status = Command::new("bash")
         .arg(&script)

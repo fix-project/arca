@@ -1,4 +1,4 @@
 /target
 .build
 .fix
-fix/wasm/coupon.wat
+fix/wasm/coupon-collector.wat
