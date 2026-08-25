@@ -232,8 +232,7 @@ impl<const N: usize, V> Trie<N, V> {
             Mode::EMPTY => Ok(None),
             Mode::LEAF => Ok(Some(self.key.load(Ordering::SeqCst))),
             Mode::INNER => {
-                for i in 0..N {
-                    let cell = &self.children[i];
+                for (i, cell) in self.children.iter().enumerate() {
                     let Some(child) = cell.try_take() else {
                         return Err(Retry);
                     };
