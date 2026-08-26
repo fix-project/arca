@@ -56,7 +56,7 @@ impl Scheduler {
         }
     }
 
-    pub fn get_work(self: &Self) -> Option<Arc<Task>> {
+    pub fn get_work(&self) -> Option<Arc<Task>> {
         self.global.pop()
     }
 

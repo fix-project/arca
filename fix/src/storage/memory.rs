@@ -59,7 +59,7 @@ impl Storage for MemoryStorage {
             Blob::Blob(name) => name,
             Blob::Literal(name) => return Some(name.bytes().into()),
         };
-        i.copy_from_slice(&BlobName::from(name).name().name[0..8]);
+        i.copy_from_slice(&name.name().name[0..8]);
         let i = !usize::from_le_bytes(i);
         blobs.get(i).cloned()
     }

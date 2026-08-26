@@ -19,7 +19,7 @@ impl Runtime for FixOnArca {
     fn execute(&self, combination: Tree) -> Handle {
         println!("applying   {}", Handle::from(combination));
         let contents = self.storage().get_tree(combination).unwrap();
-        let procedure = contents.get(0).expect("empty combination");
+        let procedure = contents.first().expect("empty combination");
         let elf = self
             .storage()
             .get_blob(procedure.unwrap_object().unwrap_blob())
@@ -27,8 +27,7 @@ impl Runtime for FixOnArca {
         let f: Function = common::elfloader::load_elf(&elf).unwrap();
         let blob = pack_handle(combination);
         let f = f.apply(blob);
-        let result = self.run(f);
-        result
+        self.run(f)
     }
 }
 
@@ -123,7 +122,7 @@ impl FixOnArca {
 
 fn pack_handle(handle: impl Into<Handle>) -> ArcaBlob {
     let raw = handle.into().pack();
-    ArcaBlob::new(&raw)
+    ArcaBlob::new(raw)
 }
 
 fn unpack_handle(blob: &ArcaBlob) -> Handle {

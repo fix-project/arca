@@ -19,7 +19,9 @@ mod tests {
 
     /// Ensures Null::new() and Null::default() produce identical values.
     #[test]
+    #[allow(clippy::default_constructed_unit_structs)]
     fn test_new_equals_default() {
         assert_eq!(Null::new(), Null::default());
+        assert_eq!(Null::new(), Null);
     }
 }

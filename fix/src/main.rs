@@ -11,8 +11,10 @@ use kernel::host::os;
 use kernel::prelude::*;
 
 use fix::arca::FixOnArca;
-use fix::parser::*;
 use fix::*;
+use lexer::*;
+use parser::*;
+use preprocessor::*;
 
 #[cfg(test)]
 mod testing;

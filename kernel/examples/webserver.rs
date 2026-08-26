@@ -46,7 +46,7 @@ fn main() {
                     }
                     (b"write", &[Value::Word(fd), Value::Blob(ref data)]) => {
                         assert_eq!(fd.read(), 1);
-                        let len = stream.send(&*data);
+                        let len = stream.send(data);
                         k.apply(Word::new(len as u64))
                     }
                     (b"close", &[Value::Word(_)]) => k.apply(None),

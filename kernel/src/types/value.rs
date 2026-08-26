@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn test_word_roundtrip() {
         let word = Word::new(99);
-        let value: Value = word.clone().into();
+        let value: Value = word.into();
         let roundtrip = Word::try_from(value).unwrap();
         assert_eq!(roundtrip, word);
     }

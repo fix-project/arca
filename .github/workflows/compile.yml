@@ -18,7 +18,7 @@ jobs:
         target: x86_64-unknown-none
         components: rustfmt
     - name: Check Formatting
-      run: cargo fmt --check
+      run: cargo fmt --all --check
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +33,7 @@ jobs:
     - name: Setup
       run: sudo apt update && sudo apt install gcc-multilib
     - name: Clippy
-      run: cargo clippy --all-features
+      run: just lint -D warnings
   build:
     runs-on: ubuntu-latest
     steps:

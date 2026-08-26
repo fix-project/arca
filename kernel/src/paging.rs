@@ -727,9 +727,9 @@ impl<T: HardwarePageTable> Drop for AugmentedPageTable<T> {
         unsafe {
             let lower = self.get_lower();
             let upper = self.get_upper();
-            for i in lower..upper {
+            for item in self.0.iter_mut().take(upper).skip(lower) {
                 let mut entry = ManuallyDrop::new(T::Entry::new(0));
-                core::mem::swap(&mut entry, &mut self.0[i]);
+                core::mem::swap(&mut entry, item);
                 ManuallyDrop::drop(&mut entry);
             }
         }
