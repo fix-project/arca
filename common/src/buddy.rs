@@ -95,7 +95,11 @@ impl<'a> BitRef<'a> {
     }
 
     pub fn write(&mut self, value: bool) -> bool {
-        if value { self.set() } else { self.clear() }
+        if value {
+            self.set()
+        } else {
+            self.clear()
+        }
     }
 }
 
