@@ -15,3 +15,9 @@ impl<R: Runtime> From<u64> for Word<R> {
         Self::new(value)
     }
 }
+
+impl<R: Runtime> From<Word<R>> for u64 {
+    fn from(value: Word<R>) -> Self {
+        value.read()
+    }
+}

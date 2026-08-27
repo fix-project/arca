@@ -24,6 +24,7 @@ pub use crate::{
         PageTable512GBEntry,
     },
     print, println, shutdown,
+    types::arca::XSaveData,
     types::{Arca, Blob, Entry, Function, Null, Page, Runtime, Table, Tuple, Value, Word},
 };
 

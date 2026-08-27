@@ -185,6 +185,10 @@ impl OpenOptions {
     }
 }
 
+pub fn yield_now() {
+    Function::symbolic("yield").call_with_current_continuation();
+}
+
 pub fn exit(code: u8) -> ! {
     Function::symbolic("exit")
         .apply(code as u64)
