@@ -255,7 +255,7 @@ pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
     encode.pack()
 }
 
-fn fixpoint_len(handle: [u8; 32]) -> usize {
+pub fn fixpoint_len(handle: [u8; 32]) -> usize {
     let handle = Handle::unpack(handle);
     handle.len()
 }
