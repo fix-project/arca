@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{doorbell::VMToHostDoorBell, prelude::*};
 
 use alloc::format;
 use common::hypercall;
@@ -115,7 +115,9 @@ unsafe fn get_pipe(data: common::protocol::control::PipeData) -> HostPipe {
     let rx = Reader::from_inner(rx);
     let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, data.tx_len), BuddyAllocator);
     let tx = Writer::from_inner(tx);
-    let pipe = Pipe::from_inner(rx, tx);
+    let rx_avail = VMToHostDoorBell::from_raw_parts(data.rx_avail);
+    let tx_avail = VMToHostDoorBell::from_raw_parts(data.tx_avail);
+    let pipe = Pipe::from_inner(rx, tx, rx_avail, tx_avail);
     HostPipe::new(pipe)
 }
 

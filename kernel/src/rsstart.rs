@@ -9,6 +9,7 @@ use log::LevelFilter;
 
 use crate::{
     debugcon::DEBUG,
+    doorbell::VMToHostDoorBell,
     gdt::{GdtDescriptor, PrivilegeLevel},
     host::HOST,
     idt::{GateType, Idt, IdtDescriptor, IdtEntry},
@@ -18,7 +19,11 @@ use crate::{
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
+use common::{
+    buddy::{BuddyAllocatorRawData, MEM_BASE},
+    protocol::control::VMToHostDoorBellData,
+    BuddyAllocator,
+};
 
 extern "C" {
     fn kmain();
@@ -98,7 +103,7 @@ unsafe extern "C" fn _start(
         }
         let ptr: *mut BuddyAllocatorRawData = vm::pa2ka(allocator_data_ptr + 0x1_0000_0000);
         let mut raw = *ptr;
-        raw.base = vm::pa2ka(0x1_0000_0000);
+        raw.base = vm::pa2ka(MEM_BASE as usize);
         common::buddy::import(raw);
         BuddyAllocator.set_caching(false);
 
@@ -147,7 +152,9 @@ unsafe extern "C" fn _start(
         let rx = Reader::from_inner(rx);
         let tx = Arc::from_raw_in(core::ptr::from_raw_parts(txp, txn), BuddyAllocator);
         let tx = Writer::from_inner(tx);
-        let pipe = RawPipe::from_inner(rx, tx);
+        let rx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData { datamatch: 0 });
+        let tx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData { datamatch: 1 });
+        let pipe = RawPipe::from_inner(rx, tx, rx_avail, tx_avail);
         let pipe = HostPipe::new(pipe);
         let host = crate::pipe::HOST.lock();
         host.set(ControlPipe::new(pipe)).unwrap();

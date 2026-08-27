@@ -119,6 +119,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     }
+    if registers.isr == 0x32 {
+        INTERRUPTED.store(true, Ordering::Release);
+        crate::lapic::LAPIC.borrow_mut().clear_interrupt();
+        return;
+    }
     if registers.cs & 0b11 == 0b11 {
         if registers.isr == 0x20 {
             INTERRUPTED.store(true, Ordering::Relaxed);
