@@ -31,7 +31,7 @@ fix *args:
 lint *args:
   cargo clippy --all-targets -- {{args}}
   cargo clippy --all-targets -p kernel -- {{args}}
-  cargo clippy -p fix -- {{args}}
+  cargo clippy --all-targets -p fix -- {{args}}
   cargo clippy -p user -- {{args}}
 
 ctags:
