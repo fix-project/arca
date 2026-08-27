@@ -1,6 +1,5 @@
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{parse_macro_input, ItemFn, LitInt};
 
 pub fn entrypoint(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -11,34 +10,10 @@ pub fn entrypoint(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #item
         #[unsafe(export_name = "_fixpoint_apply_inner")]
         pub extern "C" fn _fixpoint_apply_inner(combination: ::fixutils::RustHandle<'static>) -> ::fixutils::RustHandle<'static> {
-            #_fixpoint_apply(combination)
+            #_fixpoint_apply(combination).expect("expected _fixpoint_apply to succeed")
         }
     }
     .into()
-}
-
-fn registry(count: usize, kind: &str, lookup: &str) -> TokenStream2 {
-    let kind = format_ident!("{kind}");
-    let lookup = format_ident!("{lookup}");
-
-    quote! {
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn #lookup(index: u16) -> *mut ::fixutils::#kind {
-            use ::core::sync::atomic::{AtomicBool, Ordering};
-
-            const COUNT: usize = #count;
-            static mut SLOTS: [::fixutils::#kind; COUNT] = [const { ::fixutils::#kind::EMPTY }; COUNT];
-            static OCCUPIED: [AtomicBool; COUNT] = [const { AtomicBool::new(false) }; COUNT];
-            let slot_index = index as usize - 1;
-
-            // can't get memory 0, memory above count, or already occupied memory
-            if index == 0 || index as usize > COUNT || OCCUPIED[slot_index].swap(true, Ordering::Relaxed) {
-                return ::core::ptr::null_mut();
-            }
-            unsafe { (&raw mut SLOTS).cast::<::fixutils::#kind>().add(slot_index) }
-        }
-    }
 }
 
 fn memory_asm(count: usize) -> String {
@@ -123,9 +98,32 @@ pub fn num_memories(input: TokenStream) -> TokenStream {
         Ok(count) => count,
         Err(error) => return error.to_compile_error().into(),
     };
-    let registry = registry(count, "Memory", "fix_memory_slot");
     let asm = memory_asm(count);
-    quote! { #registry ::core::arch::global_asm!(#asm); }.into()
+    quote! {
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub static FIX_NUM_MEMORIES: u16 = #count as u16;
+
+         #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fix_allocate_memory(index: u16) -> *mut ::fixutils::Memory {
+            use ::core::sync::atomic::{AtomicBool, Ordering};
+
+            const COUNT: usize = #count;
+            static mut SLOTS: [::fixutils::Memory; COUNT] = [const { ::fixutils::Memory::EMPTY }; COUNT];
+            static OCCUPIED: [AtomicBool; COUNT] = [const { AtomicBool::new(false) }; COUNT];
+            let slot_index = index as usize - 1;
+
+            // can't get memory 0, memory above count, or already occupied memory
+            if index == 0 || index as usize > COUNT || OCCUPIED[slot_index].swap(true, Ordering::Relaxed) {
+                return ::core::ptr::null_mut();
+            }
+            unsafe { (&raw mut SLOTS).cast::<::fixutils::Memory>().add(index as usize - 1) }
+        }
+
+        ::core::arch::global_asm!(#asm);
+    }
+    .into()
 }
 
 pub fn num_tables(input: TokenStream) -> TokenStream {
@@ -133,7 +131,30 @@ pub fn num_tables(input: TokenStream) -> TokenStream {
         Ok(count) => count,
         Err(error) => return error.to_compile_error().into(),
     };
-    let registry = registry(count, "Table", "fix_table_slot");
     let asm = table_asm(count);
-    quote! { #registry ::core::arch::global_asm!(#asm); }.into()
+    quote! {
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub static FIX_NUM_TABLES: u16 = #count as u16;
+
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fix_allocate_table(index: u16) -> *mut ::fixutils::Table {
+            use ::core::sync::atomic::{AtomicBool, Ordering};
+
+            const COUNT: usize = #count;
+            static mut SLOTS: [::fixutils::Table; COUNT] = [const { ::fixutils::Table::EMPTY }; COUNT];
+            static OCCUPIED: [AtomicBool; COUNT] = [const { AtomicBool::new(false) }; COUNT];
+            let slot_index = index as usize - 1;
+
+            // can't get table 0, table above count, or already occupied table
+            if index == 0 || index as usize > COUNT || OCCUPIED[slot_index].swap(true, Ordering::Relaxed) {
+                return ::core::ptr::null_mut();
+            }
+            unsafe { (&raw mut SLOTS).cast::<::fixutils::Table>().add(index as usize - 1) }
+        }
+
+        ::core::arch::global_asm!(#asm);
+    }
+    .into()
 }

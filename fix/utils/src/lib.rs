@@ -1,15 +1,31 @@
 #![cfg_attr(target_arch = "wasm32", no_std)]
+extern crate alloc;
 #[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable()
 }
 
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 use fixhandle::{
     BitPack, Blob, BlobName, Encode, Handle, Object, RawName, Ref, Thunk, Tree, TreeName,
 };
 pub use macros::{fix_entrypoint, num_memories, num_tables};
+
+pub mod memory;
+pub mod table;
+
+pub use memory::*;
+pub use table::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixError {
+    AllOcuppied, // All memories/tables occupied
+    Unavailable, // Resource unavilable
+    GrowFailed,  // Memory/Table growth failed
+    OutOfBounds, // Memory/Table access out of bounds
+}
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,110 +76,21 @@ impl<'a> RustHandle<'a> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-}
 
-unsafe extern "C" {
-    fn fix_memory_slot(index: u16) -> *mut Memory;
-    fn fix_table_slot(index: u16) -> *mut Table;
-}
-
-#[repr(transparent)]
-pub struct Memory(u16);
-
-impl Memory {
-    #[doc(hidden)]
-    pub const EMPTY: Self = Self(0);
-
-    pub fn new(index: u16) -> Option<&'static mut Self> {
-        let slot = unsafe { fix_memory_slot(index) };
-        if !slot.is_null() {
-            let memory = unsafe { &mut *slot };
-            memory.0 = index;
-            return Some(memory);
-        }
-        None
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, FixError> {
+        Memory::from_bytes(bytes)?.to_blob(bytes.len())
     }
 
-    // Borrows the memory until the handle is consumed
-    pub fn create_blob(&self, length: usize) -> RustHandle<'_> {
-        RustHandle::new(Handle::Object(Object::Blob(Blob::Blob(unsafe {
-            BlobName::new(encode_args(Producer::CreateBlob, self.0, length))
-        }))))
+    pub fn from_entries(entries: &[RustHandle<'_>]) -> Result<Self, FixError> {
+        Table::from_entries(entries)?.to_tree(entries.len())
     }
 
-    pub fn read(&self, destination: &mut [u8]) {
-        unsafe {
-            fix_memory_read(
-                self.0 as u32,
-                destination.as_mut_ptr() as u32,
-                destination.len(),
-            )
-        }
+    pub fn to_bytes(&self) -> Result<Vec<u8>, FixError> {
+        Memory::from_blob(*self)?.to_bytes(self.len())
     }
 
-    pub fn write(&mut self, source: &[u8]) {
-        unsafe { fix_memory_write(self.0 as u32, source.as_ptr() as u32, source.len()) }
-    }
-
-    pub fn size(&self) -> usize {
-        unsafe { fix_memory_size(self.0 as u32) }
-    }
-
-    pub fn grow(&mut self, num_pages: usize) -> usize {
-        unsafe { fix_memory_grow(self.0 as u32, num_pages) }
-    }
-
-    pub fn attach_blob(&mut self, handle: RustHandle<'_>) {
-        unsafe { fix_attach_blob(self.0 as u32, &handle.raw_handle) }
-    }
-}
-
-#[repr(transparent)]
-pub struct Table(u16);
-
-impl Table {
-    #[doc(hidden)]
-    pub const EMPTY: Self = Self(0);
-
-    pub fn new(index: u16) -> Option<&'static mut Self> {
-        let slot = unsafe { fix_table_slot(index) };
-        if !slot.is_null() {
-            let table = unsafe { &mut *slot };
-            table.0 = index;
-            return Some(table);
-        }
-        None
-    }
-
-    // Borrows the table until the handle is consumed
-    pub fn create_tree(&self, length: usize) -> RustHandle<'_> {
-        RustHandle::new(Handle::Object(Object::Tree(Tree::Tree(unsafe {
-            TreeName::new(encode_args(Producer::CreateTree, self.0, length))
-        }))))
-    }
-
-    pub fn get(&self, entry: usize) -> RustHandle<'_> {
-        assert!(entry < self.size());
-        RustHandle::new(Handle::Object(Object::Tree(Tree::Tree(unsafe {
-            TreeName::new(encode_args(Producer::TableGet, self.0, entry))
-        }))))
-    }
-
-    pub fn set(&mut self, entry: usize, handle: RustHandle<'_>) {
-        assert!(entry < self.size());
-        unsafe { fix_table_set(self.0 as u32, entry, &handle.raw_handle) }
-    }
-
-    pub fn size(&self) -> usize {
-        unsafe { fix_table_size(self.0 as u32) }
-    }
-
-    pub fn grow(&mut self, entries: usize) -> usize {
-        unsafe { fix_table_grow(self.0 as u32, entries) }
-    }
-
-    pub fn attach_tree(&mut self, handle: RustHandle<'_>) {
-        unsafe { fix_attach_tree(self.0 as u32, &handle.raw_handle) }
+    pub fn to_entries(&self) -> Result<Vec<RustHandle<'_>>, FixError> {
+        Table::from_tree(*self)?.to_entries(self.len())
     }
 }
 
