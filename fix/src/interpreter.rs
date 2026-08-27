@@ -1,8 +1,10 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 
-use crate::{FixShell, Storage, parser::Expr};
+use crate::{Storage, parser::Expr};
+mod fixshell;
 use fixhandle::*;
+use fixshell::FixShell;
 use kernel::prelude::*;
 
 pub struct Interpreter<'a> {

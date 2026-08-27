@@ -97,7 +97,7 @@ pub fn main() -> ! {
         /// Read procedure handle from combination
         {
             let result: Result<Blob, _> = Function::symbolic("get_tree")
-                .apply(Blob::new(&handle))
+                .apply(Blob::new(handle))
                 .call_with_current_continuation()
                 .try_into();
 

@@ -28,17 +28,11 @@ run bin *args:
 fix *args:
   cargo run -p fix --target={{target}} {{release}} -- {{args}}
 
-fmt:
-  cargo fmt
-  cargo fmt -p kernel
-  cargo fmt -p fix
-  cargo fmt -p user
-
-lint:
-  cargo clippy
-  cargo clippy -p kernel
-  cargo clippy -p fix
-  cargo clippy -p user
+lint *args:
+  cargo clippy --all-targets -- {{args}}
+  cargo clippy --all-targets -p kernel -- {{args}}
+  cargo clippy --all-targets -p fix -- {{args}}
+  cargo clippy -p user -- {{args}}
 
 ctags:
   ctags -R arca arcane common fix kernel macros user vmm

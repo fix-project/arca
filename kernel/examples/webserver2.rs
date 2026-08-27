@@ -53,7 +53,7 @@ fn main() {
                     }
                     (b"send", &[Value::Blob(ref data)]) => {
                         if let Some(ref mut stream) = current {
-                            let len = stream.send(&*data);
+                            let len = stream.send(data);
                             k.apply(Word::new(len as u64))
                         } else {
                             k.apply(None)

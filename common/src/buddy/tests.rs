@@ -371,7 +371,7 @@ fn test_offset_calculation() {
     let allocator = BuddyAllocatorImpl::new(1 << 24);
 
     let mut ranges = vec![];
-    for level in allocator.inner.meta.level_range.clone() {
+    for level in allocator.inner.meta.level_range {
         let offset = allocator.inner.offset_of_level_words(level);
         let size = allocator.inner.size_of_level_words(level);
         ranges.push((offset, offset + size, level));
@@ -390,7 +390,7 @@ fn test_offset_calculation() {
 fn test_bitmap_boundaries() {
     let allocator = BuddyAllocatorImpl::new(1 << 24);
 
-    for level in allocator.inner.meta.level_range.clone() {
+    for level in allocator.inner.meta.level_range {
         let bits = allocator.inner.size_of_level_bits(level);
         let words = allocator.inner.size_of_level_words(level);
 
@@ -437,11 +437,13 @@ fn test_allocate_many_partial_success() {
     assert!(count < ptrs.len());
 
     // All allocated pointers should be non-null
+    #[allow(clippy::needless_range_loop)]
     for i in 0..count {
         assert!(!ptrs[i].is_null());
     }
 
     // Remaining should be null
+    #[allow(clippy::needless_range_loop)]
     for i in count..ptrs.len() {
         assert!(ptrs[i].is_null());
     }
@@ -814,6 +816,8 @@ fn try_allocate_many_returns_none_when_locked() {
 // Interleaved patterns: A,B,C,D where (A,B) and (C,D) are buddy pairs.
 // Freeing B and C alone should NOT make either parent available;
 // freeing A then enables AB coalesce; freeing D then enables CD coalesce; then both parents can coalesce further.
+#[allow(clippy::erasing_op)]
+#[allow(clippy::identity_op)]
 fn interleaved_buddy_pairs_coalesce_independently_then_merge() {
     let a = BuddyAllocatorImpl::new(1 << 24);
 
@@ -893,7 +897,7 @@ fn fragmentation_blocks_full_coalesce_until_obstacle_removed() {
     }
 
     let obstacle = leaves[7]; // arbitrary leaf to hold
-    for (_i, q) in leaves.iter().enumerate() {
+    for q in leaves.iter() {
         if *q == obstacle {
             continue;
         }
