@@ -1,10 +1,6 @@
-use super::lexer::*;
 use core::{iter::Peekable, str::Chars};
 use kernel::host::fs::{File, Whence};
 use kernel::prelude::*;
-
-// Temporary placeholder until the standard library format is finalized
-pub const STDLIB: &str = "./fix/stdlib";
 
 pub struct Preprocessor<'a> {
     characters: Peekable<Chars<'a>>,
@@ -44,16 +40,6 @@ impl<'a> Preprocessor<'a> {
                             _ => {}
                         }
                     }
-                }
-                '$' => {
-                    let mut name = String::new();
-                    while let Some(character) =
-                        self.characters.next_if(|&ch| Lexer::is_identifier(ch))
-                    {
-                        name.push(character);
-                    }
-                    let program = read_file(&format!("{STDLIB}/{name}"))?;
-                    output.push_str(&format!("0x{}", hex::encode(program)));
                 }
                 '@' => {
                     if self.characters.next() != Some('"') {

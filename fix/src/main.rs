@@ -12,9 +12,8 @@ use kernel::prelude::*;
 
 use fix::arca::FixOnArca;
 use fix::*;
-use lexer::*;
-use parser::*;
-use preprocessor::*;
+
+pub const PARSER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixparser"));
 
 #[cfg(test)]
 mod testing;
@@ -88,11 +87,14 @@ fn eval_parallel_program(
     evaluator: &Arc<parallel_evaluator::Evaluator<FixOnArca>>,
 ) -> Handle {
     let processed = Preprocessor::new(source).preprocess().unwrap();
-    let tokens = Lexer::new(&processed).tokenize().unwrap();
-    let program = Parser::new(&tokens).parse_program().unwrap();
+    let parser: Handle = evaluator.storage().add_blob(PARSER).into();
+    let source = evaluator.storage().add_blob(processed.as_bytes());
+    let environment = stdlib::build_environment(evaluator.storage());
+    let combination = evaluator
+        .storage()
+        .add_tree(&[parser, source.into(), environment]);
 
-    let mut interpreter = Interpreter::new(evaluator.storage());
-    evaluator.eval(interpreter.interpret(&program))
+    evaluator.eval(Encode::Strict(Thunk::Application(combination)).into())
 }
 
 // `fix eval <file>`: read command file and print result.
@@ -116,11 +118,14 @@ fn eval_file(path: &str) {
 // parse, interpret, and evaluate source text.
 fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
     let processed = Preprocessor::new(source).preprocess().unwrap();
-    let tokens = Lexer::new(&processed).tokenize().unwrap();
-    let program = Parser::new(&tokens).parse_program().unwrap();
+    let parser: Handle = evaluator.storage().add_blob(PARSER).into();
+    let source = evaluator.storage().add_blob(processed.as_bytes());
+    let environment = stdlib::build_environment(evaluator.storage());
+    let combination = evaluator
+        .storage()
+        .add_tree(&[parser, source.into(), environment]);
 
-    let mut interpreter = Interpreter::new(evaluator.storage());
-    evaluator.eval(interpreter.interpret(&program))
+    evaluator.eval(Encode::Strict(Thunk::Application(combination)).into())
 }
 
 #[cfg(test)]
@@ -172,6 +177,14 @@ mod tests {
             assert_eq!(
                 eval_value("(let ((x 1)) (let ((y (let ((x 2)) x))) x))", &evaluator),
                 1i64.to_le_bytes()
+            );
+        }
+
+        // primitive test
+        {
+            assert_eq!(
+                eval_value("!*($identity 2)", &evaluator),
+                2i64.to_le_bytes()
             );
         }
     }

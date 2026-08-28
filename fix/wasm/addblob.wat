@@ -10,7 +10,7 @@
        ;; attach combination tree
        (call $attach_tree
              (local.get $encode)
-             (i32.const 0))
+             (i32.const 1))
        ;; grow rw-memory
        (memory.grow
              (memory $mem_0)

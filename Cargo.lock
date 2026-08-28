@@ -606,8 +606,8 @@ dependencies = [
  "crossbeam-queue",
  "derive_more",
  "fixhandle",
+ "fixparser",
  "fixpostprocessor",
- "fixprocedure",
  "fixshell",
  "hex",
  "include_directory",
@@ -629,20 +629,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixparser"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "fixutils",
+ "hex",
+]
+
+[[package]]
 name = "fixpostprocessor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "wasm-encoder",
  "wasmparser",
-]
-
-[[package]]
-name = "fixprocedure"
-version = "0.1.0"
-dependencies = [
- "dlmalloc",
- "fixutils",
 ]
 
 [[package]]
