@@ -119,7 +119,8 @@ impl<R: Runtime> Evaluator<R> {
         match thought {
             Handle::Object(_) => thought,
             Handle::Ref(_) => self.lift(thought),
-            Handle::Thunk(_) | Handle::Encode(_) => todo!(),
+            Handle::Thunk(thunk) => self.force(thunk, eval_mode),
+            Handle::Encode(encode) => self.lift(self.encode(encode, eval_mode)),
         }
     }
 
