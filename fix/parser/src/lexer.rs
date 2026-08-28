@@ -1,6 +1,10 @@
-use super::token::Token;
+use crate::token::Token;
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::{iter::Peekable, str::Chars};
-use kernel::prelude::*;
 
 pub struct Lexer<'a> {
     characters: Peekable<Chars<'a>>,
@@ -40,6 +44,7 @@ impl<'a> Lexer<'a> {
             '*' => Token::Asterisk,
             '^' => Token::Caret,
             '!' => Token::Bang,
+            '$' => Token::Primitive(self.take(String::new(), Self::is_identifier)),
             '"' => {
                 let text = self.take(String::new(), |ch| ch != '"');
                 if self.characters.next() != Some('"') {
