@@ -28,7 +28,7 @@
     -- @ path executables
     @"./target/x86_64-unknown-none/addblob"
 
-    -- Primitives (To be implemented)
-    $interpret
+    -- Primitives
+    !*($identity 2)
 
 -}
