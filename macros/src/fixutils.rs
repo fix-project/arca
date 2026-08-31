@@ -20,18 +20,18 @@ fn memory_asm(count: usize) -> String {
     let mut asm = String::new();
     for (name, signature, body) in [
         (
-            "fix_memory_read",
+            "wasm_memory_read",
             "(i32, i32, i32) -> ()",
             "local.get 1\ni32.const 0\nlocal.get 2\nmemory.copy 0, {}",
         ),
         (
-            "fix_memory_write",
+            "wasm_memory_write",
             "(i32, i32, i32) -> ()",
             "i32.const 0\nlocal.get 1\nlocal.get 2\nmemory.copy {}, 0",
         ),
-        ("fix_memory_size", "(i32) -> (i32)", "memory.size {}"),
+        ("wasm_memory_size", "(i32) -> (i32)", "memory.size {}"),
         (
-            "fix_memory_grow",
+            "wasm_memory_grow",
             "(i32, i32) -> (i32)",
             "local.get 1\nmemory.grow {}",
         ),
@@ -47,7 +47,7 @@ fn memory_asm(count: usize) -> String {
         asm += "unreachable\nend_function\n";
     }
     // Number of memories encoded in custom section
-    asm + &format!(".section .custom_section.num_fix_memories,\"\",@\n.int32 {count}\n")
+    asm + &format!(".section .custom_section.wasm_num_memories,\"\",@\n.int32 {count}\n")
 }
 
 fn table_asm(count: usize) -> String {
@@ -55,29 +55,29 @@ fn table_asm(count: usize) -> String {
     // Tables
     for index in 1..=count {
         asm += &format!(
-            ".section .text.fix_table_{index},\"\",@\n.globl fix_table_{index}\n.tabletype fix_table_{index}, externref\nfix_table_{index}:\n"
+            ".section .text.wasm_table_{index},\"\",@\n.globl wasm_table_{index}\n.tabletype wasm_table_{index}, externref\nwasm_table_{index}:\n"
         );
     }
     for (name, signature, body) in [
         (
-            "fixpoint_table_get",
+            "wasm_table_get",
             "(i32, i32) -> (externref)",
-            "local.get 1\ntable.get fix_table_{}",
+            "local.get 1\ntable.get wasm_table_{}",
         ),
         (
-            "fixpoint_table_set",
+            "wasm_table_set",
             "(i32, i32, externref) -> ()",
-            "local.get 1\nlocal.get 2\ntable.set fix_table_{}",
+            "local.get 1\nlocal.get 2\ntable.set wasm_table_{}",
         ),
         (
-            "fix_table_size",
+            "wasm_table_size",
             "(i32) -> (i32)",
-            "table.size fix_table_{}",
+            "table.size wasm_table_{}",
         ),
         (
-            "fix_table_grow",
+            "wasm_table_grow",
             "(i32, i32) -> (i32)",
-            "ref.null_extern\nlocal.get 1\ntable.grow fix_table_{}",
+            "ref.null_extern\nlocal.get 1\ntable.grow wasm_table_{}",
         ),
     ] {
         asm += &format!(
@@ -102,11 +102,11 @@ pub fn num_memories(input: TokenStream) -> TokenStream {
     quote! {
         #[doc(hidden)]
         #[unsafe(no_mangle)]
-        pub static FIX_NUM_MEMORIES: u16 = #count as u16;
+        pub static UTIL_NUM_MEMORIES: u16 = #count as u16;
 
          #[doc(hidden)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn fix_allocate_memory(index: u16) -> *mut ::fixutils::Memory {
+        pub extern "C" fn util_allocate_memory(index: u16) -> *mut ::fixutils::Memory {
             use ::core::sync::atomic::{AtomicBool, Ordering};
 
             const COUNT: usize = #count;
@@ -135,11 +135,11 @@ pub fn num_tables(input: TokenStream) -> TokenStream {
     quote! {
         #[doc(hidden)]
         #[unsafe(no_mangle)]
-        pub static FIX_NUM_TABLES: u16 = #count as u16;
+        pub static UTIL_NUM_TABLES: u16 = #count as u16;
 
         #[doc(hidden)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn fix_allocate_table(index: u16) -> *mut ::fixutils::Table {
+        pub extern "C" fn util_allocate_table(index: u16) -> *mut ::fixutils::Table {
             use ::core::sync::atomic::{AtomicBool, Ordering};
 
             const COUNT: usize = #count;
