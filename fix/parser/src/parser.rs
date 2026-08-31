@@ -14,7 +14,7 @@ impl Parser {
     pub fn new(
         tokens: Vec<Token>,
         environment_handle: &RustHandle<'static>,
-    ) -> Result<Self, FixError> {
+    ) -> Result<Self, Error> {
         let mut environment = BTreeMap::new();
         for entry in environment_handle.to_entries()? {
             let entry = entry.to_entries()?;
@@ -34,13 +34,13 @@ impl Parser {
         })
     }
 
-    pub fn parse_program(&mut self) -> Result<RustHandle<'static>, FixError> {
+    pub fn parse_program(&mut self) -> Result<RustHandle<'static>, Error> {
         let handle = self.parse_expr()?;
         self.expect(&Token::Eof, "expected end of program");
         Ok(handle)
     }
 
-    fn parse_expr(&mut self) -> Result<RustHandle<'static>, FixError> {
+    fn parse_expr(&mut self) -> Result<RustHandle<'static>, Error> {
         Ok(match self.advance() {
             Token::String(string) => RustHandle::from_bytes(string.as_bytes())?,
             Token::Bytes(bytes) => RustHandle::from_bytes(&bytes)?,
@@ -68,7 +68,7 @@ impl Parser {
         })
     }
 
-    fn parse_handles(&mut self, close: &Token) -> Result<Vec<RustHandle<'static>>, FixError> {
+    fn parse_handles(&mut self, close: &Token) -> Result<Vec<RustHandle<'static>>, Error> {
         let mut handles = Vec::new();
         while !self.matches(close) {
             handles.push(self.parse_expr()?);
@@ -76,7 +76,7 @@ impl Parser {
         Ok(handles)
     }
 
-    fn parse_let(&mut self) -> Result<RustHandle<'static>, FixError> {
+    fn parse_let(&mut self) -> Result<RustHandle<'static>, Error> {
         self.expect(&Token::LParen, "expected '(' for let bindings");
         let outer_context = self.context.clone();
         while self.matches(&Token::LParen) {

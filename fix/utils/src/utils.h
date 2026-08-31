@@ -1,5 +1,5 @@
-#ifndef FIX_UTILS
-#define FIX_UTILS
+#ifndef FIXUTILS_H
+#define FIXUTILS_H
 #include <stdint.h>
 
 typedef __externref_t externref;
@@ -32,6 +32,7 @@ enum encode {
 #define ENCODE_TAG(meta) (((meta) >> 9) & 0x1)
 #define THUNK_TAG(meta) (((meta) >> 7) & 0x3)
 
+// Shares the shape of RawName from fixhandle. Todo: parameterize out 24 byte name field
 struct RustHandle {
     uint8_t name[24];
     union {
@@ -77,8 +78,8 @@ extern void fixpoint_attach_tree(uint32_t table_index, externref handle);
 __attribute__((import_module("fixpoint"), import_name("len")))
 extern uint32_t fixpoint_len(externref handle);
 
-extern externref fixpoint_table_get(uint32_t table_index, uint32_t entry_index);
-extern void fixpoint_table_set(uint32_t table_index, uint32_t entry_index, externref value);
+extern externref wasm_table_get(uint32_t table_index, uint32_t entry_index);
+extern void wasm_table_set(uint32_t table_index, uint32_t entry_index, externref value);
 extern struct RustHandle _fixpoint_apply_inner(struct RustHandle combination);
 
 #endif
