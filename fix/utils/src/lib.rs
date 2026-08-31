@@ -11,7 +11,7 @@ use core::marker::PhantomData;
 use fixhandle::{
     BitPack, Blob, BlobName, Encode, Handle, Object, RawName, Ref, Thunk, Tree, TreeName,
 };
-pub use macros::{fix_entrypoint, num_memories, num_tables};
+pub use macros::{num_memories, num_tables, procedure_entrypoint};
 
 pub mod memory;
 pub mod table;
@@ -20,9 +20,9 @@ pub use memory::*;
 pub use table::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FixError {
-    AllOcuppied, // All memories/tables occupied
-    Unavailable, // Resource unavilable
+pub enum Error {
+    AllOccupied, // All memories/tables occupied
+    Unavailable, // Resource unavailable
     GrowFailed,  // Memory/Table growth failed
     OutOfBounds, // Memory/Table access out of bounds
 }
@@ -70,26 +70,26 @@ impl<'a> RustHandle<'a> {
     }
 
     pub fn len(&self) -> usize {
-        unsafe { fix_len(&self.raw_handle) }
+        unsafe { util_len(&self.raw_handle) }
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, FixError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         Memory::from_bytes(bytes)?.to_blob(bytes.len())
     }
 
-    pub fn from_entries(entries: &[RustHandle<'_>]) -> Result<Self, FixError> {
+    pub fn from_entries(entries: &[RustHandle<'_>]) -> Result<Self, Error> {
         Table::from_entries(entries)?.to_tree(entries.len())
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, FixError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         Memory::from_blob(*self)?.to_bytes(self.len())
     }
 
-    pub fn to_entries(&self) -> Result<Vec<RustHandle<'static>>, FixError> {
+    pub fn to_entries(&self) -> Result<Vec<RustHandle<'static>>, Error> {
         Table::from_tree(*self)?.to_entries(self.len())
     }
 }
@@ -130,16 +130,17 @@ pub fn create_shallow_encode<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
 }
 
 unsafe extern "C" {
-    pub fn fix_memory_read(memory_index: u32, destination: u32, length: usize);
-    pub fn fix_memory_write(memory_index: u32, source: u32, length: usize);
-    pub fn fix_memory_size(memory_index: u32) -> usize;
-    pub fn fix_memory_grow(memory_index: u32, num_pages: usize) -> usize;
+    // Defined with inline assembly
+    pub fn wasm_memory_read(memory_index: u32, destination: u32, length: usize);
+    pub fn wasm_memory_write(memory_index: u32, source: u32, length: usize);
+    pub fn wasm_memory_size(memory_index: u32) -> usize;
+    pub fn wasm_memory_grow(memory_index: u32, num_pages: usize) -> usize;
 
-    pub fn fix_table_size(table_index: u32) -> usize;
-    pub fn fix_table_grow(table_index: u32, entries: usize) -> usize;
+    pub fn wasm_table_size(table_index: u32) -> usize;
+    pub fn wasm_table_grow(table_index: u32, entries: usize) -> usize;
 
-    pub fn fix_attach_blob(memory_index: u32, handle: *const [u8; 32]);
-    pub fn fix_attach_tree(table_index: u32, handle: *const [u8; 32]);
-    pub fn fix_len(handle: *const [u8; 32]) -> usize;
-    pub fn fix_table_set(table_index: u32, entry_index: usize, handle: *const [u8; 32]);
+    pub fn util_attach_blob(memory_index: u32, handle: *const [u8; 32]);
+    pub fn util_attach_tree(table_index: u32, handle: *const [u8; 32]);
+    pub fn util_len(handle: *const [u8; 32]) -> usize;
+    pub fn util_table_set(table_index: u32, entry_index: usize, handle: *const [u8; 32]);
 }

@@ -1,11 +1,11 @@
 fn main() {
-    println!("cargo::rerun-if-changed=src/fixpoint.h");
-    println!("cargo::rerun-if-changed=src/fixpoint.c");
+    println!("cargo::rerun-if-changed=src/utils.h");
+    println!("cargo::rerun-if-changed=src/utils.c");
 
     cc::Build::new()
-        .file("src/fixpoint.c")
+        .file("src/utils.c")
         .include("src")
         .flag("-mreference-types")
         .opt_level(2)
-        .compile("fixpoint");
+        .compile("fixutils");
 }
