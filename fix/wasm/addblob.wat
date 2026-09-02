@@ -9,7 +9,7 @@
  (func (export "_fixpoint_apply") (param $encode externref) (result externref)
        ;; attach combination tree
        (call $attach_tree
-             (i32.const 0)
+             (i32.const 1)
              (local.get $encode))
        ;; grow rw-memory
        (memory.grow

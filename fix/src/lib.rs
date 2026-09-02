@@ -2,9 +2,9 @@
 #![no_std]
 
 pub mod evaluator;
-pub mod interpreter;
-pub mod parser;
+pub mod preprocessor;
 pub mod runtime;
+pub mod stdlib;
 pub mod storage;
 
 pub mod handle {
@@ -13,6 +13,6 @@ pub mod handle {
 
 pub use evaluator::*;
 pub use handle::*;
-pub use interpreter::*;
+pub use preprocessor::*;
 pub use runtime::*;
 pub use storage::*;

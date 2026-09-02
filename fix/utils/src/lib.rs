@@ -89,7 +89,7 @@ impl<'a> RustHandle<'a> {
         Memory::from_blob(*self)?.to_bytes(self.len())
     }
 
-    pub fn to_entries(&self) -> Result<Vec<RustHandle<'_>>, FixError> {
+    pub fn to_entries(&self) -> Result<Vec<RustHandle<'static>>, FixError> {
         Table::from_tree(*self)?.to_entries(self.len())
     }
 }
