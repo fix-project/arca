@@ -42,15 +42,15 @@ impl Parser {
 
     fn parse_expr(&mut self) -> Result<RustHandle<'static>, FixError> {
         Ok(match self.advance() {
-            Token::Number(number) => RustHandle::from_bytes(&number.to_le_bytes())?,
             Token::String(string) => RustHandle::from_bytes(string.as_bytes())?,
             Token::Bytes(bytes) => RustHandle::from_bytes(&bytes)?,
             Token::Identifier(name) => *self.context.get(&name).expect("undefined identifier"),
             Token::Primitive(name) => *self.environment.get(&name).expect("undefined primitive"),
             Token::Ampersand => create_ref(self.parse_expr()?),
-            Token::Caret => create_identification_thunk(self.parse_expr()?),
-            Token::Asterisk => create_application_thunk(self.parse_expr()?),
-            Token::Bang => create_strict_encode(self.parse_expr()?),
+            Token::Apostrophe => create_identification_thunk(self.parse_expr()?),
+            Token::Pound => create_application_thunk(self.parse_expr()?),
+            Token::Asterisk => create_strict_encode(self.parse_expr()?),
+            Token::Plus => create_shallow_encode(self.parse_expr()?),
             Token::LParen => {
                 if let Some(Token::Identifier(token)) = self.peek(self.position)
                     && token == "let"
@@ -58,16 +58,19 @@ impl Parser {
                     self.advance();
                     self.parse_let()?
                 } else {
-                    RustHandle::from_entries(&self.parse_handles()?)?
+                    RustHandle::from_entries(&self.parse_handles(&Token::RParen)?)?
                 }
             }
+            Token::LBracket => create_selection_thunk(RustHandle::from_entries(
+                &self.parse_handles(&Token::RBracket)?,
+            )?),
             token => panic!("unexpected token: {token:?}"),
         })
     }
 
-    fn parse_handles(&mut self) -> Result<Vec<RustHandle<'static>>, FixError> {
+    fn parse_handles(&mut self, close: &Token) -> Result<Vec<RustHandle<'static>>, FixError> {
         let mut handles = Vec::new();
-        while !self.matches(&Token::RParen) {
+        while !self.matches(close) {
             handles.push(self.parse_expr()?);
         }
         Ok(handles)

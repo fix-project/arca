@@ -1,26 +1,25 @@
-(let ((add @"./target/x86_64-unknown-none/addblob")
-      (a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7)
-      (h 8) (i 9) (j 10) (k 11) (l 12) (m 13)
-      (n 14) (o 15) (p 16))
-    !*(add
-        !*(add
-            !*(add
-                !*(add a b)
-                !*(add c d)
+(let ((add @"./target/x86_64-unknown-none/debug/addblob")
+      (a 1u64) (b 2u64) (c 3u64) (d 4u64) (e 5u64) (f 6u64) (g 7u64) (h 8u64)
+      (i 9u64) (j 10u64) (k 11u64) (l 12u64) (m 13u64) (n 14u64) (o 15u64) (p 16u64))
+    *#(add
+        *#(add
+            *#(add
+                *#(add a b)
+                *#(add c d)
             )
-            !*(add
-                !*(add e f)
-                !*(add g h)
+            *#(add
+                *#(add e f)
+                *#(add g h)
             )
         )
-        !*(add
-            !*(add
-                !*(add i j)
-                !*(add k l)
+        *#(add
+            *#(add
+                *#(add i j)
+                *#(add k l)
             )
-            !*(add
-                !*(add m n)
-                !*(add o p)
+            *#(add
+                *#(add m n)
+                *#(add o p)
             )
         )
     )
