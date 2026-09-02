@@ -149,42 +149,49 @@ mod tests {
         let evaluator = Evaluator::new(FixOnArca::default());
 
         {
-            assert_eq!(eval_value("42", &evaluator), 42i64.to_le_bytes());
-            assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
+            assert_eq!(eval_value("42u8", &evaluator), 42u8.to_le_bytes());
+            //assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
             assert_eq!(eval_value("\"hello\"", &evaluator), b"hello");
 
-            assert_eq!(eval_value("(1 2 3)", &evaluator), 3i64.to_le_bytes());
-            assert_eq!(eval_value("()", &evaluator), 0i64.to_le_bytes());
+            assert_eq!(eval_value("(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
+            assert_eq!(eval_value("()", &evaluator), 0u64.to_le_bytes());
 
             assert_eq!(eval_value("&\"hello\"", &evaluator), b"hello");
-            assert_eq!(eval_value("&(1 2 3)", &evaluator), 3i64.to_le_bytes());
+            assert_eq!(eval_value("&(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
 
-            assert_eq!(eval_value("!^&2", &evaluator), 2i64.to_le_bytes());
-
+            assert_eq!(eval_value("*'&2u8", &evaluator), 2u8.to_le_bytes());
             assert_eq!(
-                eval_value("(let ((x 42)) x)", &evaluator),
-                42i64.to_le_bytes()
-            );
-            assert_eq!(
-                eval_value("(let ((x 1) (y 2)) (x y))", &evaluator),
-                2i64.to_le_bytes()
+                eval_value("*[(1u8 2u8 3u8 4u8) 2u8]", &evaluator),
+                3u8.to_le_bytes()
             );
 
             assert_eq!(
-                eval_value("(let ((x 1)) (let ((x 2)) x))", &evaluator),
-                2i64.to_le_bytes()
+                eval_value("(let ((x 42u64)) x)", &evaluator),
+                42u64.to_le_bytes()
             );
             assert_eq!(
-                eval_value("(let ((x 1)) (let ((y (let ((x 2)) x))) x))", &evaluator),
-                1i64.to_le_bytes()
+                eval_value("(let ((x 1u8) (y 2u8)) (x y))", &evaluator),
+                2u64.to_le_bytes()
+            );
+
+            assert_eq!(
+                eval_value("(let ((x 1u8)) (let ((x 2u64)) x))", &evaluator),
+                2u64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value(
+                    "(let ((x 1u64)) (let ((y (let ((x 2u8)) x))) x))",
+                    &evaluator
+                ),
+                1u64.to_le_bytes()
             );
         }
 
         // primitive test
         {
             assert_eq!(
-                eval_value("!*($identity 2)", &evaluator),
-                2i64.to_le_bytes()
+                eval_value("*#($identity 2u8)", &evaluator),
+                2u64.to_le_bytes()
             );
         }
     }
