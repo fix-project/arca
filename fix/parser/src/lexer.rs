@@ -40,10 +40,13 @@ impl<'a> Lexer<'a> {
         let token = match character {
             '(' => Token::LParen,
             ')' => Token::RParen,
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
             '&' => Token::Ampersand,
             '*' => Token::Asterisk,
-            '^' => Token::Caret,
-            '!' => Token::Bang,
+            '+' => Token::Plus,
+            '\'' => Token::Apostrophe,
+            '#' => Token::Pound,
             '$' => Token::Primitive(self.take(String::new(), Self::is_identifier)),
             '"' => {
                 let text = self.take(String::new(), |ch| ch != '"');
@@ -57,14 +60,21 @@ impl<'a> Lexer<'a> {
                 let digits = self.take(String::new(), |ch| ch.is_ascii_hexdigit());
                 Token::Bytes(hex::decode(&digits).map_err(|error| error.to_string())?)
             }
-            // Negative numbers
-            '-' if self.peek(|character| character.is_ascii_digit()) => {
-                let number = self.take(String::new(), |ch| ch.is_ascii_digit());
-                Token::Number(-number.parse::<i64>().map_err(|error| error.to_string())?)
-            }
             character if character.is_ascii_digit() => {
-                let number = self.take(String::from(character), |ch| ch.is_ascii_digit());
-                Token::Number(number.parse::<i64>().map_err(|error| error.to_string())?)
+                let digits = self.take(String::from(character), |ch| {
+                    ch.is_ascii_digit() || ch == '_'
+                });
+                let suffix = self.take(String::new(), |ch| ch.is_ascii_alphanumeric());
+                let bytes = match suffix.as_str() {
+                    "u8" => digits.parse::<u8>().map(|n| n.to_le_bytes().to_vec()),
+                    "u16" => digits.parse::<u16>().map(|n| n.to_le_bytes().to_vec()),
+                    "u32" => digits.parse::<u32>().map(|n| n.to_le_bytes().to_vec()),
+                    "u64" => digits.parse::<u64>().map(|n| n.to_le_bytes().to_vec()),
+                    "u128" => digits.parse::<u128>().map(|n| n.to_le_bytes().to_vec()),
+                    "" => return Err(format!("integer literal {digits} missing suffix")),
+                    other => return Err(format!("unknown integer suffix: {other}")),
+                };
+                Token::Bytes(bytes.map_err(|error| error.to_string())?)
             }
             character if Self::is_identifier(character) => {
                 Token::Identifier(self.take(String::from(character), Self::is_identifier))
