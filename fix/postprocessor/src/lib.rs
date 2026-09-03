@@ -19,7 +19,7 @@ pub fn process(wasm: &[u8]) -> Result<Vec<u8>> {
                 RoundtripReencoder.parse_memory_section(&mut memories, section)?;
                 memory_section = Some(memories);
             }
-            Payload::CustomSection(section) if section.name() == "num_fix_memories" => {
+            Payload::CustomSection(section) if section.name() == "wasm_num_memories" => {
                 num_memories = u32::from_le_bytes(section.data().try_into()?);
             }
             // Don't change other sections

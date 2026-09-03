@@ -16,8 +16,8 @@ use parser::Parser;
 num_memories!(48);
 num_tables!(24);
 
-#[fix_entrypoint]
-pub fn _fixpoint_apply(combination: RustHandle<'static>) -> Result<RustHandle<'static>, FixError> {
+#[procedure_entrypoint]
+pub fn _fixpoint_apply(combination: RustHandle<'static>) -> Result<RustHandle<'static>, Error> {
     let arguments = combination.to_entries()?;
 
     let source_handle = arguments.get(1).expect("expected source");

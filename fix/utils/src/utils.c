@@ -1,4 +1,4 @@
-#include "fixpoint.h"
+#include "utils.h"
 
 static externref __attribute__((address_space(1))) combination_global;
 
@@ -24,7 +24,7 @@ static externref resolve(const struct RustHandle* handle) {
 
     switch (PRODUCER_TAG(handle->meta)) {
     case COMBINATION: value = combination_global; break;
-    case TABLE_GET: value = fixpoint_table_get(handle->index, handle->entry); break;
+    case TABLE_GET: value = wasm_table_get(handle->index, handle->entry); break;
     case CREATE_BLOB: value = fixpoint_create_blob(handle->index, handle->entry); break;
     case CREATE_TREE: value = fixpoint_create_tree(handle->index, handle->entry); break;
     default: __builtin_unreachable();
@@ -39,20 +39,20 @@ static externref resolve(const struct RustHandle* handle) {
     }
 }
 
-void fix_attach_blob(uint32_t memory_index, const struct RustHandle* handle) {
+void util_attach_blob(uint32_t memory_index, const struct RustHandle* handle) {
     fixpoint_attach_blob(memory_index, resolve(handle));
 }
 
-void fix_attach_tree(uint32_t table_index, const struct RustHandle* handle) {
+void util_attach_tree(uint32_t table_index, const struct RustHandle* handle) {
     fixpoint_attach_tree(table_index, resolve(handle));
 }
 
-uint32_t fix_len(const struct RustHandle* handle) {
+uint32_t util_len(const struct RustHandle* handle) {
     return fixpoint_len(resolve(handle));
 }
 
-void fix_table_set(uint32_t table_index, uint32_t entry_index, const struct RustHandle* handle) {
-    fixpoint_table_set(table_index, entry_index, resolve(handle));
+void util_table_set(uint32_t table_index, uint32_t entry_index, const struct RustHandle* handle) {
+    wasm_table_set(table_index, entry_index, resolve(handle));
 }
 
 static const struct RustHandle combination = {
