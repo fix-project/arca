@@ -502,6 +502,13 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         }
         panic!("unaligned mmap or bad size: {p:#x}+{len:#x}");
     }
+
+    assert_eq!(
+        p,
+        (addr + len).next_multiple_of(Page4KB::SIZE),
+        "sys_compat_mmap over allocated mapping from {addr:#x} to {:#x}",
+        addr + len
+    );
     Ok(p - addr)
 }
 
