@@ -690,7 +690,7 @@ mod tests {
     // Verifies memory mapping rounds up to the nearest 4KB page without over allocation
     #[test]
     fn test_mmap_fits_request() {
-        let len: usize = Page2MB::SIZE + 1;
+        let len: usize = Page2MB::SIZE + Page4KB::SIZE;
         let mut cpu = CPU.borrow_mut();
         let mut loaded_arca = Arca::new().load(&mut cpu);
         let args = [0, len as u64, arcane::__MODE_read_write as u64, 0, 0, 0];

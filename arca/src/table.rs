@@ -49,7 +49,8 @@ impl<R: Runtime> Table<R> {
             let mut smaller = match self.set(index, Entry::Null(0))? {
                 Entry::ROTable(table) => table,
                 Entry::RWTable(table) => table,
-                _ => R::create_table(self.len() / 512),
+                Entry::Null(_) => R::create_table(self.len() / 512),
+                page => panic!("cannot remap {} byte page at {address:#x}", page.len()),
             };
             assert!(self.len() > smaller.len());
             smaller.map(offset, entry)?;
