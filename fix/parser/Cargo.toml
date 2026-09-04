@@ -1,0 +1,12 @@
+[package]
+name = "fixparser"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fixutils = { path = "../utils" }
+dlmalloc = { version = "0.2.14", features = ["global"] }
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }

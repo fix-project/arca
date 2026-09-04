@@ -12,7 +12,6 @@ use core::ffi::c_void;
 use fixhandle::*;
 
 use user::ArcaError;
-use user::Ref;
 use user::Runtime;
 use user::error::log as arca_log;
 use user::error::log_int as arca_log_int;
@@ -242,10 +241,41 @@ pub fn fixpoint_is_equal(lhs: [u8; 32], rhs: [u8; 32]) -> bool {
     result == 1
 }
 
+pub fn fixpoint_create_ref(handle: [u8; 32]) -> [u8; 32] {
+    Handle::Ref(match Handle::unpack(handle) {
+        Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
+        Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
+        _ => {
+            arca_log("create_ref: handle does not refer to an Object");
+            panic!()
+        }
+    })
+    .pack()
+}
+
+pub fn fixpoint_create_identification_thunk(handle: [u8; 32]) -> [u8; 32] {
+    let reference = match Handle::unpack(handle) {
+        Handle::Ref(reference) => reference,
+        Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
+        Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
+        _ => {
+            arca_log("create_identification_thunk: handle does not refer to an Object or Ref");
+            panic!()
+        }
+    };
+    let thunk: Handle = Thunk::Identification(reference).into();
+    thunk.pack()
+}
+
 pub fn fixpoint_create_application_thunk(handle: [u8; 32]) -> [u8; 32] {
     let handle = Handle::unpack(handle);
-    // TODO: handle refs
     let thunk: Handle = Thunk::Application(handle.unwrap_object().unwrap_tree()).into();
+    thunk.pack()
+}
+
+pub fn fixpoint_create_selection_thunk(handle: [u8; 32]) -> [u8; 32] {
+    let handle = Handle::unpack(handle);
+    let thunk: Handle = Thunk::Selection(handle.unwrap_object().unwrap_tree()).into();
     thunk.pack()
 }
 
@@ -255,7 +285,13 @@ pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
     encode.pack()
 }
 
-fn fixpoint_len(handle: [u8; 32]) -> usize {
+pub fn fixpoint_create_shallow_encode(handle: [u8; 32]) -> [u8; 32] {
+    let handle = Handle::unpack(handle);
+    let encode: Handle = Encode::Shallow(handle.unwrap_thunk()).into();
+    encode.pack()
+}
+
+pub fn fixpoint_len(handle: [u8; 32]) -> usize {
     let handle = Handle::unpack(handle);
     handle.len()
 }
