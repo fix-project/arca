@@ -309,7 +309,10 @@ impl Cpu {
         };
         let table = Table::from(CowPage::Unique(pdpt));
         let mut table = arca::Table::from_inner(table);
-        let result = table.map(address, entry)?;
+        let result = table.map(address, entry).map_err(|e| match e {
+            arca::table::MapError::Runtime(e) => e,
+            arca::table::MapError::MapExists => crate::types::Error::MapError,
+        })?;
         match table.into_inner() {
             Table::Table512GB(page) => pml4.entry_mut(i_512gb).chain_unique(page.unique()),
             _ => todo!(),

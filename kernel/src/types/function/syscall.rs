@@ -675,6 +675,7 @@ impl From<crate::types::Error> for SyscallError {
             crate::types::Error::InvalidTableEntry(_) => SyscallError::BadArgument,
             crate::types::Error::InvalidIndex(_) => SyscallError::BadIndex,
             crate::types::Error::InvalidValue => SyscallError::BadArgument,
+            crate::types::Error::MapError => SyscallError::BadArgument,
         }
     }
 }
