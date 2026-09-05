@@ -4,7 +4,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use arcane::{__MODE_read_write, arca_compat_mmap};
+use arcane::__MODE_read_write;
 use user::error;
 
 include!(concat!(env!("OUT_DIR"), "/wasm_rt.rs"));
@@ -50,7 +50,7 @@ pub extern "C" fn wasm_rt_allocate_memory(
         assert!(max_pages <= (1u64 << 32) / PAGE_SIZE as u64);
         let data = ((1 << 32) * idx) as *mut u8;
         let size = initial_pages * PAGE_SIZE as u64;
-        arca_compat_mmap(data as *mut _, size as usize, __MODE_read_write);
+        crate::mmap(data as *mut _, size as usize, __MODE_read_write);
         memory.write(wasm_rt_memory_t {
             data,
             pages: initial_pages,
@@ -86,7 +86,7 @@ pub extern "C" fn wasm_rt_grow_memory(memory: *mut wasm_rt_memory_t, pages: u64)
     let start = unsafe { memory.data.byte_add(current as usize * PAGE_SIZE as usize) };
     let size = pages * PAGE_SIZE as u64;
     unsafe {
-        arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
+        crate::mmap(start as *mut _, size as usize, __MODE_read_write);
         memory.pages += pages;
         memory.size += size;
     }
@@ -113,7 +113,7 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
             max_elements = 1 << (32 - 5);
         }
         let data = ((1 << 32) * (64 + idx)) as *mut u8;
-        arca_compat_mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
+        crate::mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
         table.write(wasm_rt_externref_table_t {
             data: data as *mut _,
             size: elements,
@@ -137,7 +137,7 @@ pub extern "C" fn wasm_rt_grow_externref_table(
     let start = unsafe { table.data.byte_add(current as usize * 32) };
     let size = delta * 32;
     unsafe {
-        arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
+        crate::mmap(start as *mut _, size as usize, __MODE_read_write);
         table.size += delta;
     }
     current
@@ -163,7 +163,7 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
             max_elements = 1 << (32 - 5);
         }
         let data = ((1 << 32) * (64 + 32 + idx)) as *mut u8;
-        arca_compat_mmap(
+        crate::mmap(
             data as *mut _,
             (elements as usize * core::mem::size_of::<wasm_rt_funcref_t>()) as usize,
             __MODE_read_write,

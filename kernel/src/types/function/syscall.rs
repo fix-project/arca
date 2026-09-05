@@ -460,7 +460,9 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
     let mut p = addr;
     while p < addr + len {
-        if p.is_multiple_of(Page1GB::SIZE) && len >= Page1GB::SIZE {
+        // Remaining number of bytes to mmap
+        let remaining = addr + len - p;
+        if p.is_multiple_of(Page1GB::SIZE) && remaining >= Page1GB::SIZE {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page1GB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -473,7 +475,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             p += Page1GB::SIZE;
             continue;
         }
-        if p.is_multiple_of(Page2MB::SIZE) && len >= Page2MB::SIZE {
+        if p.is_multiple_of(Page2MB::SIZE) && remaining >= Page2MB::SIZE {
             if mode == arcane::__MODE_none {
                 let entry = Entry::Null(Page2MB::SIZE);
                 arca.cpu().map(p, entry).unwrap();
@@ -500,7 +502,10 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         }
         panic!("unaligned mmap or bad size: {p:#x}+{len:#x}");
     }
-    Ok(p - addr)
+
+    let size_mapped = p - addr;
+    debug_assert_eq!(size_mapped, len.next_multiple_of(Page4KB::SIZE));
+    Ok(size_mapped)
 }
 
 pub fn sys_call_with_current_continuation(
@@ -670,6 +675,28 @@ impl From<crate::types::Error> for SyscallError {
             crate::types::Error::InvalidTableEntry(_) => SyscallError::BadArgument,
             crate::types::Error::InvalidIndex(_) => SyscallError::BadIndex,
             crate::types::Error::InvalidValue => SyscallError::BadArgument,
+            crate::types::Error::MapError => SyscallError::BadArgument,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verifies memory mapping rounds up to the nearest 4KB page without over allocation
+    #[test]
+    fn test_mmap_fits_request() {
+        let len: usize = Page2MB::SIZE + Page4KB::SIZE;
+        let mut cpu = CPU.borrow_mut();
+        let mut loaded_arca = Arca::new().load(&mut cpu);
+        let args = [0, len as u64, arcane::__MODE_read_write as u64, 0, 0, 0];
+        sys_compat_mmap(args, &mut loaded_arca).expect("mmap failed");
+        let mut arca = loaded_arca.unload();
+        let mappings = arca.mappings_mut();
+
+        assert_eq!(mappings.unmap(0).unwrap().len(), Page2MB::SIZE);
+        assert_eq!(mappings.unmap(Page2MB::SIZE).unwrap().len(), Page4KB::SIZE);
+        assert!(matches!(mappings.unmap(len), Some(Entry::Null(_))));
     }
 }

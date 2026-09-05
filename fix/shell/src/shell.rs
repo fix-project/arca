@@ -3,8 +3,7 @@ use arca::{Blob, Function, Table, Word};
 use arca::{Runtime as _, Tuple};
 use arcane::{
     __MODE_read_only, __MODE_read_write, __NR_length, __TYPE_table, arca_argument,
-    arca_blob_create, arca_blob_read, arca_compat_mmap, arca_entry, arca_mmap, arca_table_map,
-    arcad,
+    arca_blob_create, arca_blob_read, arca_entry, arca_mmap, arca_table_map, arcad,
 };
 
 use core::arch::x86_64::*;
@@ -52,7 +51,7 @@ pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize
     let len = fixpoint_len(handle);
 
     unsafe {
-        arca_compat_mmap(addr, len, __MODE_read_write);
+        crate::mmap(addr, len, __MODE_read_write);
         blob.read(0, core::slice::from_raw_parts_mut(addr as *mut u8, len));
     };
     // user::error::log_int("attached memory", len as u64);
@@ -86,7 +85,7 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     // user::error::log_int("attached tree", len as u64);
 
     unsafe {
-        arca_compat_mmap(addr, len * 32, __MODE_read_write);
+        crate::mmap(addr, len * 32, __MODE_read_write);
         let slice = core::slice::from_raw_parts_mut(addr as *mut u8, len * 32);
         tree.read(0, slice)
     };

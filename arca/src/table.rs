@@ -1,5 +1,10 @@
 use super::prelude::*;
 
+pub enum MapError<R: Runtime> {
+    Runtime(R::Error),
+    MapExists,
+}
+
 impl<R: Runtime> Table<R> {
     pub fn new(len: usize) -> Self {
         R::create_table(len)
@@ -25,7 +30,11 @@ impl<R: Runtime> Table<R> {
         Ok(())
     }
 
-    pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, R::Error> {
+    // map behaves somewhat like Linux's MAP_FIXED_NOREPLACE (rejects an overlapping map with MapExists).
+    // Given the heterogeneity of page sizes, handling overlapping map requests involves
+    // a bunch of cases (e.g. attempt to map a 4 KiB page in the middle of an existing 2 MiB page, etc.)
+    pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, MapError<R>> {
+        use MapError::*;
         if entry.is_empty() {
             return Ok(entry);
         }
@@ -34,26 +43,28 @@ impl<R: Runtime> Table<R> {
                 let mut embiggened = R::create_table(this.len() * 512);
                 embiggened.set(0, Entry::RWTable(this))?;
                 Ok(embiggened)
-            })?;
+            })
+            .map_err(Runtime)?;
             self.map(address, entry)?
         } else if entry.len() == self.len() / 512 {
             let shift = entry.len().ilog2();
             let index = address >> shift;
             assert!(index < 512);
-            self.set(index, entry)?
+            self.set(index, entry).map_err(Runtime)?
         } else {
             let shift = (self.len() / 512).ilog2();
             let index = (address >> shift) & 0x1ff;
             let offset = address & !(0x1ff << shift);
 
-            let mut smaller = match self.set(index, Entry::Null(0))? {
+            let mut smaller = match self.set(index, Entry::Null(0)).map_err(Runtime)? {
                 Entry::ROTable(table) => table,
                 Entry::RWTable(table) => table,
-                _ => R::create_table(self.len() / 512),
+                Entry::Null(_) => R::create_table(self.len() / 512),
+                Entry::ROPage(_) | Entry::RWPage(_) => return Err(MapExists),
             };
             assert!(self.len() > smaller.len());
             smaller.map(offset, entry)?;
-            self.set(index, Entry::RWTable(smaller))?
+            self.set(index, Entry::RWTable(smaller)).map_err(Runtime)?
         };
         Ok(result)
     }

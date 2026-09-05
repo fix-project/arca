@@ -117,3 +117,21 @@ pub fn main() -> ! {
     };
     os::exit(&result[..]);
 }
+
+const KERNEL_PAGE_SIZE: usize = 4096;
+
+/// Maps `length` bytes at `address` with the given `mode`.
+/// Panics if the kernel returns an error code or maps a different length than request
+///
+/// # Safety
+///
+/// [address] must refer to an unused region of memory at least `length` bytes long;
+/// there must be no Rust references pointing into that region.
+pub unsafe fn mmap(address: *mut c_void, length: usize, mode: u32) {
+    let expected = length.next_multiple_of(KERNEL_PAGE_SIZE);
+    let mapped = unsafe { arcane::arca_compat_mmap(address, length, mode) };
+    assert_eq!(
+        mapped, expected as i64,
+        "mmap of {length} bytes at {address:?} unexpectedly returned {mapped}"
+    );
+}
