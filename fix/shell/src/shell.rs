@@ -51,7 +51,8 @@ pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize
     let len = fixpoint_len(handle);
 
     unsafe {
-        crate::mmap(addr, len, __MODE_read_write);
+        // TODO: directly map in as read-only
+        let _ = arcane::arca_compat_mmap(addr, len, __MODE_read_write);
         blob.read(0, core::slice::from_raw_parts_mut(addr as *mut u8, len));
     };
     // user::error::log_int("attached memory", len as u64);
@@ -85,7 +86,8 @@ pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize
     // user::error::log_int("attached tree", len as u64);
 
     unsafe {
-        crate::mmap(addr, len * 32, __MODE_read_write);
+        // TODO: directly map in as read-only
+        let _ = arcane::arca_compat_mmap(addr, len * 32, __MODE_read_write);
         let slice = core::slice::from_raw_parts_mut(addr as *mut u8, len * 32);
         tree.read(0, slice)
     };
