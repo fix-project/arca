@@ -154,6 +154,8 @@ typedef struct {
 typedef struct {
   /** The table element data, with an element count of `size`. */
   wasm_rt_funcref_t *data;
+  /** The current number of bytes allocated to the table. */
+  int64_t memory_size;
   /** The maximum element count of this Table object. If there is no maximum,
    * `max_size` is 0xffffffffu (i.e. UINT32_MAX). */
   uint32_t max_size;
@@ -165,6 +167,8 @@ typedef struct {
 typedef struct {
   /** The table element data, with an element count of `size`. */
   wasm_rt_externref_t *data;
+  /** The current number of bytes allocated to the table. */
+  int64_t memory_size;
   /** The maximum element count of this Table object. If there is no maximum,
    * `max_size` is 0xffffffffu (i.e. UINT32_MAX). */
   uint32_t max_size;

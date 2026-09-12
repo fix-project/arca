@@ -8,6 +8,7 @@ pub enum Error {
     InvalidTableEntry(super::Entry),
     InvalidIndex(usize),
     InvalidValue,
+    MapError,
 }
 
 impl arca::Runtime for Runtime {

@@ -50,7 +50,8 @@ pub extern "C" fn wasm_rt_allocate_memory(
         assert!(max_pages <= (1u64 << 32) / PAGE_SIZE as u64);
         let data = ((1 << 32) * idx) as *mut u8;
         let size = initial_pages * PAGE_SIZE as u64;
-        arca_compat_mmap(data as *mut _, size as usize, __MODE_read_write);
+        let memory_size = arca_compat_mmap(data as *mut _, size as usize, __MODE_read_write);
+        assert_eq!(memory_size, size as i64); // don't expect kernel to overallocate when requesting units of Wasm page size
         memory.write(wasm_rt_memory_t {
             data,
             pages: initial_pages,
@@ -86,7 +87,8 @@ pub extern "C" fn wasm_rt_grow_memory(memory: *mut wasm_rt_memory_t, pages: u64)
     let start = unsafe { memory.data.byte_add(current as usize * PAGE_SIZE as usize) };
     let size = pages * PAGE_SIZE as u64;
     unsafe {
-        arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
+        let memory_size = arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
+        assert_eq!(memory_size, size as i64); // don't expect kernel to overallocate when using units of Wasm page size
         memory.pages += pages;
         memory.size += size;
     }
@@ -113,9 +115,11 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
             max_elements = 1 << (32 - 5);
         }
         let data = ((1 << 32) * (64 + idx)) as *mut u8;
-        arca_compat_mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
+        let memory_size =
+            arca_compat_mmap(data as *mut _, (elements * 32) as usize, __MODE_read_write);
         table.write(wasm_rt_externref_table_t {
             data: data as *mut _,
+            memory_size,
             size: elements,
             max_size: max_elements,
         });
@@ -129,19 +133,30 @@ pub extern "C" fn wasm_rt_grow_externref_table(
     init: wasm_rt_externref_t,
 ) -> u32 {
     let table = unsafe { &mut *table };
-    let current = table.size;
-    if current + delta > table.max_size {
+    if table
+        .size
+        .checked_add(delta)
+        .is_none_or(|tot| tot > table.max_size)
+    {
         return u32::MAX;
     }
 
-    let start = unsafe { table.data.byte_add(current as usize * 32) };
-    let size = delta * 32;
-    unsafe {
-        arca_compat_mmap(start as *mut _, size as usize, __MODE_read_write);
-        table.size += delta;
+    let desired_bytes = (table.size + delta) as usize * 32;
+    let cur_bytes = table.memory_size as usize;
+    if desired_bytes > cur_bytes {
+        unsafe {
+            let start = table.data.byte_add(cur_bytes);
+            let bytes_needed = desired_bytes - cur_bytes;
+            table.memory_size += arca_compat_mmap(start as *mut _, bytes_needed, __MODE_read_write);
+        }
     }
-    current
+
+    let old_element_count = table.size;
+    table.size += delta;
+    old_element_count
 }
+
+// TODO: wasm_rt_grow_funcref_table
 
 /**
  * Initialize an funcref Table object with an element count
@@ -163,13 +178,14 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
             max_elements = 1 << (32 - 5);
         }
         let data = ((1 << 32) * (64 + 32 + idx)) as *mut u8;
-        arca_compat_mmap(
+        let memory_size = arca_compat_mmap(
             data as *mut _,
             (elements as usize * core::mem::size_of::<wasm_rt_funcref_t>()) as usize,
             __MODE_read_write,
         );
         table.write(wasm_rt_funcref_table_t {
             data: data as *mut _,
+            memory_size,
             size: elements,
             max_size: max_elements,
         });
