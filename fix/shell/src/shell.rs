@@ -7,7 +7,7 @@ use arcane::{
 };
 
 use core::arch::x86_64::*;
-use core::ffi::c_void;
+use core::ffi::{CStr, c_char, c_uint, c_void};
 use fixhandle::*;
 
 use user::ArcaError;
@@ -259,4 +259,20 @@ pub fn fixpoint_create_strict_encode(handle: [u8; 32]) -> [u8; 32] {
 fn fixpoint_len(handle: [u8; 32]) -> usize {
     let handle = Handle::unpack(handle);
     handle.len()
+}
+
+// void __assert_fail(const char * assertion, const char * file, unsigned int line, const char * function);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __assert_fail(
+    assertion: *const c_char,
+    file: *const c_char,
+    line: c_uint,
+    function: *const c_char,
+) -> ! {
+    unsafe {
+        let assertion = CStr::from_ptr(assertion).display();
+        let file = CStr::from_ptr(file).display();
+        let function = CStr::from_ptr(function).display();
+        panic!("assertion failed at {file}:{line} in {function}: {assertion}");
+    }
 }

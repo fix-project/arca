@@ -73,9 +73,9 @@ impl File {
 
     pub fn seek(&mut self, from: SeekFrom) -> Result<usize> {
         let (whence, offset) = match from {
-            SeekFrom::Start(offset) => (arcane::SEEK_SET, offset as usize),
-            SeekFrom::End(offset) => (arcane::SEEK_END, offset as usize),
-            SeekFrom::Current(offset) => (arcane::SEEK_CUR, offset as usize),
+            SeekFrom::Start(offset) => ("start", offset as usize),
+            SeekFrom::End(offset) => ("end", offset as usize),
+            SeekFrom::Current(offset) => ("current", offset as usize),
         };
         let result: Word = Function::symbolic("seek")
             .apply(self.fd)
@@ -151,27 +151,23 @@ impl OpenOptions {
 
     pub fn open(self, path: &str) -> Result<File> {
         let mut flags = if self.read && self.write {
-            arcane::O_RDWR
+            "rw"
         } else if self.read {
-            arcane::O_RDONLY
+            "ro"
         } else if self.write {
-            arcane::O_WRONLY
+            "wo"
         } else {
-            0
+            ""
         };
-        if self.append {
-            flags |= arcane::O_APPEND;
-        }
-        if self.create {
-            flags |= arcane::O_CREAT;
-        }
-        if self.truncate {
-            flags |= arcane::O_TRUNC;
-        }
         let mode = 0o655;
         let result: Word = Function::symbolic("open")
             .apply(path)
-            .apply(flags)
+            .apply(Tuple::from((
+                Value::from(flags),
+                Value::from(if self.append { 1 } else { 0 }),
+                Value::from(if self.create { 1 } else { 0 }),
+                Value::from(if self.truncate { 1 } else { 0 }),
+            )))
             .apply(mode)
             .call_with_current_continuation()
             .try_into()

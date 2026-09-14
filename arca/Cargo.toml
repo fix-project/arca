@@ -5,9 +5,8 @@ edition = "2024"
 
 [features]
 default = []
-serde = ["alloc"]
+serde = ["alloc", "dep:serde"]
 alloc = []
 
 [dependencies]
-log = "0.4.27"
-serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"], optional=true }
