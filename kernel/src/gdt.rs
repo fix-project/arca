@@ -3,7 +3,7 @@ use core::cell::LazyCell;
 
 use bitfield_struct::bitfield;
 
-use crate::tss::{TaskStateSegment, TSS};
+use crate::tss::{TSS, TaskStateSegment};
 
 #[core_local]
 pub(crate) static GDT: LazyCell<[GdtEntry; 8]> = LazyCell::new(|| {

@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{
     future::Future,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -20,7 +21,7 @@ static USER_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[core_local]
 static MUTE_CORE: AtomicBool = AtomicBool::new(false);
 
-extern "C" {
+unsafe extern "C" {
     static mut _stext: u8;
     static mut _etext: u8;
 }

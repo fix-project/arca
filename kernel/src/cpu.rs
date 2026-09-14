@@ -218,7 +218,7 @@ impl From<ExitStatus> for ExitReason {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn set_pt(page_map: usize);
     // fn flush_tlb() -> usize;
     fn syscall_call_user(registers: &mut RegisterFile) -> ExitStatus;

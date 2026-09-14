@@ -1,5 +1,5 @@
 use super::error::Result;
-use super::uni::{channel, Reader, Writer};
+use super::uni::{Reader, Writer, channel};
 
 #[derive(Debug)]
 pub struct Pipe {
@@ -47,18 +47,20 @@ mod tests {
     #[test]
     pub fn test_ping_pong() {
         let (mut p, mut q) = super::pipe(1024);
-        std::thread::spawn(move || loop {
-            let mut buf = [0; 8];
+        std::thread::spawn(move || {
             loop {
-                let result = q.read(&mut buf);
-                if result.is_ok() {
-                    break;
+                let mut buf = [0; 8];
+                loop {
+                    let result = q.read(&mut buf);
+                    if result.is_ok() {
+                        break;
+                    }
+                    std::thread::yield_now();
                 }
-                std::thread::yield_now();
+                let i = u64::from_le_bytes(buf);
+                buf = u64::to_le_bytes(i + 1);
+                let _ = q.write(&buf);
             }
-            let i = u64::from_le_bytes(buf);
-            buf = u64::to_le_bytes(i + 1);
-            let _ = q.write(&buf);
         });
         let mut bytes = u64::to_le_bytes(0);
         let mut i = 0;

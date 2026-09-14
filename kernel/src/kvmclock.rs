@@ -1,4 +1,5 @@
 // https://www.kernel.org/doc/html/v5.9/virt/kvm/msr.html
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{
     arch::asm,
     sync::atomic::{AtomicPtr, Ordering},

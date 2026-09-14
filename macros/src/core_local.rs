@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, ItemStatic};
+use syn::{ItemStatic, parse_macro_input};
 
 pub fn body(_: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStatic);
@@ -19,7 +19,7 @@ pub fn body(_: TokenStream, item: TokenStream) -> TokenStream {
             use super::*;
 
             #(#attrs)*
-            #[link_section = ".cdata"]
+            #[unsafe(link_section = ".cdata")]
             pub(super) static mut #ident: #ty = #init;
         }
 

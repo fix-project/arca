@@ -1,6 +1,6 @@
-use arca::prelude::*;
 use arca::Entry;
-use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
+use arca::prelude::*;
+use elf::{ElfBytes, endian::AnyEndian, segment::ProgramHeader};
 
 extern crate alloc;
 use alloc::vec::Vec;

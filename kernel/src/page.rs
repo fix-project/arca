@@ -68,10 +68,12 @@ impl<T> CowPage<T> {
     ///
     /// The arguments to this function must have come from [into_raw].
     pub unsafe fn from_raw(unique: bool, ptr: *mut T) -> Self {
-        if unique {
-            CowPage::Unique(Box::from_raw_in(ptr, BuddyAllocator))
-        } else {
-            CowPage::Shared(RefCnt::from_raw(ptr))
+        unsafe {
+            if unique {
+                CowPage::Unique(Box::from_raw_in(ptr, BuddyAllocator))
+            } else {
+                CowPage::Shared(RefCnt::from_raw(ptr))
+            }
         }
     }
 }

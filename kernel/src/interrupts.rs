@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{
     cell::LazyCell,
     fmt::Write,
@@ -19,7 +20,7 @@ pub(crate) static INTERRUPT_STACK: LazyCell<*mut Page2MB> = LazyCell::new(|| {
 });
 
 #[core_local]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) static SEGFAULT_ESCAPE_ADDR: AtomicPtr<fn(u64, u64) -> !> =
     AtomicPtr::new(core::ptr::null_mut());
 
@@ -49,7 +50,7 @@ pub(crate) struct IsrRegisterFile {
     pub ss: u64,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn isr_save_state_and_exit(isr: u64, error: u64, registers: &RegisterFile) -> !;
     fn get_if() -> bool;
 }
@@ -90,7 +91,7 @@ pub fn must_be_disabled() {
     assert!(!enabled());
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
     must_be_disabled();
     if registers.isr == 0x31 {
