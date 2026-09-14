@@ -1,5 +1,5 @@
-#![allow(unused)]
-#![allow(clippy::double_parens)]
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(dead_code)]
 use bitfield_struct::bitfield;
 use core::{cell::RefCell, marker::PhantomData};
 

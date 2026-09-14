@@ -1,8 +1,7 @@
-#![allow(unused)]
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(dead_code)]
 
 use core::arch::asm;
-
-pub use common::controlreg::*;
 
 pub unsafe fn write_cr0(x: u64) {
     asm!("mov cr0, {x}", x=in(reg)x);

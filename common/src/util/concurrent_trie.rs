@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -55,11 +55,7 @@ impl<T> SyncBox<T> {
         unsafe {
             self.ptr
                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
-                    if old.is_null() {
-                        Some(ptr)
-                    } else {
-                        None
-                    }
+                    if old.is_null() { Some(ptr) } else { None }
                 })
                 .map_err(|p| Box::from_raw(p))?;
             Ok(())
@@ -276,7 +272,7 @@ pub type BinaryTrie<V> = Trie<2, V>;
 mod tests {
     use std::time::Duration;
 
-    use rand::Rng;
+    use rand::RngExt;
 
     use super::*;
 

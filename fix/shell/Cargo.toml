@@ -4,6 +4,7 @@ cargo-features = ["per-package-target"]
 name = "fixshell"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 forced-target = "x86_64-unknown-none"
 
 [lib]
@@ -17,6 +18,6 @@ arcane = { path = "../../arcane/"}
 fixhandle = { path = "../handle", default-features = false}
 
 [build-dependencies]
-anyhow = "1.0.100"
-bindgen = "0.72.1"
-cc = "1.2.57"
+anyhow = "1.0.104"
+bindgen = "0.73.2"
+cc = "1.4.6"

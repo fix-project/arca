@@ -422,7 +422,7 @@ mod allocator {
 
     use arca::Entry;
     use arcane::{__MODE_read_write, arca_compat_mmap, arca_mmap};
-    use spin::{Mutex, lazy::Lazy};
+    use spin::{LazyLock, Mutex};
     use talc::{ClaimOnOom, OomHandler, Span, Talc, Talck};
 
     use crate::{prelude::Page, write_entry};
@@ -430,7 +430,8 @@ mod allocator {
     unsafe extern "C" {
         static __stack_top: c_void;
     }
-    static HEAP: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(&raw const __stack_top as usize));
+    static HEAP: LazyLock<Mutex<usize>> =
+        LazyLock::new(|| Mutex::new(&raw const __stack_top as usize));
 
     #[global_allocator]
     static ALLOCATOR: Talck<spin::Mutex<()>, Mmap> = Talc::new(Mmap).lock();

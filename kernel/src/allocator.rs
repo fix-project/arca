@@ -10,16 +10,20 @@ static ALLOCATOR: Buddy = Buddy;
 struct Buddy;
 unsafe impl GlobalAlloc for Buddy {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        BuddyAllocator
-            .allocate(layout)
-            .map(|x| &raw mut (*x.as_ptr())[0])
-            .unwrap_or(core::ptr::null_mut())
+        unsafe {
+            BuddyAllocator
+                .allocate(layout)
+                .map(|x| &raw mut (*x.as_ptr())[0])
+                .unwrap_or(core::ptr::null_mut())
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if let Some(ptr) = NonNull::new(ptr) {
-            BuddyAllocator.deallocate(ptr, layout);
-        };
+        unsafe {
+            if let Some(ptr) = NonNull::new(ptr) {
+                BuddyAllocator.deallocate(ptr, layout);
+            };
+        }
     }
 }
 

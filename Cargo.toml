@@ -9,4 +9,3 @@ debug = true
 
 [workspace.package]
 license = "LGPL-2.1-or-later"
-license-file = "LICENSE"

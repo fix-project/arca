@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
-use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DataEnum, DeriveInput, Ident};
+use syn::{Data, DataEnum, DeriveInput, Ident, parse_macro_input};
 
 fn common_ident() -> Ident {
     let found_crate = crate_name("common").expect("common is present in `Cargo.toml`");
@@ -66,7 +66,7 @@ fn bitpack_enum(name: &Ident, de: DataEnum) -> TokenStream {
                 &fields_unnamed.unnamed.first().unwrap().ty
             }
             syn::Fields::Unit => {
-                return compile_error("Unable to create bitpack for variants not of 1 field")
+                return compile_error("Unable to create bitpack for variants not of 1 field");
             }
         };
 

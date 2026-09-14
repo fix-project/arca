@@ -14,7 +14,7 @@ pub fn ka2pa<T>(p: *const T) -> usize {
 
 pub const USER_MEMORY_LIMIT: usize = 0x00007fffffffffff;
 
-extern "C" {
+unsafe extern "C" {
     fn copy_user_to_kernel_asm(dst: *mut (), src: usize, len: usize) -> bool;
     fn copy_kernel_to_user_asm(dst: usize, src: *const (), len: usize) -> bool;
 }

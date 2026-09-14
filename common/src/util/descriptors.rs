@@ -21,11 +21,11 @@ impl<T> Descriptors<T> {
     }
 
     pub fn insert(&mut self, item: T) -> usize {
-        if let Some(i) =
-            self.table
-                .iter()
-                .enumerate()
-                .find_map(|(i, x)| if x.is_none() { Some(i) } else { None })
+        if let Some(i) = self
+            .table
+            .iter()
+            .enumerate()
+            .find_map(|(i, x)| if x.is_none() { Some(i) } else { None })
         {
             self.table[i] = Some(item);
             i

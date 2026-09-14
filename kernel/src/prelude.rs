@@ -14,13 +14,13 @@ pub use alloc::{
 };
 
 pub use crate::{
-    cpu::{Cpu, Register, RegisterFile, CPU},
+    cpu::{CPU, Cpu, Register, RegisterFile},
     kthread::KMutex,
     page::{CowPage, Page1GB, Page2MB, Page4KB, SharedPage, UniquePage},
     paging::{
         AugmentedEntry, AugmentedPageTable, AugmentedUnmappedPage, HardwarePage, HardwarePageTable,
         HardwarePageTableEntry, HardwareUnmappedPage, PageTable1GB, PageTable1GBEntry,
-        PageTable256TB, PageTable256TBEntry, PageTable2MB, PageTable2MBEntry, PageTable512GB,
+        PageTable2MB, PageTable2MBEntry, PageTable256TB, PageTable256TBEntry, PageTable512GB,
         PageTable512GBEntry,
     },
     print, println, shutdown,

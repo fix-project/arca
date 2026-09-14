@@ -2,6 +2,6 @@ mod bi;
 mod error;
 mod uni;
 
-pub use bi::{pipe, Pipe};
+pub use bi::{Pipe, pipe};
 pub use error::{Error, Result};
-pub use uni::{channel, Reader, Writer};
+pub use uni::{Reader, Writer, channel};

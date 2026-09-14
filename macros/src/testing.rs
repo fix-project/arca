@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
-use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Ident, ItemFn};
+use syn::{Ident, ItemFn, parse_macro_input};
 
 fn kernel_ident() -> Ident {
     let found_crate = crate_name("kernel").expect("kernel is present in `Cargo.toml`");
@@ -92,6 +92,7 @@ pub fn profile(_: TokenStream, item: TokenStream) -> TokenStream {
         vis,
         sig,
         block,
+        modifiers: _,
     } = item;
     let kernel = kernel_ident();
     let name = sig.ident.to_string();

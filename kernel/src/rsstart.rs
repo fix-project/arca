@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{
     arch::asm,
     ptr::{addr_of, addr_of_mut},
@@ -18,9 +19,9 @@ use crate::{
     vm,
 };
 
-use common::{buddy::BuddyAllocatorRawData, BuddyAllocator};
+use common::{BuddyAllocator, buddy::BuddyAllocatorRawData};
 
-extern "C" {
+unsafe extern "C" {
     fn kmain();
     fn set_gdt(gdtr: *const GdtDescriptor);
     static mut _sstack: u8;
@@ -57,7 +58,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         pdpt.into()
     });
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn _start(
     cores: usize,
     allocator_data_ptr: usize,

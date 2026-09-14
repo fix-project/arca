@@ -3,16 +3,16 @@ use std::{
     io::{self, Read},
     process::ExitCode,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{Scope, ScopedJoinHandle},
     time::{Duration, Instant},
 };
 
-use common::{hypercall, BuddyAllocator};
-use elf::{endian::AnyEndian, segment::ProgramHeader, ElfBytes};
-use kvm_bindings::{kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES};
+use common::{BuddyAllocator, hypercall};
+use elf::{ElfBytes, endian::AnyEndian, segment::ProgramHeader};
+use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, kvm_userspace_memory_region};
 use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
@@ -366,11 +366,11 @@ impl Runtime {
         ctrlc::set_handler(move || {
             let now = Instant::now();
             let diff = last_time.map(|last_time| now.duration_since(last_time));
-            if let Some(diff) = diff {
-                if diff < Duration::from_secs(1) {
-                    log::warn!("got ^C^C; forcing immediate shutdown");
-                    ExitCode::from(130).exit_process();
-                }
+            if let Some(diff) = diff
+                && diff < Duration::from_secs(1)
+            {
+                log::warn!("got ^C^C; forcing immediate shutdown");
+                ExitCode::from(130).exit_process();
             }
             log::info!("got ^C; sending soft shutdown");
             int.write(1).unwrap();

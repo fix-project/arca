@@ -1,40 +1,27 @@
 [package]
 name = "vmm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license.workspace = true
 
 [dependencies]
-kvm-bindings = { version = "0.13.0" }
-kvm-ioctls = "0.23.0"
+kvm-bindings = { version = "0.14.1" }
+kvm-ioctls = "0.25.0"
 arca = { path = "../arca" }
 common = { path = "../common" }
-elf = "0.7.4"
-env_logger = "0.11.6"
-log = "0.4.25"
-rustc-demangle = "0.1.24"
-anyhow = "1.0.97"
-libc = "0.2.174"
-vmm-sys-util = "0.14.0"
-ctrlc = "3.4.7"
-regex = "1.11.1"
-either = "1.15.0"
-chumsky = "0.10.1"
-futures = "0.3.31"
-tokio-stream = { version = "0.1.17", features = ["full"] }
-smol = "2.0.2"
-nix = { version = "0.30.1", features = ["mman", "socket"] }
-vsock = "0.5.1"
-thread-priority = "3.0.0"
-elevate = "0.6.1"
-clap = { version = "4.5.48", features = ["derive", "env"] }
-rlimit = "0.10.2"
-core_affinity = "0.8.3"
+elf = "0.8.0"
+env_logger = "0.11.11"
+log = "0.4.34"
+rustc-demangle = "0.1.28"
+anyhow = "1.0.104"
+libc = "0.2.189"
+vmm-sys-util = "0.15.0"
+ctrlc = "3.5.2"
+regex = "1.13.1"
+nix = { version = "0.31.3", features = ["mman", "socket"] }
+clap = { version = "4.6.6", features = ["derive", "env"] }
 postcard = { version = "1.1.3", features = ["use-std"] }
-serde = "1.0.228"
-
-[build-dependencies]
-anyhow = "1.0.97"
-bindgen = "0.72.0"
+serde = "1.0.229"
 
 # [dev-dependencies]
 # kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }

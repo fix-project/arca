@@ -58,7 +58,7 @@ pub use lapic::LAPIC;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static mut EXIT_CODE: u8 = 0;
 
 pub(crate) static NCORES: AtomicUsize = AtomicUsize::new(0);

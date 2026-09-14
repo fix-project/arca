@@ -1,6 +1,6 @@
 use crate::pipe::{ControlPipe, FilePipe, ListenerPipe, StreamPipe};
-use common::protocol::control::PipeData;
 use common::BuddyAllocator;
+use common::protocol::control::PipeData;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

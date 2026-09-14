@@ -144,12 +144,12 @@ pub(crate) unsafe fn run_scheduler() {
         let old_rsp = &raw mut scheduler.rsp;
         core::mem::drop(scheduler);
         let new_rsp = CURRENT_THREAD.borrow_mut().rsp;
-        cswitch(new_rsp, old_rsp);
+        unsafe { cswitch(new_rsp, old_rsp) };
         let mut next = CURRENT_THREAD.take();
         if next.exited {
             log::trace!("thread {} exited", next.tid);
             let old_stack = next.base;
-            let ptr = Box::from_raw(old_stack);
+            let ptr = unsafe { Box::from_raw(old_stack) };
             core::mem::drop(ptr);
             let left = OUTSTANDING.fetch_sub(1, Ordering::SeqCst) - 1;
             log::trace!("{left} threads outstanding");

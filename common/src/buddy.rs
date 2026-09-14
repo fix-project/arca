@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
@@ -93,11 +94,7 @@ impl<'a> BitRef<'a> {
     }
 
     pub fn write(&mut self, value: bool) -> bool {
-        if value {
-            self.set()
-        } else {
-            self.clear()
-        }
+        if value { self.set() } else { self.clear() }
     }
 }
 

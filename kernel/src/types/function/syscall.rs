@@ -33,8 +33,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_exit => sys_exit(args, arca)?,
         arcane::__NR_get_argument => {
             if let Some(front) = argv.pop_front() {
-                let idx = arca.descriptors_mut().insert(front);
-                idx
+                arca.descriptors_mut().insert(front)
             } else {
                 arca.registers_mut()[Register::RAX] = (-(arcane::__ERR_interrupted as i32)) as u64;
                 let arca = arca.take();
@@ -140,7 +139,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         DataType::Tuple => {
             let value_idx = args[2] as usize;
             let value = arca.descriptors_mut().take(value_idx)?;
-            let Value::Tuple(ref mut tree) = arca.descriptors_mut().get_mut(target_idx)? else {
+            let Value::Tuple(tree) = arca.descriptors_mut().get_mut(target_idx)? else {
                 unreachable!();
             };
             let value = tree.set(inner_idx, value);
@@ -158,7 +157,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             )?;
             let entry = unsafe { MaybeUninit::assume_init(entry) };
             let entry = read_entry(arca, entry)?;
-            let Value::Table(ref mut table) = arca.descriptors_mut().get_mut(target_idx)? else {
+            let Value::Table(table) = arca.descriptors_mut().get_mut(target_idx)? else {
                 unreachable!();
             };
             let Ok(entry) = table.set(inner_idx, entry) else {
@@ -319,8 +318,7 @@ pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let x = arca.descriptors_mut().take(arg)?;
 
     let thunk = f.apply(x);
-    let idx = arca.descriptors_mut().insert(thunk.into());
-    idx
+    arca.descriptors_mut().insert(thunk.into())
 }
 
 #[allow(unused)]
@@ -645,7 +643,7 @@ fn write_entry(arca: &mut LoadedArca, entry: Entry) -> arcane::arca_entry {
                 mode: arcane::__MODE_none,
                 datatype: arcane::__TYPE_null,
                 data,
-            }
+            };
         }
         arca::Entry::ROPage(x) => (arcane::__MODE_read_only, arcane::__TYPE_page, x.into()),
         arca::Entry::RWPage(x) => (arcane::__MODE_read_write, arcane::__TYPE_page, x.into()),

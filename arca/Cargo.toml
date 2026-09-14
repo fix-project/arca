@@ -2,12 +2,12 @@
 name = "arca"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
 default = []
-serde = ["alloc"]
+serde = ["alloc", "dep:serde"]
 alloc = []
 
 [dependencies]
-log = "0.4.27"
-serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"], optional = true }
