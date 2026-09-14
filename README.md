@@ -50,6 +50,12 @@ Building Fix-on-Arca additionally requires installing [the GCC multilib package
 We use the [just command runner](https://github.com/casey/just) to help
 simplify the commands needed to build and run arca.
 
+To build the [WebAssembly Binary Toolkit](https://github.com/WebAssembly/wabt),
+which we use for WebAssembly compilation.
+```sh
+just wabt
+```
+
 To run the test suite:
 ```sh
 just test

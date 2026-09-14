@@ -36,7 +36,6 @@ log = "0.4.34"
 time = { version = "0.3.55", default-features = false, features = ["alloc"] }
 macros = { path = "../macros" }
 common = { path = "../common", default-features = false, features = ["core_local_cache"] }
-# common = { path = "../common", default-features = false }
 arca = { path = "../arca", features = ["alloc", "serde"] }
 hashbrown = { version = "0.17.1", features = ["alloc", "core"] }
 arcane = { path = "../arcane" }

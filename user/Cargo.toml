@@ -18,5 +18,4 @@ spin = { version = "0.12.3", features=["lazylock"] }
 talc = "4.4.3"
 
 [build-dependencies]
-autotools = "0.2.7"
 cc = "1.4.6"
