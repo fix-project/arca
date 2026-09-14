@@ -6,7 +6,7 @@ license.workspace = true
 
 [build-dependencies]
 bindgen = "0.73.2"
-autotools = "0.2.7"
+cc = "1.4.6"
 
 [dependencies]
 derive_more = { version = "2.1.1", default-features = false, features = ["full"] }

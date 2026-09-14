@@ -2,6 +2,7 @@
 #![allow(unused)]
 #![feature(slice_from_ptr_range)]
 #![feature(atomic_ptr_null)]
+#![feature(cstr_display)]
 
 use core::{
     arch::{asm, global_asm},

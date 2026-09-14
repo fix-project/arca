@@ -3,21 +3,23 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo::rustc-link-arg=-no-pie");
 
-    let prefix = autotools::build("../modules/arca-musl")
-        .as_os_str()
-        .to_string_lossy()
-        .into_owned();
-    println!("cargo::rerun-if-changed=../modules/arca-musl");
+    cc::Build::new()
+        .compiler("clang")
+        .file("src/syscalls.c")
+        .include("inc")
+        .compile("syscalls");
 
-    eprintln!("{prefix:?}");
+    println!("cargo::rerun-if-changed=src/syscalls.c");
 
-    let headers = vec!["a.h"];
+    let headers = vec!["inc/arca.h"];
+
     for header in &headers {
         println!("cargo::rerun-if-changed={header}");
     }
+
     let bindings = bindgen::Builder::default()
         .headers(headers)
-        .clang_args(["-nostdinc", "-isystem", &(prefix.clone() + "/include")])
+        .clang_args(["-ffreestanding"])
         .use_core()
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
