@@ -1,3 +1,5 @@
+#![feature(const_trait_impl)]
+
 use std::fs::create_dir_all;
 use std::io::ErrorKind;
 use std::os::unix::fs::symlink;
@@ -7,7 +9,6 @@ use std::sync::OnceLock;
 use std::{env, fs};
 
 use anyhow::{Result, anyhow};
-use cmake::Config;
 
 use include_directory::{Dir, include_directory};
 
@@ -15,8 +16,8 @@ static FIX_SHELL_INC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/shell/in
 static FIX_SHELL_ETC: Dir<'_> = include_directory!("$CARGO_MANIFEST_DIR/shell/etc");
 
 static INTERMEDIATEOUT: OnceLock<PathBuf> = OnceLock::new();
-static WASM2C: OnceLock<PathBuf> = OnceLock::new();
-static WAT2WASM: OnceLock<PathBuf> = OnceLock::new();
+static WASM2C: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/toolchain/wabt/wasm2c");
+static WAT2WASM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/toolchain/wabt/wat2wasm");
 
 fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
     if &wat[..4] == b"\0asm" {
@@ -27,7 +28,7 @@ fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
         std::fs::write(&wat_file, wat)?;
         let mut wasm_file = INTERMEDIATEOUT.get().unwrap().clone();
         wasm_file.push("module.wasm");
-        let wat2wasm = Command::new(WAT2WASM.get().unwrap())
+        let wat2wasm = Command::new(WAT2WASM)
             .args([
                 "-o",
                 wasm_file.to_str().unwrap(),
@@ -37,7 +38,7 @@ fn wat2wasm(wat: &[u8]) -> Result<Vec<u8>> {
             .status()
             .map_err(|e| {
                 if let ErrorKind::NotFound = e.kind() {
-                    anyhow!("Could not find wat2wasm. Did you install wabt?")
+                    anyhow!("Could not find wat2wasm. Did you build wabt (`just wabt`)?")
                 } else {
                     e.into()
                 }
@@ -56,8 +57,7 @@ fn wasm2c(wasm: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let mut h_file = INTERMEDIATEOUT.get().unwrap().clone();
     h_file.push("module.h");
 
-    // Using wasm2c 1.0.34 from the Ubuntu repos
-    let wasm2c = Command::new(WASM2C.get().unwrap())
+    let wasm2c = Command::new(WASM2C)
         .args([
             "-o",
             c_file.to_str().unwrap(),
@@ -172,22 +172,6 @@ fn main() -> Result<()> {
     create_dir_all(&intermediateout)?;
     INTERMEDIATEOUT.set(intermediateout).unwrap();
 
-    let mut dst: PathBuf = out_dir.clone().into();
-    dst.push("wabt");
-    if !dst.exists() {
-        create_dir_all(&dst)?
-    }
-
-    let dst = Config::new("wabt")
-        .define("BUILD_TESTS", "OFF")
-        .define("BUILD_LIBWASM", "OFF")
-        .define("BUILD_TOOLS", "ON")
-        .out_dir(dst)
-        .build();
-
-    WASM2C.set(dst.join("bin/wasm2c")).unwrap();
-    WAT2WASM.set(dst.join("bin/wat2wasm")).unwrap();
-
     generate_coupon()?;
 
     for f in std::fs::read_dir("wasm")? {
@@ -208,7 +192,7 @@ fn main() -> Result<()> {
             let elf = c2elf(&c, &h)?;
             std::fs::write(&dst, elf)?;
 
-            let link = Path::new(&out_dir).ancestors().nth(4).unwrap().join(base);
+            let link = Path::new(&out_dir).ancestors().nth(5).unwrap().join(base);
             let _ = fs::remove_file(&link);
             symlink(dst, link)?;
         }

@@ -36,3 +36,8 @@ lint *args:
 
 ctags:
   ctags -R arca arcane common fix kernel macros user vmm
+
+wabt:
+  mkdir -p fix/toolchain
+  cmake -S fix/wabt -B fix/toolchain/wabt -DBUILD_TESTS=OFF -DBUILD_LIBWASM=OFF -DBUILD_TOOLS=ON
+  cmake --build fix/toolchain/wabt
