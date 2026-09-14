@@ -3,13 +3,13 @@
     (if (result i32)
       (then
         ;; Attach the tag
-        (call $attach_tree (i32.const 1) (local.get $tag))
+        (call $attach_tree (local.get $tag) (i32.const 1))
         ;; Check if the tag was authored by us
         (call $is_equal (table.get $encode (i32.const 0)) (table.get $coupon_scratch (i32.const 0)))
         (if (result i32)
           (then
             ;; Check if the coupon type matches the input type
-            (call $attach_blob (i32.const 1) (table.get $coupon_scratch (i32.const 1)))
+            (call $attach_blob (table.get $coupon_scratch (i32.const 1)) (i32.const 1))
             (i32.load (memory $mem_1) (i32.const 0))
             (local.get $type)
             i32.eq
@@ -62,34 +62,34 @@
     (call $create_coupon (global.get $Think) (local.get $lhs) (local.get $rhs))
   )
   (func $get_coupon_lhs (param $coupon externref) (result externref)
-    (call $attach_tree (i32.const 1) (local.get $coupon))
+    (call $attach_tree (local.get $coupon) (i32.const 1))
     (table.get $coupon_scratch (i32.const 2))
   )
   (func $get_coupon_rhs (param $coupon externref) (result externref)
-    (call $attach_tree (i32.const 1) (local.get $coupon))
+    (call $attach_tree (local.get $coupon) (i32.const 1))
     (table.get $coupon_scratch (i32.const 3))
   )
   (func $get_tree_size (param $t externref) (result i32)
-    (call $attach_tree (i32.const 3) (local.get $t))
+    (call $attach_tree (local.get $t) (i32.const 3))
     table.size $tree_scratch
   )
   (func $get_tree_data (param $t externref) (param $i i32) (result externref) 
-    (call $attach_tree (i32.const 3) (local.get $t))
+    (call $attach_tree (local.get $t) (i32.const 3))
     (table.get $tree_scratch (local.get $i))
   )
   (func (export "_fixpoint_apply") (param $combination externref) (result externref)
     ;; attach combination tree
     (call $attach_tree
-          (i32.const 0)
-          (local.get $combination))
+          (local.get $combination)
+          (i32.const 0))
     ;; attach coupons
     (call $attach_tree
-          (i32.const 2)
-          (table.get $encode (i32.const 2)))
+          (table.get $encode (i32.const 2))
+          (i32.const 2))
     ;; attach request field
     (call $attach_blob
-          (i32.const 1)
-          (table.get $encode (i32.const 1)))
+          (table.get $encode (i32.const 1))
+          (i32.const 1))
     (call $make_coupon
           (i32.load $mem_1 (i32.const 0))
           (table.get $encode (i32.const 3))
