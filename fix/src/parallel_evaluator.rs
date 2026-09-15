@@ -83,6 +83,62 @@ impl<R: Runtime> Evaluator<R> {
         self.runtime.execute(combination)
     }
 
+    pub fn select(&self, selection: Tree) -> Handle {
+        let handles = self.storage().get_tree(selection).unwrap();
+        match *handles {
+            [target, index] => self.select_index(target, self.read_index(index)),
+            [target, start, end] => {
+                self.select_range(target, self.read_index(start), self.read_index(end))
+            }
+            _ => panic!("selection thunk got {} handles", handles.len()),
+        }
+    }
+
+    pub fn select_index(&self, target: Handle, index: usize) -> Handle {
+        if index >= target.len() {
+            panic!("Invalid index {index} for selection thunk");
+        }
+        match target {
+            Handle::Object(Object::Tree(tree)) | Handle::Ref(Ref::Tree(tree)) => {
+                self.storage().get_tree(tree).unwrap()[index]
+            }
+            Handle::Object(Object::Blob(blob)) | Handle::Ref(Ref::Blob(blob)) => {
+                let data = self.storage().get_blob(blob).unwrap();
+                Ref::Blob(self.storage().add_blob(&[data[index]])).into()
+            }
+            _ => panic!("expected blob or tree handle for selection thunk"),
+        }
+    }
+
+    pub fn select_range(&self, target: Handle, begin: usize, end: usize) -> Handle {
+        if begin >= end {
+            panic!("Invalid range [{begin}, {end}) for seleciton thunk");
+        }
+        match target {
+            Handle::Object(Object::Tree(tree)) | Handle::Ref(Ref::Tree(tree)) => {
+                let data = self.storage().get_tree(tree).unwrap();
+                Ref::Tree(self.storage().add_tree(&data[begin..end])).into()
+            }
+            Handle::Object(Object::Blob(blob)) | Handle::Ref(Ref::Blob(blob)) => {
+                let data = self.storage().get_blob(blob).unwrap();
+                Ref::Blob(self.storage().add_blob(&data[begin..end])).into()
+            }
+            _ => panic!("expected blob or tree handle for selection thunk"),
+        }
+    }
+
+    pub fn read_index(&self, handle: Handle) -> usize {
+        let Handle::Object(Object::Blob(blob)) = handle else {
+            panic!("expected blob handle for selection index")
+        };
+        let bytes = self.storage().get_blob(blob).unwrap();
+        // Make buffer fit all supported integer widths
+        let mut buffer = [0; 16];
+        assert!(bytes.len() <= buffer.len());
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+        usize::try_from(u128::from_le_bytes(buffer)).expect("selection index should be in range")
+    }
+
     pub fn lift(&self, handle: Handle) -> Handle {
         match handle {
             Handle::Ref(r) => match r {
@@ -106,7 +162,10 @@ impl<R: Runtime> Evaluator<R> {
     fn think(&self, thunk: Thunk, eval_mode: EvalType) -> Handle {
         match thunk {
             Thunk::Identification(reference) => self.lift(Handle::Ref(reference)),
-            Thunk::Selection(_) => todo!(),
+            Thunk::Selection(tree) => {
+                let evaled = self.eval_tree(tree, eval_mode);
+                self.select(evaled)
+            }
             Thunk::Application(tree) => {
                 let evaled = self.eval_tree(tree, eval_mode);
                 self.apply(evaled)
@@ -119,7 +178,8 @@ impl<R: Runtime> Evaluator<R> {
         match thought {
             Handle::Object(_) => thought,
             Handle::Ref(_) => self.lift(thought),
-            Handle::Thunk(_) | Handle::Encode(_) => todo!(),
+            Handle::Thunk(thunk) => self.force(thunk, eval_mode),
+            Handle::Encode(encode) => self.lift(self.encode(encode, eval_mode)),
         }
     }
 
@@ -170,7 +230,7 @@ impl<R: Runtime> Evaluator<R> {
         //println!("evaluating {handle}");
         match handle {
             Handle::Ref(reference) => self.eval(self.lift(Handle::Ref(reference))),
-            Handle::Thunk(_) => todo!(),
+            Handle::Thunk(_) => handle,
             Handle::Object(obj) => match obj {
                 Object::Blob(blob) => blob.into(),
                 Object::Tree(tree) => self.eval_tree(tree, eval_mode).into(),

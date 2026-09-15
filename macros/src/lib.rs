@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod bitpack;
 mod core_local;
+mod fixutils;
 mod testing;
 mod util;
 
@@ -38,4 +39,19 @@ pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(BitPack)]
 pub fn bitpack(input: TokenStream) -> TokenStream {
     bitpack::bitpack(input)
+}
+
+#[proc_macro_attribute]
+pub fn procedure_entrypoint(attr: TokenStream, item: TokenStream) -> TokenStream {
+    fixutils::entrypoint(attr, item)
+}
+
+#[proc_macro]
+pub fn num_memories(input: TokenStream) -> TokenStream {
+    fixutils::num_memories(input)
+}
+
+#[proc_macro]
+pub fn num_tables(input: TokenStream) -> TokenStream {
+    fixutils::num_tables(input)
 }

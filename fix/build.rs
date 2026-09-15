@@ -203,7 +203,7 @@ fn main() -> Result<()> {
                 );
             }
             let wat = std::fs::read(f.path())?;
-            let wasm = wat2wasm(&wat)?;
+            let wasm = fixpostprocessor::process(&wat2wasm(&wat)?)?;
             let (c, h) = wasm2c(&wasm)?;
             let elf = c2elf(&c, &h)?;
             std::fs::write(&dst, elf)?;
@@ -213,6 +213,10 @@ fn main() -> Result<()> {
             symlink(dst, link)?;
         }
     }
+    let parser = PathBuf::from(env::var_os("CARGO_CDYLIB_FILE_FIXPARSER").unwrap());
+    let wasm = fixpostprocessor::process(&std::fs::read(&parser)?)?;
+    let (c, h) = wasm2c(&wasm)?;
+    std::fs::write(Path::new(&out_dir).join("fixparser"), c2elf(&c, &h)?)?;
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
