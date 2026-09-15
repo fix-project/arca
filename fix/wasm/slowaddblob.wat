@@ -2,9 +2,9 @@
   (import "fixpoint" "create_blob_i64"
     (func $create_blob_i64 (param i64) (result externref)))
   (import "fixpoint" "attach_blob"
-    (func $attach_blob (param i32) (param externref)))
+    (func $attach_blob (param externref) (param i32)))
   (import "fixpoint" "attach_tree"
-    (func $attach_tree (param i32) (param externref)))
+    (func $attach_tree (param externref) (param i32)))
 
   (memory $mem_0 1)
   (memory $mem_1 0)
@@ -22,8 +22,8 @@
 
     ;; Attach the combination tree.
     (call $attach_tree
-      (i32.const 0)
-      (local.get $encode))
+      (local.get $encode)
+      (i32.const 0))
 
     ;; Grow rw-memory by zero pages, preserving the original behavior.
     (memory.grow
@@ -33,11 +33,11 @@
 
     ;; Attach the two input blobs.
     (call $attach_blob
-      (i32.const 1)
-      (table.get $tab_0 (i32.const 1)))
+      (table.get $tab_0 (i32.const 1))
+      (i32.const 1))
     (call $attach_blob
-      (i32.const 2)
-      (table.get $tab_0 (i32.const 2)))
+      (table.get $tab_0 (i32.const 2))
+      (i32.const 2))
 
     ;; Load both operands once.
     (local.set $left

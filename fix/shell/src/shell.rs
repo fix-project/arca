@@ -32,7 +32,7 @@ pub fn fixpoint_create_blob_i64(val: u64) -> [u8; 32] {
 ///
 /// [addr] must refer to an unused region of memory which is large enough to fit the blob; there
 /// must be no Rust references pointing to this region.
-pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize {
+pub unsafe fn fixpoint_attach_blob(handle: [u8; 32], addr: *mut c_void) -> usize {
     if (!fixpoint_is_blob(handle)) {
         arca_log("attach_blob: handle does not refer to a BlobObject");
         panic!()
@@ -65,7 +65,7 @@ pub unsafe fn fixpoint_attach_blob(addr: *mut c_void, handle: [u8; 32]) -> usize
 ///
 /// [addr] must refer to an unused region of memory which is large enough to fit the tree; there
 /// must be no Rust references pointing to this region.  Each entry of the tree takes 32 bytes.
-pub unsafe fn fixpoint_attach_tree(addr: *mut c_void, handle: [u8; 32]) -> usize {
+pub unsafe fn fixpoint_attach_tree(handle: [u8; 32], addr: *mut c_void) -> usize {
     if (!fixpoint_is_tree(handle)) {
         arca_log("attach_tree: handle does not refer to a TreeObject");
         panic!()
