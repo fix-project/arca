@@ -52,7 +52,7 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
     table_idx: u32,
     length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(table_idx < 32);
+    assert!(table_idx < 63);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
         wasm_rt_externref_t {
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tag(
     table_idx: u32,
     length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(table_idx < 32);
+    assert!(table_idx < 63);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
         wasm_rt_externref_t {

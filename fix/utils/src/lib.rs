@@ -1,6 +1,6 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
+#![no_std]
+#![feature(asm_experimental_arch)]
 extern crate alloc;
-#[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable()
@@ -8,9 +8,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use fixhandle::{
-    BitPack, Blob, BlobName, Encode, Handle, Object, RawName, Ref, Thunk, Tree, TreeName,
-};
 pub use macros::{num_memories, num_tables, procedure_entrypoint};
 
 pub mod memory;
@@ -27,110 +24,478 @@ pub enum Error {
     OutOfBounds, // Memory/Table access out of bounds
 }
 
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Producer {
-    // Combination = 0, used on C side
-    // table_index, entry_index
-    TableGet = 1,
-    // memory_index, length
-    CreateBlob = 2,
-    // table_index, length
-    CreateTree = 3,
-}
+/// An operation that resolves to a WebAssembly externref
+pub trait Resolve: Copy {
+    /// Emits instructions for the operation, leaving the produced externref on the operand stack
+    ///
+    /// # Safety
+    ///
+    /// Caller must consume the externref before the enclosing function returns
+    unsafe fn resolve(self);
 
-fn encode_args(producer: Producer, index: u16, entry: usize) -> RawName {
-    let mut bytes = [0; 32];
-    // 4 bytes for entry/length argument
-    bytes[24..28].copy_from_slice(&(entry as u32).to_le_bytes());
-    // two bytes for table/memory index
-    bytes[28..30].copy_from_slice(&index.to_le_bytes());
-    // two bits for producer type
-    bytes[30..32].copy_from_slice(&((producer as u16) << 12).to_le_bytes());
-    RawName::forge(bytes)
-}
-
-#[repr(C, align(8))]
-#[derive(Clone, Copy)]
-pub struct RustHandle<'a> {
-    pub raw_handle: [u8; 32],
-    source: PhantomData<&'a ()>, // Lifetimes for memories/tables to prevent overwriting
-}
-
-impl<'a> RustHandle<'a> {
-    fn new(handle: Handle) -> Self {
-        Self {
-            raw_handle: handle.pack(),
-            source: PhantomData,
+    fn len(self) -> usize {
+        let length: usize;
+        unsafe {
+            self.resolve();
+            core::arch::asm!(
+                "call fixpoint_len",
+                "local.set {length}",
+                length = out(local) length,
+            );
         }
+        length
     }
 
-    fn unpack(self) -> Handle {
-        Handle::unpack(self.raw_handle)
-    }
-
-    pub fn len(&self) -> usize {
-        unsafe { util_len(&self.raw_handle) }
-    }
-
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(self) -> bool {
         self.len() == 0
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        Memory::from_bytes(bytes)?.to_blob(bytes.len())
+    /// Allocates a new memory to copy bytes from the blob this operation resolves to
+    fn to_bytes(self) -> Result<Vec<u8>, Error> {
+        Memory::from_blob(self)?.to_bytes(self.len())
     }
 
-    pub fn from_entries(entries: &[RustHandle<'_>]) -> Result<Self, Error> {
-        Table::from_entries(entries)?.to_tree(entries.len())
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        Memory::from_blob(*self)?.to_bytes(self.len())
-    }
-
-    pub fn to_entries(&self) -> Result<Vec<RustHandle<'static>>, Error> {
-        Table::from_tree(*self)?.to_entries(self.len())
+    /// Allocates a new table to copy elements from the tree this operation resolves to
+    fn to_entries(self) -> Result<Vec<TableGet<'static>>, Error> {
+        Table::from_tree(self)?.to_entries(self.len())
     }
 }
 
-pub fn create_ref<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    RustHandle::new(Handle::Ref(match handle.unpack() {
-        Handle::Ref(reference) => reference,
-        Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
-        Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
-        _ => panic!("create_ref: handle does not refer to an Object"),
-    }))
+pub fn from_bytes(bytes: &[u8]) -> Result<CreateBlob<'static>, Error> {
+    Memory::from_bytes(bytes)?.to_blob(bytes.len())
 }
 
-pub fn create_identification_thunk<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    let reference = match handle.unpack() {
-        Handle::Ref(reference) => reference,
-        Handle::Object(Object::Blob(blob)) => Ref::Blob(blob),
-        Handle::Object(Object::Tree(tree)) => Ref::Tree(tree),
-        _ => panic!("create_identification_thunk: handle does not refer to an Object or Ref"),
+pub fn from_entries<T: Resolve>(entries: &[T]) -> Result<CreateTree<'static>, Error> {
+    Table::from_entries(entries)?.to_tree(entries.len())
+}
+
+// Resolves to the procedure's input combination
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Combination;
+
+// Resolves to an entry in a table
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableGet<'a> {
+    pub(crate) table_index: u32,
+    pub(crate) entry_index: usize,
+    pub(crate) source: PhantomData<&'a Table>, // Keeps the source borrowed
+}
+
+// Resolves to externref returned by fixshell create_blob() over first `length` bytes of the memory
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreateBlob<'a> {
+    pub(crate) memory_index: u32,
+    pub(crate) length: usize,
+    pub(crate) source: PhantomData<&'a Memory>, // Keeps the source borrowed
+}
+
+// Resolves to externref returned by fixshell create_tree() over first `length` elements of the table
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreateTree<'a> {
+    pub(crate) table_index: u32,
+    pub(crate) length: usize,
+    pub(crate) source: PhantomData<&'a Table>, // Keeps the source borrowed
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreateRef<T>(pub T);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identification<T>(pub T);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Application<T>(pub T);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection<T>(pub T);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StrictEncode<T>(pub T);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShallowEncode<T>(pub T);
+
+impl Resolve for Combination {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe { core::arch::asm!("global.get combination_global") }
+    }
+}
+
+impl Resolve for TableGet<'_> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            core::arch::asm!(
+                "local.get {table_index}",
+                "local.get {entry_index}",
+                "call wasm_table_get",
+                table_index = in(local) self.table_index,
+                entry_index = in(local) self.entry_index,
+            )
+        }
+    }
+}
+
+impl Resolve for CreateBlob<'_> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            core::arch::asm!(
+                "local.get {memory_index}",
+                "local.get {length}",
+                "call fixpoint_create_blob",
+                memory_index = in(local) self.memory_index,
+                length = in(local) self.length,
+            )
+        }
+    }
+}
+
+impl Resolve for CreateTree<'_> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            core::arch::asm!(
+                "local.get {table_index}",
+                "local.get {length}",
+                "call fixpoint_create_tree",
+                table_index = in(local) self.table_index,
+                length = in(local) self.length,
+            )
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for CreateRef<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_ref");
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for Identification<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_identification_thunk");
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for Application<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_application_thunk");
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for Selection<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_selection_thunk");
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for StrictEncode<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_strict_encode");
+        }
+    }
+}
+
+impl<T: Resolve> Resolve for ShallowEncode<T> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            self.0.resolve();
+            core::arch::asm!("call fixpoint_create_shallow_encode");
+        }
+    }
+}
+
+// A generalized chain of operations with shape unknown at compile time
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleOp<'a> {
+    Combination,
+    TableGet(TableGet<'a>),
+    CreateBlob(CreateBlob<'a>),
+    CreateTree(CreateTree<'a>),
+    CreateRef(&'a HandleOp<'a>),
+    Identification(&'a HandleOp<'a>),
+    Application(&'a HandleOp<'a>),
+    Selection(&'a HandleOp<'a>),
+    StrictEncode(&'a HandleOp<'a>),
+    ShallowEncode(&'a HandleOp<'a>),
+}
+
+impl Resolve for HandleOp<'_> {
+    #[inline(always)]
+    unsafe fn resolve(self) {
+        unsafe {
+            core::arch::asm!(
+                "local.get {operation}",
+                "call wasm_resolve",
+                operation = in(local) (&raw const self) as usize,
+            )
+        }
+    }
+}
+
+impl From<Combination> for HandleOp<'_> {
+    fn from(_: Combination) -> Self {
+        HandleOp::Combination
+    }
+}
+
+impl<'a> From<TableGet<'a>> for HandleOp<'a> {
+    fn from(operation: TableGet<'a>) -> Self {
+        HandleOp::TableGet(operation)
+    }
+}
+
+impl<'a> From<CreateBlob<'a>> for HandleOp<'a> {
+    fn from(operation: CreateBlob<'a>) -> Self {
+        HandleOp::CreateBlob(operation)
+    }
+}
+
+impl<'a> From<CreateTree<'a>> for HandleOp<'a> {
+    fn from(operation: CreateTree<'a>) -> Self {
+        HandleOp::CreateTree(operation)
+    }
+}
+
+/// Sets index `entry_index` of `table_index` with externref resolved from `operation`
+///
+/// # Safety
+///
+/// `table_index` must be declared by num_tables! macro and `entry_index` < table size
+#[inline(always)]
+pub unsafe fn table_set<T: Resolve>(table_index: u32, entry_index: usize, operation: T) {
+    unsafe {
+        operation.resolve();
+        core::arch::asm!(
+            "local.get {table_index}",
+            "local.get {entry_index}",
+            "call wasm_table_set",
+            table_index = in(local) table_index,
+            entry_index = in(local) entry_index,
+        );
+    }
+}
+
+/// Calls fixshell attach_blob() with externref resolved from `operation`
+///
+/// # Safety
+///
+/// `memory_index` must be declared by num_memories! macro and `operation` must resolve to blob
+#[inline(always)]
+pub unsafe fn attach_blob<T: Resolve>(memory_index: u32, operation: T) {
+    unsafe {
+        operation.resolve();
+        core::arch::asm!(
+            "local.get {memory_index}",
+            "call fixpoint_attach_blob",
+            memory_index = in(local) memory_index,
+        );
+    }
+}
+
+/// Calls fixshell attach_tree with externref resolved from `operation`
+///
+/// # Safety
+///
+/// `table_index` must be declared by num_tables! macro and `operation` must resolve to tree
+#[inline(always)]
+pub unsafe fn attach_tree<T: Resolve>(table_index: u32, operation: T) {
+    unsafe {
+        operation.resolve();
+        core::arch::asm!(
+            "local.get {table_index}",
+            "call fixpoint_attach_tree",
+            table_index = in(local) table_index,
+        );
+    }
+}
+
+#[macro_export]
+macro_rules! declare_wasm {
+    () => {
+        r#"
+.globaltype combination_global, externref
+.functype wasm_resolve (i32) -> (externref)
+
+# fixpoint module imports
+.functype fixpoint_create_blob (i32, i32) -> (externref)
+.import_module fixpoint_create_blob, fixpoint
+.import_name fixpoint_create_blob, create_blob
+
+.functype fixpoint_create_tree (i32, i32) -> (externref)
+.import_module fixpoint_create_tree, fixpoint
+.import_name fixpoint_create_tree, create_tree
+
+.functype fixpoint_create_ref (externref) -> (externref)
+.import_module fixpoint_create_ref, fixpoint
+.import_name fixpoint_create_ref, create_ref
+
+.functype fixpoint_create_identification_thunk (externref) -> (externref)
+.import_module fixpoint_create_identification_thunk, fixpoint
+.import_name fixpoint_create_identification_thunk, create_identification_thunk
+
+.functype fixpoint_create_application_thunk (externref) -> (externref)
+.import_module fixpoint_create_application_thunk, fixpoint
+.import_name fixpoint_create_application_thunk, create_application_thunk
+
+.functype fixpoint_create_selection_thunk (externref) -> (externref)
+.import_module fixpoint_create_selection_thunk, fixpoint
+.import_name fixpoint_create_selection_thunk, create_selection_thunk
+
+.functype fixpoint_create_strict_encode (externref) -> (externref)
+.import_module fixpoint_create_strict_encode, fixpoint
+.import_name fixpoint_create_strict_encode, create_strict_encode
+
+.functype fixpoint_create_shallow_encode (externref) -> (externref)
+.import_module fixpoint_create_shallow_encode, fixpoint
+.import_name fixpoint_create_shallow_encode, create_shallow_encode
+
+.functype fixpoint_len (externref) -> (i32)
+.import_module fixpoint_len, fixpoint
+.import_name fixpoint_len, len
+
+.functype fixpoint_attach_blob (externref, i32) -> ()
+.import_module fixpoint_attach_blob, fixpoint
+.import_name fixpoint_attach_blob, attach_blob
+
+.functype fixpoint_attach_tree (externref, i32) -> ()
+.import_module fixpoint_attach_tree, fixpoint
+.import_name fixpoint_attach_tree, attach_tree
+"#
     };
-    RustHandle::new(Thunk::Identification(reference).into())
 }
 
-pub fn create_application_thunk<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    RustHandle::new(Thunk::Application(handle.unpack().unwrap_object().unwrap_tree()).into())
-}
-
-pub fn create_selection_thunk<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    RustHandle::new(Thunk::Selection(handle.unpack().unwrap_object().unwrap_tree()).into())
-}
-
-pub fn create_strict_encode<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    RustHandle::new(Encode::Strict(handle.unpack().unwrap_thunk()).into())
-}
-
-pub fn create_shallow_encode<'a>(handle: RustHandle<'a>) -> RustHandle<'a> {
-    RustHandle::new(Encode::Shallow(handle.unpack().unwrap_thunk()).into())
-}
+core::arch::global_asm!(
+    concat!(
+        declare_wasm!(),
+        r#"
+.globl combination_global
+combination_global:
+.functype wasm_table_get (i32, i32) -> (externref)
+.functype wasm_table_set (externref, i32, i32) -> ()
+.functype _fixpoint_apply_inner () -> (i32)
+# Puts input combination in global, calls procedure_entrypoint! macro's
+# _fixpoint_apply_inner, and resolves output HandleOp into externref
+.globl _fixpoint_apply_wrapper
+.export_name _fixpoint_apply_wrapper, _fixpoint_apply
+_fixpoint_apply_wrapper:
+.functype _fixpoint_apply_wrapper (externref) -> (externref)
+local.get 0
+global.set combination_global
+call _fixpoint_apply_inner
+call wasm_resolve
+end_function
+# Resolves received HandleOp pointer with layout: operation type in first 4 bytes,
+# previous operation pointer or producer first argument in middle 4 bytes, and producer second argument in last 4 bytes
+.globl wasm_resolve
+wasm_resolve:
+.functype wasm_resolve (i32) -> (externref)
+block
+block
+block
+block
+block
+block
+block
+block
+block
+block
+block
+local.get 0
+i32.load 0
+br_table {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+end_block # Combination
+global.get combination_global
+return
+end_block # TableGet
+local.get 0
+i32.load 4
+local.get 0
+i32.load 8
+call wasm_table_get
+return
+end_block # CreateBlob
+local.get 0
+i32.load 4
+local.get 0
+i32.load 8
+call fixpoint_create_blob
+return
+end_block # CreateTree
+local.get 0
+i32.load 4
+local.get 0
+i32.load 8
+call fixpoint_create_tree
+return
+end_block # CreateRef
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_ref
+return
+end_block # Identification
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_identification_thunk
+return
+end_block # Application
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_application_thunk
+return
+end_block # Selection
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_selection_thunk
+return
+end_block # StrictEncode
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_strict_encode
+return
+end_block # ShallowEncode
+local.get 0
+i32.load 4
+call wasm_resolve
+call fixpoint_create_shallow_encode
+return
+end_block
+unreachable # no other operations
+end_function
+"#
+    ),
+    options(raw),
+);
 
 unsafe extern "C" {
-    // Defined with inline assembly
     pub fn wasm_memory_read(memory_index: u32, destination: u32, length: usize);
     pub fn wasm_memory_write(memory_index: u32, source: u32, length: usize);
     pub fn wasm_memory_size(memory_index: u32) -> usize;
@@ -138,9 +503,4 @@ unsafe extern "C" {
 
     pub fn wasm_table_size(table_index: u32) -> usize;
     pub fn wasm_table_grow(table_index: u32, entries: usize) -> usize;
-
-    pub fn util_attach_blob(memory_index: u32, handle: *const [u8; 32]);
-    pub fn util_attach_tree(table_index: u32, handle: *const [u8; 32]);
-    pub fn util_len(handle: *const [u8; 32]) -> usize;
-    pub fn util_table_set(table_index: u32, entry_index: usize, handle: *const [u8; 32]);
 }
