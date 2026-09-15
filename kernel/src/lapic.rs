@@ -179,4 +179,10 @@ pub unsafe fn init() {
     win.write_volatile(0x31);
     regsel.write_volatile(0x13); // redirection entry 0-hi
     win.write_volatile(0x00);
+
+    // GSI 2 -> INT 0x32
+    regsel.write_volatile(0x14); // redirection entry 0-lo
+    win.write_volatile(0x32);
+    regsel.write_volatile(0x15); // redirection entry 0-hi
+    win.write_volatile(0x00);
 }
