@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use crate::token::Token;
 use fixutils::*;
@@ -6,23 +6,20 @@ use fixutils::*;
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
-    environment: BTreeMap<String, RustHandle<'static>>,
-    context: BTreeMap<String, RustHandle<'static>>,
+    environment: BTreeMap<String, HandleOp<'static>>,
+    context: BTreeMap<String, HandleOp<'static>>,
 }
 
 impl Parser {
-    pub fn new(
-        tokens: Vec<Token>,
-        environment_handle: &RustHandle<'static>,
-    ) -> Result<Self, Error> {
+    pub fn new(tokens: Vec<Token>, environment_handle: TableGet<'static>) -> Result<Self, Error> {
         let mut environment = BTreeMap::new();
         for entry in environment_handle.to_entries()? {
             let entry = entry.to_entries()?;
             let name = *entry.first().expect("expect name");
-            let object = entry.get(1).expect("expect object");
+            let object = *entry.get(1).expect("expect object");
             environment.insert(
                 String::from_utf8(name.to_bytes()?).expect("valid name"),
-                *object,
+                object.into(),
             );
         }
 
@@ -34,23 +31,23 @@ impl Parser {
         })
     }
 
-    pub fn parse_program(&mut self) -> Result<RustHandle<'static>, Error> {
+    pub fn parse_program(&mut self) -> Result<HandleOp<'static>, Error> {
         let handle = self.parse_expr()?;
         self.expect(&Token::Eof, "expected end of program");
         Ok(handle)
     }
 
-    fn parse_expr(&mut self) -> Result<RustHandle<'static>, Error> {
+    fn parse_expr(&mut self) -> Result<HandleOp<'static>, Error> {
         Ok(match self.advance() {
-            Token::String(string) => RustHandle::from_bytes(string.as_bytes())?,
-            Token::Bytes(bytes) => RustHandle::from_bytes(&bytes)?,
+            Token::String(string) => from_bytes(string.as_bytes())?.into(),
+            Token::Bytes(bytes) => from_bytes(&bytes)?.into(),
             Token::Identifier(name) => *self.context.get(&name).expect("undefined identifier"),
             Token::Primitive(name) => *self.environment.get(&name).expect("undefined primitive"),
-            Token::Ampersand => create_ref(self.parse_expr()?),
-            Token::Apostrophe => create_identification_thunk(self.parse_expr()?),
-            Token::Pound => create_application_thunk(self.parse_expr()?),
-            Token::Asterisk => create_strict_encode(self.parse_expr()?),
-            Token::Plus => create_shallow_encode(self.parse_expr()?),
+            Token::Ampersand => HandleOp::CreateRef(self.previous()?),
+            Token::Apostrophe => HandleOp::Identification(self.previous()?),
+            Token::Pound => HandleOp::Application(self.previous()?),
+            Token::Asterisk => HandleOp::StrictEncode(self.previous()?),
+            Token::Plus => HandleOp::ShallowEncode(self.previous()?),
             Token::LParen => {
                 if let Some(Token::Identifier(token)) = self.peek(self.position)
                     && token == "let"
@@ -58,17 +55,21 @@ impl Parser {
                     self.advance();
                     self.parse_let()?
                 } else {
-                    RustHandle::from_entries(&self.parse_handles(&Token::RParen)?)?
+                    from_entries(&self.parse_handles(&Token::RParen)?)?.into()
                 }
             }
-            Token::LBracket => create_selection_thunk(RustHandle::from_entries(
-                &self.parse_handles(&Token::RBracket)?,
-            )?),
+            Token::LBracket => HandleOp::Selection(Box::leak(Box::new(
+                from_entries(&self.parse_handles(&Token::RBracket)?)?.into(),
+            ))),
             token => panic!("unexpected token: {token:?}"),
         })
     }
 
-    fn parse_handles(&mut self, close: &Token) -> Result<Vec<RustHandle<'static>>, Error> {
+    fn previous(&mut self) -> Result<&'static HandleOp<'static>, Error> {
+        Ok(Box::leak(Box::new(self.parse_expr()?)))
+    }
+
+    fn parse_handles(&mut self, close: &Token) -> Result<Vec<HandleOp<'static>>, Error> {
         let mut handles = Vec::new();
         while !self.matches(close) {
             handles.push(self.parse_expr()?);
@@ -76,7 +77,7 @@ impl Parser {
         Ok(handles)
     }
 
-    fn parse_let(&mut self) -> Result<RustHandle<'static>, Error> {
+    fn parse_let(&mut self) -> Result<HandleOp<'static>, Error> {
         self.expect(&Token::LParen, "expected '(' for let bindings");
         let outer_context = self.context.clone();
         while self.matches(&Token::LParen) {

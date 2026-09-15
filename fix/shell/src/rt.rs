@@ -118,8 +118,7 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
             max_elements = 1 << (32 - 5);
         }
         let data = ((1 << 32) * (64 + idx)) as *mut u8;
-        let memory_size =
-            arca_compat_mmap(
+        let memory_size = arca_compat_mmap(
             data as *mut _,
             (elements * 32).next_multiple_of(PAGE_SIZE) as usize,
             __MODE_read_write,
@@ -155,6 +154,7 @@ pub extern "C" fn wasm_rt_grow_externref_table(
             let start = table.data.byte_add(cur_bytes);
             let bytes_needed = desired_bytes - cur_bytes;
             table.memory_size += arca_compat_mmap(start as *mut _, bytes_needed, __MODE_read_write);
+            from_raw_parts_mut(table.data.add(table.size as usize), delta as usize).fill(init);
         }
     }
 

@@ -1,20 +1,20 @@
 use crate::*;
 
 unsafe extern "C" {
-    fn util_allocate_memory(index: u16) -> *mut Memory;
-    static UTIL_NUM_MEMORIES: u16;
+    fn util_allocate_memory(index: u32) -> *mut Memory;
+    static UTIL_NUM_MEMORIES: u32;
 }
-static mut POSITION: u16 = 0;
+static mut POSITION: u32 = 0;
 const PAGE_SIZE: usize = 65536;
 
 #[repr(transparent)]
-pub struct Memory(u16);
+pub struct Memory(u32);
 
 impl Memory {
     #[doc(hidden)]
     pub const EMPTY: Self = Self(0);
 
-    pub fn new(index: u16) -> Result<&'static mut Self, Error> {
+    pub fn new(index: u32) -> Result<&'static mut Self, Error> {
         let slot = unsafe { util_allocate_memory(index) };
         if slot.is_null() {
             return Err(Error::Unavailable);
@@ -42,10 +42,12 @@ impl Memory {
     /// # Safety
     ///
     /// `length` must be <= size() * PAGE_SIZE
-    pub unsafe fn create_blob(&self, length: usize) -> RustHandle<'_> {
-        RustHandle::new(Handle::Object(Object::Blob(Blob::Blob(unsafe {
-            BlobName::new(encode_args(Producer::CreateBlob, self.0, length))
-        }))))
+    pub unsafe fn create_blob(&self, length: usize) -> CreateBlob<'_> {
+        CreateBlob {
+            memory_index: self.0,
+            length,
+            source: PhantomData,
+        }
     }
 
     /// Fills the destination slice by copying bytes from the memory
@@ -54,13 +56,7 @@ impl Memory {
     ///
     /// The `destination` slice's length must be <= size() * PAGE_SIZE
     pub unsafe fn read(&self, destination: &mut [u8]) {
-        unsafe {
-            wasm_memory_read(
-                self.0 as u32,
-                destination.as_mut_ptr() as u32,
-                destination.len(),
-            )
-        }
+        unsafe { wasm_memory_read(self.0, destination.as_mut_ptr() as u32, destination.len()) }
     }
 
     /// Copies the bytes from the source slice into the memory
@@ -69,24 +65,24 @@ impl Memory {
     ///
     /// The `source` slice's length must be <= size() * PAGE_SIZE
     pub unsafe fn write(&mut self, source: &[u8]) {
-        unsafe { wasm_memory_write(self.0 as u32, source.as_ptr() as u32, source.len()) }
+        unsafe { wasm_memory_write(self.0, source.as_ptr() as u32, source.len()) }
     }
 
-    /// Calls the fixshell's attach_blob after resolving the provided `handle`
+    /// Calls the fixshell's attach_blob after resolving the provided `operation`
     ///
     /// # Safety
     ///
-    /// `handle` must refer to a blob
-    pub unsafe fn attach_blob(&mut self, handle: RustHandle<'_>) {
-        unsafe { util_attach_blob(self.0 as u32, &handle.raw_handle) }
+    /// `operation` must resolve to a blob
+    pub unsafe fn attach_blob<T: Resolve>(&mut self, operation: T) {
+        unsafe { attach_blob(self.0, operation) }
     }
 
     pub fn size(&self) -> usize {
-        unsafe { wasm_memory_size(self.0 as u32) }
+        unsafe { wasm_memory_size(self.0) }
     }
 
     pub fn grow(&mut self, num_pages: usize) -> usize {
-        unsafe { wasm_memory_grow(self.0 as u32, num_pages) }
+        unsafe { wasm_memory_grow(self.0, num_pages) }
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<&'static mut Self, Error> {
@@ -100,19 +96,19 @@ impl Memory {
         Ok(memory)
     }
 
-    pub fn from_blob(handle: RustHandle<'_>) -> Result<&'static mut Self, Error> {
+    pub fn from_blob<T: Resolve>(operation: T) -> Result<&'static mut Self, Error> {
         let memory = Memory::next()?;
         let mapped = memory.size();
-        let required = handle.len().div_ceil(PAGE_SIZE);
+        let required = operation.len().div_ceil(PAGE_SIZE);
         if required > mapped && memory.grow(required - mapped) == usize::MAX {
             return Err(Error::GrowFailed);
         }
-        unsafe { memory.attach_blob(handle) };
+        unsafe { memory.attach_blob(operation) };
         Ok(memory)
     }
 
     pub fn to_bytes(&self, length: usize) -> Result<Vec<u8>, Error> {
-        if length > self.size() * PAGE_SIZE {
+        if length.div_ceil(PAGE_SIZE) > self.size() {
             return Err(Error::OutOfBounds);
         }
         let mut bytes = alloc::vec![0; length];
@@ -120,8 +116,8 @@ impl Memory {
         Ok(bytes)
     }
 
-    pub fn to_blob(&self, length: usize) -> Result<RustHandle<'_>, Error> {
-        if length > self.size() * PAGE_SIZE {
+    pub fn to_blob(&self, length: usize) -> Result<CreateBlob<'_>, Error> {
+        if length.div_ceil(PAGE_SIZE) > self.size() {
             return Err(Error::OutOfBounds);
         }
         Ok(unsafe { self.create_blob(length) })

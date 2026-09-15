@@ -1,14 +1,13 @@
+cargo-features = ["per-package-target"]
+
 [package]
 name = "fixutils"
 version = "0.1.0"
 edition = "2024"
+forced-target = "wasm32-unknown-unknown"
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
-fixhandle = { path = "../handle", default-features = false }
 macros = { path = "../../macros" }
-
-[build-dependencies]
-cc = "1.2.30"

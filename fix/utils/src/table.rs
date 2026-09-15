@@ -1,19 +1,19 @@
 use crate::*;
 
 unsafe extern "C" {
-    fn util_allocate_table(index: u16) -> *mut Table;
-    static UTIL_NUM_TABLES: u16;
+    fn util_allocate_table(index: u32) -> *mut Table;
+    static UTIL_NUM_TABLES: u32;
 }
-static mut POSITION: u16 = 0;
+static mut POSITION: u32 = 0;
 
 #[repr(transparent)]
-pub struct Table(u16);
+pub struct Table(u32);
 
 impl Table {
     #[doc(hidden)]
     pub const EMPTY: Self = Self(0);
 
-    pub fn new(index: u16) -> Result<&'static mut Self, Error> {
+    pub fn new(index: u32) -> Result<&'static mut Self, Error> {
         let slot = unsafe { util_allocate_table(index) };
         if slot.is_null() {
             return Err(Error::Unavailable);
@@ -41,85 +41,90 @@ impl Table {
     /// # Safety
     ///
     /// `length` must be <= size()
-    pub unsafe fn create_tree(&self, length: usize) -> RustHandle<'_> {
-        RustHandle::new(Handle::Object(Object::Tree(Tree::Tree(unsafe {
-            TreeName::new(encode_args(Producer::CreateTree, self.0, length))
-        }))))
+    pub unsafe fn create_tree(&self, length: usize) -> CreateTree<'_> {
+        CreateTree {
+            table_index: self.0,
+            length,
+            source: PhantomData,
+        }
     }
 
-    /// Gets the externref with index `entry` from the table when resolved
+    /// Gets the externref with index `entry_index` from the table when resolved
     ///
     /// # Safety
     ///
-    /// `entry` must be < size()
-    pub unsafe fn get(&self, entry: usize) -> RustHandle<'_> {
-        RustHandle::new(Handle::Object(Object::Tree(Tree::Tree(unsafe {
-            TreeName::new(encode_args(Producer::TableGet, self.0, entry))
-        }))))
+    /// `entry_index` must be < size()
+    pub unsafe fn get(&self, entry_index: usize) -> TableGet<'_> {
+        TableGet {
+            table_index: self.0,
+            entry_index,
+            source: PhantomData,
+        }
     }
 
-    /// Sets index `entry` in the table with the externref resolved from `handle`
+    /// Sets index `entry_index` in the table with the externref resolved from
+    /// `operation`
     ///
     /// # Safety
     ///
-    /// `entry` must be < size()
-    pub unsafe fn set(&mut self, entry: usize, handle: RustHandle<'_>) {
-        unsafe { util_table_set(self.0 as u32, entry, &handle.raw_handle) }
+    /// `entry_index` must be < size()
+    pub unsafe fn set<T: Resolve>(&mut self, entry_index: usize, operation: T) {
+        unsafe { table_set(self.0, entry_index, operation) }
     }
 
-    /// Calls the fixshell's attach_tree after resolving the provided `handle`
+    /// Calls the fixshell's attach_tree after resolving the provided `operation`
     ///
     /// # Safety
     ///
-    /// `handle` must refer to a tree
-    pub unsafe fn attach_tree(&mut self, handle: RustHandle<'_>) {
-        unsafe { util_attach_tree(self.0 as u32, &handle.raw_handle) }
+    /// `operation` must resolve to a tree
+    pub unsafe fn attach_tree<T: Resolve>(&mut self, operation: T) {
+        unsafe { attach_tree(self.0, operation) }
     }
 
     pub fn size(&self) -> usize {
-        unsafe { wasm_table_size(self.0 as u32) }
+        unsafe { wasm_table_size(self.0) }
     }
 
     pub fn grow(&mut self, entries: usize) -> usize {
-        unsafe { wasm_table_grow(self.0 as u32, entries) }
+        unsafe { wasm_table_grow(self.0, entries) }
     }
 
-    pub fn from_entries(entries: &[RustHandle<'_>]) -> Result<&'static mut Self, Error> {
+    pub fn from_entries<T: Resolve>(entries: &[T]) -> Result<&'static mut Self, Error> {
         let table = Table::next()?;
         let mapped = table.size();
         let required = entries.len();
         if required > mapped && table.grow(required - mapped) == usize::MAX {
             return Err(Error::GrowFailed);
         }
-        for (entry, handle) in entries.iter().enumerate() {
-            unsafe { table.set(entry, *handle) };
+        for (entry_index, operation) in entries.iter().enumerate() {
+            unsafe { table.set(entry_index, *operation) };
         }
         Ok(table)
     }
 
-    pub fn from_tree(handle: RustHandle<'_>) -> Result<&'static mut Self, Error> {
+    pub fn from_tree<T: Resolve>(operation: T) -> Result<&'static mut Self, Error> {
         let table = Table::next()?;
         let mapped = table.size();
-        let required = handle.len();
+        let required = operation.len();
         if required > mapped && table.grow(required - mapped) == usize::MAX {
             return Err(Error::GrowFailed);
         }
-        unsafe { table.attach_tree(handle) };
+        unsafe { table.attach_tree(operation) };
         Ok(table)
     }
 
-    pub fn to_entries(&self, length: usize) -> Result<Vec<RustHandle<'_>>, Error> {
+    pub fn to_entries(&self, length: usize) -> Result<Vec<TableGet<'_>>, Error> {
         if self.size() < length {
             return Err(Error::OutOfBounds);
         }
         let mut entries = Vec::with_capacity(length);
-        for entry in 0..length {
-            entries.push(unsafe { self.get(entry) });
+        for entry_index in 0..length {
+            entries.push(unsafe { self.get(entry_index) });
         }
         Ok(entries)
     }
 
-    pub fn to_tree(&self, length: usize) -> Result<RustHandle<'_>, Error> {
+    pub fn to_tree(&self, length: usize) -> Result<CreateTree<'_>, Error> {
         if self.size() < length {
             return Err(Error::OutOfBounds);
         }
