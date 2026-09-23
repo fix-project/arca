@@ -1,12 +1,9 @@
 ### Text Format
 
 ```
-A ::= O | K | E             Any
+A ::= O | K | E | L         Any
     | name                  Identifier
     | $name                 Stdlib primitive
-    | @"/path/"             Executable path
-
-binding ::= name = A        Binds identifier to a value
 
 int ::= num_u8              Integer
       | num_u16
@@ -16,6 +13,7 @@ int ::= num_u8              Integer
 
 B ::= int                   Blob
     | string
+    | @"/path/"             File contents
 
 T ::= (A*)                  Tree
 
@@ -32,6 +30,8 @@ K ::= 'O                    Thunk (Identify)
 E ::= *K                    Encode (Strict)
     | +K                    Encode (Shallow)
 
+L ::= (let ((name A)*) A)   Let bindings
+
 comment ::= --              Single line
           | {- -}           Multi-line
 ```
@@ -39,9 +39,8 @@ comment ::= --              Single line
 ### Example
 
 ```
-compiler = @"/path/"
-
-*#(*#(compiler $def_limits
-    "int f(int x, int y) {return x + y;}")
-    $def_limits 19u32 4u32)
+(let ((compiler @"/path/"))
+    *#(*#(compiler $def_limits
+        "int f(int x, int y) {return x + y;}")
+        $def_limits 19u32 4u32))
 ```

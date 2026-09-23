@@ -77,6 +77,7 @@ pub unsafe extern "C" fn _rsstart() -> ! {
     main();
 }
 
+// Size in bytes of the buffer for the wasm2c module instance (w2c_module). Must be at least wasm_rt_module_size()
 const MODULE_BUF_SIZE: usize = 8192;
 static mut MODULE_BUF: [u8; MODULE_BUF_SIZE] = [0; MODULE_BUF_SIZE];
 

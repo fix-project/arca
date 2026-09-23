@@ -8,13 +8,9 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-pub use macros::{num_memories, num_tables, procedure_entrypoint};
-
-pub mod memory;
-pub mod table;
-
-pub use memory::*;
-pub use table::*;
+pub use macros::procedure_entrypoint;
+pub mod resource;
+pub use resource::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -52,21 +48,21 @@ pub trait Resolve: Copy {
 
     /// Allocates a new memory to copy bytes from the blob this operation resolves to
     fn to_bytes(self) -> Result<Vec<u8>, Error> {
-        Memory::from_blob(self)?.to_bytes(self.len())
+        Memory::from_handle(self)?.to_bytes(self.len())
     }
 
     /// Allocates a new table to copy elements from the tree this operation resolves to
     fn to_entries(self) -> Result<Vec<TableGet<'static>>, Error> {
-        Table::from_tree(self)?.to_entries(self.len())
+        Table::from_handle(self)?.to_entries(self.len())
     }
 }
 
 pub fn from_bytes(bytes: &[u8]) -> Result<CreateBlob<'static>, Error> {
-    Memory::from_bytes(bytes)?.to_blob(bytes.len())
+    Memory::from_bytes(bytes)?.to_handle(bytes.len())
 }
 
 pub fn from_entries<T: Resolve>(entries: &[T]) -> Result<CreateTree<'static>, Error> {
-    Table::from_entries(entries)?.to_tree(entries.len())
+    Table::from_entries(entries)?.to_handle(entries.len())
 }
 
 // Resolves to the procedure's input combination
@@ -284,7 +280,7 @@ impl<'a> From<CreateTree<'a>> for HandleOp<'a> {
 ///
 /// # Safety
 ///
-/// `table_index` must be declared by num_tables! macro and `entry_index` < table size
+/// `table_index` must be in Table::RESOURCE_INDICES and `entry_index` < table size
 #[inline(always)]
 pub unsafe fn table_set<T: Resolve>(table_index: u32, entry_index: usize, operation: T) {
     unsafe {
@@ -303,7 +299,7 @@ pub unsafe fn table_set<T: Resolve>(table_index: u32, entry_index: usize, operat
 ///
 /// # Safety
 ///
-/// `memory_index` must be declared by num_memories! macro and `operation` must resolve to blob
+/// `memory_index` must be in Memory::RESOURCE_INDICES and `operation` must resolve to blob
 #[inline(always)]
 pub unsafe fn attach_blob<T: Resolve>(memory_index: u32, operation: T) {
     unsafe {
@@ -320,7 +316,7 @@ pub unsafe fn attach_blob<T: Resolve>(memory_index: u32, operation: T) {
 ///
 /// # Safety
 ///
-/// `table_index` must be declared by num_tables! macro and `operation` must resolve to tree
+/// `table_index` must be in Table::RESOURCE_INDICES and `operation` must resolve to tree
 #[inline(always)]
 pub unsafe fn attach_tree<T: Resolve>(table_index: u32, operation: T) {
     unsafe {

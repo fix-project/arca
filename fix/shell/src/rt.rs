@@ -18,13 +18,36 @@ unsafe extern "C" {
     pub fn wasm_rt_free();
 }
 
+pub const EXTERNREF_SIZE: usize = core::mem::size_of::<wasm_rt_externref_t>();
+pub const FUNCREF_SIZE: usize = core::mem::size_of::<wasm_rt_funcref_t>();
+
+/*
+ *  The virtual memory layout is divided into 4 GiB pieces or "slots" and allocated to
+ *  memories, externref tables, and funcref tables in the order they are listed.
+ *
+ * idx                          base address
+ * [0, NUM_MEMORIES)            SLOT_SIZE * idx
+ * [0, NUM_TABLES)              SLOT_SIZE * (NUM_MEMORIES + idx)
+ * [0, NUM_FUNCREF_TABLES)      SLOT_SIZE * (NUM_MEMORIES + NUM_TABLES + idx)
+ */
 pub static mut MEMORY_IDX: usize = 0;
-pub static mut TABLE_IDX: usize = 1;
+pub static mut TABLE_IDX: usize = 0;
 pub static mut FUNCREF_TABLE_IDX: usize = 0;
 
-pub static mut MEMORIES: [*mut wasm_rt_memory_t; 64] = [core::ptr::null_mut(); 64];
-pub static mut TABLES: [*mut wasm_rt_externref_table_t; 32] = [core::ptr::null_mut(); 32];
-pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; 32] = [core::ptr::null_mut(); 32];
+pub const NUM_MEMORIES: usize = 64;
+pub const NUM_TABLES: usize = 32;
+pub const NUM_FUNCREF_TABLES: usize = 32;
+pub const SLOT_SIZE: usize = 1 << 32;
+pub const MAX_PAGES: u64 = (SLOT_SIZE / PAGE_SIZE as usize) as u64;
+pub const MAX_TABLE_ELEMENTS: u32 = (SLOT_SIZE / EXTERNREF_SIZE) as u32;
+pub const MAX_FUNCREF_TABLE_ELEMENTS: u32 = (SLOT_SIZE / FUNCREF_SIZE) as u32;
+
+pub static mut MEMORIES: [*mut wasm_rt_memory_t; NUM_MEMORIES] =
+    [core::ptr::null_mut(); NUM_MEMORIES];
+pub static mut TABLES: [*mut wasm_rt_externref_table_t; NUM_TABLES] =
+    [core::ptr::null_mut(); NUM_TABLES];
+pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; NUM_FUNCREF_TABLES] =
+    [core::ptr::null_mut(); NUM_FUNCREF_TABLES];
 
 /**
  * Initialize a Memory object with an initial page size of `initial_pages` and
@@ -47,11 +70,11 @@ pub extern "C" fn wasm_rt_allocate_memory(
     unsafe {
         let idx = MEMORY_IDX;
         MEMORY_IDX += 1;
-        assert!(idx < 64);
+        assert!(idx < NUM_MEMORIES);
         MEMORIES[idx] = memory;
         assert!(!is64);
-        assert!(max_pages <= (1u64 << 32) / PAGE_SIZE as u64);
-        let data = ((1 << 32) * idx) as *mut u8;
+        assert!(max_pages <= MAX_PAGES);
+        let data = (SLOT_SIZE * idx) as *mut u8;
         let size = initial_pages * PAGE_SIZE as u64;
         let memory_size = arca_compat_mmap(data as *mut _, size as usize, __MODE_read_write);
         assert_eq!(memory_size, size as i64); // don't expect kernel to overallocate when requesting units of Wasm page size
@@ -112,15 +135,13 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
     unsafe {
         let idx = TABLE_IDX;
         TABLE_IDX += 1;
-        assert!(idx < 31);
+        assert!(idx < NUM_TABLES);
         TABLES[idx] = table;
-        if max_elements > (1 << (32 - 5)) {
-            max_elements = 1 << (32 - 5);
-        }
-        let data = ((1 << 32) * (64 + idx)) as *mut u8;
+        max_elements = max_elements.min(MAX_TABLE_ELEMENTS);
+        let data = (SLOT_SIZE * (NUM_MEMORIES + idx)) as *mut u8;
         let memory_size = arca_compat_mmap(
             data as *mut _,
-            (elements * 32).next_multiple_of(PAGE_SIZE) as usize,
+            (elements * EXTERNREF_SIZE as u32).next_multiple_of(PAGE_SIZE) as usize,
             __MODE_read_write,
         );
         table.write(wasm_rt_externref_table_t {
@@ -147,16 +168,16 @@ pub extern "C" fn wasm_rt_grow_externref_table(
         return u32::MAX;
     }
 
-    let desired_bytes = (table.size + delta) as usize * 32;
+    let desired_bytes = (table.size + delta) as usize * EXTERNREF_SIZE;
     let cur_bytes = table.memory_size as usize;
     if desired_bytes > cur_bytes {
         unsafe {
             let start = table.data.byte_add(cur_bytes);
             let bytes_needed = desired_bytes - cur_bytes;
             table.memory_size += arca_compat_mmap(start as *mut _, bytes_needed, __MODE_read_write);
-            from_raw_parts_mut(table.data.add(table.size as usize), delta as usize).fill(init);
         }
     }
+    unsafe { from_raw_parts_mut(table.data.add(table.size as usize), delta as usize).fill(init) };
 
     let old_element_count = table.size;
     table.size += delta;
@@ -179,15 +200,13 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
     unsafe {
         let idx = FUNCREF_TABLE_IDX;
         FUNCREF_TABLE_IDX += 1;
-        assert!(idx < 31);
+        assert!(idx < NUM_FUNCREF_TABLES);
         FUNCREF_TABLES[idx] = table;
-        if max_elements > (1 << (32 - 5)) {
-            max_elements = 1 << (32 - 5);
-        }
-        let data = ((1 << 32) * (64 + 32 + idx)) as *mut u8;
+        max_elements = max_elements.min(MAX_FUNCREF_TABLE_ELEMENTS);
+        let data = (SLOT_SIZE * (NUM_MEMORIES + NUM_TABLES + idx)) as *mut u8;
         let memory_size = arca_compat_mmap(
             data as *mut _,
-            (elements as usize * core::mem::size_of::<wasm_rt_funcref_t>()) as usize,
+            elements as usize * FUNCREF_SIZE,
             __MODE_read_write,
         );
         table.write(wasm_rt_funcref_table_t {

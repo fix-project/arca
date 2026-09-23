@@ -13,9 +13,6 @@ use fixutils::*;
 use lexer::Lexer;
 use parser::Parser;
 
-num_memories!(48);
-num_tables!(24);
-
 #[procedure_entrypoint]
 pub fn _fixpoint_apply(combination: Combination) -> Result<HandleOp<'static>, Error> {
     let arguments = combination.to_entries()?;

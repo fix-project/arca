@@ -597,7 +597,6 @@ dependencies = [
  "derive_more",
  "fixhandle",
  "fixparser",
- "fixpostprocessor",
  "fixshell",
  "hex",
  "include_directory",
@@ -607,6 +606,8 @@ dependencies = [
  "postcard",
  "serde",
  "user",
+ "wasm-encoder",
+ "wasmparser",
 ]
 
 [[package]]
@@ -625,15 +626,6 @@ dependencies = [
  "dlmalloc",
  "fixutils",
  "hex",
-]
-
-[[package]]
-name = "fixpostprocessor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "wasm-encoder",
- "wasmparser",
 ]
 
 [[package]]

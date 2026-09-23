@@ -1,6 +1,9 @@
 use core::ffi::c_void;
 
-use crate::rt::{PAGE_SIZE, wasm_rt_externref_t, wasm_rt_externref_table_t, wasm_rt_memory_t};
+use crate::rt::{
+    EXTERNREF_SIZE, MAX_PAGES, MAX_TABLE_ELEMENTS, NUM_MEMORIES, NUM_TABLES, PAGE_SIZE, SLOT_SIZE,
+    wasm_rt_externref_t, wasm_rt_externref_table_t, wasm_rt_memory_t,
+};
 use crate::shell;
 
 #[repr(C)]
@@ -12,17 +15,16 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_blob(
     handle: wasm_rt_externref_t,
     memory_idx: u32,
 ) {
-    assert!(memory_idx < 64);
+    assert!((memory_idx as usize) < NUM_MEMORIES);
     unsafe {
         let memory = crate::rt::MEMORIES[memory_idx as usize];
         if (memory.is_null()) {
             return;
         }
-        let addr = (1usize << 32) * memory_idx as usize;
+        let addr = SLOT_SIZE * memory_idx as usize;
         let len = shell::fixpoint_attach_blob(handle.bytes, addr as *mut c_void);
-        // TODO: this math is wrong
         (*memory).pages = len.div_ceil(PAGE_SIZE as usize) as u64;
-        (*memory).max_pages = (1u64 << 32) / PAGE_SIZE as u64;
+        (*memory).max_pages = MAX_PAGES;
         (*memory).size = (*memory).pages * PAGE_SIZE as u64;
     }
 }
@@ -33,16 +35,16 @@ pub unsafe extern "C" fn w2c_fixpoint_attach_tree(
     handle: wasm_rt_externref_t,
     table_idx: u32,
 ) {
-    assert!(table_idx < 32);
+    assert!((table_idx as usize) < NUM_TABLES);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
         if (table.is_null()) {
             return;
         }
-        let addr = (1usize << 32) * (64 + table_idx as usize);
+        let addr = SLOT_SIZE * (NUM_MEMORIES + table_idx as usize);
         let len = shell::fixpoint_attach_tree(handle.bytes, addr as *mut c_void);
         (*table).size = len as u32;
-        (*table).max_size = (1 << (32 - 5)) as u32;
+        (*table).max_size = MAX_TABLE_ELEMENTS;
     }
 }
 
@@ -52,13 +54,14 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
     table_idx: u32,
     length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(table_idx < 63);
+    assert!((table_idx as usize) < NUM_TABLES);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
+        assert!(length <= (*table).size);
         wasm_rt_externref_t {
             bytes: shell::fixpoint_create_tree(core::slice::from_raw_parts(
                 (*table).data.cast::<u8>(),
-                length as usize * 32,
+                length as usize * EXTERNREF_SIZE,
             )),
         }
     }
@@ -68,15 +71,15 @@ pub unsafe extern "C" fn w2c_fixpoint_create_tree(
 pub unsafe extern "C" fn w2c_fixpoint_create_tag(
     fixpoint: *mut w2c_fixpoint,
     table_idx: u32,
-    length: u32,
 ) -> wasm_rt_externref_t {
     assert!(table_idx < 63);
     unsafe {
         let table = crate::rt::TABLES[table_idx as usize];
+        let addr = (1usize << 32) * (64 + table_idx as usize);
         wasm_rt_externref_t {
             bytes: shell::fixpoint_create_tag(core::slice::from_raw_parts(
-                (*table).data.cast::<u8>(),
-                length as usize * 32,
+                addr as *const u8,
+                (*table).size as usize,
             )),
         }
     }
@@ -108,9 +111,10 @@ pub unsafe extern "C" fn w2c_fixpoint_create_blob(
     memory_index: u32,
     length: u32,
 ) -> wasm_rt_externref_t {
-    assert!(memory_index < 63);
+    assert!((memory_index as usize) < NUM_MEMORIES);
     unsafe {
         let memory = crate::rt::MEMORIES[memory_index as usize];
+        assert!(length as u64 <= (*memory).size);
         wasm_rt_externref_t {
             bytes: shell::fixpoint_create_blob(core::slice::from_raw_parts(
                 (*memory).data,

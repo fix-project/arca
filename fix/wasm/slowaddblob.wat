@@ -23,7 +23,7 @@
     ;; Attach the combination tree.
     (call $attach_tree
       (local.get $encode)
-      (i32.const 1))
+      (i32.const 0))
 
     ;; Grow rw-memory by zero pages, preserving the original behavior.
     (memory.grow

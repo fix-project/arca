@@ -1,15 +1,21 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::fmt::Write;
-use syn::{ItemFn, LitInt, parse_macro_input};
+use std::{fmt::Write, ops::Range};
+use syn::{ItemFn, parse_macro_input};
+
+// Must match NUM_MEMORIES and NUM_TABLES in fixutils
+const NUM_MEMORIES: usize = 32;
+const NUM_TABLES: usize = 32;
 
 pub fn entrypoint(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
     let _fixpoint_apply = &item.sig.ident;
+    let asm = memory_asm() + &table_asm();
 
     quote! {
         // Declarations need to be included in procedure's object file during compilation for the inlined WebAssembly
         ::core::arch::global_asm!(::fixutils::declare_wasm!(), options(raw),);
+        ::core::arch::global_asm!(#asm, options(raw));
         #item
 
         #[unsafe(export_name = "_fixpoint_apply_inner")]
@@ -26,14 +32,15 @@ pub fn entrypoint(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-fn write_asm(name: &str, signature: &str, count: usize, body: &str) -> String {
+fn write_asm(name: &str, signature: &str, indices: Range<usize>, body: &str) -> String {
     let index_local = usize::from(name == "wasm_table_set");
+    let (start, count) = (indices.start, indices.len());
     let mut asm = format!(".globl {name}\n{name}:\n.functype {name} {signature}\n");
-    // blocks for default fallback and index 1 to count
+    // blocks for default fallback and each index
     for _ in 0..=count {
         asm.push_str("block\n");
     }
-    writeln!(asm, "local.get {index_local}\ni32.const 1\ni32.sub").unwrap();
+    writeln!(asm, "local.get {index_local}\ni32.const {start}\ni32.sub").unwrap();
 
     asm.push_str("br_table {");
     for depth in 0..count {
@@ -42,7 +49,7 @@ fn write_asm(name: &str, signature: &str, count: usize, body: &str) -> String {
     write!(asm, "{count}").unwrap();
     asm.push_str("}\n");
 
-    for index in 1..=count {
+    for index in indices {
         writeln!(
             asm,
             "end_block\n{}\nreturn",
@@ -54,7 +61,7 @@ fn write_asm(name: &str, signature: &str, count: usize, body: &str) -> String {
     asm
 }
 
-fn memory_asm(count: usize) -> String {
+fn memory_asm() -> String {
     let mut asm = String::new();
     for (name, signature, body) in [
         (
@@ -74,15 +81,14 @@ fn memory_asm(count: usize) -> String {
             "local.get 1\nmemory.grow {}",
         ),
     ] {
-        asm += &write_asm(name, signature, count, body);
+        asm += &write_asm(name, signature, 1..NUM_MEMORIES + 1, body);
     }
-    // Number of memories encoded in custom section
-    asm + &format!(".section .custom_section.wasm_num_memories,\"\",@\n.int32 {count}\n")
+    asm
 }
 
-fn table_asm(count: usize) -> String {
+fn table_asm() -> String {
     let mut asm = String::new();
-    for index in 1..=count {
+    for index in 0..NUM_TABLES {
         asm += &format!(
             ".section .text.wasm_table_{index},\"\",@\n.globl wasm_table_{index}\n.tabletype wasm_table_{index}, externref\nwasm_table_{index}:\n"
         );
@@ -109,79 +115,7 @@ fn table_asm(count: usize) -> String {
             "ref.null_extern\nlocal.get 1\ntable.grow wasm_table_{}",
         ),
     ] {
-        asm += &write_asm(name, signature, count, body);
+        asm += &write_asm(name, signature, 0..NUM_TABLES, body);
     }
     asm
-}
-
-pub fn num_memories(input: TokenStream) -> TokenStream {
-    let count: usize = match parse_macro_input!(input as LitInt).base10_parse() {
-        Ok(count) => count,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let asm = memory_asm(count);
-    quote! {
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub static UTIL_NUM_MEMORIES: u32 = #count as u32;
-
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn util_allocate_memory(index: u32) -> *mut ::fixutils::Memory {
-            use ::core::sync::atomic::{AtomicBool, Ordering};
-
-            const COUNT: usize = #count;
-            static mut SLOTS: [::fixutils::Memory; COUNT] = [const { ::fixutils::Memory::EMPTY }; COUNT];
-            static OCCUPIED: [AtomicBool; COUNT] = [const { AtomicBool::new(false) }; COUNT];
-
-            // can't get memory 0, memory above count, or already occupied memory
-            if index == 0 || index as usize > COUNT {
-                return ::core::ptr::null_mut();
-            }
-            let slot_index = index as usize - 1;
-            if OCCUPIED[slot_index].swap(true, Ordering::Relaxed) {
-                return ::core::ptr::null_mut();
-            }
-            unsafe { (&raw mut SLOTS).cast::<::fixutils::Memory>().add(slot_index) }
-        }
-
-        ::core::arch::global_asm!(#asm, options(raw));
-    }
-    .into()
-}
-
-pub fn num_tables(input: TokenStream) -> TokenStream {
-    let count: usize = match parse_macro_input!(input as LitInt).base10_parse() {
-        Ok(count) => count,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let asm = table_asm(count);
-    quote! {
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub static UTIL_NUM_TABLES: u32 = #count as u32;
-
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn util_allocate_table(index: u32) -> *mut ::fixutils::Table {
-            use ::core::sync::atomic::{AtomicBool, Ordering};
-
-            const COUNT: usize = #count;
-            static mut SLOTS: [::fixutils::Table; COUNT] = [const { ::fixutils::Table::EMPTY }; COUNT];
-            static OCCUPIED: [AtomicBool; COUNT] = [const { AtomicBool::new(false) }; COUNT];
-
-            // can't get table 0, table above count, or already occupied table
-            if index == 0 || index as usize > COUNT {
-                return ::core::ptr::null_mut();
-            }
-            let slot_index = index as usize - 1;
-            if OCCUPIED[slot_index].swap(true, Ordering::Relaxed) {
-                return ::core::ptr::null_mut();
-            }
-            unsafe { (&raw mut SLOTS).cast::<::fixutils::Table>().add(slot_index) }
-        }
-
-        ::core::arch::global_asm!(#asm, options(raw));
-    }
-    .into()
 }

@@ -45,13 +45,3 @@ pub fn bitpack(input: TokenStream) -> TokenStream {
 pub fn procedure_entrypoint(attr: TokenStream, item: TokenStream) -> TokenStream {
     fixutils::entrypoint(attr, item)
 }
-
-#[proc_macro]
-pub fn num_memories(input: TokenStream) -> TokenStream {
-    fixutils::num_memories(input)
-}
-
-#[proc_macro]
-pub fn num_tables(input: TokenStream) -> TokenStream {
-    fixutils::num_tables(input)
-}
