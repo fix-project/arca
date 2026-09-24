@@ -1,2 +1,3 @@
-(let ((add @"addblob"))
-    *#(add *#(add 2u64 3u64) 1u64))
+add = @"addblob"
+
+*#(add *#(add 2u64 3u64) 1u64)

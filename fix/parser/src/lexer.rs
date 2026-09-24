@@ -19,11 +19,21 @@ impl<'a> Lexer<'a> {
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, String> {
         let mut tokens = Vec::new();
+        let mut depth: usize = 0;
+
         loop {
             let token = self.next_token()?;
-            if token == Token::Eof {
-                tokens.push(token);
-                break;
+            match token {
+                Token::LParen | Token::LBracket => depth += 1,
+                Token::RParen | Token::RBracket => {
+                    depth = depth.checked_sub(1).ok_or("unexpected closing delimiter")?;
+                }
+                Token::Newline if depth > 0 => continue,
+                Token::Eof => {
+                    tokens.push(token);
+                    break;
+                }
+                _ => {}
             }
             tokens.push(token);
         }
@@ -31,8 +41,8 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token, String> {
-        // skip whitespace
-        self.take(String::new(), |ch| ch.is_whitespace());
+        // skip whitespace except newline
+        self.take(String::new(), |ch| ch.is_whitespace() && ch != '\n');
         let Some(character) = self.characters.next() else {
             return Ok(Token::Eof);
         };
@@ -47,6 +57,8 @@ impl<'a> Lexer<'a> {
             '+' => Token::Plus,
             '\'' => Token::Apostrophe,
             '#' => Token::Pound,
+            '=' => Token::Equal,
+            '\n' => Token::Newline,
             '$' => Token::Primitive(self.take(String::new(), Self::is_identifier)),
             '"' => {
                 let text = self.take(String::new(), |ch| ch != '"');
