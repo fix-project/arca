@@ -62,10 +62,8 @@ just run threads
 just run webserver
 ```
 
-To run Fix-on-Arca, run:
-```sh
-just fix eval addblob.fix
-```
+To run Fix-on-Arca, run [XXX] (can scrape this from .github/workflows/compile.yml or
+better solution arriving RSN TODO).
 
 # License
 

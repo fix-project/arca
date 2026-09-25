@@ -1,2 +1,2 @@
-(let ((add @"./target/x86_64-unknown-none/addblob"))
+(let ((add @"addblob"))
     !*(add !*(add 2 3) 1))
