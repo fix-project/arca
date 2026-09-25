@@ -56,3 +56,5 @@ jobs:
       run: just build-all
     - name: Test
       run: just test
+    - name: Test Fix evaluation of addblob.fix
+      run: just build-all && cd target/x86_64-unknown-none/debug && ../../../target/debug/vmm ../../../target/x86_64-unknown-none/debug/fix eval ../../../addblob.fix
