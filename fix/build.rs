@@ -1,3 +1,6 @@
+#[path = "utils/postprocessor.rs"]
+mod fixpostprocessor;
+
 use std::fs::create_dir_all;
 use std::io::ErrorKind;
 use std::os::unix::fs::symlink;
@@ -213,6 +216,10 @@ fn main() -> Result<()> {
             symlink(dst, link)?;
         }
     }
+    let parser = PathBuf::from(env::var_os("CARGO_CDYLIB_FILE_FIXPARSER").unwrap());
+    let wasm = fixpostprocessor::process(&std::fs::read(&parser)?)?;
+    let (c, h) = wasm2c(&wasm)?;
+    std::fs::write(Path::new(&out_dir).join("fixparser"), c2elf(&c, &h)?)?;
 
     let cwd = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 

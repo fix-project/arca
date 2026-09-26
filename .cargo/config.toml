@@ -14,3 +14,8 @@ rustflags = [
   # "-C", "target-feature=+crt-static",
 ]
 runner = "cargo run -p vmm --"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "codegen-units=1", # required for properly inlining resolve functions in fixutils
+]

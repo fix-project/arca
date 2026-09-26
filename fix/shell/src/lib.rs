@@ -77,7 +77,9 @@ pub unsafe extern "C" fn _rsstart() -> ! {
     main();
 }
 
-static mut MODULE_BUF: [u8; 1024] = [0; 1024];
+// Size in bytes of the buffer for the wasm2c module instance (w2c_module). Must be at least wasm_rt_module_size()
+const MODULE_BUF_SIZE: usize = 8192;
+static mut MODULE_BUF: [u8; MODULE_BUF_SIZE] = [0; MODULE_BUF_SIZE];
 
 pub fn main() -> ! {
     let combination = os::argument();
@@ -89,7 +91,7 @@ pub fn main() -> ! {
         wasm_rt_init();
         let module_size = wasm_rt_module_size();
         let module = unsafe {
-            assert!(module_size <= 1024);
+            assert!(module_size <= MODULE_BUF_SIZE);
             &raw mut MODULE_BUF[0] as *mut c_void
         };
         wasm2c_module_instantiate(module, core::ptr::null());

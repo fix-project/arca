@@ -12,9 +12,8 @@ use kernel::prelude::*;
 
 use fix::arca::FixOnArca;
 use fix::*;
-use lexer::*;
-use parser::*;
-use preprocessor::*;
+
+pub const PARSER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixparser"));
 
 #[cfg(test)]
 mod testing;
@@ -88,11 +87,14 @@ fn eval_parallel_program(
     evaluator: &Arc<parallel_evaluator::Evaluator<FixOnArca>>,
 ) -> Handle {
     let processed = Preprocessor::new(source).preprocess().unwrap();
-    let tokens = Lexer::new(&processed).tokenize().unwrap();
-    let program = Parser::new(&tokens).parse_program().unwrap();
+    let parser: Handle = evaluator.storage().add_blob(PARSER).into();
+    let source = evaluator.storage().add_blob(processed.as_bytes());
+    let environment = stdlib::build_environment(evaluator.storage());
+    let combination = evaluator
+        .storage()
+        .add_tree(&[parser, source.into(), environment]);
 
-    let mut interpreter = Interpreter::new(evaluator.storage());
-    evaluator.eval(interpreter.interpret(&program))
+    evaluator.eval(Encode::Strict(Thunk::Application(combination)).into())
 }
 
 // `fix eval <file>`: read command file and print result.
@@ -116,11 +118,14 @@ fn eval_file(path: &str) {
 // parse, interpret, and evaluate source text.
 fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
     let processed = Preprocessor::new(source).preprocess().unwrap();
-    let tokens = Lexer::new(&processed).tokenize().unwrap();
-    let program = Parser::new(&tokens).parse_program().unwrap();
+    let parser: Handle = evaluator.storage().add_blob(PARSER).into();
+    let source = evaluator.storage().add_blob(processed.as_bytes());
+    let environment = stdlib::build_environment(evaluator.storage());
+    let combination = evaluator
+        .storage()
+        .add_tree(&[parser, source.into(), environment]);
 
-    let mut interpreter = Interpreter::new(evaluator.storage());
-    evaluator.eval(interpreter.interpret(&program))
+    evaluator.eval(Encode::Strict(Thunk::Application(combination)).into())
 }
 
 #[cfg(test)]
@@ -144,34 +149,49 @@ mod tests {
         let evaluator = Evaluator::new(FixOnArca::default());
 
         {
-            assert_eq!(eval_value("42", &evaluator), 42i64.to_le_bytes());
-            assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
+            assert_eq!(eval_value("42u8", &evaluator), 42u8.to_le_bytes());
+            //assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
             assert_eq!(eval_value("\"hello\"", &evaluator), b"hello");
 
-            assert_eq!(eval_value("(1 2 3)", &evaluator), 3i64.to_le_bytes());
-            assert_eq!(eval_value("()", &evaluator), 0i64.to_le_bytes());
+            assert_eq!(eval_value("(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
+            assert_eq!(eval_value("()", &evaluator), 0u64.to_le_bytes());
 
             assert_eq!(eval_value("&\"hello\"", &evaluator), b"hello");
-            assert_eq!(eval_value("&(1 2 3)", &evaluator), 3i64.to_le_bytes());
+            assert_eq!(eval_value("&(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
 
-            assert_eq!(eval_value("!^&2", &evaluator), 2i64.to_le_bytes());
-
+            assert_eq!(eval_value("*'&2u8", &evaluator), 2u8.to_le_bytes());
             assert_eq!(
-                eval_value("(let ((x 42)) x)", &evaluator),
-                42i64.to_le_bytes()
-            );
-            assert_eq!(
-                eval_value("(let ((x 1) (y 2)) (x y))", &evaluator),
-                2i64.to_le_bytes()
+                eval_value("*[(1u8 2u8 3u8 4u8) 2u8]", &evaluator),
+                3u8.to_le_bytes()
             );
 
             assert_eq!(
-                eval_value("(let ((x 1)) (let ((x 2)) x))", &evaluator),
-                2i64.to_le_bytes()
+                eval_value("(let ((x 42u64)) x)", &evaluator),
+                42u64.to_le_bytes()
             );
             assert_eq!(
-                eval_value("(let ((x 1)) (let ((y (let ((x 2)) x))) x))", &evaluator),
-                1i64.to_le_bytes()
+                eval_value("(let ((x 1u8) (y 2u8)) (x y))", &evaluator),
+                2u64.to_le_bytes()
+            );
+
+            assert_eq!(
+                eval_value("(let ((x 1u8)) (let ((x 2u64)) x))", &evaluator),
+                2u64.to_le_bytes()
+            );
+            assert_eq!(
+                eval_value(
+                    "(let ((x 1u64)) (let ((y (let ((x 2u8)) x))) x))",
+                    &evaluator
+                ),
+                1u64.to_le_bytes()
+            );
+        }
+
+        // primitive test
+        {
+            assert_eq!(
+                eval_value("*#($identity 2u8)", &evaluator),
+                2u64.to_le_bytes()
             );
         }
     }

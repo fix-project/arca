@@ -2,33 +2,40 @@
     -- The whole file is interpreted as a single expression. Expressions can be comprised of:
 
     -- Integer Literals
-    42
+    42u8
 
     -- String Literals
     "hello"
 
     -- Trees
-    (1 2 3)
+    (1u8 2u8 3u8)
 
     -- References
     &"hello"
 
     -- Identification Thunks
-    ^&4
+    '&4u8
 
     -- Application Thunks
-    *(1 2)
+    #(1u8 2u8)
+
+    -- Selection Thunks
+    ["hello" 2u8] -- Zero-indexed
+    ["hello" 1u8 3u8] -- Inclusive start and exclusive end
 
     -- Strict Encodes
-    !^&2
+    *'&2u8
+
+    -- Shallow Encodes
+    +'&2u8
 
     -- Let bindings that tie expressions to variables
-    (let ((x 42)) x)
+    (let ((x 42u8)) x)
 
     -- @ path executables
     @"./target/x86_64-unknown-none/addblob"
 
-    -- Primitives (To be implemented)
-    $interpret
+    -- Primitives
+    *#($identity 2u8)
 
 -}
