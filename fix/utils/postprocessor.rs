@@ -5,8 +5,7 @@ use wasm_encoder::{
 };
 use wasmparser::{Parser, Payload};
 
-// Must match NUM_MEMORIES in fixutils
-const NUM_MEMORIES: u32 = 32;
+const NUM_MEMORIES: u32 = macros::num_fixutils_memories!();
 
 /* Adds `NUM_MEMORIES` memories to inputted `wasm` binary. This is required for binaries produced
  * from fix procedures that link with fixutils which provides multi-memory for interacting with

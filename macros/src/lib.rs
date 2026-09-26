@@ -1,4 +1,4 @@
-use proc_macro::TokenStream;
+use proc_macro::{Literal, TokenStream, TokenTree};
 
 mod bitpack;
 mod core_local;
@@ -44,4 +44,14 @@ pub fn bitpack(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn procedure_entrypoint(attr: TokenStream, item: TokenStream) -> TokenStream {
     fixutils::entrypoint(attr, item)
+}
+
+#[proc_macro]
+pub fn num_fixutils_memories(_input: TokenStream) -> TokenStream {
+    TokenTree::Literal(Literal::usize_unsuffixed(fixutils::NUM_MEMORIES)).into()
+}
+
+#[proc_macro]
+pub fn num_fixutils_tables(_input: TokenStream) -> TokenStream {
+    TokenTree::Literal(Literal::usize_unsuffixed(fixutils::NUM_TABLES)).into()
 }

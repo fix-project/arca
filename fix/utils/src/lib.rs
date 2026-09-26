@@ -8,7 +8,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-pub use macros::procedure_entrypoint;
+pub use macros::{num_fixutils_memories, num_fixutils_tables, procedure_entrypoint};
 pub mod resource;
 pub use resource::*;
 
@@ -385,109 +385,121 @@ macro_rules! declare_wasm {
 }
 
 core::arch::global_asm!(
-    concat!(
-        declare_wasm!(),
-        r#"
-.globl combination_global
-combination_global:
-.functype wasm_table_get (i32, i32) -> (externref)
-.functype wasm_table_set (externref, i32, i32) -> ()
-.functype _fixpoint_apply_inner () -> (i32)
-# Puts input combination in global, calls procedure_entrypoint! macro's
-# _fixpoint_apply_inner, and resolves output HandleOp into externref
-.globl _fixpoint_apply_wrapper
-.export_name _fixpoint_apply_wrapper, _fixpoint_apply
-_fixpoint_apply_wrapper:
-.functype _fixpoint_apply_wrapper (externref) -> (externref)
-local.get 0
-global.set combination_global
-call _fixpoint_apply_inner
-call wasm_resolve
-end_function
-# Resolves received HandleOp pointer with layout: operation type in first 4 bytes,
-# previous operation pointer or producer first argument in middle 4 bytes, and producer second argument in last 4 bytes
-.globl wasm_resolve
-wasm_resolve:
-.functype wasm_resolve (i32) -> (externref)
-block
-block
-block
-block
-block
-block
-block
-block
-block
-block
-block
-local.get 0
-i32.load 0
-br_table {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-end_block # Combination
-global.get combination_global
-return
-end_block # TableGet
-local.get 0
-i32.load 4
-local.get 0
-i32.load 8
-call wasm_table_get
-return
-end_block # CreateBlob
-local.get 0
-i32.load 4
-local.get 0
-i32.load 8
-call fixpoint_create_blob
-return
-end_block # CreateTree
-local.get 0
-i32.load 4
-local.get 0
-i32.load 8
-call fixpoint_create_tree
-return
-end_block # CreateRef
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_ref
-return
-end_block # Identification
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_identification_thunk
-return
-end_block # Application
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_application_thunk
-return
-end_block # Selection
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_selection_thunk
-return
-end_block # StrictEncode
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_strict_encode
-return
-end_block # ShallowEncode
-local.get 0
-i32.load 4
-call wasm_resolve
-call fixpoint_create_shallow_encode
-return
-end_block
-unreachable # no other operations
-end_function
-"#
-    ),
+    declare_wasm!(),
+    ".globl combination_global",
+    "combination_global:",
+    ".functype wasm_table_get (i32, i32) -> (externref)",
+    ".functype wasm_table_set (externref, i32, i32) -> ()",
+    ".functype _fixpoint_apply_inner () -> (i32)",
+    // Puts input combination in global, calls procedure_entrypoint! macro's
+    // _fixpoint_apply_inner, and resolves output HandleOp into externref
+    ".globl _fixpoint_apply_wrapper",
+    ".export_name _fixpoint_apply_wrapper, _fixpoint_apply",
+    "_fixpoint_apply_wrapper:",
+    ".functype _fixpoint_apply_wrapper (externref) -> (externref)",
+    "local.get 0",
+    "global.set combination_global",
+    "call _fixpoint_apply_inner", // () -> *const HandleOp
+    "call wasm_resolve",          // *const HandleOp -> externref
+    "end_function",
+    /*
+     * wasm_resolve(operation: *const HandleOp) -> externref
+     *
+     * Resolves received HandleOp pointer with layout: operation type in first 4 bytes,
+     * previous operation pointer or producer first argument in middle 4 bytes, and producer second argument in last 4 bytes
+     */
+    ".globl wasm_resolve",
+    "wasm_resolve:",
+    ".functype wasm_resolve (i32) -> (externref)",
+    // One block per operation type plus one for default
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "block",
+    "local.get 0",
+    "i32.load 0", // Operation type
+    "br_table {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}",
+    "end_block",
+    // 0: Combination -> input combination
+    "global.get combination_global",
+    "return",
+    "end_block",
+    // 1: TableGet { table_index, entry_index } -> wasm_table_get(table_index, entry_index)
+    "local.get 0",
+    "i32.load 4", // table_index
+    "local.get 0",
+    "i32.load 8", // entry_index
+    "call wasm_table_get",
+    "return",
+    "end_block",
+    // 2: CreateBlob { memory_index, length } -> fixpoint_create_blob(memory_index, length)
+    "local.get 0",
+    "i32.load 4", // memory_index
+    "local.get 0",
+    "i32.load 8", // length
+    "call fixpoint_create_blob",
+    "return",
+    "end_block",
+    // 3: CreateTree { table_index, length } -> fixpoint_create_tree(table_index, length)
+    "local.get 0",
+    "i32.load 4", // table_index
+    "local.get 0",
+    "i32.load 8", // length
+    "call fixpoint_create_tree",
+    "return",
+    "end_block",
+    // 4: CreateRef(operation: *const HandleOp) -> fixpoint_create_ref(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_ref",
+    "return",
+    "end_block",
+    // 5: Identification(operation: *const HandleOp) -> fixpoint_create_identification_thunk(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_identification_thunk",
+    "return",
+    "end_block",
+    // 6: Application(operation: *const HandleOp) -> fixpoint_create_application_thunk(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_application_thunk",
+    "return",
+    "end_block",
+    // 7: Selection(operation: *const HandleOp) -> fixpoint_create_selection_thunk(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_selection_thunk",
+    "return",
+    "end_block",
+    // 8: StrictEncode(operation: *const HandleOp) -> fixpoint_create_strict_encode(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_strict_encode",
+    "return",
+    "end_block",
+    // 9: ShallowEncode(operation: *const HandleOp) -> fixpoint_create_shallow_encode(wasm_resolve(operation))
+    "local.get 0",
+    "i32.load 4", // pointer to operation
+    "call wasm_resolve",
+    "call fixpoint_create_shallow_encode",
+    "return",
+    "end_block",
+    // Default
+    "unreachable",
+    "end_function",
     options(raw),
 );
 

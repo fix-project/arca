@@ -5,8 +5,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-const NUM_MEMORIES: usize = 32;
-const NUM_TABLES: usize = 32;
+const NUM_MEMORIES: usize = num_fixutils_memories!();
+const NUM_TABLES: usize = num_fixutils_tables!();
 const PAGE_SIZE: usize = 65536;
 
 pub trait Resource: Sized + 'static {

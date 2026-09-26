@@ -3,9 +3,8 @@ use quote::quote;
 use std::{fmt::Write, ops::Range};
 use syn::{ItemFn, parse_macro_input};
 
-// Must match NUM_MEMORIES and NUM_TABLES in fixutils
-const NUM_MEMORIES: usize = 32;
-const NUM_TABLES: usize = 32;
+pub const NUM_MEMORIES: usize = 32;
+pub const NUM_TABLES: usize = 32;
 
 pub fn entrypoint(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
