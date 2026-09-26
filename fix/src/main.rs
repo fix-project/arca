@@ -165,24 +165,18 @@ mod tests {
                 3u8.to_le_bytes()
             );
 
+            assert_eq!(eval_value("x = 42u64\nx", &evaluator), 42u64.to_le_bytes());
             assert_eq!(
-                eval_value("(let ((x 42u64)) x)", &evaluator),
-                42u64.to_le_bytes()
-            );
-            assert_eq!(
-                eval_value("(let ((x 1u8) (y 2u8)) (x y))", &evaluator),
+                eval_value("x = 1u8\ny = 2u8\n(x y)", &evaluator),
                 2u64.to_le_bytes()
             );
 
             assert_eq!(
-                eval_value("(let ((x 1u8)) (let ((x 2u64)) x))", &evaluator),
+                eval_value("x = 1u8\nx = 2u64\nx", &evaluator),
                 2u64.to_le_bytes()
             );
             assert_eq!(
-                eval_value(
-                    "(let ((x 1u64)) (let ((y (let ((x 2u8)) x))) x))",
-                    &evaluator
-                ),
+                eval_value("x = 1u64\ny = x\nx = 2u8\ny", &evaluator),
                 1u64.to_le_bytes()
             );
         }

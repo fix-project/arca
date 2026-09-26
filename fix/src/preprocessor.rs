@@ -21,10 +21,10 @@ impl<'a> Preprocessor<'a> {
                 // Inline comments
                 '-' if self.characters.next_if_eq(&'-').is_some() => {
                     while self.characters.next_if(|&ch| ch != '\n').is_some() {}
-                    self.characters.next();
                 }
                 // Block comments
                 '{' if self.characters.next_if_eq(&'-').is_some() => {
+                    output.push(' ');
                     let mut depth = 1;
                     while depth > 0 {
                         match (self.characters.next(), self.characters.peek()) {
@@ -36,6 +36,8 @@ impl<'a> Preprocessor<'a> {
                                 depth -= 1;
                                 self.characters.next();
                             }
+                            // Preserve newline for separating statements
+                            (Some('\n'), _) => output.push('\n'),
                             (None, _) => return Err(String::from("unterminated block comment")),
                             _ => {}
                         }

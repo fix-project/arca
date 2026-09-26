@@ -15,5 +15,7 @@ pub enum Token {
     Asterisk,
     Plus,
     Pound,
+    Equal,
+    Newline,
     Eof,
 }

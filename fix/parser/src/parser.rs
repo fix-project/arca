@@ -32,9 +32,26 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> Result<HandleOp<'static>, Error> {
-        let handle = self.parse_expr()?;
-        self.expect(&Token::Eof, "expected end of program");
-        Ok(handle)
+        loop {
+            // skip empty lines
+            while self.matches(&Token::Newline) {}
+
+            if let Some(Token::Identifier(name)) = self.peek(self.position).cloned()
+                && self.peek(self.position + 1) == Some(&Token::Equal)
+            {
+                self.position += 2;
+                let handle = self.parse_expr()?;
+                self.expect(&Token::Newline, "expected newline after assignment");
+                self.context.insert(name, handle);
+                continue;
+            }
+
+            let handle = self.parse_expr()?;
+            // skip empty lines
+            while self.matches(&Token::Newline) {}
+            self.expect(&Token::Eof, "expected end of program");
+            return Ok(handle);
+        }
     }
 
     fn parse_expr(&mut self) -> Result<HandleOp<'static>, Error> {
@@ -48,16 +65,7 @@ impl Parser {
             Token::Pound => HandleOp::Application(self.previous()?),
             Token::Asterisk => HandleOp::StrictEncode(self.previous()?),
             Token::Plus => HandleOp::ShallowEncode(self.previous()?),
-            Token::LParen => {
-                if let Some(Token::Identifier(token)) = self.peek(self.position)
-                    && token == "let"
-                {
-                    self.advance();
-                    self.parse_let()?
-                } else {
-                    from_entries(&self.parse_handles(&Token::RParen)?)?.into()
-                }
-            }
+            Token::LParen => from_entries(&self.parse_handles(&Token::RParen)?)?.into(),
             Token::LBracket => HandleOp::Selection(Box::leak(Box::new(
                 from_entries(&self.parse_handles(&Token::RBracket)?)?.into(),
             ))),
@@ -75,24 +83,6 @@ impl Parser {
             handles.push(self.parse_expr()?);
         }
         Ok(handles)
-    }
-
-    fn parse_let(&mut self) -> Result<HandleOp<'static>, Error> {
-        self.expect(&Token::LParen, "expected '(' for let bindings");
-        let outer_context = self.context.clone();
-        while self.matches(&Token::LParen) {
-            let Token::Identifier(name) = self.advance() else {
-                panic!("expected name in let binding")
-            };
-            let handle = self.parse_expr()?;
-            self.expect(&Token::RParen, "expected ')' for let binding");
-            self.context.insert(name, handle);
-        }
-        self.expect(&Token::RParen, "expected ')' for let bindings");
-        let body = self.parse_expr()?;
-        self.expect(&Token::RParen, "expected ')' for let");
-        self.context = outer_context;
-        Ok(body)
     }
 
     fn expect(&mut self, token: &Token, message: &str) {
