@@ -10,7 +10,7 @@ use core::{
 use arcane::{__MODE_read_write, arca_compat_mmap};
 use user::error;
 
-include!(concat!(env!("OUT_DIR"), "/wasm_rt.rs"));
+include!(env!("WASM_BINDINGS"));
 
 unsafe extern "C" {
     pub fn wasm_rt_init();

@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "bindgen",
+    srcs = ["bindgen.rs"],
+    edition = "2024",
+    deps = ["@crates//:bindgen"],
+)
+
+rust_binary(
+    name = "postprocess",
+    srcs = [
+        "postprocess.rs",
+        "postprocessor.rs",
+    ],
+    crate_root = "postprocess.rs",
+    edition = "2024",
+    proc_macro_deps = ["//tools/macros"],
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:wasm-encoder",
+        "@crates//:wasmparser",
+    ],
+)

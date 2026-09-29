@@ -1,0 +1,11 @@
+common --enable_bzlmod
+build --@rules_rust//rust/toolchain/channel=nightly
+build --platforms=//build/platforms:host
+build --incompatible_strict_action_env
+build --action_env=LIBCLANG_PATH
+build --action_env=BINDGEN_EXTRA_CLANG_ARGS
+build --verbose_failures
+build --compilation_mode=dbg
+build:release --compilation_mode=opt
+test --test_output=errors
+test --test_tag_filters=-kvm,-proof

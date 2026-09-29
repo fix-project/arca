@@ -1,0 +1,52 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "common",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = select({
+        "//build/platforms:linux": [
+            "std",
+            "alloc",
+            "libc",
+            "nix",
+        ],
+        "//build/platforms:bare_metal": [
+            "cache",
+            "core_local_cache",
+        ],
+        "//conditions:default": [],
+    }),
+    proc_macro_deps = ["//tools/macros"],
+    deps = [
+        "//arca/api",
+        "@crates//:async-channel",
+        "@crates//:async-lock",
+        "@crates//:derive_more",
+        "@crates//:elf",
+        "@crates//:embedded-io",
+        "@crates//:hashbrown",
+        "@crates//:log",
+        "@crates//:serde",
+        "@crates//:snafu",
+    ] + select({
+        "//build/platforms:linux": [
+            "@crates//:libc",
+            "@crates//:nix",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+rust_test(
+    name = "tests",
+    crate = ":common",
+    crate_features = [
+        "std",
+        "alloc",
+        "libc",
+        "nix",
+    ],
+    deps = ["@crates//:rand"],
+)

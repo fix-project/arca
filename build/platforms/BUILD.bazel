@@ -1,0 +1,121 @@
+load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+constraint_setting(name = "arca_mode")
+
+constraint_value(
+    name = "kernel_mode",
+    constraint_setting = ":arca_mode",
+)
+
+constraint_value(
+    name = "user_mode",
+    constraint_setting = ":arca_mode",
+)
+
+platform(
+    name = "host",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+platform(
+    name = "arca",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:none",
+        ":kernel_mode",
+    ],
+)
+
+platform(
+    name = "arca_user",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:none",
+        ":user_mode",
+    ],
+)
+
+platform(
+    name = "wasm",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+)
+
+config_setting(
+    name = "linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "bare_metal",
+    constraint_values = [":kernel_mode"],
+)
+
+# The objects in cc_import are freestanding x86-64 archives produced by explicit
+# actions. Reuse the host binutils descriptions for CcInfo; Rust links Arca
+# images with its bundled rust-lld and the supplied linker script, without CRT.
+toolchain(
+    name = "arca_cc",
+    exec_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:none",
+    ],
+    toolchain = "@local_config_cc//:cc-compiler-k8",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
+
+# Set the linker here, so host proc macros keep the host C/C++ linker.
+rust_toolchain(
+    name = "arca_rust_impl",
+    binary_ext = "",
+    cargo = "@arca_rust_tools//:cargo",
+    cargo_clippy = "@arca_rust_tools//:cargo_clippy_bin",
+    channel = "nightly",
+    clippy_driver = "@arca_rust_tools//:clippy_driver_bin",
+    default_edition = "2024",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_rustc_flags = [
+        "-Cforce-frame-pointers=on",
+        "-Ccode-model=large",
+        "-Crelocation-model=static",
+    ],
+    iso_date = "2026-09-28",
+    linker = "@arca_rust_tools//:rust-lld",
+    linker_preference = "rust",
+    linker_type = "direct",
+    rust_doc = "@arca_rust_tools//:rustdoc",
+    rust_std = "@arca_rust_tools//:rust_std-x86_64-unknown-none",
+    rustc = "@arca_rust_tools//:rustc",
+    rustc_lib = "@arca_rust_tools//:rustc_lib",
+    rustfmt = "@arca_rust_tools//:rustfmt_bin",
+    staticlib_ext = ".a",
+    stdlib_linkflags = [],
+    target_triple = "x86_64-unknown-none",
+    version = "1.100.0",
+)
+
+toolchain(
+    name = "arca_rust",
+    exec_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:none",
+    ],
+    toolchain = ":arca_rust_impl",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+)

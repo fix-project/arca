@@ -1,0 +1,9 @@
+platforms:
+  //build/platforms:host
+    --@rules_rust//rust/settings:no_std=off
+  //build/platforms:arca
+    --@rules_rust//rust/settings:no_std=alloc
+  //build/platforms:arca_user
+    --@rules_rust//rust/settings:no_std=alloc
+  //build/platforms:wasm
+    --@rules_rust//rust/settings:no_std=off

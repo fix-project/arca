@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY", "native_archive")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["etc/memmap.ld"])
+
+native_archive(
+    name = "start",
+    srcs = ["src/start.S"],
+)
+
+rust_library(
+    name = "user",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["allocator"],
+    link_deps = [":start"],
+    target_compatible_with = GUEST_ONLY,
+    deps = [
+        "//arca/abi",
+        "//arca/api",
+        "@crates//:spin",
+        "@crates//:talc",
+    ],
+)

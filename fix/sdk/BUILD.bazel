@@ -1,0 +1,11 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "sdk",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fixutils",
+    proc_macro_deps = ["//tools/macros"],
+    target_compatible_with = ["@platforms//cpu:wasm32"],
+)

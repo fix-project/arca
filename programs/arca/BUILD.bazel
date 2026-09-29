@@ -1,0 +1,66 @@
+load("//build:defs.bzl", "ARCA_USER", "guest_binary", "vm_run")
+
+package(default_visibility = ["//visibility:public"])
+
+[
+    guest_binary(
+        name = name + "_elf",
+        srcs = ["src/" + name + ".rs"],
+        linker_script = "//arca/user:etc/memmap.ld",
+        platform = ARCA_USER,
+        deps = [
+            "//arca/abi",
+            "//arca/api",
+            "//arca/user",
+        ],
+    )
+    for name in [
+        "add",
+        "curry",
+        "identity",
+        "io",
+        "map",
+        "null",
+        "webserver",
+        "webserver2",
+    ]
+]
+
+USER_PROGRAMS = ["add", "curry", "identity", "io", "map", "null"]
+
+[
+    guest_binary(
+        name = name + "_image",
+        srcs = ["run.rs"],
+        compile_data = [":" + name + "_elf"],
+        crate_name = name + "_runner",
+        linker_script = "//arca/kernel:etc/memmap.ld",
+        rustc_env = {
+            "ARCA_PROGRAM_NAME": name,
+        },
+        deps = [
+            "//arca/api",
+            "//arca/kernel",
+            "//lib/common",
+            "@crates//:log",
+            "@crates//:postcard",
+        ],
+    )
+    for name in USER_PROGRAMS
+]
+
+[
+    vm_run(
+        name = name,
+        kernel = name + "_image",
+    )
+    for name in USER_PROGRAMS
+]
+
+[
+    alias(
+        name = name,
+        actual = "//programs/kernel:" + name,
+    )
+    for name in ["webserver", "webserver2"]
+]

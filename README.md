@@ -1,78 +1,48 @@
-# Arca
+# Fix and Arca
 
-## Installation
+Fix is a prototype distributed operating system running on the Arca research
+kernel.
 
-### Cloning
+## Build
 
-This repository contains submodules, you can clone it using:
-```
-git clone --recurse-submodules git@github.com:fix-project/arca
-```
+Requires Linux x86-64, Bazelisk (or the version in `.bazelversion`), GCC/G++,
+binutils, CMake, Make, Clang/libclang, and Bash. Rust is downloaded by Bazel;
+native C/C++ tools come from the host. Nonstandard libclang installations can
+set `LIBCLANG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS`.
 
-### Runtime
-
-Arca is currently paravirtualized within a custom hypervisor; it requires a
-Linux AMD64 machine with KVM enabled.  If you're using `stagecast.org`, make
-sure your user is in the `kvm` group.
-
-### Toolchain
-
-Arca is written in nightly Rust.  You should install Rust and Cargo via
-`rustup`. Arca requires the `x86_64-unknown-none` target.  Arca expects Rust
-version 1.98+.
-
-Instructions for Debian- and RHEL-based distributions:
 ```sh
-sudo [apt|dnf] install rustup
-# rustup toolchain install stable # (optional)
-rustup toolchain install nightly
-rustup target install x86_64-unknown-none
+git submodule update --init --recursive
+bazel build //:all
+bazel test //...
+bazel test //tests:format //tests:lint
+bazel run //programs/kernel:hello -- Ada
+bazel run //programs/arca:add -- tuple:word:2,word:3
+bazel run //programs/fix:addblob -- 2u64 3u64
+bazel run //fix/runtime:fix -- eval path/to/program.fix
 ```
 
-You can update Rust and Cargo using:
+Arca program arguments use `word:`, `blob:`, `tuple:` (comma-separated values),
+`elf:` (a path to a built Arca ELF), or `null`. Fix program arguments are Fix
+expressions. Use `_elf` targets when another target needs the raw artifact.
+
+Use `--config=release` for optimized builds. Kernel and user-space platforms are
+separate because only the kernel may use common's core-local allocator cache.
+
+## Environment-dependent tests
+
+Guest execution requires readable/writable `/dev/kvm`. These tests are excluded
+from default discovery:
+
 ```sh
-rustup update
+bazel test --test_tag_filters=kvm //:guest_tests
+bazel test --test_tag_filters=proof //coupon:proof
 ```
 
-Be aware that nightly releases often break compatibility, so you may have to
-patch code to run on newer versions.  In general we try to follow the latest
-nightly release.
+The proof test additionally requires Isabelle2025-2, AFP, and OCaml; see
+[coupon/proof/README.md](coupon/proof/README.md). Ordinary builds use its checked-in
+Wasm without running the proof. Tests write to private temporary directories;
+`bazel run` uses the workspace directory.
 
-## Fix Compilation
+`programs/legacy-c` is not built: it requires the removed arca-musl port.
 
-Building Fix-on-Arca additionally requires installing [the GCC multilib package
-(`gcc-multilib`)][gcc-multilib] on Debian-based distributions.
-
-[gcc-multilib]: https://packages.debian.org/bookworm/gcc-multilib
-
-## Running
-
-We use the [just command runner](https://github.com/casey/just) to help
-simplify the commands needed to build and run arca.
-
-To build the [WebAssembly Binary Toolkit](https://github.com/WebAssembly/wabt),
-which we use for WebAssembly compilation.
-```sh
-just wabt
-```
-
-To run the test suite:
-```sh
-just test
-```
-
-To run an example kernel (from `kernel/examples`):
-```sh
-just run hello
-just run threads
-just run webserver
-```
-
-To run Fix-on-Arca, run [XXX] (can scrape this from .github/workflows/compile.yml or
-better solution arriving RSN TODO).
-
-# License
-
-This codebase is licensed under the GNU Lesser General Public License v2.1 or
-later (LGPL-2.1-or-later).  See [LICENSE](LICENSE)
-for more information.
+Licensed under [LGPL-2.1-or-later](LICENSE).

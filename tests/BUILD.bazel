@@ -1,0 +1,51 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy_test", "rustfmt_test")
+
+HOST = [
+    "//tools/vmm:vmm",
+    "//tools:bindgen",
+    "//tools:postprocess",
+    "//fix/handle",
+    "//coupon:api",
+]
+
+GUEST = [
+    "//fix/runtime:image_elf",
+    "//arca/kernel:test_image",
+    "//fix/runtime:test_image",
+    "//programs/kernel:hello_image",
+    "//programs/kernel:threads_image",
+    "//programs/kernel:webserver_image",
+    "//programs/kernel:webserver2_image",
+] + ["//programs/arca:" + name + "_elf" for name in [
+    "add",
+    "curry",
+    "identity",
+    "io",
+    "map",
+    "null",
+    "webserver",
+    "webserver2",
+]] + ["//programs/arca:" + name + "_image" for name in [
+    "add",
+    "curry",
+    "identity",
+    "io",
+    "map",
+    "null",
+]]
+
+CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"]
+
+rustfmt_test(
+    name = "format",
+    tags = ["manual"],
+    targets = CHECKS,
+    transitive = True,
+)
+
+rust_clippy_test(
+    name = "lint",
+    tags = ["manual"],
+    targets = CHECKS,
+    transitive = True,
+)

@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "handle",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fixhandle",
+    deps = [
+        "//lib/common",
+        "@crates//:bitint",
+        "@crates//:derive_more",
+    ],
+)
+
+rust_test(
+    name = "tests",
+    crate = ":handle",
+)

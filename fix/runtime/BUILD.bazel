@@ -1,0 +1,85 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY", "guest_binary", "vm_run", "vm_test")
+
+package(default_visibility = ["//visibility:public"])
+
+DEPS = [
+    "//arca/api",
+    "//arca/kernel",
+    "//arca/abi",
+    "//lib/common",
+    "//fix/handle",
+    "@crates//:log",
+    "@crates//:serde",
+    "@crates//:postcard",
+    "@crates//:derive_more",
+    "@crates//:async-lock",
+    "@crates//:hex",
+    "@crates//:bitint",
+    "@crates//:crossbeam-queue",
+]
+
+rust_library(
+    name = "runtime",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/main.rs",
+            "src/name.rs",
+            "src/parallel_evaluator.rs",
+            "src/scheduler.rs",
+            "src/testing.rs",
+        ],
+    ),
+    compile_data = ["//programs/fix:identity_elf"],
+    crate_name = "fix",
+    proc_macro_deps = ["//tools/macros"],
+    rustc_env = {"FIX_IDENTITY": "$(execpath //programs/fix:identity_elf)"},
+    target_compatible_with = GUEST_ONLY,
+    deps = DEPS,
+)
+
+[
+    guest_binary(
+        name = "test_image" if test else "image_elf",
+        testonly = test,
+        srcs = [
+            "src/main.rs",
+            "src/parallel_evaluator.rs",
+            "src/scheduler.rs",
+            "src/testing.rs",
+        ],
+        compile_data = ["//programs/fix/parser:parser_elf"],
+        crate_name = "fix",
+        crate_root = "src/main.rs",
+        linker_script = "etc/memmap.ld",
+        proc_macro_deps = ["//tools/macros"],
+        rustc_env = {"FIX_PARSER": "$(execpath //programs/fix/parser:parser_elf)"},
+        rustc_flags = ["--test"] if test else [],
+        deps = [":runtime"] + DEPS,
+    )
+    for test in [
+        False,
+        True,
+    ]
+]
+
+vm_run(
+    name = "image",
+    kernel = ":image_elf",
+)
+
+alias(
+    name = "fix",
+    actual = ":image",
+)
+
+vm_test(
+    name = "tests",
+    size = "large",
+    kernel = ":test_image",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)

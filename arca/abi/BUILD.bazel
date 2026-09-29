@@ -1,0 +1,44 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY", "native_archive")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "inc/arca.h",
+    "inc/asm.h",
+])
+
+native_archive(
+    name = "syscalls",
+    srcs = ["src/syscalls.c"],
+    hdrs = [
+        "inc/arca.h",
+        "inc/asm.h",
+    ],
+    compiler = "@local_tools//:clang",
+    # The syscall stubs pass pointer-width values as longs.
+    copts = ["-Wno-error=int-conversion"],
+    includes = ["arca/abi/inc"],
+)
+
+genrule(
+    name = "bindings",
+    srcs = [
+        "inc/arca.h",
+        "inc/asm.h",
+    ],
+    outs = ["bindings.rs"],
+    cmd = "$(execpath //tools:bindgen) arca $(location inc/arca.h) $@",
+    tools = ["//tools:bindgen"],
+)
+
+rust_library(
+    name = "abi",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = [":bindings"],
+    crate_name = "arcane",
+    link_deps = [":syscalls"],
+    rustc_env = {"ARCA_BINDINGS": "$(execpath :bindings)"},
+    target_compatible_with = GUEST_ONLY,
+    deps = ["@crates//:derive_more"],
+)
