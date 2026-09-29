@@ -5,10 +5,9 @@ kernel.
 
 ## Build
 
-Requires Linux x86-64, Bazelisk (or the version in `.bazelversion`), GCC/G++,
-binutils, CMake, Make, Clang/libclang, and Bash. Rust is downloaded by Bazel;
-native C/C++ tools come from the host. Nonstandard libclang installations can
-set `LIBCLANG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS`.
+Requires Linux x86-64, Bazelisk, GCC/G++, binutils, CMake, Make,
+Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
+`BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
 ```sh
 git submodule update --init --recursive
@@ -21,25 +20,31 @@ bazel run //programs/fix:addblob -- 2u64 3u64
 bazel run //fix/runtime:fix -- eval path/to/program.fix
 ```
 
-Arca program arguments use `word:`, `blob:`, `tuple:` (comma-separated values),
-`elf:` (a path to a built Arca ELF), or `null`. Fix program arguments are Fix
-expressions. Use `_elf` targets when another target needs the raw artifact.
+Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
+`null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
 
-Use `--config=release` for optimized builds. Kernel and user-space platforms are
-separate because only the kernel may use common's core-local allocator cache.
+Use `--config=release` for optimized builds.
+
+## rust-analyzer
+
+Generate the ignored `rust-project.json` after changing Rust targets or the
+toolchain:
+
+```sh
+bazel run @rules_rust//tools/rust_analyzer:gen_rust_project -- //...
+```
 
 ## Environment-dependent tests
 
-`bazel test //...` includes kernel and Fix guest tests and requires readable/writable
-`/dev/kvm`. Without KVM, run `bazel test //:host_tests`. The proof test requires
-Isabelle2025-2, AFP, and OCaml and is run separately:
+`bazel test //...` requires `/dev/kvm`; without it, use
+`bazel test //:host_tests`. The proof test requires Isabelle2025-2, AFP,
+and OCaml:
 
 ```sh
 bazel test --test_tag_filters=proof //coupon:proof
 ```
 
-See [coupon/proof/README.md](coupon/proof/README.md) for proof setup. Tests write
-to private temporary directories; `bazel run` uses the workspace directory.
+See [coupon/proof/README.md](coupon/proof/README.md) for proof setup.
 
 `programs/legacy-c` is not built: it requires the removed arca-musl port.
 

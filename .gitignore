@@ -4,4 +4,6 @@
 /bazel-*
 /apps/*.elf
 .vscode
+.rules_rust_analyzer/
+/rust-project.json
 .DS_Store
