@@ -1,4 +1,6 @@
 common --enable_bzlmod
+# Module-extension digests differ across supported developer environments.
+common --lockfile_mode=off
 build --@rules_rust//rust/toolchain/channel=nightly
 build --platforms=//build/platforms:host
 build --incompatible_strict_action_env

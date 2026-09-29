@@ -5,4 +5,5 @@
 .vscode
 .rules_rust_analyzer/
 /rust-project.json
+/MODULE.bazel.lock
 .DS_Store
