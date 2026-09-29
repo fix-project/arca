@@ -1,5 +1,11 @@
 {- 
-    -- The whole file is interpreted as a single expression. Expressions can be comprised of:
+    -- The program consists of a list of varible-expression assignments,
+    -- ending with a single expression, which is the result of the program.
+
+    -- Assignments tie expression values to variable names
+    x = 42u8
+
+    -- Expressions consist of:
 
     -- Integer Literals
     42u8
@@ -29,10 +35,7 @@
     -- Shallow Encodes
     +'&2u8
 
-    -- Let bindings that tie expressions to variables
-    (let ((x 42u8)) x)
-
-    -- @ path executables
+    -- @ contents of a file in the host filesystem
     @"./target/x86_64-unknown-none/addblob"
 
     -- Primitives

@@ -1,7 +1,9 @@
 ### Text Format
 
 ```
-A ::= O | K | E | L         Any
+P ::= (name = A newline+)* A
+
+A ::= O | K | E             Any
     | name                  Identifier
     | $name                 Stdlib primitive
 
@@ -30,8 +32,6 @@ K ::= 'O                    Thunk (Identify)
 E ::= *K                    Encode (Strict)
     | +K                    Encode (Shallow)
 
-L ::= (let ((name A)*) A)   Let bindings
-
 comment ::= --              Single line
           | {- -}           Multi-line
 ```
@@ -39,8 +39,8 @@ comment ::= --              Single line
 ### Example
 
 ```
-(let ((compiler @"/path/"))
-    *#(*#(compiler $def_limits
-        "int f(int x, int y) {return x + y;}")
-        $def_limits 19u32 4u32))
+compiler = @"/path/"
+*#(*#(compiler $def_limits
+    "int f(int x, int y) {return x + y;}")
+    $def_limits 19u32 4u32)
 ```
