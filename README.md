@@ -11,7 +11,8 @@ Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
 
 ```sh
 git submodule update --init --recursive
-bazel build //:all
+bazel query //... --output=label_kind
+bazel build //:artifacts
 bazel test //...
 bazel test //tests:format //tests:lint
 bazel run //programs/kernel:hello -- Ada
@@ -45,7 +46,5 @@ bazel test --test_tag_filters=proof //coupon:proof
 ```
 
 See [coupon/proof/README.md](coupon/proof/README.md) for proof setup.
-
-`programs/legacy-c` is not built: it requires the removed arca-musl port.
 
 Licensed under [LGPL-2.1-or-later](LICENSE).
