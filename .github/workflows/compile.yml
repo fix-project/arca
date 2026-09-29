@@ -21,7 +21,7 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-24.04
           repository-cache: true
       - name: Native build tools
         run: |
@@ -41,7 +41,7 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-24.04
           repository-cache: true
       - name: Native build tools
         run: |
@@ -74,7 +74,7 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-24.04
           repository-cache: true
       - name: Check formatting
         run: bazel test //tests:format
@@ -90,7 +90,7 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-24.04
           repository-cache: true
       - name: Native build tools
         run: |
