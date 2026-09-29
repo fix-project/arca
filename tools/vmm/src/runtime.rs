@@ -341,7 +341,26 @@ impl Runtime {
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();
 
-        common::buddy::init(ram);
+        let elf_bytes =
+            ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
+        let kernel_end = elf_bytes
+            .segments()
+            .expect("could not find ELF segments")
+            .iter()
+            .filter(|segment| segment.p_type == elf::abi::PT_LOAD)
+            .map(|segment| {
+                let start = segment.p_paddr as usize & !0xFFFF800000000000;
+                start
+                    .checked_sub(MEM_BASE as usize)
+                    .expect("kernel wants to be loaded below guest memory")
+                    .checked_add(segment.p_memsz as usize)
+                    .expect("kernel segment address overflow")
+            })
+            .max()
+            .unwrap_or(0)
+            .max(9 << 20);
+        assert!(kernel_end <= ram, "kernel image exceeds guest memory");
+        common::buddy::init(ram, kernel_end);
 
         let mem_region = kvm_userspace_memory_region {
             slot: 0,
@@ -384,8 +403,6 @@ impl Runtime {
             cores,
             elf: elf.clone(),
         };
-        let elf_bytes =
-            ElfBytes::<AnyEndian>::minimal_parse(&elf).expect("could not read kernel elf file");
         x.load_elf(&elf_bytes);
         x
     }

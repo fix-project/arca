@@ -32,9 +32,12 @@ static BUDDY: LazyLock<BuddyAllocatorImpl> = LazyLock::new(|| {
 });
 
 #[cfg(feature = "std")]
-pub fn init(size: usize) {
-    LazyLock::set(&BUDDY, BuddyAllocatorImpl::new(size))
-        .expect("buddy allocator was already initialized");
+pub fn init(size: usize, reserved_until: usize) {
+    LazyLock::set(
+        &BUDDY,
+        BuddyAllocatorImpl::new_with_reserved(size, reserved_until),
+    )
+    .expect("buddy allocator was already initialized");
 }
 
 pub fn export() -> BuddyAllocatorRawData {
@@ -529,6 +532,11 @@ impl BuddyAllocatorImpl {
 
     #[cfg(feature = "std")]
     pub fn new(size: usize) -> BuddyAllocatorImpl {
+        Self::new_with_reserved(size, 9 << 20)
+    }
+
+    #[cfg(feature = "std")]
+    pub fn new_with_reserved(size: usize, reserved_until: usize) -> BuddyAllocatorImpl {
         let mmap = crate::mmap::Mmap::new(size);
         // allocate on the normal heap
 
@@ -557,10 +565,9 @@ impl BuddyAllocatorImpl {
 
         // prevent physical zero page from being allocated
         assert_eq!(temp.to_offset(temp.reserve_raw(0, 4096)), 0);
-        // reserve kernel pages (only if within range)
+        // Keep image pages free of allocator metadata until the loader reserves them.
         let mut pages = alloc::vec![];
-        for i in 0..8 {
-            let addr = 0x100000 * (i + 1);
+        for addr in (0x100000..reserved_until).step_by(0x100000) {
             if addr + 0x100000 <= size {
                 let p = temp.reserve_raw(addr, 0x100000);
                 assert!(!p.is_null());
