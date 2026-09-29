@@ -98,7 +98,7 @@
         "recordedFileInputs": {
           "@@//third_party/rust/Cargo.lock": "615de05bfa9c11df589981331d5e7f1a7e0fbadb4274f76b0fd776558b9be67a",
           "@@//MODULE.bazel": "a0f39c9dc4bcd63e12c74dca9eff28540d3398ff2361b42e364106ed7ef52352",
-          "@@//third_party/rust/Cargo.toml": "e88e324adf152990bd1d89de70c752fa34eb1f1c008772d5ebe461451ffcfbc1",
+          "@@//third_party/rust/Cargo.toml": "aefecd7a0eae5e8dd85990a6c5472e0314a06bccc47467f93541980975cfe954",
           "@@rules_rust~~rust_host_tools~rust_host_tools//rust_host_tools": "ENOENT"
         },
         "recordedDirentsInputs": {},

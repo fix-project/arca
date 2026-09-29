@@ -27,18 +27,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake clang libclang-dev gcc-multilib
-      - name: Build, host tests, formatting, and lint
-        run: bazel test --keep_going //... //tests:format //tests:lint
-      - name: Build environment-dependent tests
-        run: bazel build //:guest_tests //coupon:proof
       - name: Enable KVM access
         run: |
           sudo modprobe kvm
           test -c /dev/kvm
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
-      - name: Guest and integration tests
-        run: bazel test --keep_going --local_test_jobs=2 --test_tag_filters=kvm //:guest_tests
+      - name: Build and test
+        run: bazel test --keep_going --local_test_jobs=2 //... //tests:format //tests:lint
       - name: Test logs
         if: always()
         uses: actions/upload-artifact@v4

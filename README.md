@@ -30,18 +30,16 @@ separate because only the kernel may use common's core-local allocator cache.
 
 ## Environment-dependent tests
 
-Guest execution requires readable/writable `/dev/kvm`. These tests are excluded
-from default discovery:
+`bazel test //...` includes kernel and Fix guest tests and requires readable/writable
+`/dev/kvm`. Without KVM, run `bazel test //:host_tests`. The proof test requires
+Isabelle2025-2, AFP, and OCaml and is run separately:
 
 ```sh
-bazel test --test_tag_filters=kvm //:guest_tests
 bazel test --test_tag_filters=proof //coupon:proof
 ```
 
-The proof test additionally requires Isabelle2025-2, AFP, and OCaml; see
-[coupon/proof/README.md](coupon/proof/README.md). Ordinary builds use its checked-in
-Wasm without running the proof. Tests write to private temporary directories;
-`bazel run` uses the workspace directory.
+See [coupon/proof/README.md](coupon/proof/README.md) for proof setup. Tests write
+to private temporary directories; `bazel run` uses the workspace directory.
 
 `programs/legacy-c` is not built: it requires the removed arca-musl port.
 

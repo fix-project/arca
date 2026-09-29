@@ -17,10 +17,9 @@
 #ifndef WASM_RT_H_
 #define WASM_RT_H_
 
-#include <setjmp.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #define PAGE_SIZE 65536
 
@@ -45,6 +44,7 @@ extern "C" {
 #if __has_builtin(__builtin_memcpy)
 #define wasm_rt_memcpy __builtin_memcpy
 #else
+void *memcpy(void *, const void *, size_t);
 #define wasm_rt_memcpy memcpy
 #endif
 
@@ -186,20 +186,7 @@ bool wasm_rt_is_initialized(void);
 void wasm_rt_free(void);
 
 /**
- * A hardened jmp_buf that allows checking for initialization before use
- */
-typedef struct {
-  /* Is the jmp buf intialized? */
-  bool initialized;
-  /* jmp_buf contents */
-  jmp_buf buffer;
-} wasm_rt_jmp_buf;
-
-/**
- * Stop execution immediately and jump back to the call to `wasm_rt_impl_try`.
- * The result of `wasm_rt_impl_try` will be the provided trap reason.
- *
- * This is typically called by the generated code, and not the embedder.
+ * Stop execution immediately after a trap.
  */
 WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t);
 
@@ -207,8 +194,6 @@ WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t);
  * Return a human readable error string based on a trap type.
  */
 const char *wasm_rt_strerror(wasm_rt_trap_t trap);
-
-#define wasm_rt_try(target) WASM_RT_SETJMP(target)
 
 /**
  * Initialize a Memory object with an initial page size of `initial_pages` and
