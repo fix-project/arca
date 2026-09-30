@@ -114,13 +114,13 @@ impl Function {
                     for i in 0..18 {
                         rr.set(i, Value::Word(Word::new(registers.registers[i])));
                     }
-                    let mut data = Tuple::new(5);
-                    data.set(0, rr);
-                    data.set(1, t);
-                    data.set(2, d);
-                    data.set(3, Word::new(registers.fsbase));
-                    data.set(4, Blob::new(registers.xstate.as_bytes()));
-                    data
+                    (
+                        rr,
+                        t,
+                        d,
+                        Word::new(registers.fsbase),
+                        Blob::new(registers.xstate.as_bytes()),
+                    )
                 }),
                 args,
             ))),
