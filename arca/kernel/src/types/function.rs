@@ -45,15 +45,14 @@ impl Function {
         let args = VecDeque::from(args.into_inner().into_vec());
         let value = if arca {
             let data: Tuple = data.try_into().ok()?;
-            if data.len() < 4 {
+            if data.len() < 3 {
                 return None;
             }
             let registers: Tuple = data.get(0).try_into().ok()?;
             let memory: Table = data.get(1).try_into().ok()?;
             let descriptors: Tuple = data.get(2).try_into().ok()?;
-            let rlimit: Tuple = data.get(3).try_into().ok()?;
-            let fsbase = if data.len() > 4 {
-                let fsbase: Word = data.get(4).try_into().ok()?;
+            let fsbase = if data.len() > 3 {
+                let fsbase: Word = data.get(3).try_into().ok()?;
                 let fsbase = fsbase.read();
                 if !matches!((fsbase as i64) >> 47, 0 | -1) {
                     return None;
@@ -62,8 +61,8 @@ impl Function {
             } else {
                 0
             };
-            let xstate = if data.len() > 5 {
-                match data.get(5) {
+            let xstate = if data.len() > 4 {
+                match data.get(4) {
                     Value::Null(_) => XState::default(),
                     Value::Blob(blob) => XState::from_bytes(blob.inner())?,
                     _ => return None,
@@ -85,7 +84,12 @@ impl Function {
                 };
                 register_file[i] = w.read();
             }
-            let arca = Arca::new_with(register_file, memory, descriptors, rlimit, fsbase, xstate);
+            let registers = CompleteRegisterFile {
+                registers: register_file,
+                fsbase,
+                xstate,
+            };
+            let arca = Arca::new_with(registers, memory, descriptors);
             Function::arcane_with_args(arca, args)
         } else if symbolic {
             Function::symbolic_with_args(data, args)
@@ -105,18 +109,17 @@ impl Function {
             Definition::Arcane(arca) => Value::Tuple(Tuple::from((
                 Blob::from("Arcane"),
                 Tuple::from({
-                    let (r, t, d, fsbase, xstate) = arca.read();
+                    let (registers, t, d) = arca.read();
                     let mut rr = Tuple::new(18);
                     for i in 0..18 {
-                        rr.set(i, Value::Word(Word::new(r[i])));
+                        rr.set(i, Value::Word(Word::new(registers.registers[i])));
                     }
-                    let mut data = Tuple::new(6);
+                    let mut data = Tuple::new(5);
                     data.set(0, rr);
                     data.set(1, t);
                     data.set(2, d);
-                    data.set(3, Tuple::new(0));
-                    data.set(4, Word::new(fsbase));
-                    data.set(5, Blob::new(xstate.as_bytes()));
+                    data.set(3, Word::new(registers.fsbase));
+                    data.set(4, Blob::new(registers.xstate.as_bytes()));
                     data
                 }),
                 args,
@@ -235,15 +238,15 @@ mod tests {
         };
         let actual: Tuple = actual.get(1).try_into().unwrap();
         let expected: Tuple = expected.get(1).try_into().unwrap();
+        assert_eq!(actual.get(3), expected.get(3));
         assert_eq!(actual.get(4), expected.get(4));
-        assert_eq!(actual.get(5), expected.get(5));
 
         for fsbase in [0x12345678, 0x800000000000] {
             let Value::Tuple(mut definition) = definition.clone() else {
                 unreachable!()
             };
             let mut data: Tuple = definition.take(1).try_into().unwrap();
-            data.set(4, Word::new(fsbase));
+            data.set(3, Word::new(fsbase));
             definition.set(1, data);
             let definition = Value::Tuple(definition);
             let function = Function::new(definition.clone());
@@ -252,7 +255,7 @@ mod tests {
                     unreachable!()
                 };
                 let data: Tuple = definition.get(1).try_into().unwrap();
-                let saved: Word = data.get(4).try_into().unwrap();
+                let saved: Word = data.get(3).try_into().unwrap();
                 assert_eq!(saved.read(), fsbase);
             } else {
                 assert!(function.is_none());
@@ -264,10 +267,10 @@ mod tests {
                 unreachable!()
             };
             let mut data: Tuple = definition.take(1).try_into().unwrap();
-            let state: Blob = data.get(5).try_into().unwrap();
+            let state: Blob = data.get(4).try_into().unwrap();
             let mut bytes = state.inner().to_vec();
             bytes[offset] = value;
-            data.set(5, Blob::new(bytes));
+            data.set(4, Blob::new(bytes));
             definition.set(1, data);
             assert!(Function::new(definition.into()).is_none());
         }
@@ -276,7 +279,7 @@ mod tests {
                 unreachable!()
             };
             let mut data: Tuple = definition.take(1).try_into().unwrap();
-            data.set(5, Blob::new(vec![0; len]));
+            data.set(4, Blob::new(vec![0; len]));
             definition.set(1, data);
             assert!(Function::new(definition.into()).is_none());
         }
@@ -289,11 +292,10 @@ mod tests {
         for i in 0..18 {
             registers.set(i, Value::Null(Null::new()));
         }
-        let mut data = Tuple::new(4);
+        let mut data = Tuple::new(3);
         data.set(0, Value::Tuple(registers));
         data.set(1, Value::Table(Table::new(1)));
         data.set(2, Value::Tuple(Tuple::new(0)));
-        data.set(3, Value::Tuple(Tuple::new(0)));
 
         let value = Value::Tuple(Tuple::from((
             Blob::from("Arcane"),

@@ -41,8 +41,8 @@ fn test_simd_continuations() {
     let expected: Tuple = definition.get(1).try_into().unwrap();
     let definition: Tuple = restored.read_cloned().try_into().unwrap();
     let actual: Tuple = definition.get(1).try_into().unwrap();
+    assert_eq!(actual.get(3), expected.get(3));
     assert_eq!(actual.get(4), expected.get(4));
-    assert_eq!(actual.get(5), expected.get(5));
     resume(second, 3);
     resume(restored, 28);
     resume(clone, 28);
@@ -56,9 +56,7 @@ fn test_simd_load_unload() {
     let expected = process.clone();
     let mut cpu = CPU.borrow_mut();
     let process = process.load(&mut cpu).unload();
-    let (registers, _, _, fsbase, xstate) = process.read();
-    let (expected_registers, _, _, expected_fsbase, expected_xstate) = expected.read();
+    let (registers, _, _) = process.read();
+    let (expected_registers, _, _) = expected.read();
     assert_eq!(registers, expected_registers);
-    assert_eq!(fsbase, expected_fsbase);
-    assert_eq!(xstate, expected_xstate);
 }
