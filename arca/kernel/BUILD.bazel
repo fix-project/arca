@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
-load("//build:defs.bzl", "GUEST_ONLY", "guest_binary", "native_archive", "vm_test")
+load("//build:defs.bzl", "GUEST_ONLY", "kernel_test", "native_archive")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
 DEPS = [
     "//arca/abi",
@@ -20,7 +20,7 @@ PROC_MACROS = [
     "@crates//:bitfield-struct",
 ]
 
-exports_files(["etc/memmap.ld"])
+exports_files(["etc/memmap.ld"], visibility = ["//programs:__subpackages__", "//fix/runtime:__pkg__"])
 
 native_archive(
     name = "assembly",
@@ -33,6 +33,7 @@ native_archive(
 
 rust_library(
     name = "kernel",
+    visibility = ["//visibility:public"],
     srcs = glob(["src/**/*.rs"]),
     link_deps = [":assembly"],
     proc_macro_deps = PROC_MACROS,
@@ -40,9 +41,11 @@ rust_library(
     deps = DEPS,
 )
 
-guest_binary(
-    name = "test_image",
-    testonly = True,
+kernel_test(
+    name = "tests",
+    visibility = ["//:__pkg__"],
+    image_visibility = ["//tests:__pkg__"],
+    image_name = "test_image",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "kernel",
     crate_root = "src/lib.rs",
@@ -51,17 +54,5 @@ guest_binary(
     proc_macro_deps = PROC_MACROS,
     compile_data = ["//programs/arca:simd_elf"],
     rustc_env = {"ARCA_SIMD_PROGRAM": "$(execpath //programs/arca:simd_elf)"},
-    rustc_flags = ["--test"],
     deps = DEPS,
-)
-
-vm_test(
-    name = "tests",
-    size = "large",
-    timeout = "short",
-    kernel = ":test_image",
-    tags = [
-        "kvm",
-        "local",
-    ],
 )

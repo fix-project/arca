@@ -17,6 +17,50 @@ def guest_binary(name, linker_script, rustc_flags = [], platform = ARCA, **kwarg
         **kwargs
     )
 
+def kernel_program(name, srcs, image_name = None, linker_script = "//arca/kernel:etc/memmap.ld", visibility = None, image_visibility = ["//visibility:private"], **kwargs):
+    """Build a kernel image and its VM launcher."""
+    image_name = image_name or name + "_image"
+    guest_binary(
+        name = image_name,
+        visibility = image_visibility,
+        srcs = srcs,
+        linker_script = linker_script,
+        **kwargs
+    )
+    vm_run(name = name, kernel = ":" + image_name, visibility = visibility)
+
+def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:etc/memmap.ld", rustc_flags = [], visibility = None, image_visibility = ["//visibility:private"], **kwargs):
+    """Build a kernel test image and run it under the VMM."""
+    image_name = image_name or name + "_image"
+    guest_binary(
+        name = image_name,
+        visibility = image_visibility,
+        testonly = True,
+        srcs = srcs,
+        linker_script = linker_script,
+        rustc_flags = rustc_flags + ["--test"],
+        **kwargs
+    )
+    vm_test(
+        name = name,
+        size = "large",
+        timeout = "short",
+        kernel = ":" + image_name,
+        tags = ["kvm", "local"],
+        visibility = visibility,
+    )
+
+def wat_module(name, src, out = None):
+    """Compile WebAssembly text to a binary module."""
+    native.genrule(
+        name = name,
+        visibility = ["//visibility:private"],
+        srcs = [src],
+        outs = [out or name + ".wasm"],
+        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
+        tools = ["//third_party:wat2wasm"],
+    )
+
 def native_archive(name, srcs, hdrs = [], includes = [], compiler = "@local_tools//:gcc", copts = [], **kwargs):
     """Freestanding x86-64 objects; no Linux CRT or host ABI libraries."""
     objects = []
@@ -24,6 +68,7 @@ def native_archive(name, srcs, hdrs = [], includes = [], compiler = "@local_tool
         obj = name + "_%d.o" % i
         native.genrule(
             name = name + "_object_%d" % i,
+            visibility = ["//visibility:private"],
             srcs = [src] + hdrs,
             outs = [obj],
             tools = [compiler],
@@ -34,6 +79,7 @@ def native_archive(name, srcs, hdrs = [], includes = [], compiler = "@local_tool
         objects.append(obj)
     native.genrule(
         name = name + "_archive",
+        visibility = ["//visibility:private"],
         srcs = objects,
         outs = ["lib" + name + ".a"],
         tools = ["@local_tools//:ar"],
@@ -134,11 +180,12 @@ fix_program_run = rule(
     },
 )
 
-def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility = None):
+def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"]):
     """Wasm -> optional Fix memory imports -> C -> native Fix ELF."""
     if postprocess:
         native.genrule(
             name = name + "_postprocess",
+            visibility = ["//visibility:private"],
             srcs = [wasm],
             tools = ["//tools:postprocess"],
             outs = [name + ".wasm"],
@@ -147,6 +194,7 @@ def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility 
         wasm = ":" + name + "_postprocess"
     native.genrule(
         name = name + "_translate",
+        visibility = ["//visibility:private"],
         srcs = [wasm],
         tools = ["//third_party:wasm2c"],
         outs = [name + "/module.c", name + "/module.h"],
@@ -160,7 +208,7 @@ def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility 
         outs = [name + ".elf"],
         cmd = "$(execpath @local_tools//:gcc) -o $@ -T $(location //fix/shell:memmap) -O2 -fno-optimize-sibling-calls -frounding-math -ffreestanding -nostdlib -nostartfiles -mcmodel=large -mno-red-zone -march=x86-64-v3 -static -Ifix/shell/inc " +
               "-I$$(dirname $(location " + name + "/module.h)) $(location " + name + "/module.c) $(location //fix/shell:wasm_rt) $(location //fix/shell:shell)",
-        visibility = visibility,
+        visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:
         fix_program_run(

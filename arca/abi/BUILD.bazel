@@ -1,12 +1,12 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//build:defs.bzl", "GUEST_ONLY", "native_archive")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
 exports_files([
     "inc/arca.h",
     "inc/asm.h",
-])
+], visibility = ["//visibility:private"])
 
 native_archive(
     name = "syscalls",
@@ -34,6 +34,7 @@ genrule(
 
 rust_library(
     name = "abi",
+    visibility = ["//visibility:public"],
     srcs = glob(["src/**/*.rs"]),
     compile_data = [":bindings"],
     crate_name = "arcane",

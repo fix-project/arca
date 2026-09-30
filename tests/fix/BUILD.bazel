@@ -6,6 +6,7 @@ exports_files(glob(["*.fix"]))
 
 genrule(
     name = "addblob_fixture",
+    visibility = ["//visibility:private"],
     srcs = ["//programs/fix:addblob_elf"],
     outs = ["addblob"],
     cmd = "cp $< $@",

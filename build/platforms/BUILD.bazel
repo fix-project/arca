@@ -81,6 +81,7 @@ toolchain(
 [
     rust_toolchain(
         name = name + "_impl",
+        visibility = ["//visibility:private"],
         binary_ext = "",
         cargo = tools + ":cargo",
         cargo_clippy = tools + ":cargo_clippy_bin",
@@ -134,10 +135,11 @@ toolchain(
     for name, mode in [("arca_rust", ":kernel_mode"), ("arca_user_rust", ":user_mode")]
 ]
 
-arca_target(name = "user_target")
+arca_target(name = "user_target", visibility = ["//visibility:private"])
 
 genrule(
     name = "build_user_std",
+    visibility = ["//visibility:private"],
     srcs = [
         ":user_target",
         "@rust_src//:sources",
@@ -157,5 +159,6 @@ genrule(
 
 rust_stdlib_filegroup(
     name = "user_std",
+    visibility = ["//visibility:private"],
     srcs = [":build_user_std"],
 )
