@@ -1,0 +1,55 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//build:defs.bzl", "fix_procedure")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "api",
+    srcs = ["api.rs"],
+    edition = "2024",
+)
+
+genrule(
+    name = "adapt",
+    srcs = [
+        "@coupon_proof//:coupon.wat",
+        "prologue.wat",
+        "epilogue.wat",
+        "rewrite-wat.sh",
+    ],
+    outs = ["coupon-collector.wat"],
+    cmd = "$(execpath @local_tools//:bash) $(location rewrite-wat.sh) $(location @coupon_proof//:coupon.wat) $(location prologue.wat) $(location epilogue.wat) $@",
+    tools = ["@local_tools//:bash"],
+)
+
+genrule(
+    name = "wasm",
+    srcs = [":adapt"],
+    outs = ["coupon-collector.wasm"],
+    cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
+    tools = ["//third_party:wat2wasm"],
+)
+
+fix_procedure(
+    name = "collector",
+    wasm = ":wasm",
+    runnable = True,
+)
+
+sh_test(
+    name = "proof",
+    size = "enormous",
+    srcs = ["proof_test.sh"],
+    args = ["$(rlocationpath @coupon_proof//:coupon.wat)"],
+    data = [
+        "@bazel_tools//tools/bash/runfiles",
+        "@coupon_proof//:coupon.wat",
+        "@coupon_proof//:sources",
+    ],
+    tags = [
+        "local",
+        "manual",
+        "proof",
+    ],
+)

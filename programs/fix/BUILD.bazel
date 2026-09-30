@@ -1,0 +1,31 @@
+load("//build:defs.bzl", "fix_procedure")
+
+package(default_visibility = ["//visibility:public"])
+
+[
+    genrule(
+        name = name + "_wasm",
+        srcs = [name + ".wat"],
+        outs = [name + ".wasm"],
+        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
+        tools = ["//third_party:wat2wasm"],
+    )
+    for name in [
+        "identity",
+        "addblob",
+        "slowaddblob",
+    ]
+]
+
+[
+    fix_procedure(
+        name = name,
+        wasm = ":" + name + "_wasm",
+        runnable = True,
+    )
+    for name in [
+        "identity",
+        "addblob",
+        "slowaddblob",
+    ]
+]

@@ -1,0 +1,45 @@
+package(default_visibility = ["//visibility:public"])
+
+genrule(
+    name = "wabt",
+    srcs = [
+        "@wabt_src//:sources",
+        "@wabt_src//:CMakeLists.txt",
+    ],
+    outs = [
+        "wabt-bin/wasm2c",
+        "wabt-bin/wat2wasm",
+    ],
+    cmd = """
+        build="$$PWD/$(@D)/wabt-build"
+        source="$$PWD/$(@D)/wabt-source"
+        cp -R -L $$(dirname $(location @wabt_src//:CMakeLists.txt)) "$$source"
+        chmod -R u+w "$$source"
+        $(execpath @local_tools//:cmake) -S "$$source" -B "$$build" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_LIBWASM=OFF -DBUILD_TOOLS=ON \
+            -DCMAKE_C_COMPILER="$$PWD/$(execpath @local_tools//:gcc)" \
+            -DCMAKE_CXX_COMPILER="$$PWD/$(execpath @local_tools//:g++)" \
+            -DCMAKE_AR="$$PWD/$(execpath @local_tools//:ar)" -DCMAKE_RANLIB="$$PWD/$(execpath @local_tools//:ranlib)" -DCMAKE_MAKE_PROGRAM="$$PWD/$(execpath @local_tools//:make)"
+        $(execpath @local_tools//:cmake) --build "$$build" --target wasm2c wat2wasm --parallel 2
+        cp "$$build/wasm2c" $(location wabt-bin/wasm2c)
+        cp "$$build/wat2wasm" $(location wabt-bin/wat2wasm)
+    """,
+    tools = [
+        "@local_tools//:ar",
+        "@local_tools//:cmake",
+        "@local_tools//:g++",
+        "@local_tools//:gcc",
+        "@local_tools//:make",
+        "@local_tools//:ranlib",
+    ],
+)
+
+filegroup(
+    name = "wasm2c",
+    srcs = ["wabt-bin/wasm2c"],
+)
+
+filegroup(
+    name = "wat2wasm",
+    srcs = ["wabt-bin/wat2wasm"],
+)

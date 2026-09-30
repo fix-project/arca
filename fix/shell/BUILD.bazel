@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_static_library")
+load("//build:defs.bzl", "ARCA_USER")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "headers",
+    srcs = glob(["inc/*.h"]),
+)
+
+filegroup(
+    name = "wasm_rt",
+    srcs = ["etc/wasm-rt.c"],
+)
+
+filegroup(
+    name = "memmap",
+    srcs = ["etc/memmap.ld"],
+)
+
+genrule(
+    name = "bindings",
+    srcs = ["inc/wasm-rt.h"],
+    outs = ["wasm_rt.rs"],
+    cmd = "$(execpath //tools:bindgen) wasm $(location inc/wasm-rt.h) $@",
+    tools = ["//tools:bindgen"],
+)
+
+rust_static_library(
+    name = "shell",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = [":bindings"],
+    crate_name = "fixshell",
+    platform = ARCA_USER,
+    rustc_env = {"WASM_BINDINGS": "$(execpath :bindings)"},
+    deps = [
+        "//arca/abi",
+        "//arca/api",
+        "//arca/user",
+        "//fix/handle",
+    ],
+)

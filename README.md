@@ -1,72 +1,50 @@
-# Arca
+# Fix and Arca
 
-## Installation
+Fix is a prototype distributed operating system running on the Arca research
+kernel.
 
-### Cloning
+## Build
 
-This repository contains submodules, you can clone it using:
-```
-git clone --recurse-submodules git@github.com:fix-project/arca
-```
+Requires Linux x86-64, Bazelisk, GCC/G++, binutils, CMake, Make,
+Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
+`BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
-### Runtime
-
-Arca is currently paravirtualized within a custom hypervisor; it requires a
-Linux AMD64 machine with KVM enabled.  If you're using `stagecast.org`, make
-sure your user is in the `kvm` group.
-
-### Toolchain
-
-Arca is written in nightly Rust.  You should install Rust and Cargo via
-`rustup`. Arca requires the `x86_64-unknown-none` target.  Arca expects Rust
-version 1.98+.
-
-Instructions for Debian- and RHEL-based distributions:
 ```sh
-sudo [apt|dnf] install rustup
-# rustup toolchain install stable # (optional)
-rustup toolchain install nightly
-rustup target install x86_64-unknown-none
+git submodule update --init --recursive
+bazel query //... --output=label_kind
+bazel build //:artifacts
+bazel test //...
+bazel test //tests:format //tests:lint
+bazel run //programs/kernel:hello -- Ada
+bazel run //programs/arca:add -- tuple:word:2,word:3
+bazel run //programs/fix:addblob -- 2u64 3u64
+bazel run //fix/runtime:fix -- eval path/to/program.fix
 ```
 
-You can update Rust and Cargo using:
+Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
+`null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
+
+Use `--config=release` for optimized builds.
+
+## rust-analyzer
+
+Generate the ignored `rust-project.json` after changing Rust targets or the
+toolchain:
+
 ```sh
-rustup update
+bazel run @rules_rust//tools/rust_analyzer:gen_rust_project -- //...
 ```
 
-Be aware that nightly releases often break compatibility, so you may have to
-patch code to run on newer versions.  In general we try to follow the latest
-nightly release.
+## Environment-dependent tests
 
-## Fix Compilation
+`bazel test //...` requires `/dev/kvm`; without it, use
+`bazel test //:host_tests`. The proof test requires Isabelle2025-2, AFP,
+and OCaml:
 
-Building Fix-on-Arca additionally requires installing [the GCC multilib package
-(`gcc-multilib`)][gcc-multilib] on Debian-based distributions.
-
-[gcc-multilib]: https://packages.debian.org/bookworm/gcc-multilib
-
-## Running
-
-We use the [just command runner](https://github.com/casey/just) to help
-simplify the commands needed to build and run arca.
-
-To run the test suite:
 ```sh
-just test
+bazel test --test_tag_filters=proof //coupon:proof
 ```
 
-To run an example kernel (from `kernel/examples`):
-```sh
-just run hello
-just run threads
-just run webserver
-```
+See [coupon/proof/README.md](coupon/proof/README.md) for proof setup.
 
-To run Fix-on-Arca, run [XXX] (can scrape this from .github/workflows/compile.yml or
-better solution arriving RSN TODO).
-
-# License
-
-This codebase is licensed under the GNU Lesser General Public License v2.1 or
-later (LGPL-2.1-or-later).  See [LICENSE](LICENSE)
-for more information.
+Licensed under [LGPL-2.1-or-later](LICENSE).

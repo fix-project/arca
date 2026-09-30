@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("//build:defs.bzl", "WASM", "fix_procedure")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_shared_library(
+    name = "wasm",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fixparser",
+    crate_root = "src/lib.rs",
+    platform = WASM,
+    deps = [
+        "//fix/sdk",
+        "@crates//:dlmalloc",
+        "@crates//:hex",
+    ],
+)
+
+fix_procedure(
+    name = "parser",
+    postprocess = True,
+    runnable = True,
+    wasm = ":wasm",
+)

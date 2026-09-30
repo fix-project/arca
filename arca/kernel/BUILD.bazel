@@ -1,0 +1,64 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY", "guest_binary", "native_archive", "vm_test")
+
+package(default_visibility = ["//visibility:public"])
+
+DEPS = [
+    "//arca/abi",
+    "//arca/api",
+    "//lib/common",
+    "@crates//:async-lock",
+    "@crates//:hashbrown",
+    "@crates//:log",
+    "@crates//:postcard",
+    "@crates//:serde",
+    "@crates//:time",
+]
+
+PROC_MACROS = [
+    "//tools/macros",
+    "@crates//:bitfield-struct",
+]
+
+exports_files(["etc/memmap.ld"])
+
+native_archive(
+    name = "assembly",
+    srcs = [
+        "src/cswitch.S",
+        "src/interrupts.S",
+        "src/util.S",
+    ],
+)
+
+rust_library(
+    name = "kernel",
+    srcs = glob(["src/**/*.rs"]),
+    link_deps = [":assembly"],
+    proc_macro_deps = PROC_MACROS,
+    target_compatible_with = GUEST_ONLY,
+    deps = DEPS,
+)
+
+guest_binary(
+    name = "test_image",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "kernel",
+    crate_root = "src/lib.rs",
+    link_deps = [":assembly"],
+    linker_script = "etc/memmap.ld",
+    proc_macro_deps = PROC_MACROS,
+    rustc_flags = ["--test"],
+    deps = DEPS,
+)
+
+vm_test(
+    name = "tests",
+    size = "large",
+    kernel = ":test_image",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)

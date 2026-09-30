@@ -1,0 +1,67 @@
+load("//build:defs.bzl", "guest_binary", "vm_run", "vm_test")
+
+package(default_visibility = ["//visibility:public"])
+
+[
+    guest_binary(
+        name = name + "_image",
+        srcs = ["src/" + name + ".rs"],
+        compile_data = ["//programs/arca:" + name + "_elf"] if name.startswith("webserver") else [],
+        crate_name = name,
+        linker_script = "//arca/kernel:etc/memmap.ld",
+        proc_macro_deps = ["//tools/macros"],
+        rustc_env = {"ARCA_HANDLER": "$(execpath //programs/arca:" + name + "_elf)"} if name.startswith("webserver") else {},
+        deps = [
+            "//arca/api",
+            "//arca/kernel",
+            "//lib/common",
+            "@crates//:log",
+            "@crates//:postcard",
+        ],
+    )
+    for name in [
+        "hello",
+        "threads",
+        "webserver",
+        "webserver2",
+    ]
+]
+
+vm_test(
+    name = "hello_test",
+    size = "large",
+    args = ["Bazel"],
+    expected_output = ["hello, Bazel"],
+    kernel = ":hello_image",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+vm_test(
+    name = "threads_test",
+    size = "large",
+    expected_output = [
+        "thread 1 says 4",
+        "thread 2 says 104",
+    ],
+    kernel = ":threads_image",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+[
+    vm_run(
+        name = name,
+        kernel = name + "_image",
+    )
+    for name in [
+        "hello",
+        "threads",
+        "webserver",
+        "webserver2",
+    ]
+]

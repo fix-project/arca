@@ -1,0 +1,47 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "vmm",
+    deps = [
+        "//arca/api",
+        "//lib/common",
+        "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:ctrlc",
+        "@crates//:elf",
+        "@crates//:env_logger",
+        "@crates//:kvm-bindings",
+        "@crates//:kvm-ioctls",
+        "@crates//:libc",
+        "@crates//:log",
+        "@crates//:nix",
+        "@crates//:postcard",
+        "@crates//:regex",
+        "@crates//:rustc-demangle",
+        "@crates//:serde",
+        "@crates//:vmm-sys-util",
+    ],
+)
+
+rust_binary(
+    name = "vmm",
+    srcs = ["src/main.rs"],
+    deps = [
+        ":lib",
+        "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:env_logger",
+    ],
+)
+
+rust_test(
+    name = "tests",
+    crate = ":lib",
+)

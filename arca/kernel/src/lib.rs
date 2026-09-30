@@ -1,0 +1,129 @@
+#![no_main]
+#![no_std]
+#![allow(stable_features, unused_features)]
+#![feature(cfg_version)]
+#![feature(allocator_api)]
+#![cfg_attr(not(version("1.96")), feature(bigint_helper_methods))]
+#![cfg_attr(version("1.96"), feature(widening_mul))]
+#![feature(box_as_ptr)]
+#![feature(negative_impls)]
+#![feature(never_type)]
+#![feature(ptr_metadata)]
+#![feature(atomic_ptr_null)]
+#![feature(custom_test_frameworks)]
+#![test_runner(testing::harness)]
+#![reexport_test_harness_main = "test_main"]
+
+extern crate alloc;
+
+// Allow procedural macros to use the same path inside and outside this crate.
+extern crate self as kernel;
+
+#[macro_use]
+pub extern crate macros;
+
+use common::hypercall;
+pub use macros::core_local;
+
+pub mod allocator;
+pub mod cpu;
+pub mod debugcon;
+pub mod host;
+pub mod io;
+pub mod iprofile;
+pub mod kthread;
+pub mod kvmclock;
+pub mod page;
+pub mod paging;
+pub mod prelude;
+pub mod tsc;
+pub mod types;
+pub mod vm;
+
+mod gdt;
+mod idt;
+mod interrupts;
+mod lapic;
+mod msr;
+mod pipe;
+mod registers;
+mod rsstart;
+mod tss;
+
+#[cfg(test)]
+mod testing;
+#[cfg(test)]
+mod tests;
+
+pub use common::util::initcell;
+pub use common::util::spinlock;
+pub use lapic::LAPIC;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[unsafe(no_mangle)]
+static mut EXIT_CODE: u8 = 0;
+
+pub(crate) static NCORES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn coreid() -> u32 {
+    let mut id: u32 = 0;
+    unsafe {
+        core::arch::x86_64::__rdtscp(&mut id);
+    }
+    id
+}
+
+pub fn ncores() -> usize {
+    NCORES.load(Ordering::SeqCst)
+}
+
+pub fn halt() {
+    unsafe {
+        core::arch::asm!("hlt");
+    }
+}
+
+pub fn pause() {
+    core::arch::x86_64::_mm_pause();
+}
+
+pub fn shutdown() -> ! {
+    exit(0);
+}
+
+pub fn exit(code: u8) -> ! {
+    loop {
+        unsafe {
+            io::hypercall1(hypercall::EXIT, code as u64);
+        }
+        core::hint::spin_loop();
+    }
+}
+
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+    use spinlock::SpinLockGuard;
+
+    let mut console = crate::debugcon::CONSOLE.lock();
+    let _ = writeln!(&mut *console, "KERNEL PANIC: {info}");
+
+    let _ = writeln!(&mut *console, "----- BACKTRACE -----");
+    let mut i = 0;
+    crate::iprofile::backtrace(|addr, decoded| {
+        if i > 0 {
+            if let Some((symname, offset)) = decoded {
+                let _ = writeln!(&mut *console, "{i}. {addr:#p} - {symname}+{offset:#x}");
+            } else {
+                let _ = writeln!(&mut *console, "{i}. {addr:#p}");
+            }
+        }
+        i += 1;
+    });
+    let _ = writeln!(&mut *console, "---------------------");
+
+    SpinLockGuard::unlock(console);
+
+    exit(1);
+}

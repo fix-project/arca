@@ -1,6 +1,9 @@
 /target
 .build
 .fix
-fix/wasm/coupon-collector.wat
+/bazel-*
 .vscode
+.rules_rust_analyzer/
+/rust-project.json
+/MODULE.bazel.lock
 .DS_Store

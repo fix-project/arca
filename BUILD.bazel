@@ -1,0 +1,48 @@
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "artifacts",
+    srcs = [
+        "//coupon:collector",
+        "//fix/runtime:image",
+        "//programs/arca:add",
+        "//programs/arca:curry",
+        "//programs/arca:identity",
+        "//programs/arca:io",
+        "//programs/arca:map",
+        "//programs/arca:null",
+        "//programs/arca:webserver",
+        "//programs/arca:webserver2",
+        "//programs/fix:addblob",
+        "//programs/fix:identity",
+        "//programs/fix:slowaddblob",
+        "//programs/fix/parser:parser",
+        "//programs/kernel:hello_image",
+        "//programs/kernel:threads_image",
+        "//programs/kernel:webserver2_image",
+        "//programs/kernel:webserver_image",
+        "//tools/vmm",
+    ],
+)
+
+test_suite(
+    name = "host_tests",
+    tests = [
+        "//arca/api:tests",
+        "//fix/handle:tests",
+        "//lib/common:tests",
+        "//tools/vmm:tests",
+    ],
+)
+
+test_suite(
+    name = "guest_tests",
+    tags = ["kvm"],
+    tests = [
+        "//arca/kernel:tests",
+        "//fix/runtime:tests",
+        "//programs/kernel:hello_test",
+        "//programs/kernel:threads_test",
+        "//tests/fix:tests",
+    ],
+)

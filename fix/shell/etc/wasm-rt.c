@@ -1,5 +1,3 @@
-#include <assert.h>
-
 #include "wasm-rt.h"
 #include "module.h"
 

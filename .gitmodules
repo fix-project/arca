@@ -1,9 +1,6 @@
-[submodule "modules/arca-musl"]
-	path = modules/arca-musl
-	url = https://github.com/fix-project/arca-musl
 [submodule "fix/wabt"]
-	path = fix/wabt
+	path = third_party/wabt
 	url = https://github.com/WebAssembly/wabt.git
 [submodule "fix/wasm/fix-proof"]
-	path = fix/wasm/coupon/fix-proof
+	path = coupon/proof
 	url = https://github.com/fix-project/fix-proof.git

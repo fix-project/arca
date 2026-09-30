@@ -1,0 +1,95 @@
+load("//build:defs.bzl", "vm_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob(["*.fix"]))
+
+genrule(
+    name = "addblob_fixture",
+    srcs = ["//programs/fix:addblob_elf"],
+    outs = ["addblob"],
+    cmd = "cp $< $@",
+)
+
+vm_test(
+    name = "addblob_test",
+    size = "large",
+    args = [
+        "eval",
+        "addblob.fix",
+    ],
+    data = [
+        "addblob.fix",
+        ":addblob_fixture",
+    ],
+    expected_output = ["as a u64: 6"],
+    kernel = "//fix/runtime:image_elf",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+vm_test(
+    name = "addblob_extended_test",
+    size = "large",
+    args = [
+        "eval",
+        "addblob_extended.fix",
+    ],
+    data = [
+        "addblob_extended.fix",
+        ":addblob_fixture",
+    ],
+    expected_output = ["as a u64: 136"],
+    kernel = "//fix/runtime:image_elf",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+vm_test(
+    name = "selection_test",
+    size = "large",
+    args = [
+        "eval",
+        "selection.fix",
+    ],
+    data = ["selection.fix"],
+    expected_output = ["result is a Blob: [104]"],
+    kernel = "//fix/runtime:image_elf",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+vm_test(
+    name = "parallel_addblob_test",
+    size = "large",
+    args = [
+        "parallel_eval",
+        "addblob.fix",
+    ],
+    data = [
+        "addblob.fix",
+        ":addblob_fixture",
+    ],
+    expected_output = ["as a u64: 6"],
+    kernel = "//fix/runtime:image_elf",
+    tags = [
+        "kvm",
+        "local",
+    ],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":addblob_extended_test",
+        ":addblob_test",
+        ":parallel_addblob_test",
+        ":selection_test",
+    ],
+)
