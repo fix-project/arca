@@ -14,6 +14,7 @@ genrule(
 vm_test(
     name = "addblob_test",
     size = "large",
+    timeout = "short",
     args = [
         "eval",
         "addblob.fix",
@@ -33,6 +34,7 @@ vm_test(
 vm_test(
     name = "addblob_extended_test",
     size = "large",
+    timeout = "short",
     args = [
         "eval",
         "addblob_extended.fix",
@@ -52,6 +54,7 @@ vm_test(
 vm_test(
     name = "selection_test",
     size = "large",
+    timeout = "short",
     args = [
         "eval",
         "selection.fix",
@@ -68,6 +71,7 @@ vm_test(
 vm_test(
     name = "parallel_addblob_test",
     size = "large",
+    timeout = "short",
     args = [
         "parallel_eval",
         "addblob.fix",

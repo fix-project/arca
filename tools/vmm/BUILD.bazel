@@ -43,5 +43,6 @@ rust_binary(
 
 rust_test(
     name = "tests",
+    timeout = "short",
     crate = ":lib",
 )

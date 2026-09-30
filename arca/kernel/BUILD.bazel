@@ -56,6 +56,7 @@ guest_binary(
 vm_test(
     name = "tests",
     size = "large",
+    timeout = "short",
     kernel = ":test_image",
     tags = [
         "kvm",

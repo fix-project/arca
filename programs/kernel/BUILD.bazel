@@ -30,6 +30,7 @@ package(default_visibility = ["//visibility:public"])
 vm_test(
     name = "hello_test",
     size = "large",
+    timeout = "short",
     args = ["Bazel"],
     expected_output = ["hello, Bazel"],
     kernel = ":hello_image",
@@ -42,6 +43,7 @@ vm_test(
 vm_test(
     name = "threads_test",
     size = "large",
+    timeout = "short",
     expected_output = [
         "thread 1 says 4",
         "thread 2 says 104",
