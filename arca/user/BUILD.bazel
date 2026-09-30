@@ -10,16 +10,11 @@ native_archive(
     srcs = ["src/start.S"],
 )
 
-native_archive(
-    name = "memory",
-    srcs = ["src/memory.S"],
-)
-
 rust_library(
     name = "user",
     srcs = glob(["src/**/*.rs"]),
     crate_features = ["allocator"],
-    link_deps = [":memory", ":start"],
+    link_deps = [":start"],
     target_compatible_with = GUEST_ONLY,
     deps = [
         "//arca/abi",

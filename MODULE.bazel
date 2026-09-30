@@ -4,6 +4,12 @@ module(
 )
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
+# Fix custom target paths, identities, and build-script feature probes.
+single_version_override(
+    module_name = "rules_rust",
+    patches = ["//build:rules_rust.patch"],
+    patch_strip = 1,
+)
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_shell", version = "0.8.0")
@@ -30,8 +36,8 @@ rust.toolchain(
 use_repo(
     rust,
     "rust_toolchains",
+    host_rust_tools = "rust_linux_x86_64__x86_64-unknown-linux-gnu__nightly_tools",
     arca_rust_tools = "rust_linux_x86_64__x86_64-unknown-none__nightly_tools",
-    arca_user_rust_tools = "rust_linux_x86_64__x86_64-unknown-linux-gnu__nightly_tools",
 )
 
 register_toolchains("//build/platforms:arca_rust", "//build/platforms:arca_user_rust", "@rust_toolchains//:all")
@@ -72,4 +78,14 @@ new_local_repository(
     name = "coupon_proof",
     build_file = "//build:proof.BUILD.bazel",
     path = "coupon/proof",
+)
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "rust_src",
+    urls = ["https://static.rust-lang.org/dist/2026-09-28/rust-src-nightly.tar.xz"],
+    sha256 = "681da083978612ab5062d6e656143055fb4b27b0a3b7ab85bb62a1598be43677",
+    strip_prefix = "rust-src-nightly/rust-src/lib/rustlib/src/rust/library",
+    build_file_content = 'filegroup(name = "sources", srcs = glob(["**"]), visibility = ["//visibility:public"])\nexports_files(["core/src/lib.rs"])',
 )

@@ -63,6 +63,7 @@ syscall_call_user:
 
 .globl syscall_handler
 syscall_handler:
+  cld
   // rflags -> r11
   // rip -> rcx
   // we are coming from user mode, so switch to kernel GS
@@ -152,6 +153,8 @@ isr_call_user:
   iretq
 
 isr_stub:
+  // userspace may be interrupted with the direction flag set
+  cld
   // ss                   0
   // rsp                  8
   // rflags              10

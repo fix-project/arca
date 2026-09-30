@@ -29,17 +29,3 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         core::hint::spin_loop();
     }
 }
-
-// The prebuilt System V alloc library references this symbol even with panic=abort.
-// Arca has no unwinder; reaching a personality routine is a process fault.
-#[unsafe(no_mangle)]
-extern "C" fn rust_eh_personality() -> ! {
-    loop {
-        unsafe { core::arch::asm!("ud2") };
-    }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn _Unwind_Resume(_: *mut core::ffi::c_void) -> ! {
-    rust_eh_personality()
-}

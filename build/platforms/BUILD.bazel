@@ -1,4 +1,5 @@
-load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+load("@rules_rust//rust:toolchain.bzl", "rust_toolchain", "rust_stdlib_filegroup")
+load(":arca.bzl", "ARCA_TARGET", "arca_target")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -98,18 +99,20 @@ toolchain(
         linker_preference = "rust",
         linker_type = "direct",
         rust_doc = tools + ":rustdoc",
-        rust_std = tools + ":rust_std-" + triple,
+        rust_std = ":user_std" if name == "arca_user_rust" else tools + ":rust_std-" + triple,
         rustc = tools + ":rustc",
         rustc_lib = tools + ":rustc_lib",
         rustfmt = tools + ":rustfmt_bin",
         staticlib_ext = ".a",
         stdlib_linkflags = [],
-        target_triple = triple,
+        target_triple = triple if name == "arca_rust" else None,
+        target_json = json.encode(ARCA_TARGET) if name == "arca_user_rust" else None,
+        target_json_name = "x86_64-unknown-arca.json" if name == "arca_user_rust" else "",
         version = "1.100.0",
     )
     for name, tools, triple, flags in [
         ("arca_rust", "@arca_rust_tools//", "x86_64-unknown-none", []),
-        ("arca_user_rust", "@arca_user_rust_tools//", "x86_64-unknown-linux-gnu", ["-Ctarget-cpu=x86-64-v3", "-Cpanic=abort", "-Cno-redzone=yes"]),
+        ("arca_user_rust", "@arca_rust_tools//", "x86_64-unknown-arca", ["-Zunstable-options"]),
     ]
 ]
 
@@ -130,3 +133,29 @@ toolchain(
     )
     for name, mode in [("arca_rust", ":kernel_mode"), ("arca_user_rust", ":user_mode")]
 ]
+
+arca_target(name = "user_target")
+
+genrule(
+    name = "build_user_std",
+    srcs = [
+        ":user_target",
+        "@rust_src//:sources",
+        "@rust_src//:core/src/lib.rs",
+    ],
+    outs = ["libcore.rlib", "liballoc.rlib", "libcompiler_builtins.rlib"],
+    tools = [
+        ":build_std.sh",
+        "@arca_rust_tools//:rustc",
+        "@arca_rust_tools//:rustc_lib",
+        "@host_rust_tools//:rust_std-x86_64-unknown-linux-gnu",
+    ],
+    cmd = "bash $(location :build_std.sh) $(location @arca_rust_tools//:rustc) " +
+          "$(location @rust_src//:core/src/lib.rs) $(location :user_target) $(@D) " +
+          "$(locations @host_rust_tools//:rust_std-x86_64-unknown-linux-gnu)",
+)
+
+rust_stdlib_filegroup(
+    name = "user_std",
+    srcs = [":build_user_std"],
+)

@@ -26,6 +26,11 @@ Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 
 Use `--config=release` for optimized builds.
 
+Userspace targets `x86_64-unknown-arca` with the x86-64-v3 baseline and System V
+calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
+sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
+with its soft-float ABI.
+
 ## rust-analyzer
 
 Generate the ignored `rust-project.json` after changing Rust targets or the

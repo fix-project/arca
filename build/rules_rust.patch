@@ -1,0 +1,68 @@
+diff --git a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_script.bzl
+--- a/cargo/private/cargo_build_script.bzl
++++ b/cargo/private/cargo_build_script.bzl
+@@ -468,6 +468,6 @@
+         "OPT_LEVEL": compilation_mode_opt_level,
+         "RUSTC": toolchain.rustc.path,
+         "RUSTDOC": toolchain.rust_doc.path,
+-        "TARGET": toolchain.target_flag_value,
++        "TARGET": "${pwd}/" + toolchain.target_json.path if toolchain.target_json else toolchain.target_flag_value,
+         # OUT_DIR is set by the runner itself, rather than on the action.
+     })
+@@ -570,7 +570,9 @@
+         "--sysroot=${{pwd}}/{}".format(toolchain.sysroot),
+         # Keep build scripts from baking the exec root into their output
+         "--remap-path-prefix=${pwd}=.",
+-    ] + ctx.attr.rustc_flags)
++    ] + toolchain.extra_rustc_flags + [
++        "-L${{pwd}}/{}".format(path) for path in toolchain.rust_std_paths.to_list()
++    ] + ctx.attr.rustc_flags)
+ 
+     for f in ctx.attr.crate_features:
+         env["CARGO_FEATURE_" + f.upper().replace("-", "_")] = "1"
+diff --git a/rust/private/toolchain.bzl b/rust/private/toolchain.bzl
+--- a/rust/private/toolchain.bzl
++++ b/rust/private/toolchain.bzl
+@@ -520,7 +520,7 @@
+     elif ctx.attr.target_json:
+         # Ensure the data provided is valid json
+         target_json_content = json.decode(ctx.attr.target_json)
+-        target_json = ctx.actions.declare_file("{}.target.json".format(ctx.label.name))
++        target_json = ctx.actions.declare_file(ctx.attr.target_json_name or "{}.target.json".format(ctx.label.name))
+ 
+         ctx.actions.write(
+             output = target_json,
+@@ -882,6 +882,9 @@
+                 "opt": "debuginfo",
+             },
+         ),
++        "target_json_name": attr.string(
++            doc = "Filename of the target specification, which determines its Rust target identity.",
++        ),
+         "target_json": attr.string(
+             doc = ("Override the target_triple with a custom target specification. " +
+                    "For more details see: https://doc.rust-lang.org/rustc/targets/custom.html"),
+diff --git a/cargo/private/cargo_build_script_runner/bin.rs b/cargo/private/cargo_build_script_runner/bin.rs
+--- a/cargo/private/cargo_build_script_runner/bin.rs
++++ b/cargo/private/cargo_build_script_runner/bin.rs
+@@ -505,12 +505,15 @@
+ 
+ fn get_target_env_vars<P: AsRef<Path>>(rustc: &P) -> Result<BTreeMap<String, String>, String> {
+     // As done by Cargo when constructing a cargo::core::compiler::build_context::target_info::TargetInfo.
+-    let output = Command::new(rustc.as_ref())
++    let target = env::var("TARGET").expect("missing TARGET");
++    let target = target.replace("${pwd}", &env::current_dir().unwrap().to_string_lossy());
++    let mut command = Command::new(rustc.as_ref());
++    if target.ends_with(".json") {
++        command.arg("-Zunstable-options");
++    }
++    let output = command
+         .arg("--print=cfg")
+-        .arg(format!(
+-            "--target={}",
+-            env::var("TARGET").expect("missing TARGET")
+-        ))
++        .arg(format!("--target={target}"))
+         .output()
+         .map_err(|err| format!("Error running rustc to get target information: {err}"))?;
+     if !output.status.success() {
