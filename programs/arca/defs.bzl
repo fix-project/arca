@@ -1,14 +1,16 @@
-"""Standalone Arca programs and their kernel runners."""
+"""Arca userspace programs, combinators, and kernel runners."""
 
 load("//build:defs.bzl", "ARCA_USER", "guest_binary", "kernel_program")
 
-ARCA_PROGRAMS = ["add", "curry", "identity", "io", "map", "null", "simd"]
+ARCA_PROGRAMS = ["add", "identity", "io", "null"]
+ARCA_COMBINATORS = ["curry", "map"]
 
-def arca_program(name):
-    """Build a userspace ELF, a kernel image embedding it, and a VM launcher."""
+def arca_elf(name, visibility = None, testonly = False):
+    """Build an Arca userspace ELF."""
     guest_binary(
         name = name + "_elf",
-        visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],
+        visibility = visibility,
+        testonly = testonly,
         srcs = ["src/" + name + ".rs"],
         linker_script = "//arca/user:etc/memmap.ld",
         platform = ARCA_USER,
@@ -18,6 +20,10 @@ def arca_program(name):
             "//arca/user",
         ],
     )
+
+def arca_program(name):
+    """Build a userspace ELF, a kernel image embedding it, and a VM launcher."""
+    arca_elf(name = name, visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"])
     kernel_program(
         name = name,
         visibility = ["//visibility:public"],

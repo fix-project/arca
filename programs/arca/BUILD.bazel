@@ -1,22 +1,15 @@
-load("//build:defs.bzl", "ARCA_USER", "guest_binary")
-load(":defs.bzl", "ARCA_PROGRAMS", "arca_program")
+load(":defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS", "arca_elf", "arca_program")
 
 package(default_visibility = ["//visibility:private"])
 
 [arca_program(name = name) for name in ARCA_PROGRAMS]
 
+[arca_elf(name = name, visibility = ["//visibility:public"]) for name in ARCA_COMBINATORS]
+
 [
-    guest_binary(
-        name = name + "_elf",
+    arca_elf(
+        name = name,
         visibility = ["//programs/kernel:__pkg__", "//tests:__pkg__"],
-        srcs = ["src/" + name + ".rs"],
-        linker_script = "//arca/user:etc/memmap.ld",
-        platform = ARCA_USER,
-        deps = [
-            "//arca/abi",
-            "//arca/api",
-            "//arca/user",
-        ],
     )
     for name in ["webserver", "webserver2"]
 ]
@@ -29,3 +22,10 @@ package(default_visibility = ["//visibility:private"])
     )
     for name in ["webserver", "webserver2"]
 ]
+
+# Embedded by the kernel tests to exercise SIMD state across process switches.
+arca_elf(
+    name = "simd",
+    testonly = True,
+    visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],
+)

@@ -52,7 +52,17 @@ kernel_test(
     link_deps = [":assembly"],
     linker_script = "etc/memmap.ld",
     proc_macro_deps = PROC_MACROS,
-    compile_data = ["//programs/arca:simd_elf"],
-    rustc_env = {"ARCA_SIMD_PROGRAM": "$(execpath //programs/arca:simd_elf)"},
+    compile_data = [
+        "//programs/arca:add_elf",
+        "//programs/arca:curry_elf",
+        "//programs/arca:map_elf",
+        "//programs/arca:simd_elf",
+    ],
+    rustc_env = {
+        "ARCA_ADD_PROGRAM": "$(execpath //programs/arca:add_elf)",
+        "ARCA_CURRY_PROGRAM": "$(execpath //programs/arca:curry_elf)",
+        "ARCA_MAP_PROGRAM": "$(execpath //programs/arca:map_elf)",
+        "ARCA_SIMD_PROGRAM": "$(execpath //programs/arca:simd_elf)",
+    },
     deps = DEPS,
 )

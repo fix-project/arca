@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy_test", "rustfmt_test")
-load("//programs/arca:defs.bzl", "ARCA_PROGRAMS")
+load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
 load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
 
 HOST = [
@@ -14,8 +14,9 @@ GUEST = [
     "//fix/runtime:image_elf",
     "//arca/kernel:test_image",
     "//fix/runtime:test_image",
+    "//programs/arca:simd_elf",
 ] + ["//programs/kernel:" + name + "_image" for name in KERNEL_PROGRAMS] + [
-    "//programs/arca:" + name + "_elf" for name in ARCA_PROGRAMS + ["webserver", "webserver2"]
+    "//programs/arca:" + name + "_elf" for name in ARCA_PROGRAMS + ARCA_COMBINATORS + ["webserver", "webserver2"]
 ] + [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
