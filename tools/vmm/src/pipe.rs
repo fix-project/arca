@@ -24,8 +24,11 @@ impl GuestPipe {
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         while !self.inner.can_read() {
-            self.rx_avail.fd.read().unwrap();
+            self.rx_avail.wait();
         }
         self.inner.read(bytes)
     }
@@ -45,8 +48,11 @@ impl GuestPipe {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         while !self.inner.can_write() {
-            self.tx_avail.fd.read().unwrap();
+            self.tx_avail.wait();
         }
         self.inner.write(bytes)
     }

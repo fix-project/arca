@@ -13,7 +13,7 @@ use std::{
 use common::{BuddyAllocator, buddy::MEM_BASE, hypercall};
 use elf::{ElfBytes, endian::AnyEndian, segment::ProgramHeader};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, kvm_userspace_memory_region};
-use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
@@ -365,14 +365,8 @@ impl Runtime {
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-        let kick = EventFd::new(EFD_NONBLOCK).unwrap();
-        let call = EventFd::new(EFD_NONBLOCK).unwrap();
-
         let int = EventFd::new(EFD_NONBLOCK).unwrap();
 
-        vm.register_ioevent(&kick, &IoEventAddress::Pio(0xf4), NoDatamatch)
-            .unwrap();
-        vm.register_irqfd(&call, 0).unwrap();
         vm.register_irqfd(&int, 1).unwrap();
 
         let mut last_time = None;

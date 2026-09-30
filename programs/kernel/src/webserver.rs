@@ -9,7 +9,6 @@ const HANDLER: &[u8] = include_bytes!(env!("ARCA_HANDLER"));
 
 #[kmain]
 fn main() {
-    kthread::wfi();
     let listener = TcpListener::bind(&[0, 0, 0, 0], 8080);
     log::info!("listening on port 8080");
     let handler: Function = elfloader::load_elf(HANDLER).unwrap();

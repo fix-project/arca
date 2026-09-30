@@ -7,7 +7,7 @@ use core::{
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
 use common::util::{initcell::LazyLock, spinlock::SpinLock};
 
-use crate::{interrupts::INTERRUPTED, page::Page2MB};
+use crate::{interrupts::IO_GENERATION, page::Page2MB};
 
 pub mod kmutex;
 pub use kmutex::{KMutex, KMutexGuard};
@@ -20,6 +20,7 @@ pub struct KThread {
     scheduler: bool,
     exited: bool,
     wfi: bool,
+    io_generation: usize,
     next: Option<Box<KThread>>,
 }
 
@@ -48,6 +49,7 @@ pub static SCHEDULER_THREAD: LazyLock<RefCell<KThread>> = LazyLock::new(|| {
         scheduler: true,
         exited: false,
         wfi: false,
+        io_generation: 0,
         next: None,
     })
 });
@@ -104,6 +106,7 @@ pub fn spawn(f: impl FnOnce()) {
         scheduler: false,
         exited: false,
         wfi: false,
+        io_generation: 0,
         next: None,
     };
     let mut q = THREAD_QUEUE.lock();
@@ -124,20 +127,31 @@ pub(crate) unsafe fn run_scheduler() {
         core::hint::spin_loop();
     }
     while OUTSTANDING.load(Ordering::SeqCst) != 0 {
-        let Some(next) = THREAD_QUEUE.lock().pop_front() else {
-            sleep();
-            if INTERRUPTED.swap(false, Ordering::SeqCst) {
-                let mut wfi = WFI.lock();
-                let mut head = core::mem::take(&mut *wfi);
-                let mut q = THREAD_QUEUE.lock();
-                while let Some(mut current) = head {
-                    head = core::mem::take(&mut current.next);
-                    log::trace!("awakening {}", current.tid);
+        // Keep interrupts disabled from the final readiness check through HLT.
+        // STI's interrupt shadow makes STI; HLT indivisible with respect to IRQs.
+        unsafe { crate::interrupts::disable() };
+        let generation = IO_GENERATION.load(Ordering::SeqCst);
+        {
+            let mut wfi = WFI.lock();
+            let mut head = wfi.take();
+            let mut q = THREAD_QUEUE.lock();
+            while let Some(mut current) = head {
+                head = current.next.take();
+                if current.io_generation != generation {
+                    current.wfi = false;
                     q.push_back(current);
+                } else {
+                    current.next = wfi.take();
+                    wfi.replace(current);
                 }
             }
+        }
+        let next = THREAD_QUEUE.lock().pop_front();
+        let Some(next) = next else {
+            sleep();
             continue;
         };
+        unsafe { crate::interrupts::enable() };
         log::trace!("scheduling thread {}", next.tid);
         CURRENT_THREAD.replace(next);
         let mut scheduler = SCHEDULER_THREAD.borrow_mut();
@@ -178,8 +192,8 @@ pub fn yield_now() {
 
 fn sleep() {
     unsafe {
-        // io::outl(0xf4, 0);
-        core::arch::asm!("hlt");
+        crate::interrupts::must_be_disabled();
+        core::arch::asm!("sti", "hlt");
     }
 }
 
@@ -188,9 +202,21 @@ fn exit() {
     yield_now();
 }
 
-pub fn wfi() {
-    CURRENT_THREAD.borrow_mut().wfi = true;
-    yield_now();
+/// Wait until an I/O predicate is satisfied, including interrupts arriving
+/// between checking the predicate and parking the thread.
+pub fn wait_until(mut ready: impl FnMut() -> bool) {
+    loop {
+        let generation = IO_GENERATION.load(Ordering::SeqCst);
+        if ready() {
+            return;
+        }
+        {
+            let mut current = CURRENT_THREAD.borrow_mut();
+            current.io_generation = generation;
+            current.wfi = true;
+        }
+        yield_now();
+    }
 }
 
 unsafe extern "C" fn start_thread(f: *mut Box<dyn FnOnce()>) {

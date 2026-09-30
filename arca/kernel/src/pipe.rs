@@ -19,9 +19,10 @@ impl HostPipe {
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> PipeResult<usize> {
-        while !self.inner.can_read() {
-            kthread::wfi();
+        if bytes.is_empty() {
+            return Ok(0);
         }
+        kthread::wait_until(|| self.inner.can_read());
         self.inner.read(bytes)
     }
 
@@ -40,9 +41,10 @@ impl HostPipe {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> PipeResult<usize> {
-        while !self.inner.can_write() {
-            kthread::wfi();
+        if bytes.is_empty() {
+            return Ok(0);
         }
+        kthread::wait_until(|| self.inner.can_write());
         self.inner.write(bytes)
     }
 
