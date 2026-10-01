@@ -72,7 +72,7 @@ toolchain(
         "@platforms//os:none",
     ],
     toolchain = "@local_config_cc//:cc-compiler-k8",
-    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    toolchain_type = "@rules_cc//cc:toolchain_type",
 )
 
 # Set the linker here, so host proc macros keep the host C/C++ linker.

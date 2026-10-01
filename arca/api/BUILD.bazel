@@ -15,6 +15,7 @@ rust_library(
 
 rust_test(
     name = "tests",
+    timeout = "short",
     crate = ":api",
     crate_features = [
         "alloc",

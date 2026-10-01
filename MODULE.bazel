@@ -5,8 +5,8 @@ module(
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_cc", version = "0.2.8")
-bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "rules_cc", version = "0.2.25")
+bazel_dep(name = "rules_shell", version = "0.8.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -30,6 +30,9 @@ rust.toolchain(
 use_repo(rust, "rust_toolchains", arca_rust_tools = "rust_linux_x86_64__x86_64-unknown-none__nightly_tools")
 
 register_toolchains("//build/platforms:arca_rust", "@rust_toolchains//:all")
+
+cc_configure = use_extension("@rules_cc//cc:extensions.bzl", "cc_configure_extension")
+use_repo(cc_configure, "local_config_cc")
 
 register_toolchains("//build/platforms:arca_cc")
 

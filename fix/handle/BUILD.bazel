@@ -16,4 +16,5 @@ rust_library(
 rust_test(
     name = "tests",
     crate = ":handle",
+    timeout = "short",
 )
