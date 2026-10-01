@@ -1,4 +1,5 @@
-load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+load("@rules_rust//rust:toolchain.bzl", "rust_toolchain", "rust_stdlib_filegroup")
+load(":arca.bzl", "ARCA_TARGET", "arca_target")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -75,47 +76,89 @@ toolchain(
     toolchain_type = "@rules_cc//cc:toolchain_type",
 )
 
-# Set the linker here, so host proc macros keep the host C/C++ linker.
-rust_toolchain(
-    name = "arca_rust_impl",
-    binary_ext = "",
-    cargo = "@arca_rust_tools//:cargo",
-    cargo_clippy = "@arca_rust_tools//:cargo_clippy_bin",
-    channel = "nightly",
-    clippy_driver = "@arca_rust_tools//:clippy_driver_bin",
-    default_edition = "2024",
-    dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_rustc_flags = [
-        "-Cforce-frame-pointers=on",
-        "-Ccode-model=large",
-        "-Crelocation-model=static",
+# Use a freestanding linker for both modes. Userspace uses the System V ABI
+# (including SIMD); the kernel uses the soft-float ABI of x86_64-unknown-none.
+[
+    rust_toolchain(
+        name = name + "_impl",
+        visibility = ["//visibility:private"],
+        binary_ext = "",
+        cargo = tools + ":cargo",
+        cargo_clippy = tools + ":cargo_clippy_bin",
+        channel = "nightly",
+        clippy_driver = tools + ":clippy_driver_bin",
+        default_edition = "2024",
+        dylib_ext = ".so",
+        exec_triple = "x86_64-unknown-linux-gnu",
+        extra_rustc_flags = [
+            "-Cforce-frame-pointers=on",
+            "-Ccode-model=large",
+            "-Crelocation-model=static",
+        ] + flags,
+        iso_date = "2026-09-28",
+        linker = tools + ":rust-lld",
+        linker_preference = "rust",
+        linker_type = "direct",
+        rust_doc = tools + ":rustdoc",
+        rust_std = ":user_std" if name == "arca_user_rust" else tools + ":rust_std-" + triple,
+        rustc = tools + ":rustc",
+        rustc_lib = tools + ":rustc_lib",
+        rustfmt = tools + ":rustfmt_bin",
+        staticlib_ext = ".a",
+        stdlib_linkflags = [],
+        target_triple = triple if name == "arca_rust" else None,
+        target_json = json.encode(ARCA_TARGET) if name == "arca_user_rust" else None,
+        target_json_name = "x86_64-unknown-arca.json" if name == "arca_user_rust" else "",
+        version = "1.100.0",
+    )
+    for name, tools, triple, flags in [
+        ("arca_rust", "@arca_rust_tools//", "x86_64-unknown-none", []),
+        ("arca_user_rust", "@arca_rust_tools//", "x86_64-unknown-arca", ["-Zunstable-options"]),
+    ]
+]
+
+[
+    toolchain(
+        name = name,
+        exec_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:none",
+            mode,
+        ],
+        toolchain = ":" + name + "_impl",
+        toolchain_type = "@rules_rust//rust:toolchain_type",
+    )
+    for name, mode in [("arca_rust", ":kernel_mode"), ("arca_user_rust", ":user_mode")]
+]
+
+arca_target(name = "user_target", visibility = ["//visibility:private"])
+
+genrule(
+    name = "build_user_std",
+    visibility = ["//visibility:private"],
+    srcs = [
+        ":user_target",
+        "@rust_src//:sources",
+        "@rust_src//:core/src/lib.rs",
     ],
-    iso_date = "2026-09-28",
-    linker = "@arca_rust_tools//:rust-lld",
-    linker_preference = "rust",
-    linker_type = "direct",
-    rust_doc = "@arca_rust_tools//:rustdoc",
-    rust_std = "@arca_rust_tools//:rust_std-x86_64-unknown-none",
-    rustc = "@arca_rust_tools//:rustc",
-    rustc_lib = "@arca_rust_tools//:rustc_lib",
-    rustfmt = "@arca_rust_tools//:rustfmt_bin",
-    staticlib_ext = ".a",
-    stdlib_linkflags = [],
-    target_triple = "x86_64-unknown-none",
-    version = "1.100.0",
+    outs = ["libcore.rlib", "liballoc.rlib", "libcompiler_builtins.rlib"],
+    tools = [
+        ":build_std.sh",
+        "@arca_rust_tools//:rustc",
+        "@arca_rust_tools//:rustc_lib",
+        "@host_rust_tools//:rust_std-x86_64-unknown-linux-gnu",
+    ],
+    cmd = "bash $(location :build_std.sh) $(location @arca_rust_tools//:rustc) " +
+          "$(location @rust_src//:core/src/lib.rs) $(location :user_target) $(@D) " +
+          "$(locations @host_rust_tools//:rust_std-x86_64-unknown-linux-gnu)",
 )
 
-toolchain(
-    name = "arca_rust",
-    exec_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:linux",
-    ],
-    target_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:none",
-    ],
-    toolchain = ":arca_rust_impl",
-    toolchain_type = "@rules_rust//rust:toolchain_type",
+rust_stdlib_filegroup(
+    name = "user_std",
+    visibility = ["//visibility:private"],
+    srcs = [":build_user_std"],
 )

@@ -1,3 +1,7 @@
+load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
+load("//programs/fix:defs.bzl", "FIX_PROGRAMS")
+load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
+
 package(default_visibility = ["//visibility:public"])
 
 filegroup(
@@ -5,24 +9,15 @@ filegroup(
     srcs = [
         "//coupon:collector",
         "//fix/runtime:image",
-        "//programs/arca:add",
-        "//programs/arca:curry",
-        "//programs/arca:identity",
-        "//programs/arca:io",
-        "//programs/arca:map",
-        "//programs/arca:null",
         "//programs/arca:webserver",
         "//programs/arca:webserver2",
-        "//programs/fix:addblob",
-        "//programs/fix:identity",
-        "//programs/fix:slowaddblob",
         "//programs/fix/parser:parser",
-        "//programs/kernel:hello_image",
-        "//programs/kernel:threads_image",
-        "//programs/kernel:webserver2_image",
-        "//programs/kernel:webserver_image",
         "//tools/vmm",
-    ],
+    ] + ["//programs/arca:" + name for name in ARCA_PROGRAMS] + [
+        "//programs/arca:" + name + "_elf" for name in ARCA_COMBINATORS
+    ] + [
+        "//programs/fix:" + name for name in FIX_PROGRAMS
+    ] + ["//programs/kernel:" + name + "_image" for name in KERNEL_PROGRAMS],
 )
 
 test_suite(

@@ -55,6 +55,7 @@ fn new_cpu<'scope>(
     vcpu_sregs.cr4 = ControlReg4::PAE
         | ControlReg4::PGE
         | ControlReg4::OSFXSR
+        | ControlReg4::OSXSAVE
         | ControlReg4::OSXMMEXCPT
         | ControlReg4::FSGSBASE
         | ControlReg4::SMAP

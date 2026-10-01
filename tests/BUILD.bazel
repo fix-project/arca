@@ -1,4 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy_test", "rustfmt_test")
+load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
+load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
 
 HOST = [
     "//tools/vmm:vmm",
@@ -12,27 +14,12 @@ GUEST = [
     "//fix/runtime:image_elf",
     "//arca/kernel:test_image",
     "//fix/runtime:test_image",
-    "//programs/kernel:hello_image",
-    "//programs/kernel:threads_image",
-    "//programs/kernel:webserver_image",
-    "//programs/kernel:webserver2_image",
-] + ["//programs/arca:" + name + "_elf" for name in [
-    "add",
-    "curry",
-    "identity",
-    "io",
-    "map",
-    "null",
-    "webserver",
-    "webserver2",
-]] + ["//programs/arca:" + name + "_image" for name in [
-    "add",
-    "curry",
-    "identity",
-    "io",
-    "map",
-    "null",
-]]
+    "//programs/arca:simd_elf",
+] + ["//programs/kernel:" + name + "_image" for name in KERNEL_PROGRAMS] + [
+    "//programs/arca:" + name + "_elf" for name in ARCA_PROGRAMS + ARCA_COMBINATORS + ["webserver", "webserver2"]
+] + [
+    "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
+]
 
 CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"]
 

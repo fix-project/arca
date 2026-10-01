@@ -8,6 +8,7 @@ use alloc::format;
 use crate::{initcell::LazyLock, prelude::*, vm::ka2pa};
 
 use crate::types::table::Table;
+use crate::xstate::XState;
 
 #[core_local]
 pub static CPU: LazyLock<RefCell<Cpu>> = LazyLock::new(|| {
@@ -67,6 +68,38 @@ impl RegisterFile {
 impl Default for RegisterFile {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Process register state, including the state that stays on the CPU across syscalls.
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
+pub struct CompleteRegisterFile {
+    pub registers: RegisterFile,
+    pub fsbase: u64,
+    pub xstate: XState,
+}
+
+impl CompleteRegisterFile {
+    pub(crate) fn save(&mut self) {
+        self.xstate.save();
+        unsafe {
+            core::arch::asm!(
+                "rdfsbase {base}",
+                base = out(reg) self.fsbase,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+
+    pub(crate) fn restore(&self) {
+        self.xstate.restore();
+        unsafe {
+            core::arch::asm!(
+                "wrfsbase {base}",
+                base = in(reg) self.fsbase,
+                options(nostack, preserves_flags),
+            );
+        }
     }
 }
 

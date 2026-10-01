@@ -14,7 +14,7 @@ pub use alloc::{
 };
 
 pub use crate::{
-    cpu::{CPU, Cpu, Register, RegisterFile},
+    cpu::{CPU, CompleteRegisterFile, Cpu, Register, RegisterFile},
     kthread::KMutex,
     page::{CowPage, Page1GB, Page2MB, Page4KB, SharedPage, UniquePage},
     paging::{

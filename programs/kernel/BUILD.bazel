@@ -1,10 +1,13 @@
-load("//build:defs.bzl", "guest_binary", "vm_run", "vm_test")
+load("//build:defs.bzl", "kernel_program", "vm_test")
+load(":defs.bzl", "KERNEL_PROGRAMS")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
 [
-    guest_binary(
-        name = name + "_image",
+    kernel_program(
+        name = name,
+        visibility = ["//visibility:public"],
+        image_visibility = ["//:__pkg__", "//tests:__pkg__"],
         srcs = ["src/" + name + ".rs"],
         compile_data = ["//programs/arca:" + name + "_elf"] if name.startswith("webserver") else [],
         crate_name = name,
@@ -19,16 +22,12 @@ package(default_visibility = ["//visibility:public"])
             "@crates//:postcard",
         ],
     )
-    for name in [
-        "hello",
-        "threads",
-        "webserver",
-        "webserver2",
-    ]
+    for name in KERNEL_PROGRAMS
 ]
 
 vm_test(
     name = "hello_test",
+    visibility = ["//:__pkg__"],
     size = "large",
     timeout = "short",
     args = ["Bazel"],
@@ -42,6 +41,7 @@ vm_test(
 
 vm_test(
     name = "threads_test",
+    visibility = ["//:__pkg__"],
     size = "large",
     timeout = "short",
     expected_output = [
@@ -54,16 +54,3 @@ vm_test(
         "local",
     ],
 )
-
-[
-    vm_run(
-        name = name,
-        kernel = name + "_image",
-    )
-    for name in [
-        "hello",
-        "threads",
-        "webserver",
-        "webserver2",
-    ]
-]

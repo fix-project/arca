@@ -5,7 +5,7 @@ kernel.
 
 ## Build
 
-Requires Linux x86-64, Bazelisk, GCC/G++, binutils, CMake, Make,
+Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
 Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
 `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
@@ -23,8 +23,15 @@ bazel run //fix/runtime:fix -- eval path/to/program.fix
 
 Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 `null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
+The `map` and `curry` combinators provide only `_elf` targets. The SIMD probe is
+a test fixture; SIMD and combinator tests run with `bazel test //arca/kernel:tests`.
 
 Use `--config=release` for optimized builds.
+
+Userspace targets `x86_64-unknown-arca` with the x86-64-v3 baseline and System V
+calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
+sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
+with its soft-float ABI.
 
 ## rust-analyzer
 

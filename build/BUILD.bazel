@@ -2,6 +2,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "repositories.bzl",
+    "rules_rust.patch",
     "defs.bzl",
     "wabt.BUILD.bazel",
     "proof.BUILD.bazel",

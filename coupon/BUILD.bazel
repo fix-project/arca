@@ -1,11 +1,12 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//build:defs.bzl", "fix_procedure")
+load("//build:defs.bzl", "fix_procedure", "wat_module")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
 rust_library(
     name = "api",
+    visibility = ["//visibility:public"],
     srcs = ["api.rs"],
     edition = "2024",
 )
@@ -23,16 +24,15 @@ genrule(
     tools = ["@local_tools//:bash"],
 )
 
-genrule(
+wat_module(
     name = "wasm",
-    srcs = [":adapt"],
-    outs = ["coupon-collector.wasm"],
-    cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
-    tools = ["//third_party:wat2wasm"],
+    src = ":adapt",
+    out = "coupon-collector.wasm",
 )
 
 fix_procedure(
     name = "collector",
+    visibility = ["//visibility:public"],
     wasm = ":wasm",
     runnable = True,
 )

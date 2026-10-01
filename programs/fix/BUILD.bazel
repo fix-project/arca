@@ -1,31 +1,5 @@
-load("//build:defs.bzl", "fix_procedure")
+load(":defs.bzl", "FIX_PROGRAMS", "fix_wat_program")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
-[
-    genrule(
-        name = name + "_wasm",
-        srcs = [name + ".wat"],
-        outs = [name + ".wasm"],
-        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
-        tools = ["//third_party:wat2wasm"],
-    )
-    for name in [
-        "identity",
-        "addblob",
-        "slowaddblob",
-    ]
-]
-
-[
-    fix_procedure(
-        name = name,
-        wasm = ":" + name + "_wasm",
-        runnable = True,
-    )
-    for name in [
-        "identity",
-        "addblob",
-        "slowaddblob",
-    ]
-]
+[fix_wat_program(name = name) for name in FIX_PROGRAMS]

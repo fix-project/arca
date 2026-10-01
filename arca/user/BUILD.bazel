@@ -1,9 +1,9 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//build:defs.bzl", "GUEST_ONLY", "native_archive")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:private"])
 
-exports_files(["etc/memmap.ld"])
+exports_files(["etc/memmap.ld"], visibility = ["//programs/arca:__pkg__", "//fix/shell:__pkg__"])
 
 native_archive(
     name = "start",
@@ -12,6 +12,7 @@ native_archive(
 
 rust_library(
     name = "user",
+    visibility = ["//visibility:public"],
     srcs = glob(["src/**/*.rs"]),
     crate_features = ["allocator"],
     link_deps = [":start"],
