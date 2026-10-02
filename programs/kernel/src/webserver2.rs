@@ -9,7 +9,6 @@ const HANDLER: &[u8] = include_bytes!(env!("ARCA_HANDLER"));
 
 #[kmain]
 fn main() {
-    kthread::wfi();
     let listener = Arc::new(TcpListener::bind(&[0, 0, 0, 0], 8081));
     log::info!("listening on port 8081");
 

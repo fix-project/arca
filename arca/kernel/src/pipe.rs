@@ -1,3 +1,4 @@
+use crate::doorbell::VMToHostDoorBell;
 use crate::kthread;
 use crate::prelude::*;
 use common::pipe::Pipe as RawPipe;
@@ -9,19 +10,19 @@ pub static HOST: KMutex<OnceCell<ControlPipe>> = KMutex::new(OnceCell::new());
 
 #[derive(Debug)]
 pub struct HostPipe {
-    inner: RawPipe,
+    inner: RawPipe<VMToHostDoorBell>,
 }
 
 impl HostPipe {
-    pub fn new(pipe: RawPipe) -> Self {
+    pub fn new(pipe: RawPipe<VMToHostDoorBell>) -> Self {
         Self { inner: pipe }
     }
 
     pub fn read(&mut self, bytes: &mut [u8]) -> PipeResult<usize> {
-        while !self.inner.can_read() {
-            // kthread::wfi();
-            kthread::yield_now();
+        if bytes.is_empty() {
+            return Ok(0);
         }
+        kthread::wait_until(|| self.inner.can_read());
         self.inner.read(bytes)
     }
 
@@ -40,15 +41,11 @@ impl HostPipe {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> PipeResult<usize> {
-        while !self.inner.can_write() {
-            // kthread::wfi();
-            kthread::yield_now();
+        if bytes.is_empty() {
+            return Ok(0);
         }
-        let n = self.inner.write(bytes);
-        // unsafe {
-        //     crate::io::hypercall0(crate::hypercall::NOTIFY_READ);
-        // }
-        n
+        kthread::wait_until(|| self.inner.can_write());
+        self.inner.write(bytes)
     }
 
     pub fn write_exact(&mut self, mut bytes: &[u8]) -> PipeResult<()> {

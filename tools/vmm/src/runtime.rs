@@ -4,22 +4,22 @@ use std::{
     process::ExitCode,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{Scope, ScopedJoinHandle},
     time::{Duration, Instant},
 };
 
-use common::{BuddyAllocator, hypercall};
+use common::{BuddyAllocator, buddy::MEM_BASE, hypercall};
 use elf::{ElfBytes, endian::AnyEndian, segment::ProgramHeader};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, kvm_userspace_memory_region};
-use kvm_ioctls::{IoEventAddress, Kvm, NoDatamatch, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 
 pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
 
-const MEM_BASE: u64 = 0x1_0000_0000;
+use crate::comm::new_pipe;
 
 fn new_cpu<'scope>(
     i: usize,
@@ -291,14 +291,6 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 regs.rax = mem.as_ptr() as u64;
                             }
                         }
-                        hypercall::NOTIFY_READ => {
-                            todo!();
-                            // read_fd.write(1).unwrap();
-                        }
-                        hypercall::NOTIFY_WRITE => {
-                            todo!();
-                            // write_fd.write(1).unwrap();
-                        }
                         x => unimplemented!("hypercall {x}"),
                     };
                     vcpu_fd.set_regs(&regs).unwrap();
@@ -331,9 +323,10 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
 
 pub struct Runtime {
     kvm: Kvm,
-    vm: VmFd,
+    vm: Arc<VmFd>,
     cores: usize,
     elf: Arc<[u8]>,
+    next_pipe_idx: Arc<AtomicUsize>,
 }
 
 impl Runtime {
@@ -372,14 +365,8 @@ impl Runtime {
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-        let kick = EventFd::new(EFD_NONBLOCK).unwrap();
-        let call = EventFd::new(EFD_NONBLOCK).unwrap();
-
         let int = EventFd::new(EFD_NONBLOCK).unwrap();
 
-        vm.register_ioevent(&kick, &IoEventAddress::Pio(0xf4), NoDatamatch)
-            .unwrap();
-        vm.register_irqfd(&call, 0).unwrap();
         vm.register_irqfd(&int, 1).unwrap();
 
         let mut last_time = None;
@@ -400,9 +387,10 @@ impl Runtime {
 
         let mut x = Self {
             kvm,
-            vm,
+            vm: Arc::new(vm),
             cores,
             elf: elf.clone(),
+            next_pipe_idx: Arc::new(AtomicUsize::new(0)),
         };
         x.load_elf(&elf_bytes);
         x
@@ -476,19 +464,21 @@ impl Runtime {
         std::thread::scope(|s| {
             let mut cpus = vec![];
 
-            let (p, q) = common::pipe::pipe(8192);
-            // let read = EventFd::new(0).unwrap();
-            // let write = EventFd::new(0).unwrap();
-            // let read_fd = read.try_clone().unwrap();
-            // let write_fd = write.try_clone().unwrap();
+            let (p, q) = new_pipe(&self.vm, 8192, &self.next_pipe_idx);
+
+            let vm_cl = self.vm.clone();
+            let next_pipe_cl = self.next_pipe_idx.clone();
+
             let comm = s.spawn(move || {
                 crate::comm::control_thread(
+                    vm_cl,
+                    next_pipe_cl,
                     argv,
-                    crate::pipe::ControlPipe::new(crate::pipe::GuestPipe::new(q)),
+                    crate::pipe::ControlPipe::new(q),
                 );
             });
 
-            let (rx, tx) = p.into_inner();
+            let (rx, tx, _, _) = p.into_inner();
             let rx = rx.into_inner();
             let tx = tx.into_inner();
             let (rxp, rxn) = Arc::into_raw_with_allocator(rx).0.to_raw_parts();

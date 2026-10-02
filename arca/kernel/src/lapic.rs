@@ -138,30 +138,20 @@ pub unsafe fn init() {
 
     lapic.set_spurious_interrupt_vector(0xff);
     lapic.set_apic_enabled(true);
-    // TODO: why is this crashing?
-    // lapic.set_divide_configuration(TimerDivider::One);
+    // I/O wakeups do not require the LAPIC timer.
     lapic.set_timer(
         TimerConfig::new()
-            .with_mask(false)
+            .with_mask(true)
             .with_vector(0x20)
-            .with_mode(TimerMode::Periodic),
+            .with_mode(TimerMode::OneShot),
     );
+    lapic.set_initial_count(0);
 
-    // lapic.set_initial_count(0x4000000); // 1s
-
-    // lapic.set_initial_count(0x400000); // 100ms
-
-    lapic.set_initial_count(0x80000); // 10ms
-
-    // lapic.set_initial_count(0x10000); // 1ms
-
-    // lapic.set_initial_count(0x8000); // 500us
-
-    // lapic.set_initial_count(0x2000); // 100us
-
-    // lapic.set_initial_count(0x200); // 10us
-
-    // lapic.set_initial_count(0x40); // 1us
+    // The IOAPIC register selector is shared by all CPUs. Only the boot CPU
+    // programs it; every CPU still initializes its own LAPIC above.
+    if lapic.id() != 0 {
+        return;
+    }
 
     // enable the IOAPIC
     let io_apic_base: *mut u32 = crate::vm::pa2ka(0xFEC00000);
@@ -179,4 +169,11 @@ pub unsafe fn init() {
     win.write_volatile(0x31);
     regsel.write_volatile(0x13); // redirection entry 0-hi
     win.write_volatile(0x00);
+
+    // GSI 2 -> INT 0x32 on every LAPIC (physical broadcast). Kernel threads
+    // can migrate, so every idle scheduler must receive I/O wakeups.
+    regsel.write_volatile(0x14); // redirection entry 0-lo
+    win.write_volatile(0x32);
+    regsel.write_volatile(0x15); // redirection entry 2-hi
+    win.write_volatile(0xff000000);
 }
