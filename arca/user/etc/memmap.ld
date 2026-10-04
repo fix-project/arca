@@ -56,6 +56,8 @@ SECTIONS {
     __stack_top = .;
     . = ALIGN(4096);
   } > memory 
+  __heap_start = __stack_top;
+  __heap_end = 0x40000000;
   /DISCARD/ :
   {
     *(.eh_frame*)

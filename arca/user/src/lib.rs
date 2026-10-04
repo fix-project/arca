@@ -420,18 +420,16 @@ impl Runtime {
 mod allocator {
     use core::ffi::c_void;
 
-    use arca::Entry;
-    use arcane::{__MODE_read_write, arca_compat_mmap, arca_mmap};
+    use arcane::{__MODE_read_write, arca_compat_mmap};
     use spin::{LazyLock, Mutex};
-    use talc::{ClaimOnOom, OomHandler, Span, Talc, Talck};
-
-    use crate::{prelude::Page, write_entry};
+    use talc::{OomHandler, Span, Talc, Talck};
 
     unsafe extern "C" {
-        static __stack_top: c_void;
+        static __heap_start: c_void;
+        static __heap_end: c_void;
     }
     static HEAP: LazyLock<Mutex<usize>> =
-        LazyLock::new(|| Mutex::new(&raw const __stack_top as usize));
+        LazyLock::new(|| Mutex::new(&raw const __heap_start as usize));
 
     #[global_allocator]
     static ALLOCATOR: Talck<spin::Mutex<()>, Mmap> = Talc::new(Mmap).lock();
@@ -440,50 +438,25 @@ mod allocator {
 
     impl OomHandler for Mmap {
         fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
-            // TODO(kmohr) review this
             const PAGE_SIZE: usize = 2 * 1024 * 1024;
-
-            // Calculate the total size needed, considering alignment requirements
-            // TODO(kmohr) I'm just arbitrarily adding 128 bytes
-            // what is the exact amount of space needed for metadata?
             let align = layout.align().max(PAGE_SIZE);
-            let required_size = (layout.size() + 128).max(PAGE_SIZE);
-
-            // Round up to alignment boundary
-            let aligned_size = (required_size + align - 1) & !(align - 1);
-            let pages_needed = aligned_size.div_ceil(PAGE_SIZE);
-            let mut total_size = pages_needed * PAGE_SIZE;
-
+            let required_size = layout.size().checked_add(128).ok_or(())?.max(PAGE_SIZE);
+            let total_size = required_size.checked_next_multiple_of(align).ok_or(())?;
             let mut addr = HEAP.lock();
-            let current_addr = *addr;
-
-            // Align the base address to the required alignment
-            let aligned_base = (current_addr + align - 1) & !(align - 1);
-
-            let page_addr = aligned_base;
-
-            if page_addr + total_size > 1024 * 1024 * 1024 {
-                panic!("Heap growing into mmap region")
+            let base = addr.checked_next_multiple_of(align).ok_or(())?;
+            let end = base.checked_add(total_size).ok_or(())?;
+            if end > &raw const __heap_end as usize {
+                return Err(());
             }
-
             unsafe {
-                let base = page_addr as *mut c_void;
-                let len = arca_compat_mmap(base, total_size, __MODE_read_write);
-                if len < 0 {
-                    panic!("Failed to handle oom");
+                let mapped = arca_compat_mmap(base as *mut c_void, total_size, __MODE_read_write);
+                if mapped < 0 {
+                    return Err(());
                 }
-                total_size = len as usize;
+                assert_eq!(mapped as usize, total_size);
+                talc.claim(Span::new(base as *mut u8, end as *mut u8))?;
             }
-
-            // Claim the entire aligned region for the allocator
-            unsafe {
-                let base = aligned_base as *mut u8;
-                let end = base.add(total_size);
-                talc.claim(Span::new(base, end));
-            }
-
-            // Update heap pointer to after the allocated region
-            *addr = aligned_base + total_size;
+            *addr = end;
             Ok(())
         }
     }
