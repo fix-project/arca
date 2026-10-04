@@ -35,13 +35,3 @@ pub trait Storage {
     fn canonicalize_blob(&self, blob: Blob) -> Option<CanonicalHandle>;
     fn canonicalize_tree(&self, tree: Tree) -> Option<CanonicalHandle>;
 }
-
-/// An object store that is capable of saving and retrieving canonically named Fix objects.
-pub trait CanonicalStorage {
-        /// Name blob contents without storing them. Short blobs remain inline literals.
-    ///
-    /// # Panics
-    /// Panics if the length exceeds the handle's 48-bit size field.
-    fn canonicalize_blob(&self, bytes: &[u8]) -> CanonicalHandle;
-
-}
