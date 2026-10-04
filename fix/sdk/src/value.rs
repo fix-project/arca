@@ -1,4 +1,5 @@
 use crate::{DataType, EncodeType, Error, ValueType};
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 macro_rules! delegate_value {
@@ -239,6 +240,7 @@ pub trait Value {
         self.read_into(0, &mut bytes)?;
         Ok(u64::from_le_bytes(bytes))
     }
+    #[cfg(feature = "alloc")]
     fn read(&self) -> Result<Vec<u8>, Error> {
         let mut bytes = alloc::vec![0; self.len()?];
         self.read_into(0, &mut bytes)?;
@@ -262,6 +264,7 @@ impl<V: Value + ?Sized> Value for &mut V {
     type Type = V::Type;
     delegate_value!(this, &**this);
 }
+#[cfg(feature = "alloc")]
 impl<V: Value + ?Sized> Value for alloc::rc::Rc<V> {
     type Type = V::Type;
     delegate_value!(this, &**this);

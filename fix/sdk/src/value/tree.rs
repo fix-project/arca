@@ -9,6 +9,7 @@ impl<R: Lookup> Handle<Object<Tree>, R> {
             })
         }))
     }
+    #[cfg(feature = "alloc")]
     pub fn children(&self) -> Result<Vec<Handle<Any, Child<&R>>>, Error> {
         Ok(self.iter()?.collect())
     }
@@ -321,6 +322,7 @@ impl<C: Children> CreateTree<C> {
             index,
         })
     }
+    #[cfg(feature = "alloc")]
     pub fn children(&self) -> Vec<Select<&Self>> {
         self.iter().collect()
     }

@@ -1,6 +1,4 @@
 #![no_std]
-#[global_allocator]
-static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 use fix::{Error, Handle, Object, Tree, Value, tree};
 

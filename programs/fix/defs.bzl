@@ -17,17 +17,14 @@ def fix_wat_program(name):
         artifact_visibility = ["//fix/runtime:__pkg__", "//tests/fix:__pkg__"],
     )
 
-def fix_rust_program(name):
+def fix_rust_program(name, alloc = False):
     """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
     rust_shared_library(
         name = name + "_wasm",
         visibility = ["//tests:__pkg__"],
         srcs = [name + ".rs"],
         platform = WASM,
-        deps = [
-            "//fix/sdk",
-            "@crates//:dlmalloc",
-        ],
+        deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"] if alloc else ["//fix/sdk"],
     )
     fix_procedure(
         name = name,

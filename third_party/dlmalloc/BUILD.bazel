@@ -1,0 +1,11 @@
+load("//build:cc.bzl", "cc_object")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_object(
+    name = "wasm",
+    src = "wasm.c",
+    include_roots = ["@dlmalloc_src//file"],
+    compiler = "@local_tools//:clang",
+    copts = ["--target=wasm32", "-mbulk-memory", "-std=c17", "-O2", "-ffreestanding", "-fno-builtin"],
+)

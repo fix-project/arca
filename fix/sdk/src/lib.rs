@@ -1,4 +1,5 @@
 #![no_std]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[panic_handler]
@@ -17,7 +18,6 @@ pub use value::{
 pub use value::{Cons as __Cons, Nil as __Nil, Path};
 
 pub mod files;
-mod resource;
 mod value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,11 +34,8 @@ pub enum Error {
 pub fn __apply(
     callback: impl for<'a> FnOnce(&'a mut Handle<Object<Tree>, Focus>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let resources = resource::Resources::new()?;
     let mut combination = Handle::<Object<Tree>, Focus>::combination();
-    let result = callback(&mut combination);
-    drop(resources);
-    result
+    callback(&mut combination)
 }
 
 #[doc(hidden)]

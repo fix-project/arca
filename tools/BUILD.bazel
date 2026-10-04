@@ -1,7 +1,10 @@
-load("//build:defs.bzl", "wat_module")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("//build:defs.bzl", "FIX_COPTS", "wat_module")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
+
+exports_files(["format.sh", "cc_format.sh", "cc_lint.sh"])
 
 rust_binary(
     name = "bindgen",
@@ -41,4 +44,11 @@ rust_test(
         "POSTPROCESSOR_IMPORT_ONLY": "$(execpath :postprocessor_import_only)",
     },
     timeout = "short",
+)
+
+sh_binary(name = "compile", srcs = ["compile.sh"])
+genrule(
+    name = "fix_copts",
+    outs = ["fix_copts.txt"],
+    cmd = "printf '%s\\n' " + " ".join(FIX_COPTS) + " > $@",
 )

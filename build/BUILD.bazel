@@ -2,6 +2,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "cc.bzl",
+    "cc_checks.bzl",
     "repositories.bzl",
     "rules_rust.patch",
     "blake3-custom-target.patch",

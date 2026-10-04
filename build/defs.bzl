@@ -3,7 +3,10 @@
 load("@rules_cc//cc:cc_import.bzl", "cc_import")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("//build:cc.bzl", "cc_object")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-nostdlib", "-nostartfiles", "-mcmodel=large", "-mno-red-zone", "-march=x86-64-v3", "-static"]
 
 ARCA = "//build/platforms:arca"
 ARCA_USER = "//build/platforms:arca_user"
@@ -52,11 +55,11 @@ def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:et
         visibility = visibility,
     )
 
-def wat_module(name, src, out = None, relocatable = False, debug_names = False):
+def wat_module(name, src, out = None, relocatable = False, debug_names = False, visibility = ["//visibility:private"]):
     """Compile WebAssembly text to a module or relocatable object."""
     native.genrule(
         name = name,
-        visibility = ["//visibility:private"],
+        visibility = visibility,
         srcs = [src],
         outs = [out or name + (".o" if relocatable else ".wasm")],
         cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory --enable-exceptions " +
@@ -107,18 +110,16 @@ def native_archive(name, srcs, hdrs = [], includes = [], compiler = "@local_tool
     """Freestanding x86-64 objects; no Linux CRT or host ABI libraries."""
     objects = []
     for i, src in enumerate(srcs):
-        obj = name + "_%d.o" % i
-        native.genrule(
-            name = name + "_object_%d" % i,
+        obj = name + "_object_%d" % i
+        cc_object(
+            name = obj,
+            src = src,
+            hdrs = hdrs,
+            compiler = compiler,
+            copts = ["-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-mcmodel=large", "-fno-pic", "-g"] + ["-I" + path for path in includes] + copts,
             visibility = ["//visibility:private"],
-            srcs = [src] + hdrs,
-            outs = [obj],
-            tools = [compiler],
-            cmd = "$(execpath " + compiler + ") -c -ffreestanding -fno-stack-protector -mno-red-zone -mcmodel=large -fno-pic -g " +
-                  " ".join(["-I" + p for p in includes] + copts) +
-                  " $(location " + src + ") -o $@",
         )
-        objects.append(obj)
+        objects.append(":" + obj)
     native.genrule(
         name = name + "_archive",
         visibility = ["//visibility:private"],
@@ -235,18 +236,30 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         name = name + "_translate",
         visibility = ["//visibility:private"],
         srcs = [wasm],
-        tools = ["//third_party:wasm2c"],
+        tools = ["//third_party:wasm2c", "//tools:compile"],
         outs = [name + "/module.c", name + "/module.h"],
-        cmd = "$(execpath //third_party:wasm2c) -n module --enable-multi-memory --enable-exceptions $(location " + wasm + ") -o $(location " + name + "/module.c)",
+        cmd = "$(execpath //tools:compile) translate $(execpath //third_party:wasm2c) $(location " + wasm + ") $(location " + name + "/module.c)",
     )
     artifact = name + "_elf" if runnable else name
+    flags = FIX_COPTS + ["-Ifix/shell/inc"]
+    objects = []
+    for index, src in enumerate([name + "/module.c", "//fix/shell:wasm_rt"]):
+        obj = name + "_native_object_%d" % index
+        cc_object(
+            name = obj,
+            src = src,
+            hdrs = [name + "/module.h", "//fix/shell:headers"],
+            include_roots = [name + "/module.h"],
+            copts = flags,
+            visibility = ["//visibility:private"],
+        )
+        objects.append(":" + obj)
     native.genrule(
         name = artifact,
-        srcs = [name + "/module.c", name + "/module.h", "//fix/shell:headers", "//fix/shell:wasm_rt", "//fix/shell:memmap", "//fix/shell:shell"],
-        tools = ["@local_tools//:gcc"],
+        srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
+        tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
         outs = [name + ".elf"],
-        cmd = "$(execpath @local_tools//:gcc) -o $@ -T $(location //fix/shell:memmap) -O2 -fno-optimize-sibling-calls -frounding-math -ffreestanding -nostdlib -nostartfiles -mcmodel=large -mno-red-zone -march=x86-64-v3 -static -Ifix/shell/inc " +
-              "-I$$(dirname $(location " + name + "/module.h)) $(location " + name + "/module.c) $(location //fix/shell:wasm_rt) $(location //fix/shell:shell)",
+        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
         visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:

@@ -1,2 +1,2 @@
-program = @"rust_files"
+program = @"rust_files_native.elf"
 *#(program)

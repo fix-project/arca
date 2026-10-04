@@ -41,6 +41,7 @@ impl<'a, T: FixType> TryFrom<&'a dyn Value<Type = Any>> for Cast<T, &'a dyn Valu
         checked(value)
     }
 }
+#[cfg(feature = "alloc")]
 impl<'a, T: FixType> TryFrom<alloc::rc::Rc<dyn Value<Type = Any> + 'a>>
     for Cast<T, alloc::rc::Rc<dyn Value<Type = Any> + 'a>>
 {

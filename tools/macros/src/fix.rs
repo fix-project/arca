@@ -8,9 +8,11 @@ pub fn apply(_attr: TokenStream, item: TokenStream) -> TokenStream {
     quote! {
         #item
         #[unsafe(export_name = "_fix_apply_inner")]
-        pub extern "C" fn __fix_apply() {
-            ::fix::__apply(|combination| ::fix::__finish(#callback(combination)?))
-                .expect("Fix apply failed");
+        pub extern "C" fn __fix_apply() -> u32 {
+            match ::fix::__apply(|combination| ::fix::__finish(#callback(combination)?)) {
+                Ok(()) => 0,
+                Err(error) => error as u32,
+            }
         }
     }
     .into()

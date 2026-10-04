@@ -187,9 +187,16 @@ fix_handle fix_sdk_value(void) {
     return output;
 }
 
-extern void _fix_apply_inner(void);
-__attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
+extern uint32_t _fix_apply_inner(void);
+__attribute__((export_name("_fix_apply"))) fix_handle
+_fix_apply(fix_handle input) {
     fix_sdk_input(input);
-    _fix_apply_inner();
-    return fix_sdk_value();
+    if (fix_sdk_begin())
+        __builtin_trap();
+    uint32_t error = _fix_apply_inner();
+    fix_handle output = fix_sdk_value();
+    fix_sdk_reset();
+    if (error)
+        __builtin_trap();
+    return output;
 }

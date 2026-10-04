@@ -4,18 +4,6 @@ use fix::{
     files::{self, Stat},
     tree,
 };
-#[global_allocator]
-static ALLOCATOR: NoAllocation = NoAllocation;
-struct NoAllocation;
-unsafe impl core::alloc::GlobalAlloc for NoAllocation {
-    unsafe fn alloc(&self, _: core::alloc::Layout) -> *mut u8 {
-        core::arch::wasm32::unreachable()
-    }
-    unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {
-        core::arch::wasm32::unreachable()
-    }
-}
-
 #[fix::apply]
 fn apply<'a>(
     combination: &'a mut Handle<Object<Tree>, fix::Focus>,

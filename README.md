@@ -6,8 +6,8 @@ kernel.
 ## Build
 
 Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
-Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
-`BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
+Clang/libclang, clang-format, clang-tidy, and Bash.
+Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
 ```sh
 git submodule update --init --recursive
@@ -15,6 +15,7 @@ bazel query //... --output=label_kind
 bazel build //:artifacts
 bazel test -- //... -//coupon/...
 bazel test //tests:format //tests:lint
+bazel run //:format
 bazel run //programs/kernel:hello -- Ada
 bazel run //programs/arca:add -- tuple:word:2,word:3
 bazel run //programs/fix:addblob -- 2u64 3u64
@@ -35,9 +36,10 @@ with its soft-float ABI.
 
 ## Formatting
 
-Apply rustfmt across the repository:
+Format Rust throughout the codebase and C SDK sources:
+
 ```sh
-bazel run @rules_rust//tools/rustfmt:target_aware_rustfmt
+bazel run //:format
 ```
 
 ## rust-analyzer

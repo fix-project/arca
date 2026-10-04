@@ -44,7 +44,7 @@ rust_shared_library(
     crate_name = "sdk_expressions",
     crate_root = "sdk_expressions.rs",
     platform = WASM,
-    deps = ["//fix/sdk", "@crates//:dlmalloc"],
+    deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
 )
 
 fix_procedure(
@@ -74,7 +74,7 @@ rust_shared_library(
     name = "wat_linkage_wasm",
     srcs = ["wat_linkage.rs"],
     platform = WASM,
-    deps = ["//fix/sdk", "@crates//:dlmalloc"],
+    deps = ["//fix/sdk"],
     link_deps = [":wat_operations"],
 )
 

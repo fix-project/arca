@@ -1,0 +1,2 @@
+program = @"c_bindings_native.elf"
+*#(program)

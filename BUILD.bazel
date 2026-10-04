@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
 load("//programs/fix:defs.bzl", "FIX_PROGRAMS", "FIX_RUST_PROGRAMS")
 load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
@@ -40,4 +41,9 @@ test_suite(
         "//programs/kernel:threads_test",
         "//tests/fix:tests",
     ],
+)
+
+sh_binary(
+    name = "format",
+    srcs = ["//tools:format.sh"],
 )

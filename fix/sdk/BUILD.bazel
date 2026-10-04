@@ -1,8 +1,28 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
 load("//build:cc.bzl", "cc_object")
+load("//build:cc_checks.bzl", "cc_format", "cc_lint_test")
 load("//build:defs.bzl", "WASM", "fix_procedure", "vm_test", "wasm_library")
+load(":defs.bzl", "SDK_WARNINGS", "fix_cc_wasm", "sdk_copts")
 
 package(default_visibility = ["//visibility:public"])
+
+exports_files(["defs.bzl"])
+
+cc_format(
+    name = "format",
+    srcs = glob(["include/*.h", "src/*.c", "tests/*.c"]),
+    style = ".clang-format",
+)
+
+cc_lint_test(
+    name = "c_lint_test",
+    srcs = glob(["src/*.c", "tests/*.c"]),
+    hdrs = [":headers"],
+    config = ".clang-tidy",
+    copts = sdk_copts() + SDK_WARNINGS,
+)
+
+test_suite(name = "lint", tests = [":c_lint_test"])
 
 filegroup(
     name = "headers",
@@ -20,7 +40,7 @@ cc_object(
     src = "src/rust.c",
     hdrs = [":headers"],
     compiler = "@local_tools//:clang",
-    copts = ["--target=wasm32", "-mreference-types", "-mbulk-memory", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib", "-Ifix/sdk/include", "-Wall", "-Wextra", "-Werror"],
+    copts = sdk_copts() + SDK_WARNINGS,
 )
 
 wasm_library(
@@ -29,14 +49,26 @@ wasm_library(
     target_compatible_with = ["@platforms//cpu:wasm32"],
 )
 
-rust_library(
-    name = "sdk",
-    srcs = glob(["src/**/*.rs"]),
-    crate_name = "fix",
-    deps = [":types"],
-    link_deps = [":rust_runtime"],
-    proc_macro_deps = ["//tools/macros"],
-    target_compatible_with = ["@platforms//cpu:wasm32"],
+[
+    rust_library(
+        name = name,
+        srcs = glob(["src/**/*.rs"]),
+        crate_name = "fix",
+        crate_features = features,
+        deps = [":types"],
+        link_deps = [":rust_runtime"],
+        proc_macro_deps = ["//tools/macros"],
+        target_compatible_with = ["@platforms//cpu:wasm32"],
+    )
+    for name, features in [("sdk", []), ("sdk_alloc", ["alloc"])]
+]
+
+fix_cc_wasm(
+    name = "c_bindings_wasm",
+    srcs = ["tests/bindings.c"],
+    memories = 3,
+    tables = 4,
+    copts = SDK_WARNINGS,
 )
 
 rust_shared_library(
@@ -54,17 +86,7 @@ rust_shared_library(
         memories = 2 if name == "rust_files" else None,
         tables = 2 if name == "rust_files" else None,
     )
-    for name in ["rust_files"]
-]
-
-[
-    genrule(
-        name = name + "_fixture",
-        srcs = [":" + name + "_native"],
-        outs = [name],
-        cmd = "cp $< $@",
-    )
-    for name in ["rust_files"]
+    for name in ["c_bindings", "rust_files"]
 ]
 
 [
@@ -73,12 +95,12 @@ rust_shared_library(
         size = "large",
         timeout = "short",
         args = ["eval", name + ".fix"],
-        data = [":" + name + "_fixture", "tests/" + name + ".fix"],
+        data = [":" + name + "_native", "tests/" + name + ".fix"],
         expected_output = ["as a u64: 42"],
         kernel = "//fix/runtime:image_elf",
         tags = ["kvm", "local"],
     )
-    for name in ["rust_files"]
+    for name in ["c_bindings", "rust_files"]
 ]
 
-test_suite(name = "tests", tests = [":rust_files_test"])
+test_suite(name = "tests", tests = [":c_bindings_test", ":rust_files_test"])

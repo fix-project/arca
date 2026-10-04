@@ -27,15 +27,18 @@ CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"] + [
 ]
 
 rustfmt_test(
-    name = "format",
+    name = "rust_format",
     tags = ["manual"],
     targets = CHECKS,
     transitive = True,
 )
 
 rust_clippy_test(
-    name = "lint",
+    name = "rust_lint",
     tags = ["manual"],
     targets = CHECKS,
     transitive = True,
 )
+
+test_suite(name = "format", tags = ["manual"], tests = [":rust_format", "//fix/sdk:format_test"])
+test_suite(name = "lint", tags = ["manual"], tests = [":rust_lint", "//fix/sdk:lint"])

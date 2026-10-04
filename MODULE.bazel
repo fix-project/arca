@@ -95,3 +95,12 @@ http_archive(
     strip_prefix = "rust-src-nightly/rust-src/lib/rustlib/src/rust/library",
     build_file_content = 'filegroup(name = "sources", srcs = glob(["**"]), visibility = ["//visibility:public"])\nexports_files(["core/src/lib.rs"])',
 )
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "dlmalloc_src",
+    urls = ["https://gee.cs.oswego.edu/pub/misc/malloc.c"],
+    sha256 = "be7be56b40b4b31417e74e77687f9b96127ea6cae534cf236aee40a4c739508d",
+    downloaded_file_path = "malloc.c",
+)

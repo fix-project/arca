@@ -11,7 +11,7 @@ rust_shared_library(
     crate_root = "src/lib.rs",
     platform = WASM,
     deps = [
-        "//fix/sdk",
+        "//fix/sdk:sdk_alloc",
         "@crates//:dlmalloc",
         "@crates//:hex",
     ],
