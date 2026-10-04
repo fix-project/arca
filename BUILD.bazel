@@ -12,6 +12,7 @@ filegroup(
         "//programs/arca:webserver",
         "//programs/arca:webserver2",
         "//programs/fix/parser:parser",
+        "//programs/flatware:programs",
         "//tools/vmm",
     ] + ["//programs/fix/" + language + ":programs" for language in ["wat", "c", "rust"]] + ["//programs/arca:" + name for name in ARCA_PROGRAMS] + [
         "//programs/arca:" + name + "_elf" for name in ARCA_COMBINATORS
@@ -25,10 +26,10 @@ test_suite(
     tests = [
         "//arca/api:tests",
         "//fix/handle:tests",
+        "//tests/flatware:filesystem_test",
         "//lib/common:tests",
         "//tools/vmm:tests",
         "//tools:postprocess_test",
-        "//tests/flatware:filesystem_test",
     ],
 )
 

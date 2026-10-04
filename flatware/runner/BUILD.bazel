@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//build:defs.bzl", "guest_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "protocol",
+    srcs = ["protocol.rs"],
+    crate_name = "flatware_protocol",
+    deps = ["@crates//:serde"],
+)
+
+rust_binary(
+    name = "binary",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [":protocol", "@crates//:anyhow", "@crates//:clap", "@crates//:postcard"],
+)
+
+guest_binary(
+    name = "kernel_elf",
+    srcs = ["kernel.rs"],
+    linker_script = "//fix/runtime:etc/memmap.ld",
+    deps = [":protocol", "//arca/kernel", "//fix/runtime:runtime", "@crates//:postcard"],
+)

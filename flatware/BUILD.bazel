@@ -1,3 +1,4 @@
+load("//flatware/runner:defs.bzl", "flatware_run")
 load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("//build:defs.bzl", "wat_module")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
@@ -22,3 +23,4 @@ rust_binary(
 
 wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
 
+flatware_run(name = "run")

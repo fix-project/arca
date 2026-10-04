@@ -61,7 +61,7 @@ vm_test(
 
 test_suite(
     name = "tests",
-    tests = [":flatware_guest_test", ":flatware_return_status_test", ":filesystem_test"],
+    tests = [":flatware_guest_test", ":flatware_return_status_test", ":filesystem_test", ":runner_test"],
 )
 
 cc_test(
@@ -72,3 +72,27 @@ cc_test(
     additional_compiler_inputs = ["//fix/sdk:headers"],
 )
 
+rust_binary(
+    name = "runner_probe_wasm",
+    srcs = ["runner_probe.rs"],
+    edition = "2024",
+    platform = "//build/platforms:wasip1",
+    rustc_flags = ["-Copt-level=2"],
+)
+
+sh_test(
+    name = "runner_test",
+    srcs = ["runner_test.sh"],
+    args = ["$(rootpath " + target + ")" for target in [
+        "//flatware:run",
+        ":runner_probe_wasm",
+        "//programs/flatware:ls",
+        "//programs/flatware:wc",
+        "//programs/flatware:cat",
+        "//programs/flatware:head",
+    ]],
+    data = [":runner_probe_wasm", "//flatware:run"] + ["//programs/flatware:" + name for name in ["ls", "wc", "cat", "head"]],
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local"],
+)

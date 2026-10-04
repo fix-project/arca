@@ -1,0 +1,32 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//flatware:defs.bzl", "flatware_procedure")
+
+package(default_visibility = ["//visibility:public"])
+
+PROGRAMS = ["ls", "wc", "cat", "head"]
+
+filegroup(
+    name = "programs",
+    srcs = [":" + name for name in PROGRAMS],
+)
+
+[
+    rust_binary(
+        name = name + "_wasm",
+        srcs = [name + ".rs"],
+        edition = "2024",
+        platform = "//build/platforms:wasip1",
+        rustc_flags = ["-Copt-level=2"],
+    )
+    for name in PROGRAMS
+]
+
+[
+    flatware_procedure(
+        name = name,
+        wasm = ":" + name + "_wasm",
+        runnable = True,
+        artifact_visibility = ["//tests/flatware:__pkg__"],
+    )
+    for name in PROGRAMS
+]
