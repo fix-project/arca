@@ -168,17 +168,27 @@ impl Blob {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn is_canonical(&self) -> bool {
+        match self {
+            Blob::Literal(_) => true,
+            Blob::Blob(name) => matches!(
+                name.name(),
+                PotentiallyCanonicalName::Canonical(_)
+            ),
+        }
+    }
 }
 
 #[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
 #[try_unwrap(ref)]
-pub enum PotentiallyConincalName {
+pub enum PotentiallyCanonicalName {
     Local(RawName),
     Canonical(RawName),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
-pub struct BlobName(PotentiallyConincalName);
+pub struct BlobName(PotentiallyCanonicalName);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
 pub struct LiteralName {
@@ -192,18 +202,18 @@ pub struct TreeName(RawName);
 impl BlobName {
     /// # Safety
     /// This name must be valid within the scope of the storage(s) it'll be used with.
-    pub unsafe fn new(name: PotentiallyConincalName) -> Self {
+    pub unsafe fn new(name: PotentiallyCanonicalName) -> Self {
         Self(name)
     }
 
-    pub fn name(&self) -> PotentiallyConincalName {
+    pub fn name(&self) -> PotentiallyCanonicalName {
         self.0
     }
 
     pub fn len(&self) -> usize {
         match self.0 {
-            PotentiallyConincalName::Local(raw) => raw.size.to_primitive() as usize,
-            PotentiallyConincalName::Canonical(raw) => raw.size.to_primitive() as usize,
+            PotentiallyCanonicalName::Local(raw) => raw.size.to_primitive() as usize,
+            PotentiallyCanonicalName::Canonical(raw) => raw.size.to_primitive() as usize,
         }
     }
 
@@ -256,14 +266,14 @@ impl TreeName {
 }
 
 impl common::bitpack::BitPack for BlobName {
-    const TAGBITS: u32 = PotentiallyConincalName::TAGBITS;
+    const TAGBITS: u32 = PotentiallyCanonicalName::TAGBITS;
 
     fn pack(&self) -> [u8; 32] {
         self.0.pack()
     }
 
     fn unpack(content: [u8; 32]) -> Self {
-        unsafe { Self::new(PotentiallyConincalName::unpack(content)) }
+        unsafe { Self::new(PotentiallyCanonicalName::unpack(content)) }
     }
 }
 

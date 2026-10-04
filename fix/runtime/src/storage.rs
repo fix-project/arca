@@ -10,9 +10,31 @@ pub mod memory;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct CanonicalHandle(Handle);
 
-impl From<CanonicalHandle> for Handle {
-    fn from(canonical: CanonicalHandle) -> Self {
-        canonical.0
+impl CanonicalHandle { 
+    /// # Safety
+    /// `Handle` must be canonicalized.
+    /// For blobs this means being an inline literal or containing a canonical name,
+    /// For trees this means all children `Handle`s must be canonicalized.
+    pub unsafe fn new(handle: Handle) -> Self {
+        Self(handle)
+    }
+}
+
+impl TryFrom<Blob> for CanonicalHandle {
+    type Error = Blob;
+
+    fn try_from(blob: Blob) -> Result<Self, Self::Error> {
+        if blob.is_canonical() {
+            Ok(Self(blob.into()))
+        } else {
+            Err(blob)
+        }
+    }
+}
+
+impl core::hash::Hash for CanonicalHandle {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        state.write(&self.0.pack());
     }
 }
 
