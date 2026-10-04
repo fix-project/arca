@@ -1,0 +1,3 @@
+fib = @"fib"
+add = @"addblob"
+*#(fib 6u64 add)

@@ -1,5 +1,6 @@
-load(":defs.bzl", "FIX_PROGRAMS", "fix_wat_program")
+load(":defs.bzl", "FIX_PROGRAMS", "FIX_RUST_PROGRAMS", "fix_rust_program", "fix_wat_program")
 
 package(default_visibility = ["//visibility:private"])
 
 [fix_wat_program(name = name) for name in FIX_PROGRAMS]
+[fix_rust_program(name = name) for name in FIX_RUST_PROGRAMS]

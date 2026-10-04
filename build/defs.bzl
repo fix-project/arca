@@ -160,11 +160,11 @@ if [[ "$#" -eq 0 ]]; then
     echo "Pass one or more Fix expressions after --." >&2
     exit 2
 fi
-printf '(let ((program @"%%s")) *#(program' "$work/program.elf" > "$work/program.fix"
+printf 'program = @"%%s"\\n*#(program' "$work/program.elf" > "$work/program.fix"
 for arg in "$@"; do
     printf ' %%s' "$arg" >> "$work/program.fix"
 done
-printf '))\\n' >> "$work/program.fix"
+printf ')\\n' >> "$work/program.fix"
 "$vmm" "$kernel" --smp 2 eval "$work/program.fix"
 """ % (ctx.workspace_name, vmm.short_path, kernel.short_path, program.short_path)
     ctx.actions.write(script, content, is_executable = True)

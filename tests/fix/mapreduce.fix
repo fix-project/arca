@@ -1,0 +1,9 @@
+-- adapted from fix/src/test/test-countwords.cc
+mapreduce = @"mapreduce"
+count_words = @"count_words"
+add = @"addblob"
+goal = "the"
+*#(mapreduce count_words add (
+    (goal "the quick brown fox jumps over the lazy dog")
+    (goal "it was the best of times, it was the worst of times")
+))
