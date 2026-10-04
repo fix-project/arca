@@ -33,6 +33,13 @@ calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
 sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
+## Formatting
+
+Apply rustfmt across the repository:
+```sh
+bazel run @rules_rust//tools/rustfmt:target_aware_rustfmt
+```
+
 ## rust-analyzer
 
 Generate the ignored `rust-project.json` after changing Rust targets or the

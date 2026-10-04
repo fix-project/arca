@@ -168,10 +168,24 @@ impl Blob {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn is_canonical(&self) -> bool {
+        match self {
+            Blob::Literal(_) => true,
+            Blob::Blob(name) => matches!(name.name(), PotentiallyCanonicalName::Canonical(_)),
+        }
+    }
+}
+
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
+#[try_unwrap(ref)]
+pub enum PotentiallyCanonicalName {
+    Local(RawName),
+    Canonical(RawName),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
-pub struct BlobName(RawName);
+pub struct BlobName(PotentiallyCanonicalName);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
 pub struct LiteralName {
@@ -185,16 +199,19 @@ pub struct TreeName(RawName);
 impl BlobName {
     /// # Safety
     /// This name must be valid within the scope of the storage(s) it'll be used with.
-    pub unsafe fn new(name: RawName) -> Self {
+    pub unsafe fn new(name: PotentiallyCanonicalName) -> Self {
         Self(name)
     }
 
-    pub fn name(&self) -> RawName {
+    pub fn name(&self) -> PotentiallyCanonicalName {
         self.0
     }
 
     pub fn len(&self) -> usize {
-        self.0.size.to_primitive() as usize
+        match self.0 {
+            PotentiallyCanonicalName::Local(raw) => raw.size.to_primitive() as usize,
+            PotentiallyCanonicalName::Canonical(raw) => raw.size.to_primitive() as usize,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -246,14 +263,14 @@ impl TreeName {
 }
 
 impl common::bitpack::BitPack for BlobName {
-    const TAGBITS: u32 = 240;
+    const TAGBITS: u32 = PotentiallyCanonicalName::TAGBITS;
 
     fn pack(&self) -> [u8; 32] {
-        self.0.into()
+        self.0.pack()
     }
 
     fn unpack(content: [u8; 32]) -> Self {
-        unsafe { Self::new(RawName::forge(content)) }
+        unsafe { Self::new(PotentiallyCanonicalName::unpack(content)) }
     }
 }
 
@@ -356,6 +373,18 @@ impl RawName {
         bytes[24..30].copy_from_slice(&size[..6]);
         bytes[30..32].copy_from_slice(&self.meta.to_le_bytes());
         bytes
+    }
+}
+
+impl common::bitpack::BitPack for RawName {
+    const TAGBITS: u32 = 240;
+
+    fn pack(&self) -> [u8; 32] {
+        self.as_bytes()
+    }
+
+    fn unpack(content: [u8; 32]) -> Self {
+        Self::forge(content)
     }
 }
 

@@ -16,7 +16,9 @@ DEPS = [
     "@crates//:async-lock",
     "@crates//:hex",
     "@crates//:bitint",
+    "@crates//:blake3",
     "@crates//:crossbeam-queue",
+    "@crates//:hashbrown",
 ]
 
 rust_library(
