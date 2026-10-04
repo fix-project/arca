@@ -172,10 +172,7 @@ impl Blob {
     pub fn is_canonical(&self) -> bool {
         match self {
             Blob::Literal(_) => true,
-            Blob::Blob(name) => matches!(
-                name.name(),
-                PotentiallyCanonicalName::Canonical(_)
-            ),
+            Blob::Blob(name) => matches!(name.name(), PotentiallyCanonicalName::Canonical(_)),
         }
     }
 }

@@ -63,12 +63,13 @@ impl Storage for MemoryStorage {
                 let mut i = [0; 8];
                 i.copy_from_slice(&raw.name[0..8]);
                 !usize::from_le_bytes(i)
-            },
+            }
             PotentiallyCanonicalName::Canonical(_) => {
                 let canonical = CanonicalHandle::try_from(blob).expect("blob is canonical");
                 let canonicals = self.canonicals.lock();
-                canonicals.get(&canonical)?.clone()
-            },
+                let i = canonicals.get(&canonical)?;
+                *i
+            }
         };
 
         let blobs = self.blobs.lock();
@@ -85,13 +86,17 @@ impl Storage for MemoryStorage {
 
     fn canonicalize_blob(&self, blob: Blob) -> Option<CanonicalHandle> {
         if blob.is_canonical() {
-            return Some(unsafe { CanonicalHandle::new(blob.into()) })
+            return Some(unsafe { CanonicalHandle::new(blob.into()) });
         }
 
         // Everything at this point is a local, non-literal blob.
         // We need to get the memory index for the blob to insert into the canonicals map
-        let Blob::Blob(local_name) = blob else { unreachable!() };
-        let PotentiallyCanonicalName::Local(raw) = local_name.name() else { unreachable!() };
+        let Blob::Blob(local_name) = blob else {
+            unreachable!()
+        };
+        let PotentiallyCanonicalName::Local(raw) = local_name.name() else {
+            unreachable!()
+        };
         let mut i = [0; 8];
         i.copy_from_slice(&raw.name[0..8]);
         let index = !usize::from_le_bytes(i);
@@ -100,7 +105,7 @@ impl Storage for MemoryStorage {
         // we already need the index later when we store it in the map anyway
         let blobs = self.blobs.lock();
         let bytes = blobs.get(index)?;
-        
+
         // Take the first 24 bytes of blake3 content hash
         let hash = blake3::hash(bytes.as_ref());
         let len = bytes.len();
@@ -118,7 +123,10 @@ impl Storage for MemoryStorage {
 
         let canonicalized_blob = Blob::Blob(unsafe { BlobName::new(canonicalized) });
         let canonical_handle = unsafe { CanonicalHandle::new(canonicalized_blob.into()) };
-        self.canonicals.lock().entry(canonical_handle).or_insert(index);
+        self.canonicals
+            .lock()
+            .entry(canonical_handle)
+            .or_insert(index);
         Some(canonical_handle)
     }
 
