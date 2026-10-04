@@ -170,8 +170,15 @@ impl Blob {
     }
 }
 
+#[derive(BitPack, Debug, Copy, Clone, Eq, PartialEq, TryUnwrap, Unwrap)]
+#[try_unwrap(ref)]
+pub enum PotentiallyConincalName {
+    Local(RawName),
+    Canonical(RawName),
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
-pub struct BlobName(RawName);
+pub struct BlobName(PotentiallyConincalName);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, From, Into)]
 pub struct LiteralName {
@@ -185,16 +192,19 @@ pub struct TreeName(RawName);
 impl BlobName {
     /// # Safety
     /// This name must be valid within the scope of the storage(s) it'll be used with.
-    pub unsafe fn new(name: RawName) -> Self {
+    pub unsafe fn new(name: PotentiallyConincalName) -> Self {
         Self(name)
     }
 
-    pub fn name(&self) -> RawName {
+    pub fn name(&self) -> PotentiallyConincalName {
         self.0
     }
 
     pub fn len(&self) -> usize {
-        self.0.size.to_primitive() as usize
+        match self.0 {
+            PotentiallyConincalName::Local(raw) => raw.size.to_primitive() as usize,
+            PotentiallyConincalName::Canonical(raw) => raw.size.to_primitive() as usize,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -249,7 +259,10 @@ impl common::bitpack::BitPack for BlobName {
     const TAGBITS: u32 = 240;
 
     fn pack(&self) -> [u8; 32] {
-        self.0.into()
+        match self.0 {
+            PotentiallyConincalName::Local(raw) => raw.into(),
+            PotentiallyConincalName::Canonical(raw) => raw.into(),
+        }
     }
 
     fn unpack(content: [u8; 32]) -> Self {
