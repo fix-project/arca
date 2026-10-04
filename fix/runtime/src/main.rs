@@ -132,6 +132,29 @@ fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
 mod tests {
     use super::*;
 
+    #[test_case]
+    fn canonical_blob_round_trip() {
+        let storage = storage::memory::MemoryStorage::default();
+        let bytes = [42u8; 64];
+        let local = storage.add_blob(&bytes);
+        let canonical = storage.canonicalize_blob(local).unwrap();
+        let handle = Handle::from(canonical);
+        let Handle::Object(Object::Blob(blob)) = handle else {
+            panic!("expected a blob");
+        };
+        assert_eq!(storage.get_blob(blob).unwrap().as_ref(), &bytes);
+
+        let duplicate = storage.add_blob(&bytes);
+        assert_ne!(local, duplicate);
+        assert_eq!(storage.canonicalize_blob(duplicate), Some(canonical));
+
+        let Handle::Object(Object::Blob(decoded)) = Handle::unpack(handle.pack()) else {
+            panic!("expected a blob after serialization");
+        };
+        assert_eq!(CanonicalHandle::try_from(decoded).unwrap(), canonical);
+        assert_eq!(storage.get_blob(decoded).unwrap().as_ref(), &bytes);
+    }
+
     fn eval_value(source: &str, evaluator: &Evaluator<FixOnArca>) -> Vec<u8> {
         match eval_program(source, evaluator) {
             Handle::Object(Object::Blob(blob)) => {
