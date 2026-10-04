@@ -256,17 +256,14 @@ impl TreeName {
 }
 
 impl common::bitpack::BitPack for BlobName {
-    const TAGBITS: u32 = 240;
+    const TAGBITS: u32 = PotentiallyConincalName::TAGBITS;
 
     fn pack(&self) -> [u8; 32] {
-        match self.0 {
-            PotentiallyConincalName::Local(raw) => raw.into(),
-            PotentiallyConincalName::Canonical(raw) => raw.into(),
-        }
+        self.0.pack()
     }
 
     fn unpack(content: [u8; 32]) -> Self {
-        unsafe { Self::new(RawName::forge(content)) }
+        unsafe { Self::new(PotentiallyConincalName::unpack(content)) }
     }
 }
 
@@ -369,6 +366,18 @@ impl RawName {
         bytes[24..30].copy_from_slice(&size[..6]);
         bytes[30..32].copy_from_slice(&self.meta.to_le_bytes());
         bytes
+    }
+}
+
+impl common::bitpack::BitPack for RawName {
+    const TAGBITS: u32 = 240;
+
+    fn pack(&self) -> [u8; 32] {
+        self.as_bytes()
+    }
+
+    fn unpack(content: [u8; 32]) -> Self {
+        Self::forge(content)
     }
 }
 
