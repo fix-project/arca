@@ -1,0 +1,5 @@
+load("//programs/fix:defs.bzl", "fix_language_programs")
+
+package(default_visibility = ["//visibility:public"])
+
+fix_language_programs("c")

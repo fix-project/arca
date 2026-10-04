@@ -1,6 +1,9 @@
 load(":defs.bzl", "FIX_PROGRAMS", "fix_rust_program", "fix_wat_program")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:private"])
+
+exports_files(glob(["fixtures/*.fix"]))
 
 [fix_wat_program(name = name) for name in FIX_PROGRAMS]
 fix_rust_program(name = "map")
@@ -9,3 +12,24 @@ fix_rust_program(name = "fib")
 fix_rust_program(name = "count_words", alloc = True)
 fix_rust_program(name = "bptree_get", alloc = True)
 fix_rust_program(name = "bptree_get_n", alloc = True)
+
+sh_test(
+    name = "tests",
+    visibility = ["//:__pkg__"],
+    srcs = ["tests.sh"],
+    args = ["$(rootpath :addblob)"],
+    data = [":addblob"],
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)
+
+sh_test(
+    name = "run_test",
+    srcs = ["run_test.sh"],
+    args = ["$(rootpath //programs/fix/c:blob)", "$(rootpath //programs/fix/c:add)"],
+    data = ["//programs/fix/c:blob", "//programs/fix/c:add"],
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)

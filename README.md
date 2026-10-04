@@ -24,8 +24,9 @@ bazel run //fix/runtime:fix -- eval path/to/program.fix
 
 Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 `null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
-The `map` and `curry` combinators provide only `_elf` targets. The SIMD probe is
-a test fixture; SIMD and combinator tests run with `bazel test //arca/kernel:tests`.
+The `map` and `curry` combinators provide only `_elf` targets. Test fixtures live
+under `//tests`; SIMD and combinator tests run with `bazel test //arca/kernel:tests`.
+Integration tests for standalone programs can live beside those programs.
 
 Use `--config=release` for optimized builds.
 

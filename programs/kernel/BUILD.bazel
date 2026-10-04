@@ -38,19 +38,3 @@ vm_test(
         "local",
     ],
 )
-
-vm_test(
-    name = "threads_test",
-    visibility = ["//:__pkg__"],
-    size = "large",
-    timeout = "short",
-    expected_output = [
-        "thread 1 says 4",
-        "thread 2 says 104",
-    ],
-    kernel = ":threads_image",
-    tags = [
-        "kvm",
-        "local",
-    ],
-)

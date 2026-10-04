@@ -1,0 +1,33 @@
+load("//build:defs.bzl", "guest_binary", "vm_test")
+
+package(default_visibility = ["//:__pkg__"])
+
+guest_binary(
+    name = "threads_image",
+    testonly = True,
+    visibility = ["//tests:__pkg__"],
+    srcs = ["threads.rs"],
+    linker_script = "//arca/kernel:etc/memmap.ld",
+    proc_macro_deps = ["//tools/macros"],
+    deps = [
+        "//arca/api",
+        "//arca/kernel",
+        "//lib/common",
+        "@crates//:log",
+        "@crates//:postcard",
+    ],
+)
+
+vm_test(
+    name = "threads_test",
+    size = "large",
+    timeout = "short",
+    expected_output = ["thread 1 says 4", "thread 2 says 104"],
+    kernel = ":threads_image",
+    tags = ["kvm", "local"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [":threads_test"],
+)

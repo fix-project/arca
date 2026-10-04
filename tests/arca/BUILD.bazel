@@ -1,0 +1,11 @@
+load("//build:defs.bzl", "ARCA_USER", "guest_binary")
+
+guest_binary(
+    name = "simd_elf",
+    testonly = True,
+    visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],
+    srcs = ["simd.rs"],
+    linker_script = "//arca/user:etc/memmap.ld",
+    platform = ARCA_USER,
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)

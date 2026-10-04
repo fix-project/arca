@@ -1,4 +1,5 @@
 load(":defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS", "arca_elf", "arca_program")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -14,6 +15,17 @@ package(default_visibility = ["//visibility:private"])
     for name in ["webserver", "webserver2"]
 ]
 
+sh_test(
+    name = "tests",
+    visibility = ["//:__pkg__"],
+    srcs = ["tests.sh"],
+    args = ["$(rootpath :" + name + ")" for name in ["add", "identity", "null", "io"]],
+    data = [":" + name for name in ARCA_PROGRAMS],
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)
+
 [
     alias(
         name = name,
@@ -22,10 +34,3 @@ package(default_visibility = ["//visibility:private"])
     )
     for name in ["webserver", "webserver2"]
 ]
-
-# Embedded by the kernel tests to exercise SIMD state across process switches.
-arca_elf(
-    name = "simd",
-    testonly = True,
-    visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],
-)

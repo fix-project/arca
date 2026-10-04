@@ -15,7 +15,8 @@ GUEST = [
     "//fix/runtime:image_elf",
     "//arca/kernel:test_image",
     "//fix/runtime:test_image",
-    "//programs/arca:simd_elf",
+    "//tests/arca:simd_elf",
+    "//tests/kernel:threads_image",
 ] + ["//programs/kernel:" + name + "_image" for name in KERNEL_PROGRAMS] + [
     "//programs/arca:" + name + "_elf" for name in ARCA_PROGRAMS + ARCA_COMBINATORS + ["webserver", "webserver2"]
 ] + [

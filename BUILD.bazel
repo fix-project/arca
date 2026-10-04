@@ -13,7 +13,7 @@ filegroup(
         "//programs/arca:webserver2",
         "//programs/fix/parser:parser",
         "//tools/vmm",
-    ] + ["//programs/arca:" + name for name in ARCA_PROGRAMS] + [
+    ] + ["//programs/fix/" + language + ":programs" for language in ["wat", "c", "rust"]] + ["//programs/arca:" + name for name in ARCA_PROGRAMS] + [
         "//programs/arca:" + name + "_elf" for name in ARCA_COMBINATORS
     ] + [
         "//programs/fix:" + name for name in FIX_PROGRAMS + FIX_RUST_PROGRAMS
@@ -38,9 +38,12 @@ test_suite(
         "//arca/kernel:tests",
         "//fix/runtime:tests",
         "//programs/kernel:hello_test",
-        "//programs/kernel:threads_test",
+        "//programs/fix:tests",
+        "//programs/fix:run_test",
+        "//programs/arca:tests",
+        "//tests/kernel:tests",
         "//tests/fix:tests",
-    ],
+    ] + ["//programs/fix/" + language + ":tests" for language in ["wat", "c", "rust"]],
 )
 
 sh_binary(

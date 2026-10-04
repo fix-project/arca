@@ -5,12 +5,11 @@ load("//build:defs.bzl", "ARCA_USER", "guest_binary", "kernel_program")
 ARCA_PROGRAMS = ["add", "identity", "io", "null"]
 ARCA_COMBINATORS = ["curry", "map"]
 
-def arca_elf(name, visibility = None, testonly = False):
+def arca_elf(name, visibility = None):
     """Build an Arca userspace ELF."""
     guest_binary(
         name = name + "_elf",
         visibility = visibility,
-        testonly = testonly,
         srcs = ["src/" + name + ".rs"],
         linker_script = "//arca/user:etc/memmap.ld",
         platform = ARCA_USER,

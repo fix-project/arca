@@ -1,3 +1,3 @@
-"""Example kernel programs."""
+"""Standalone kernel programs."""
 
-KERNEL_PROGRAMS = ["hello", "threads", "webserver", "webserver2"]
+KERNEL_PROGRAMS = ["hello", "webserver", "webserver2"]

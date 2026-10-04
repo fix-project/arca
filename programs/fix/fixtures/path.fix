@@ -1,0 +1,9 @@
+program = @"path.elf"
+directory_stat = (0u64 1u64 3u8 1u64 2u64 0u64 0u64 0u64)
+file_stat = (0u64 2u64 4u8 1u64 12u64 0u64 0u64 0u64)
+root = ("/work" directory_stat (("unused" file_stat "unused data") ("docs" directory_stat (("unused.txt" file_stat "unused data") ("message.txt" file_stat "Fix raw file")))))
+root_refs = ("/work" directory_stat &(("docs" directory_stat &(("message.txt" file_stat &"Fix raw file")))))
+checker = @"check_result_native.elf"
+actual = (*#(program root ("docs" "message.txt")) *#(program root_refs ("docs" "message.txt")) *#(program root ("docs" "missing.txt")) *#(program root ()) *#(program () ("docs")))
+expected = (("message.txt" file_stat "Fix raw file") ("message.txt" file_stat "Fix raw file") () root ())
+*#(checker actual expected)

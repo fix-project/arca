@@ -57,6 +57,8 @@ fix_procedure(
 test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
+        ":mapreduce_" + name + "_test" for name in ["empty", "one", "even", "odd"]
+    ] + [
         ":addblob_extended_test",
         ":addblob_test",
         ":parallel_addblob_test",
@@ -67,6 +69,31 @@ test_suite(
         ":wat_linkage_test",
     ],
 )
+
+wat_module(name = "empty_tree_checker_wasm", src = "empty_tree_checker.wat")
+fix_procedure(name = "empty_tree_checker", wasm = ":empty_tree_checker_wasm")
+
+wat_module(name = "reduction_subtract_wasm", src = "reduction_subtract.wat")
+fix_procedure(name = "reduction_subtract", wasm = ":reduction_subtract_wasm")
+
+[
+    vm_test(
+        name = "mapreduce_" + name + "_test",
+        size = "large",
+        timeout = "short",
+        args = ["eval", "mapreduce_" + name + ".fix"],
+        data = [
+            "mapreduce_" + name + ".fix",
+            "//programs/fix:mapreduce_elf",
+            "//programs/fix:count_words_elf",
+            ":reduction_subtract",
+        ] + ([":empty_tree_checker"] if name == "empty" else []),
+        expected_output = ["as a u64: " + str(expected)],
+        kernel = "//fix/runtime:image_elf",
+        tags = ["kvm", "local"],
+    )
+    for name, expected in [("empty", 42), ("one", 1), ("even", 0), ("odd", 2)]
+]
 
 wat_library(name = "wat_operations", src = "wat_linkage.wat")
 
@@ -80,6 +107,13 @@ rust_shared_library(
 
 fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 2, tables = 2)
 
+rust_shared_library(
+    name = "check_result_wasm",
+    srcs = ["check_result.rs"],
+    platform = WASM,
+    deps = ["//fix/sdk", "@crates//:dlmalloc"],
+)
+fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 2, tables = 2)
 
 [
     vm_test(

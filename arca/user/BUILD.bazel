@@ -3,7 +3,7 @@ load("//build:defs.bzl", "GUEST_ONLY", "native_archive")
 
 package(default_visibility = ["//visibility:private"])
 
-exports_files(["etc/memmap.ld"], visibility = ["//programs/arca:__pkg__", "//fix/shell:__pkg__"])
+exports_files(["etc/memmap.ld"], visibility = ["//programs/arca:__pkg__", "//tests/arca:__pkg__", "//fix/shell:__pkg__"])
 
 native_archive(
     name = "start",

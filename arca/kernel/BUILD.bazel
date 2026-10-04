@@ -20,7 +20,7 @@ PROC_MACROS = [
     "@crates//:bitfield-struct",
 ]
 
-exports_files(["etc/memmap.ld"], visibility = ["//programs:__subpackages__", "//fix/runtime:__pkg__"])
+exports_files(["etc/memmap.ld"], visibility = ["//programs:__subpackages__", "//tests/kernel:__pkg__", "//fix/runtime:__pkg__"])
 
 native_archive(
     name = "assembly",
@@ -56,13 +56,13 @@ kernel_test(
         "//programs/arca:add_elf",
         "//programs/arca:curry_elf",
         "//programs/arca:map_elf",
-        "//programs/arca:simd_elf",
+        "//tests/arca:simd_elf",
     ],
     rustc_env = {
         "ARCA_ADD_PROGRAM": "$(execpath //programs/arca:add_elf)",
         "ARCA_CURRY_PROGRAM": "$(execpath //programs/arca:curry_elf)",
         "ARCA_MAP_PROGRAM": "$(execpath //programs/arca:map_elf)",
-        "ARCA_SIMD_PROGRAM": "$(execpath //programs/arca:simd_elf)",
+        "ARCA_SIMD_PROGRAM": "$(execpath //tests/arca:simd_elf)",
     },
     deps = DEPS,
 )
