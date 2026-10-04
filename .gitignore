@@ -7,3 +7,6 @@
 /rust-project.json
 /MODULE.bazel.lock
 .DS_Store
+/compile_commands.json
+/external
+/.cache/clangd/

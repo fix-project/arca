@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//build:cc.bzl", "cc_object")
 package(default_visibility = ["//visibility:public"])
 
 genrule(
@@ -16,11 +17,11 @@ cc_library(
     copts = ["-std=c17"],
 )
 
-genrule(
+cc_object(
     name = "wasm",
-    srcs = ["mt19937.c", "mt19937.h", "stdio.h", ":reference"],
-    outs = ["mt19937.o"],
-    tools = ["@local_tools//:clang"],
-    cmd = "$(execpath @local_tools//:clang) --target=wasm32 -std=c17 -O2 -ffreestanding -fno-builtin " +
-          "-Ithird_party/mt19937 -I$(@D) -c $(location mt19937.c) -o $@",
+    src = "mt19937.c",
+    hdrs = ["mt19937.h", "stdio.h"],
+    include_roots = [":reference"],
+    compiler = "@local_tools//:clang",
+    copts = ["--target=wasm32", "-std=c17", "-O2", "-ffreestanding", "-fno-builtin", "-Ithird_party/mt19937"],
 )

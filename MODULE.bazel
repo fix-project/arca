@@ -112,3 +112,12 @@ http_file(
     sha256 = "7a42a33ed3327c5dc2785afa5d3508ebb67343ba2c360767a8f5799e6c3d0cfe",
     downloaded_file_path = "mt19937-64.c",
 )
+
+bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
+git_override(
+    module_name = "hedron_compile_commands",
+    remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
+    commit = "abb61a688167623088f8768cc9264798df6a9d10",
+    patches = ["//build:hedron-bazel9.patch"],
+    patch_strip = 1,
+)

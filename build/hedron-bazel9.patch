@@ -1,0 +1,61 @@
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -1,4 +1,7 @@
+ module(name = "hedron_compile_commands")
++
++bazel_dep(name = "rules_python", version = "1.7.0")
++bazel_dep(name = "rules_cc", version = "0.2.25")
+ 
+ p = use_extension("//:workspace_setup.bzl", "hedron_compile_commands_extension")
+ pt = use_extension("//:workspace_setup_transitive.bzl", "hedron_compile_commands_extension")
+diff --git a/refresh_compile_commands.bzl b/refresh_compile_commands.bzl
+--- a/refresh_compile_commands.bzl
++++ b/refresh_compile_commands.bzl
+@@ -57,6 +57,7 @@
+ # Implementation
+ 
+ load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
++load("@rules_python//python:defs.bzl", "py_binary")
+ 
+ 
+ def refresh_compile_commands(
+@@ -92,7 +93,7 @@
+     _expand_template(name = script_name, labels_to_flags = targets, exclude_headers = exclude_headers, exclude_external_sources = exclude_external_sources, **kwargs)
+ 
+     # Combine them so the wrapper calls the main script
+-    native.py_binary(
++    py_binary(
+         name = name,
+         main = version_checker_script_name,
+         srcs = [version_checker_script_name, script_name],
+diff --git a/BUILD b/BUILD
+--- a/BUILD
++++ b/BUILD
+@@ -1,3 +1,4 @@
++load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+ load(":refresh_compile_commands.bzl", "refresh_compile_commands")
+ 
+ # See README.md for interface.
+diff --git a/refresh.template.py b/refresh.template.py
+--- a/refresh.template.py
++++ b/refresh.template.py
+@@ -129,6 +129,9 @@
+ @functools.lru_cache(maxsize=None)
+ def _get_bazel_cached_action_keys():
+     """Gets the set of actionKeys cached in bazel-out."""
++    # Bazel 9's compact action cache omits action keys.
++    if _get_bazel_version() >= (9, 0, 0):
++        return set()
+     action_cache_process = subprocess.run(
+         ['bazel', 'dump', '--action_cache'],
+         # MIN_PY=3.7: Replace PIPEs with capture_output.
+@@ -268,7 +268,7 @@
+ 
+     # Strip output flags. Apple clang tries to do a full compile if you don't.
+     header_cmd = (arg for arg in header_cmd
+-        if arg != '-o' and not arg.endswith('.o'))
++        if arg not in ('-c', '-o') and not arg.endswith('.o'))
+ 
+     # Strip sanitizer ignore lists...so they don't show up in the dependency list.
+     # See https://clang.llvm.org/docs/SanitizerSpecialCaseList.html and https://github.com/hedronvision/bazel-compile-commands-extractor/issues/34 for more context.

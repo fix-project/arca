@@ -1,2 +1,2 @@
 CompileFlags:
-  Add: [-ffreestanding, -Iarca/abi/inc, -Ifix/shell/inc]
+  CompilationDatabase: .

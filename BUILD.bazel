@@ -1,3 +1,4 @@
+load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
 load("//programs/fix:defs.bzl", "FIX_PROGRAMS", "FIX_RUST_PROGRAMS")
@@ -47,6 +48,17 @@ test_suite(
         "//tests/fix:tests",
         "//tests/flatware:tests",
     ] + ["//programs/fix/" + language + ":tests" for language in ["wat", "c", "rust"]],
+)
+
+refresh_compile_commands(
+    name = "clangd",
+    targets = ["//:artifacts + //tests/... + //fix/sdk:all"],
+    exclude_external_sources = True,
+)
+
+sh_binary(
+    name = "lsp",
+    srcs = ["//tools:lsp.sh"],
 )
 
 sh_binary(

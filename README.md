@@ -43,13 +43,12 @@ Format Rust throughout the codebase and C SDK sources:
 bazel run //:format
 ```
 
-## rust-analyzer
+## Language servers
 
-Generate the ignored `rust-project.json` after changing Rust targets or the
-toolchain:
+Generate `compile_commands.json` for clangd and `rust-project.json` for rust-analyzer:
 
 ```sh
-bazel run @rules_rust//tools/rust_analyzer:gen_rust_project -- //...
+bazel run //:lsp
 ```
 
 ## Environment-dependent tests

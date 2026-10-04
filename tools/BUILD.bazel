@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["format.sh", "cc_format.sh", "cc_lint.sh"])
+exports_files(["lsp.sh", "format.sh", "cc_format.sh", "cc_lint.sh"])
 
 rust_binary(
     name = "bindgen",
