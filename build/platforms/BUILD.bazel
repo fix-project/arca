@@ -49,6 +49,15 @@ platform(
     ],
 )
 
+platform(
+    name = "wasip1",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:wasi",
+        "@rules_rust//rust/platform:wasi_preview_1",
+    ],
+)
+
 config_setting(
     name = "linux",
     constraint_values = ["@platforms//os:linux"],

@@ -1,0 +1,24 @@
+load("//fix/sdk:defs.bzl", "fix_cc_wasm")
+load("//build:defs.bzl", "wat_module")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+fix_cc_wasm(
+    name = "adapter_wasm",
+    srcs = ["c/main.c", "c/bytes.c", "c/filesystem.c", "c/wasi.c"],
+    hdrs = ["c/flatware.h", "//third_party/mt19937:mt19937.h"],
+    link_inputs = ["//third_party/dlmalloc:wasm", "//third_party/mt19937:wasm"],
+    copts = ["-I.", "-std=c17", "-Wall", "-Wextra", "-Werror"],
+    memories = 2,
+    tables = 1,
+)
+
+rust_binary(
+    name = "check_resources",
+    srcs = ["resources.rs"],
+    deps = ["@crates//:anyhow", "@crates//:wasmparser"],
+)
+
+wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
+

@@ -1,0 +1,5 @@
+program = @"flatware_guest_return_native.elf"
+stat = (0u64 100u64 3u8 1u64 0u64 100u64 100u64 100u64)
+seed = 0u64
+result = *#(program ("fixture" "foo") ("HELLO=world") (("stdin" () "input") ("stdout" () "prefix:") ("stderr" () "") ("/work" stat ())) seed 100u64)
+*[result 1u8]

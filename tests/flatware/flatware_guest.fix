@@ -1,0 +1,11 @@
+program = @"flatware_guest_native.elf"
+stat = (0u64 100u64 3u8 1u64 0u64 100u64 100u64 100u64)
+seed = 0u64
+result = *#(program ("fixture" "foo") ("HELLO=world") (("stdin" () "input") ("stdout" () "prefix:") ("stderr" () "") ("/work" stat ())) seed 100u64)
+descriptors = *[result 0u8]
+directory = *[descriptors 3u8]
+entries = *[directory 2u8]
+file = *[entries 1u8]
+stdout = *[descriptors 1u8]
+checker = @"check_result_native.elf"
+*#(checker (*[stdout 2u8] *[result 1u8] *[file 2u8]) ("prefix:flatware-ok" 7u32 "hello world"))

@@ -28,6 +28,7 @@ test_suite(
         "//lib/common:tests",
         "//tools/vmm:tests",
         "//tools:postprocess_test",
+        "//tests/flatware:filesystem_test",
     ],
 )
 
@@ -43,6 +44,7 @@ test_suite(
         "//programs/arca:tests",
         "//tests/kernel:tests",
         "//tests/fix:tests",
+        "//tests/flatware:tests",
     ] + ["//programs/fix/" + language + ":tests" for language in ["wat", "c", "rust"]],
 )
 

@@ -1,0 +1,15 @@
+(module
+  (import "wasi_snapshot_preview1" "memory" (memory $adapter 0))
+  (import "flatware_guest" "memory" (memory $guest 0))
+  (import "flatware_guest" "_start" (func $start))
+  (tag $exit)
+  (func (export "read") (param $offset i32) (param $destination i32) (param $length i32)
+    (memory.copy $adapter $guest (local.get $destination) (local.get $offset) (local.get $length)))
+  (func (export "write") (param $offset i32) (param $source i32) (param $length i32)
+    (memory.copy $guest $adapter (local.get $offset) (local.get $source) (local.get $length)))
+  (func (export "size") (result i32) (memory.size $guest))
+  (func (export "exit") (throw $exit))
+  (func (export "run")
+    (try
+      (do (call $start))
+      (catch $exit))))

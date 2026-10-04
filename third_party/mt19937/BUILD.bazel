@@ -1,0 +1,26 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+package(default_visibility = ["//visibility:public"])
+
+genrule(
+    name = "reference",
+    srcs = ["@mt19937_src//file"],
+    outs = ["mt19937-64.c"],
+    cmd = "cp $< $@",
+)
+
+cc_library(
+    name = "mt19937",
+    srcs = ["mt19937.c"],
+    hdrs = ["mt19937.h", ":reference"],
+    includes = ["."],
+    copts = ["-std=c17"],
+)
+
+genrule(
+    name = "wasm",
+    srcs = ["mt19937.c", "mt19937.h", "stdio.h", ":reference"],
+    outs = ["mt19937.o"],
+    tools = ["@local_tools//:clang"],
+    cmd = "$(execpath @local_tools//:clang) --target=wasm32 -std=c17 -O2 -ffreestanding -fno-builtin " +
+          "-Ithird_party/mt19937 -I$(@D) -c $(location mt19937.c) -o $@",
+)

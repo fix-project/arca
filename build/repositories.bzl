@@ -12,6 +12,10 @@ def _local_tools_impl(ctx):
         if path:
             ctx.symlink(path, tool)
             tools.append(tool)
+    wasm_merge = ctx.which("wasm-merge")
+    if wasm_merge:
+        ctx.symlink(wasm_merge, "wasm-merge")
+        tools.append("wasm-merge")
     ctx.file("BUILD.bazel", "exports_files(%s, visibility = [\"//visibility:public\"])\n" % repr(tools))
 
 local_tools = repository_rule(implementation = _local_tools_impl, local = True, configure = True)
