@@ -131,11 +131,20 @@ static const wasm_rt_funcref_t wasm_rt_funcref_null_value;
 /** The type of an external reference (opaque to WebAssembly). */
 typedef unsigned char __attribute__((vector_size(32))) u8x32;
 typedef struct {
-  uint8_t bytes[32];
+  u8x32 bytes;
 } wasm_rt_externref_t;
 
 /** Default (null) value of an externref */
 static const wasm_rt_externref_t wasm_rt_externref_null_value = {0};
+
+static inline bool wasm_rt_externref_is_null(wasm_rt_externref_t value) {
+  for (size_t i = 0; i < sizeof(value.bytes); ++i) {
+    if (value.bytes[i] != 0) return false;
+  }
+  return true;
+}
+#define WASM_RT_EXTERNREF_IS_NULL(value) wasm_rt_externref_is_null(value)
+
 
 /** A Memory object. */
 typedef struct {
@@ -212,14 +221,14 @@ void wasm_rt_allocate_memory(wasm_rt_memory_t *, uint64_t initial_pages,
 /**
  * Grow a Memory object by `pages`, and return the previous page count. If
  * this new page count is greater than the maximum page count, the grow fails
- * and 0xffffffffu (UINT32_MAX) is returned instead.
+ * and 0xffffffffffffffffu (UINT64_MAX) is returned instead.
  *
  *  ```
  *    wasm_rt_memory_t my_memory;
  *    ...
  *    // Grow memory by 10 pages.
- *    uint32_t old_page_size = wasm_rt_grow_memory(&my_memory, 10);
- *    if (old_page_size == UINT32_MAX) {
+ *    uint64_t old_page_size = wasm_rt_grow_memory(&my_memory, 10);
+ *    if (old_page_size == UINT64_MAX) {
  *      // Failed to grow memory.
  *    }
  *  ```

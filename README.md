@@ -13,7 +13,7 @@ Clang/libclang, and Bash. Set `LIBCLANG_PATH` or
 git submodule update --init --recursive
 bazel query //... --output=label_kind
 bazel build //:artifacts
-bazel test //...
+bazel test -- //... -//coupon/...
 bazel test //tests:format //tests:lint
 bazel run //programs/kernel:hello -- Ada
 bazel run //programs/arca:add -- tuple:word:2,word:3

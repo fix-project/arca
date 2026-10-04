@@ -3,6 +3,8 @@ load("//build:defs.bzl", "GUEST_ONLY", "kernel_program", "kernel_test")
 
 package(default_visibility = ["//visibility:private"])
 
+exports_files(["etc/memmap.ld"], visibility = ["//flatware:__subpackages__"])
+
 DEPS = [
     "//arca/api",
     "//arca/kernel",
@@ -16,18 +18,17 @@ DEPS = [
     "@crates//:async-lock",
     "@crates//:hex",
     "@crates//:bitint",
-    "@crates//:blake3",
     "@crates//:crossbeam-queue",
     "@crates//:hashbrown",
 ]
 
 rust_library(
     name = "runtime",
+    visibility = ["//flatware:__subpackages__"],
     srcs = glob(
         ["src/**/*.rs"],
         exclude = [
             "src/main.rs",
-            "src/name.rs",
             "src/parallel_evaluator.rs",
             "src/scheduler.rs",
             "src/testing.rs",
@@ -48,7 +49,9 @@ rust_library(
         image_visibility = ["//tests:__pkg__"] if test else [
             "//tests:__subpackages__",
             "//programs/fix:__subpackages__",
+            "//programs/flatware:__subpackages__",
             "//coupon:__pkg__",
+            "//fix/sdk:__pkg__",
         ],
         image_name = "test_image" if test else "image_elf",
         srcs = [

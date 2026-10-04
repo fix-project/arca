@@ -2,7 +2,6 @@ use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use crate::storage::memory::MemoryStorage;
-use common::bitpack::BitPack;
 use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
 use kernel::println;
 
@@ -22,7 +21,7 @@ impl Runtime for FixOnArca {
         let procedure = contents.first().expect("empty combination");
         let elf = self
             .storage()
-            .get_blob(procedure.unwrap_object().unwrap_blob())
+            .get_blob(Blob::try_from(*procedure).expect("procedure must be a blob object"))
             .unwrap();
         let f: Function = common::elfloader::load_elf(&elf).unwrap();
         let blob = pack_handle(combination);
@@ -55,6 +54,19 @@ impl FixOnArca {
                 };
 
                 f = match &*effect {
+                    b"equals" => {
+                        let Some(Value::Blob(rhs)) = args.pop() else {
+                            panic!()
+                        };
+                        let Some(Value::Blob(lhs)) = args.pop() else {
+                            panic!()
+                        };
+                        let equal = self
+                            .storage()
+                            .equals(unpack_handle(&lhs), unpack_handle(&rhs))
+                            .expect("equals: invalid or non-Eq operand");
+                        k.apply(kernel::prelude::Word::new(equal as u64))
+                    }
                     b"create_blob_i32" => {
                         let Some(Value::Word(w)) = args.pop() else {
                             panic!()
@@ -82,8 +94,14 @@ impl FixOnArca {
                             panic!()
                         };
                         let mut tree = Vec::new();
-                        for handle in t.chunks(32) {
-                            tree.push(Handle::unpack(handle.try_into().unwrap()));
+                        assert!(
+                            t.len().is_multiple_of(HANDLE_SIZE),
+                            "invalid tree payload length"
+                        );
+                        for handle in t.as_chunks::<HANDLE_SIZE>().0 {
+                            tree.push(
+                                unsafe { Handle::parse(*handle) }.expect("invalid tree entry"),
+                            );
                         }
                         k.apply(pack_handle(self.storage().add_tree(&tree)))
                     }
@@ -91,25 +109,15 @@ impl FixOnArca {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let b = self
-                            .storage()
-                            .get_blob(unpack_handle(&b).unwrap_object().unwrap_blob())
-                            .unwrap();
-                        k.apply(ArcaBlob::new(b))
+                        let name = Blob::try_from(unpack_handle(&b)).expect("expected blob object");
+                        k.apply(self.storage().get_blob_backing(name).unwrap().value())
                     }
                     b"get_tree" => {
                         let Some(Value::Blob(b)) = args.pop() else {
                             panic!()
                         };
-                        let t = self
-                            .storage()
-                            .get_tree(unpack_handle(&b).unwrap_object().unwrap_tree())
-                            .unwrap();
-                        let mut tree = Vec::new();
-                        for x in t {
-                            tree.extend_from_slice(&Handle::pack(&x));
-                        }
-                        k.apply(ArcaBlob::new(tree))
+                        let name = Tree::try_from(unpack_handle(&b)).expect("expected tree object");
+                        k.apply(self.storage().get_tree_backing(name).unwrap().value())
                     }
                     _ => {
                         todo!("handle effect {:?}", &*effect);
@@ -121,14 +129,15 @@ impl FixOnArca {
 }
 
 fn pack_handle(handle: impl Into<Handle>) -> ArcaBlob {
-    let raw = handle.into().pack();
+    let raw = handle.into().into_bytes();
     ArcaBlob::new(raw)
 }
 
 fn unpack_handle(blob: &ArcaBlob) -> Handle {
+    assert_eq!(blob.len(), HANDLE_SIZE, "invalid handle length");
     let mut buf = [0u8; 32];
     if blob.read(0, &mut buf) != 32 {
         panic!("Failed to parse Arca Blob to Fix Handle")
     }
-    Handle::unpack(buf)
+    unsafe { Handle::parse(buf) }.expect("invalid Fix handle")
 }

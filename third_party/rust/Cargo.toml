@@ -13,7 +13,7 @@ async-channel = { version = "=2.5.0", default-features = false }
 async-lock = { version = "=3.4.2", default-features = false }
 bitfield-struct = "=0.13.0"
 bitint = "=0.1.1"
-blake3 = { version = "=1.8.5", default-features = false }
+blake3 = { version = "=1.8.7", default-features = false, features = ["pure"] }
 crossbeam-queue = { version = "=0.3.14", default-features = false, features = ["alloc"] }
 derive_more = { version = "=2.1.1", default-features = false, features = ["full"] }
 elf = { version = "=0.8.0", default-features = false }

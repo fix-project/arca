@@ -1,4 +1,4 @@
-add = @"addblob"
+add = @"addblob.elf"
 a = 1u64
 b = 2u64
 c = 3u64

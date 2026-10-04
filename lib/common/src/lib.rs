@@ -20,7 +20,6 @@ pub mod buddy;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod arrayvec;
-pub mod bitpack;
 pub mod controlreg;
 pub mod elfloader;
 pub mod ipaddr;

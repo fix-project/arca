@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 MEMORY {
-  memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 2M /* instead of memory 128 */
+  memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 4M
 }
 
 SECTIONS {
@@ -51,11 +51,13 @@ SECTIONS {
   } > memory 
   .stack (NOLOAD) :
   {
-    . = ALIGN(16);
+    . = ALIGN(4K);
     __stack_bottom = .;
-    . = . + 64K;
+    . = . + 2M;
     __stack_top = .;
   } > memory 
+  __heap_start = ALIGN(__stack_top, 2M);
+  __heap_end = ORIGIN(memory) + 0x100000000;
   /DISCARD/ :
   {
     *(.eh_frame*)

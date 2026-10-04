@@ -1,234 +1,110 @@
-load("//build:defs.bzl", "vm_test")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
+load("//build:defs.bzl", "WASM", "fix_procedure", "vm_test", "wat_library", "wat_module")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob(["*.fix"]))
 
-[
-    genrule(
-        name = name + "_fixture",
-        visibility = ["//visibility:private"],
-        srcs = ["//programs/fix:" + name + "_elf"],
-        outs = [name],
-        cmd = "cp $< $@",
-    )
-    for name in ["addblob"] + FIX_RUST_PROGRAMS
-]
+wat_module(name = "slowaddblob_wasm", src = "slowaddblob.wat")
+fix_procedure(name = "slowaddblob_native", wasm = ":slowaddblob_wasm")
 
-vm_test(
-    name = "addblob_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "addblob.fix",
-    ],
-    data = [
-        "addblob.fix",
-        ":addblob_fixture",
-    ],
-    expected_output = ["as a u64: 6"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+genrule(
+    name = "slowaddblob_fixture",
+    srcs = [":slowaddblob_native"],
+    outs = ["slowaddblob"],
+    cmd = "cp $< $@",
 )
 
 vm_test(
-    name = "addblob_extended_test",
+    name = "slowaddblob_test",
     size = "large",
     timeout = "short",
-    args = [
-        "eval",
-        "addblob_extended.fix",
-    ],
-    data = [
-        "addblob_extended.fix",
-        ":addblob_fixture",
-    ],
-    expected_output = ["as a u64: 136"],
+    args = ["eval", "slowaddblob.fix"],
+    data = ["slowaddblob.fix", ":slowaddblob_fixture"],
+    expected_output = ["as a u64: 5"],
     kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+    tags = ["kvm", "local"],
 )
 
-vm_test(
-    name = "selection_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "selection.fix",
-    ],
-    data = ["selection.fix"],
-    expected_output = ["result is a Blob: [104]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+wat_module(
+    name = "shell_wasm",
+    src = "shell.wat",
+    out = "shell.wasm",
 )
 
-vm_test(
-    name = "parallel_addblob_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "parallel_eval",
-        "addblob.fix",
-    ],
-    data = [
-        "addblob.fix",
-        ":addblob_fixture",
-    ],
-    expected_output = ["as a u64: 6"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+fix_procedure(
+    name = "shell_native",
+    wasm = ":shell_wasm",
 )
 
-vm_test(
-    name = "bptree_get_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "bptree_get.fix",
-    ],
-        data = [
-        "bptree_get.fix",
-        ":bptree_get_fixture",
-    ],
-    expected_output = ["result is a Blob: [54]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+rust_shared_library(
+    name = "sdk_expressions_wasm",
+    srcs = ["sdk_expressions.rs"],
+    crate_name = "sdk_expressions",
+    crate_root = "sdk_expressions.rs",
+    platform = WASM,
+    deps = ["//fix/sdk", "@crates//:dlmalloc"],
 )
 
-vm_test(
-    name = "bptree_get_n_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "bptree_get_n.fix",
-    ],
-        data = [
-        "bptree_get_n.fix",
-        ":bptree_get_n_fixture",
-    ],
-    expected_output = ["result is a Blob: [53]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
-)
-
-vm_test(
-    name = "map_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "map.fix",
-    ],
-    data = [
-        "map.fix",
-        ":addblob_fixture",
-        ":map_fixture",
-    ],
-    expected_output = ["result is a Blob: [10, 0, 0, 0, 0, 0, 0, 0]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
-)
-
-vm_test(
-    name = "mapreduce_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "mapreduce.fix",
-    ],
-    data = [
-        "mapreduce.fix",
-        ":addblob_fixture",
-        ":count_words_fixture",
-        ":mapreduce_fixture",
-    ],
-    expected_output = ["result is a Blob: [4, 0, 0, 0, 0, 0, 0, 0]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
-)
-
-vm_test(
-    name = "count_words_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "count_words.fix",
-    ],
-    data = [
-        "count_words.fix",
-        ":count_words_fixture",
-    ],
-    expected_output = ["result is a Blob: [2, 0, 0, 0, 0, 0, 0, 0]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
-)
-
-vm_test(
-    name = "fib_test",
-    size = "large",
-    timeout = "short",
-    args = [
-        "eval",
-        "fib.fix",
-    ],
-    data = [
-        "fib.fix",
-        ":addblob_fixture",
-        ":fib_fixture",
-    ],
-    expected_output = ["result is a Blob: [13, 0, 0, 0, 0, 0, 0, 0]"],
-    kernel = "//fix/runtime:image_elf",
-    tags = [
-        "kvm",
-        "local",
-    ],
+fix_procedure(
+    name = "sdk_expressions_native",
+    wasm = ":sdk_expressions_wasm",
+    memories = 2,
+    tables = 2,
 )
 
 test_suite(
     name = "tests",
-    tests = [
+    tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
         ":addblob_extended_test",
         ":addblob_test",
-        ":bptree_get_n_test",
-        ":bptree_get_test",
-        ":count_words_test",
-        ":fib_test",
-        ":map_test",
-        ":mapreduce_test",
         ":parallel_addblob_test",
         ":selection_test",
+        ":shell_test",
+        ":slowaddblob_test",
+        ":sdk_expressions_test",
+        ":wat_linkage_test",
     ],
 )
+
+wat_library(name = "wat_operations", src = "wat_linkage.wat")
+
+rust_shared_library(
+    name = "wat_linkage_wasm",
+    srcs = ["wat_linkage.rs"],
+    platform = WASM,
+    deps = ["//fix/sdk", "@crates//:dlmalloc"],
+    link_deps = [":wat_operations"],
+)
+
+fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 2, tables = 2)
+
+
+[
+    vm_test(
+        name = name,
+        size = "large",
+        timeout = "short",
+        args = args,
+        data = [args[1]] + data,
+        expected_output = expected,
+        kernel = "//fix/runtime:image_elf",
+        tags = ["kvm", "local"],
+    )
+    for name, args, data, expected in [
+        ("addblob_test", ["eval", "addblob.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 6"]),
+        ("addblob_extended_test", ["eval", "addblob_extended.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 136"]),
+        ("selection_test", ["eval", "selection.fix"], [], ["result is a Blob: [104]"]),
+        ("parallel_addblob_test", ["parallel_eval", "addblob.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 6"]),
+        ("shell_test", ["eval", "shell.fix"], [":shell_native"], ["as a u64: 42"]),
+        ("sdk_expressions_test", ["eval", "sdk_expressions.fix"], [":sdk_expressions_native"], ["as a u64: 42"]),
+        ("bptree_get_test", ["eval", "bptree_get.fix"], ["//programs/fix:bptree_get_elf"], ["result is a Blob: [54]"]),
+        ("bptree_get_n_test", ["eval", "bptree_get_n.fix"], ["//programs/fix:bptree_get_n_elf"], ["result is a Blob: [53]"]),
+        ("map_test", ["eval", "map.fix"], ["//programs/fix:addblob_elf", "//programs/fix:map_elf"], ["result is a Blob: [10, 0, 0, 0, 0, 0, 0, 0]"]),
+        ("mapreduce_test", ["eval", "mapreduce.fix"], ["//programs/fix:addblob_elf", "//programs/fix:count_words_elf", "//programs/fix:mapreduce_elf"], ["result is a Blob: [4, 0, 0, 0, 0, 0, 0, 0]"]),
+        ("count_words_test", ["eval", "count_words.fix"], ["//programs/fix:count_words_elf"], ["result is a Blob: [2, 0, 0, 0, 0, 0, 0, 0]"]),
+        ("fib_test", ["eval", "fib.fix"], ["//programs/fix:addblob_elf", "//programs/fix:fib_elf"], ["result is a Blob: [13, 0, 0, 0, 0, 0, 0, 0]"]),
+        ("wat_linkage_test", ["eval", "wat_linkage.fix"], [":wat_linkage_native"], ["as a u64: 42"]),
+    ]
+]

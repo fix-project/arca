@@ -18,11 +18,11 @@ def fix_wat_program(name):
     )
 
 def fix_rust_program(name):
-    """Build a Rust procedure using fixutils, a native Fix ELF, and a Fix runtime launcher."""
+    """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
     rust_shared_library(
         name = name + "_wasm",
         visibility = ["//tests:__pkg__"],
-        srcs = ["rust/" + name + ".rs"],
+        srcs = [name + ".rs"],
         platform = WASM,
         deps = [
             "//fix/sdk",
@@ -32,7 +32,8 @@ def fix_rust_program(name):
     fix_procedure(
         name = name,
         wasm = ":" + name + "_wasm",
-        postprocess = True,
+        memories = 2,
+        tables = 2,
         runnable = True,
         visibility = ["//visibility:public"],
         artifact_visibility = ["//tests/fix:__pkg__"],

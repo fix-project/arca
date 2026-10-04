@@ -1,6 +1,8 @@
 """Arca artifact and VM rules."""
 
 load("@rules_cc//cc:cc_import.bzl", "cc_import")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 ARCA = "//build/platforms:arca"
@@ -50,16 +52,56 @@ def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:et
         visibility = visibility,
     )
 
-def wat_module(name, src, out = None):
-    """Compile WebAssembly text to a binary module."""
+def wat_module(name, src, out = None, relocatable = False, debug_names = False):
+    """Compile WebAssembly text to a module or relocatable object."""
     native.genrule(
         name = name,
         visibility = ["//visibility:private"],
         srcs = [src],
-        outs = [out or name + ".wasm"],
-        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory $< -o $@",
+        outs = [out or name + (".o" if relocatable else ".wasm")],
+        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory --enable-exceptions " +
+              ("--relocatable " if relocatable else "") + ("--debug-names " if debug_names else "") + "$< -o $@",
         tools = ["//third_party:wat2wasm"],
     )
+
+def _wasm_library_impl(ctx):
+    archive = ctx.file.archive
+    library = cc_common.create_library_to_link(
+        actions = ctx.actions,
+        static_library = archive,
+    )
+    linker_input = cc_common.create_linker_input(
+        owner = ctx.label,
+        libraries = depset([library]),
+    )
+    return [
+        DefaultInfo(files = depset([archive])),
+        CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = depset([linker_input]))),
+    ]
+
+_wasm_library = rule(
+    implementation = _wasm_library_impl,
+    attrs = {
+        "archive": attr.label(allow_single_file = [".a"], mandatory = True),
+    },
+)
+
+def wasm_library(name, srcs, **kwargs):
+    """Archive relocatable Wasm objects for C/C++ or Rust linkage."""
+    native.genrule(
+        name = name + "_archive",
+        visibility = ["//visibility:private"],
+        srcs = srcs,
+        outs = ["lib" + name + ".a"],
+        cmd = "$(execpath @local_tools//:ar) crs $@ $(SRCS)",
+        tools = ["@local_tools//:ar"],
+    )
+    _wasm_library(name = name, archive = ":" + name + "_archive", **kwargs)
+
+def wat_library(name, src, **kwargs):
+    """Compile WebAssembly text into a relocatable Wasm library."""
+    wat_module(name = name + "_object", src = src, relocatable = True)
+    wasm_library(name = name, srcs = [":" + name + "_object"], **kwargs)
 
 def native_archive(name, srcs, hdrs = [], includes = [], compiler = "@local_tools//:gcc", copts = [], **kwargs):
     """Freestanding x86-64 objects; no Linux CRT or host ABI libraries."""
@@ -156,10 +198,6 @@ cd "${BUILD_WORKSPACE_DIRECTORY:-$PWD}"
 work=$(mktemp -d)
 trap 'rm -f "$work/program.elf" "$work/program.fix"; rmdir "$work"' EXIT
 cp "$program" "$work/program.elf"
-if [[ "$#" -eq 0 ]]; then
-    echo "Pass one or more Fix expressions after --." >&2
-    exit 2
-fi
 printf 'program = @"%%s"\\n*#(program' "$work/program.elf" > "$work/program.fix"
 for arg in "$@"; do
     printf ' %%s' "$arg" >> "$work/program.fix"
@@ -180,16 +218,17 @@ fix_program_run = rule(
     },
 )
 
-def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"]):
-    """Wasm -> optional Fix memory imports -> C -> native Fix ELF."""
-    if postprocess:
+def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"]):
+    """Wasm -> optional resource postprocessing -> C -> native Fix ELF."""
+    if memories != None or tables != None:
+        counts = (" --memories %d" % memories if memories != None else "") + (" --tables %d" % tables if tables != None else "")
         native.genrule(
             name = name + "_postprocess",
             visibility = ["//visibility:private"],
             srcs = [wasm],
             tools = ["//tools:postprocess"],
             outs = [name + ".wasm"],
-            cmd = "$(execpath //tools:postprocess) $(location " + wasm + ") $@",
+            cmd = "$(execpath //tools:postprocess) $(location " + wasm + ") $@" + counts,
         )
         wasm = ":" + name + "_postprocess"
     native.genrule(
@@ -198,7 +237,7 @@ def fix_procedure(name, wasm, postprocess = False, runnable = False, visibility 
         srcs = [wasm],
         tools = ["//third_party:wasm2c"],
         outs = [name + "/module.c", name + "/module.h"],
-        cmd = "$(execpath //third_party:wasm2c) -n module --enable-multi-memory $(location " + wasm + ") -o $(location " + name + "/module.c)",
+        cmd = "$(execpath //third_party:wasm2c) -n module --enable-multi-memory --enable-exceptions $(location " + wasm + ") -o $(location " + name + "/module.c)",
     )
     artifact = name + "_elf" if runnable else name
     native.genrule(

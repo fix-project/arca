@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//build:defs.bzl", "wat_module")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -14,13 +15,30 @@ rust_binary(
     srcs = [
         "postprocess.rs",
         "postprocessor.rs",
+        "postprocessor_tests.rs",
     ],
     crate_root = "postprocess.rs",
     edition = "2024",
-    proc_macro_deps = ["//tools/macros"],
     deps = [
         "@crates//:anyhow",
         "@crates//:wasm-encoder",
         "@crates//:wasmparser",
     ],
+)
+
+wat_module(name = "postprocessor_fixture", src = "postprocessor_fixture.wat", debug_names = True)
+wat_module(name = "postprocessor_import_only", src = "postprocessor_import_only.wat")
+
+rust_test(
+    name = "postprocess_test",
+    srcs = ["postprocessor.rs", "postprocessor_tests.rs"],
+    crate_root = "postprocessor.rs",
+    edition = "2024",
+    deps = ["@crates//:anyhow", "@crates//:wasm-encoder", "@crates//:wasmparser"],
+    compile_data = [":postprocessor_fixture", ":postprocessor_import_only"],
+    rustc_env = {
+        "POSTPROCESSOR_FIXTURE": "$(execpath :postprocessor_fixture)",
+        "POSTPROCESSOR_IMPORT_ONLY": "$(execpath :postprocessor_import_only)",
+    },
+    timeout = "short",
 )

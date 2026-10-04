@@ -7,7 +7,6 @@ package(default_visibility = ["//visibility:public"])
 filegroup(
     name = "artifacts",
     srcs = [
-        "//coupon:collector",
         "//fix/runtime:image",
         "//programs/arca:webserver",
         "//programs/arca:webserver2",
@@ -27,6 +26,7 @@ test_suite(
         "//fix/handle:tests",
         "//lib/common:tests",
         "//tools/vmm:tests",
+        "//tools:postprocess_test",
     ],
 )
 

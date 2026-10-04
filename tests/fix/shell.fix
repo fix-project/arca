@@ -1,0 +1,3 @@
+shell = @"shell_native.elf"
+
+*#(shell)

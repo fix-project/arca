@@ -3,18 +3,6 @@ use crate::runtime::Runtime;
 use crate::storage::Storage;
 use kernel::prelude::*;
 
-// use fixhandle::rawhandle::{Encode, Handle, Object, Ref, Thunk, TreeName};
-
-// use fixruntime::{
-//     common::CouponTrades,
-//     fixruntime::{FixRuntime, FixTreeData},
-//     runtime::{DeterministicEquivRuntime, Executor},
-//     storage::FixData,
-// };
-
-// use common::bitpack::BitPack;
-// use kernel::prelude::*;
-
 pub struct Evaluator<R: Runtime> {
     runtime: R,
 }
@@ -51,15 +39,17 @@ impl<R: Runtime> Evaluator<R> {
         if index >= target.len() {
             panic!("Invalid index {index} for selection thunk");
         }
-        match target {
-            Handle::Object(Object::Tree(tree)) | Handle::Ref(Ref::Tree(tree)) => {
-                self.storage().get_tree(tree).unwrap()[index]
-            }
-            Handle::Object(Object::Blob(blob)) | Handle::Ref(Ref::Blob(blob)) => {
-                let data = self.storage().get_blob(blob).unwrap();
-                Ref::Blob(self.storage().add_blob(&[data[index]])).into()
-            }
+        let object = match target.view() {
+            HandleView::Object(object) => *object,
+            HandleView::Ref(reference) => reference.object_descriptor(),
             _ => panic!("expected blob or tree handle for selection thunk"),
+        };
+        match object.view() {
+            ObjectView::Tree(tree) => self.storage().get_tree(*tree).unwrap()[index],
+            ObjectView::Blob(blob) => {
+                let data = self.storage().get_blob(*blob).unwrap();
+                self.storage().add_blob(&[data[index]]).into_ref().into()
+            }
         }
     }
 
@@ -67,23 +57,26 @@ impl<R: Runtime> Evaluator<R> {
         if begin >= end {
             panic!("Invalid range [{begin}, {end}) for seleciton thunk");
         }
-        match target {
-            Handle::Object(Object::Tree(tree)) | Handle::Ref(Ref::Tree(tree)) => {
-                let data = self.storage().get_tree(tree).unwrap();
-                Ref::Tree(self.storage().add_tree(&data[begin..end])).into()
-            }
-            Handle::Object(Object::Blob(blob)) | Handle::Ref(Ref::Blob(blob)) => {
-                let data = self.storage().get_blob(blob).unwrap();
-                Ref::Blob(self.storage().add_blob(&data[begin..end])).into()
-            }
+        let object = match target.view() {
+            HandleView::Object(object) => *object,
+            HandleView::Ref(reference) => reference.object_descriptor(),
             _ => panic!("expected blob or tree handle for selection thunk"),
+        };
+        match object.view() {
+            ObjectView::Tree(tree) => {
+                let data = self.storage().get_tree(*tree).unwrap();
+                self.storage().add_tree(&data[begin..end]).into_ref().into()
+            }
+            ObjectView::Blob(blob) => {
+                let data = self.storage().get_blob(*blob).unwrap();
+                self.storage().add_blob(&data[begin..end]).into_ref().into()
+            }
         }
     }
 
     pub fn read_index(&self, handle: Handle) -> usize {
-        let Handle::Object(Object::Blob(blob)) = handle else {
-            panic!("expected blob handle for selection index")
-        };
+        let blob =
+            fixhandle::Blob::try_from(handle).expect("expected blob handle for selection index");
         let bytes = self.storage().get_blob(blob).unwrap();
         // Make buffer fit all supported integer widths
         let mut buffer = [0; 16];
@@ -93,34 +86,28 @@ impl<R: Runtime> Evaluator<R> {
     }
 
     pub fn lift(&self, handle: Handle) -> Handle {
-        match handle {
-            Handle::Ref(r) => match r {
-                Ref::Tree(t) => Object::Tree(t).into(),
-                Ref::Blob(b) => Object::Blob(b).into(),
-            },
+        match handle.view() {
+            HandleView::Ref(reference) => reference.object_descriptor().into(),
             _ => handle,
         }
     }
 
     pub fn lower(&self, handle: Handle) -> Handle {
-        match handle {
-            Handle::Object(r) => match r {
-                Object::Tree(t) => Ref::Tree(t).into(),
-                Object::Blob(b) => Ref::Blob(b).into(),
-            },
+        match handle.view() {
+            HandleView::Object(object) => object.into_ref().into(),
             _ => handle,
         }
     }
 
     fn think(&self, thunk: Thunk) -> Handle {
-        match thunk {
-            Thunk::Identification(reference) => self.lift(Handle::Ref(reference)),
-            Thunk::Selection(tree) => {
-                let evaled = self.eval_tree(tree);
+        match thunk.view() {
+            ThunkView::Identification(reference) => self.lift(reference.into()),
+            ThunkView::Selection(tree) => {
+                let evaled = self.eval_tree(tree.object_descriptor());
                 self.select(evaled)
             }
-            Thunk::Application(tree) => {
-                let evaled = self.eval_tree(tree);
+            ThunkView::Application(tree) => {
+                let evaled = self.eval_tree(tree.object_descriptor());
                 self.apply(evaled)
             }
         }
@@ -128,18 +115,18 @@ impl<R: Runtime> Evaluator<R> {
 
     fn force(&self, thunk: Thunk) -> Handle {
         let thought = self.think(thunk);
-        match thought {
-            Handle::Object(_) => thought,
-            Handle::Ref(_) => self.lift(thought),
-            Handle::Thunk(thunk) => self.force(thunk),
-            Handle::Encode(encode) => self.lift(self.encode(encode)),
+        match thought.view() {
+            HandleView::Object(_) => thought,
+            HandleView::Ref(_) => self.lift(thought),
+            HandleView::Thunk(thunk) => self.force(*thunk),
+            HandleView::Encode(encode) => self.lift(self.encode(*encode)),
         }
     }
 
     fn encode(&self, encode: Encode) -> Handle {
-        match encode {
-            Encode::Strict(thunk) => self.lift(self.force(thunk)),
-            Encode::Shallow(thunk) => self.lower(self.force(thunk)),
+        match encode.view() {
+            EncodeView::Strict(thunk) => self.lift(self.force(thunk)),
+            EncodeView::Shallow(thunk) => self.lower(self.force(thunk)),
         }
     }
 
@@ -156,14 +143,14 @@ impl<R: Runtime> Evaluator<R> {
 
     pub fn eval(&self, handle: Handle) -> Handle {
         println!("evaluating {handle}");
-        match handle {
-            Handle::Ref(reference) => self.eval(self.lift(Handle::Ref(reference))),
-            Handle::Thunk(_) => handle,
-            Handle::Object(obj) => match obj {
-                Object::Blob(blob) => blob.into(),
-                Object::Tree(tree) => self.eval_tree(tree).into(),
+        match handle.view() {
+            HandleView::Ref(reference) => self.eval(self.lift((*reference).into())),
+            HandleView::Thunk(_) => handle,
+            HandleView::Object(obj) => match obj.view() {
+                ObjectView::Blob(blob) => (*blob).into(),
+                ObjectView::Tree(tree) => self.eval_tree(*tree).into(),
             },
-            Handle::Encode(e) => self.eval(self.encode(e)),
+            HandleView::Encode(e) => self.eval(self.encode(*e)),
         }
     }
 }

@@ -5,6 +5,7 @@ genrule(
     srcs = [
         "@wabt_src//:sources",
         "@wabt_src//:CMakeLists.txt",
+        "//build:wabt-externref.cmake",
     ],
     outs = [
         "wabt-bin/wasm2c",
@@ -15,6 +16,7 @@ genrule(
         source="$$PWD/$(@D)/wabt-source"
         cp -R -L $$(dirname $(location @wabt_src//:CMakeLists.txt)) "$$source"
         chmod -R u+w "$$source"
+        $(execpath @local_tools//:cmake) -DSOURCE="$$source" -P $(location //build:wabt-externref.cmake)
         $(execpath @local_tools//:cmake) -S "$$source" -B "$$build" \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_LIBWASM=OFF -DBUILD_TOOLS=ON \
             -DCMAKE_C_COMPILER="$$PWD/$(execpath @local_tools//:gcc)" \
@@ -36,12 +38,12 @@ genrule(
 
 filegroup(
     name = "wasm2c",
-    visibility = ["//programs/fix:__subpackages__", "//coupon:__pkg__"],
+    visibility = ["//programs/fix:__subpackages__", "//programs/flatware:__subpackages__", "//flatware:__subpackages__", "//tests/flatware:__pkg__", "//coupon:__pkg__", "//tests/fix:__subpackages__", "//fix/sdk:__pkg__"],
     srcs = ["wabt-bin/wasm2c"],
 )
 
 filegroup(
     name = "wat2wasm",
-    visibility = ["//programs/fix:__pkg__", "//coupon:__pkg__"],
+    visibility = ["//programs/fix:__subpackages__", "//coupon:__pkg__", "//tests/fix:__subpackages__", "//flatware:__subpackages__", "//fix/sdk:__pkg__", "//tools:__pkg__"],
     srcs = ["wabt-bin/wat2wasm"],
 )

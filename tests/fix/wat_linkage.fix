@@ -1,0 +1,2 @@
+program = @"wat_linkage_native.elf"
+*#(program)

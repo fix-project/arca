@@ -1,8 +1,11 @@
 #![no_std]
+#![feature(portable_simd, simd_ffi)]
 #![allow(unused)]
 #![feature(slice_from_ptr_range)]
 #![feature(atomic_ptr_null)]
 #![feature(cstr_display)]
+
+extern crate alloc;
 
 use core::{
     arch::{asm, global_asm},
@@ -15,10 +18,14 @@ use user::error::log as arca_log;
 use user::{error, os, prelude::*};
 
 use crate::{
-    fixpoint::w2c_fixpoint,
-    rt::{wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_size},
+    fixpoint::w2c_fix,
+    rt::{
+        wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_alignment,
+        wasm_rt_module_size,
+    },
 };
 
+mod exceptions;
 mod fixpoint;
 mod rt;
 pub mod shell;
@@ -45,14 +52,18 @@ bail:
 "#
 );
 
-pub static mut _PROCEDURE: [u8; 32] = [0; 32];
+pub static mut _PROCEDURE: core::simd::u8x32 = core::simd::u8x32::splat(0);
 
+#[allow(
+    improper_ctypes,
+    reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
+)]
 unsafe extern "C" {
     static mut _sbss: c_void;
     static mut _ebss: c_void;
-    fn wasm2c_module_instantiate(module: *mut c_void, combination: *const w2c_fixpoint);
+    fn wasm2c_module_instantiate(module: *mut c_void, combination: *const w2c_fix);
     fn wasm2c_module_free(module: *mut c_void);
-    fn w2c_module_0x5Ffixpoint_apply(
+    fn w2c_module_0x5Ffix_apply(
         module: *const c_void,
         combination: wasm_rt_externref_t,
     ) -> wasm_rt_externref_t;
@@ -80,43 +91,60 @@ pub unsafe extern "C" fn _rsstart() -> ! {
 
 // Size in bytes of the buffer for the wasm2c module instance (w2c_module). Must be at least wasm_rt_module_size()
 const MODULE_BUF_SIZE: usize = 8192;
-static mut MODULE_BUF: [u8; MODULE_BUF_SIZE] = [0; MODULE_BUF_SIZE];
+#[repr(C, align(32))]
+struct ModuleBuffer([u8; MODULE_BUF_SIZE]);
+
+static mut MODULE_BUF: ModuleBuffer = ModuleBuffer([0; MODULE_BUF_SIZE]);
 
 pub fn main() -> ! {
+    unsafe extern "C" {
+        static __stack_bottom: u8;
+    }
+    assert_eq!(
+        unsafe {
+            arcane::arca_mprotect(
+                (&raw const __stack_bottom).cast_mut().cast(),
+                arcane::__MODE_none as i32,
+            )
+        },
+        0
+    );
     let combination = os::argument();
     let combination =
         Blob::try_from(combination).expect("fix programs must receive a handle as input");
     let mut handle = [0; 32];
-    combination.read(0, &mut handle);
+    assert_eq!(combination.len(), handle.len());
+    assert_eq!(combination.read(0, &mut handle), handle.len());
     let result = unsafe {
         wasm_rt_init();
         let module_size = wasm_rt_module_size();
         let module = unsafe {
             assert!(module_size <= MODULE_BUF_SIZE);
-            &raw mut MODULE_BUF[0] as *mut c_void
+            &raw mut MODULE_BUF.0[0] as *mut c_void
         };
-        wasm2c_module_instantiate(module, core::ptr::null());
+        assert_eq!(module as usize % wasm_rt_module_alignment(), 0);
 
         /// Read procedure handle from combination
         {
-            let result: Result<Blob, _> = Function::symbolic("get_tree")
+            let tree = Function::symbolic("get_tree")
                 .apply(Blob::new(handle))
-                .call_with_current_continuation()
-                .try_into();
-
-            let Ok(tree) = result else {
-                arca_log("prelogue: failed to get TreeData");
-                panic!()
-            };
+                .call_with_current_continuation();
 
             let procedure_ref = &raw mut _PROCEDURE;
-            tree.read(0, &mut *procedure_ref);
+            assert!(shell::fixpoint_len(core::simd::u8x32::from_array(handle)) >= 1);
+            shell::read_backing(&tree, 0, (&mut *procedure_ref).as_mut_array());
         }
 
-        let wasm_rt_externref_t { bytes: result } =
-            w2c_module_0x5Ffixpoint_apply(module, wasm_rt_externref_t { bytes: handle });
+        wasm2c_module_instantiate(module, core::ptr::null());
+
+        let wasm_rt_externref_t { bytes: result } = w2c_module_0x5Ffix_apply(
+            module,
+            wasm_rt_externref_t {
+                bytes: core::simd::u8x32::from_array(handle),
+            },
+        );
         wasm_rt_free();
         result
     };
-    os::exit(&result[..]);
+    os::exit(result.as_array().as_slice());
 }

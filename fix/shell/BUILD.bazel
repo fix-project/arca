@@ -39,5 +39,6 @@ rust_static_library(
         "//arca/api",
         "//arca/user",
         "//fix/handle",
+        "//fix/sdk:types",
     ],
 )

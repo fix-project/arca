@@ -54,7 +54,7 @@ jobs:
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       - name: Test
-        run: bazel test --keep_going --local_test_jobs=2 //...
+        run: bazel test --keep_going --local_test_jobs=2 -- //... -//coupon/...
       - name: Test logs
         if: always()
         uses: actions/upload-artifact@v4

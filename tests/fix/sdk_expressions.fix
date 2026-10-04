@@ -1,0 +1,3 @@
+program = @"sdk_expressions_native.elf"
+result = *#(program '42u64 #($identity "ignored") [&"payload" 1u64])
+*[result 0u64]

@@ -50,6 +50,12 @@ register_toolchains("//build/platforms:arca_cc")
 register_execution_platforms("//build/platforms:host")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.annotation(
+    crate = "blake3",
+    version = "1.8.7",
+    patches = ["//build:blake3-custom-target.patch"],
+    patch_args = ["-p1"],
+)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//third_party/rust:Cargo.lock",

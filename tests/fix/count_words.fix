@@ -1,3 +1,3 @@
 -- adapted from fix/src/test/test-countwords.cc
-count_words = @"count_words"
+count_words = @"count_words.elf"
 *#(count_words ("the" "the quick brown fox jumps over the lazy dog"))
