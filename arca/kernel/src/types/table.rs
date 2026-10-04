@@ -21,6 +21,14 @@ pub enum Table {
 pub type Entry = arca::Entry<Runtime>;
 
 impl Table {
+    pub fn shared(self) -> Self {
+        match self {
+            Self::Table2MB(table) => Self::Table2MB(table.shared().into()),
+            Self::Table1GB(table) => Self::Table1GB(table.shared().into()),
+            Self::Table512GB(table) => Self::Table512GB(table.shared().into()),
+        }
+    }
+
     pub fn new(size: usize) -> Table {
         if size <= Table2MB::SIZE {
             Table::Table2MB(Default::default())

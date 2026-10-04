@@ -63,8 +63,9 @@ impl<R: Runtime> Table<R> {
                 Entry::ROPage(_) | Entry::RWPage(_) => return Err(MapExists),
             };
             assert!(self.len() > smaller.len());
-            smaller.map(offset, entry)?;
-            self.set(index, Entry::RWTable(smaller)).map_err(Runtime)?
+            let replaced = smaller.map(offset, entry)?;
+            self.set(index, Entry::RWTable(smaller)).map_err(Runtime)?;
+            replaced
         };
         Ok(result)
     }

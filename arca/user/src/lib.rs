@@ -222,10 +222,22 @@ impl arca::Runtime for Runtime {
     }
 
     fn get_table(
-        tuple: &arca::Table<Self>,
+        table: &arca::Table<Self>,
         index: usize,
     ) -> Result<arca::Entry<Self>, Self::Error> {
-        todo!()
+        let mut entry = arcane::arca_entry {
+            mode: arcane::__MODE_none,
+            datatype: arcane::__TYPE_null,
+            data: 0,
+        };
+        unsafe {
+            syscall_result_raw(arcane::arca_table_get(
+                table.inner().as_raw() as i64,
+                index,
+                &mut entry,
+            ))?;
+        }
+        Ok(read_entry(entry))
     }
 
     fn set_table(
