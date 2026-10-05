@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy_test", "rustfmt_test")
 load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
 load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
+load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
 
 HOST = [
     "//tools/vmm:vmm",
@@ -21,7 +22,9 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"]
+CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"] + [
+    "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
+]
 
 rustfmt_test(
     name = "format",
