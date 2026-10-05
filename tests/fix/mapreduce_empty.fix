@@ -1,5 +1,0 @@
-program = @"mapreduce.elf"
-mapper = @"count_words.elf"
-reducer = @"reduction_subtract.elf"
-check = @"empty_tree_checker.elf"
-*#(check *#(program mapper reducer ()))

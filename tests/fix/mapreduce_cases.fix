@@ -1,0 +1,10 @@
+program = @"mapreduce.elf"
+mapper = @"count_words.elf"
+reducer = @"reduction_subtract.elf"
+check = @"check_result_native.elf"
+*#(check (
+    *#(program mapper reducer ())
+    *#(program mapper reducer (("x" "x")))
+    *#(program mapper reducer (("x" "x") ("x" "xx") ("x" "xxx") ("x" "xxxx")))
+    *#(program mapper reducer (("x" "x") ("x" "xx") ("x" "xxx")))
+) (() 1u64 0u64 2u64))

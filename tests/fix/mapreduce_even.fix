@@ -1,4 +1,0 @@
-program = @"mapreduce.elf"
-mapper = @"count_words.elf"
-reducer = @"reduction_subtract.elf"
-*#(program mapper reducer (("x" "x") ("x" "xx") ("x" "xxx") ("x" "xxxx")))

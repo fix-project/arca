@@ -57,8 +57,7 @@ fix_procedure(
 test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
-        ":mapreduce_" + name + "_test" for name in ["empty", "one", "even", "odd"]
-    ] + [
+        ":mapreduce_cases_test",
         ":addblob_extended_test",
         ":addblob_test",
         ":parallel_addblob_test",
@@ -70,30 +69,25 @@ test_suite(
     ],
 )
 
-wat_module(name = "empty_tree_checker_wasm", src = "empty_tree_checker.wat")
-fix_procedure(name = "empty_tree_checker", wasm = ":empty_tree_checker_wasm")
-
 wat_module(name = "reduction_subtract_wasm", src = "reduction_subtract.wat")
 fix_procedure(name = "reduction_subtract", wasm = ":reduction_subtract_wasm")
 
-[
-    vm_test(
-        name = "mapreduce_" + name + "_test",
-        size = "large",
-        timeout = "short",
-        args = ["eval", "mapreduce_" + name + ".fix"],
-        data = [
-            "mapreduce_" + name + ".fix",
-            "//programs/fix:mapreduce_elf",
-            "//programs/fix:count_words_elf",
-            ":reduction_subtract",
-        ] + ([":empty_tree_checker"] if name == "empty" else []),
-        expected_output = ["as a u64: " + str(expected)],
-        kernel = "//fix/runtime:image_elf",
-        tags = ["kvm", "local"],
-    )
-    for name, expected in [("empty", 42), ("one", 1), ("even", 0), ("odd", 2)]
-]
+vm_test(
+    name = "mapreduce_cases_test",
+    size = "large",
+    timeout = "short",
+    args = ["eval", "mapreduce_cases.fix"],
+    data = [
+        "mapreduce_cases.fix",
+        "//programs/fix:mapreduce_elf",
+        "//programs/fix:count_words_elf",
+        ":reduction_subtract",
+        ":check_result_native",
+    ],
+    expected_output = ["as a u64: 42"],
+    kernel = "//fix/runtime:image_elf",
+    tags = ["kvm", "local"],
+)
 
 wat_library(name = "wat_operations", src = "wat_linkage.wat")
 
@@ -111,7 +105,7 @@ rust_shared_library(
     name = "check_result_wasm",
     srcs = ["check_result.rs"],
     platform = WASM,
-    deps = ["//fix/sdk", "@crates//:dlmalloc"],
+    deps = ["//fix/sdk"],
 )
 fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 2, tables = 2)
 
