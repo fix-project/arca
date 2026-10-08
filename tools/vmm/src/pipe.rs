@@ -35,15 +35,21 @@ impl GuestPipe {
 
     pub fn read_exact(&mut self, mut bytes: &mut [u8]) -> Result<()> {
         while !bytes.is_empty() {
-            match self.read(bytes) {
+            while !self.inner.can_read() {
+                self.inner.flush();
+                self.rx_avail.wait();
+            }
+            match self.inner.read_deferred(bytes) {
                 Ok(n) => {
                     bytes = &mut bytes[n..];
                 }
                 Err(e) => {
+                    self.inner.flush();
                     return Err(e);
                 }
             }
         }
+        self.inner.flush();
         Ok(())
     }
 
@@ -59,15 +65,21 @@ impl GuestPipe {
 
     pub fn write_exact(&mut self, mut bytes: &[u8]) -> Result<()> {
         while !bytes.is_empty() {
-            match self.write(bytes) {
+            while !self.inner.can_write() {
+                self.inner.flush();
+                self.tx_avail.wait();
+            }
+            match self.inner.write_deferred(bytes) {
                 Ok(n) => {
                     bytes = &bytes[n..];
                 }
                 Err(e) => {
+                    self.inner.flush();
                     return Err(e);
                 }
             }
         }
+        self.inner.flush();
         Ok(())
     }
 }

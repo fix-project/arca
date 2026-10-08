@@ -12,9 +12,9 @@ fn read_file(path: &str) -> Vec<u8> {
         fs::File::open(path, true, false, false, false, false).expect("could not open input file");
     let len = file.seek(fs::Whence::End(0)) as usize;
     file.seek(fs::Whence::Start(0));
-    let mut bytes = vec![0; len];
+    let mut bytes = kernel::allocator::buffer(vec![0; len]);
     assert_eq!(file.read_exact(&mut bytes), len);
-    bytes
+    bytes.into_inner()
 }
 
 fn parse_value(spec: &str) -> Value {
@@ -95,7 +95,8 @@ fn effect(function: Function) -> Option<Function> {
         ] if &**operation == b"write" => {
             let mut file = fs::File::open(path(output), false, true, true, false, true)
                 .expect("could not open output file");
-            assert_eq!(file.write_exact(bytes), bytes.len());
+            let buffer = kernel::allocator::buffer(bytes.to_vec());
+            assert_eq!(file.write_exact(&buffer), bytes.len());
             Some(continuation.apply(None))
         }
         [Value::Blob(operation)] if &**operation == b"exit" => None,

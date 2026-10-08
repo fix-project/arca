@@ -8,6 +8,8 @@ pub struct Pipe<D: DoorBell> {
     tx: Option<Writer>,
     rx_avail: D,
     tx_avail: D,
+    read_pending: bool,
+    write_pending: bool,
 }
 
 pub fn pipe<D0: DoorBell, D1: DoorBell>(
@@ -25,23 +27,34 @@ pub fn pipe<D0: DoorBell, D1: DoorBell>(
             tx: Some(w1),
             rx_avail: rx_avail0,
             tx_avail: tx_avail0,
+            read_pending: false,
+            write_pending: false,
         },
         Pipe {
             rx: Some(r1),
             tx: Some(w0),
             rx_avail: rx_avail1,
             tx_avail: tx_avail1,
+            read_pending: false,
+            write_pending: false,
         },
     )
 }
 
 impl<D: DoorBell> Pipe<D> {
     pub fn read(&mut self, data: &mut [u8]) -> Result<usize> {
+        let res = self.read_deferred(data);
+        self.flush();
+        res
+    }
+
+    /// Defers the space-available notification until `flush`. Flush before waiting for the peer.
+    pub fn read_deferred(&mut self, data: &mut [u8]) -> Result<usize> {
         let res = self.rx.as_mut().unwrap().read(data);
         if let Ok(s) = res
             && s > 0
         {
-            self.tx_avail.ring();
+            self.read_pending = true;
         }
         res
     }
@@ -52,13 +65,30 @@ impl<D: DoorBell> Pipe<D> {
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<usize> {
+        let res = self.write_deferred(data);
+        self.flush();
+        res
+    }
+
+    /// Defers the data-available notification until `flush`. Flush before waiting for the peer.
+    pub fn write_deferred(&mut self, data: &[u8]) -> Result<usize> {
         let res = self.tx.as_mut().unwrap().write(data);
         if let Ok(s) = res
             && s > 0
         {
-            self.rx_avail.ring();
+            self.write_pending = true;
         }
         res
+    }
+
+    /// Sends pending notifications to the peer.
+    pub fn flush(&mut self) {
+        if core::mem::take(&mut self.read_pending) {
+            self.tx_avail.ring();
+        }
+        if core::mem::take(&mut self.write_pending) {
+            self.rx_avail.ring();
+        }
     }
 
     /// Whether a write can complete, including reporting a peer hangup.
@@ -67,6 +97,7 @@ impl<D: DoorBell> Pipe<D> {
     }
 
     pub fn into_inner(mut self) -> (Reader, Writer, D, D) {
+        self.flush();
         // Suppress hangup notifications while transferring ownership of the pipe.
         let rx = self.rx.take().unwrap();
         let tx = self.tx.take().unwrap();
@@ -91,6 +122,8 @@ impl<D: DoorBell> Pipe<D> {
             tx: Some(tx),
             rx_avail,
             tx_avail,
+            read_pending: false,
+            write_pending: false,
         }
     }
 }
@@ -173,6 +206,31 @@ mod tests {
         assert_eq!(q.read(&mut buf), Err(Error::Closed));
         assert!(q.can_write());
         assert_eq!(q.write(b"x"), Err(Error::Closed));
+    }
+
+    #[test]
+    fn deferred_notifications_are_batched() {
+        let (mut p, mut q) = pipe(
+            8,
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+            TestDoorBell::new(),
+        );
+        assert_eq!(p.write_deferred(b"abc"), Ok(3));
+        assert_eq!(p.write_deferred(b"def"), Ok(3));
+        assert_eq!(p.rx_avail.count.load(Ordering::SeqCst), 0);
+        p.flush();
+        assert_eq!(p.rx_avail.count.load(Ordering::SeqCst), 1);
+        let mut bytes = [0; 3];
+        assert_eq!(q.read_deferred(&mut bytes), Ok(3));
+        assert_eq!(&bytes, b"abc");
+        assert_eq!(q.read_deferred(&mut bytes), Ok(3));
+        assert_eq!(&bytes, b"def");
+        assert_eq!(q.tx_avail.count.load(Ordering::SeqCst), 0);
+        q.flush();
+        q.flush();
+        assert_eq!(q.tx_avail.count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

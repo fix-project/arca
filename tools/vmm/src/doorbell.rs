@@ -134,6 +134,24 @@ mod tests {
     }
 
     #[test]
+    fn notification_survives_arrival_before_wait() {
+        let waiter = VMToHostDoorBellWaiter {
+            fd: EventFd::new(0).unwrap(),
+        };
+        let bell = HostToVMDoorBell {
+            fd: waiter.fd.try_clone().unwrap(),
+        };
+        bell.ring();
+        let (done, result) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            waiter.wait();
+            done.send(()).unwrap();
+        });
+        result.recv_timeout(Duration::from_secs(5)).unwrap();
+        waiter.join().unwrap();
+    }
+
+    #[test]
     fn eventfd_backpressure_and_wraparound() {
         let (mut p, mut q) = pipes();
         let (done, result) = mpsc::channel();
@@ -170,9 +188,9 @@ mod tests {
             let (done, result) = mpsc::channel();
             let waiter = std::thread::spawn(move || {
                 let outcome = if writing {
-                    p.write(b"x")
+                    p.write_exact(b"x")
                 } else {
-                    p.read(&mut [0])
+                    p.read_exact(&mut [0])
                 };
                 done.send(outcome).unwrap();
             });

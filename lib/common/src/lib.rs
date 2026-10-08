@@ -17,6 +17,7 @@
 extern crate self as common;
 
 pub mod buddy;
+pub mod buffer;
 pub mod refcnt;
 pub use buddy::BuddyAllocator;
 pub mod arrayvec;

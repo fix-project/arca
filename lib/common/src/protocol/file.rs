@@ -1,19 +1,16 @@
-extern crate alloc;
-use alloc::vec::Vec;
-
+use crate::buffer::Region;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Request {
-    Read(usize),
-    Write(Vec<u8>),
+pub enum Request<B = Region> {
+    Read(B),
+    Write(B),
     Seek(Whence),
     Close,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
-    Bytes(Vec<u8>),
     Length(usize),
     Offset(u64),
     Ack,

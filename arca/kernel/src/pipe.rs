@@ -18,47 +18,43 @@ impl HostPipe {
         Self { inner: pipe }
     }
 
-    pub fn read(&mut self, bytes: &mut [u8]) -> PipeResult<usize> {
-        if bytes.is_empty() {
-            return Ok(0);
-        }
-        kthread::wait_until(|| self.inner.can_read());
-        self.inner.read(bytes)
-    }
-
     pub fn read_exact(&mut self, mut bytes: &mut [u8]) -> PipeResult<()> {
         while !bytes.is_empty() {
-            match self.read(bytes) {
+            if !self.inner.can_read() {
+                self.inner.flush();
+            }
+            kthread::wait_until(|| self.inner.can_read());
+            match self.inner.read_deferred(bytes) {
                 Ok(n) => {
                     bytes = &mut bytes[n..];
                 }
                 Err(e) => {
+                    self.inner.flush();
                     return Err(e);
                 }
             }
         }
+        self.inner.flush();
         Ok(())
-    }
-
-    pub fn write(&mut self, bytes: &[u8]) -> PipeResult<usize> {
-        if bytes.is_empty() {
-            return Ok(0);
-        }
-        kthread::wait_until(|| self.inner.can_write());
-        self.inner.write(bytes)
     }
 
     pub fn write_exact(&mut self, mut bytes: &[u8]) -> PipeResult<()> {
         while !bytes.is_empty() {
-            match self.write(bytes) {
+            if !self.inner.can_write() {
+                self.inner.flush();
+            }
+            kthread::wait_until(|| self.inner.can_write());
+            match self.inner.write_deferred(bytes) {
                 Ok(n) => {
                     bytes = &bytes[n..];
                 }
                 Err(e) => {
+                    self.inner.flush();
                     return Err(e);
                 }
             }
         }
+        self.inner.flush();
         Ok(())
     }
 }
@@ -80,6 +76,10 @@ impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
     }
 
     pub fn request(&mut self, request: &S) -> R {
+        self.request_serialized(request)
+    }
+
+    pub(crate) fn request_serialized(&mut self, request: &impl serde::Serialize) -> R {
         let bytes = postcard::to_allocvec(request).unwrap();
         let length = bytes.len().to_le_bytes();
         self.pipe.write_exact(&length).unwrap();
