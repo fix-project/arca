@@ -55,3 +55,8 @@ unsafe impl GlobalAlloc for Buddy {
 //         Ok(())
 //     }
 // }
+
+// The kernel's global allocator is Buddy, including allocations returned by libraries.
+pub fn buffer(bytes: alloc::vec::Vec<u8>) -> common::buffer::Buffer<alloc::vec::Vec<u8>> {
+    unsafe { common::buffer::Buffer::from_buddy(bytes) }
+}

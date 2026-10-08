@@ -69,7 +69,7 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| format!("could not open {path}"))?;
     let len = file.seek(Whence::End(0)) as usize;
     file.seek(Whence::Start(0));
-    let mut data = vec![0; len];
+    let mut data = kernel::allocator::buffer(vec![0; len]);
     file.read_exact(&mut data);
-    Ok(data)
+    Ok(data.into_inner())
 }

@@ -49,8 +49,9 @@ fn main() {
     let combination =
         Tree::try_from(import(input, evaluator.storage())).expect("Flatware combination");
     let result = evaluator.eval(combination.into_ref().application().strict().into());
-    let result = postcard::to_allocvec(&export(result, evaluator.storage()))
-        .expect("encode Flatware result");
+    let result = kernel::allocator::buffer(
+        postcard::to_allocvec(&export(result, evaluator.storage())).expect("encode Flatware result"),
+    );
     let mut output =
         File::open(&args[2], false, true, true, false, true).expect("open Flatware output");
     assert_eq!(output.write_exact(&result), result.len());

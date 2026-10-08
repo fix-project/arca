@@ -67,7 +67,8 @@ pub fn control_thread(
                     Ok(f) => {
                         let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
                         std::thread::spawn(move || {
-                            file_thread(f, FilePipe::new(q));
+                            // The kernel holds each buffer loan until the response arrives.
+                            unsafe { file_thread(f, FilePipe::new(q)) };
                         });
                         Response::Pipe(decompose_pipe(p))
                     }
@@ -101,18 +102,19 @@ pub fn control_thread(
     }
 }
 
-pub fn file_thread(mut file: File, mut pipe: FilePipe) {
+/// # Safety
+/// The peer must hold each region alive until its response, exclusively for reads
+/// and immutably for writes.
+pub unsafe fn file_thread(mut file: File, mut pipe: FilePipe) {
     use common::protocol::file::*;
     loop {
         let response = match pipe.recv() {
-            Request::Read(len) => {
-                let mut buf = vec![0; len];
-                let len = file.read(&mut buf).unwrap();
-                buf.truncate(len);
-                Response::Bytes(buf)
+            Request::Read(mut buffer) => {
+                let len = file.read(unsafe { buffer.as_mut_slice() }).unwrap();
+                Response::Length(len)
             }
             Request::Write(bytes) => {
-                let len = file.write(&bytes).unwrap();
+                let len = file.write(unsafe { bytes.as_slice() }).unwrap();
                 Response::Length(len)
             }
             Request::Seek(whence) => {
@@ -130,6 +132,57 @@ pub fn file_thread(mut file: File, mut pipe: FilePipe) {
             }
         };
         pipe.send(&response);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{
+        BuddyAllocator,
+        buffer::{Buffer, Region},
+        protocol::file::Request,
+        refcnt::RefCnt,
+    };
+
+    #[test]
+    fn buffers_lend_unique_and_shared_storage() {
+        let mut unique = Buffer::from(Box::new_in([0u8; 4096], BuddyAllocator));
+        let request = Request::Read(unique.slice_mut(..));
+        let encoded = postcard::to_allocvec(&request).unwrap();
+        assert!(encoded.len() < 32);
+        let Request::Read(mut region) = postcard::from_bytes::<Request>(&encoded).unwrap() else {
+            panic!("expected read");
+        };
+        unsafe { region.as_mut_slice() }.fill(0xa5);
+        assert_eq!(*unique, [0xa5; 4096]);
+
+        let shared: RefCnt<_> = unique.into_inner().into();
+        let request = Request::Write(Buffer::from(shared.clone()));
+        let encoded = postcard::to_allocvec(&request).unwrap();
+        let Request::Write(region) = postcard::from_bytes::<Request>(&encoded).unwrap() else {
+            panic!("expected write");
+        };
+        assert_eq!(unsafe { region.as_slice() }, &*shared);
+        assert_eq!(unsafe { region.as_slice() }.as_ptr(), shared.as_ptr());
+        drop(request);
+        assert_eq!(
+            RefCnt::refcnt(&shared).load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let shared = Buffer::from(shared);
+        let empty = postcard::to_allocvec(&shared.slice(..0)).unwrap();
+        let region: Region = postcard::from_bytes(&empty).unwrap();
+        assert!(unsafe { region.as_slice() }.is_empty());
+    }
+
+    #[test]
+    fn buffer_ranges_are_checked_before_access() {
+        for (offset, len) in [(BuddyAllocator.len(), 1), (usize::MAX, 2)] {
+            let encoded = postcard::to_allocvec(&(offset, len)).unwrap();
+            let region: Region = postcard::from_bytes(&encoded).unwrap();
+            assert!(std::panic::catch_unwind(|| unsafe { region.as_slice() }).is_err());
+        }
     }
 }
 

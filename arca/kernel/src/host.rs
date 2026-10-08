@@ -240,11 +240,13 @@ pub mod net {
 pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
+    use common::buffer::Buffer;
     pub use common::protocol::file::Whence;
     use common::{
         protocol::control::{ErrorKind, FileMode},
         protocol::*,
     };
+    use core::ops::{Deref, DerefMut};
 
     pub struct File {
         pipe: FilePipe,
@@ -296,44 +298,59 @@ pub mod fs {
 
         pub fn close(self) {}
 
-        pub fn read(&mut self, buf: &mut [u8]) -> usize {
-            let file::Response::Bytes(bytes) = self.pipe.request(&file::Request::Read(buf.len()))
+        pub fn read<B>(&mut self, buf: &mut Buffer<B>) -> usize
+        where
+            Buffer<B>: DerefMut<Target = [u8]>,
+        {
+            let file::Response::Length(len) = self
+                .pipe
+                .request_serialized(&file::Request::Read(buf.slice_mut(..)))
             else {
                 panic!("bad response");
             };
-            buf[..bytes.len()].copy_from_slice(&bytes);
-            bytes.len()
+            assert!(len <= buf.len());
+            len
         }
 
-        pub fn read_exact(&mut self, mut buf: &mut [u8]) -> usize {
+        pub fn read_exact<B>(&mut self, buf: &mut Buffer<B>) -> usize
+        where
+            Buffer<B>: DerefMut<Target = [u8]>,
+        {
             let mut total = 0;
-            while !buf.is_empty() {
-                let n = self.read(buf);
+            while total < buf.len() {
+                let n = self.read::<&mut [u8]>(&mut buf.slice_mut(total..));
                 if n == 0 {
                     break;
                 }
-                buf = &mut buf[n..];
                 total += n;
             }
             total
         }
 
-        pub fn write(&mut self, buf: &[u8]) -> usize {
-            let file::Response::Length(len) = self.pipe.request(&file::Request::Write(buf.into()))
+        pub fn write<B>(&mut self, buf: &Buffer<B>) -> usize
+        where
+            Buffer<B>: Deref<Target = [u8]>,
+        {
+            let file::Response::Length(len) = self
+                .pipe
+                .request_serialized(&file::Request::Write(buf.slice(..)))
             else {
                 panic!("bad response");
             };
+            assert!(len <= buf.len());
             len
         }
 
-        pub fn write_exact(&mut self, mut buf: &[u8]) -> usize {
+        pub fn write_exact<B>(&mut self, buf: &Buffer<B>) -> usize
+        where
+            Buffer<B>: Deref<Target = [u8]>,
+        {
             let mut total = 0;
-            while !buf.is_empty() {
-                let n = self.write(buf);
+            while total < buf.len() {
+                let n = self.write::<&[u8]>(&buf.slice(total..));
                 if n == 0 {
                     break;
                 }
-                buf = &buf[n..];
                 total += n;
             }
             total
@@ -358,10 +375,9 @@ pub mod fs {
 
     impl core::fmt::Write for File {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let mut s = s.as_bytes();
-            while !s.is_empty() {
-                let len = self.write(s);
-                s = &s[len..];
+            let bytes = crate::allocator::buffer(alloc::vec::Vec::from(s.as_bytes()));
+            if self.write_exact(&bytes) != bytes.len() {
+                return Err(core::fmt::Error);
             }
             Ok(())
         }
