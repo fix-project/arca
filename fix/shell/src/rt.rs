@@ -107,7 +107,7 @@ fn table_bytes(elements: u32, element_size: usize) -> usize {
  *    wasm_rt_memory_t my_memory;
  *    // 1 initial page (65536 bytes), and a maximum of 2 pages,
  *    // indexed with an i32
- *    wasm_rt_allocate_memory(&my_memory, 1, 2, false);
+ *    wasm_rt_allocate_memory(&my_memory, 1, 2, false, PAGE_SIZE);
  *  ```
  */
 #[unsafe(no_mangle)]
@@ -116,10 +116,12 @@ pub extern "C" fn wasm_rt_allocate_memory(
     initial_pages: u64,
     max_pages: u64,
     is64: bool,
+    page_size: u32,
 ) {
     unsafe {
         assert!(!memory.is_null());
         assert!(!is64);
+        assert_eq!(page_size, PAGE_SIZE);
         assert!(initial_pages <= max_pages && max_pages <= MAX_PAGES);
         let idx = MEMORY_IDX;
         assert!(idx < NUM_MEMORIES);
@@ -128,6 +130,7 @@ pub extern "C" fn wasm_rt_allocate_memory(
         map_region(data, size as usize, __MODE_read_write).expect("memory allocation failed");
         memory.write(wasm_rt_memory_t {
             data,
+            page_size,
             pages: initial_pages,
             max_pages,
             size,

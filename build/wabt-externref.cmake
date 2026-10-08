@@ -21,3 +21,9 @@ replace_required("${SOURCE}/src/c-writer.cc"
                   Newline());]=]
 [=[            Write(StackVar(0, Type::I32), " = WASM_RT_EXTERNREF_IS_NULL(",
                   StackVar(0), ");", Newline());]=])
+
+replace_required("${SOURCE}/src/c-writer.cc"
+[=[    Write(StackVar(0), ".tag = wasm_rt_exception_tag();", Newline());]=]
+[=[    Write("if (wasm_rt_exception_size() > sizeof(", StackVar(0),
+          ".data)) { TRAP(EXHAUSTION); }", Newline());
+    Write(StackVar(0), ".tag = wasm_rt_exception_tag();", Newline());]=])
