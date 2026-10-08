@@ -55,5 +55,9 @@ Returned files retain contents and access/modification timestamps; host inode
 identities, permissions, and hard links are not reproduced.
 
 The runner uses the existing `wasm-merge`, `wasm2c`, compiler, and KVM toolchain.
+The Fix shell shares a 4 GiB address region between its native executable and
+heap. Only ELF segments and heap allocations are mapped; unused address space
+does not consume memory. Module instances are allocated using wasm2c's reported
+size and alignment.
 The standalone utilities in `//programs/flatware` use precompiled modules through
 the same runner.
