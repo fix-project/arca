@@ -2,6 +2,14 @@
 #include "wasm-rt-exceptions.h"
 #include "module.h"
 
+float nearbyintf(float value) {
+  return __builtin_nearbyintf(value);
+}
+
+double nearbyint(double value) {
+  return __builtin_nearbyint(value);
+}
+
 void wasm_rt_init(void) {
 }
 

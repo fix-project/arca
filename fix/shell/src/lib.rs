@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use core::{
     arch::{asm, global_asm},
     ffi::c_void,
@@ -89,13 +90,6 @@ pub unsafe extern "C" fn _rsstart() -> ! {
     main();
 }
 
-// Size in bytes of the buffer for the wasm2c module instance (w2c_module). Must be at least wasm_rt_module_size()
-const MODULE_BUF_SIZE: usize = 8192;
-#[repr(C, align(32))]
-struct ModuleBuffer([u8; MODULE_BUF_SIZE]);
-
-static mut MODULE_BUF: ModuleBuffer = ModuleBuffer([0; MODULE_BUF_SIZE]);
-
 pub fn main() -> ! {
     unsafe extern "C" {
         static __stack_bottom: u8;
@@ -117,12 +111,12 @@ pub fn main() -> ! {
     assert_eq!(combination.read(0, &mut handle), handle.len());
     let result = unsafe {
         wasm_rt_init();
-        let module_size = wasm_rt_module_size();
-        let module = unsafe {
-            assert!(module_size <= MODULE_BUF_SIZE);
-            &raw mut MODULE_BUF.0[0] as *mut c_void
-        };
-        assert_eq!(module as usize % wasm_rt_module_alignment(), 0);
+        let layout =
+            Layout::from_size_align(wasm_rt_module_size(), wasm_rt_module_alignment()).unwrap();
+        let module = alloc_zeroed(layout).cast::<c_void>();
+        if module.is_null() {
+            handle_alloc_error(layout);
+        }
 
         /// Read procedure handle from combination
         {
@@ -144,6 +138,7 @@ pub fn main() -> ! {
             },
         );
         wasm_rt_free();
+        dealloc(module.cast(), layout);
         result
     };
     os::exit(result.as_array().as_slice());
