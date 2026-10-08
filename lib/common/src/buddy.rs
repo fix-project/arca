@@ -796,7 +796,7 @@ impl BuddyAllocatorImpl {
         assert_ne!(self.inner.meta.level_range.start, 0);
         let size_log2 = core::cmp::max(self.inner.meta.level_range.start, level);
         self.inner.meta.request_count[size_log2 as usize].fetch_add(1, Ordering::SeqCst);
-        let index = (ptr as usize - self.base as usize) / (1 << size_log2) as usize;
+        let index = (ptr as usize - self.base as usize) >> size_log2;
         log::debug!("freed {index:#x}@{size_log2}");
         self.inner.free_unchecked(self.base, index, size_log2, None);
         self.inner
