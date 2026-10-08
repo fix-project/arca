@@ -8,8 +8,17 @@ extern "C" {
 #endif
 
 typedef const void *wasm_rt_tag_t;
+
+#define WASM_EXN_MAX_SIZE 256
 typedef struct {
-  intptr_t state[5];
+  wasm_rt_tag_t tag;
+  uint32_t size;
+  char data[WASM_EXN_MAX_SIZE];
+} wasm_rt_exnref_t;
+
+#define wasm_rt_exnref_null_value ((wasm_rt_exnref_t){NULL, 0, {0}})
+typedef struct {
+  void *state[5];
 } wasm_rt_jmp_buf;
 
 #define WASM_RT_UNWIND_TARGET wasm_rt_jmp_buf

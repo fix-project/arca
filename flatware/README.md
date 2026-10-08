@@ -4,6 +4,10 @@ Flatware is a freestanding WASIp1 adapter. It links standard command modules
 with `wasm-merge`, retaining separate guest and adapter memories. The control
 bridge copies guest buffers and catches the adapter's exit tag.
 
+The WABT 1.0.42 translator supports legacy and modern Wasm exception handling.
+Exception references retain upstream's 256-byte inline payload limit; legacy
+exceptions continue to use dynamically sized payload storage.
+
 The adapter uses the C Fix bindings directly. It reads and constructs descriptor
 Trees with one scratch Memory and Table. The original combination stays in native
 externref locals; input parent and child indices locate preserved fields

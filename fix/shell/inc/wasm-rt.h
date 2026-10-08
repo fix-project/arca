@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #define PAGE_SIZE 65536
+#define WASM_RT_MEMCHECK_BOUNDS_CHECK 1
 
 [[noreturn]] void abort(void);
 
@@ -65,6 +66,7 @@ typedef enum {
   WASM_RT_TRAP_INVALID_CONVERSION, /** Conversion from NaN to integer. */
   WASM_RT_TRAP_UNREACHABLE,        /** Unreachable instruction executed. */
   WASM_RT_TRAP_CALL_INDIRECT,      /** Invalid call_indirect, for any reason. */
+  WASM_RT_TRAP_NULL_REF,           /** Null reference. */
   WASM_RT_TRAP_UNCAUGHT_EXCEPTION, /* Exception thrown and not caught. */
   WASM_RT_TRAP_UNALIGNED,          /** Unaligned atomic instruction executed. */
 #if WASM_RT_MERGED_OOB_AND_EXHAUSTION_TRAPS
@@ -83,6 +85,7 @@ typedef enum {
   WASM_RT_V128,
   WASM_RT_FUNCREF,
   WASM_RT_EXTERNREF,
+  WASM_RT_EXNREF,
 } wasm_rt_type_t;
 
 /**
@@ -150,6 +153,7 @@ static inline bool wasm_rt_externref_is_null(wasm_rt_externref_t value) {
 typedef struct {
   /** The linear memory data, with a byte length of `size`. */
   uint8_t *data;
+  uint32_t page_size;
   /** The current and maximum page count for this Memory object. If there is no
    * maximum, `max_pages` is 0xffffffffu (i.e. UINT32_MAX). */
   uint64_t pages, max_pages;
@@ -212,11 +216,11 @@ const char *wasm_rt_strerror(wasm_rt_trap_t trap);
  *    wasm_rt_memory_t my_memory;
  *    // 1 initial page (65536 bytes), and a maximum of 2 pages,
  *    // indexed with an i32
- *    wasm_rt_allocate_memory(&my_memory, 1, 2, false);
+ *    wasm_rt_allocate_memory(&my_memory, 1, 2, false, PAGE_SIZE);
  *  ```
  */
 void wasm_rt_allocate_memory(wasm_rt_memory_t *, uint64_t initial_pages,
-                             uint64_t max_pages, bool is64);
+                             uint64_t max_pages, bool is64, uint32_t page_size);
 
 /**
  * Grow a Memory object by `pages`, and return the previous page count. If
