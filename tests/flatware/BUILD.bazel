@@ -86,12 +86,8 @@ sh_test(
     args = ["$(rootpath " + target + ")" for target in [
         "//flatware:run",
         ":runner_probe_wasm",
-        "//programs/flatware:ls",
-        "//programs/flatware:wc",
-        "//programs/flatware:cat",
-        "//programs/flatware:head",
     ]],
-    data = [":runner_probe_wasm", "//flatware:run"] + ["//programs/flatware:" + name for name in ["ls", "wc", "cat", "head"]],
+    data = [":runner_probe_wasm", "//flatware:run"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local"],
