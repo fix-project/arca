@@ -7,6 +7,7 @@ HOST = [
     "//tools/vmm:vmm",
     "//tools:bindgen",
     "//tools:postprocess",
+    "//flatware/runner:binary",
     "//fix/handle",
     "//coupon:api",
 ]
@@ -23,7 +24,7 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm"] + [
+CHECKS = HOST + GUEST + ["//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 

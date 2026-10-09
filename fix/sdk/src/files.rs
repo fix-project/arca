@@ -3,7 +3,6 @@ use crate::{Blob, Cast, Error, Object, Select, Tree, Value};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
     pub dev: u64,
-    pub ino: u64,
     pub filetype: u8,
     pub nlink: u64,
     pub size: u64,
@@ -49,13 +48,13 @@ pub fn make_file<
     crate::tree![name, stat, contents]
 }
 pub fn read_stat(object: &impl Value<Type = Object<Tree>>) -> Result<Stat, Error> {
-    if object.len()? != 8 {
+    if object.len()? != 7 {
         return Err(Error::WrongType);
     }
-    let mut fields = [0u64; 8];
+    let mut fields = [0u64; 7];
     for (index, field) in fields.iter_mut().enumerate() {
         let value = Cast::<Object<Blob>, _>::try_from(Value::get(object, index))?;
-        *field = if index == 2 {
+        *field = if index == 1 {
             if value.len()? != 1 {
                 return Err(Error::WrongType);
             }
@@ -68,19 +67,17 @@ pub fn read_stat(object: &impl Value<Type = Object<Tree>>) -> Result<Stat, Error
     }
     Ok(Stat {
         dev: fields[0],
-        ino: fields[1],
-        filetype: fields[2] as u8,
-        nlink: fields[3],
-        size: fields[4],
-        atim: fields[5],
-        mtim: fields[6],
-        ctim: fields[7],
+        filetype: fields[1] as u8,
+        nlink: fields[2],
+        size: fields[3],
+        atim: fields[4],
+        mtim: fields[5],
+        ctim: fields[6],
     })
 }
 pub fn write_stat(stat: &Stat) -> impl Value<Type = Object<Tree>> + Clone + use<> {
     crate::tree![
         stat.dev,
-        stat.ino,
         Blob::create([stat.filetype]),
         stat.nlink,
         stat.size,

@@ -46,11 +46,13 @@ typedef struct {
   uint8_t filetype;
   uint64_t nlink, size, atim, mtim, ctim;
 } Stat;
+enum { NODE_NAME = 1, NODE_STAT = 2, NODE_CONTENT = 4, NODE_ALL = 7 };
 typedef struct {
   Bytes name, bytes;
   Indices children;
   Stat stat;
   size_t parent, input_parent, input_index;
+  unsigned loaded, changed;
   bool stream;
 } Node;
 typedef struct {
@@ -65,7 +67,6 @@ typedef struct {
   Indices roots;
   Descriptor *descriptors;
   size_t descriptor_count, descriptor_cap;
-  uint64_t next_inode;
 } Filesystem;
 typedef struct {
   Bytes *arguments, *environment;
@@ -92,7 +93,9 @@ bool bytes_equal(const Bytes *, const uint8_t *, size_t);
 uint64_t load_le(const uint8_t *, size_t);
 void put_le(uint8_t *, uint64_t, size_t);
 uint64_t node_size(const Node *);
-void node_modified(Node *, uint64_t);
+void fs_load(Filesystem *, size_t, unsigned);
+void fs_changed(Filesystem *, size_t, unsigned);
+void node_modified(Filesystem *, size_t, uint64_t);
 uint32_t node_file(const Node *);
 uint32_t node_directory(const Node *);
 void fs_init(Filesystem *);

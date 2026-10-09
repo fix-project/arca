@@ -4,6 +4,12 @@
 
 __attribute__((import_module("flatware_control"), import_name("run"))) void
 guest_run(void);
+__attribute__((import_module("flatware_control"),
+               import_name("input"))) fix_handle
+current_input(void);
+__attribute__((import_module("flatware_control"),
+               import_name("set_input"))) void
+set_input(fix_handle input);
 WASM_MEMORY(1);
 WASM_MEMORY_COPY(0, 1);
 WASM_MEMORY_COPY(1, 0);
@@ -70,65 +76,38 @@ static fix_handle make_tree(uint32_t length) {
   return value;
 }
 static Stat read_stat(fix_handle value) {
-  tree(value, 8);
-  Stat stat = {
-      integer(entry(value, 0), 8),          integer(entry(value, 1), 8),
-      (uint8_t)integer(entry(value, 2), 1), integer(entry(value, 3), 8),
-      integer(entry(value, 4), 8),          integer(entry(value, 5), 8),
-      integer(entry(value, 6), 8),          integer(entry(value, 7), 8)};
+  tree(value, 7);
+  fix_attach_tree(value, 0);
+  Stat stat = {.dev = integer(wasm_table_get_0(0), 8),
+               .filetype = (uint8_t)integer(wasm_table_get_0(1), 1),
+               .nlink = integer(wasm_table_get_0(2), 8),
+               .size = integer(wasm_table_get_0(3), 8),
+               .atim = integer(wasm_table_get_0(4), 8),
+               .mtim = integer(wasm_table_get_0(5), 8),
+               .ctim = integer(wasm_table_get_0(6), 8)};
+  fix_detach_tree(0, 0);
   return stat;
 }
 static fix_handle write_stat(const Stat *stat) {
-  prepare_tree(8);
+  prepare_tree(7);
   wasm_table_set_0(0, fix_create_blob_i64(stat->dev));
-  wasm_table_set_0(1, fix_create_blob_i64(stat->ino));
-  wasm_table_set_0(2, make_blob(&stat->filetype, 1));
-  wasm_table_set_0(3, fix_create_blob_i64(stat->nlink));
-  wasm_table_set_0(4, fix_create_blob_i64(stat->size));
-  wasm_table_set_0(5, fix_create_blob_i64(stat->atim));
-  wasm_table_set_0(6, fix_create_blob_i64(stat->mtim));
-  wasm_table_set_0(7, fix_create_blob_i64(stat->ctim));
-  return make_tree(8);
+  wasm_table_set_0(1, make_blob(&stat->filetype, 1));
+  wasm_table_set_0(2, fix_create_blob_i64(stat->nlink));
+  wasm_table_set_0(3, fix_create_blob_i64(stat->size));
+  wasm_table_set_0(4, fix_create_blob_i64(stat->atim));
+  wasm_table_set_0(5, fix_create_blob_i64(stat->mtim));
+  wasm_table_set_0(6, fix_create_blob_i64(stat->ctim));
+  return make_tree(7);
 }
-static size_t read_node(fix_handle descriptor, size_t parent,
-                        uint32_t input_index, bool stream) {
-  tree(descriptor, 3);
-  fix_handle name = entry(descriptor, 0), metadata = entry(descriptor, 1),
-             contents = entry(descriptor, 2);
-  Filesystem *fs = &state.fs;
-  Stat stat = stream ? (Stat){.ino = fs->count,
-                              .filetype = 2,
-                              .nlink = 1,
-                              .atim = state.time,
-                              .mtim = state.time,
-                              .ctim = state.time}
-                     : read_stat(metadata);
+static size_t read_node(Filesystem *fs, size_t parent, uint32_t input_index,
+                        bool stream) {
+  require(fs->count < SIZE_MAX);
   fs->nodes = reserve(fs->nodes, &fs->cap, fs->count + 1, sizeof(Node));
   size_t index = fs->count++;
-  fs->nodes[index] = (Node){.name = blob(name),
-                            .stat = stat,
-                            .parent = parent,
+  fs->nodes[index] = (Node){.parent = parent,
                             .input_parent = parent,
                             .input_index = input_index,
                             .stream = stream};
-  if (stat.dev == 0 && stat.filetype == 3) {
-    require(fix_is_object(contents) && fix_get_data_type(contents) == FIX_TREE);
-    for (uint32_t i = 0; i < fix_len(contents); ++i) {
-      size_t child = read_node(entry(contents, i), index, i, false);
-      Bytes *name = &fs->nodes[child].name;
-      require(name->len && !bytes_equal(name, (const uint8_t *)".", 1) &&
-              !bytes_equal(name, (const uint8_t *)"..", 2));
-      for (size_t j = 0; j < name->len; ++j)
-        require(name->data[j] && name->data[j] != '/');
-      for (size_t j = 0; j < fs->nodes[index].children.len; ++j)
-        require(!bytes_equal(&fs->nodes[fs->nodes[index].children.data[j]].name,
-                             name->data, name->len));
-      indices_push(&fs->nodes[index].children, child);
-    }
-  } else if (stat.dev == 0 && (stat.filetype == 4 || stream)) {
-    fs->nodes[index].bytes = blob(contents);
-  }
-  fs->nodes[index].stat.size = node_size(&fs->nodes[index]);
   return index;
 }
 static Bytes *byte_list(fix_handle value, size_t *count) {
@@ -141,12 +120,59 @@ static Bytes *byte_list(fix_handle value, size_t *count) {
     list[i] = blob(entry(value, i));
   return list;
 }
-static fix_handle original(fix_handle input, size_t index) {
-  const Node *node = &state.fs.nodes[index];
+static fix_handle original(fix_handle input, const Filesystem *fs,
+                           size_t index) {
+  const Node *node = &fs->nodes[index];
+  require(node->input_index != NONE);
   fix_handle parent = node->input_parent == NONE
                           ? entry(input, 3)
-                          : entry(original(input, node->input_parent), 2);
+                          : entry(original(input, fs, node->input_parent), 2);
   return entry(parent, node->input_index);
+}
+void fs_load(Filesystem *fs, size_t index, unsigned fields) {
+  fields &= ~fs->nodes[index].loaded;
+  if (!fields)
+    return;
+  fix_handle descriptor = original(current_input(), fs, index);
+  tree(descriptor, 3);
+  if (fields & NODE_NAME) {
+    fs->nodes[index].name = blob(entry(descriptor, 0));
+    if (fs->nodes[index].parent != NONE) {
+      const Bytes *name = &fs->nodes[index].name;
+      require(name->len && !bytes_equal(name, (const uint8_t *)".", 1) &&
+              !bytes_equal(name, (const uint8_t *)"..", 2));
+      for (size_t i = 0; i < name->len; ++i)
+        require(name->data[i] && name->data[i] != '/');
+    }
+  }
+  if (fields & NODE_STAT) {
+    Node *node = &fs->nodes[index];
+    node->stat = node->stream ? (Stat){.filetype = 2,
+                                       .nlink = 1,
+                                       .atim = state.time,
+                                       .mtim = state.time,
+                                       .ctim = state.time}
+                              : read_stat(entry(descriptor, 1));
+    node->stat.ino = index + 1;
+    if (!node_file(node) || !node_directory(node))
+      node->stat.size = fix_len(entry(descriptor, 2));
+  }
+  fs->nodes[index].loaded |= fields & (NODE_NAME | NODE_STAT);
+  if (fields & NODE_CONTENT) {
+    fs_load(fs, index, NODE_STAT);
+    fix_handle contents = entry(descriptor, 2);
+    if (!node_directory(&fs->nodes[index])) {
+      require(fix_is_object(contents) &&
+              fix_get_data_type(contents) == FIX_TREE);
+      for (uint32_t i = 0; i < fix_len(contents); ++i) {
+        size_t child = read_node(fs, index, i, false);
+        indices_push(&fs->nodes[index].children, child);
+      }
+    } else if (!node_file(&fs->nodes[index])) {
+      fs->nodes[index].bytes = blob(contents);
+    }
+    fs->nodes[index].loaded |= NODE_CONTENT;
+  }
 }
 static fix_handle write_node(fix_handle input, size_t index);
 static void write_children(fix_handle input, const Indices *children,
@@ -164,16 +190,26 @@ static fix_handle write_directory(fix_handle input, const Indices *children) {
   return make_tree(children->len);
 }
 static fix_handle write_node(fix_handle input, size_t index) {
-  Node *node = &state.fs.nodes[index];
-  Stat stat = node->stat;
-  stat.size = node_size(node);
-  fix_handle name = make_blob(node->name.data, node->name.len);
-  fix_handle metadata =
-      node->stream ? entry(original(input, index), 1) : write_stat(&stat);
-  fix_handle contents =
-      !node_file(node)        ? make_blob(node->bytes.data, node->bytes.len)
-      : !node_directory(node) ? write_directory(input, &node->children)
-                              : entry(original(input, index), 2);
+  const Node *node = &state.fs.nodes[index];
+  if (!node->changed)
+    return original(input, &state.fs, index);
+  fix_handle descriptor =
+      node->input_index == NONE ? null() : original(input, &state.fs, index);
+  fix_handle name = node->changed & NODE_NAME
+                        ? make_blob(node->name.data, node->name.len)
+                        : entry(descriptor, 0);
+  fix_handle metadata = !node->stream && (node->changed & NODE_STAT)
+                            ? write_stat(&node->stat)
+                            : entry(descriptor, 1);
+  fix_handle contents;
+  if (!(node->changed & NODE_CONTENT)) {
+    contents = entry(descriptor, 2);
+  } else {
+    require(node->loaded & NODE_CONTENT);
+    contents = !node_directory(node)
+                   ? write_directory(input, &node->children)
+                   : make_blob(node->bytes.data, node->bytes.len);
+  }
   prepare_tree(3);
   wasm_table_set_0(0, name);
   wasm_table_set_0(1, metadata);
@@ -182,6 +218,7 @@ static fix_handle write_node(fix_handle input, size_t index) {
 }
 __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
   tree(input, 6);
+  set_input(input);
   state = (State){0};
   state.time = integer(entry(input, 5), 8);
   mt19937_seed(&state.random, integer(entry(input, 4), 8));
@@ -191,8 +228,7 @@ __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
   require(fix_is_object(descriptors) &&
           fix_get_data_type(descriptors) == FIX_TREE);
   for (uint32_t i = 0; i < fix_len(descriptors); ++i)
-    indices_push(&state.fs.roots,
-                 read_node(entry(descriptors, i), NONE, i, i < 3));
+    indices_push(&state.fs.roots, read_node(&state.fs, NONE, i, i < 3));
   fs_init(&state.fs);
   guest_run();
   fix_handle roots = write_directory(input, &state.fs.roots);
@@ -203,6 +239,7 @@ __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
   fix_detach_tree(0, 0);
   fix_detach_blob(1, 0);
   fs_destroy(&state.fs);
+  set_input(null());
   for (size_t i = 0; i < state.argument_count; ++i)
     free(state.arguments[i].data);
   for (size_t i = 0; i < state.environment_count; ++i)

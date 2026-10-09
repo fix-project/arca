@@ -1,6 +1,10 @@
 #include "flatware.h"
 #include <assert.h>
 
+void fs_load(Filesystem *fs, size_t node, unsigned fields) {
+  assert((fs->nodes[node].loaded & fields) == fields);
+}
+
 static uint8_t guest_memory[65536];
 void guest_read(uint32_t p, void *out, uint32_t len) {
   assert(p <= sizeof(guest_memory) && len <= sizeof(guest_memory) - p);
@@ -31,7 +35,7 @@ static Filesystem initial_fs(void) {
   for (size_t i = 0; i < 4; i++) {
     fs.nodes[i] =
         (Node){.name = bytes_copy((const uint8_t *)names[i], lengths[i]),
-               .stat = {.ino = i,
+               .stat = {.ino = i + 1,
                         .nlink = 1,
                         .atim = 10,
                         .mtim = 10,
@@ -39,6 +43,9 @@ static Filesystem initial_fs(void) {
                         .filetype = i < 3 ? 2 : 3},
                .parent = NONE,
                .input_parent = NONE,
+               .input_index = NONE,
+               .loaded = NODE_ALL,
+               .changed = NODE_ALL,
                .stream = i < 3};
     if (i < 3)
       fs.nodes[i].bytes =

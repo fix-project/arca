@@ -99,7 +99,6 @@ TreeRef rather than being an object.
 ```
 Tree: stat info
 ├─ Blob: device
-├─ Blob: inode
 ├─ Blob: filetype
 ├─ Blob: link count
 ├─ Blob: size
