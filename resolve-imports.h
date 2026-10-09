@@ -18,6 +18,7 @@
 #define WABT_RESOLVE_IMPORTS_H_
 
 #include <unordered_map>
+#include <vector>
 
 #include "wabt/common.h"
 
@@ -25,7 +26,7 @@ namespace wabt {
 
 struct Module;
 
-Result ResolveImports(struct Module*, struct Module*, std::unordered_map<std::string, std::string>*);
+Result ResolveImports(const std::vector<Module*>& modules);
 
 }  // namespace wabt
 

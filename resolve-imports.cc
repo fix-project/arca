@@ -66,6 +66,7 @@ class ImportResolver: public ExprVisitor::DelegateNop {
   Result OnTableFillExpr(TableFillExpr*) override;
   Result OnStoreExpr(StoreExpr*) override;
   Result BeginTryExpr(TryExpr*) override;
+  Result BeginTryTableExpr(TryTableExpr*) override;
   Result EndTryExpr(TryExpr*) override;
   Result OnCatchExpr(TryExpr*, Catch*) override;
   Result OnThrowExpr(ThrowExpr*) override;
@@ -253,6 +254,15 @@ Result ImportResolver::OnStoreExpr(StoreExpr* expr) {
   return Result::Ok;
 }
 
+Result ImportResolver::BeginTryTableExpr(TryTableExpr* expr) {
+  for (auto& clause : expr->catches) {
+    if (!clause.IsCatchAll()) {
+      CHECK_RESULT(ResolveImportForTagVar(&clause.tag));
+    }
+  }
+  return Result::Ok;
+}
+
 Result ImportResolver::BeginTryExpr(TryExpr* expr) {
   PushLabel(expr->block.label);
   return Result::Ok;
@@ -369,7 +379,11 @@ Result ImportResolver::VisitExport(Index export_index, Export* export_) {
 
 Result ImportResolver::VisitElemSegment(Index elem_segment_index,
                                      ElemSegment* segment) {
-  CHECK_RESULT(ResolveImportForTableVar(&segment->table_var));
+  if (segment->kind == SegmentKind::Active) {
+    CHECK_RESULT(ResolveImportForTableVar(&segment->table_var));
+  } else {
+    segment->table_var = Var(Index(0), Location());
+  }
   CHECK_RESULT(visitor_.VisitExprList(segment->offset));
   for (ExprList& elem_expr : segment->elem_exprs) {
     Expr* expr = &elem_expr.front();
@@ -382,7 +396,11 @@ Result ImportResolver::VisitElemSegment(Index elem_segment_index,
 
 Result ImportResolver::VisitDataSegment(Index data_segment_index,
                                      DataSegment* segment) {
-  CHECK_RESULT(ResolveImportForMemoryVar(&segment->memory_var));
+  if (segment->kind == SegmentKind::Active) {
+    CHECK_RESULT(ResolveImportForMemoryVar(&segment->memory_var));
+  } else {
+    segment->memory_var = Var(Index(0), Location());
+  }
   CHECK_RESULT(visitor_.VisitExprList(segment->offset));
   return Result::Ok;
 }
@@ -458,6 +476,10 @@ void ImportMapConstructor(Module* module_, Module* libmodule, unordered_map<stri
         exit(1);
       }
       Export* export_ = libmodule->exports[export_index];
+      if (export_->kind != import_->kind()) {
+        std::cerr << "Import/export kind mismatch: " << field_name << std::endl;
+        exit(1);
+      }
       string export_name;
       
       switch (export_->kind) {
@@ -499,13 +521,28 @@ void ImportMapConstructor(Module* module_, Module* libmodule, unordered_map<stri
 
 }  // end anonymous namespace
 
-Result ResolveImports(Module* module, Module* libmodule, unordered_map<string, string>* import_map) {
-  ImportMapConstructor(module, libmodule, import_map);
-  ImportMapConstructor(libmodule, module, import_map);
-  ImportResolver resolver(import_map);
-  Result result = resolver.VisitModule(module);
-  result |= resolver.VisitModule(libmodule);
-  return result;
+Result ResolveImports(const std::vector<Module*>& modules) {
+  unordered_map<string, string> import_map;
+  for (Module* module : modules) {
+    for (Module* other : modules) {
+      ImportMapConstructor(module, other, &import_map);
+    }
+  }
+  for (auto& [name, target] : import_map) {
+    size_t remaining = import_map.size();
+    while (import_map.count(target)) {
+      if (remaining-- == 0) {
+        std::cerr << "Cyclic import alias: " << name << std::endl;
+        return Result::Error;
+      }
+      target = import_map.at(target);
+    }
+  }
+  ImportResolver resolver(&import_map);
+  for (Module* module : modules) {
+    CHECK_RESULT(resolver.VisitModule(module));
+  }
+  return Result::Ok;
 }
 
 }  // namespace wabt
