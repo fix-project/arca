@@ -1,4 +1,5 @@
 ENTRY(_start)
+PROVIDE(__stack_size = 8M);
 
 MEMORY {
   memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 0x100000000
@@ -56,7 +57,7 @@ SECTIONS {
   {
     . = ALIGN(4K);
     __stack_bottom = .;
-    . = . + 2M;
+    . = . + __stack_size;
     __stack_top = .;
   } > memory 
   __heap_start = ALIGN(__stack_top, 2M);
