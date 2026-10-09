@@ -13,6 +13,7 @@ rust_library(
 
 genrule(
     name = "adapt",
+    tags = ["manual"],
     srcs = [
         "@coupon_proof//:coupon.wat",
         "prologue.wat",
@@ -26,12 +27,14 @@ genrule(
 
 wat_module(
     name = "wasm",
+    tags = ["manual"],
     src = ":adapt",
     out = "coupon-collector.wasm",
 )
 
 fix_procedure(
     name = "collector",
+    tags = ["manual"],
     visibility = ["//visibility:public"],
     wasm = ":wasm",
     runnable = True,

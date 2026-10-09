@@ -38,7 +38,7 @@ genrule(
 
 filegroup(
     name = "wasm2c",
-    visibility = ["//programs/fix:__subpackages__", "//programs/flatware:__subpackages__", "//flatware:__subpackages__", "//tests/flatware:__pkg__", "//coupon:__pkg__", "//tests:__subpackages__", "//fix/sdk:__pkg__"],
+    visibility = ["//programs/fix:__subpackages__", "//programs/flatware:__subpackages__", "//flatware:__subpackages__", "//tests/flatware:__pkg__", "//coupon:__pkg__", "//tests:__subpackages__", "//fix/sdk:__pkg__", "//tools:__pkg__"],
     srcs = ["wabt-bin/wasm2c"],
 )
 

@@ -1,0 +1,182 @@
+load(":cmake.bzl", "MAPS", "patched_sources", "source_build")
+load(":defs.bzl", "wasm_tools")
+load(":llvm.bzl", "llvm_bundle", "llvm_resources")
+load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
+load(":native.bzl", native_generation = "generation")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["toolchain-tags.patch"])
+
+bool_flag(name = "debug", build_setting_default = False)
+config_setting(name = "debug_enabled", flag_values = {":debug": "true"})
+
+exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "README.md"])
+
+HOST = "$${EXT_BUILD_ROOT}/$(execpath :host_llvm)"
+SYSROOT = "$${EXT_BUILD_ROOT}/$(execpath :wasi_sysroot)"
+WASM_FLAGS = MAPS + " -resource-dir=$${EXT_BUILD_ROOT}/$(execpath :wasi_resources)"
+BUILTINS = "lib/clang/23/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a"
+WASI_TARGET = {
+    "CMAKE_SYSTEM_NAME": "Generic",
+    "CMAKE_C_COMPILER_TARGET": "wasm32-unknown-wasip1",
+    "CMAKE_CXX_COMPILER_TARGET": "wasm32-unknown-wasip1",
+    "CMAKE_ASM_COMPILER_TARGET": "wasm32-unknown-wasip1",
+}
+
+patched_sources(
+    name = "wabt_sources",
+    root = "@wabt_src//:CMakeLists.txt",
+    sources = "@wabt_src//:sources",
+    patch = "//build:wabt-externref.cmake",
+    tags = ["manual"],
+)
+
+llvm_bundle(
+    name = "host_llvm",
+    native_files = {
+        "@llvm-project//clang:clang": "bin/clang",
+        "@llvm-project//clang:clang++": "bin/clang++",
+        "@llvm-project//lld:ld.lld": "bin/ld.lld",
+        "@llvm-project//lld:wasm-ld": "bin/wasm-ld",
+        "@llvm-project//llvm:llvm-ar": "bin/llvm-ar",
+        "@llvm-project//llvm:llvm-ranlib": "bin/llvm-ranlib",
+        "@llvm-project//clang:builtin_headers_gen": "lib/clang/23/include/",
+    },
+    tags = ["manual"],
+)
+
+source_build(
+    name = "host_wasm2c",
+    lib_source = ":wabt_sources",
+    working_directory = "wabt_sources",
+    copies = {
+        "wasm2c": "bin/wasm2c",
+    },
+    options = {
+        "BUILD_TESTS": "OFF",
+        "BUILD_LIBWASM": "OFF",
+        "BUILD_TOOLS": "ON",
+    },
+    targets = ["wasm2c"],
+    tags = ["manual"],
+)
+
+source_build(
+    name = "wasi_builtins",
+    lib_source = "@llvm-raw//:sources",
+    working_directory = "compiler-rt/lib/builtins",
+    out_data_files = [BUILTINS],
+    options = WASI_TARGET | {
+        "LLVM_RUNTIMES_BUILD": "ON",
+        "LLVM_ENABLE_PER_TARGET_RUNTIME_DIR": "ON",
+        "COMPILER_RT_DEFAULT_TARGET_ONLY": "ON",
+        "COMPILER_RT_INSTALL_PATH": "$${INSTALLDIR}/lib/clang/23",
+    },
+    targets = ["install"],
+    tags = ["manual"],
+)
+
+llvm_resources(
+    name = "wasi_resources",
+    host = ":host_llvm",
+    builtins = ":wasi_builtins",
+    tags = ["manual"],
+)
+
+source_build(
+    name = "wasi_sysroot",
+    data = [":wasi_builtins", ":wasi_resources"],
+    out_data_dirs = ["include"],
+    out_data_files = [
+        "lib/wasm32-wasip1/crt1.o",
+        "lib/wasm32-wasip1/libc.a",
+        "lib/wasm32-wasip1/libc++.a",
+        "lib/wasm32-wasip1/libc++abi.a",
+        "lib/wasm32-wasip1/libunwind.a",
+    ],
+    copies = {"$${EXT_BUILD_ROOT}/$(execpath :wasi_builtins)/" + BUILTINS: BUILTINS},
+    lib_source = "@llvm-raw//:sources",
+    working_directory = "runtimes",
+    options = WASI_TARGET | {
+        "CMAKE_C_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
+        "CMAKE_CXX_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
+        "CMAKE_ASM_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
+        "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
+        "LLVM_DEFAULT_TARGET_TRIPLE": "wasm32-wasip1",
+        "LIBC_TARGET_TRIPLE": "wasm32-wasip1",
+        "LLVM_INCLUDE_TESTS": "OFF",
+        "LLVM_INCLUDE_DOCS": "OFF",
+        "LLVM_ENABLE_RUNTIMES": "libc;libunwind;libcxxabi;libcxx",
+        "LLVM_ENABLE_PER_TARGET_RUNTIME_DIR": "ON",
+        "RUNTIMES_USE_LIBC": "llvm-libc",
+        "LLVM_LIBC_FULL_BUILD": "ON",
+        "LIBC_WASM_ENABLE_SJLJ": "ON",
+        "LIBCXX_HAS_PTHREAD_API": "ON",
+        "LIBCXXABI_HAS_PTHREAD_API": "ON",
+        "LIBUNWIND_USE_COMPILER_RT": "ON",
+        "LIBCXXABI_USE_COMPILER_RT": "ON",
+        "LIBCXX_USE_COMPILER_RT": "ON",
+        "LIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY": "ON",
+    },
+    targets = ["install"],
+    tags = ["manual"],
+)
+
+wasi_cc_toolchain_from_targets(
+    name = "wasi_cc",
+    clang = "@llvm-project//clang:clang",
+    clangxx = "@llvm-project//clang:clang++",
+    ld = "@llvm-project//lld:wasm-ld",
+    ar = "@llvm-project//llvm:llvm-ar",
+    nm = "@llvm-project//llvm:llvm-nm",
+    objcopy = "@llvm-project//llvm:llvm-objcopy",
+    objdump = "@llvm-project//llvm:llvm-objdump",
+    strip = "@llvm-project//llvm:llvm-strip",
+    resource_dir = ":wasi_resources",
+    sysroot = ":wasi_sysroot",
+    tags = ["manual"],
+)
+
+llvm_bundle(
+    name = "wasm_llvm",
+    wasi = True,
+    files = {
+        "@llvm-project//clang:clang": "usr/bin/clang",
+        "@llvm-project//lld:ld.lld": "usr/bin/ld.lld",
+        "@llvm-project//lld:wasm-ld": "usr/bin/wasm-ld",
+        "@llvm-project//clang:builtin_headers_gen": "usr/lib/clang/23/include/",
+    },
+    tags = ["manual"],
+)
+
+source_build(
+    name = "wasm2c",
+    data = [":wasi_resources"],
+    lib_source = ":wabt_sources",
+    working_directory = "wabt_sources",
+    sysroot = ":wasi_sysroot",
+    copies = {
+        "wasm2c": "wasm2c.wasm",
+    },
+    options = WASI_TARGET | {
+        "CMAKE_SYSROOT": SYSROOT,
+        "CMAKE_C_FLAGS": WASM_FLAGS,
+        "CMAKE_CXX_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
+        "CMAKE_CXX_STANDARD_LIBRARIES": "-lunwind",
+        "BUILD_TESTS": "OFF",
+        "BUILD_LIBWASM": "OFF",
+        "BUILD_TOOLS": "ON",
+        "CMAKE_EXE_LINKER_FLAGS": "--no-wasm-opt -fuse-ld=" + HOST + "/bin/wasm-ld -Wl,-z,stack-size=16777216",
+        "WITH_WASI": "OFF",
+        "WITH_EXCEPTIONS": "OFF",
+    },
+    targets = ["wasm2c"],
+    tags = ["manual"],
+)
+
+wasm_tools(name = "stage0", tags = ["manual"])
+native_generation("stage1")
+
+alias(name = "bootstrap", actual = ":stage1", tags = ["manual"])
