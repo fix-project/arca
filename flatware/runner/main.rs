@@ -190,7 +190,6 @@ fn snapshot(path: &Path, name: &[u8]) -> Result<Object> {
     };
     let stat = Object::Tree(vec![
         Object::integer(0),
-        Object::integer(metadata.ino()),
         Object::blob([filetype]),
         Object::integer(metadata.nlink()),
         Object::integer(size as u64),
@@ -234,7 +233,7 @@ fn integer(object: &Object) -> Result<u64> {
 
 fn materialize(descriptor: &Object, path: &Path) -> Result<()> {
     let [_, metadata, contents] = fields(descriptor)?;
-    let [dev, _, filetype, _, _, atim, mtim, _] = fields(metadata)?;
+    let [dev, filetype, _, _, atim, mtim, _] = fields(metadata)?;
     ensure!(integer(dev)? == 0, "unsupported Flatware filesystem device");
     match bytes(filetype)? {
         [3] => {

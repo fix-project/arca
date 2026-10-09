@@ -243,10 +243,11 @@ WASI(fd_filestat_set_size)(uint32_t fd, uint64_t size) {
   TRY(fs_descriptor(&state.fs, fd, RIGHT(22), &d));
   return fs_resize(&state.fs, d->node, size, state.time);
 }
-static uint32_t set_times(Stat *s, uint64_t atim, uint64_t mtim,
+static uint32_t set_times(size_t node, uint64_t atim, uint64_t mtim,
                           uint32_t flags) {
   if ((flags & ~15u) || (flags & 3) == 3 || (flags & 12) == 12)
     return INVAL;
+  Stat *s = &state.fs.nodes[node].stat;
   if (flags & 1)
     s->atim = atim;
   if (flags & 2)
@@ -256,6 +257,7 @@ static uint32_t set_times(Stat *s, uint64_t atim, uint64_t mtim,
   if (flags & 8)
     s->mtim = state.time;
   s->ctim = state.time;
+  fs_changed(&state.fs, node, NODE_STAT);
   return 0;
 }
 WASI(fd_filestat_set_times)(uint32_t fd, uint64_t atim, uint64_t mtim,
@@ -263,7 +265,7 @@ WASI(fd_filestat_set_times)(uint32_t fd, uint64_t atim, uint64_t mtim,
   BEGIN();
   Descriptor *d;
   TRY(fs_descriptor(&state.fs, fd, RIGHT(23), &d));
-  return set_times(&state.fs.nodes[d->node].stat, atim, mtim, flags);
+  return set_times(d->node, atim, mtim, flags);
 }
 WASI(fd_prestat_get)(uint32_t fd, uint32_t out) {
   BEGIN();
@@ -329,7 +331,7 @@ WASI(path_filestat_set_times)(uint32_t fd, uint32_t lookup, uint32_t pointer,
   BEGIN();
   size_t node;
   TRY(resolve_path(fd, lookup, pointer, len, RIGHT(20), &node));
-  return set_times(&state.fs.nodes[node].stat, atim, mtim, flags);
+  return set_times(node, atim, mtim, flags);
 }
 WASI(path_create_directory)(uint32_t fd, uint32_t pointer, uint32_t len) {
   BEGIN();
@@ -375,14 +377,17 @@ WASI(fd_readdir)(uint32_t fd, uint32_t out, uint32_t length, uint64_t cookie,
   TRY(bounds(used, 4));
   Descriptor *d;
   TRY(fs_descriptor(&state.fs, fd, RIGHT(14), &d));
+  TRY(node_directory(&state.fs.nodes[d->node]));
+  fs_load(&state.fs, d->node, NODE_CONTENT);
   Node *directory = &state.fs.nodes[d->node];
-  TRY(node_directory(directory));
   if (cookie > directory->children.len)
     return INVAL;
   size_t cursor = 0;
   for (size_t i = (size_t)cookie;
        i < directory->children.len && cursor < length; i++) {
-    Node *n = &state.fs.nodes[directory->children.data[i]];
+    size_t child = directory->children.data[i];
+    fs_load(&state.fs, child, NODE_NAME | NODE_STAT);
+    Node *n = &state.fs.nodes[child];
     uint8_t header[24] = {0};
     put_le(header, i + 1, 8);
     put_le(header + 8, n->stat.ino, 8);

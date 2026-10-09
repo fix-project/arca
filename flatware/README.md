@@ -9,10 +9,16 @@ Exception references retain upstream's 256-byte inline payload limit; legacy
 exceptions continue to use dynamically sized payload storage.
 
 The adapter uses the C Fix bindings directly. It reads and constructs descriptor
-Trees with one scratch Memory and Table. The original combination stays in native
-externref locals; input parent and child indices locate preserved fields
-after filesystem mutations. Filesystem operations and WASIp1 bindings are
-implemented in C.
+Trees with one scratch Memory and Table. One scoped externref global holds the
+original combination; input parent and child indices locate preserved fields
+after filesystem mutations. Names, metadata, directory entries, and file contents
+load on demand. Output reuses unchanged descriptors and subtrees, rebuilding
+only changed fields and their ancestors. WASI inode numbers are unique within
+an invocation; they are assigned as nodes are discovered and are not serialized.
+Descriptor metadata contains device, filetype, link count, size, atime, mtime,
+and ctime, in that order. Filetype is one byte; other fields are eight-byte
+little-endian integers. Filesystem operations
+and WASIp1 bindings are implemented in C.
 
 The adapter allocates its buffers with upstream dlmalloc 2.8.6. Its MORECORE hook
 grows only the adapter memory in whole Wasm pages. The allocator does not use OS
