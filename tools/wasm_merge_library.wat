@@ -1,0 +1,13 @@
+(module
+  (import "app" "one" (func $one (result i32)))
+  (memory (export "library_memory") 1)
+  (data (i32.const 0) "P")
+  (global $counter (export "counter") (mut i32) (i32.const 0))
+  (table (export "functions") 1 funcref)
+  (tag (export "exception") (param i32))
+  (func $answer (export "answer") (result i32)
+    (i32.add (global.get $counter) (call $one)))
+  (elem (i32.const 0) $answer)
+  (func (export "first_byte") (result i32) (i32.load8_u (i32.const 0)))
+  (func $initialize (global.set $counter (i32.const 41)))
+  (start $initialize))

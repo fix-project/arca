@@ -1,0 +1,37 @@
+--- a/utils/bazel/llvm-project-overlay/wasi/toolchain.bzl
++++ b/utils/bazel/llvm-project-overlay/wasi/toolchain.bzl
+@@ -34,15 +34,18 @@
+         resource_dir,
+         sysroot,
+         exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
++        tags = [],
+         visibility = None):
+     """Register a WASIp1 compiler whose tools and data are Bazel targets."""
+     tools = [clang, clangxx, ld, ar, nm, objcopy, objdump, strip]
+     _files(
+         name = name + "_files",
++        tags = tags,
+         srcs = tools + [resource_dir, sysroot],
+     )
+     wasi_cc_toolchain_config(
+         name = name + "_config",
++        tags = tags,
+         source_built = True,
+         clang = clang,
+         clangxx = clangxx,
+@@ -57,6 +60,7 @@
+     )
+     cc_toolchain(
+         name = name + "_impl",
++        tags = tags,
+         toolchain_identifier = name,
+         toolchain_config = name + "_config",
+         all_files = name + "_files",
+@@ -71,6 +75,7 @@
+     )
+     native.toolchain(
+         name = name,
++        tags = tags,
+         toolchain = name + "_impl",
+         toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+         exec_compatible_with = exec_compatible_with,

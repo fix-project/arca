@@ -35,6 +35,10 @@ calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
 sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
+The optional [bootstrap process](bootstrap/README.md) builds Wasm-to-ELF
+toolchains from pinned sources through Stage1. Shared caches use ordinary Bazel
+configuration.
+
 ## Formatting
 
 Format Rust throughout the codebase and C SDK sources:

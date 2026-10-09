@@ -55,12 +55,13 @@ def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:et
         visibility = visibility,
     )
 
-def wat_module(name, src, out = None, relocatable = False, debug_names = False, visibility = ["//visibility:private"]):
+def wat_module(name, src, out = None, relocatable = False, debug_names = False, visibility = ["//visibility:private"], tags = []):
     """Compile WebAssembly text to a module or relocatable object."""
     native.genrule(
         name = name,
         visibility = visibility,
         srcs = [src],
+        tags = tags,
         outs = [out or name + (".o" if relocatable else ".wasm")],
         cmd = "$(execpath //third_party:wat2wasm) " +
               ("--relocatable " if relocatable else "") + ("--debug-names " if debug_names else "") + "$< -o $@",
@@ -219,12 +220,13 @@ fix_program_run = rule(
     },
 )
 
-def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"]):
+def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"], tags = []):
     """Wasm -> optional resource postprocessing -> C -> native Fix ELF."""
     if memories != None or tables != None:
         counts = (" --memories %d" % memories if memories != None else "") + (" --tables %d" % tables if tables != None else "")
         native.genrule(
             name = name + "_postprocess",
+            tags = tags,
             visibility = ["//visibility:private"],
             srcs = [wasm],
             tools = ["//tools:postprocess"],
@@ -234,6 +236,7 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         wasm = ":" + name + "_postprocess"
     native.genrule(
         name = name + "_translate",
+        tags = tags,
         visibility = ["//visibility:private"],
         srcs = [wasm],
         tools = ["//third_party:wasm2c", "//tools:compile"],
@@ -247,6 +250,7 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         obj = name + "_native_object_%d" % index
         cc_object(
             name = obj,
+            tags = tags,
             src = src,
             hdrs = [name + "/module.h", "//fix/shell:headers"],
             include_roots = [name + "/module.h"],
@@ -256,6 +260,7 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         objects.append(":" + obj)
     native.genrule(
         name = artifact,
+        tags = tags,
         srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
         tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
         outs = [name + ".elf"],
@@ -267,4 +272,5 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
             name = name,
             program = ":" + artifact,
             visibility = visibility,
+            tags = tags,
         )

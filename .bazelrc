@@ -1,11 +1,14 @@
 common --enable_bzlmod
 # Module-extension digests differ across supported developer environments.
 common --lockfile_mode=off
+build --repo_env=LLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-gnu
 build --@rules_rust//rust/toolchain/channel=nightly
 build --platforms=//build/platforms:host
 build --incompatible_strict_action_env
 build --linkopt=-fuse-ld=bfd
 build --host_linkopt=-fuse-ld=bfd
+build --features=-supports_start_end_lib
+build --host_features=-supports_start_end_lib
 build --action_env=LIBCLANG_PATH
 build --action_env=BINDGEN_EXTRA_CLANG_ARGS
 build --verbose_failures
