@@ -1,3 +1,6 @@
+use super::KThread;
+use alloc::boxed::Box;
+use common::util::spinlock::SpinLock;
 use core::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
@@ -7,12 +10,13 @@ use core::{
 #[derive(Debug, Default)]
 pub struct KMutex<T: ?Sized> {
     lock: AtomicBool,
+    waiters: SpinLock<Option<Box<KThread>>>,
     data: UnsafeCell<T>,
 }
 
 #[derive(Debug)]
 pub struct KMutexGuard<'a, T: ?Sized> {
-    lock: &'a KMutex<T>,
+    pub(super) lock: &'a KMutex<T>,
     data: &'a mut T,
 }
 
@@ -23,6 +27,7 @@ impl<T: ?Sized> KMutex<T> {
     {
         KMutex {
             lock: AtomicBool::new(false),
+            waiters: SpinLock::new(None),
             data: UnsafeCell::new(data),
         }
     }
@@ -47,7 +52,7 @@ impl<T: ?Sized> KMutex<T> {
             if let Some(guard) = self.try_lock() {
                 return guard;
             }
-            crate::kthread::yield_now();
+            super::wait_for_mutex(&self.lock, &self.waiters);
         }
     }
 
@@ -71,7 +76,13 @@ impl<T: ?Sized> KMutexGuard<'_, T> {
 
 impl<T: ?Sized> Drop for KMutexGuard<'_, T> {
     fn drop(&mut self) {
+        let mut waiters = self.lock.waiters.lock();
         self.lock.lock.store(false, Ordering::Release);
+        if let Some(mut thread) = waiters.take() {
+            *waiters = thread.next.take();
+            drop(waiters);
+            super::enqueue(thread);
+        }
     }
 }
 
