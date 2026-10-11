@@ -12,16 +12,10 @@ case "$mode" in
     translate)
         "$1" -n module "$2" -o "$3"
         ;;
-    link|compile)
+    link)
         compiler=$1 flags_file=$2 memmap=$3 shell=$4 output=$5
         shift 5
         mapfile -t flags < "$flags_file"
-        if [[ "$mode" == compile ]]; then
-            wasm2c=$1 input=$2 runtime=$3 header=$4
-            source="$(dirname "$output")/module.c"
-            "$0" translate "$wasm2c" "$input" "$source"
-            set -- "-I$(dirname "$header")" "-I$(dirname "$source")" "$source" "$runtime"
-        fi
         "$compiler" "${flags[@]}" -T "$memmap" -o "$output" "$@" "$shell"
         ;;
 esac

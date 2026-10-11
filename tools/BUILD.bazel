@@ -65,10 +65,10 @@ sh_test(
     name = "wasm_merge_test",
     srcs = ["wasm_merge_test.sh"],
     args = ["$(rootpath " + target + ")" for target in [
-        ":wasm_merge", ":wasm_merge_wasm", "//flatware:run", ":wasm_merge_library", ":wasm_merge_app",
+        ":wasm_merge", "//fix", ":wasm_merge_library", ":wasm_merge_app", "//bootstrap:repository_archive",
     ]],
-    data = [":wasm_merge", ":wasm_merge_wasm", "//flatware:run", ":wasm_merge_library", ":wasm_merge_app"],
+    data = [":wasm_merge", "//fix", ":wasm_merge_library", ":wasm_merge_app", "//bootstrap:repository_archive"],
     tags = ["kvm", "local", "manual"],
     size = "large",
-    timeout = "long",
+    timeout = "moderate",
 )
