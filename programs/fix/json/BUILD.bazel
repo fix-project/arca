@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("//build:defs.bzl", "WASM", "fix_procedure")
+load("//build:defs.bzl", "wasm_library")
+load("//build:cc.bzl", "cc_object")
+load("//fix/sdk:defs.bzl", "SDK_WARNINGS", "sdk_copts")
+
+cc_object(
+    name = "cache_c",
+    src = "cache.c",
+    hdrs = ["//fix/sdk:headers"],
+    compiler = "@local_tools//:clang",
+    copts = sdk_copts() + SDK_WARNINGS,
+)
+
+wasm_library(name = "cache", srcs = [":cache_c"])
+
+rust_shared_library(
+    name = "wasm",
+    visibility = ["//tests:__pkg__"],
+    srcs = ["lib.rs", "cache.rs"],
+    crate_name = "fixjson",
+    crate_root = "lib.rs",
+    platform = WASM,
+    deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc", "@crates//:hex", "@crates//:serde_json"],
+    link_deps = [":cache"],
+)
+
+fix_procedure(
+    name = "json",
+    visibility = ["//visibility:public"],
+    artifact_visibility = ["//visibility:public"],
+    memories = 2,
+    tables = 3,
+    runnable = True,
+    wasm = ":wasm",
+)
