@@ -1,0 +1,53 @@
+load("//build:fix.bzl", "fix_application_thunk", "fix_blob", "fix_build", "fix_eval", "fix_read_blob", "fix_ref", "fix_select_index", "fix_strict_encode", "fix_tree")
+load("//flatware:build.bzl", "flatware_application", "flatware_directory", "flatware_file", "flatware_files", "flatware_outputs", "flatware_work")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@bazel_skylib//rules:common_settings.bzl", "int_flag")
+
+int_flag(name = "memory", build_setting_default = 64)
+
+fix_blob(name = "add", src = "//programs/fix:addblob_elf")
+fix_blob(name = "two", value = "2", format = "u64")
+fix_blob(name = "four", value = "4", format = "u64")
+fix_tree(name = "numbers", children = [":two", ":four"])
+fix_ref(name = "numbers_ref", src = ":numbers")
+fix_select_index(name = "selected_two", src = ":numbers_ref", index = 0)
+fix_strict_encode(name = "selected", src = ":selected_two")
+fix_tree(name = "combination", children = [":add", ":selected", ":four"])
+fix_application_thunk(name = "application", src = ":combination")
+fix_strict_encode(name = "request", src = ":application")
+fix_build(name = "built", src = ":request")
+fix_eval(name = "sum", src = ":built", jobs = 2, memory = ":memory")
+fix_read_blob(name = "sum_file", src = ":sum", out = "sum.bin")
+
+fix_blob(name = "copy", src = "//tests/flatware:runner_probe_native")
+flatware_directory(name = "source", inputs = {":sum_file": "sum.bin"}, guest_path = "/input")
+flatware_application(name = "first_copy", executable = ":copy", mounts = {":source": "/input"}, args = ["copy", "/input/sum.bin", "/work/sum.bin"])
+alias(name = "first_copy_graph", actual = ":first_copy")
+flatware_work(name = "first_work", src = ":first_copy_graph", fd = 4)
+flatware_file(name = "intermediate", src = ":first_work", path = "sum.bin")
+flatware_files(name = "inputs", files = {":intermediate": "sum.bin"}, guest_path = "/input")
+
+[
+    flatware_application(
+        name = "copy_" + suffix,
+        executable = ":copy",
+        mounts = {":inputs": "/input"},
+        args = ["copy", "/input/sum.bin", "/work/" + suffix + ".bin"],
+    )
+    for suffix in ["a", "b", "c", "d"]
+]
+fix_tree(name = "copies", children = [":copy_a", ":copy_b", ":copy_c", ":copy_d"])
+fix_eval(name = "copied", src = ":copies", jobs = 2, memory = 512)
+fix_tree(name = "retained", children = [":copied"])
+fix_eval(name = "retained_result", src = ":retained", jobs = 1)
+flatware_outputs(name = "files", src = ":copied", outs = ["a.bin", "b.bin", "c.bin", "d.bin"], indices = [0, 1, 2, 3], fd = 4)
+
+sh_test(
+    name = "rules_test",
+    srcs = ["rules_test.sh"],
+    data = [":files", ":retained_result"],
+    args = ["$(rootpaths :files)"],
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local"],
+)
