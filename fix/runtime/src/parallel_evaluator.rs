@@ -19,7 +19,7 @@ pub struct Evaluator<R: Runtime> {
     scheduler: Scheduler,
 }
 
-impl<R: Runtime> Evaluator<R> {
+impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     pub fn new(runtime: R) -> Arc<Self> {
         let evaluator = Arc::new(Self {
             runtime,

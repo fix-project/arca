@@ -120,8 +120,11 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     }
-    if registers.isr == 0x32 {
-        IO_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if matches!(registers.isr, 0x32 | 0x33) {
+        if registers.isr == 0x32 {
+            IO_GENERATION.fetch_add(1, Ordering::SeqCst);
+            crate::kthread::wake_idle();
+        }
         crate::lapic::LAPIC.borrow_mut().clear_interrupt();
         return;
     }

@@ -51,6 +51,39 @@ fn file_io_lends_unique_and_shared_memory() {
 }
 
 #[test]
+fn concurrent_file_io() {
+    use crate::{host::fs, prelude::*};
+    use common::buffer::Buffer;
+
+    let completed = Arc::new((kthread::KMutex::new(0), kthread::KCondvar::new()));
+    for worker in 0..8 {
+        let completed = completed.clone();
+        kthread::spawn(move || {
+            let path = alloc::format!("concurrent-io-{worker}");
+            let mut file = File::open(&path, true, true, true, false, true).unwrap();
+            let bytes = Buffer::from(Box::new_in([worker as u8; 1024], BuddyAllocator));
+            let mut response = Buffer::from(Box::new_in([0u8; 1024], BuddyAllocator));
+            for _ in 0..128 {
+                assert!(fs::exists(&path).unwrap());
+                file.seek(Whence::Start(0));
+                assert_eq!(file.write_exact(&bytes), bytes.len());
+                file.seek(Whence::Start(0));
+                assert_eq!(file.read_exact(&mut response), bytes.len());
+                assert_eq!(&*response, &*bytes);
+            }
+            file.close();
+            fs::remove_file(&path).unwrap();
+            *completed.0.lock() += 1;
+            completed.1.notify_one();
+        });
+    }
+    let mut count = completed.0.lock();
+    while *count != 8 {
+        count = completed.1.wait(count);
+    }
+}
+
+#[test]
 fn whole_file_io() {
     use crate::host::fs;
     use crate::prelude::*;

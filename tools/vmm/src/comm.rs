@@ -32,13 +32,14 @@ pub fn new_pipe(
     vm: &VmFd,
     len: usize,
     next_pipe_idx: &Arc<AtomicUsize>,
+    doorbell: &HostToVMDoorBell,
 ) -> (common::pipe::Pipe<VMToHostDoorBell>, GuestPipe) {
     let pipe_idx = next_pipe_idx.fetch_add(1, std::sync::atomic::Ordering::Release);
     let (rx_avail_vm, rx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2);
     let (tx_avail_vm, tx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2 + 1);
 
-    let rx_avail_host = HostToVMDoorBell::new(vm);
-    let tx_avail_host = HostToVMDoorBell::new(vm);
+    let rx_avail_host = doorbell.clone();
+    let tx_avail_host = doorbell.clone();
 
     let (p0, p1) = common::pipe::pipe(len, rx_avail_vm, tx_avail_vm, rx_avail_host, tx_avail_host);
     let p1 = GuestPipe::new(p1, rx_avail_waiter, tx_avail_waiter);
@@ -48,6 +49,7 @@ pub fn new_pipe(
 pub fn control_thread(
     vm: Arc<VmFd>,
     next_pipe_idx: Arc<AtomicUsize>,
+    doorbell: HostToVMDoorBell,
     argv: Vec<String>,
     mut pipe: ControlPipe,
 ) {
@@ -58,7 +60,7 @@ pub fn control_thread(
             Request::Exit(code) => std::process::exit(code),
             Request::Open(path, mode) => {
                 let f = open_file(&path, mode);
-                file_response(f, &vm, &next_pipe_idx)
+                file_response(f, &vm, &next_pipe_idx, &doorbell)
             }
             Request::Exists(path) => match std::fs::exists(path) {
                 Ok(exists) => Response::Bool(exists),
@@ -84,7 +86,7 @@ pub fn control_thread(
                     StandardStream::Stdout => std::io::stdout().as_fd().try_clone_to_owned(),
                     StandardStream::Stderr => std::io::stderr().as_fd().try_clone_to_owned(),
                 };
-                file_response(fd.map(File::from), &vm, &next_pipe_idx)
+                file_response(fd.map(File::from), &vm, &next_pipe_idx, &doorbell)
             }
             Request::IsDirectory(path) => match std::fs::metadata(path) {
                 Ok(metadata) => Response::Bool(metadata.is_dir()),
@@ -130,17 +132,24 @@ pub fn control_thread(
             },
             Request::Listen { ip, port } => {
                 let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 let vm_cl = vm.clone();
                 let next_pipe_cl = next_pipe_idx.clone();
+                let doorbell = doorbell.clone();
                 std::thread::spawn(move || {
-                    listener_thread(vm_cl, next_pipe_cl, listener, ListenerPipe::new(q));
+                    listener_thread(
+                        vm_cl,
+                        next_pipe_cl,
+                        doorbell,
+                        listener,
+                        ListenerPipe::new(q),
+                    );
                 });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Connect { host, port } => {
                 let stream = TcpStream::connect((host.as_str(), port)).unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });
@@ -203,11 +212,12 @@ fn file_response(
     file: std::io::Result<File>,
     vm: &Arc<VmFd>,
     next_pipe_idx: &Arc<AtomicUsize>,
+    doorbell: &HostToVMDoorBell,
 ) -> common::protocol::control::Response {
     use common::protocol::control::Response;
     match file {
         Ok(file) => {
-            let (p, q) = new_pipe(vm, 1024, next_pipe_idx);
+            let (p, q) = new_pipe(vm, 1024, next_pipe_idx, doorbell);
             std::thread::spawn(move || unsafe { file_thread(file, FilePipe::new(q)) });
             Response::Pipe(decompose_pipe(p))
         }
@@ -304,6 +314,7 @@ mod tests {
 pub fn listener_thread(
     vm: Arc<VmFd>,
     next_pipe_idx: Arc<AtomicUsize>,
+    doorbell: HostToVMDoorBell,
     listener: TcpListener,
     mut pipe: ListenerPipe,
 ) {
@@ -312,7 +323,7 @@ pub fn listener_thread(
         let response = match pipe.recv() {
             Request::Accept => {
                 let (stream, _) = listener.accept().unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });
