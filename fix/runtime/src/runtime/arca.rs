@@ -3,6 +3,7 @@ use crate::runtime::Runtime;
 use crate::storage::Storage;
 use crate::storage::memory::MemoryStorage;
 use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
+#[cfg(debug_assertions)]
 use kernel::println;
 
 #[derive(Debug, Default)]
@@ -16,6 +17,7 @@ impl Runtime for FixOnArca {
     }
 
     fn execute(&self, combination: Tree) -> Handle {
+        #[cfg(debug_assertions)]
         println!("applying   {}", Handle::from(combination));
         let contents = self.storage().get_tree(combination).unwrap();
         let mut procedure = *contents.first().expect("empty combination");
@@ -32,6 +34,7 @@ impl Runtime for FixOnArca {
             .get_blob(Blob::try_from(procedure).expect("procedure must be a blob object"))
             .unwrap();
         let f: Function = common::elfloader::load_elf(&elf).unwrap();
+        drop(elf);
         let blob = pack_handle(combination);
         let f = f.apply(blob);
         self.run(f)

@@ -1,15 +1,21 @@
 use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
+use hashbrown::HashMap;
+use kernel::kthread::KMutex;
 use kernel::prelude::*;
 
 pub struct Evaluator<R: Runtime> {
     runtime: R,
+    trees: KMutex<HashMap<[u8; HANDLE_SIZE], Tree>>,
 }
 
 impl<R: Runtime> Evaluator<R> {
     pub fn new(runtime: R) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            trees: KMutex::new(HashMap::new()),
+        }
     }
 
     pub fn runtime(&self) -> &R {
@@ -26,10 +32,15 @@ impl<R: Runtime> Evaluator<R> {
 
     pub fn select(&self, selection: Tree) -> Handle {
         let handles = self.storage().get_tree(selection).unwrap();
-        match *handles {
-            [target, index] => self.select_index(target, self.read_index(index)),
-            [target, start, end] => {
-                self.select_range(target, self.read_index(start), self.read_index(end))
+        let (&target, indices) = handles.split_first().expect("empty selection thunk");
+        let target = match target.view() {
+            HandleView::Encode(encode) => self.encode(*encode),
+            _ => target,
+        };
+        match indices {
+            [index] => self.select_index(target, self.read_index(*index)),
+            [start, end] => {
+                self.select_range(target, self.read_index(*start), self.read_index(*end))
             }
             _ => panic!("selection thunk got {} handles", handles.len()),
         }
@@ -75,8 +86,8 @@ impl<R: Runtime> Evaluator<R> {
     }
 
     pub fn read_index(&self, handle: Handle) -> usize {
-        let blob =
-            fixhandle::Blob::try_from(handle).expect("expected blob handle for selection index");
+        let blob = fixhandle::Blob::try_from(self.eval(handle))
+            .expect("expected blob handle for selection index");
         let bytes = self.storage().get_blob(blob).unwrap();
         // Make buffer fit all supported integer widths
         let mut buffer = [0; 16];
@@ -99,13 +110,10 @@ impl<R: Runtime> Evaluator<R> {
         }
     }
 
-    fn think(&self, thunk: Thunk) -> Handle {
+    pub fn think(&self, thunk: Thunk) -> Handle {
         match thunk.view() {
             ThunkView::Identification(reference) => self.lift(reference.into()),
-            ThunkView::Selection(tree) => {
-                let evaled = self.eval_tree(tree.object_descriptor());
-                self.select(evaled)
-            }
+            ThunkView::Selection(tree) => self.select(tree.object_descriptor()),
             ThunkView::Application(tree) => {
                 let evaled = self.eval_tree(tree.object_descriptor());
                 self.apply(evaled)
@@ -125,12 +133,21 @@ impl<R: Runtime> Evaluator<R> {
 
     fn encode(&self, encode: Encode) -> Handle {
         match encode.view() {
-            EncodeView::Strict(thunk) => self.lift(self.force(thunk)),
+            EncodeView::Strict(thunk) => self.eval(self.force(thunk)),
             EncodeView::Shallow(thunk) => self.lower(self.force(thunk)),
         }
     }
 
     fn eval_tree(&self, handle: Tree) -> Tree {
+        if handle.as_handle().is_eq()
+            && let Some(result) = self
+                .trees
+                .lock()
+                .get(handle.as_handle().as_bytes())
+                .copied()
+        {
+            return result;
+        }
         let tree = self.runtime.storage().get_tree(handle).unwrap();
         let evaled: Vec<Handle> = tree
             .as_ref()
@@ -138,10 +155,30 @@ impl<R: Runtime> Evaluator<R> {
             .copied()
             .map(|x| self.eval(x))
             .collect();
-        self.runtime.storage().add_tree(&evaled)
+        let result = if tree
+            .iter()
+            .zip(&evaled)
+            .all(|(a, b)| a.as_bytes() == b.as_bytes())
+        {
+            handle
+        } else {
+            let result = self.runtime.storage().add_tree(&evaled);
+            if handle.is_tag() {
+                result.tag_descriptor()
+            } else {
+                result
+            }
+        };
+        if handle.as_handle().is_eq() {
+            self.trees
+                .lock()
+                .insert(*handle.as_handle().as_bytes(), result);
+        }
+        result
     }
 
     pub fn eval(&self, handle: Handle) -> Handle {
+        #[cfg(debug_assertions)]
         println!("evaluating {handle}");
         match handle.view() {
             HandleView::Ref(reference) => self.eval(self.lift((*reference).into())),
@@ -150,7 +187,7 @@ impl<R: Runtime> Evaluator<R> {
                 ObjectView::Blob(blob) => (*blob).into(),
                 ObjectView::Tree(tree) => self.eval_tree(*tree).into(),
             },
-            HandleView::Encode(e) => self.eval(self.encode(*e)),
+            HandleView::Encode(e) => self.encode(*e),
         }
     }
 }

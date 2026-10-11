@@ -1,14 +1,17 @@
 extern crate alloc;
 use crate::scheduler::{Scheduler, Task};
 use alloc::sync::Arc;
-use kernel::{coreid, kthread};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use hashbrown::HashMap;
+#[cfg(debug_assertions)]
+use kernel::coreid;
+use kernel::kthread;
 
 use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use kernel::prelude::*;
 
-const NUM_WORKERS: usize = 19;
 #[derive(Clone, Copy)]
 enum EvalType {
     Parallel,
@@ -17,40 +20,58 @@ enum EvalType {
 pub struct Evaluator<R: Runtime> {
     runtime: R,
     scheduler: Scheduler,
+    trees: kthread::KMutex<HashMap<[u8; HANDLE_SIZE], Tree>>,
+    stopped: AtomicBool,
+    workers: AtomicUsize,
 }
 
 impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
-    pub fn new(runtime: R) -> Arc<Self> {
+    pub fn new(runtime: R, parallelism: usize) -> Arc<Self> {
         let evaluator = Arc::new(Self {
             runtime,
             scheduler: Scheduler::new(),
+            trees: kthread::KMutex::new(HashMap::new()),
+            stopped: AtomicBool::new(false),
+            workers: AtomicUsize::new(0),
         });
 
-        evaluator.start_workers(NUM_WORKERS);
+        evaluator.start_workers(parallelism.saturating_sub(1));
         evaluator
     }
 
     pub fn start_workers(self: &Arc<Self>, num_workers: usize) {
         for i in 0..num_workers {
+            self.workers.fetch_add(1, Ordering::Relaxed);
             let evaluator = Arc::clone(self);
             kthread::spawn(move || {
+                #[cfg(debug_assertions)]
                 println!("worker {} started on core {}", i, coreid());
                 evaluator.worker_loop(i);
+                evaluator.workers.fetch_sub(1, Ordering::Release);
             })
         }
     }
 
+    /// Call after evaluation finishes to stop and release the worker threads.
+    pub fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.scheduler.wake_workers();
+        while self.workers.load(Ordering::Acquire) != 0 {
+            kthread::yield_now();
+        }
+    }
+
     pub fn worker_loop(self: &Arc<Self>, _worker_id: usize) {
-        loop {
+        while !self.stopped.load(Ordering::Acquire) {
             // eventually make this a queue to handle local queue of work
-            if let Some(work) = self.scheduler.get_work() {
+            if let Some(work) = self
+                .scheduler
+                .wait_for_work(|| self.stopped.load(Ordering::Acquire))
+            {
                 //println!("worker {} evaluating task on core {}", worker_id, coreid());
 
                 let result = self.eval_test(work.get_handle(), EvalType::Parallel);
                 work.task_complete(result)
-            } else {
-                //change this to condition variable, so it does no busy waiting?
-                kthread::yield_now()
             }
         }
     }
@@ -65,12 +86,11 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
             if let Some(work) = self.scheduler.get_work() {
                 //println!("calling thread helping on core {}", coreid());
 
-                let result = self.eval_test(work.get_handle(), EvalType::Parallel);
+                let result = self.eval_test(work.get_handle(), EvalType::Serial);
 
                 work.task_complete(result);
             } else {
-                // Workers already claimed all available tasks.
-                kthread::yield_now();
+                return target.take_result();
             }
         }
     }
@@ -84,12 +104,23 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     }
 
     pub fn select(&self, selection: Tree) -> Handle {
+        self.select_with_mode(selection, EvalType::Parallel)
+    }
+
+    fn select_with_mode(&self, selection: Tree, eval_mode: EvalType) -> Handle {
         let handles = self.storage().get_tree(selection).unwrap();
-        match *handles {
-            [target, index] => self.select_index(target, self.read_index(index)),
-            [target, start, end] => {
-                self.select_range(target, self.read_index(start), self.read_index(end))
-            }
+        let (&target, indices) = handles.split_first().expect("empty selection thunk");
+        let target = match target.view() {
+            HandleView::Encode(encode) => self.encode(*encode, eval_mode),
+            _ => target,
+        };
+        match indices {
+            [index] => self.select_index(target, self.read_index_with_mode(*index, eval_mode)),
+            [start, end] => self.select_range(
+                target,
+                self.read_index_with_mode(*start, eval_mode),
+                self.read_index_with_mode(*end, eval_mode),
+            ),
             _ => panic!("selection thunk got {} handles", handles.len()),
         }
     }
@@ -134,8 +165,12 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     }
 
     pub fn read_index(&self, handle: Handle) -> usize {
-        let blob =
-            fixhandle::Blob::try_from(handle).expect("expected blob handle for selection index");
+        self.read_index_with_mode(handle, EvalType::Parallel)
+    }
+
+    fn read_index_with_mode(&self, handle: Handle, eval_mode: EvalType) -> usize {
+        let blob = fixhandle::Blob::try_from(self.eval_test(handle, eval_mode))
+            .expect("expected blob handle for selection index");
         let bytes = self.storage().get_blob(blob).unwrap();
         // Make buffer fit all supported integer widths
         let mut buffer = [0; 16];
@@ -162,8 +197,7 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
         match thunk.view() {
             ThunkView::Identification(reference) => self.lift(reference.into()),
             ThunkView::Selection(tree) => {
-                let evaled = self.eval_tree(tree.object_descriptor(), eval_mode);
-                self.select(evaled)
+                self.select_with_mode(tree.object_descriptor(), eval_mode)
             }
             ThunkView::Application(tree) => {
                 let evaled = self.eval_tree(tree.object_descriptor(), eval_mode);
@@ -184,16 +218,31 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
 
     fn encode(&self, encode: Encode, eval_mode: EvalType) -> Handle {
         match encode.view() {
-            EncodeView::Strict(thunk) => self.lift(self.force(thunk, eval_mode)),
+            EncodeView::Strict(thunk) => self.eval_test(self.force(thunk, eval_mode), eval_mode),
             EncodeView::Shallow(thunk) => self.lower(self.force(thunk, eval_mode)),
         }
     }
 
     fn eval_tree(&self, handle: Tree, eval_mode: EvalType) -> Tree {
-        match eval_mode {
+        if handle.as_handle().is_eq()
+            && let Some(result) = self
+                .trees
+                .lock()
+                .get(handle.as_handle().as_bytes())
+                .copied()
+        {
+            return result;
+        }
+        let result = match eval_mode {
             EvalType::Serial => self.eval_tree_seq(handle),
             EvalType::Parallel => self.eval_tree_parallel(handle),
+        };
+        if handle.as_handle().is_eq() {
+            self.trees
+                .lock()
+                .insert(*handle.as_handle().as_bytes(), result);
         }
+        result
     }
 
     fn eval_tree_seq(&self, handle: Tree) -> Tree {
@@ -204,37 +253,56 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
             .copied()
             .map(|x| self.eval_test(x, EvalType::Serial))
             .collect();
-        self.runtime.storage().add_tree(&evaled)
+        if tree
+            .iter()
+            .zip(&evaled)
+            .all(|(a, b)| a.as_bytes() == b.as_bytes())
+        {
+            return handle;
+        }
+        let result = self.runtime.storage().add_tree(&evaled);
+        if handle.is_tag() {
+            result.tag_descriptor()
+        } else {
+            result
+        }
     }
 
     fn eval_tree_parallel(&self, handle: Tree) -> Tree {
         let tree = self.runtime.storage().get_tree(handle).unwrap();
-        if tree.len() <= 3 {
-            return self.eval_tree_seq(handle);
-        }
         let mut evaled = Vec::with_capacity(tree.len());
-        // evaluate the first
-        evaled.push(self.eval_test(tree[0], EvalType::Serial));
-        let mut tasks = Vec::with_capacity(tree.len() - 1);
-        for child in tree[1..].iter().copied() {
+        let mut tasks = Vec::with_capacity(tree.len());
+        for child in tree.iter().copied() {
             tasks.push(self.scheduler.push_work(child));
         }
         for task in tasks {
             evaled.push(self.wait_while_helping(&task));
         }
-        self.runtime.storage().add_tree(&evaled)
+        if tree
+            .iter()
+            .zip(&evaled)
+            .all(|(a, b)| a.as_bytes() == b.as_bytes())
+        {
+            return handle;
+        }
+        let result = self.runtime.storage().add_tree(&evaled);
+        if handle.is_tag() {
+            result.tag_descriptor()
+        } else {
+            result
+        }
     }
     // elimnate redundancy i think
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
         //println!("evaluating {handle}");
         match handle.view() {
-            HandleView::Ref(reference) => self.eval(self.lift((*reference).into())),
+            HandleView::Ref(reference) => self.eval_test(self.lift((*reference).into()), eval_mode),
             HandleView::Thunk(_) => handle,
             HandleView::Object(obj) => match obj.view() {
                 ObjectView::Blob(blob) => (*blob).into(),
                 ObjectView::Tree(tree) => self.eval_tree(*tree, eval_mode).into(),
             },
-            HandleView::Encode(e) => self.eval_test(self.encode(*e, eval_mode), eval_mode),
+            HandleView::Encode(e) => self.encode(*e, eval_mode),
         }
     }
 
