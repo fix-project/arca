@@ -64,7 +64,7 @@ pub fn apply<'a>(
         let child = tree![childrenordata_h, idx as u64 + 1]
             .reference()
             .selection()
-            .shallow();
+            .strict();
         let child_keys = tree![child, 0u64].reference().selection().strict();
         Right(Right(
             tree![arguments[0], child_keys, child, key_h, n_h]

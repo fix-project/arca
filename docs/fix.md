@@ -82,8 +82,8 @@ A Thunk may be constructed in three different ways:
    the function to those arguments.
 2. Identification Thunks are defined by a Ref; they represent the identity
    function applied to the data of that Ref.
-3. Selection Thunks are defined by a Tree consisting of a Ref and an index (or
-   indices); they represent slicing the data of that Ref.
+3. Selection Thunks are defined by a Tree consisting of a value and an index
+   (or indices); they represent slicing the data of that value.
 
 In our implementation, a "function" is usually an ELF blob containing
 x86-64-unknown-arca machine code. In order to ensure determinism, we check that
