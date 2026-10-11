@@ -57,6 +57,7 @@ test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
         ":cli_test",
+        "//tests/build:rules_test",
         ":mapreduce_cases_test",
         ":addblob_extended_test",
         ":addblob_test",

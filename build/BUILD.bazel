@@ -1,11 +1,16 @@
 package(default_visibility = ["//visibility:public"])
 
 load(":fix_settings.bzl", "fix_jobs")
+load("@rules_python//python:defs.bzl", "py_binary")
 
 fix_jobs(name = "fix-jobs", build_setting_default = 0)
 
+py_binary(name = "ndjson", srcs = ["ndjson.py"])
+
 exports_files([
     "cc.bzl",
+    "fix.bzl",
+    "FIX.md",
     "cc_checks.bzl",
     "repositories.bzl",
     "rules_rust.patch",
