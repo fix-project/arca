@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or not 1 <= len(args) <= 2:
+    print("fix json-import DOCUMENT [BINDINGS] (use - for stdin)", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+
+
+def fix(*args):
+    return subprocess.check_output([cli, *args]).decode().rstrip("\n")
+
+
+source = fix("create-blob", args[0])
+combination = fix("create-tree", fix("resolve", "json"), source, *args[1:])
+print(fix("think", fix("create-application-thunk", combination)))

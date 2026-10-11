@@ -15,6 +15,7 @@ pub enum StorageError {
 
 mod data;
 pub mod memory;
+pub mod repository;
 pub use data::{ImmutableBytes, backing_value};
 
 /// A content-addressed handle, constructed by storage canonicalization.
@@ -124,4 +125,31 @@ pub trait Storage {
 
     fn canonicalize_blob(&self, blob: Blob) -> Result<CanonicalHandle, StorageError>;
     fn canonicalize_tree(&self, tree: Tree) -> Result<CanonicalHandle, StorageError>;
+}
+
+impl<S: Storage + ?Sized> Storage for alloc::sync::Arc<S> {
+    fn add_blob(&self, data: &[u8]) -> Blob {
+        (**self).add_blob(data)
+    }
+    fn add_tree(&self, data: &[Handle]) -> Tree {
+        (**self).add_tree(data)
+    }
+    fn get_blob(&self, name: Blob) -> Result<Box<[u8]>, StorageError> {
+        (**self).get_blob(name)
+    }
+    fn get_tree(&self, name: Tree) -> Result<Box<[Handle]>, StorageError> {
+        (**self).get_tree(name)
+    }
+    fn get_blob_backing(&self, name: Blob) -> Result<ImmutableBytes, StorageError> {
+        (**self).get_blob_backing(name)
+    }
+    fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
+        (**self).get_tree_backing(name)
+    }
+    fn canonicalize_blob(&self, name: Blob) -> Result<CanonicalHandle, StorageError> {
+        (**self).canonicalize_blob(name)
+    }
+    fn canonicalize_tree(&self, name: Tree) -> Result<CanonicalHandle, StorageError> {
+        (**self).canonicalize_tree(name)
+    }
 }

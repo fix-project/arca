@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or len(args) != 1:
+    print("fix flatware-link WASM_VALUE", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+
+
+def fix(*args, input=None):
+    return subprocess.run([cli, *args], input=input, stdout=subprocess.PIPE, check=True).stdout.decode().rstrip("\n")
+
+
+def store(expression):
+    pairs = b"".join(key.encode() + b"\0" + value.encode() + b"\0" for key, value in values.items())
+    bindings = fix("create-tree", "--bindings", "-", input=pairs)
+    return fix("json-import", "-", bindings, input=json.dumps(expression).encode())
+
+
+values = {name: fix("resolve", name) for name in ("wasm-merge", "toolchain", "path")}
+values["wasm"] = fix("resolve", args[0])
+wasm = {"binding": "wasm"}
+if fix("get-type", values["wasm"]) == "thunk":
+    wasm = {"create-strict-encode": wasm}
+file_stat = [{"u64": 0}, {"u8": 4}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
+directory_stat = [{"u64": 0}, {"u8": 3}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
+merged = {"create-application-thunk": [
+    {"binding": "wasm-merge"}, [
+        "/toolchain/usr/bin/wasm-merge", "/toolchain/share/fix/adapter.wasm", "wasi_snapshot_preview1",
+        "/work/guest.wasm", "flatware_guest", "/toolchain/share/fix/control.wasm", "flatware_control",
+        "--all-features", "--disable-gc", "--rename-export-conflicts", "--no-resource-imports", "-o", "/work/module.wasm",
+    ], ["TMPDIR=/work", "LC_ALL=C", "SOURCE_DATE_EPOCH=0"],
+    [["stdin", [], ""], ["stdout", [], ""], ["stderr", [], ""], {"binding": "toolchain"},
+     ["/work", directory_stat, [["guest.wasm", file_stat, wasm]]]],
+    {"u64": 0}, {"u64": 0},
+]}
+values["merge"] = store(merged)
+result = {"create-strict-encode": {"binding": "merge"}}
+fds = {"create-strict-encode": {"create-selection-thunk": [result, {"u64": 0}]}}
+work = {"create-strict-encode": {"create-selection-thunk": [fds, {"u64": 4}]}}
+lookup = {"create-application-thunk": [{"binding": "path"}, work, ["module.wasm"]]}
+print(store({"create-selection-thunk": [{"create-strict-encode": lookup}, {"u64": 2}]}))

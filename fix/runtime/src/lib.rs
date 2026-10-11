@@ -1,10 +1,12 @@
 #![no_main]
 #![no_std]
 
+pub mod cli;
 pub mod computation;
 pub mod evaluator;
 pub mod parallel_evaluator;
 pub mod preprocessor;
+pub mod repository;
 pub mod runtime;
 mod scheduler;
 pub mod stdlib;
@@ -12,6 +14,7 @@ pub mod storage;
 pub mod task_graph;
 pub mod user_queues;
 pub mod user_scheduler_driver;
+
 pub mod handle {
     pub use fixhandle::*;
 }

@@ -1,6 +1,6 @@
 use core::{iter::Peekable, str::Chars};
-use kernel::host::fs::{File, Whence};
-use kernel::prelude::*;
+extern crate alloc;
+use alloc::{format, string::String, vec::Vec};
 
 pub struct Preprocessor<'a> {
     characters: Peekable<Chars<'a>>,
@@ -13,7 +13,19 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
-    pub fn preprocess(mut self) -> Result<String, String> {
+    pub fn preprocess(
+        self,
+        read_file: impl Fn(&str) -> Result<Vec<u8>, String>,
+    ) -> Result<String, String> {
+        self.preprocess_with(|path| {
+            read_file(path).map(|bytes| format!("0x{}", hex::encode(bytes)))
+        })
+    }
+
+    pub fn preprocess_with(
+        mut self,
+        mut expand_file: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
         let mut output = String::new();
 
         while let Some(character) = self.characters.next() {
@@ -43,33 +55,46 @@ impl<'a> Preprocessor<'a> {
                         }
                     }
                 }
+                '"' => {
+                    output.push(character);
+                    loop {
+                        let next = self.characters.next().ok_or("unterminated string")?;
+                        output.push(next);
+                        if next == '"' {
+                            break;
+                        }
+                        if next == '\\' {
+                            output.push(self.characters.next().ok_or("unterminated escape")?);
+                        }
+                    }
+                }
                 '@' => {
                     if self.characters.next() != Some('"') {
                         return Err(String::from("expected path after '@'"));
                     }
                     let mut path = String::new();
                     while let Some(next) = self.characters.next_if(|&ch| ch != '"') {
-                        path.push(next);
+                        path.push(if next == '\\' {
+                            match self.characters.next().ok_or("unterminated path escape")? {
+                                '\\' => '\\',
+                                '"' => '"',
+                                'n' => '\n',
+                                'r' => '\r',
+                                't' => '\t',
+                                _ => return Err(String::from("invalid path escape")),
+                            }
+                        } else {
+                            next
+                        });
                     }
                     if self.characters.next() != Some('"') {
                         return Err(String::from("unterminated path"));
                     }
-                    let program = read_file(&path)?;
-                    output.push_str(&format!("0x{}", hex::encode(program)));
+                    output.push_str(&expand_file(&path)?);
                 }
                 character => output.push(character),
             }
         }
         Ok(output)
     }
-}
-
-pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
-    let mut file = File::open(path, true, false, false, false, false)
-        .map_err(|_| format!("could not open {path}"))?;
-    let len = file.seek(Whence::End(0)) as usize;
-    file.seek(Whence::Start(0));
-    let mut data = kernel::allocator::buffer(vec![0; len]);
-    file.read_exact(&mut data);
-    Ok(data.into_inner())
 }

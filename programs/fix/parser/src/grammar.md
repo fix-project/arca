@@ -44,3 +44,6 @@ compiler = @"/path/"
     "int f(int x, int y) {return x + y;}")
     $def_limits 19u32 4u32)
 ```
+
+Strings support escaped quotes, backslashes, control characters, and Unicode
+scalar escapes. File expansion happens on the host.

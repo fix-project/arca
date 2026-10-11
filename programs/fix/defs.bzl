@@ -1,7 +1,7 @@
 """Build and test standalone Fix programs."""
 
 load("@rules_rust//rust:defs.bzl", "rust_shared_library")
-load("//build:defs.bzl", "WASM", "fix_procedure", "vm_test", "wat_module")
+load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test", "wat_module")
 load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 
 FIX_PROGRAMS = ["identity", "addblob"]
@@ -15,7 +15,7 @@ def fix_wat_program(name):
         wasm = ":" + name + "_wasm",
         runnable = True,
         visibility = ["//visibility:public"],
-        artifact_visibility = ["//fix/runtime:__pkg__", "//tests/fix:__pkg__"],
+        artifact_visibility = ["//visibility:public"],
     )
 
 def fix_rust_program(name, alloc = False, artifact_visibility = ["//tests/fix:__pkg__"]):
@@ -70,14 +70,13 @@ def fix_language_programs(language):
         )
 
     native.filegroup(name = "programs", srcs = [":" + name for name in FIX_LANGUAGE_PROGRAMS])
-    vm_test(
+    fix_script_test(
         name = "path_test",
         size = "large",
         timeout = "short",
-        args = ["eval", "path.fix"],
+        script = "path.fix",
         data = ["//programs/fix:fixtures/path.fix", ":path_elf", "//tests/fix:check_result_native"],
-        expected_output = ["as a u64: 42"],
-        kernel = "//fix/runtime:image_elf",
+        expected = "2a00000000000000",
         tags = ["kvm", "local"],
     )
     native.test_suite(name = "tests", tests = [":path_test"])

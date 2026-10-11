@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_rust//rust:defs.bzl", "rust_clippy_test", "rustfmt_test")
 load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
 load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
@@ -8,7 +9,11 @@ HOST = [
     "//tools:bindgen",
     "//tools:postprocess",
     "//tools/module-combiner:wasm_merge",
-    "//flatware/runner:binary",
+    "//fix/cli:host",
+    "//fix/cli:preprocess",
+    "//build:fix_test",
+    "//programs/fix:addblob",
+    "//programs/flatware:ls",
     "//fix/handle",
     "//coupon:api",
 ]
@@ -25,7 +30,7 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//flatware:cpio_wasm", "//flatware:normalize_wasm", "//programs/fix:compose_wasm", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
+CHECKS = HOST + GUEST + ["//flatware:cpio_wasm", "//flatware:normalize_wasm", "//programs/fix:compose_wasm", "//programs/fix/json:wasm", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 

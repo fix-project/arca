@@ -36,39 +36,53 @@ library programs in the VM, checking status, output, and returned files.
 
 ## Running programs
 
-Run a standard WASIp1 command module:
+Link a WASIp1 Wasm Blob with Flatware, compile it, then evaluate explicitly:
 
 ```sh
-bazel run //flatware:run -- --dir ./input::/work --stdin ./stdin.txt program.wasm argument
+wasm=$(fix create-blob program.wasm)
+linked=$(fix flatware-link "$wasm")
+thunk=$(fix compile "$linked")
+executable=$(fix eval "$(fix create-strict-encode "$thunk")")
+fix label set program "$executable"
+fix flatware-run program argument < stdin.txt
 ```
 
-`--dir HOST[::GUEST]` snapshots a host directory as a guest preopen. Without
-`::GUEST`, the guest path is the supplied host path. Multiple mounts must have
-nonoverlapping guest paths. `--env NAME=VALUE` supplies an environment entry.
-Runner options precede guest arguments; `--` separates guest arguments that
-would otherwise be interpreted as runner options.
+`fix flatware-link` attaches the WASIp1 adapter; `fix compile` translates the
+supplied module unchanged and constructs pending compilation and ELF linking
+operations using Python and the JSON deserializer. No compiler runs until evaluation.
+Intermediate files stay in Flatware directory values. It uses repository labels
+`wasm-merge`, `wasm2c`, `clang`, `path`, and `toolchain`.
+`FIX_COMPILE_PARTITIONS` selects C partitions (default 8); evaluation parallelism
+is independent. The merger rejects unresolved memory and table imports, keeping
+the adapter's resource indices unchanged.
 
-Input is buffered from `--stdin FILE`, or empty when omitted. Guest stdout and
-stderr are written to the corresponding host streams. The runner returns the
-guest's exit status. It writes returned directories to a fresh temporary
-directory and prints `output directory: PATH` to stderr, including when the
-guest exits unsuccessfully. Absolute guest paths become relative paths within
-that directory. Source directories are not overwritten.
+Import a UNIX directory, construct an invocation, evaluate it, and export its
+returned directory:
 
-Snapshots support regular files, directories, and preserved symbolic links.
-Flatware does not support following symbolic links. Special files are rejected.
-Returned files retain contents and access/modification timestamps; host inode
-identities, permissions, and hard links are not reproduced.
+```sh
+directory=$(fix flatware-import ./input /work)
+fds=$(fix create-tree "$directory")
+thunk=$(FIX_FDS="$fds" fix flatware-application program argument < stdin.txt)
+result=$(fix eval "$(fix create-strict-encode "$thunk")")
+mapfile -t output < <(fix read-tree "$result")
+mapfile -t descriptors < <(fix read-tree "${output[0]}")
+fix flatware-export "${descriptors[3]}" ./result
+```
 
-The runner uses the existing `wasm-merge`, `wasm2c`, compiler, and KVM toolchain.
-The Fix shell shares a 4 GiB address region between its native executable and
-heap. Only ELF segments and heap allocations are mapped; unused address space
-does not consume memory. Module instances are allocated using wasm2c's reported
-size and alignment.
-The standalone utilities in `//programs/flatware` use precompiled modules through
-the same runner.
+`flatware-application` only constructs an application Thunk. `flatware-run`
+evaluates that Thunk, forwards stdout/stderr, and exits with the guest's status.
+Both read host stdin into the invocation. Optional settings are environment
+variables: `FIX_FDS` supplies preopens, `FIX_ENV` supplies a Tree of `NAME=VALUE`
+Blobs, and `FIX_ARGV0` overrides the process name. `FIX_JOBS` selects evaluator
+parallelism for `flatware-run`; `FIX_RESULT_LABEL` preserves its result.
+Seed and initial clock are zero.
 
-## Archive conversion
+`flatware-import PATH [NAME]` snapshots a file, directory, or symlink. Names
+default to the input basename; timestamps are zero and link counts one.
+Snapshots exclude `.fix`. Import packages the host entries with GNU `cpio`, then
+composes the `cpio` and `flatware-normalize` Fix programs. Export applies `cpio`
+and extracts its output into a new directory with system `cpio`.
+`flatware-export DIRECTORY PATH` refuses an existing destination.
 
 The `cpio` program takes one argument: a `newc` or `crc` Blob expands into a
 Flatware directory descriptor, and a directory descriptor serializes to `newc`.
@@ -84,3 +98,12 @@ to zero and link counts to one, and preserves names, devices, types, sizes, and
 file-content handles. Directory children are recursive Fix applications, allowing
 parallel evaluation without a Rust allocator.
 
+A callable Tree `(compose outer inner)` applies the inner procedure to its
+arguments, consumes that result strictly, and returns the outer application's
+Thunk. For example, import uses `(compose flatware-normalize cpio)`. Both programs
+and `compose` are included as labels in the bootstrap repository.
+
+The `toolchain` label contains `usr/` (sysroot and LLVM resource files) and
+`share/fix/` (adapter/control Wasm, `wasm-rt.c`, shell headers, `memmap.ld`, and
+`libfixshell.a`). Build the bootstrap with `bazel build //bootstrap`, or import
+a prebuilt archive with `fix import PATH`.

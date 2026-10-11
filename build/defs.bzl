@@ -158,7 +158,7 @@ fi
         content += 'cd "${BUILD_WORKSPACE_DIRECTORY:-$PWD}"\n'
 
     # Bazel passes the rule's args before command-line arguments.
-    command = '"$vmm" "$kernel" --smp %d "$@"' % ctx.attr.smp
+    command = '"$vmm" "$kernel" --smp %d -- "$@"' % ctx.attr.smp
     if ctx.attr.expected_output:
         content += command + ' 2>&1 | tee "${TEST_TMPDIR:?}/output"\n'
         for expected in ctx.attr.expected_output:
@@ -179,44 +179,53 @@ _vm_attrs = {
 vm_run = rule(implementation = _vm_launcher_impl, executable = True, attrs = _vm_attrs)
 vm_test = rule(implementation = _vm_launcher_impl, test = True, attrs = _vm_attrs)
 
-def _fix_program_launcher_impl(ctx):
-    script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    vmm = ctx.executable.vmm
-    kernel = ctx.file.kernel
-    program = ctx.file.program
-    runfiles = ctx.runfiles(files = [vmm, kernel, program])
-    runfiles = runfiles.merge(ctx.attr.vmm[DefaultInfo].default_runfiles)
-    content = """#!/usr/bin/env bash
-set -euo pipefail
-root="${RUNFILES_DIR:-${TEST_SRCDIR:-$0.runfiles}}/%s"
-vmm="$root/%s"
-kernel="$root/%s"
-program="$root/%s"
-if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-    echo "This target requires Linux x86-64 and access to /dev/kvm." >&2
-    exit 1
-fi
-cd "${BUILD_WORKSPACE_DIRECTORY:-$PWD}"
-work=$(mktemp -d)
-trap 'rm -f "$work/program.elf" "$work/program.fix"; rmdir "$work"' EXIT
-cp "$program" "$work/program.elf"
-printf 'program = @"%%s"\\n*#(program' "$work/program.elf" > "$work/program.fix"
-for arg in "$@"; do
-    printf ' %%s' "$arg" >> "$work/program.fix"
-done
-printf ')\\n' >> "$work/program.fix"
-"$vmm" "$kernel" --smp 2 eval "$work/program.fix"
-""" % (ctx.workspace_name, vmm.short_path, kernel.short_path, program.short_path)
-    ctx.actions.write(script, content, is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = runfiles)]
+def fix_program_run(name, program, mode = "run", **kwargs):
+    rust_binary(
+        name = name,
+        srcs = ["//build:fix_run.rs"],
+        crate_name = "fix_run",
+        edition = "2024",
+        data = ["//fix", program],
+        deps = ["@rules_rust//tools/runfiles"],
+        rustc_env = {
+            "FIX_CLI": "$(rlocationpath //fix)",
+            "FIX_PROGRAM": "$(rlocationpath " + program + ")",
+            "FIX_MODE": mode,
+        },
+        **kwargs
+    )
 
-fix_program_run = rule(
-    implementation = _fix_program_launcher_impl,
-    executable = True,
+def _fix_script_test(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(output = executable, target_file = ctx.executable.driver, is_executable = True)
+    def path(file):
+        return ctx.workspace_name + "/" + file.short_path
+    environment = {
+        "FIX_TEST_CLI": path(ctx.executable.fix),
+        "FIX_TEST_PARSER": path(ctx.file.parser),
+        "FIX_TEST_IDENTITY": path(ctx.file.identity),
+        "FIX_TEST_DATA": "\n".join([path(file) for file in ctx.files.data]),
+        "FIX_TEST_SCRIPT": ctx.attr.script,
+        "FIX_TEST_JOBS": str(ctx.attr.jobs),
+        "FIX_TEST_EXPECTED": ctx.attr.expected,
+    }
+    runfiles = ctx.runfiles(files = ctx.files.data + [ctx.executable.fix, ctx.file.parser, ctx.file.identity])
+    for target in [ctx.attr.fix, ctx.attr.driver]:
+        runfiles = runfiles.merge(target[DefaultInfo].default_runfiles)
+    return [DefaultInfo(executable = executable, runfiles = runfiles), RunEnvironmentInfo(environment = environment)]
+
+fix_script_test = rule(
+    implementation = _fix_script_test,
+    test = True,
     attrs = {
-        "vmm": attr.label(default = "//tools/vmm:vmm", executable = True, cfg = "exec"),
-        "kernel": attr.label(default = "//fix/runtime:image_elf", allow_single_file = True),
-        "program": attr.label(mandatory = True, allow_single_file = True),
+        "driver": attr.label(default = "//build:fix_test", executable = True, cfg = "exec"),
+        "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
+        "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
+        "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),
+        "script": attr.string(mandatory = True),
+        "data": attr.label_list(allow_files = True),
+        "jobs": attr.int(default = 1),
+        "expected": attr.string(mandatory = True),
     },
 )
 
@@ -240,20 +249,20 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         visibility = ["//visibility:private"],
         srcs = [wasm],
         tools = ["//third_party:wasm2c", "//tools:compile"],
-        outs = [name + "/module.c", name + "/module.h"],
-        cmd = "$(execpath //tools:compile) translate $(execpath //third_party:wasm2c) $(location " + wasm + ") $(location " + name + "/module.c)",
+        outs = [name + "_translate/module.c", name + "_translate/module.h"],
+        cmd = "$(execpath //tools:compile) translate $(execpath //third_party:wasm2c) $(location " + wasm + ") $(location " + name + "_translate/module.c)",
     )
     artifact = name + "_elf" if runnable else name
     flags = FIX_COPTS + ["-Ifix/shell/inc"]
     objects = []
-    for index, src in enumerate([name + "/module.c", "//fix/shell:wasm_rt"]):
+    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt"]):
         obj = name + "_native_object_%d" % index
         cc_object(
             name = obj,
             tags = tags,
             src = src,
-            hdrs = [name + "/module.h", "//fix/shell:headers"],
-            include_roots = [name + "/module.h"],
+            hdrs = [name + "_translate/module.h", "//fix/shell:headers"],
+            include_roots = [name + "_translate/module.h"],
             copts = flags,
             visibility = ["//visibility:private"],
         )

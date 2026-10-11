@@ -26,7 +26,7 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen
+          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
       - name: Build
         run: bazel build //:artifacts
 
@@ -46,7 +46,7 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen
+          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
       - name: Enable KVM access
         run: |
           sudo modprobe kvm
@@ -79,7 +79,7 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen
+          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
       - name: Check formatting
         run: bazel test //tests:format
 
@@ -99,6 +99,6 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen
+          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
       - name: Check lint
         run: bazel test //tests:lint

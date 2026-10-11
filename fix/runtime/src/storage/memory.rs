@@ -92,7 +92,9 @@ impl MemoryStorage {
             self.index(stored.as_handle()).expect("new tree index")
         });
         let tagged = CanonicalHandle::try_from(canonical.tag_descriptor()).unwrap();
-        canonicals.entry(tagged).or_insert(index);
+        if tree.is_tag() {
+            canonicals.entry(tagged).or_insert(index);
+        }
         drop(canonicals);
         visiting.pop();
         let canonical = if tree.is_tag() {
@@ -104,7 +106,7 @@ impl MemoryStorage {
         Ok(canonical)
     }
 
-    fn canonicalize_handle(
+    pub(crate) fn canonicalize_handle(
         &self,
         handle: Handle,
         visiting: &mut Vec<Handle>,

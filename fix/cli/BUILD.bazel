@@ -1,0 +1,14 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load(":defs.bzl", "launcher")
+
+package(default_visibility = ["//visibility:public"])
+
+alias(name = "host", actual = ":fix")
+rust_binary(
+    name = "preprocess",
+    srcs = ["preprocess.rs", "//fix/runtime:src/preprocessor.rs"],
+    crate_root = "preprocess.rs",
+    edition = "2024",
+    deps = ["@crates//:hex"],
+)
+launcher(name = "fix", scripts = glob(["commands/*"]))

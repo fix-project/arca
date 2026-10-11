@@ -6,7 +6,7 @@ kernel.
 ## Build
 
 Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
-Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), Bash, and Python 3.
+Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), Bash, GNU cpio, and Python 3.
 Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
 ```sh
@@ -38,7 +38,7 @@ sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
 The optional [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
-toolchains from pinned sources through Stage1. Shared
+toolchains from pinned sources and checks byte-identical generations. Shared
 caches use ordinary Bazel configuration.
 
 ## Formatting

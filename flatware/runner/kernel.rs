@@ -43,7 +43,7 @@ fn export(handle: Handle, storage: &dyn Storage) -> Object {
 fn main() {
     let args = os::argv();
     assert_eq!(args.len(), 3);
-    let input = fix::preprocessor::read_file(&args[1]).expect("read Flatware input");
+    let input = kernel::host::fs::read(&args[1]).expect("read Flatware input");
     let input: Object = postcard::from_bytes(&input).expect("decode Flatware input");
     let evaluator = Evaluator::new(FixOnArca::default());
     let combination =

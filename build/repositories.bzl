@@ -7,6 +7,10 @@ def _local_tools_impl(ctx):
         if not path:
             fail("Install %s before building Fix (see README.md)" % tool)
         ctx.symlink(path, tool)
+    cores = ctx.execute([str(ctx.which("nproc"))])
+    if cores.return_code:
+        fail(cores.stderr)
+    ctx.file("cores.bzl", "HOST_CPUS = %d\n" % int(cores.stdout.strip()))
     for tool in ["clang-format", "clang-tidy"]:
         path = ctx.which(tool)
         if path:

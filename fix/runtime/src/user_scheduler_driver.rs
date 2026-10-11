@@ -1,7 +1,7 @@
 // driver that will initialize run() and set up of when user scheduler is called
 use crate::runtime::arca::{FixOnArca, decode_handle, pack_handle};
 use crate::user_queues::{Error, WorkQueues};
-use crate::{Handle, Runtime, Tree};
+use crate::{Handle, Runtime, Storage, Tree};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use fixhandle::Name;
 use kernel::{kthread, prelude::*};
@@ -42,8 +42,8 @@ fn read_handle(value: &Blob) -> Result<Handle, Error> {
 }
 // accepts a root handle, just as a starting point, they can then figure out what to do with it
 // or to add new functions, which these helper functions will be defined in the SDK we implement
-pub fn start(
-    runtime: Arc<FixOnArca>,
+pub fn start<S: Storage + Send + Sync + 'static>(
+    runtime: Arc<FixOnArca<S>>,
     elf: Arc<[u8]>,
     root: Handle,
     workers: usize,
@@ -103,8 +103,8 @@ pub fn start(
 }
 
 // need function to run each instance, receive effects
-fn run(
-    runtime: &FixOnArca,
+fn run<S: Storage>(
+    runtime: &FixOnArca<S>,
     shared: &Shared,
     worker: usize,
     elf: &[u8],
@@ -173,8 +173,8 @@ fn run(
 }
 
 // need another function to perform the requested queue, execution, or completion operation
-fn execute_task(
-    runtime: &FixOnArca,
+fn execute_task<S: Storage>(
+    runtime: &FixOnArca<S>,
     shared: &Shared,
     worker: usize,
     name: &[u8],
