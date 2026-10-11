@@ -34,3 +34,8 @@
   The evaluators do not memoize application results, so sharing a Thunk handle
   does not share its computed result. The compilation graph needs to avoid
   repeated forcing.
+- Parallel evaluation starts jobs without reserving memory. Exhausting the VM's
+  memory can abort evaluation rather than delay jobs until memory is available.
+  Blocking allocation alone could deadlock if all running jobs hold memory and
+  need more to finish. Job admission needs to account for peak memory use;
+  estimates alone cannot guarantee that arbitrary programs will fit.
