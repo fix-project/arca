@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fix=${FIX:-fix}
+if [[ $# -lt 1 || $# -gt 2 || $1 == --help || $1 == -h ]]; then
+    echo 'fix flatware-import PATH [NAME]'
+    exit 0
+fi
+IFS= read -r -d '' path < <(realpath -s -z -- "$1")
+name=${2:-${path##*/}}
+if [[ -d $path && ! -L $path ]]; then
+    archive=$( (cd "$path"; find . -name .fix -prune -o -print0 | LC_ALL=C sort -z | cpio --null -o -H newc --reproducible --owner=0:0) | "$fix" create-blob -)
+else
+    archive=$( (cd "$(dirname "$path")"; printf '%s\0' "${path##*/}" | cpio --null -o -H newc --reproducible --owner=0:0) | "$fix" create-blob -)
+fi
+composition=$("$fix" create-tree compose flatware-normalize cpio)
+combination=$("$fix" create-tree "$composition" "$archive")
+thunk=$("$fix" create-application-thunk "$combination")
+directory=$("$fix" eval "$("$fix" create-strict-encode "$thunk")")
+fields=$("$fix" read-tree "$directory")
+mapfile -t fields <<< "$fields"
+if [[ ! -d $path || -L $path ]]; then
+    entries=$("$fix" read-tree "${fields[2]}")
+    fields=$("$fix" read-tree "$entries")
+    mapfile -t fields <<< "$fields"
+fi
+name=$("$fix" create-blob --string "$name")
+"$fix" create-tree "$name" "${fields[1]}" "${fields[2]}"

@@ -24,3 +24,13 @@
   Objects and Refs. The SDK uses `Handle` for existing Fix values and `Value`
   adaptors for pending values. Content reads use caller-provided buffers or
   owned vectors with `alloc`, rather than borrowed slices of attached resources.
+- `docs/cli.sh`: the CLI uses `create-shallow-encode`, not `create-encode`.
+  The persistent core commands and external shell helpers are documented in
+  `fix/runtime/README.md`. `eval` consumes a handle; `run` consumes a script.
+  File/directory helpers use Flatware descriptors, rather than unimplemented CPIO.
+- `fix compile`: each linker object lookup forces the entire compilation Tree
+  again, and compilation jobs repeatedly force translation. With eight C
+  partitions plus `wasm-rt.c`, the nine-job compilation batch can run nine times.
+  The evaluators do not memoize application results, so sharing a Thunk handle
+  does not share its computed result. The compilation graph needs to avoid
+  repeated forcing.

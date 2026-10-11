@@ -6,12 +6,18 @@ use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
 #[cfg(debug_assertions)]
 use kernel::println;
 
-#[derive(Debug, Default)]
-pub struct FixOnArca {
-    storage: MemoryStorage,
+#[derive(Debug)]
+pub struct FixOnArca<S = MemoryStorage> {
+    storage: S,
 }
 
-impl Runtime for FixOnArca {
+impl Default for FixOnArca {
+    fn default() -> Self {
+        Self::new(MemoryStorage::default())
+    }
+}
+
+impl<S: Storage> Runtime for FixOnArca<S> {
     fn storage(&self) -> &dyn Storage {
         &self.storage
     }
@@ -41,7 +47,11 @@ impl Runtime for FixOnArca {
     }
 }
 
-impl FixOnArca {
+impl<S: Storage> FixOnArca<S> {
+    pub fn new(storage: S) -> Self {
+        Self { storage }
+    }
+
     fn run(&self, mut f: Function) -> Handle {
         loop {
             let result = f.force();

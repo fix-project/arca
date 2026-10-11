@@ -1,10 +1,12 @@
 # Minimal Flatware utilities
 
 ```sh
-bazel run //programs/flatware:ls -- --dir ./input::/work /work
-bazel run //programs/flatware:wc -- --dir ./input::/work /work/example.txt
-bazel run //programs/flatware:cat -- --stdin ./example.txt
-bazel run //programs/flatware:head -- --dir ./input::/work /work/example.txt
+directory=$(fix flatware-import ./input /work)
+fds=$(fix create-tree "$directory")
+FIX_FDS="$fds" bazel run //programs/flatware:ls -- /work
+FIX_FDS="$fds" bazel run //programs/flatware:wc -- /work/example.txt
+bazel run //programs/flatware:cat < example.txt
+FIX_FDS="$fds" bazel run //programs/flatware:head -- /work/example.txt
 ```
 
 `ls` prints sorted directory entry names, including hidden names. `wc` counts
@@ -15,3 +17,6 @@ of each input. These programs have no option parser.
 `ls` defaults to `.`. The other programs default to stdin and accept `-` as an
 operand for stdin. See [the runner](../../flatware/README.md) for directory
 snapshots and output handling.
+
+The entry points import their compiled executable and call `fix flatware-run`.
+All arguments go to the guest. They require an initialized Fix repository.

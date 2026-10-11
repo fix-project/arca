@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or not 1 <= len(args) <= 2:
+    print("fix parse SCRIPT [BINDINGS] (use - for stdin)", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+
+
+def fix(*args, input=None):
+    return subprocess.run([cli, *args], input=input, stdout=subprocess.PIPE, check=True).stdout.decode().rstrip("\n")
+
+
+with tempfile.TemporaryDirectory() as work:
+    manifest = Path(work) / "imports"
+    source = subprocess.check_output(["fix-preprocess", "--imports", str(manifest), args[0]])
+    imports = manifest.read_bytes().split(b"\0")[:-1]
+    paths = b"".join(path + b"\0" for path in imports[1::2])
+    handles = fix("create-blob", "--files-from", "-", input=paths).splitlines() if paths else []
+    pairs = b"".join(name + b"\0" + value.encode() + b"\0" for name, value in zip(imports[::2], handles, strict=True))
+    if len(args) == 2:
+        bindings = args[1]
+        if pairs:
+            imported = fix("create-tree", "--bindings", "-", input=pairs)
+            children = fix("read-tree", bindings).splitlines() + fix("read-tree", imported).splitlines()
+            bindings = fix("create-tree", "-", input="".join(child + "\n" for child in children).encode())
+    else:
+        pairs += b"identity\0" + fix("resolve", "identity").encode() + b"\0"
+        bindings = fix("create-tree", "--bindings", "-", input=pairs)
+    source = fix("create-blob", "-", input=source)
+    combination = fix("create-tree", fix("resolve", "parser"), source, bindings)
+    print(fix("think", fix("create-application-thunk", combination)))

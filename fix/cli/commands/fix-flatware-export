@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fix=${FIX:-fix}
+if [[ $# != 2 || $1 == --help || $1 == -h ]]; then
+    echo 'fix flatware-export DIRECTORY PATH'
+    exit 0
+fi
+if [[ -e $2 || -L $2 ]]; then
+    echo "fix: destination already exists: $2" >&2
+    exit 2
+fi
+combination=$("$fix" create-tree cpio "$1")
+thunk=$("$fix" create-application-thunk "$combination")
+archive=$("$fix" think "$thunk")
+mkdir -- "$2"
+"$fix" read-blob "$archive" | (cd "$2"; cpio -id --no-preserve-owner --no-absolute-filenames -m)

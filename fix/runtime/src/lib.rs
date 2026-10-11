@@ -1,9 +1,11 @@
 #![no_main]
 #![no_std]
 
+pub mod cli;
 pub mod evaluator;
 pub mod parallel_evaluator;
 pub mod preprocessor;
+pub mod repository;
 pub mod runtime;
 mod scheduler;
 pub mod stdlib;

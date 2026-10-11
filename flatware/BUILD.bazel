@@ -24,6 +24,7 @@ rust_binary(
 
 wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
 
+
 flatware_run(name = "run")
 
 fix_rust_program(name = "cpio", alloc = True, artifact_visibility = ["//visibility:public"])

@@ -3,7 +3,7 @@ load("//build:defs.bzl", "GUEST_ONLY", "kernel_program", "kernel_test")
 
 package(default_visibility = ["//visibility:private"])
 
-exports_files(["etc/memmap.ld"], visibility = ["//flatware:__subpackages__"])
+exports_files(["etc/memmap.ld", "src/preprocessor.rs"], visibility = ["//flatware:__subpackages__", "//fix/cli:__pkg__"])
 
 DEPS = [
     "//arca/api",
@@ -49,26 +49,20 @@ rust_library(
             "//programs/flatware:__subpackages__",
             "//coupon:__pkg__",
             "//flatware:__pkg__",
-            "//fix/sdk:__pkg__",
+            "//fix:__subpackages__",
         ],
         image_name = "test_image" if test else "image_elf",
         srcs = [
             "src/main.rs",
             "src/testing.rs",
         ],
-        compile_data = ["//programs/fix/parser:parser_elf"],
+        compile_data = ["//programs/fix/parser:parser_elf"] if test else [],
         crate_name = "fix",
         crate_root = "src/main.rs",
         linker_script = "etc/memmap.ld",
         proc_macro_deps = ["//tools/macros"],
-        rustc_env = {"FIX_PARSER": "$(execpath //programs/fix/parser:parser_elf)"},
+        rustc_env = {"FIX_PARSER": "$(execpath //programs/fix/parser:parser_elf)"} if test else {},
         deps = [":runtime"] + DEPS,
     )
     for test, rule in [(False, kernel_program), (True, kernel_test)]
 ]
-
-alias(
-    name = "fix",
-    visibility = ["//visibility:public"],
-    actual = ":image",
-)

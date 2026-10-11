@@ -1,6 +1,6 @@
-load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_test")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
-load("//build:defs.bzl", "WASM", "fix_procedure", "vm_test", "wat_library", "wat_module")
+load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test", "wat_library", "wat_module")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -16,14 +16,13 @@ genrule(
     cmd = "cp $< $@",
 )
 
-vm_test(
+fix_script_test(
     name = "slowaddblob_test",
     size = "large",
     timeout = "short",
-    args = ["eval", "slowaddblob.fix"],
+    script = "slowaddblob.fix",
     data = ["slowaddblob.fix", ":slowaddblob_fixture"],
-    expected_output = ["as a u64: 5"],
-    kernel = "//fix/runtime:image_elf",
+    expected = "0500000000000000",
     tags = ["kvm", "local"],
 )
 
@@ -57,6 +56,7 @@ fix_procedure(
 test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
+        ":cli_test",
         ":mapreduce_cases_test",
         ":addblob_extended_test",
         ":addblob_test",
@@ -72,11 +72,11 @@ test_suite(
 wat_module(name = "reduction_subtract_wasm", src = "reduction_subtract.wat")
 fix_procedure(name = "reduction_subtract", wasm = ":reduction_subtract_wasm")
 
-vm_test(
+fix_script_test(
     name = "mapreduce_cases_test",
     size = "large",
     timeout = "short",
-    args = ["eval", "mapreduce_cases.fix"],
+    script = "mapreduce_cases.fix",
     data = [
         "mapreduce_cases.fix",
         "//programs/fix:mapreduce_elf",
@@ -84,8 +84,7 @@ vm_test(
         ":reduction_subtract",
         ":check_result_native",
     ],
-    expected_output = ["as a u64: 42"],
-    kernel = "//fix/runtime:image_elf",
+    expected = "2a00000000000000",
     tags = ["kvm", "local"],
 )
 
@@ -110,29 +109,40 @@ rust_shared_library(
 fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 2, tables = 2)
 
 [
-    vm_test(
+    fix_script_test(
         name = name,
         size = "large",
         timeout = "short",
-        args = args,
-        data = [args[1]] + data,
-        expected_output = expected,
-        kernel = "//fix/runtime:image_elf",
+        script = script,
+        jobs = jobs,
+        data = [script] + data,
+        expected = expected,
         tags = ["kvm", "local"],
     )
-    for name, args, data, expected in [
-        ("addblob_test", ["eval", "addblob.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 6"]),
-        ("addblob_extended_test", ["eval", "addblob_extended.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 136"]),
-        ("selection_test", ["eval", "selection.fix"], [], ["result is a Blob: [104]"]),
-        ("parallel_addblob_test", ["parallel_eval", "addblob.fix"], ["//programs/fix:addblob_elf"], ["as a u64: 6"]),
-        ("shell_test", ["eval", "shell.fix"], [":shell_native"], ["as a u64: 42"]),
-        ("sdk_expressions_test", ["eval", "sdk_expressions.fix"], [":sdk_expressions_native"], ["as a u64: 42"]),
-        ("bptree_get_test", ["eval", "bptree_get.fix"], ["//programs/fix:bptree_get_elf"], ["result is a Blob: [54]"]),
-        ("bptree_get_n_test", ["eval", "bptree_get_n.fix"], ["//programs/fix:bptree_get_n_elf"], ["result is a Blob: [53]"]),
-        ("map_test", ["eval", "map.fix"], ["//programs/fix:addblob_elf", "//programs/fix:map_elf"], ["result is a Blob: [10, 0, 0, 0, 0, 0, 0, 0]"]),
-        ("mapreduce_test", ["eval", "mapreduce.fix"], ["//programs/fix:addblob_elf", "//programs/fix:count_words_elf", "//programs/fix:mapreduce_elf"], ["result is a Blob: [4, 0, 0, 0, 0, 0, 0, 0]"]),
-        ("count_words_test", ["eval", "count_words.fix"], ["//programs/fix:count_words_elf"], ["result is a Blob: [2, 0, 0, 0, 0, 0, 0, 0]"]),
-        ("fib_test", ["eval", "fib.fix"], ["//programs/fix:addblob_elf", "//programs/fix:fib_elf"], ["result is a Blob: [13, 0, 0, 0, 0, 0, 0, 0]"]),
-        ("wat_linkage_test", ["eval", "wat_linkage.fix"], [":wat_linkage_native"], ["as a u64: 42"]),
+    for name, script, jobs, data, expected in [
+        ("addblob_test", "addblob.fix", 1, ["//programs/fix:addblob_elf"], "0600000000000000"),
+        ("addblob_extended_test", "addblob_extended.fix", 1, ["//programs/fix:addblob_elf"], "8800000000000000"),
+        ("selection_test", "selection.fix", 1, [], "68"),
+        ("parallel_addblob_test", "addblob.fix", 2, ["//programs/fix:addblob_elf"], "0600000000000000"),
+        ("shell_test", "shell.fix", 1, [":shell_native"], "2a00000000000000"),
+        ("sdk_expressions_test", "sdk_expressions.fix", 1, [":sdk_expressions_native"], "2a00000000000000"),
+        ("bptree_get_test", "bptree_get.fix", 1, ["//programs/fix:bptree_get_elf"], "36"),
+        ("bptree_get_n_test", "bptree_get_n.fix", 1, ["//programs/fix:bptree_get_n_elf"], "35"),
+        ("map_test", "map.fix", 1, ["//programs/fix:addblob_elf", "//programs/fix:map_elf"], "0a00000000000000"),
+        ("mapreduce_test", "mapreduce.fix", 1, ["//programs/fix:addblob_elf", "//programs/fix:count_words_elf", "//programs/fix:mapreduce_elf"], "0400000000000000"),
+        ("count_words_test", "count_words.fix", 1, ["//programs/fix:count_words_elf"], "0200000000000000"),
+        ("fib_test", "fib.fix", 1, ["//programs/fix:addblob_elf", "//programs/fix:fib_elf"], "0d00000000000000"),
+        ("wat_linkage_test", "wat_linkage.fix", 1, [":wat_linkage_native"], "2a00000000000000"),
     ]
 ]
+
+rust_test(
+    name = "cli_test",
+    srcs = ["cli.rs"],
+    edition = "2024",
+    data = ["//flatware:cpio_elf", "//flatware:normalize_elf", "//programs/fix:compose_elf", "//programs/fix/json:json_elf", "//fix/cli:fix", "//fix/cli:commands", "//programs/fix/parser:parser_elf", "//programs/fix:identity_elf"],
+    rustc_env = {"FIX_CPIO": "$(rootpath //flatware:cpio_elf)", "FIX_NORMALIZE": "$(rootpath //flatware:normalize_elf)", "FIX_COMPOSE": "$(rootpath //programs/fix:compose_elf)", "FIX_JSON": "$(rootpath //programs/fix/json:json_elf)", "FIX_CLI": "$(rootpath //fix/cli:fix)", "FIX_COMMANDS": "$(rootpath //fix/cli:commands)", "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)", "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)"},
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local"],
+)

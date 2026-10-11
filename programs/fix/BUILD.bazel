@@ -1,5 +1,5 @@
 load(":defs.bzl", "FIX_PROGRAMS", "fix_rust_program", "fix_wat_program")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//build:defs.bzl", "fix_script_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -10,26 +10,27 @@ fix_rust_program(name = "map")
 fix_rust_program(name = "compose", artifact_visibility = ["//visibility:public"])
 fix_rust_program(name = "mapreduce")
 fix_rust_program(name = "fib")
+alias(name = "fib_module", actual = ":fib_postprocess", visibility = ["//tests:__pkg__"])
 fix_rust_program(name = "count_words", alloc = True)
 fix_rust_program(name = "bptree_get", alloc = True)
 fix_rust_program(name = "bptree_get_n", alloc = True)
 
-sh_test(
+fix_script_test(
     name = "tests",
     visibility = ["//:__pkg__"],
-    srcs = ["tests.sh"],
-    args = ["$(rootpath :addblob)"],
-    data = [":addblob"],
+    script = "programs.fix",
+    data = ["fixtures/programs.fix", ":addblob_elf", "//tests/fix:check_result_native"],
+    expected = "2a00000000000000",
     size = "large",
     timeout = "short",
     tags = ["kvm", "local"],
 )
 
-sh_test(
+fix_script_test(
     name = "run_test",
-    srcs = ["run_test.sh"],
-    args = ["$(rootpath //programs/fix/c:blob)", "$(rootpath //programs/fix/c:add)"],
-    data = ["//programs/fix/c:blob", "//programs/fix/c:add"],
+    script = "c.fix",
+    data = ["fixtures/c.fix", "//programs/fix/c:blob_elf", "//programs/fix/c:add_elf", "//tests/fix:check_result_native"],
+    expected = "2a00000000000000",
     size = "large",
     timeout = "short",
     tags = ["kvm", "local"],

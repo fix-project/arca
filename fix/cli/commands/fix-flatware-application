@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or not args:
+    print("fix flatware-application EXECUTABLE [ARGS...]", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+
+
+def fix(*args, input=None):
+    return subprocess.run([cli, *args], input=input, stdout=subprocess.PIPE, check=True).stdout.decode().rstrip("\n")
+
+
+empty = fix("create-tree", "-", input=b"")
+values = {
+    "program": fix("resolve", args[0]),
+    "environment": fix("resolve", os.environ.get("FIX_ENV", empty)),
+    "fds": fix("resolve", os.environ.get("FIX_FDS", empty)),
+    "input": fix("create-blob", "-"),
+}
+streams = [["stdin", [], {"binding": "input"}], ["stdout", [], ""], ["stderr", [], ""]]
+descriptors = [{"create-strict-encode": {"create-selection-thunk": [{"binding": "fds"}, {"u64": i}]}}
+               for i in range(int(fix("len", values["fds"])))]
+invocation = {"create-application-thunk": [
+    {"binding": "program"}, [os.environ.get("FIX_ARGV0", args[0]), *args[1:]],
+    {"binding": "environment"}, streams + descriptors, {"u64": 0}, {"u64": 0},
+]}
+pairs = b"".join(key.encode() + b"\0" + value.encode() + b"\0" for key, value in values.items())
+bindings = fix("create-tree", "--bindings", "-", input=pairs)
+print(fix("json-import", "-", bindings, input=json.dumps(invocation).encode()))

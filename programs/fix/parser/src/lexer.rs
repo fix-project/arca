@@ -61,9 +61,32 @@ impl<'a> Lexer<'a> {
             '\n' => Token::Newline,
             '$' => Token::Primitive(self.take(String::new(), Self::is_identifier)),
             '"' => {
-                let text = self.take(String::new(), |ch| ch != '"');
-                if self.characters.next() != Some('"') {
-                    return Err(String::from("unterminated string"));
+                let mut text = String::new();
+                loop {
+                    let character = self.characters.next().ok_or("unterminated string")?;
+                    match character {
+                        '"' => break,
+                        '\\' => text.push(
+                            match self.characters.next().ok_or("unterminated escape")? {
+                                '"' => '"',
+                                '\\' => '\\',
+                                '/' => '/',
+                                'n' => '\n',
+                                'r' => '\r',
+                                't' => '\t',
+                                'b' => '\u{8}',
+                                'f' => '\u{c}',
+                                'u' => {
+                                    let digits: String = self.characters.by_ref().take(4).collect();
+                                    let code = u32::from_str_radix(&digits, 16)
+                                        .map_err(|error| error.to_string())?;
+                                    char::from_u32(code).ok_or("invalid Unicode escape")?
+                                }
+                                _ => return Err(String::from("invalid string escape")),
+                            },
+                        ),
+                        character => text.push(character),
+                    }
                 }
                 Token::String(text)
             }
@@ -114,6 +137,6 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn is_identifier(character: char) -> bool {
-        character.is_ascii_alphabetic() || character == '_'
+        character.is_ascii_alphanumeric() || character == '_'
     }
 }
