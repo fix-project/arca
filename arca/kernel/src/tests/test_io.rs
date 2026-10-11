@@ -49,3 +49,37 @@ fn file_io_lends_unique_and_shared_memory() {
     assert_eq!(file.write(&shared.slice(..0)), 0);
     file.close();
 }
+
+#[test]
+fn whole_file_io() {
+    use crate::host::fs;
+    use crate::prelude::*;
+    use common::protocol::control::{ErrorKind, FileMode};
+
+    let path = "whole-file-io-test";
+    for length in [128 * 1024 + 1, 31, 0] {
+        let bytes: Vec<_> = (0..length).map(|index| index as u8).collect();
+        fs::write(path, &bytes).unwrap();
+        assert!(fs::exists(path).unwrap());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(
+        fs::write_with(
+            path,
+            b"replacement",
+            FileMode {
+                write: true,
+                create_new: true,
+                ..FileMode::default()
+            }
+        ),
+        Err(ErrorKind::AlreadyExists)
+    );
+    assert!(fs::read(path).unwrap().is_empty());
+    fs::remove_file(path).unwrap();
+    assert!(!fs::exists(path).unwrap());
+    assert_eq!(fs::read(path), Err(ErrorKind::NotFound));
+    fs::symlink("missing-whole-file-io-test", path).unwrap();
+    assert!(!fs::exists(path).unwrap());
+    fs::remove_file(path).unwrap();
+}

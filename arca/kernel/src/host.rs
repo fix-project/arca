@@ -105,6 +105,19 @@ pub mod os {
         };
         args
     }
+
+    pub fn set_current_dir(path: &str) -> Result<(), control::ErrorKind> {
+        let mut binding = crate::pipe::HOST.lock();
+        match binding
+            .get_mut()
+            .unwrap()
+            .request(&control::Request::SetCurrentDirectory(path.into()))
+        {
+            control::Response::Ack => Ok(()),
+            control::Response::Err(error) => Err(error.into()),
+            _ => Err(control::ErrorKind::Other),
+        }
+    }
 }
 
 use super::pipe::HostPipe;
@@ -240,6 +253,7 @@ pub mod net {
 pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
+    use alloc::{string::String, vec, vec::Vec};
     use common::buffer::Buffer;
     pub use common::protocol::file::Whence;
     use common::{
@@ -265,6 +279,121 @@ pub mod fs {
         }
     }
 
+    fn request(request: control::Request) -> Result<control::Response, ErrorKind> {
+        request_serialized(&request)
+    }
+
+    fn request_serialized(request: &impl serde::Serialize) -> Result<control::Response, ErrorKind> {
+        let mut binding = crate::pipe::HOST.lock();
+        match binding.get_mut().unwrap().request_serialized(request) {
+            control::Response::Err(e) => Err(e.into()),
+            response => Ok(response),
+        }
+    }
+
+    fn ack(request_value: control::Request) -> Result<(), ErrorKind> {
+        match request(request_value)? {
+            control::Response::Ack => Ok(()),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn is_directory(path: &str) -> Result<bool, ErrorKind> {
+        match request(control::Request::IsDirectory(path.into()))? {
+            control::Response::Bool(value) => Ok(value),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn exists(path: &str) -> Result<bool, ErrorKind> {
+        match request(control::Request::Exists(path.into()))? {
+            control::Response::Bool(value) => Ok(value),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn read(path: &str) -> Result<Vec<u8>, ErrorKind> {
+        let mut bytes = vec![0; 4096];
+        loop {
+            let mut buffer = crate::allocator::buffer(bytes);
+            let response = request_serialized(&control::Request::ReadFile(
+                path.into(),
+                buffer.slice_mut(..),
+            ))?;
+            bytes = buffer.into_inner();
+            let control::Response::Length(length) = response else {
+                return Err(ErrorKind::Other);
+            };
+            if length <= bytes.len() {
+                bytes.truncate(length);
+                return Ok(bytes);
+            }
+            let length = length.max(bytes.len().saturating_mul(2));
+            bytes
+                .try_reserve(length - bytes.len())
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            bytes.resize(length, 0);
+        }
+    }
+
+    pub fn write(path: &str, bytes: &[u8]) -> Result<(), ErrorKind> {
+        write_with(
+            path,
+            bytes,
+            FileMode {
+                write: true,
+                create: true,
+                truncate: true,
+                ..FileMode::default()
+            },
+        )
+    }
+
+    pub fn write_with(path: &str, bytes: &[u8], mode: FileMode) -> Result<(), ErrorKind> {
+        let buffer = crate::allocator::buffer(Vec::from(bytes));
+        match request_serialized(&control::Request::WriteFile(
+            path.into(),
+            buffer.slice(..),
+            mode,
+        ))? {
+            control::Response::Ack => Ok(()),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn read_dir(path: &str) -> Result<Vec<String>, ErrorKind> {
+        match request(control::Request::ReadDirectory(path.into()))? {
+            control::Response::Names(names) => Ok(names),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn rename(from: &str, to: &str) -> Result<(), ErrorKind> {
+        ack(control::Request::Rename(from.into(), to.into()))
+    }
+
+    pub fn symlink(target: &str, path: &str) -> Result<(), ErrorKind> {
+        ack(control::Request::Symlink(target.into(), path.into()))
+    }
+
+    pub fn canonicalize(path: &str) -> Result<String, ErrorKind> {
+        match request(control::Request::Canonicalize(path.into()))? {
+            control::Response::Path(path) => Ok(path),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn read_link(path: &str) -> Result<String, ErrorKind> {
+        match request(control::Request::ReadLink(path.into()))? {
+            control::Response::Path(target) => Ok(target),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
+    pub fn remove_file(path: &str) -> Result<(), ErrorKind> {
+        ack(control::Request::RemoveFile(path.into()))
+    }
+
     impl File {
         pub fn open(
             path: &str,
@@ -274,18 +403,29 @@ pub mod fs {
             append: bool,
             truncate: bool,
         ) -> Result<File, ErrorKind> {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            match host.request(&control::Request::Open(
-                path.into(),
+            Self::open_with(
+                path,
                 FileMode {
                     read,
                     write,
                     create,
                     append,
                     truncate,
+                    create_new: false,
                 },
-            )) {
+            )
+        }
+
+        pub fn open_with(path: &str, mode: FileMode) -> Result<File, ErrorKind> {
+            Self::from_response(request(control::Request::Open(path.into(), mode))?)
+        }
+
+        pub fn stdio(stream: control::StandardStream) -> Result<File, ErrorKind> {
+            Self::from_response(request(control::Request::Stdio(stream))?)
+        }
+
+        fn from_response(response: control::Response) -> Result<File, ErrorKind> {
+            match response {
                 control::Response::Pipe(id) => unsafe {
                     Ok(File {
                         pipe: FilePipe::new(get_pipe(id)),
@@ -302,14 +442,21 @@ pub mod fs {
         where
             Buffer<B>: DerefMut<Target = [u8]>,
         {
-            let file::Response::Length(len) = self
+            self.try_read(buf).expect("host file read failed")
+        }
+
+        pub fn try_read<B>(&mut self, buf: &mut Buffer<B>) -> Result<usize, ErrorKind>
+        where
+            Buffer<B>: DerefMut<Target = [u8]>,
+        {
+            match self
                 .pipe
                 .request_serialized(&file::Request::Read(buf.slice_mut(..)))
-            else {
-                panic!("bad response");
-            };
-            assert!(len <= buf.len());
-            len
+            {
+                file::Response::Length(len) if len <= buf.len() => Ok(len),
+                file::Response::Err(e) => Err(e.into()),
+                _ => Err(ErrorKind::Other),
+            }
         }
 
         pub fn read_exact<B>(&mut self, buf: &mut Buffer<B>) -> usize
@@ -331,14 +478,46 @@ pub mod fs {
         where
             Buffer<B>: Deref<Target = [u8]>,
         {
-            let file::Response::Length(len) = self
+            self.try_write(buf).expect("host file write failed")
+        }
+
+        pub fn try_write<B>(&mut self, buf: &Buffer<B>) -> Result<usize, ErrorKind>
+        where
+            Buffer<B>: Deref<Target = [u8]>,
+        {
+            match self
                 .pipe
                 .request_serialized(&file::Request::Write(buf.slice(..)))
-            else {
-                panic!("bad response");
-            };
-            assert!(len <= buf.len());
-            len
+            {
+                file::Response::Length(len) if len <= buf.len() => Ok(len),
+                file::Response::Err(e) => Err(e.into()),
+                _ => Err(ErrorKind::Other),
+            }
+        }
+
+        pub fn try_read_to_end(&mut self) -> Result<Vec<u8>, ErrorKind> {
+            let mut bytes = Vec::new();
+            let mut buffer = crate::allocator::buffer(vec![0; 65536]);
+            loop {
+                let len = self.try_read(&mut buffer)?;
+                if len == 0 {
+                    return Ok(bytes);
+                }
+                bytes.extend_from_slice(&buffer[..len]);
+            }
+        }
+
+        pub fn try_write_all(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+            let buffer = crate::allocator::buffer(Vec::from(bytes));
+            let mut offset = 0;
+            while offset < buffer.len() {
+                let len = self.try_write(&buffer.slice(offset..))?;
+                if len == 0 {
+                    return Err(ErrorKind::Other);
+                }
+                offset += len;
+            }
+            Ok(())
         }
 
         pub fn write_exact<B>(&mut self, buf: &Buffer<B>) -> usize

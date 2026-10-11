@@ -14,6 +14,7 @@ pub enum Response {
     Length(usize),
     Offset(u64),
     Ack,
+    Err(super::control::IoErrorKind),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
