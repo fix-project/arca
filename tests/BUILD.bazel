@@ -50,3 +50,16 @@ rust_clippy_test(
 
 test_suite(name = "format", tags = ["manual"], tests = [":rust_format", "//fix/sdk:format_test"])
 test_suite(name = "lint", tags = ["manual"], tests = [":rust_lint", "//fix/sdk:lint"])
+
+
+sh_test(
+    name = "compile_test",
+    srcs = ["compile_test.sh"],
+    args = ["$(rootpath " + target + ")" for target in [
+        "//fix", "//programs/fix:fib_module", "//programs/fix:addblob_elf", "//bootstrap:repository_archive",
+    ]],
+    data = ["//fix", "//programs/fix:fib_module", "//programs/fix:addblob_elf", "//bootstrap:repository_archive"],
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local", "manual"],
+)

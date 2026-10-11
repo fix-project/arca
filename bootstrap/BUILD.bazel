@@ -1,5 +1,5 @@
 load(":cmake.bzl", "MAPS", "patched_sources", "source_build")
-load(":defs.bzl", "wasm_tools")
+load(":defs.bzl", "wasm_tools", "repository_archive")
 load(":llvm.bzl", "llvm_bundle", "llvm_resources")
 load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
 load(":native.bzl", native_generation = "generation")
@@ -12,7 +12,7 @@ exports_files(["toolchain-tags.patch"])
 bool_flag(name = "debug", build_setting_default = False)
 config_setting(name = "debug_enabled", flag_values = {":debug": "true"})
 
-exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "README.md"])
+exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "repository.sh", "README.md"])
 
 HOST = "$${EXT_BUILD_ROOT}/$(execpath :host_llvm)"
 SYSROOT = "$${EXT_BUILD_ROOT}/$(execpath :wasi_sysroot)"
@@ -179,4 +179,6 @@ source_build(
 wasm_tools(name = "stage0", tags = ["manual"])
 native_generation("stage1")
 
-alias(name = "bootstrap", actual = ":stage1", tags = ["manual"])
+alias(name = "bootstrap", actual = ":repository_archive", tags = ["manual"])
+
+repository_archive(name = "repository_archive", tags = ["manual"])
