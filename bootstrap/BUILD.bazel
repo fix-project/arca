@@ -3,16 +3,21 @@ load(":defs.bzl", "wasm_tools", "repository_archive")
 load(":llvm.bzl", "llvm_bundle", "llvm_resources")
 load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
 load(":native.bzl", native_generation = "generation")
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load(":fix.bzl", "generation", "verify")
+load("//flatware:build.bzl", "flatware_directory")
+load("//build:fix.bzl", "fix_blob")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(["toolchain-tags.patch"])
 
+int_flag(name = "jobs", build_setting_default = 0)
+int_flag(name = "memory", build_setting_default = 0)
 bool_flag(name = "debug", build_setting_default = False)
 config_setting(name = "debug_enabled", flag_values = {":debug": "true"})
 
-exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "repository.sh", "README.md"])
+exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "fix.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "repository.sh", "README.md"])
 
 HOST = "$${EXT_BUILD_ROOT}/$(execpath :host_llvm)"
 SYSROOT = "$${EXT_BUILD_ROOT}/$(execpath :wasi_sysroot)"
@@ -177,8 +182,19 @@ source_build(
 )
 
 wasm_tools(name = "stage0", tags = ["manual"])
+flatware_directory(name = "usr_graph", src = ":stage0", subdir = "usr", guest_path = "/usr", tags = ["manual"])
+alias(name = "usr", actual = ":usr_graph", tags = ["manual"])
+flatware_directory(name = "shell_headers_graph", inputs = {"//fix/shell:headers": "", "//fix/shell:wasm_rt": "wasm-rt.c", "//fix/shell:shell": "libfixshell.a", "//fix/shell:memmap": "memmap.ld"}, guest_path = "/include", tags = ["manual"])
+alias(name = "shell_headers", actual = ":shell_headers_graph", tags = ["manual"])
+[fix_blob(name = "stage1_" + command + "_value", src = ":stage1_" + command + "_link", tags = ["manual"]) for command in ["clang", "wasm2c", "wasm-merge"]]
 native_generation("stage1")
+generation("stage2", previous = "stage1", jobs = ":jobs", memory = ":memory")
+generation("stage3", previous = "stage2", jobs = ":jobs", memory = ":memory")
+
+verify(name = "verify1", left = "stage1", right = "stage2")
+verify(name = "verify2", left = "stage2", right = "stage3")
 
 alias(name = "bootstrap", actual = ":repository_archive", tags = ["manual"])
+alias(name = "verify", actual = ":verify1", tags = ["manual"])
 
 repository_archive(name = "repository_archive", tags = ["manual"])
