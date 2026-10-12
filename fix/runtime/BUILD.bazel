@@ -51,6 +51,7 @@ rust_library(
             "//programs/fix:__subpackages__",
             "//programs/flatware:__subpackages__",
             "//coupon:__pkg__",
+            "//flatware:__pkg__",
             "//fix/sdk:__pkg__",
         ],
         image_name = "test_image" if test else "image_elf",

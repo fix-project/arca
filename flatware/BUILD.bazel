@@ -2,6 +2,7 @@ load("//flatware/runner:defs.bzl", "flatware_run")
 load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("//build:defs.bzl", "wat_module")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//programs/fix:defs.bzl", "fix_rust_program")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -24,3 +25,6 @@ rust_binary(
 wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
 
 flatware_run(name = "run")
+
+fix_rust_program(name = "cpio", alloc = True, artifact_visibility = ["//visibility:public"])
+fix_rust_program(name = "normalize", artifact_visibility = ["//visibility:public"])
