@@ -67,3 +67,20 @@ does not consume memory. Module instances are allocated using wasm2c's reported
 size and alignment.
 The standalone utilities in `//programs/flatware` use precompiled modules through
 the same runner.
+
+## Archive conversion
+
+The `cpio` program takes one argument: a `newc` or `crc` Blob expands into a
+Flatware directory descriptor, and a directory descriptor serializes to `newc`.
+It supports directories, regular files, and symlinks, including hard-link data
+stored on a later archive entry. GNU `crc` checksums are verified for regular
+files. Modification times retain whole-second precision; missing access and
+change times are zero. Flatware does not represent ownership, permissions, or
+hard-link identities. Export uses uid/gid zero and modes 0755 for directories,
+0644 for files, and 0777 for symlinks.
+
+`flatware-normalize` takes one descriptor, recursively resets all three timestamps
+to zero and link counts to one, and preserves names, devices, types, sizes, and
+file-content handles. Directory children are recursive Fix applications, allowing
+parallel evaluation without a Rust allocator.
+

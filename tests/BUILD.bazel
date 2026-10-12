@@ -24,7 +24,7 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//programs/fix:compose_wasm", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
+CHECKS = HOST + GUEST + ["//flatware:cpio_wasm", "//flatware:normalize_wasm", "//programs/fix:compose_wasm", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 
