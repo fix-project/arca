@@ -18,10 +18,18 @@ impl Runtime for FixOnArca {
     fn execute(&self, combination: Tree) -> Handle {
         println!("applying   {}", Handle::from(combination));
         let contents = self.storage().get_tree(combination).unwrap();
-        let procedure = contents.first().expect("empty combination");
+        let mut procedure = *contents.first().expect("empty combination");
+        while let Ok(tree) = Tree::try_from(procedure) {
+            procedure = *self
+                .storage()
+                .get_tree(tree)
+                .unwrap()
+                .first()
+                .expect("empty callable tree");
+        }
         let elf = self
             .storage()
-            .get_blob(Blob::try_from(*procedure).expect("procedure must be a blob object"))
+            .get_blob(Blob::try_from(procedure).expect("procedure must be a blob object"))
             .unwrap();
         let f: Function = common::elfloader::load_elf(&elf).unwrap();
         let blob = pack_handle(combination);

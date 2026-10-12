@@ -7,6 +7,7 @@ exports_files(glob(["fixtures/*.fix"]))
 
 [fix_wat_program(name = name) for name in FIX_PROGRAMS]
 fix_rust_program(name = "map")
+fix_rust_program(name = "compose", artifact_visibility = ["//visibility:public"])
 fix_rust_program(name = "mapreduce")
 fix_rust_program(name = "fib")
 fix_rust_program(name = "count_words", alloc = True)
