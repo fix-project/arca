@@ -1,7 +1,8 @@
 ENTRY(_start)
+PROVIDE(__stack_size = 8M);
 
 MEMORY {
-  memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 4M
+  memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 0x100000000
 }
 
 SECTIONS {
@@ -27,11 +28,14 @@ SECTIONS {
   {
     . = ALIGN(16);
     _sgot = .;
-    *(.got*)
-    *(.got.plt)
+    *(.got)
     . = ALIGN(16);
     _egot = .;
   } > memory 
+  .got.plt :
+  {
+    *(.got.plt)
+  } > memory
   .data :
   {
     . = ALIGN(16);
@@ -53,11 +57,11 @@ SECTIONS {
   {
     . = ALIGN(4K);
     __stack_bottom = .;
-    . = . + 2M;
+    . = . + __stack_size;
     __stack_top = .;
   } > memory 
   __heap_start = ALIGN(__stack_top, 2M);
-  __heap_end = ORIGIN(memory) + 0x100000000;
+  __heap_end = ORIGIN(memory) + LENGTH(memory);
   /DISCARD/ :
   {
     *(.eh_frame*)

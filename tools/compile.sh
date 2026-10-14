@@ -10,7 +10,7 @@ case "$mode" in
         "$checker" "$output" "$output"
         ;;
     translate)
-        "$1" -n module --enable-multi-memory --enable-exceptions "$2" -o "$3"
+        "$1" -n module "$2" -o "$3"
         ;;
     link|compile)
         compiler=$1 flags_file=$2 memmap=$3 shell=$4 output=$5

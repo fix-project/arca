@@ -80,6 +80,18 @@ fn test_allocate_raw_and_used_size() {
 }
 
 #[test]
+fn large_buffers_release_their_allocations() {
+    let allocator = BuddyAllocatorImpl::new(1usize << 34);
+    let used_before = allocator.used_size();
+    for capacity in [(1usize << 30) + 1, (1usize << 31) + 1] {
+        let bytes = Vec::<u8, _>::with_capacity_in(capacity, &allocator);
+        assert!(bytes.capacity() >= capacity);
+        drop(bytes);
+        assert_eq!(allocator.used_size(), used_before);
+    }
+}
+
+#[test]
 // Verifying allocate_many_raw adds size to used_size, and free_many_raw subtracts it back, returning usage to the original amount.
 fn test_allocate_many_and_free_many() {
     use std::collections::BTreeSet;

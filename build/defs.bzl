@@ -62,7 +62,7 @@ def wat_module(name, src, out = None, relocatable = False, debug_names = False, 
         visibility = visibility,
         srcs = [src],
         outs = [out or name + (".o" if relocatable else ".wasm")],
-        cmd = "$(execpath //third_party:wat2wasm) --enable-multi-memory --enable-exceptions " +
+        cmd = "$(execpath //third_party:wat2wasm) " +
               ("--relocatable " if relocatable else "") + ("--debug-names " if debug_names else "") + "$< -o $@",
         tools = ["//third_party:wat2wasm"],
     )
