@@ -1,0 +1,5 @@
+alias(
+    name = "fix",
+    actual = "//fix/cli:fix",
+    visibility = ["//visibility:public"],
+)

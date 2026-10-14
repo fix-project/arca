@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or not 1 <= len(args) <= 2:
+    print("fix run SCRIPT [BINDINGS] (use - for stdin)", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+value = subprocess.check_output([cli, "parse", *args]).decode().strip()
+jobs = ["-j", os.environ["FIX_JOBS"]] if "FIX_JOBS" in os.environ else []
+sys.exit(subprocess.run([cli, "eval", *jobs, value]).returncode)

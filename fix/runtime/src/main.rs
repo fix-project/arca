@@ -4,14 +4,15 @@
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use fix::parallel_evaluator;
-use kernel::host::fs;
 use kernel::host::os;
 use kernel::prelude::*;
 
+#[cfg(test)]
 use fix::arca::FixOnArca;
+#[cfg(test)]
 use fix::*;
 
+#[cfg(test)]
 pub const PARSER: &[u8] = include_bytes!(env!("FIX_PARSER"));
 
 #[cfg(test)]
@@ -27,97 +28,32 @@ fn tests() {
 #[cfg_attr(test, allow(dead_code))]
 fn main() {
     let argv = os::argv();
+    let arguments = fix::cli::configure_directory(&argv[1..]).unwrap_or_else(|error| {
+        println!("fix: {error}");
+        kernel::exit(2);
+    });
 
-    // Subcommand dispatch: `fix init` | `fix eval <file>`.
-    match argv.get(1).map(String::as_str) {
-        Some("init") => init(),
-        Some("eval") => {
-            let path = argv.get(2).expect("fix eval: expected a command file");
-            eval_file(path)
+    match fix::cli::run(arguments) {
+        Ok(0) => (),
+        Ok(status) => kernel::exit(status),
+        Err(error) => {
+            println!("fix: {error}");
+            kernel::exit(2);
         }
-        // test to run the parallel evaluator
-        Some("parallel_eval") => {
-            let path = argv.get(2).expect("fix eval: expected a command file");
-            eval_file_parallel(path);
-        }
-        Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file> )"),
-        None => panic!("fix: expected a command (init | eval <file> "),
     }
 
     kernel::shutdown();
 }
 
-/// `fix init`: create the on-disk `.fix` store with its `objects/` and
-/// `labels/` subdirs. `mkdir` maps to host `create_dir_all`, so re-running on an
-/// existing store is harmless (matches git's "reinitialized existing repository").
-fn init() {
-    for dir in [".fix/objects", ".fix/labels"] {
-        if let Err(e) = fs::mkdir(dir) {
-            println!("fix init: failed to create {dir}: {e:?}");
-            kernel::exit(1);
-        }
-    }
-    println!("initialized empty fix store in .fix");
-}
-
-// Jennifer: tons of redundancy but I just didn't want to change original code,
-// in case errors showed up
-// the main change is just calling the parallel evaluator and how its passed in
-fn eval_file_parallel(path: &str) {
-    let file = preprocessor::read_file(path).unwrap();
-
-    let evaluator = parallel_evaluator::Evaluator::new(FixOnArca::default(), kernel::ncores());
-    let result = eval_parallel_program(core::str::from_utf8(&file).unwrap(), &evaluator);
-    evaluator.shutdown();
-
-    println!("handle:    {result}");
-    println!("Current handle is: {:?}", result);
-    if let Ok(blob) = fixhandle::Blob::try_from(result) {
-        let contents = evaluator.storage().get_blob(blob).unwrap();
-        println!("result is a Blob: {contents:?}");
-        if contents.len() == 8 {
-            let bytes: [u8; 8] = (*contents).try_into().unwrap();
-            println!("\tas a u64: {}", u64::from_le_bytes(bytes));
-        }
-    }
-}
-
-fn eval_parallel_program(
-    source: &str,
-    evaluator: &Arc<parallel_evaluator::Evaluator<FixOnArca>>,
-) -> Handle {
-    let processed = Preprocessor::new(source).preprocess().unwrap();
-    let parser: Handle = evaluator.storage().add_blob(PARSER).into();
-    let source = evaluator.storage().add_blob(processed.as_bytes());
-    let environment = stdlib::build_environment(evaluator.storage());
-    let combination = evaluator
-        .storage()
-        .add_tree(&[parser, source.into(), environment]);
-
-    evaluator.eval(combination.into_ref().application().strict().into())
-}
-
-// `fix eval <file>`: read command file and print result.
-fn eval_file(path: &str) {
-    let file = preprocessor::read_file(path).unwrap();
-    let evaluator = Evaluator::new(FixOnArca::default());
-    let result = eval_program(core::str::from_utf8(&file).unwrap(), &evaluator);
-
-    println!("handle:    {result}");
-    println!("Current handle is: {:?}", result);
-    if let Ok(blob) = fixhandle::Blob::try_from(result) {
-        let contents = evaluator.storage().get_blob(blob).unwrap();
-        println!("result is a Blob: {contents:?}");
-        if contents.len() == 8 {
-            let bytes: [u8; 8] = (*contents).try_into().unwrap();
-            println!("\tas a u64: {}", u64::from_le_bytes(bytes));
-        }
-    }
-}
-
-// parse, interpret, and evaluate source text.
+#[cfg(test)]
 fn eval_program(source: &str, evaluator: &Evaluator<FixOnArca>) -> Handle {
-    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let processed = Preprocessor::new(source)
+        .preprocess(|path| {
+            kernel::host::fs::File::open(path, true, false, false, false, false)
+                .and_then(|mut file| file.try_read_to_end())
+                .map_err(|error| format!("{error:?}"))
+        })
+        .unwrap();
     let parser: Handle = evaluator.storage().add_blob(PARSER).into();
     let source = evaluator.storage().add_blob(processed.as_bytes());
     let environment = stdlib::build_environment(evaluator.storage());

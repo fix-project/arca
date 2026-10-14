@@ -12,7 +12,9 @@ build --host_features=-supports_start_end_lib
 build --action_env=LIBCLANG_PATH
 build --action_env=BINDGEN_EXTRA_CLANG_ARGS
 build --verbose_failures
+build --local_resources=fix=1
 build --compilation_mode=dbg
 build:release --compilation_mode=opt
 test --test_output=errors
 test --test_tag_filters=-proof
+run --run_under="bash -c 'export PATH=\"$PWD/fix/cli/commands/bin:$PATH\"; cd \"$BUILD_WORKING_DIRECTORY\"; exec \"$@\"' --"

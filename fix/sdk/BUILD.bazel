@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
 load("//build:cc.bzl", "cc_object")
 load("//build:cc_checks.bzl", "cc_format", "cc_lint_test")
-load("//build:defs.bzl", "WASM", "fix_procedure", "vm_test", "wasm_library")
+load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test", "wasm_library")
 load(":defs.bzl", "SDK_WARNINGS", "fix_cc_wasm", "sdk_copts")
 
 package(default_visibility = ["//visibility:public"])
@@ -90,14 +90,13 @@ rust_shared_library(
 ]
 
 [
-    vm_test(
+    fix_script_test(
         name = name + "_test",
         size = "large",
         timeout = "short",
-        args = ["eval", name + ".fix"],
+        script = name + ".fix",
         data = [":" + name + "_native", "tests/" + name + ".fix"],
-        expected_output = ["as a u64: 42"],
-        kernel = "//fix/runtime:image_elf",
+        expected = "2a00000000000000",
         tags = ["kvm", "local"],
     )
     for name in ["c_bindings", "rust_files"]

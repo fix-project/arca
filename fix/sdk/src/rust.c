@@ -175,6 +175,7 @@ void fix_sdk_finish(void) {
     result = value;
     value = null();
 }
+void fix_sdk_restore(fix_handle input) { value = input; }
 void fix_sdk_input(fix_handle input) {
     if (!active) {
         focus = input;

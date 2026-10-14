@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+FIX=${FIX:-fix}
+if [[ ${1-} == --help || ${1-} == -h ]]; then
+    echo 'fix import ARCHIVE.tar[.gz]'
+    exit 0
+fi
+[[ $# == 1 ]] || { echo 'fix import ARCHIVE.tar[.gz]' >&2; exit 2; }
+repository=$("$FIX" repository)
+tar --directory "${repository%/*}" --extract --file "$1" --no-same-owner --no-same-permissions .fix

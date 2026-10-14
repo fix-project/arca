@@ -6,7 +6,7 @@ kernel.
 ## Build
 
 Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
-Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), and Bash.
+Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), Bash, GNU coreutils 9.3+, GNU cpio, and Python 3.
 Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
 ```sh
@@ -18,8 +18,10 @@ bazel test //tests:format //tests:lint
 bazel run //:format
 bazel run //programs/kernel:hello -- Ada
 bazel run //programs/arca:add -- tuple:word:2,word:3
+bazel run //fix -- init
+bazel run //fix -- import /path/to/bootstrap.tar.gz
 bazel run //programs/fix:addblob -- 2u64 3u64
-bazel run //fix/runtime:fix -- eval path/to/program.fix
+bazel run //fix -- run path/to/program.fix
 ```
 
 Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
@@ -35,9 +37,9 @@ calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
 sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
-The optional [bootstrap process](bootstrap/README.md) builds Wasm-to-ELF
-toolchains from pinned sources through Stage1. Shared caches use ordinary Bazel
-configuration.
+The optional [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
+toolchains from pinned sources and checks byte-identical generations. Shared
+caches use ordinary Bazel configuration.
 
 ## Formatting
 
@@ -66,5 +68,8 @@ bazel test --test_tag_filters=proof //coupon:proof
 ```
 
 See [coupon/proof/README.md](coupon/proof/README.md) for proof setup.
+
+The [Fix CLI](fix/runtime/README.md) also provides persistent object construction,
+reading, inspection, and labels.
 
 Licensed under [LGPL-2.1-or-later](LICENSE).

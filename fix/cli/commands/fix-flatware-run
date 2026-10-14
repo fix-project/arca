@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+help_requested = args[:1] in (["-h"], ["--help"])
+if help_requested or not args:
+    print("fix flatware-run EXECUTABLE [ARGS...]", file=sys.stdout if help_requested else sys.stderr)
+    sys.exit(0 if help_requested else 2)
+cli = os.environ.get("FIX", "fix")
+
+
+def fix(*args):
+    return subprocess.check_output([cli, *args]).decode().rstrip("\n")
+
+
+thunk = fix("flatware-application", *args)
+encoded = fix("create-strict-encode", thunk)
+jobs = ["-j", os.environ["FIX_JOBS"]] if "FIX_JOBS" in os.environ else []
+result = fix("eval", *jobs, encoded)
+if label := os.environ.get("FIX_RESULT_LABEL"):
+    fix("label", "set", label, result)
+fds, status = fix("read-tree", result).splitlines()
+descriptors = fix("read-tree", fds).splitlines()
+for descriptor, output in [(descriptors[1], sys.stdout.buffer), (descriptors[2], sys.stderr.buffer)]:
+    contents = fix("read-tree", descriptor).splitlines()[2]
+    subprocess.run([cli, "read-blob", contents], stdout=output, check=True)
+sys.exit(int(fix("read-blob", "--u32", status)) & 255)

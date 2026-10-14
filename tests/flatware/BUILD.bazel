@@ -2,7 +2,7 @@ load("//build:cc.bzl", "cc_object")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//build:defs.bzl", "vm_test", "wat_module")
+load("//build:defs.bzl", "fix_script_test", "wat_module")
 load("//flatware:defs.bzl", "flatware_procedure")
 
 package(default_visibility = ["//visibility:public"])
@@ -37,25 +37,23 @@ flatware_procedure(
     wasm = ":flatware_guest_return_wasm",
 )
 
-vm_test(
+fix_script_test(
     name = "flatware_guest_test",
     size = "large",
     timeout = "short",
-    args = ["eval", "flatware_guest.fix"],
+    script = "flatware_guest.fix",
     data = ["flatware_guest.fix", ":flatware_guest_native", "//tests/fix:check_result_native"],
-    expected_output = ["as a u64: 42"],
-    kernel = "//fix/runtime:image_elf",
+    expected = "2a00000000000000",
     tags = ["kvm", "local"],
 )
 
-vm_test(
+fix_script_test(
     name = "flatware_return_status_test",
     size = "large",
     timeout = "short",
-    args = ["eval", "flatware_return_status.fix"],
+    script = "flatware_return_status.fix",
     data = ["flatware_return_status.fix", ":flatware_guest_return_native"],
-    expected_output = ["result is a Blob: [0, 0, 0, 0]"],
-    kernel = "//fix/runtime:image_elf",
+    expected = "00000000",
     tags = ["kvm", "local"],
 )
 
@@ -80,15 +78,31 @@ rust_binary(
     rustc_flags = ["-Copt-level=2"],
 )
 
+flatware_procedure(name = "runner_probe_native", wasm = ":runner_probe_wasm")
+
 sh_test(
     name = "runner_test",
     srcs = ["runner_test.sh"],
     args = ["$(rootpath " + target + ")" for target in [
-        "//flatware:run",
-        ":runner_probe_wasm",
+        "//fix",
+        ":runner_probe_native",
+        "//programs/fix/json:json_elf",
+        "//flatware:cpio_elf",
+        "//flatware:normalize_elf",
+        "//programs/fix:compose_elf",
     ]],
-    data = [":runner_probe_wasm", "//flatware:run"],
+    data = [":runner_probe_native", "//fix", "//programs/fix/json:json_elf", "//flatware:cpio_elf", "//flatware:normalize_elf", "//programs/fix:compose_elf"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local"],
+)
+
+sh_test(
+    name = "compile_test",
+    srcs = ["compile_test.sh"],
+    args = ["$(rootpath //fix)", "$(rootpath :flatware_guest_return_wasm)", "$(rootpath //bootstrap:repository_archive)"],
+    data = ["//fix", ":flatware_guest_return_wasm", "//bootstrap:repository_archive"],
+    size = "large",
+    timeout = "long",
+    tags = ["kvm", "local", "manual"],
 )
