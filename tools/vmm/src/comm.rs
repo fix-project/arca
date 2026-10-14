@@ -6,6 +6,7 @@ use kvm_ioctls::VmFd;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -31,13 +32,14 @@ pub fn new_pipe(
     vm: &VmFd,
     len: usize,
     next_pipe_idx: &Arc<AtomicUsize>,
+    doorbell: &HostToVMDoorBell,
 ) -> (common::pipe::Pipe<VMToHostDoorBell>, GuestPipe) {
     let pipe_idx = next_pipe_idx.fetch_add(1, std::sync::atomic::Ordering::Release);
     let (rx_avail_vm, rx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2);
     let (tx_avail_vm, tx_avail_waiter) = new_vm_to_host_door_bell(vm, pipe_idx as u64 * 2 + 1);
 
-    let rx_avail_host = HostToVMDoorBell::new(vm);
-    let tx_avail_host = HostToVMDoorBell::new(vm);
+    let rx_avail_host = doorbell.clone();
+    let tx_avail_host = doorbell.clone();
 
     let (p0, p1) = common::pipe::pipe(len, rx_avail_vm, tx_avail_vm, rx_avail_host, tx_avail_host);
     let p1 = GuestPipe::new(p1, rx_avail_waiter, tx_avail_waiter);
@@ -47,6 +49,7 @@ pub fn new_pipe(
 pub fn control_thread(
     vm: Arc<VmFd>,
     next_pipe_idx: Arc<AtomicUsize>,
+    doorbell: HostToVMDoorBell,
     argv: Vec<String>,
     mut pipe: ControlPipe,
 ) {
@@ -56,42 +59,97 @@ pub fn control_thread(
             Request::GetArgs => Response::Args(argv.clone()),
             Request::Exit(code) => std::process::exit(code),
             Request::Open(path, mode) => {
-                let f = OpenOptions::new()
-                    .read(mode.read)
-                    .write(mode.write)
-                    .create(mode.create)
-                    .append(mode.append)
-                    .truncate(mode.truncate)
-                    .open(path);
-                match f {
-                    Ok(f) => {
-                        let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
-                        std::thread::spawn(move || {
-                            // The kernel holds each buffer loan until the response arrives.
-                            unsafe { file_thread(f, FilePipe::new(q)) };
-                        });
-                        Response::Pipe(decompose_pipe(p))
+                let f = open_file(&path, mode);
+                file_response(f, &vm, &next_pipe_idx, &doorbell)
+            }
+            Request::Exists(path) => match std::fs::exists(path) {
+                Ok(exists) => Response::Bool(exists),
+                Err(error) => Response::Err(error.kind().into()),
+            },
+            Request::ReadFile(path, mut buffer) => match unsafe { read_file(&path, &mut buffer) } {
+                Ok(length) => Response::Length(length),
+                Err(error) => Response::Err(error.kind().into()),
+            },
+            Request::WriteFile(path, buffer, mode) => {
+                let create_new = mode.create_new;
+                io_response(open_file(&path, mode).and_then(|mut file| {
+                    let result = file.write_all(unsafe { buffer.as_slice() });
+                    if create_new && result.is_err() {
+                        let _ = std::fs::remove_file(&path);
                     }
+                    result
+                }))
+            }
+            Request::Stdio(stream) => {
+                let fd = match stream {
+                    StandardStream::Stdin => std::io::stdin().as_fd().try_clone_to_owned(),
+                    StandardStream::Stdout => std::io::stdout().as_fd().try_clone_to_owned(),
+                    StandardStream::Stderr => std::io::stderr().as_fd().try_clone_to_owned(),
+                };
+                file_response(fd.map(File::from), &vm, &next_pipe_idx, &doorbell)
+            }
+            Request::IsDirectory(path) => match std::fs::metadata(path) {
+                Ok(metadata) => Response::Bool(metadata.is_dir()),
+                Err(e) => Response::Err(e.kind().into()),
+            },
+            Request::ReadDirectory(path) => {
+                let names = std::fs::read_dir(path).and_then(|entries| {
+                    entries
+                        .map(|entry| {
+                            entry?
+                                .file_name()
+                                .into_string()
+                                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))
+                        })
+                        .collect::<std::io::Result<Vec<_>>>()
+                });
+                match names {
+                    Ok(names) => Response::Names(names),
                     Err(e) => Response::Err(e.kind().into()),
                 }
             }
+            Request::Canonicalize(path) => match std::fs::canonicalize(path) {
+                Ok(path) => match path.into_os_string().into_string() {
+                    Ok(path) => Response::Path(path),
+                    Err(_) => Response::Err(IoErrorKind::InvalidData),
+                },
+                Err(e) => Response::Err(e.kind().into()),
+            },
+            Request::SetCurrentDirectory(path) => io_response(std::env::set_current_dir(path)),
+            Request::Rename(from, to) => io_response(std::fs::rename(from, to)),
+            Request::Symlink(target, path) => io_response(std::os::unix::fs::symlink(target, path)),
+            Request::RemoveFile(path) => io_response(std::fs::remove_file(path)),
+            Request::ReadLink(path) => match std::fs::read_link(path) {
+                Ok(target) => match target.into_os_string().into_string() {
+                    Ok(target) => Response::Path(target),
+                    Err(_) => Response::Err(IoErrorKind::InvalidData),
+                },
+                Err(e) => Response::Err(e.kind().into()),
+            },
             Request::Mkdir(path) => match std::fs::create_dir_all(&path) {
                 Ok(()) => Response::Ack,
                 Err(e) => Response::Err(e.kind().into()),
             },
             Request::Listen { ip, port } => {
                 let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 let vm_cl = vm.clone();
                 let next_pipe_cl = next_pipe_idx.clone();
+                let doorbell = doorbell.clone();
                 std::thread::spawn(move || {
-                    listener_thread(vm_cl, next_pipe_cl, listener, ListenerPipe::new(q));
+                    listener_thread(
+                        vm_cl,
+                        next_pipe_cl,
+                        doorbell,
+                        listener,
+                        ListenerPipe::new(q),
+                    );
                 });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Connect { host, port } => {
                 let stream = TcpStream::connect((host.as_str(), port)).unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });
@@ -102,6 +160,71 @@ pub fn control_thread(
     }
 }
 
+fn open_file(path: &str, mode: common::protocol::control::FileMode) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(mode.read)
+        .write(mode.write)
+        .create(mode.create)
+        .create_new(mode.create_new)
+        .append(mode.append)
+        .truncate(mode.truncate)
+        .open(path)
+}
+
+/// # Safety
+/// The peer must keep the buffer initialized and exclusively borrowed until the response.
+unsafe fn read_file(path: &str, buffer: &mut common::buffer::Region) -> std::io::Result<usize> {
+    let mut file = File::open(path)?;
+    let bytes = unsafe { buffer.as_mut_slice() };
+    let length = usize::try_from(file.metadata()?.len())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+    if length > bytes.len() {
+        return Ok(length);
+    }
+    let mut length = 0;
+    while length < bytes.len() {
+        match file.read(&mut bytes[length..]) {
+            Ok(0) => return Ok(length),
+            Ok(read) => length += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let mut extra = [0];
+    loop {
+        match file.read(&mut extra) {
+            Ok(read) => return Ok(length + read),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn io_response(result: std::io::Result<()>) -> common::protocol::control::Response {
+    use common::protocol::control::Response;
+    match result {
+        Ok(()) => Response::Ack,
+        Err(e) => Response::Err(e.kind().into()),
+    }
+}
+
+fn file_response(
+    file: std::io::Result<File>,
+    vm: &Arc<VmFd>,
+    next_pipe_idx: &Arc<AtomicUsize>,
+    doorbell: &HostToVMDoorBell,
+) -> common::protocol::control::Response {
+    use common::protocol::control::Response;
+    match file {
+        Ok(file) => {
+            let (p, q) = new_pipe(vm, 1024, next_pipe_idx, doorbell);
+            std::thread::spawn(move || unsafe { file_thread(file, FilePipe::new(q)) });
+            Response::Pipe(decompose_pipe(p))
+        }
+        Err(e) => Response::Err(e.kind().into()),
+    }
+}
+
 /// # Safety
 /// The peer must hold each region alive until its response, exclusively for reads
 /// and immutably for writes.
@@ -109,22 +232,24 @@ pub unsafe fn file_thread(mut file: File, mut pipe: FilePipe) {
     use common::protocol::file::*;
     loop {
         let response = match pipe.recv() {
-            Request::Read(mut buffer) => {
-                let len = file.read(unsafe { buffer.as_mut_slice() }).unwrap();
-                Response::Length(len)
-            }
-            Request::Write(bytes) => {
-                let len = file.write(unsafe { bytes.as_slice() }).unwrap();
-                Response::Length(len)
-            }
+            Request::Read(mut buffer) => match file.read(unsafe { buffer.as_mut_slice() }) {
+                Ok(len) => Response::Length(len),
+                Err(e) => Response::Err(e.kind().into()),
+            },
+            Request::Write(bytes) => match file.write(unsafe { bytes.as_slice() }) {
+                Ok(len) => Response::Length(len),
+                Err(e) => Response::Err(e.kind().into()),
+            },
             Request::Seek(whence) => {
                 let from = match whence {
                     Whence::Start(x) => SeekFrom::Start(x),
                     Whence::Current(x) => SeekFrom::Current(x),
                     Whence::End(x) => SeekFrom::End(x),
                 };
-                let offset = file.seek(from).unwrap();
-                Response::Offset(offset)
+                match file.seek(from) {
+                    Ok(offset) => Response::Offset(offset),
+                    Err(e) => Response::Err(e.kind().into()),
+                }
             }
             Request::Close => {
                 pipe.send(&Response::Ack);
@@ -189,6 +314,7 @@ mod tests {
 pub fn listener_thread(
     vm: Arc<VmFd>,
     next_pipe_idx: Arc<AtomicUsize>,
+    doorbell: HostToVMDoorBell,
     listener: TcpListener,
     mut pipe: ListenerPipe,
 ) {
@@ -197,7 +323,7 @@ pub fn listener_thread(
         let response = match pipe.recv() {
             Request::Accept => {
                 let (stream, _) = listener.accept().unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx);
+                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 std::thread::spawn(move || {
                     stream_thread(stream, StreamPipe::new(q));
                 });

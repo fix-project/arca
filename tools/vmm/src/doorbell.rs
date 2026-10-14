@@ -1,10 +1,11 @@
 use common::{buddy::ioaddr, pipe::DoorBell, protocol::control::VMToHostDoorBellData};
 use kvm_ioctls::{IoEventAddress, VmFd};
+use std::sync::Arc;
 use vmm_sys_util::eventfd::{EFD_NONBLOCK, EventFd};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct HostToVMDoorBell {
-    fd: EventFd,
+    fd: Arc<EventFd>,
 }
 
 const HOST_TO_VM_GSI: u32 = 2;
@@ -14,7 +15,9 @@ impl HostToVMDoorBell {
         let evtfd = EventFd::new(EFD_NONBLOCK).unwrap();
         vm.register_irqfd(&evtfd, HOST_TO_VM_GSI)
             .expect("Failed to register irqfd");
-        Self { fd: evtfd }
+        Self {
+            fd: Arc::new(evtfd),
+        }
     }
 }
 
@@ -107,16 +110,16 @@ mod tests {
         let (p, q) = common::pipe::pipe(
             8,
             HostToVMDoorBell {
-                fd: q_readable.try_clone().unwrap(),
+                fd: Arc::new(q_readable.try_clone().unwrap()),
             },
             HostToVMDoorBell {
-                fd: q_writable.try_clone().unwrap(),
+                fd: Arc::new(q_writable.try_clone().unwrap()),
             },
             HostToVMDoorBell {
-                fd: p_readable.try_clone().unwrap(),
+                fd: Arc::new(p_readable.try_clone().unwrap()),
             },
             HostToVMDoorBell {
-                fd: p_writable.try_clone().unwrap(),
+                fd: Arc::new(p_writable.try_clone().unwrap()),
             },
         );
         (
@@ -139,7 +142,7 @@ mod tests {
             fd: EventFd::new(0).unwrap(),
         };
         let bell = HostToVMDoorBell {
-            fd: waiter.fd.try_clone().unwrap(),
+            fd: Arc::new(waiter.fd.try_clone().unwrap()),
         };
         bell.ring();
         let (done, result) = mpsc::channel();

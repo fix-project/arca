@@ -127,6 +127,10 @@ impl LocalApic {
 #[core_local]
 pub static LAPIC: RefCell<LocalApic> = RefCell::new(LocalApic(PhantomData));
 
+pub(crate) fn wake(core: u32) {
+    unsafe { wrmsr(0x830, (u64::from(core) << 32) | 0x33) };
+}
+
 pub unsafe fn init() {
     // switch to x2APIC and enable LAPIC
     // https://courses.cs.washington.edu/courses/cse451/21sp/readings/x2apic.pdf
@@ -170,10 +174,9 @@ pub unsafe fn init() {
     regsel.write_volatile(0x13); // redirection entry 0-hi
     win.write_volatile(0x00);
 
-    // GSI 2 -> INT 0x32 on every LAPIC (physical broadcast). Kernel threads
-    // can migrate, so every idle scheduler must receive I/O wakeups.
+    // GSI 2 -> INT 0x32 on CPU 0; the handler wakes an idle scheduler.
     regsel.write_volatile(0x14); // redirection entry 0-lo
     win.write_volatile(0x32);
     regsel.write_volatile(0x15); // redirection entry 2-hi
-    win.write_volatile(0xff000000);
+    win.write_volatile(0x00);
 }

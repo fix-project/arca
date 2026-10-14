@@ -1,16 +1,14 @@
-use alloc::sync::Arc;
-use fix::Handle;
+use crate::Handle;
+use alloc::{collections::VecDeque, sync::Arc};
 extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
-use kernel::kthread::KMutex;
+use kernel::kthread::{KCondvar, KMutex};
 
-use crossbeam_queue::SegQueue;
-
-//task that must be added
 pub struct Task {
     handle: Handle,
     result: KMutex<Option<Handle>>,
     done: AtomicBool,
+    completed: KCondvar,
 }
 impl Task {
     fn new(value: Handle) -> Self {
@@ -18,12 +16,15 @@ impl Task {
             handle: value,
             result: KMutex::new(None),
             done: AtomicBool::new(false),
+            completed: KCondvar::new(),
         }
     }
 
     pub fn task_complete(&self, value: Handle) {
-        *self.result.lock() = Some(value);
+        let mut result = self.result.lock();
+        *result = Some(value);
         self.done.store(true, Ordering::Release);
+        self.completed.notify_one();
     }
 
     pub fn get_handle(&self) -> Handle {
@@ -35,34 +36,49 @@ impl Task {
     }
 
     pub fn take_result(&self) -> Handle {
-        self.result
-            .lock()
+        let mut result = self.result.lock();
+        while !self.done.load(Ordering::Acquire) {
+            result = self.completed.wait(result);
+        }
+        result
             .take()
             .expect("task marked complete without a result")
     }
 }
 pub struct Scheduler {
-    global: SegQueue<Arc<Task>>,
-    //locals: Vec<Arc<KMutex<VecDeque<task>>>>,
-    //results: ,
-    //num_work_left:,
-    //live_worker_count:, scheduler calls into executer??? scheduler thread, thread is like arca user pipe opens user programarca blob
+    global: KMutex<VecDeque<Arc<Task>>>,
+    available: KCondvar,
 }
 
 impl Scheduler {
     pub const fn new() -> Self {
         Self {
-            global: SegQueue::new(),
+            global: KMutex::new(VecDeque::new()),
+            available: KCondvar::new(),
         }
     }
 
     pub fn get_work(&self) -> Option<Arc<Task>> {
-        self.global.pop()
+        self.global.lock().pop_front()
+    }
+
+    pub fn wait_for_work(&self, ready: impl Fn() -> bool) -> Option<Arc<Task>> {
+        let mut queue = self.global.lock();
+        while queue.is_empty() && !ready() {
+            queue = self.available.wait(queue);
+        }
+        if ready() { None } else { queue.pop_front() }
+    }
+
+    pub fn wake_workers(&self) {
+        let _queue = self.global.lock();
+        self.available.notify_all();
     }
 
     pub fn push_work(&self, handle: Handle) -> Arc<Task> {
         let task = Arc::new(Task::new(handle));
-        self.global.push(Arc::clone(&task));
+        self.global.lock().push_back(Arc::clone(&task));
+        self.available.notify_one();
         task
     }
 }

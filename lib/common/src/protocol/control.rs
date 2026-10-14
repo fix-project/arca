@@ -2,18 +2,38 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::buffer::Region;
 use serde::{Deserialize, Serialize};
 
 pub use embedded_io::ErrorKind;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Request {
+pub enum Request<B = Region> {
     GetArgs,
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),
-    Listen { ip: [u8; 4], port: u16 },
-    Connect { host: String, port: u16 },
+    IsDirectory(String),
+    Canonicalize(String),
+    SetCurrentDirectory(String),
+    Rename(String, String),
+    Symlink(String, String),
+    ReadLink(String),
+    RemoveFile(String),
+    Stdio(StandardStream),
+    Listen {
+        ip: [u8; 4],
+        port: u16,
+    },
+    Connect {
+        host: String,
+        port: u16,
+    },
+    ReadDirectory(String),
+    Exists(String),
+    /// Returns bytes read, or a required buffer length greater than the supplied capacity.
+    ReadFile(String, B),
+    WriteFile(String, B, FileMode),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -21,7 +41,11 @@ pub enum Response {
     Args(Vec<String>),
     Pipe(PipeData),
     Ack,
+    Bool(bool),
+    Path(String),
     Err(IoErrorKind),
+    Names(Vec<String>),
+    Length(usize),
 }
 
 /// Wire-serializable mirror of [`embedded_io::ErrorKind`], which is
@@ -93,6 +117,14 @@ pub struct FileMode {
     pub read: bool,
     pub write: bool,
     pub create: bool,
+    pub create_new: bool,
     pub append: bool,
     pub truncate: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum StandardStream {
+    Stdin,
+    Stdout,
+    Stderr,
 }

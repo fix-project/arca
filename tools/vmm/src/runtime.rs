@@ -19,7 +19,7 @@ pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::comm::new_pipe;
+use crate::{comm::new_pipe, doorbell::HostToVMDoorBell};
 
 fn new_cpu<'scope>(
     i: usize,
@@ -327,6 +327,7 @@ pub struct Runtime {
     cores: usize,
     elf: Arc<[u8]>,
     next_pipe_idx: Arc<AtomicUsize>,
+    doorbell: HostToVMDoorBell,
 }
 
 impl Runtime {
@@ -387,6 +388,7 @@ impl Runtime {
 
         let mut x = Self {
             kvm,
+            doorbell: HostToVMDoorBell::new(&vm),
             vm: Arc::new(vm),
             cores,
             elf: elf.clone(),
@@ -464,15 +466,17 @@ impl Runtime {
         std::thread::scope(|s| {
             let mut cpus = vec![];
 
-            let (p, q) = new_pipe(&self.vm, 8192, &self.next_pipe_idx);
+            let (p, q) = new_pipe(&self.vm, 8192, &self.next_pipe_idx, &self.doorbell);
 
             let vm_cl = self.vm.clone();
             let next_pipe_cl = self.next_pipe_idx.clone();
+            let doorbell = self.doorbell.clone();
 
             let comm = s.spawn(move || {
                 crate::comm::control_thread(
                     vm_cl,
                     next_pipe_cl,
+                    doorbell,
                     argv,
                     crate::pipe::ControlPipe::new(q),
                 );

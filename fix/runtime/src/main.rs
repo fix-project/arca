@@ -4,8 +4,7 @@
 #![test_runner(crate::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-mod parallel_evaluator;
-mod scheduler;
+use fix::parallel_evaluator;
 use kernel::host::fs;
 use kernel::host::os;
 use kernel::prelude::*;
@@ -67,8 +66,9 @@ fn init() {
 fn eval_file_parallel(path: &str) {
     let file = preprocessor::read_file(path).unwrap();
 
-    let evaluator = parallel_evaluator::Evaluator::new(FixOnArca::default());
+    let evaluator = parallel_evaluator::Evaluator::new(FixOnArca::default(), kernel::ncores());
     let result = eval_parallel_program(core::str::from_utf8(&file).unwrap(), &evaluator);
+    evaluator.shutdown();
 
     println!("handle:    {result}");
     println!("Current handle is: {:?}", result);
@@ -331,6 +331,111 @@ mod tests {
         );
         assert!(first.is_eq() && second.is_eq());
         assert_eq!(storage.equals(first, second), Ok(true));
+    }
+
+    #[test_case]
+    fn evaluation_preserves_access_and_tags() {
+        fn check(storage: &dyn storage::Storage, eval: impl Fn(Handle) -> Handle) {
+            let blob = storage.add_blob(b"ok");
+            let thunk = blob.into_ref().identification();
+            assert!(matches!(
+                eval(thunk.shallow().into()).view(),
+                HandleView::Ref(_)
+            ));
+            assert!(matches!(
+                eval(thunk.strict().into()).view(),
+                HandleView::Object(_)
+            ));
+
+            let index = storage.add_blob(&0u64.to_le_bytes());
+            let invalid_index = storage.add_blob(&99u64.to_le_bytes());
+            let invalid = storage.add_tree(&[blob.into_ref().into(), invalid_index.into()]);
+            let source =
+                storage.add_tree(&[blob.into(), invalid.into_ref().selection().strict().into()]);
+            let selection = storage.add_tree(&[source.into_ref().into(), index.into()]);
+            let selected = eval(selection.into_ref().selection().strict().into());
+            assert_eq!(storage.equals(selected, blob.into()), Ok(true));
+
+            let tag = storage
+                .add_tree(&[blob.into(), thunk.strict().into(), blob.into()])
+                .tag_descriptor();
+            let result = Tree::try_from(eval(tag.into())).unwrap();
+            assert!(result.is_tag());
+            assert!(storage.get_tree(result).unwrap().iter().all(Handle::is_eq));
+
+            let leaf = storage.add_tree(&[blob.into()]);
+            assert_eq!(eval(leaf.into()).as_bytes(), leaf.as_handle().as_bytes());
+            let references = storage.add_tree(&[leaf.into_ref().into(), blob.into_ref().into()]);
+            let loaded = eval(references.into());
+            let children = storage.get_tree(Tree::try_from(loaded).unwrap()).unwrap();
+            assert!(
+                children
+                    .iter()
+                    .all(|child| matches!(child.view(), HandleView::Object(_)))
+            );
+            assert_eq!(eval(references.into()).as_bytes(), loaded.as_bytes());
+        }
+        let serial = Evaluator::new(FixOnArca::default());
+        check(serial.storage(), |value| serial.eval(value));
+        let parallel = fix::parallel_evaluator::Evaluator::new(FixOnArca::default(), 2);
+        check(parallel.storage(), |value| parallel.eval(value));
+        parallel.shutdown();
+    }
+
+    #[test_case]
+    fn independent_applications_run_in_parallel() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        struct Runtime {
+            storage: storage::memory::MemoryStorage,
+            started: AtomicUsize,
+        }
+        impl fix::runtime::Runtime for Runtime {
+            fn storage(&self) -> &dyn storage::Storage {
+                &self.storage
+            }
+            fn execute(&self, _: Tree) -> Handle {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                while self.started.load(Ordering::SeqCst) < 2 {
+                    kernel::kthread::yield_now();
+                }
+                self.storage.add_blob(b"done").into()
+            }
+        }
+        let evaluator = fix::parallel_evaluator::Evaluator::new(
+            Runtime {
+                storage: storage::memory::MemoryStorage::default(),
+                started: AtomicUsize::new(0),
+            },
+            2,
+        );
+        let storage = evaluator.storage();
+        let combination = storage.add_tree(&[]);
+        let application = combination.into_ref().application().strict();
+        let requests = storage.add_tree(&[application.into(), application.into()]);
+        let result = Tree::try_from(evaluator.eval(requests.into())).unwrap();
+        let nested = storage.add_tree(&[application.into()]);
+        let batch = storage.add_tree(&vec![
+            nested
+                .into_ref()
+                .reference()
+                .identification()
+                .strict()
+                .into();
+            2048
+        ]);
+        let evaluated = evaluator.eval(batch.into());
+        assert!(evaluated.is_eq());
+        assert_eq!(Tree::try_from(evaluated).unwrap().len(), 2048);
+        let expected = storage.add_blob(b"done");
+        for child in storage.get_tree(result).unwrap().iter().copied() {
+            assert_eq!(storage.equals(child, expected.into()), Ok(true));
+        }
+        let weak = Arc::downgrade(&evaluator);
+        evaluator.shutdown();
+        drop(evaluator);
+        while weak.upgrade().is_some() {
+            kernel::kthread::yield_now();
+        }
     }
 
     fn eval_value(source: &str, evaluator: &Evaluator<FixOnArca>) -> Vec<u8> {
