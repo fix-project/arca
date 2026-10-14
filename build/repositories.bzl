@@ -1,7 +1,7 @@
 """Discover native build tools on the host."""
 
 def _local_tools_impl(ctx):
-    tools = ["bash", "gcc", "g++", "clang", "ar", "ranlib", "cmake", "make"]
+    tools = ["bash", "gcc", "g++", "clang", "ar", "ranlib", "cmake", "make", "nproc"]
     for tool in tools:
         path = ctx.which(tool)
         if not path:

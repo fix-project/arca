@@ -36,3 +36,28 @@ semantics. Invalid names, signatures, indices, or resulting modules are errors.
 `wasm_memory_copy_0_to_2`. `WASM_TABLE(N)` declares externref Table operations,
 and `WASM_TABLE_COPY(S, D)` declares copying. For caller-declared Tables,
 prefer Clang's Table builtins.
+
+# Wasm merger
+
+```
+wasm-merge library.wasm lib application.wasm app -o combined.wasm
+```
+
+`//tools:wasm_merge` is native; `//tools:wasm_merge_wasm` is a WASIp1 command.
+The canonical module combiner lives in `tools/module-combiner`. Its upstream
+history was imported from [fix-project/wasm-tools](https://github.com/fix-project/wasm-tools)
+at `c52a5707b3e75c0520aacb65a12a9a94f583017a`, preserving author attribution.
+Compatibility changes are a separate commit on that history, merged as a subtree.
+Imports referring to a supplied module name bind to that module's exports;
+other imports remain external. wasmparser validates the input and output modules.
+Multiple start functions run in input order. `--rename-export-conflicts` preserves
+the first export and prefixes later collisions with the input module name.
+The merger has no Fix-specific behavior. Both builds use the repository Rust
+toolchain. It scans module metadata, then re-encodes one function at a time using
+wasm-encoder, without constructing an instruction AST.
+
+For a standalone Cargo build:
+
+```
+cargo build --release --locked --manifest-path tools/module-combiner/Cargo.toml
+```

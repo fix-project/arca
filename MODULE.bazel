@@ -13,6 +13,15 @@ single_version_override(
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "rules_foreign_cc", version = "0.16.0")
+
+foreign_tools = use_extension("@rules_foreign_cc//foreign_cc:extensions.bzl", "tools")
+foreign_tools.explicit()
+foreign_tools.cmake(mode = "system")
+foreign_tools.make(mode = "system")
+foreign_tools.ninja(mode = "noop")
+foreign_tools.m4(mode = "noop")
+foreign_tools.pkgconfig(mode = "noop")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -65,6 +74,7 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-none",
         "wasm32-unknown-unknown",
+        "wasm32-wasip1",
     ],
 )
 use_repo(crate, "crates")
@@ -121,3 +131,23 @@ git_override(
     patches = ["//build:hedron-bazel9.patch"],
     patch_strip = 1,
 )
+
+http_archive(
+    name = "llvm-raw",
+    urls = ["https://github.com/fix-project/llvm-project/archive/3c24197a97c8f1200596d2dc3dd4335960a3bbc6.tar.gz"],
+    sha256 = "52f4e5b06eaecc30140ed60e88e97a01bc1d2706ce71c22ea83f872f761001bc",
+    strip_prefix = "llvm-project-3c24197a97c8f1200596d2dc3dd4335960a3bbc6",
+    build_file = "//bootstrap:llvm.BUILD.bazel",
+    patches = ["//bootstrap:toolchain-tags.patch"],
+    patch_args = ["-p1"],
+)
+
+bazel_dep(name = "llvm", version = "0.8.5")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "rules_python", version = "1.9.0")
+bazel_dep(name = "zlib-ng", version = "2.3.3", repo_name = "llvm_zlib")
+bazel_dep(name = "zstd", version = "1.5.7.bcr.1", repo_name = "llvm_zstd")
+bazel_dep(name = "libpfm", version = "4.13.0", repo_name = "pfm")
+
+llvm_configure = use_repo_rule("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
+llvm_configure(name = "llvm-project", targets = ["X86", "WebAssembly"])

@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+DEPS = ["@crates//:anyhow", "@crates//:wasm-encoder", "@crates//:wasmparser"]
+
+rust_binary(
+    name = "wasm_merge",
+    srcs = ["wasmlink.rs"],
+    edition = "2024",
+    deps = DEPS,
+)
+
+rust_binary(
+    name = "wasm_merge_wasm",
+    srcs = ["wasmlink.rs"],
+    edition = "2024",
+    platform = "//build/platforms:wasip1",
+    deps = DEPS,
+)
