@@ -60,7 +60,6 @@ fn apply<'a>(
     assert_eq!(number.equals(&thunk), Err(Error::NotEq));
     let stat = Stat {
         dev: 0x0102030405060708,
-        ino: 12,
         filetype: 4,
         nlink: 3,
         size: 4096,
@@ -89,7 +88,6 @@ fn apply<'a>(
     }
     let malformed = tree![
         stat.dev,
-        stat.ino,
         Blob::create([stat.filetype]),
         stat.nlink,
         stat.size,

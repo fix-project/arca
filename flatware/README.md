@@ -9,10 +9,16 @@ Exception references retain upstream's 256-byte inline payload limit; legacy
 exceptions continue to use dynamically sized payload storage.
 
 The adapter uses the C Fix bindings directly. It reads and constructs descriptor
-Trees with one scratch Memory and Table. The original combination stays in native
-externref locals; input parent and child indices locate preserved fields
-after filesystem mutations. Filesystem operations and WASIp1 bindings are
-implemented in C.
+Trees with one scratch Memory and Table. One scoped externref global holds the
+original combination; input parent and child indices locate preserved fields
+after filesystem mutations. Names, metadata, directory entries, and file contents
+load on demand. Output reuses unchanged descriptors and subtrees, rebuilding
+only changed fields and their ancestors. WASI inode numbers are unique within
+an invocation; they are assigned as nodes are discovered and are not serialized.
+Descriptor metadata contains device, filetype, link count, size, atime, mtime,
+and ctime, in that order. Filetype is one byte; other fields are eight-byte
+little-endian integers. Filesystem operations
+and WASIp1 bindings are implemented in C.
 
 The adapter allocates its buffers with upstream dlmalloc 2.8.6. Its MORECORE hook
 grows only the adapter memory in whole Wasm pages. The allocator does not use OS
@@ -61,3 +67,20 @@ does not consume memory. Module instances are allocated using wasm2c's reported
 size and alignment.
 The standalone utilities in `//programs/flatware` use precompiled modules through
 the same runner.
+
+## Archive conversion
+
+The `cpio` program takes one argument: a `newc` or `crc` Blob expands into a
+Flatware directory descriptor, and a directory descriptor serializes to `newc`.
+It supports directories, regular files, and symlinks, including hard-link data
+stored on a later archive entry. GNU `crc` checksums are verified for regular
+files. Modification times retain whole-second precision; missing access and
+change times are zero. Flatware does not represent ownership, permissions, or
+hard-link identities. Export uses uid/gid zero and modes 0755 for directories,
+0644 for files, and 0777 for symlinks.
+
+`flatware-normalize` takes one descriptor, recursively resets all three timestamps
+to zero and link counts to one, and preserves names, devices, types, sizes, and
+file-content handles. Directory children are recursive Fix applications, allowing
+parallel evaluation without a Rust allocator.
+

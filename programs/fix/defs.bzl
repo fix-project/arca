@@ -18,7 +18,7 @@ def fix_wat_program(name):
         artifact_visibility = ["//fix/runtime:__pkg__", "//tests/fix:__pkg__"],
     )
 
-def fix_rust_program(name, alloc = False):
+def fix_rust_program(name, alloc = False, artifact_visibility = ["//tests/fix:__pkg__"]):
     """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
     rust_shared_library(
         name = name + "_wasm",
@@ -34,7 +34,7 @@ def fix_rust_program(name, alloc = False):
         tables = 2,
         runnable = True,
         visibility = ["//visibility:public"],
-        artifact_visibility = ["//tests/fix:__pkg__"],
+        artifact_visibility = artifact_visibility,
     )
 
 FIX_LANGUAGE_PROGRAMS = ["blob", "add", "path"]

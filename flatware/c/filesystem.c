@@ -6,14 +6,24 @@
       return error;                                                            \
   } while (0)
 uint64_t node_size(const Node *n) {
+  if (!(n->loaded & NODE_CONTENT))
+    return n->stat.size;
   return !node_file(n)        ? n->bytes.len
          : !node_directory(n) ? n->children.len
                               : n->stat.size;
 }
-void node_modified(Node *n, uint64_t time) {
+void fs_changed(Filesystem *fs, size_t index, unsigned fields) {
+  fs->nodes[index].changed |= fields;
+  for (size_t parent = fs->nodes[index].parent; parent != NONE;
+       parent = fs->nodes[parent].parent)
+    fs->nodes[parent].changed |= NODE_CONTENT;
+}
+void node_modified(Filesystem *fs, size_t index, uint64_t time) {
+  Node *n = &fs->nodes[index];
   n->stat.size = node_size(n);
   if (!n->stream)
     n->stat.mtim = n->stat.ctim = time;
+  fs_changed(fs, index, NODE_STAT | NODE_CONTENT);
 }
 uint32_t node_file(const Node *n) {
   if (n->stat.dev)
@@ -40,18 +50,13 @@ void stat_encode(const Stat *s, uint8_t output[64]) {
 }
 void fs_init(Filesystem *fs) {
   require(fs->roots.len >= 3);
-  uint64_t highest = 0;
-  for (size_t i = 0; i < fs->count; i++)
-    if (fs->nodes[i].stat.ino > highest)
-      highest = fs->nodes[i].stat.ino;
-  require(highest < UINT64_MAX);
-  fs->next_inode = highest + 1;
   fs->descriptors = reserve(fs->descriptors, &fs->descriptor_cap, fs->roots.len,
                             sizeof(Descriptor));
   fs->descriptor_count = fs->roots.len;
   for (size_t fd = 0; fd < fs->roots.len; fd++) {
     size_t index = fs->roots.data[fd];
     require(index < fs->count);
+    fs_load(fs, index, NODE_NAME | NODE_STAT);
     Node *node = &fs->nodes[index];
     bool directory = node->stat.filetype == 3;
     require(fd >= 3 || !directory);
@@ -88,6 +93,7 @@ uint32_t fs_descriptor(Filesystem *fs, uint32_t fd, uint64_t rights,
   Descriptor *d = &fs->descriptors[fd];
   if ((d->rights & rights) != rights)
     return NOTCAPABLE;
+  fs_load(fs, d->node, NODE_STAT);
   *result = d;
   return 0;
 }
@@ -101,9 +107,11 @@ uint32_t fs_set_flags(Filesystem *fs, uint32_t fd, uint32_t flags) {
 }
 static size_t find_child(Filesystem *fs, size_t parent, const uint8_t *name,
                          size_t len) {
+  fs_load(fs, parent, NODE_CONTENT);
   Indices *entries = &fs->nodes[parent].children;
   for (size_t i = 0; i < entries->len; i++) {
     size_t child = entries->data[i];
+    fs_load(fs, child, NODE_NAME);
     if (bytes_equal(&fs->nodes[child].name, name, len))
       return child;
   }
@@ -141,6 +149,7 @@ uint32_t fs_resolve(Filesystem *fs, uint32_t fd, const Bytes *path,
           return NOENT;
       }
     }
+    fs_load(fs, node, NODE_STAT);
     start = end < path->len ? end + 1 : end;
   }
   if (path->data[path->len - 1] == '/')
@@ -180,22 +189,23 @@ static uint32_t create(Filesystem *fs, size_t parent, const Bytes *name,
   TRY(node_directory(&fs->nodes[parent]));
   if (find_child(fs, parent, name->data, name->len) != NONE)
     return EXIST;
-  if (fs->next_inode == UINT64_MAX)
-    return OVERFLOW;
   require(fs->count < SIZE_MAX);
   fs->nodes = reserve(fs->nodes, &fs->cap, fs->count + 1, sizeof(Node));
   size_t index = fs->count++;
   fs->nodes[index] = (Node){.name = bytes_copy(name->data, name->len),
-                            .stat = {.ino = fs->next_inode++,
+                            .stat = {.ino = index + 1,
                                      .nlink = 1,
                                      .atim = time,
                                      .mtim = time,
                                      .ctim = time,
                                      .filetype = directory ? 3 : 4},
                             .parent = parent,
-                            .input_parent = NONE};
+                            .input_parent = NONE,
+                            .input_index = NONE,
+                            .loaded = NODE_ALL,
+                            .changed = NODE_ALL};
   indices_push(&fs->nodes[parent].children, index);
-  node_modified(&fs->nodes[parent], time);
+  node_modified(fs, parent, time);
   *out = index;
   return 0;
 }
@@ -236,7 +246,8 @@ uint32_t fs_open(Filesystem *fs, uint32_t fd, const Bytes *path,
     if (directory)
       return ISDIR;
     bytes_resize(&fs->nodes[node].bytes, 0);
-    node_modified(&fs->nodes[node], time);
+    fs->nodes[node].loaded |= NODE_CONTENT;
+    node_modified(fs, node, time);
   }
   size_t slot = 0;
   while (slot < fs->descriptor_count && fs->descriptors[slot].active)
@@ -265,6 +276,8 @@ uint32_t fs_read(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
   if (positioned && n->stat.filetype == 2)
     return SPIPE;
   TRY(node_file(n));
+  fs_load(fs, d->node, NODE_CONTENT);
+  n = &fs->nodes[d->node];
   uint64_t position = positioned ? offset : d->offset;
   size_t start = position < n->bytes.len ? (size_t)position : n->bytes.len;
   size_t len = count < n->bytes.len - start ? count : n->bytes.len - start;
@@ -273,8 +286,10 @@ uint32_t fs_read(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
   *out = (Bytes){.data = len ? n->bytes.data + start : NULL, .len = len};
   if (!positioned)
     d->offset = position + len;
-  if (!n->stream)
+  if (!n->stream) {
     n->stat.atim = time;
+    fs_changed(fs, d->node, NODE_STAT);
+  }
   return 0;
 }
 uint32_t fs_write(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
@@ -293,6 +308,8 @@ uint32_t fs_write(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
   *out = (Bytes){0};
   if (!count)
     return 0;
+  fs_load(fs, d->node, NODE_CONTENT);
+  n = &fs->nodes[d->node];
   size_t end = (size_t)position + count;
   if (end > n->bytes.len) {
     n->bytes.data = reserve(n->bytes.data, &n->bytes.cap, end, 1);
@@ -301,7 +318,7 @@ uint32_t fs_write(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
     n->bytes.len = end;
   }
   *out = (Bytes){.data = n->bytes.data + (size_t)position, .len = count};
-  node_modified(n, time);
+  node_modified(fs, d->node, time);
   if (!positioned)
     d->offset = end;
   return 0;
@@ -339,8 +356,11 @@ uint32_t fs_resize(Filesystem *fs, size_t node, uint64_t size, uint64_t time) {
   if (size > SIZE_MAX)
     return OVERFLOW;
   TRY(node_file(&fs->nodes[node]));
+  if (size)
+    fs_load(fs, node, NODE_CONTENT);
   bytes_resize(&fs->nodes[node].bytes, (size_t)size);
-  node_modified(&fs->nodes[node], time);
+  fs->nodes[node].loaded |= NODE_CONTENT;
+  node_modified(fs, node, time);
   return 0;
 }
 uint32_t fs_mkdir(Filesystem *fs, uint32_t fd, const Bytes *path,
@@ -374,15 +394,16 @@ uint32_t fs_unlink(Filesystem *fs, uint32_t fd, const Bytes *path,
   if (!node_directory(n)) {
     if (!directory)
       return ISDIR;
-    if (n->children.len)
+    if (node_size(n))
       return NOTEMPTY;
   } else if (directory)
     return NOTDIR;
   size_t parent = n->parent;
   remove_child(&fs->nodes[parent], node);
-  node_modified(&fs->nodes[parent], time);
+  node_modified(fs, parent, time);
   n->stat.nlink = 0;
   n->stat.ctim = time;
+  fs_changed(fs, node, NODE_STAT);
   return 0;
 }
 uint32_t fs_rename(Filesystem *fs, uint32_t old_fd, const Bytes *old_path,
@@ -411,10 +432,11 @@ uint32_t fs_rename(Filesystem *fs, uint32_t old_fd, const Bytes *old_path,
   }
   if (existing != NONE) {
     bool directory = !node_directory(&fs->nodes[node]);
+    fs_load(fs, existing, NODE_STAT);
     Node *replaced = &fs->nodes[existing];
     uint32_t e = 0;
     if (!node_directory(replaced))
-      e = !directory ? ISDIR : replaced->children.len ? NOTEMPTY : 0;
+      e = !directory ? ISDIR : node_size(replaced) ? NOTEMPTY : 0;
     else if (directory)
       e = NOTDIR;
     if (e) {
@@ -430,7 +452,8 @@ uint32_t fs_rename(Filesystem *fs, uint32_t old_fd, const Bytes *old_path,
   fs->nodes[node].name = bytes_copy(name.data, name.len);
   fs->nodes[node].parent = new_parent;
   fs->nodes[node].stat.ctim = time;
-  node_modified(&fs->nodes[old_parent], time);
-  node_modified(&fs->nodes[new_parent], time);
+  fs_changed(fs, node, NODE_NAME | NODE_STAT);
+  node_modified(fs, old_parent, time);
+  node_modified(fs, new_parent, time);
   return 0;
 }
