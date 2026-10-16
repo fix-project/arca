@@ -1,5 +1,5 @@
 // driver that will initialize run() and set up of when user scheduler is called
-use crate::runtime::arca::{FixOnArca};
+use crate::runtime::arca::{FixOnArca, decode_handle, pack_handle};
 use crate::user_queues::{Error, WorkQueues};
 use crate::{Handle, Runtime, Tree};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -39,7 +39,7 @@ fn read_handle(value: &Blob) -> Result<Handle, Error> {
     Ok(handle)
 }
 
-pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, input: Handle, workers: usize) -> Result<Report, &'static str> {
+pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usize) -> Result<Report, &'static str> {
     if !(1..=256).contains(&workers) {
         return Err("worker count must be 1..=256");
     }
@@ -47,7 +47,7 @@ pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, input: Handle, workers: us
     // wait for eveyrhting to finish, and get all results into one?
     // return the result/ report
     let procedure = runtime.storage().add_blob(&elf);
-    let combination = runtime.storage().add_tree(&[procedure.into(), input]);
+    let combination = runtime.storage().add_tree(&[procedure.into()]);
 
     let shared = Arc::new(Shared {
         queues: KMutex::new(WorkQueues::new(

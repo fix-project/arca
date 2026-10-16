@@ -1,4 +1,5 @@
 // file includes how the queues are created functions that it can call on it
+extern crate alloc;
 use alloc::{collections::VecDeque, vec::Vec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

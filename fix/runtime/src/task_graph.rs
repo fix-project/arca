@@ -4,6 +4,8 @@ use crate::handle::*;
 use crate::runtime::Runtime;
 use crate::storage::Storage;
 use kernel::prelude::*;
+
+extern crate alloc; 
 use crate::computation::Computation;
 use alloc::vec::Vec;
 use fixhandle::{Handle, Name};
@@ -20,20 +22,13 @@ pub struct TaskGraph {
     results: HashMap<Computation, Handle>,
 }
 
-impl<H: WorkHandle> TaskGraph<H> {
+impl TaskGraph {
     pub fn new() -> Self {
         Self {
             dependencies: HashMap::new(),
             dependents: HashMap::new(),
             results: HashMap::new(),
         }
-    }
-    // add all other functions
-}
-
-impl<H: WorkHandle> Default for TaskGraph<H> {
-    fn default() -> Self {
-        Self::new()
     }
 
     pub fn wait_for(&mut self,consumer: Computation,inputs: &[Computation],) -> usize {
@@ -109,6 +104,13 @@ impl<H: WorkHandle> Default for TaskGraph<H> {
 
     pub fn retained_results(&self) -> usize {
         self.results.len()
+    }
+    // add all other functions
+}
+
+impl Default for TaskGraph {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

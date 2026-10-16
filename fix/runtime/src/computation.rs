@@ -14,7 +14,7 @@ pub enum Operation {
 #[derive(Clone, Copy, Debug)]
 pub struct Computation {
     operation: Operation,
-    input: H,
+    input: Handle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,3 +58,10 @@ impl PartialEq for Computation {
     }
 }
 impl Eq for Computation {}
+
+impl Hash for Computation {
+    fn hash<S: Hasher>(&self, state: &mut S) {
+        self.operation.hash(state);
+        self.input.as_bytes().hash(state);
+    }
+}

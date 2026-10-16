@@ -8,7 +8,8 @@ pub mod stdlib;
 pub mod storage;
 pub mod user_queues;
 pub mod user_scheduler_driver;
-
+pub mod computation;
+pub mod task_graph;
 pub mod handle {
     pub use fixhandle::*;
 }
