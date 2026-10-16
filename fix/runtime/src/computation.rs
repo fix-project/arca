@@ -1,5 +1,5 @@
 // new data structure to keep track of handle as well as what to do with it
-// used in task graph and probably the queues when we call on it 
+// used in task graph and probably the queues when we call on it
 use core::hash::{Hash, Hasher};
 use fixhandle::{Handle, Name, Thunk, Tree};
 
@@ -53,8 +53,7 @@ impl Computation {
 
 impl PartialEq for Computation {
     fn eq(&self, other: &Self) -> bool {
-        self.operation == other.operation
-            && self.input.same_encoding(&other.input)
+        self.operation == other.operation && self.input.same_encoding(&other.input)
     }
 }
 impl Eq for Computation {}

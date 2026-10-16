@@ -35,11 +35,19 @@ pub struct Report {
 //check to make sure its not a local handle
 fn read_handle(value: &Blob) -> Result<Handle, Error> {
     let handle = decode_handle(value).map_err(|_| Error::Invalid)?;
-    if matches!(handle.name(), Name::Local { .. }) {return Err(Error::Invalid);}
+    if matches!(handle.name(), Name::Local { .. }) {
+        return Err(Error::Invalid);
+    }
     Ok(handle)
 }
-
-pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usize) -> Result<Report, &'static str> {
+// accepts a root handle, just as a starting point, they can then figure out what to do with it
+// or to add new functions, which these helper functions will be defined in the SDK we implement
+pub fn start(
+    runtime: Arc<FixOnArca>,
+    elf: Arc<[u8]>,
+    root: Handle,
+    workers: usize,
+) -> Result<Report, &'static str> {
     if !(1..=256).contains(&workers) {
         return Err("worker count must be 1..=256");
     }
@@ -47,14 +55,10 @@ pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usi
     // wait for eveyrhting to finish, and get all results into one?
     // return the result/ report
     let procedure = runtime.storage().add_blob(&elf);
-    let combination = runtime.storage().add_tree(&[procedure.into()]);
+    let combination = runtime.storage().add_tree(&[procedure.into(), root]);
 
     let shared = Arc::new(Shared {
-        queues: KMutex::new(WorkQueues::new(
-            workers,
-            MAX_QUEUE_CAPACITY,
-            MAX_QUEUES,
-        )),
+        queues: KMutex::new(WorkQueues::new(workers, MAX_QUEUE_CAPACITY, MAX_QUEUES)),
         outcome: KMutex::new(None),
         remaining: AtomicUsize::new(workers),
         executed: (0..workers).map(|_| AtomicUsize::new(0)).collect(),
@@ -66,13 +70,7 @@ pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usi
         let elf = elf.clone();
 
         spawn(move || {
-            let result = run(
-                &runtime,
-                &shared,
-                worker,
-                &elf,
-                combination,
-            );
+            let result = run(&runtime, &shared, worker, &elf, combination);
 
             if let Err(error) = result {
                 shared.finish(Err(error));
@@ -83,9 +81,16 @@ pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usi
         });
     }
 
-    while shared.remaining.load(Ordering::Acquire) != 0 { kthread::yield_now(); }
+    while shared.remaining.load(Ordering::Acquire) != 0 {
+        kthread::yield_now();
+    }
 
-    let result = shared.outcome.lock().as_ref().copied().ok_or("no scheduler result")??;
+    let result = shared
+        .outcome
+        .lock()
+        .as_ref()
+        .copied()
+        .ok_or("no scheduler result")??;
 
     Ok(Report {
         result,
@@ -98,7 +103,13 @@ pub fn start(runtime: Arc<FixOnArca>, elf: Arc<[u8]>, root: Handle, workers: usi
 }
 
 // need function to run each instance, receive effects
-fn run(runtime: &FixOnArca, shared: &Shared, worker: usize, elf: &[u8], combination: Tree,) -> Result<(), &'static str> {
+fn run(
+    runtime: &FixOnArca,
+    shared: &Shared,
+    worker: usize,
+    elf: &[u8],
+    combination: Tree,
+) -> Result<(), &'static str> {
     let mut f: Function = common::elfloader::load_elf(elf).map_err(|_| "invalid scheduler ELF")?;
     f = f.apply(pack_handle(combination));
 
@@ -119,17 +130,17 @@ fn run(runtime: &FixOnArca, shared: &Shared, worker: usize, elf: &[u8], combinat
             return Err("invalid scheduler effect");
         }
 
-        let tag: Blob = data
-            .take(0)
-            .try_into()
-            .map_err(|_| "invalid effect tag")?;
+        let tag: Blob = data.take(0).try_into().map_err(|_| "invalid effect tag")?;
 
         if &*tag != b"Symbolic" {
             return Err("invalid effect tag");
         }
 
         let name: Blob = data.take(1).try_into().map_err(|_| "invalid effect name")?;
-        let args: Tuple = data.take(2).try_into().map_err(|_| "invalid effect arguments")?;
+        let args: Tuple = data
+            .take(2)
+            .try_into()
+            .map_err(|_| "invalid effect arguments")?;
         let mut args: Vec<Value> = args.into_iter().collect();
 
         let Some(Value::Function(k)) = args.pop() else {
@@ -137,34 +148,40 @@ fn run(runtime: &FixOnArca, shared: &Shared, worker: usize, elf: &[u8], combinat
         };
 
         if !name.starts_with(b"scheduler_") {
-            f = runtime.handle_effect(&name, args, k).ok_or("unknown scheduler object effect")?;
+            f = runtime
+                .handle_effect(&name, args, k)
+                .ok_or("unknown scheduler object effect")?;
             continue;
         }
 
-        let (status, value) =
-            match execute_task(runtime, shared, worker, &name, &args) {
-                Ok(value) => (0, value),
-                Err(error) => (
-                    match error {
-                        Error::Empty => 1,
-                        Error::Full => 2,
-                        Error::Closed => 3,
-                        Error::Unauthorized => 4,
-                        Error::Invalid => 5,
-                    },
-                    Word::new(0).into(),
-                ),
-            };
+        let (status, value) = match execute_task(runtime, shared, worker, &name, &args) {
+            Ok(value) => (0, value),
+            Err(error) => (
+                match error {
+                    Error::Empty => 1,
+                    Error::Full => 2,
+                    Error::Closed => 3,
+                    Error::Unauthorized => 4,
+                    Error::Invalid => 5,
+                },
+                Word::new(0).into(),
+            ),
+        };
 
         f = k.apply(Tuple::from((Word::new(status), value)));
     }
-    
 }
 
 // need another function to perform the requested queue, execution, or completion operation
-fn execute_task(runtime: &FixOnArca, shared: &Shared, worker: usize, name: &[u8], args: &[Value],) -> Result<Value, Error>{
+fn execute_task(
+    runtime: &FixOnArca,
+    shared: &Shared,
+    worker: usize,
+    name: &[u8],
+    args: &[Value],
+) -> Result<Value, Error> {
     match (name, args) {
-        // maybe have one so people can query what the scheduler fields are? 
+        // maybe have one so people can query what the scheduler fields are?
         (b"scheduler_config", [Value::Word(field)]) => {
             let value = match field.read() {
                 0 => worker as u64,
@@ -191,7 +208,7 @@ fn execute_task(runtime: &FixOnArca, shared: &Shared, worker: usize, name: &[u8]
             Ok(pack_handle(work).into())
         }
 
-        (b"scheduler_push", [Value::Word(queue), Value::Blob(value)],) => {
+        (b"scheduler_push", [Value::Word(queue), Value::Blob(value)]) => {
             let queue = usize::try_from(queue.read()).map_err(|_| Error::Invalid)?;
             let work = read_handle(value)?;
             shared.queues.lock().push(worker, queue, work)?;

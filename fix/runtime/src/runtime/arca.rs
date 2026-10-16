@@ -53,12 +53,18 @@ impl FixOnArca {
                     panic!("unexpected non-effect return");
                 };
 
-                f = self.handle_effect(&effect, args, k)
+                f = self
+                    .handle_effect(&effect, args, k)
                     .unwrap_or_else(|| todo!("handle effect {:?}", &*effect));
             }
         }
     }
-    pub(crate) fn handle_effect(&self, effect: &[u8], mut args: Vec<Value>, k: Function,)->Option<Function>  {
+    pub(crate) fn handle_effect(
+        &self,
+        effect: &[u8],
+        mut args: Vec<Value>,
+        k: Function,
+    ) -> Option<Function> {
         Some(match effect {
             b"equals" => {
                 let Some(Value::Blob(rhs)) = args.pop() else {
@@ -105,9 +111,7 @@ impl FixOnArca {
                     "invalid tree payload length"
                 );
                 for handle in t.as_chunks::<HANDLE_SIZE>().0 {
-                    tree.push(
-                        unsafe { Handle::parse(*handle) }.expect("invalid tree entry"),
-                    );
+                    tree.push(unsafe { Handle::parse(*handle) }.expect("invalid tree entry"));
                 }
                 k.apply(pack_handle(self.storage().add_tree(&tree)))
             }
@@ -130,16 +134,16 @@ impl FixOnArca {
     }
 }
 
-
-
 pub(crate) fn pack_handle(handle: impl Into<Handle>) -> ArcaBlob {
     let raw = handle.into().into_bytes();
     ArcaBlob::new(raw)
 }
 
-//needed since we want to error out instead of 
-pub(crate) fn decode_handle( blob: &ArcaBlob,) -> Result<Handle, &'static str> {
-    if blob.len() != HANDLE_SIZE {return Err("invalid handle length");}
+//needed since we want to error out instead of
+pub(crate) fn decode_handle(blob: &ArcaBlob) -> Result<Handle, &'static str> {
+    if blob.len() != HANDLE_SIZE {
+        return Err("invalid handle length");
+    }
     let mut buf = [0u8; HANDLE_SIZE];
     if blob.read(0, &mut buf) != HANDLE_SIZE {
         return Err("Failed to parse Arca Blob to Fix Handle");

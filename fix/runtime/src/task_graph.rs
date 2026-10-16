@@ -1,11 +1,7 @@
 // this file keeps track of task graph that all instances share that updates
-// dependencies 
-use crate::handle::*;
-use crate::runtime::Runtime;
-use crate::storage::Storage;
-use kernel::prelude::*;
+// dependencies
 
-extern crate alloc; 
+extern crate alloc;
 use crate::computation::Computation;
 use alloc::vec::Vec;
 use fixhandle::{Handle, Name};
@@ -31,7 +27,7 @@ impl TaskGraph {
         }
     }
 
-    pub fn wait_for(&mut self,consumer: Computation,inputs: &[Computation],) -> usize {
+    pub fn wait_for(&mut self, consumer: Computation, inputs: &[Computation]) -> usize {
         self.clear_dependencies(consumer);
 
         let missing: HashSet<Computation> = inputs
@@ -43,18 +39,21 @@ impl TaskGraph {
         let count = missing.len();
 
         for input in &missing {
-            self.dependents
-                .entry(*input)
-                .or_default()
-                .insert(consumer);
+            self.dependents.entry(*input).or_default().insert(consumer);
         }
 
-        if count != 0 { self.dependencies.insert(consumer, missing);}
+        if count != 0 {
+            self.dependencies.insert(consumer, missing);
+        }
         count
     }
 
     /// Stores an observation and returns newly unblocked computations
-    pub fn publish( &mut self, work: Computation, result: Handle) -> Result<Vec<Computation>, Error> {
+    pub fn publish(
+        &mut self,
+        work: Computation,
+        result: Handle,
+    ) -> Result<Vec<Computation>, Error> {
         if matches!(result.name(), Name::Local { .. }) {
             return Err(Error::LocalResult);
         }
@@ -113,4 +112,3 @@ impl Default for TaskGraph {
         Self::new()
     }
 }
-

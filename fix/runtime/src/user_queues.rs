@@ -44,9 +44,13 @@ impl<T: Copy> WorkQueues<T> {
     pub fn create_queue(&mut self, worker: usize, capacity: usize) -> Result<u32, Error> {
         self.member(worker)?;
 
-        if capacity == 0 || capacity > self.max_capacity {return Err(Error::Invalid);}
-        if self.queues.len() >= self.max_queues {return Err(Error::Full);}
-        
+        if capacity == 0 || capacity > self.max_capacity {
+            return Err(Error::Invalid);
+        }
+        if self.queues.len() >= self.max_queues {
+            return Err(Error::Full);
+        }
+
         let id = u32::try_from(self.queues.len()).map_err(|_| Error::Full)?;
 
         self.queues.push(VecDeque::new());
@@ -79,7 +83,7 @@ impl<T: Copy> WorkQueues<T> {
 
         self.queues[queue].pop_front().ok_or(Error::Empty)
     }
-    
+
     pub fn len(&self, worker: usize, queue: usize) -> Result<usize, Error> {
         self.member(worker)?;
         self.queue(queue)?;
@@ -97,4 +101,4 @@ impl<T: Copy> WorkQueues<T> {
         self.closed[worker] = true;
         Ok(())
     }
-}   
+}
