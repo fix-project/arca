@@ -94,9 +94,6 @@ fn eval_user_scheduler(source: &str, runtime: &FixOnArca,) {
         .add_tree(&[parser, source.into(), environment]);
 }
 
-// Jennifer: tons of redundancy but I just didn't want to change original code,
-// in case errors showed up
-// the main change is just calling the parallel evaluator and how its passed in
 fn eval_file_parallel(path: &str) {
     let file = preprocessor::read_file(path).unwrap();
 

@@ -6,6 +6,8 @@ pub mod preprocessor;
 pub mod runtime;
 pub mod stdlib;
 pub mod storage;
+pub mod user_queues;
+pub mod user_scheduler_driver;
 
 pub mod handle {
     pub use fixhandle::*;

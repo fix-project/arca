@@ -10,7 +10,7 @@ pub enum Error {
     Invalid,
 }
 
-/// create a vector of queues
+/// create a vector of queues (empty)
 pub struct WorkQueues<T: Copy> {
     queues: Vec<VecDeque<T>>,
     capacities: Vec<usize>,
