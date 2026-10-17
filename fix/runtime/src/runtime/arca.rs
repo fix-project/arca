@@ -53,84 +53,103 @@ impl FixOnArca {
                     panic!("unexpected non-effect return");
                 };
 
-                f = match &*effect {
-                    b"equals" => {
-                        let Some(Value::Blob(rhs)) = args.pop() else {
-                            panic!()
-                        };
-                        let Some(Value::Blob(lhs)) = args.pop() else {
-                            panic!()
-                        };
-                        let equal = self
-                            .storage()
-                            .equals(unpack_handle(&lhs), unpack_handle(&rhs))
-                            .expect("equals: invalid or non-Eq operand");
-                        k.apply(kernel::prelude::Word::new(equal as u64))
-                    }
-                    b"create_blob_i32" => {
-                        let Some(Value::Word(w)) = args.pop() else {
-                            panic!()
-                        };
-                        k.apply(pack_handle(
-                            self.storage().add_blob(&u32::to_le_bytes(w.read() as u32)),
-                        ))
-                    }
-                    b"create_blob_i64" => {
-                        let Some(Value::Word(w)) = args.pop() else {
-                            panic!()
-                        };
-                        k.apply(pack_handle(
-                            self.storage().add_blob(&u64::to_le_bytes(w.read())),
-                        ))
-                    }
-                    b"create_blob" => {
-                        let Some(Value::Blob(b)) = args.pop() else {
-                            panic!()
-                        };
-                        k.apply(pack_handle(self.storage().add_blob(&b)))
-                    }
-                    b"create_tree" => {
-                        let Some(Value::Blob(t)) = args.pop() else {
-                            panic!()
-                        };
-                        let mut tree = Vec::new();
-                        assert!(
-                            t.len().is_multiple_of(HANDLE_SIZE),
-                            "invalid tree payload length"
-                        );
-                        for handle in t.as_chunks::<HANDLE_SIZE>().0 {
-                            tree.push(
-                                unsafe { Handle::parse(*handle) }.expect("invalid tree entry"),
-                            );
-                        }
-                        k.apply(pack_handle(self.storage().add_tree(&tree)))
-                    }
-                    b"get_blob" => {
-                        let Some(Value::Blob(b)) = args.pop() else {
-                            panic!()
-                        };
-                        let name = Blob::try_from(unpack_handle(&b)).expect("expected blob object");
-                        k.apply(self.storage().get_blob_backing(name).unwrap().value())
-                    }
-                    b"get_tree" => {
-                        let Some(Value::Blob(b)) = args.pop() else {
-                            panic!()
-                        };
-                        let name = Tree::try_from(unpack_handle(&b)).expect("expected tree object");
-                        k.apply(self.storage().get_tree_backing(name).unwrap().value())
-                    }
-                    _ => {
-                        todo!("handle effect {:?}", &*effect);
-                    }
-                };
+                f = self
+                    .handle_effect(&effect, args, k)
+                    .unwrap_or_else(|| todo!("handle effect {:?}", &*effect));
             }
         }
     }
+    pub(crate) fn handle_effect(
+        &self,
+        effect: &[u8],
+        mut args: Vec<Value>,
+        k: Function,
+    ) -> Option<Function> {
+        Some(match effect {
+            b"equals" => {
+                let Some(Value::Blob(rhs)) = args.pop() else {
+                    panic!()
+                };
+                let Some(Value::Blob(lhs)) = args.pop() else {
+                    panic!()
+                };
+                let equal = self
+                    .storage()
+                    .equals(unpack_handle(&lhs), unpack_handle(&rhs))
+                    .expect("equals: invalid or non-Eq operand");
+                k.apply(kernel::prelude::Word::new(equal as u64))
+            }
+            b"create_blob_i32" => {
+                let Some(Value::Word(w)) = args.pop() else {
+                    panic!()
+                };
+                k.apply(pack_handle(
+                    self.storage().add_blob(&u32::to_le_bytes(w.read() as u32)),
+                ))
+            }
+            b"create_blob_i64" => {
+                let Some(Value::Word(w)) = args.pop() else {
+                    panic!()
+                };
+                k.apply(pack_handle(
+                    self.storage().add_blob(&u64::to_le_bytes(w.read())),
+                ))
+            }
+            b"create_blob" => {
+                let Some(Value::Blob(b)) = args.pop() else {
+                    panic!()
+                };
+                k.apply(pack_handle(self.storage().add_blob(&b)))
+            }
+            b"create_tree" => {
+                let Some(Value::Blob(t)) = args.pop() else {
+                    panic!()
+                };
+                let mut tree = Vec::new();
+                assert!(
+                    t.len().is_multiple_of(HANDLE_SIZE),
+                    "invalid tree payload length"
+                );
+                for handle in t.as_chunks::<HANDLE_SIZE>().0 {
+                    tree.push(unsafe { Handle::parse(*handle) }.expect("invalid tree entry"));
+                }
+                k.apply(pack_handle(self.storage().add_tree(&tree)))
+            }
+            b"get_blob" => {
+                let Some(Value::Blob(b)) = args.pop() else {
+                    panic!()
+                };
+                let name = Blob::try_from(unpack_handle(&b)).expect("expected blob object");
+                k.apply(self.storage().get_blob_backing(name).unwrap().value())
+            }
+            b"get_tree" => {
+                let Some(Value::Blob(b)) = args.pop() else {
+                    panic!()
+                };
+                let name = Tree::try_from(unpack_handle(&b)).expect("expected tree object");
+                k.apply(self.storage().get_tree_backing(name).unwrap().value())
+            }
+            _ => return None,
+        })
+    }
 }
 
-fn pack_handle(handle: impl Into<Handle>) -> ArcaBlob {
+pub(crate) fn pack_handle(handle: impl Into<Handle>) -> ArcaBlob {
     let raw = handle.into().into_bytes();
     ArcaBlob::new(raw)
+}
+
+//needed since we want to error out instead of
+pub(crate) fn decode_handle(blob: &ArcaBlob) -> Result<Handle, &'static str> {
+    if blob.len() != HANDLE_SIZE {
+        return Err("invalid handle length");
+    }
+    let mut buf = [0u8; HANDLE_SIZE];
+    if blob.read(0, &mut buf) != HANDLE_SIZE {
+        return Err("Failed to parse Arca Blob to Fix Handle");
+    }
+
+    unsafe { Handle::parse(buf) }.map_err(|_| "invalid Fix handle")
 }
 
 fn unpack_handle(blob: &ArcaBlob) -> Handle {
