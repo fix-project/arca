@@ -19,7 +19,13 @@ exports_files([
     "hedron-bazel9.patch",
     "wabt.BUILD.bazel",
     "wabt-externref.cmake",
-    "proof.BUILD.bazel",
+    "rocq.bzl",
+    "rocq-toolchain.opam",
+    "rocq-toolchain.opam.locked",
+    "rocq_toolchain.py",
+    "rocq_toolchain.bzl",
+    "rocq_dependencies.py",
+    "proof_modules.bzl",
 ])
 
 load("@rules_rust//rust:defs.bzl", "rust_binary")

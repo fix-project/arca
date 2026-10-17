@@ -1,6 +1,6 @@
 [submodule "fix/wabt"]
 	path = third_party/wabt
 	url = https://github.com/WebAssembly/wabt.git
-[submodule "fix/wasm/fix-proof"]
-	path = coupon/proof
-	url = https://github.com/fix-project/fix-proof.git
+[submodule "WasmCert-Coq"]
+	path = coupon/proof/wasm-proofs/WasmCert-Coq
+	url = https://github.com/WasmCert/WasmCert-Coq.git

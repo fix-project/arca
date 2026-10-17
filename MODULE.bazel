@@ -91,12 +91,6 @@ new_local_repository(
     path = "third_party/wabt",
 )
 
-new_local_repository(
-    name = "coupon_proof",
-    build_file = "//build:proof.BUILD.bazel",
-    path = "coupon/proof",
-)
-
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -151,3 +145,11 @@ bazel_dep(name = "libpfm", version = "4.13.0", repo_name = "pfm")
 
 llvm_configure = use_repo_rule("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = ["X86", "WebAssembly"])
+
+rocq_toolchain = use_repo_rule("//build:rocq_toolchain.bzl", "rocq_toolchain")
+
+rocq_toolchain(name = "rocq_toolchain")
+
+rocq_host = use_repo_rule("//build:rocq.bzl", "rocq_host")
+
+rocq_host(name = "rocq_host")

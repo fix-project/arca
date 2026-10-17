@@ -60,14 +60,22 @@ bazel run //:lsp
 ## Environment-dependent tests
 
 `bazel test //...` requires `/dev/kvm`; without it, use
-`bazel test //:host_tests`. The proof test requires Isabelle2025-2, AFP,
-and OCaml:
+`bazel test //:host_tests`. The optional proof test requires opam, Python 3.11+,
+WABT, and the native build prerequisites listed in [coupon/proof/README.md](coupon/proof/README.md).
+Bazel provisions its own pinned OCaml/Rocq toolchain on the first run:
 
 ```sh
-bazel test --test_tag_filters=proof //coupon:proof
+bazel build //coupon:proof_modules
+bazel test //coupon:proof
 ```
 
-See [coupon/proof/README.md](coupon/proof/README.md) for proof setup.
+Bazel compiles each module and caches its kernel check separately. It also checks
+that the generated Wasm bytes match `coupon.wat` and verifies the installed
+library dependencies. Individual module checks assume their imports; the full
+suite verifies the complete dependency closure. CI runs it separately from the
+default tests.
+Module dependencies are declared in `build/proof_modules.bzl`; use `rocq dep`
+with the proof's `_CoqProject` when updating imports.
 
 The [Fix CLI](fix/runtime/README.md) also provides persistent object construction,
 reading, inspection, and labels.

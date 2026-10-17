@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//build:rocq.bzl", "rocq_test")
+load("//build:proof_modules.bzl", "MODULES")
 load("//build:defs.bzl", "fix_procedure", "wat_module")
 
 package(default_visibility = ["//visibility:private"])
@@ -15,13 +16,13 @@ genrule(
     name = "adapt",
     tags = ["manual"],
     srcs = [
-        "@coupon_proof//:coupon.wat",
+        "//coupon/proof:coupon.wat",
         "prologue.wat",
         "epilogue.wat",
         "rewrite-wat.sh",
     ],
     outs = ["coupon-collector.wat"],
-    cmd = "$(execpath @local_tools//:bash) $(location rewrite-wat.sh) $(location @coupon_proof//:coupon.wat) $(location prologue.wat) $(location epilogue.wat) $@",
+    cmd = "$(execpath @local_tools//:bash) $(location rewrite-wat.sh) $(location //coupon/proof:coupon.wat) $(location prologue.wat) $(location epilogue.wat) $@",
     tools = ["@local_tools//:bash"],
 )
 
@@ -40,19 +41,31 @@ fix_procedure(
     runnable = True,
 )
 
-sh_test(
-    name = "proof",
+filegroup(
+    name = "proof_modules",
+    srcs = ["//coupon/proof:" + name for name in MODULES],
+    tags = ["manual"],
+)
+
+[
+    rocq_test(
+        name = "proof_" + name,
+        size = "enormous",
+        deps = ["//coupon/proof:" + name],
+        tags = ["local", "manual", "proof"],
+    )
+    for name in MODULES
+]
+
+rocq_test(
+    name = "proof_dependencies",
     size = "enormous",
-    srcs = ["proof_test.sh"],
-    args = ["$(rlocationpath @coupon_proof//:coupon.wat)"],
-    data = [
-        "@bazel_tools//tools/bash/runfiles",
-        "@coupon_proof//:coupon.wat",
-        "@coupon_proof//:sources",
-    ],
-    tags = [
-        "local",
-        "manual",
-        "proof",
-    ],
+    modules = "@rocq_host//:dependencies",
+    tags = ["local", "manual", "proof"],
+)
+
+test_suite(
+    name = "proof",
+    tests = [":proof_" + name for name in MODULES] + [":proof_dependencies"],
+    tags = ["manual", "proof"],
 )

@@ -1,0 +1,13 @@
+opam-version: "2.0"
+synopsis: "Bazel proof toolchain"
+maintainer: "Fix project"
+authors: "Fix project"
+license: "MIT"
+depends: [
+  "ocaml-base-compiler" {= "5.5.1"}
+  "coq" {= "9.1.1"}
+  "coq-wasm" {= "2.2.1"}
+]
+pin-depends: [
+  ["coq-wasm.2.2.1" "git+https://github.com/WasmCert/WasmCert-Coq.git#5e6df8d60c94aa5dbeff633f5eb48caa6c64c225"]
+]
