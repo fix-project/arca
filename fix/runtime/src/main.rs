@@ -11,6 +11,7 @@ use kernel::host::os;
 use kernel::prelude::*;
 
 use fix::arca::FixOnArca;
+use fix::runtime::Runtime;
 use fix::*;
 
 pub const PARSER: &[u8] = include_bytes!(env!("FIX_PARSER"));
@@ -41,6 +42,16 @@ fn main() {
             let path = argv.get(2).expect("fix eval: expected a command file");
             eval_file_parallel(path);
         }
+        Some("user_scheduler") => {
+            let path = argv.get(2).expect("fix eval: expected a command file");
+            let scheduler = argv.get(3).expect("fix eval: expected a command file");
+            let num_workers = argv
+                .get(4)
+                .expect("user_eval: expected a worker count")
+                .parse::<usize>()
+                .expect("fix eval: expected a command file");
+            eval_user_file(path, scheduler, num_workers);
+        }
         Some(other) => panic!("fix: unknown command '{other}' (expected: init | eval <file> )"),
         None => panic!("fix: expected a command (init | eval <file> "),
     }
@@ -61,9 +72,39 @@ fn init() {
     println!("initialized empty fix store in .fix");
 }
 
-// Jennifer: tons of redundancy but I just didn't want to change original code,
-// in case errors showed up
-// the main change is just calling the parallel evaluator and how its passed in
+fn eval_user_file(path: &str, scheduler: &str, num_workers: usize) {
+    let file = preprocessor::read_file(path).unwrap();
+    let scheduler_elf: Arc<[u8]> = preprocessor::read_file(scheduler).unwrap().into();
+    let runtime = Arc::new(FixOnArca::default());
+    let root = eval_user_scheduler(core::str::from_utf8(&file).unwrap(), &runtime);
+    let report =
+        user_scheduler_driver::start(runtime.clone(), scheduler_elf, root, num_workers).unwrap();
+
+    let result = report.result;
+    println!("handle:    {result}");
+    println!("Current handle is: {:?}", result);
+    if let Ok(blob) = fixhandle::Blob::try_from(result) {
+        let contents = runtime.storage().get_blob(blob).unwrap();
+        println!("result is a Blob: {contents:?}");
+        if contents.len() == 8 {
+            let bytes: [u8; 8] = (*contents).try_into().unwrap();
+            println!("\tas a u64: {}", u64::from_le_bytes(bytes));
+        }
+    }
+}
+
+fn eval_user_scheduler(source: &str, runtime: &FixOnArca) -> Handle {
+    let processed = Preprocessor::new(source).preprocess().unwrap();
+    let parser: Handle = runtime.storage().add_blob(PARSER).into();
+    let source = runtime.storage().add_blob(processed.as_bytes());
+    let environment = stdlib::build_environment(runtime.storage());
+    let combination = runtime
+        .storage()
+        .add_tree(&[parser, source.into(), environment]);
+
+    combination.into_ref().application().strict().into()
+}
+
 fn eval_file_parallel(path: &str) {
     let file = preprocessor::read_file(path).unwrap();
 
