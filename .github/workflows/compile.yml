@@ -102,20 +102,3 @@ jobs:
           sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
       - name: Check lint
         run: bazel test //tests:lint
-
-  proof:
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - uses: bazel-contrib/setup-bazel@0.15.0
-        with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
-          repository-cache: true
-      - name: Install proof build prerequisites
-        run: sudo apt-get update && sudo apt-get install -y opam clang libgmp-dev pkg-config m4
-      - name: Check proofs
-        run: bazel test --local_test_jobs=2 //fix/proof:check

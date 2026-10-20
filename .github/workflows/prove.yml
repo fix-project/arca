@@ -1,0 +1,75 @@
+name: prove
+
+on:
+  push:
+    paths:
+      - fix/proof/**
+      - build/**
+      - third_party/BUILD.bazel
+      - third_party/wasmcert
+      - MODULE.bazel
+      - .bazel*
+      - .gitmodules
+      - .github/workflows/prove.yml
+      - '!**/*.md'
+  pull_request:
+    paths:
+      - fix/proof/**
+      - build/**
+      - third_party/BUILD.bazel
+      - third_party/wasmcert
+      - MODULE.bazel
+      - .bazel*
+      - .gitmodules
+      - .github/workflows/prove.yml
+      - '!**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          cache-version: prove-ubuntu-26.04
+          bazelrc: build --disk_cache=${{ runner.temp }}/prove-actions
+          external-cache: |
+            manifest:
+              "+rocq_toolchain+rocq_toolchain":
+                - build/rocq-toolchain.opam
+                - build/rocq-toolchain.opam.locked
+                - build/rocq_toolchain.bzl
+                - build/rocq_toolchain.py
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/prove-actions
+          # Include proof sources so source-only edits can save a new cache entry.
+          key: prove-ubuntu-26.04-${{ hashFiles('fix/proof/**', 'build/**', 'third_party/BUILD.bazel', 'MODULE.bazel', '.bazel*', '.gitmodules', '.github/workflows/prove.yml') }}
+          restore-keys: prove-ubuntu-26.04-
+      - name: Install proof build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake cpio opam clang libgmp-dev pkg-config m4
+      - name: Check proofs
+        run: bazel test --local_test_jobs=2 //fix/proof:check
+      - name: Proof logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-testlogs
+          path: bazel-testlogs/fix/proof/**/test.*
+          if-no-files-found: ignore
