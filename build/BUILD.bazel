@@ -7,6 +7,7 @@ fix_jobs(name = "fix-jobs", build_setting_default = 0)
 
 py_binary(name = "ndjson", srcs = ["ndjson.py"])
 
+
 exports_files([
     "cc.bzl",
     "fix.bzl",
@@ -24,8 +25,6 @@ exports_files([
     "rocq-toolchain.opam.locked",
     "rocq_toolchain.py",
     "rocq_toolchain.bzl",
-    "rocq_dependencies.py",
-    "proof_modules.bzl",
 ])
 
 load("@rules_rust//rust:defs.bzl", "rust_binary")
@@ -37,3 +36,5 @@ rust_binary(
     edition = "2024",
     deps = ["@crates//:hex", "@rules_rust//tools/runfiles"],
 )
+
+py_binary(name = "rocq_dependencies", srcs = ["rocq_dependencies.py"])

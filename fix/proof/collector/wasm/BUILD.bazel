@@ -1,0 +1,159 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "Acceptance",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        ":Backend",
+        ":Support",
+        ":Witnesses",
+    ],
+)
+
+rocq_module(
+    name = "Binary",
+    namespace = "FixProof.Collector.wasm",
+    src = ":binary_source",
+)
+
+rocq_module(
+    name = "Backend",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        "//fix/proof/shell:ABI",
+        "//fix/proof/shell:Externref",
+        "//fix/proof/shell:Host",
+        "//fix/proof/shell:Memory",
+        "//fix/proof/shell:Privileged",
+        "//fix/proof/shell:Tables",
+        "//fix/proof/collector:Encoding",
+        "//fix/proof/collector:Exchanges",
+        "//fix/proof/collector:Matching",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        "//fix/proof/support:BlobInteger",
+        "//fix/proof/support:WasmNatural",
+        ":Binary",
+        ":Execution",
+        ":Guards",
+        ":Layout",
+    ],
+)
+
+rocq_module(
+    name = "Execution",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        "//fix/proof/shell:ABI",
+        "//fix/proof/shell:Externref",
+        "//fix/proof/shell:Host",
+        "//fix/proof/collector:Matching",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Binary",
+        ":Layout",
+    ],
+)
+
+rocq_module(
+    name = "Guards",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        "//fix/proof/shell:ABI",
+        "//fix/proof/shell:Externref",
+        "//fix/proof/shell:Host",
+        "//fix/proof/collector:Matching",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        "//fix/proof/support:WasmNatural",
+        ":Binary",
+        ":Execution",
+        ":Layout",
+    ],
+)
+
+rocq_module(
+    name = "Layout",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        "//fix/proof/shell:ABI",
+        "//fix/proof/shell:Externref",
+        "//fix/proof/semantics:Handle",
+        "//fix/proof/support:WasmNatural",
+        ":Binary",
+    ],
+)
+
+rocq_module(
+    name = "Output",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        ":Backend",
+        ":Support",
+    ],
+)
+
+rocq_module(
+    name = "Refinement",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        ":Backend",
+        ":Support",
+        ":Witnesses",
+        ":Acceptance",
+        ":Output",
+    ],
+)
+
+rocq_module(
+    name = "Support",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        ":Backend",
+    ],
+)
+
+rocq_module(
+    name = "Witnesses",
+    namespace = "FixProof.Collector.wasm",
+    deps = [
+        ":Backend",
+        ":Support",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":Acceptance_check",
+        ":Binary_check",
+        ":Backend_check",
+        ":Execution_check",
+        ":Guards_check",
+        ":Layout_check",
+        ":Output_check",
+        ":Refinement_check",
+        ":Support_check",
+        ":Witnesses_check",
+    ],
+    tags = ["manual", "proof"],
+)
+
+py_binary(
+    name = "generate_binary",
+    srcs = ["generate.py"],
+    main = "generate.py",
+    tags = ["manual"],
+)
+
+genrule(
+    name = "binary_source",
+    srcs = ["//fix/proof/collector:wasm"],
+    outs = ["Binary.v"],
+    tools = [":generate_binary"],
+    cmd = "$(execpath :generate_binary) $(location //fix/proof/collector:wasm) $@",
+    tags = ["manual"],
+)

@@ -1,0 +1,101 @@
+load("//build:defs.bzl", "fix_procedure", "wat_module")
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+exports_files(["collector.wat"])
+
+wat_module(
+    name = "wasm",
+    visibility = ["//fix/proof/collector/wasm:__pkg__"],
+    src = "collector.wat",
+    out = "coupon-collector.wasm",
+    tags = ["manual"],
+)
+
+fix_procedure(
+    name = "collector",
+    wasm = ":wasm",
+    runnable = True,
+    visibility = ["//visibility:public"],
+    artifact_visibility = ["//fix/runtime:__pkg__"],
+    tags = ["manual"],
+)
+
+rocq_module(
+    name = "Completeness",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/shell:TagCreation",
+        "//fix/proof/evaluation:Adequacy",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Encoding",
+        ":Exchanges",
+        ":Matching",
+    ],
+)
+
+rocq_module(
+    name = "Encoding",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/semantics:Handle",
+        ":Matching",
+    ],
+)
+
+rocq_module(
+    name = "Exchanges",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/shell:TagCreation",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Encoding",
+        ":Logic",
+        ":Matching",
+    ],
+)
+
+rocq_module(
+    name = "Logic",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/equivalence:Closure",
+        "//fix/proof/equivalence:Indistinguishability",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "Matching",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "Preservation",
+    namespace = "FixProof.Collector",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Exchanges",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":Completeness_check",
+        ":Encoding_check",
+        ":Exchanges_check",
+        ":Logic_check",
+        ":Matching_check",
+        ":Preservation_check",
+    ],
+    tags = ["manual", "proof"],
+)

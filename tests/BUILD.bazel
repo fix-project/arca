@@ -15,7 +15,6 @@ HOST = [
     "//programs/fix:addblob",
     "//programs/flatware:ls",
     "//fix/handle",
-    "//coupon:api",
 ]
 
 GUEST = [

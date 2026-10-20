@@ -3,7 +3,7 @@
 def _rocq_toolchain_impl(ctx):
     opam = ctx.which("opam")
     if not opam:
-        fail("Install opam to build the pinned Rocq toolchain; see coupon/proof/README.md")
+        fail("Install opam to build the pinned Rocq toolchain; see fix/proof/README.md")
     ctx.file("rocq-toolchain.opam", ctx.read(ctx.attr._manifest))
     ctx.file("rocq-toolchain.opam.locked", ctx.read(ctx.attr._lock))
     result = ctx.execute(

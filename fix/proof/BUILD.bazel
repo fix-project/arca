@@ -1,0 +1,39 @@
+load("//build:rocq.bzl", "rocq_dependencies", "rocq_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["README.md"])
+
+rocq_dependencies(
+    name = "dependency_modules",
+    deps = [
+        "//fix/proof/shell:Runnable",
+        "//fix/proof/shell:TagProperties",
+        "//fix/proof/collector:Completeness",
+        "//fix/proof/collector:Preservation",
+        "//fix/proof/collector/wasm:Refinement",
+    ],
+    tags = ["manual"],
+)
+
+rocq_test(
+    name = "dependencies",
+    size = "enormous",
+    modules = ":dependency_modules",
+    tags = ["local", "manual", "proof"],
+)
+
+test_suite(
+    name = "check",
+    tests = [":dependencies"] + [
+        "//fix/proof/shell:check",
+        "//fix/proof/collector:check",
+        "//fix/proof/collector/wasm:check",
+        "//fix/proof/equivalence:check",
+        "//fix/proof/evaluation:check",
+        "//fix/proof/semantics:check",
+        "//fix/proof/support:check",
+        "//fix/proof/storage:check",
+    ],
+    tags = ["manual", "proof"],
+)

@@ -1,0 +1,43 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "Closure",
+    namespace = "FixProof.Equivalence",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Equivalence",
+    ],
+)
+
+rocq_module(
+    name = "Equivalence",
+    namespace = "FixProof.Equivalence",
+    deps = [
+        "//fix/proof/evaluation:Properties",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "Indistinguishability",
+    namespace = "FixProof.Equivalence",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Closure",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":Closure_check",
+        ":Equivalence_check",
+        ":Indistinguishability_check",
+    ],
+    tags = ["manual", "proof"],
+)

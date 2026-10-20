@@ -1,0 +1,32 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "Adequacy",
+    namespace = "FixProof.Evaluation",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Properties",
+    ],
+)
+
+rocq_module(
+    name = "Properties",
+    namespace = "FixProof.Evaluation",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Evaluation",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":Adequacy_check",
+        ":Properties_check",
+    ],
+    tags = ["manual", "proof"],
+)

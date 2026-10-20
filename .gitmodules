@@ -2,5 +2,5 @@
 	path = third_party/wabt
 	url = https://github.com/WebAssembly/wabt.git
 [submodule "WasmCert-Coq"]
-	path = coupon/proof/wasm-proofs/WasmCert-Coq
+	path = third_party/wasmcert
 	url = https://github.com/WasmCert/WasmCert-Coq.git

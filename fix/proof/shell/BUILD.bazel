@@ -1,0 +1,117 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "Privileged",
+    namespace = "FixProof.Shell",
+    deps = ["//fix/proof/storage:Interface"],
+)
+
+rocq_module(
+    name = "Interface",
+    namespace = "FixProof.Shell",
+    deps = ["//fix/proof/storage:Interface"],
+)
+
+rocq_module(
+    name = "ABI",
+    namespace = "FixProof.Shell",
+)
+
+rocq_module(
+    name = "Externref",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/semantics:Handle",
+        ":Operations",
+    ],
+)
+
+rocq_module(
+    name = "Host",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":ABI",
+        ":Externref",
+        ":Memory",
+        ":Operations",
+        ":Tables",
+    ],
+)
+
+rocq_module(
+    name = "Memory",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/support:BlobInteger",
+    ],
+)
+
+rocq_module(
+    name = "Operations",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "Runnable",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "Tables",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+        ":Externref",
+        ":TagCreation",
+    ],
+)
+
+rocq_module(
+    name = "TagCreation",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/equivalence:Indistinguishability",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+rocq_module(
+    name = "TagProperties",
+    namespace = "FixProof.Shell",
+    deps = [
+        "//fix/proof/equivalence:Closure",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":Privileged_check",
+        ":Interface_check",
+        ":ABI_check",
+        ":Externref_check",
+        ":Host_check",
+        ":Memory_check",
+        ":Operations_check",
+        ":Runnable_check",
+        ":Tables_check",
+        ":TagCreation_check",
+        ":TagProperties_check",
+    ],
+    tags = ["manual", "proof"],
+)

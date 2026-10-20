@@ -1,6 +1,6 @@
 """Compile and kernel-check Rocq libraries using a pinned opam toolchain."""
 
-RocqInfo = provider(fields = ["files", "paths", "module"])
+RocqInfo = provider(fields = ["files", "paths", "module", "modules"])
 
 def _rocq_library_impl(ctx):
     source = ctx.file.src
@@ -18,7 +18,7 @@ def _rocq_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._rocq,
         arguments = [args],
-        inputs = depset([source] + ctx.files.data, transitive = [dependencies]),
+        inputs = depset([source], transitive = [dependencies]),
         tools = ctx.files._toolchain,
         outputs = [output],
         env = {"HOME": "."},
@@ -32,6 +32,10 @@ def _rocq_library_impl(ctx):
             files = depset([output], transitive = [dependencies]),
             paths = paths,
             module = ctx.attr.namespace + "." + source.basename[:-2],
+            modules = depset(
+                [ctx.attr.namespace + "." + source.basename[:-2]],
+                transitive = [dep[RocqInfo].modules for dep in ctx.attr.deps],
+            ),
         ),
     ]
 
@@ -40,7 +44,6 @@ rocq_library = rule(
     attrs = {
         "src": attr.label(allow_single_file = [".v"], mandatory = True),
         "deps": attr.label_list(providers = [RocqInfo]),
-        "data": attr.label_list(allow_files = True),
         "namespace": attr.string(mandatory = True),
         "_rocq": attr.label(default = "@rocq_host//:bin/rocq", executable = True, cfg = "exec", allow_single_file = True),
         "_toolchain": attr.label(default = "@rocq_host//:files"),
@@ -101,22 +104,9 @@ def _rocq_host_impl(ctx):
     ctx.symlink(prefix.get_child("lib"), "lib")
     ctx.symlink(rocq, "bin/rocq")
     ctx.symlink(rocq.dirname.get_child("rocqchk"), "bin/rocqchk")
-    wat2wasm = ctx.which("wat2wasm")
-    if not wat2wasm:
-        fail("Install WABT (wat2wasm); see coupon/proof/README.md")
-    ctx.symlink(wat2wasm, "wat2wasm")
     ctx.file("config", config.stdout)
-    project = ctx.path(ctx.attr.project).dirname
-    sources = project.get_child("wasm-proofs/rocq")
-    for line in ctx.read(sources.get_child("_CoqProject")).splitlines():
-        if line.endswith(".v"):
-            ctx.read(sources.get_child(line))
-    dependencies = ctx.execute(["python3", ctx.path(ctx.attr._dependencies), rocq, project])
-    if dependencies.return_code:
-        fail("Cannot load the managed proof dependencies\n" + dependencies.stderr)
-    ctx.file("dependencies", dependencies.stdout)
     ctx.file("BUILD.bazel", '''package(default_visibility = ["//visibility:public"])
-exports_files(["bin/rocq", "bin/rocqchk", "wat2wasm", "dependencies"])
+exports_files(["bin/rocq", "bin/rocqchk"])
 filegroup(name = "files", srcs = ["bin/rocq", "bin/rocqchk", "config"] + glob(["lib/**"]))
 ''')
 
@@ -124,10 +114,58 @@ rocq_host = repository_rule(
     implementation = _rocq_host_impl,
     environ = ["PATH"],
     attrs = {
-        "project": attr.label(default = "//coupon/proof:coupon.wat"),
         "_rocq": attr.label(default = "@rocq_toolchain//:opam/proof/bin/rocq"),
-        "_dependencies": attr.label(default = "//build:rocq_dependencies.py"),
     },
     local = True,
     configure = True,
+)
+
+def rocq_module(name, namespace, deps = [], src = None):
+    rocq_library(
+        name = name,
+        src = src or name + ".v",
+        deps = deps,
+        namespace = namespace,
+        tags = ["manual"],
+    )
+    rocq_test(
+        name = name + "_check",
+        size = "enormous",
+        deps = [":" + name],
+        tags = ["local", "manual", "proof"],
+    )
+
+def _rocq_dependencies_impl(ctx):
+    libraries = [dep[RocqInfo] for dep in ctx.attr.deps]
+    files = depset(transitive = [library.files for library in libraries])
+    paths = depset(transitive = [library.paths for library in libraries])
+    modules = depset(transitive = [library.modules for library in libraries])
+    output = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.add(output)
+    args.add(ctx.executable._rocq)
+    for directory, namespace in paths.to_list():
+        args.add_all(["-Q", directory, namespace])
+    args.add("--")
+    args.add_all(modules)
+    ctx.actions.run(
+        executable = ctx.executable._inventory,
+        arguments = [args],
+        inputs = files,
+        tools = ctx.files._toolchain,
+        outputs = [output],
+        env = {"HOME": "."},
+        mnemonic = "RocqDependencies",
+        execution_requirements = {"no-remote-exec": "1"},
+    )
+    return [DefaultInfo(files = depset([output]))]
+
+rocq_dependencies = rule(
+    implementation = _rocq_dependencies_impl,
+    attrs = {
+        "deps": attr.label_list(providers = [RocqInfo]),
+        "_inventory": attr.label(default = "//build:rocq_dependencies", executable = True, cfg = "exec"),
+        "_rocq": attr.label(default = "@rocq_host//:bin/rocq", executable = True, cfg = "exec", allow_single_file = True),
+        "_toolchain": attr.label(default = "@rocq_host//:files"),
+    },
 )

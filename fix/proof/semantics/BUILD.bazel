@@ -1,0 +1,64 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "ApplyTree",
+    namespace = "FixProof.Semantics",
+    deps = [
+        ":Handle",
+        "//fix/proof/shell:Interface",
+    ],
+)
+
+rocq_module(
+    name = "Evaluation",
+    namespace = "FixProof.Semantics",
+    deps = [
+        ":ApplyTree",
+        ":Handle",
+        ":Identify",
+        ":Select",
+    ],
+)
+
+rocq_module(
+    name = "Handle",
+    namespace = "FixProof.Semantics",
+    deps = ["//fix/proof/storage:Interface"],
+)
+
+rocq_module(
+    name = "Types",
+    namespace = "FixProof.Semantics",
+    deps = ["//fix/proof/support:BlobInteger"],
+)
+
+rocq_module(
+    name = "Identify",
+    namespace = "FixProof.Semantics",
+    deps = [
+        ":Handle",
+    ],
+)
+
+rocq_module(
+    name = "Select",
+    namespace = "FixProof.Semantics",
+    deps = [
+        ":Handle",
+    ],
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":ApplyTree_check",
+        ":Evaluation_check",
+        ":Handle_check",
+        ":Types_check",
+        ":Identify_check",
+        ":Select_check",
+    ],
+    tags = ["manual", "proof"],
+)

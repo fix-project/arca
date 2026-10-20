@@ -10,3 +10,7 @@
 /compile_commands.json
 /external
 /.cache/clangd/
+/Makefile.rocq*
+/.Makefile.rocq.d
+/.lia.cache
+/.nia.cache

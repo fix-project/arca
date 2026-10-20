@@ -1,0 +1,22 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "BlobInteger",
+    namespace = "FixProof.Support",
+)
+
+rocq_module(
+    name = "WasmNatural",
+    namespace = "FixProof.Support",
+)
+
+test_suite(
+    name = "check",
+    tests = [
+        ":BlobInteger_check",
+        ":WasmNatural_check",
+    ],
+    tags = ["manual", "proof"],
+)

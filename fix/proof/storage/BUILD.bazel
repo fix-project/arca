@@ -1,0 +1,15 @@
+load("//build:rocq.bzl", "rocq_module")
+
+package(default_visibility = ["//fix/proof:__subpackages__"])
+
+rocq_module(
+    name = "Interface",
+    namespace = "FixProof.Storage",
+    deps = ["//fix/proof/semantics:Types"],
+)
+
+test_suite(
+    name = "check",
+    tests = [":Interface_check"],
+    tags = ["manual", "proof"],
+)

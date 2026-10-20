@@ -1,3 +1,3 @@
 third_party/wabt
-coupon/proof/wasm-proofs/WasmCert-Coq
+third_party/wasmcert
 target

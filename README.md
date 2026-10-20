@@ -13,7 +13,7 @@ Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installa
 git submodule update --init --recursive
 bazel query //... --output=label_kind
 bazel build //:artifacts
-bazel test -- //... -//coupon/...
+bazel test -- //... -//fix/proof/...
 bazel test //tests:format //tests:lint
 bazel run //:format
 bazel run //programs/kernel:hello -- Ada
@@ -61,21 +61,19 @@ bazel run //:lsp
 
 `bazel test //...` requires `/dev/kvm`; without it, use
 `bazel test //:host_tests`. The optional proof test requires opam, Python 3.11+,
-WABT, and the native build prerequisites listed in [coupon/proof/README.md](coupon/proof/README.md).
+and the native build prerequisites listed in [fix/proof/README.md](fix/proof/README.md).
 Bazel provisions its own pinned OCaml/Rocq toolchain on the first run:
 
 ```sh
-bazel build //coupon:proof_modules
-bazel test //coupon:proof
+bazel test //fix/proof:check
 ```
 
-Bazel compiles each module and caches its kernel check separately. It also checks
-that the generated Wasm bytes match `coupon.wat` and verifies the installed
+Bazel compiles each module and caches its kernel check separately. The proof embeds
+the Wasm binary built from `fix/proof/collector/collector.wat` and verifies the installed
 library dependencies. Individual module checks assume their imports; the full
 suite verifies the complete dependency closure. CI runs it separately from the
 default tests.
-Module dependencies are declared in `build/proof_modules.bzl`; use `rocq dep`
-with the proof's `_CoqProject` when updating imports.
+Theory directories declare their Bazel module dependencies and Rocq namespaces.
 
 The [Fix CLI](fix/runtime/README.md) also provides persistent object construction,
 reading, inspection, and labels.

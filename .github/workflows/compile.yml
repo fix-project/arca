@@ -54,7 +54,7 @@ jobs:
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       - name: Test
-        run: bazel test --keep_going --local_test_jobs=2 -- //... -//coupon/...
+        run: bazel test --keep_going --local_test_jobs=2 -- //... -//fix/proof/...
       - name: Test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,6 +116,6 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
           repository-cache: true
       - name: Install proof build prerequisites
-        run: sudo apt-get update && sudo apt-get install -y opam wabt clang libgmp-dev pkg-config m4
+        run: sudo apt-get update && sudo apt-get install -y opam clang libgmp-dev pkg-config m4
       - name: Check proofs
-        run: bazel test --local_test_jobs=2 //coupon:proof
+        run: bazel test --local_test_jobs=2 //fix/proof:check
