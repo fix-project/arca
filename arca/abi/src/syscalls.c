@@ -154,7 +154,7 @@ int64_t arca_tuple_set(arcad tuple, size_t index, arcad value) {
 }
 
 int64_t arca_table_set(arcad table, size_t index,
-                       const struct arca_entry *entry) {
+                       struct arca_entry *entry) {
   return syscall3(__NR_set, table, index, entry);
 }
 

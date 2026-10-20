@@ -2,7 +2,6 @@
     improper_ctypes_definitions,
     reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
 )]
-use crate::_PROCEDURE;
 use arca::{Blob, Entry, Function, Table, Value, Word};
 use arca::{Runtime as _, Tuple};
 use arcane::{
@@ -136,12 +135,6 @@ pub fn backing_page(data: &Value<Runtime>, mut offset: usize) -> (arca::Page<Run
     }
 }
 
-pub fn read_backing(data: &Value<Runtime>, offset: usize, bytes: &mut [u8]) {
-    let (page, position) = backing_page(data, offset);
-    assert_eq!(page.len(), 4096);
-    assert_eq!(page.read(position, bytes), bytes.len());
-}
-
 unsafe fn attach_data(data: &Value<Runtime>, addr: *mut u8, old_size: usize, len: usize) {
     assert!(
         matches!(data, Value::Table(_) | Value::Tuple(_)),
@@ -206,41 +199,128 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(data: *const u8, len: 
     let raw = unsafe { arca_blob_create(data, len) };
     assert!(raw >= 0);
     let blob = Blob::<Runtime>::from_inner(user::Ref::from_raw(u32::try_from(raw).unwrap()));
-    let result: Blob<Runtime> = Function::symbolic("create_blob")
-        .apply(blob)
-        .call_with_current_continuation()
-        .try_into()
-        .expect("create_blob failed");
-    assert_eq!(result.len(), 32);
-    let mut buf = [0u8; 32];
-    assert_eq!(result.read(0, &mut buf), buf.len());
-    u8x32::from_array(buf)
+    receive(Function::symbolic("create_blob").apply(blob))
 }
 
 /// Creates a tree from a region of memory.  Returns the handle,
 ///
 /// # Safety
 ///
-/// [addr] must refer to an region of memory which is large enough for the specified [len];  
-/// Each entry of the tree takes 32 bytes.
+/// `slice` must be a prefix of a reserved externref table slot, containing
+/// 32-byte handles supplied by the runtime.
 #[inline]
 pub unsafe fn fixpoint_create_tree(slice: &[u8]) -> u8x32 {
-    assert!(slice.len().is_multiple_of(crate::rt::EXTERNREF_SIZE));
-    for entry in slice.chunks_exact(HANDLE_SIZE) {
-        Handle::parse_ref(entry.try_into().expect("handle width"))
-            .expect("create_tree: invalid handle");
+    assert!(slice.len().is_multiple_of(HANDLE_SIZE));
+    let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
+    receive(
+        Function::symbolic("create_tree")
+            .apply(backing)
+            .apply(Word::<Runtime>::new(slice.len() as u64)),
+    )
+}
+
+unsafe fn snapshot_tree(addr: *const u8, len: usize) -> Value<Runtime> {
+    const CHUNK: usize = 1 << 30;
+    assert_eq!(addr as usize % CHUNK, 0);
+    let mut chunks = Tuple::<Runtime>::new(len.div_ceil(CHUNK).max(1));
+    for index in 0..chunks.len() {
+        let used = (len - index * CHUNK).min(CHUNK);
+        if used == 0 {
+            chunks.set(index, Table::<Runtime>::new(0));
+            continue;
+        }
+        let position = unsafe { addr.add(index * CHUNK) };
+        let mut raw = arca_entry {
+            mode: arcane::__MODE_none,
+            datatype: arcane::__TYPE_null,
+            data: CHUNK,
+        };
+        assert_eq!(
+            unsafe { arca_mmap(position.cast_mut().cast(), &mut raw) },
+            0
+        );
+        let reference = user::Ref::from_raw(u32::try_from(raw.data).unwrap());
+        let mut source = match (raw.datatype, raw.mode) {
+            (arcane::__TYPE_page, arcane::__MODE_read_only) => {
+                Entry::ROPage(arca::Page::from_inner(reference))
+            }
+            (arcane::__TYPE_page, arcane::__MODE_read_write) => {
+                Entry::RWPage(arca::Page::from_inner(reference))
+            }
+            (arcane::__TYPE_table, arcane::__MODE_read_only) => {
+                Entry::ROTable(Table::from_inner(reference))
+            }
+            (arcane::__TYPE_table, arcane::__MODE_read_write) => {
+                Entry::RWTable(Table::from_inner(reference))
+            }
+            _ => panic!("missing tree mapping"),
+        };
+        let Entry::ROTable(snapshot) = snapshot_tree_entry(&mut source, used) else {
+            panic!("invalid tree backing")
+        };
+        raw.data = match source {
+            Entry::ROPage(page) | Entry::RWPage(page) => page.into_inner().into_raw() as usize,
+            Entry::ROTable(table) | Entry::RWTable(table) => table.into_inner().into_raw() as usize,
+            Entry::Null(_) => unreachable!(),
+        };
+        assert_eq!(
+            unsafe { arca_mmap(position.cast_mut().cast(), &mut raw) },
+            0
+        );
+        chunks.set(index, snapshot);
     }
-    unsafe {
-        let result: Blob<Runtime> = Function::symbolic("create_tree")
-            .apply(slice)
-            .call_with_current_continuation()
-            .try_into()
-            .expect("create_tree failed");
-        let mut buf = [0u8; 32];
-        assert_eq!(result.len(), buf.len());
-        assert_eq!(Runtime::read_blob(&result, 0, &mut buf), buf.len());
-        u8x32::from_array(buf)
+    if chunks.len() == 1 {
+        chunks.take(0)
+    } else {
+        chunks.into()
     }
+}
+
+fn snapshot_tree_entry(source: &mut Entry<Runtime>, len: usize) -> Entry<Runtime> {
+    match source {
+        Entry::ROTable(table) | Entry::RWTable(table) => {
+            let mut result = Table::<Runtime>::new(table.len());
+            let span = table.len() / 512;
+            for index in 0..len.div_ceil(span) {
+                let mut entry = table.take(index).expect("tree mapping");
+                result
+                    .set(
+                        index,
+                        snapshot_tree_entry(&mut entry, (len - index * span).min(span)),
+                    )
+                    .expect("tree mapping");
+                table.set(index, entry).expect("tree mapping");
+            }
+            Entry::ROTable(result)
+        }
+        Entry::ROPage(page) | Entry::RWPage(page) => {
+            if page.len() == 4096 {
+                return Entry::ROPage(snapshot_tree_page(page, 0, len));
+            }
+            let mut result = Table::<Runtime>::new(page.len());
+            for offset in (0..len).step_by(4096) {
+                let snapshot = snapshot_tree_page(page, offset, (len - offset).min(4096));
+                assert!(result.map(offset, Entry::ROPage(snapshot)).is_ok());
+            }
+            Entry::ROTable(result)
+        }
+        Entry::Null(_) => panic!("missing tree mapping"),
+    }
+}
+
+fn snapshot_tree_page(
+    page: &arca::Page<Runtime>,
+    offset: usize,
+    len: usize,
+) -> arca::Page<Runtime> {
+    if page.len() == 4096 {
+        return page.clone();
+    }
+    let mut bytes = [0; 4096];
+    assert_eq!(page.read(offset, &mut bytes[..len]), len);
+    let mut snapshot = arca::Page::<Runtime>::new(4096);
+    assert_eq!(snapshot.write(0, &bytes), bytes.len());
+    snapshot
 }
 
 /// Creates a tag from a region of memory.  Returns the handle,
@@ -248,27 +328,17 @@ pub unsafe fn fixpoint_create_tree(slice: &[u8]) -> u8x32 {
 /// # Safety
 ///
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
-/// Each entry of the tree takes 32 bytes. _PROCEDURE must be initialized before first invocation
-/// of this function.
+/// Each entry of the tree takes 32 bytes.
 #[inline]
-pub unsafe fn fixpoint_create_tag(slice: &[u8]) -> u8x32 {
-    /// Check that the author field matches with current procedure
+pub unsafe fn fixpoint_create_tag(slice: &[u8], author_depth: u32) -> u8x32 {
     assert!(slice.len() >= 32);
-    let author_field = &slice[..32];
-
-    let procedure_ref = &raw mut _PROCEDURE;
-
-    if unsafe { (&*procedure_ref).as_array().as_slice() } != author_field {
-        arca_log("create_tag: author does not match current procedure");
-        panic!()
-    };
-
-    let result = unsafe { fixpoint_create_tree(slice) };
-    let tree = Tree::try_from(
-        unsafe { Handle::parse_native(result) }.expect("create_tag: invalid handle"),
+    let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
+    receive(
+        Function::symbolic("create_tag")
+            .apply(backing)
+            .apply(Word::<Runtime>::new(slice.len() as u64))
+            .apply(Word::<Runtime>::new(author_depth as u64)),
     )
-    .expect("create_tag: created not a tree");
-    tree.tag_descriptor().handle().into_native()
 }
 
 /// # Safety
@@ -381,10 +451,23 @@ fn data_reference(handle: Handle) -> Result<fixhandle::Ref, fixhandle::Error> {
 /// # Safety
 /// `bytes` must encode a Handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_is_eq(bytes: u8x32) -> bool {
+pub unsafe extern "C" fn fixpoint_is_comparable(bytes: u8x32) -> bool {
     unsafe { Handle::parse_native(bytes) }
-        .expect("is_eq: invalid handle")
-        .is_eq()
+        .expect("is_comparable: invalid handle")
+        .is_comparable()
+}
+
+/// # Safety
+/// `handle` must have been supplied by the runtime.
+pub unsafe fn fixpoint_unsound_handle_bytes(handle: u8x32) -> u8x32 {
+    let privileged: Word<Runtime> = Function::symbolic("is_privileged")
+        .call_with_current_continuation()
+        .try_into()
+        .expect("is_privileged: return type is not a word");
+    assert_eq!(privileged.read(), 1, "handle bytes require privilege");
+    receive(
+        Function::symbolic("unsound_handle_bytes").apply(Runtime::create_blob(handle.as_array())),
+    )
 }
 
 /// # Safety
@@ -392,8 +475,8 @@ pub unsafe extern "C" fn fixpoint_is_eq(bytes: u8x32) -> bool {
 #[inline]
 pub unsafe extern "C" fn fixpoint_equals(lhs: u8x32, rhs: u8x32) -> bool {
     assert!(
-        unsafe { fixpoint_is_eq(lhs) && fixpoint_is_eq(rhs) },
-        "equals: non-Eq operand"
+        unsafe { fixpoint_is_comparable(lhs) && fixpoint_is_comparable(rhs) },
+        "equals: non-comparable operand"
     );
     let result: Word<Runtime> = Function::symbolic("equals")
         .apply(Runtime::create_blob(lhs.as_array()))
@@ -483,8 +566,9 @@ pub unsafe extern "C" fn fixpoint_create_shallow_encode(bytes: u8x32) -> u8x32 {
 /// `bytes` must encode a Handle supplied by the runtime.
 #[inline]
 pub unsafe extern "C" fn fixpoint_len(bytes: u8x32) -> usize {
-    unsafe { Handle::parse_native(bytes) }
-        .expect("len: invalid handle")
+    data_reference(unsafe { Handle::parse_native(bytes) }.expect("len: invalid handle"))
+        .expect("len: expected Object or Ref")
+        .handle()
         .checked_len()
         .expect("len: handle length exceeds address space")
 }
@@ -503,4 +587,15 @@ pub unsafe extern "C" fn __assert_fail(
         let function = CStr::from_ptr(function).display();
         panic!("assertion failed at {file}:{line} in {function}: {assertion}");
     }
+}
+
+pub fn receive(function: Function<Runtime>) -> u8x32 {
+    let result: Blob<Runtime> = function
+        .call_with_current_continuation()
+        .try_into()
+        .expect("expected a handle");
+    let mut bytes = [0; 32];
+    assert_eq!(result.len(), bytes.len());
+    assert_eq!(result.read(0, &mut bytes), bytes.len());
+    u8x32::from_array(bytes)
 }

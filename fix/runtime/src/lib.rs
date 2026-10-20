@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod computation;
+pub mod coupon;
 pub mod evaluator;
 pub mod parallel_evaluator;
 pub mod preprocessor;

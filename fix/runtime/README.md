@@ -27,8 +27,8 @@ whitespace-separated value from stdin when their argument is `-`.
 | --- | --- |
 | `repository` | Print the absolute path to the active `.fix` directory |
 | `think THUNK` | Perform one thunk reduction and store its returned value, without recursively evaluating that value |
-| `visit VALUE` | Print reachable stored Objects once each; omit literal Blobs and do not evaluate thunks |
-| `eval [-j N] VALUE` | Evaluate using serial (`-j 1`) or parallel evaluator; persist and print result |
+| `visit [--paths] VALUE` | Print reachable stored Objects once each; `--paths` prints NUL-separated data, record, index, and explicitly selected label paths relative to the repository's parent; omit literal Blobs and do not evaluate thunks |
+| `eval [-j N] [--memoize] VALUE` | Evaluate using serial (`-j 1`) or parallel evaluator; persist and print result |
 | `create-blob FILE… \| --files-from MANIFEST \| --string TEXT \| --u8 NUMBER \| --u32 NUMBER \| --u64 NUMBER` | File bytes or formatted argument → Blob handle(s); manifests contain NUL-separated paths, `-` reads stdin |
 | `create-tree [--bindings] VALUE… \| -` | Arguments, or stdin tokens → ordered Tree handle; `--bindings -` reads NUL-separated name/value pairs |
 | `read-blob [--string \| --u8 \| --u32 \| --u64] VALUE` | Blob Object → bytes, text, or unsigned decimal integer |
@@ -47,7 +47,7 @@ whitespace-separated value from stdin when their argument is `-`.
 | `get-data-type VALUE` | Object or Ref → `blob` or `tree` |
 | `get-encode-type VALUE` | Encode → `strict` or `shallow` |
 | `len VALUE` | Blob bytes or Tree elements |
-| `is-tag VALUE`, `is-eq VALUE` | Predicate exit status |
+| `is-tag VALUE`, `is-comparable VALUE` | Predicate exit status |
 
 Constructors accept `-l NAME`. Label names are single filename components,
 excluding `.` and `..`. Inspection does not evaluate or force values.
@@ -78,6 +78,30 @@ Evaluation defaults to the host's available parallelism. Input objects are read
 from the repository on demand; newly produced objects are persisted before the
 result handle is printed.
 
+`eval --memoize` saves application coupons and reuses existing zero-author
+application coupons for the same canonical combination. A hit returns the
+existing certificate unchanged. Conditional coupons are indexed but not reused;
+their assumptions must first be propagated through collector derivations.
+Saved coupons retain their inputs and results, increasing repository size.
+
+Stored Tags are indexed at
+`.fix/tags/<field-1>/…/<field-8>/entries/<tag-handle>` using up to eight fields
+after the authors. Each entry is a relative symlink to its Object record.
+Prefix lookup checks the actual stored Tag; the index does not confer authority.
+Repositories imported without index entries remain usable, but those Tags will
+not be found until saved again.
+
+Calling an ELF requires a Tag `[authors, ELF, "Runnable"]`; every author must
+be trusted. Empty-author certificates are unconditional. Trusting an ELF as
+an author does not permit calling it without a certificate.
+
+Trusted author handles are read from `$XDG_CONFIG_HOME/fix/trust`, or
+`~/.config/fix/trust` when `XDG_CONFIG_HOME` is unset. Each line contains one
+canonical handle. `FIX_TRUST` selects another file. A missing default file
+trusts no authors; an explicitly selected file must exist. Repository trust
+files are never loaded automatically. To use an explicitly trusted bootstrap,
+set `FIX_TRUST` to its `.fix/trust` file.
+
 ## External commands
 
 The host launcher runs `fix-COMMAND` from the nearest repository's
@@ -94,7 +118,7 @@ The bundled helper commands require an initialized repository:
 | `parse SCRIPT [BINDINGS]` | Construct a value using `parser`; batch-import file expansions (`-` reads stdin) |
 | `run SCRIPT [BINDINGS]` | Parse and evaluate a script; `FIX_JOBS` sets parallelism |
 | `json-import DOCUMENT [BINDINGS]` | Construct a value using the JSON deserializer (`-` reads stdin) |
-| `compile WASM_VALUE` | Construct an ELF-producing Thunk from a native Fix Wasm module |
+| `compile WASM_VALUE` | Construct a Thunk producing a Runnable certificate for a native Fix Wasm module |
 | `flatware-link WASM_VALUE` | Attach the WASIp1 adapter, producing a Wasm-producing Thunk |
 | `flatware-import PATH [NAME]` | UNIX file, directory, or symlink → Flatware descriptor |
 | `flatware-export VALUE PATH` | Flatware descriptor → UNIX filesystem |
@@ -111,8 +135,11 @@ rather than adding filesystem semantics to Fix itself. See [Flatware](../../flat
 The native CLI bundles its VMM and kernel. External helpers own their tools;
 Bazel supplies a command directory on PATH, without compiler resource variables.
 `parse` uses `fix-preprocess` from PATH. The graph helpers use Python 3 and its standard library.
-[fix-compile](../cli/commands/fix-compile) constructs translation, compilation, and linking directly as JSON expressions.
-`compile` uses the `wasm2c`, `clang`, `path`, and `toolchain` repository labels.
+[fix-compile](../cli/commands/fix-compile) applies the trusted [compiler wrapper](../../programs/fix/compile.rs)
+using the `fixpoint` and `compile-resources` labels. The wrapper authenticates its
+resources and phase state, checks command exit statuses, and returns a
+`[authors, ELF, "Runnable"]` Tag or an Error Tag containing the failed Flatware result.
+`FIX_COMPILE_PARTITIONS` sets the number of C units (default 8).
 `flatware-link` uses `wasm-merge`, `path`, and `toolchain`; its merger must support
 `--no-resource-imports`. Both accept a Wasm Blob or a Thunk producing one.
 Bootstrap archives are trusted store contents. They can also be extracted over

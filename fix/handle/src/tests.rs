@@ -17,7 +17,7 @@ fn machine_fields_and_typed_operations() {
     assert_eq!(&bytes[..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(&bytes[8..16], &[17, 18, 19, 20, 21, 22, 23, 24]);
     assert_eq!(&bytes[16..24], &[0; 8]);
-    assert_eq!(&bytes[24..], &[1, 2, 3, 4, 5, 6, 6, 0x80]);
+    assert_eq!(&bytes[24..], &[1, 2, 3, 4, 5, 6, 14, 0x80]);
     let encoded = blob.into_ref().identification().shallow().handle();
     assert_eq!(encoded.as_bytes()[31], 0x9a);
     assert_eq!(&encoded.as_bytes()[..31], &bytes[..31]);
@@ -152,7 +152,7 @@ fn malformed_names_are_rejected() {
     bytes[30] = 1;
     assert_eq!(Handle::parse_ref(&bytes).unwrap_err(), Error::InvalidName);
     bytes = base.handle().into_bytes();
-    bytes[30] = 2 | 0x08;
+    bytes[30] = 2 | 0x10;
     assert_eq!(Handle::parse_ref(&bytes).unwrap_err(), Error::ReservedBits);
     assert_eq!(
         unsafe { Blob::named(Name::Canonical(&[0; 24]), 30, false) }.unwrap_err(),
@@ -176,6 +176,7 @@ fn malformed_names_are_rejected() {
                     storage_id: 0,
                 },
                 31,
+                false,
                 false,
             )
         }
@@ -260,6 +261,7 @@ fn tree_thunks_preserve_name_metadata_and_tag() {
             },
             64,
             true,
+            true,
         )
     }
     .unwrap()
@@ -269,14 +271,14 @@ fn tree_thunks_preserve_name_metadata_and_tag() {
             let handle = encode.handle();
             assert_eq!(&handle.as_bytes()[..31], &tree.handle().as_bytes()[..31]);
             unsafe { Handle::parse(*handle.as_bytes()) }.unwrap();
-            assert_eq!(handle.eq_bit(), Some(true));
+            assert_eq!(handle.comparability_bit(), Some(true));
             assert_eq!(handle.checked_len().unwrap(), 2);
         }
     }
 }
 
 #[test]
-fn equality_metadata_and_verification() {
+fn comparability_metadata_and_verification() {
     let literal = Blob::literal(b"value").unwrap();
     let blob = Blob::canonical(&[7; 64]).unwrap();
     for value in [
@@ -285,10 +287,10 @@ fn equality_metadata_and_verification() {
         blob.handle(),
         blob.into_ref().handle(),
     ] {
-        assert!(value.is_eq());
+        assert!(value.is_comparable());
     }
     let tree = Tree::canonical(&[literal.into(), blob.into_ref().into()]).unwrap();
-    assert!(tree.as_handle().is_eq());
+    assert!(tree.as_handle().is_comparable());
     let thunk = literal.into_ref().identification();
     for value in [
         thunk.handle(),
@@ -296,17 +298,59 @@ fn equality_metadata_and_verification() {
         thunk.shallow().handle(),
         tree.into_ref().selection().handle(),
     ] {
-        assert!(!value.is_eq());
-        let non_eq = Tree::canonical(&[value]).unwrap();
-        assert!(!non_eq.as_handle().is_eq());
-        assert!(!non_eq.into_ref().as_handle().is_eq());
-        let mut forged = non_eq.handle().into_bytes();
+        assert!(!value.is_comparable());
+        let non_comparable = Tree::canonical(&[value]).unwrap();
+        assert!(!non_comparable.as_handle().is_comparable());
+        assert!(!non_comparable.into_ref().as_handle().is_comparable());
+        let mut forged = non_comparable.handle().into_bytes();
         forged[30] |= 4;
         let forged = Tree::try_from(unsafe { Handle::parse(forged) }.unwrap()).unwrap();
-        assert_eq!(forged.verify(&[value]), Err(Error::InvalidEq));
+        assert_eq!(forged.verify(&[value]), Err(Error::InvalidComparisonBit));
     }
     let mut forged = blob.handle().into_bytes();
     forged[30] &= !4;
     let forged = Blob::try_from(unsafe { Handle::parse(forged) }.unwrap()).unwrap();
-    assert_eq!(forged.verify(&[7; 64]), Err(Error::InvalidEq));
+    assert_eq!(forged.verify(&[7; 64]), Err(Error::InvalidComparisonBit));
+}
+
+#[test]
+fn value_metadata_and_verification() {
+    let blob = Blob::canonical(&[7; 64]).unwrap();
+    let pending_children = [blob.into_ref().identification().strict().into()];
+    let pending = Tree::canonical(&pending_children).unwrap();
+    assert!(!pending.as_handle().is_value());
+    assert_eq!(pending.as_handle().value_bit(), Some(false));
+    let children: [Handle; 4] = [
+        Blob::literal(b"value").unwrap().into(),
+        blob.into(),
+        pending.into_ref().into(),
+        pending.into_ref().application().into(),
+    ];
+    for child in children {
+        assert!(child.is_value());
+        assert!(child.bytes_view().is_value());
+    }
+    let ready = Tree::canonical(&children).unwrap();
+    assert!(ready.as_handle().is_value());
+    assert!(!ready.as_handle().is_comparable());
+    assert!(ready.tag_descriptor().as_handle().is_value());
+    let nested_children = [pending.into()];
+    let nested = Tree::canonical(&nested_children).unwrap();
+    assert!(!nested.as_handle().is_value());
+    assert!(nested.into_ref().as_handle().is_value());
+    assert!(!nested.into_ref().object_descriptor().as_handle().is_value());
+    for (tree, contents) in [
+        (pending, pending_children.as_slice()),
+        (ready, children.as_slice()),
+        (nested, nested_children.as_slice()),
+    ] {
+        let mut forged = tree.handle().into_bytes();
+        forged[30] ^= 8;
+        let forged = Tree::try_from(unsafe { Handle::parse(forged) }.unwrap()).unwrap();
+        assert_eq!(forged.verify(contents), Err(Error::InvalidValueBit));
+    }
+    let mut forged = blob.handle().into_bytes();
+    forged[30] &= !8;
+    let forged = Blob::try_from(unsafe { Handle::parse(forged) }.unwrap()).unwrap();
+    assert_eq!(forged.verify(&[7; 64]), Err(Error::InvalidValueBit));
 }

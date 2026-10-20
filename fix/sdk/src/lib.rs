@@ -10,9 +10,9 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 pub use fixtypes::{DataType, EncodeType, ValueType};
 pub use macros::apply;
 pub use value::{
-    Any, Application, Blob, Cast, Choice, CreateBlob, CreateTree, Encode, Erased, Focus, Handle,
-    Identification, Object, Ref, Reference, Select, Selection, Shallow, Strict, Thunk, Tree, Value,
-    choose,
+    Any, Application, Blob, Cast, Choice, CreateBlob, CreateTag, CreateTree, Encode, Erased, Focus,
+    Handle, Identification, Object, Ref, Reference, Select, Selection, Shallow, Strict, Thunk,
+    Tree, Value, choose,
 };
 #[doc(hidden)]
 pub use value::{Cons as __Cons, Nil as __Nil, Path};
@@ -27,7 +27,13 @@ pub enum Error {
     OutOfBounds = 2,
     WrongType = 3,
     AllOccupied = 6,
-    NotEq = 4,
+    NotComparable = 4,
+}
+
+impl From<core::num::TryFromIntError> for Error {
+    fn from(_: core::num::TryFromIntError) -> Self {
+        Self::OutOfBounds
+    }
 }
 
 #[doc(hidden)]

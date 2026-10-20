@@ -109,18 +109,32 @@ In order to induce the computation of a Thunk, it must be wrapped in an Encode.
 An encode is an "Explicit Named Computation On Data (or ENCODE)".
 
 An Encode may request two different types of evaluation:
-1. Strict Encodes recursively evaluate and load a value, producing an object
-   that contains no refs (even transitively).
+1. Strict Encodes perform the minimum amount of evaluation to produce an object.
 2. Shallow Encodes perform the minimum amount of evaluation to produce a ref.
 
-## Equality
+## Comparability
 
 Certain types of values in Fix can be deterministically compared for equality.
-This class, Eq, can be recursively defined as:
+This class, Comparable, can be recursively defined as:
 1. Blobs
-2. Trees containing only Eq values
-3. Refs to Eq values
+2. Trees containing only Comparable values
+3. Refs to Comparable values
 
 In essence, these are values where every bit of information is already
 computed; they do not contain Thunks anywhere in their body. Whether a given
-value is Eq or not is stored as a metadata bit on its handle.
+value is Comparable or not is stored as a metadata bit on its handle.
+
+## Fully-Evaluated Values
+
+Strictly, a "value" refers to something which has been evaluated. Since we use
+the word "value" loosely, we distinguish fully-evaluated values. This basically
+maps to any value which does not contain an Encode.
+
+This class can be recursively defined as:
+1. Blobs
+2. Trees containing only fully-evaluated values
+3. Refs (whether or not the referent is fully-evaluated)
+4. Thunks
+
+This is similar to Comparable, except it admits Thunks. Any value in this class
+is evaluation-stable; evaluating it again will not change its canonical name.

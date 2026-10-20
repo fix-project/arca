@@ -39,7 +39,7 @@ macro_rules! delegate_value {
             let $path = path;
             delegate_value!(@call $value, encode_type_at, ($route))
         }
-        fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
+        fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
             let $this = self;
             let $path = path;
             delegate_value!(@call $value, len_at, ($route))
@@ -69,6 +69,7 @@ mod encode;
 mod ffi;
 mod handle;
 mod reference;
+mod tag;
 mod thunk;
 mod tree;
 mod types;
@@ -84,6 +85,7 @@ pub(crate) use ffi::status;
 use ffi::*;
 pub use handle::{Child, Focus, Handle, Lookup, Path};
 pub use reference::Reference;
+pub use tag::CreateTag;
 pub use thunk::{Application, Identification, Selection};
 pub use tree::{Children, Cons, CreateTree, Nil, Select};
 pub use types::*;
@@ -108,7 +110,7 @@ pub trait Value {
         Err(Error::WrongType)
     }
     #[doc(hidden)]
-    fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
+    fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
         let _ = path;
         Err(Error::WrongType)
     }
@@ -161,15 +163,15 @@ pub trait Value {
     fn encode_type(&self) -> Result<EncodeType, Error> {
         self.encode_type_at(None)
     }
-    fn len(&self) -> Result<usize, Error> {
+    fn len(&self) -> Result<u64, Error> {
         self.len_at(None)
     }
     fn is_empty(&self) -> Result<bool, Error> {
         Ok(self.len()? == 0)
     }
-    fn is_eq(&self) -> Result<bool, Error> {
+    fn is_comparable(&self) -> Result<bool, Error> {
         self.build_at(None)?;
-        Ok(query_current(fix_sdk_is_eq)? != 0)
+        Ok(query_current(fix_sdk_is_comparable)? != 0)
     }
     fn equals<V: Value>(&self, other: V) -> Result<bool, Error>
     where
@@ -242,7 +244,7 @@ pub trait Value {
     }
     #[cfg(feature = "alloc")]
     fn read(&self) -> Result<Vec<u8>, Error> {
-        let mut bytes = alloc::vec![0; self.len()?];
+        let mut bytes = alloc::vec![0; usize::try_from(self.len()?)?];
         self.read_into(0, &mut bytes)?;
         Ok(bytes)
     }
@@ -275,7 +277,7 @@ impl<V: Value> Value for Result<V, Error> {
 }
 fn equal<L: Value, R: Value>(left: &L, right: &R) -> bool {
     match left.equals(right) {
-        Err(Error::NotEq) => false,
+        Err(Error::NotComparable) => false,
         result => result.expect("Fix equality failed"),
     }
 }

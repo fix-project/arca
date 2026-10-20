@@ -2,7 +2,6 @@ extern crate alloc;
 use crate::scheduler::{Scheduler, Task};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use hashbrown::HashMap;
 #[cfg(debug_assertions)]
 use kernel::coreid;
 use kernel::kthread;
@@ -20,7 +19,6 @@ enum EvalType {
 pub struct Evaluator<R: Runtime> {
     runtime: R,
     scheduler: Scheduler,
-    trees: kthread::KMutex<HashMap<[u8; HANDLE_SIZE], Tree>>,
     stopped: AtomicBool,
     workers: AtomicUsize,
 }
@@ -30,7 +28,6 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
         let evaluator = Arc::new(Self {
             runtime,
             scheduler: Scheduler::new(),
-            trees: kthread::KMutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
             workers: AtomicUsize::new(0),
         });
@@ -100,7 +97,9 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     }
 
     fn apply(&self, combination: Tree) -> Handle {
-        self.runtime.execute(combination)
+        let coupon = self.runtime.execute(combination);
+        let claim = self.storage().certificate_claim(coupon).unwrap();
+        self.storage().get_tree(claim).unwrap()[2]
     }
 
     pub fn select(&self, selection: Tree) -> Handle {
@@ -108,75 +107,8 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     }
 
     fn select_with_mode(&self, selection: Tree, eval_mode: EvalType) -> Handle {
-        let handles = self.storage().get_tree(selection).unwrap();
-        let (&target, indices) = handles.split_first().expect("empty selection thunk");
-        let target = match target.view() {
-            HandleView::Encode(encode) => self.encode(*encode, eval_mode),
-            _ => target,
-        };
-        match indices {
-            [index] => self.select_index(target, self.read_index_with_mode(*index, eval_mode)),
-            [start, end] => self.select_range(
-                target,
-                self.read_index_with_mode(*start, eval_mode),
-                self.read_index_with_mode(*end, eval_mode),
-            ),
-            _ => panic!("selection thunk got {} handles", handles.len()),
-        }
-    }
-
-    pub fn select_index(&self, target: Handle, index: usize) -> Handle {
-        if index >= target.len() {
-            panic!("Invalid index {index} for selection thunk");
-        }
-        let object = match target.view() {
-            HandleView::Object(object) => *object,
-            HandleView::Ref(reference) => reference.object_descriptor(),
-            _ => panic!("expected blob or tree handle for selection thunk"),
-        };
-        match object.view() {
-            ObjectView::Tree(tree) => self.storage().get_tree(*tree).unwrap()[index],
-            ObjectView::Blob(blob) => {
-                let data = self.storage().get_blob(*blob).unwrap();
-                self.storage().add_blob(&[data[index]]).into_ref().into()
-            }
-        }
-    }
-
-    pub fn select_range(&self, target: Handle, begin: usize, end: usize) -> Handle {
-        if begin >= end {
-            panic!("Invalid range [{begin}, {end}) for seleciton thunk");
-        }
-        let object = match target.view() {
-            HandleView::Object(object) => *object,
-            HandleView::Ref(reference) => reference.object_descriptor(),
-            _ => panic!("expected blob or tree handle for selection thunk"),
-        };
-        match object.view() {
-            ObjectView::Tree(tree) => {
-                let data = self.storage().get_tree(*tree).unwrap();
-                self.storage().add_tree(&data[begin..end]).into_ref().into()
-            }
-            ObjectView::Blob(blob) => {
-                let data = self.storage().get_blob(*blob).unwrap();
-                self.storage().add_blob(&data[begin..end]).into_ref().into()
-            }
-        }
-    }
-
-    pub fn read_index(&self, handle: Handle) -> usize {
-        self.read_index_with_mode(handle, EvalType::Parallel)
-    }
-
-    fn read_index_with_mode(&self, handle: Handle, eval_mode: EvalType) -> usize {
-        let blob = fixhandle::Blob::try_from(self.eval_test(handle, eval_mode))
-            .expect("expected blob handle for selection index");
-        let bytes = self.storage().get_blob(blob).unwrap();
-        // Make buffer fit all supported integer widths
-        let mut buffer = [0; 16];
-        assert!(bytes.len() <= buffer.len());
-        buffer[..bytes.len()].copy_from_slice(&bytes);
-        usize::try_from(u128::from_le_bytes(buffer)).expect("selection index should be in range")
+        let selection = self.eval_tree(selection, eval_mode);
+        self.storage().select(selection).expect("invalid selection")
     }
 
     pub fn lift(&self, handle: Handle) -> Handle {
@@ -195,7 +127,7 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
 
     fn think(&self, thunk: Thunk, eval_mode: EvalType) -> Handle {
         match thunk.view() {
-            ThunkView::Identification(reference) => self.lift(reference.into()),
+            ThunkView::Identification(reference) => reference.into(),
             ThunkView::Selection(tree) => {
                 self.select_with_mode(tree.object_descriptor(), eval_mode)
             }
@@ -209,40 +141,31 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     fn force(&self, thunk: Thunk, eval_mode: EvalType) -> Handle {
         let thought = self.think(thunk, eval_mode);
         match thought.view() {
-            HandleView::Object(_) => thought,
-            HandleView::Ref(_) => self.lift(thought),
+            HandleView::Object(_) | HandleView::Ref(_) => thought,
             HandleView::Thunk(thunk) => self.force(*thunk, eval_mode),
-            HandleView::Encode(encode) => self.lift(self.encode(*encode, eval_mode)),
+            HandleView::Encode(encode) => match encode.view() {
+                EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => {
+                    self.force(thunk, eval_mode)
+                }
+            },
         }
     }
 
     fn encode(&self, encode: Encode, eval_mode: EvalType) -> Handle {
         match encode.view() {
-            EncodeView::Strict(thunk) => self.eval_test(self.force(thunk, eval_mode), eval_mode),
+            EncodeView::Strict(thunk) => self.lift(self.force(thunk, eval_mode)),
             EncodeView::Shallow(thunk) => self.lower(self.force(thunk, eval_mode)),
         }
     }
 
     fn eval_tree(&self, handle: Tree, eval_mode: EvalType) -> Tree {
-        if handle.as_handle().is_eq()
-            && let Some(result) = self
-                .trees
-                .lock()
-                .get(handle.as_handle().as_bytes())
-                .copied()
-        {
-            return result;
+        if handle.as_handle().is_value() {
+            return handle;
         }
-        let result = match eval_mode {
+        match eval_mode {
             EvalType::Serial => self.eval_tree_seq(handle),
             EvalType::Parallel => self.eval_tree_parallel(handle),
-        };
-        if handle.as_handle().is_eq() {
-            self.trees
-                .lock()
-                .insert(*handle.as_handle().as_bytes(), result);
         }
-        result
     }
 
     fn eval_tree_seq(&self, handle: Tree) -> Tree {
@@ -296,13 +219,12 @@ impl<R: Runtime + Send + Sync + 'static> Evaluator<R> {
     fn eval_test(&self, handle: Handle, eval_mode: EvalType) -> Handle {
         //println!("evaluating {handle}");
         match handle.view() {
-            HandleView::Ref(reference) => self.eval_test(self.lift((*reference).into()), eval_mode),
-            HandleView::Thunk(_) => handle,
+            HandleView::Ref(_) | HandleView::Thunk(_) => handle,
             HandleView::Object(obj) => match obj.view() {
                 ObjectView::Blob(blob) => (*blob).into(),
                 ObjectView::Tree(tree) => self.eval_tree(*tree, eval_mode).into(),
             },
-            HandleView::Encode(e) => self.encode(*e, eval_mode),
+            HandleView::Encode(e) => self.eval_test(self.encode(*e, eval_mode), eval_mode),
         }
     }
 

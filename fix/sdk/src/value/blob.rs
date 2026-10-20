@@ -14,8 +14,8 @@ impl<B: AsRef<[u8]>> Value for CreateBlob<B> {
     fn data_type_at(&self, path: Option<&Path<'_>>) -> Result<DataType, Error> {
         at_root(path, DataType::Blob)
     }
-    fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
-        at_root(path, self.0.as_ref().len())
+    fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
+        at_root(path, self.0.as_ref().len() as u64)
     }
     fn read_at(&self, path: Option<&Path<'_>>, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         at_root(path, ())?;

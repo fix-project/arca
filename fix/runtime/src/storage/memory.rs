@@ -13,7 +13,7 @@ static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 pub struct MemoryStorage {
     id: u64,
     blobs: KMutex<Vec<ImmutableBytes>>,
-    trees: KMutex<Vec<(ImmutableBytes, bool)>>,
+    trees: KMutex<Vec<(ImmutableBytes, bool, bool)>>,
     canonicals: KMutex<HashMap<CanonicalHandle, usize>>,
     locals: KMutex<HashMap<[u8; HANDLE_SIZE], CanonicalHandle>>,
 }
@@ -106,7 +106,7 @@ impl MemoryStorage {
         Ok(canonical)
     }
 
-    pub(crate) fn canonicalize_handle(
+    fn canonicalize_handle(
         &self,
         handle: Handle,
         visiting: &mut Vec<Handle>,
@@ -154,9 +154,21 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
+    fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError> {
+        self.canonicalize_handle(handle, &mut Vec::new())
+            .map(CanonicalHandle)
+    }
+
     fn add_blob(&self, data: &[u8]) -> Blob {
         if data.len() <= 30 {
             return Blob::literal(data).expect("literal size checked");
+        }
+        self.add_blob_backing(ImmutableBytes::new(data))
+    }
+
+    fn add_blob_backing(&self, data: ImmutableBytes) -> Blob {
+        if data.len() <= 30 {
+            return Blob::literal(&data.to_bytes()).unwrap();
         }
         let mut blobs = self.blobs.lock();
         let handle = unsafe {
@@ -170,32 +182,42 @@ impl Storage for MemoryStorage {
             )
         }
         .expect("blob exceeds handle length");
-        blobs.push(ImmutableBytes::new(data));
+        blobs.push(data);
         handle
     }
 
     fn add_tree(&self, data: &[Handle]) -> Tree {
-        let eq = data.iter().all(Handle::is_eq);
+        let bytes = unsafe {
+            core::slice::from_raw_parts(data.as_ptr().cast(), core::mem::size_of_val(data))
+        };
+        unsafe { self.add_tree_backing(ImmutableBytes::new(bytes)) }
+    }
+
+    unsafe fn add_tree_backing(&self, data: ImmutableBytes) -> Tree {
+        assert!(data.len().is_multiple_of(HANDLE_SIZE));
+        let mut comparable = true;
+        let mut value = true;
+        data.for_each_chunk(|bytes| {
+            for bytes in bytes.as_chunks::<HANDLE_SIZE>().0 {
+                let handle = unsafe { Handle::parse(*bytes) }.expect("invalid tree entry");
+                comparable &= handle.is_comparable();
+                value &= handle.is_value();
+            }
+        });
         let mut trees = self.trees.lock();
-        let bytes = (data.len() as u64)
-            .checked_mul(HANDLE_SIZE as u64)
-            .expect("tree length overflow");
         let handle = unsafe {
             Tree::named(
                 Name::Machine {
                     index: trees.len() as u64,
                     storage_id: self.id,
                 },
-                bytes,
-                eq,
+                data.len() as u64,
+                comparable,
+                value,
             )
         }
         .expect("tree exceeds handle length");
-        let bytes: Vec<_> = data
-            .iter()
-            .flat_map(|handle| handle.as_bytes().iter().copied())
-            .collect();
-        trees.push((ImmutableBytes::new(&bytes), eq));
+        trees.push((data, comparable, value));
         handle
     }
 
@@ -227,8 +249,11 @@ impl Storage for MemoryStorage {
         if data.len() as u64 != name.byte_len() {
             return Err(StorageError::LengthMismatch);
         }
-        if name.as_handle().eq_bit() != Some(true) {
-            return Err(StorageError::InvalidEq);
+        if name.as_handle().comparability_bit() != Some(true) {
+            return Err(StorageError::InvalidComparisonBit);
+        }
+        if name.as_handle().value_bit() != Some(true) {
+            return Err(StorageError::InvalidValueBit);
         }
         Ok(data.clone())
     }
@@ -236,19 +261,25 @@ impl Storage for MemoryStorage {
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
         let index = self.index(name.as_handle())?;
         let trees = self.trees.lock();
-        let (data, eq) = trees.get(index).ok_or(StorageError::NotFound)?;
+        let (data, comparable, value) = trees.get(index).ok_or(StorageError::NotFound)?;
         if data.len() as u64 != name.byte_len() {
             return Err(StorageError::LengthMismatch);
         }
-        if name.as_handle().eq_bit() != Some(*eq) {
-            return Err(StorageError::InvalidEq);
+        if name.as_handle().comparability_bit() != Some(*comparable) {
+            return Err(StorageError::InvalidComparisonBit);
+        }
+        if name.as_handle().value_bit() != Some(*value) {
+            return Err(StorageError::InvalidValueBit);
         }
         Ok(data.clone())
     }
 
     fn canonicalize_blob(&self, blob: Blob) -> Result<CanonicalHandle, StorageError> {
-        if blob.as_handle().eq_bit() == Some(false) {
-            return Err(StorageError::InvalidEq);
+        if blob.as_handle().comparability_bit() == Some(false) {
+            return Err(StorageError::InvalidComparisonBit);
+        }
+        if blob.as_handle().value_bit() == Some(false) {
+            return Err(StorageError::InvalidValueBit);
         }
         if let Ok(canonical) = CanonicalHandle::try_from(blob) {
             return Ok(canonical);

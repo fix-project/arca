@@ -19,8 +19,13 @@ pub extern "C" fn _rsstart() -> ! {
         .call_with_current_continuation()
         .try_into()
         .unwrap();
+    let mut page = Page::new(4096);
+    page.write(0, &root);
+    let mut backing = Table::new(4096 * 512);
+    backing.set(0, Entry::ROPage(page)).unwrap();
     let result: Blob = Function::symbolic("create_tree")
-        .apply(Blob::new(root))
+        .apply(backing)
+        .apply(Word::new(32))
         .call_with_current_continuation()
         .try_into()
         .unwrap();

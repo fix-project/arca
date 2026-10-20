@@ -146,7 +146,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             arca.descriptors_mut().insert(value)
         }
         DataType::Table => {
-            let ptr = args[3] as usize;
+            let ptr = args[2] as usize;
             let mut entry: MaybeUninit<arcane::arca_entry> = MaybeUninit::uninit();
             copy_user_to_kernel(
                 unsafe {

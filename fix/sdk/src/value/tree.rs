@@ -2,7 +2,7 @@ use super::*;
 
 impl<R: Lookup> Handle<Object<Tree>, R> {
     pub fn iter(&self) -> Result<impl Iterator<Item = Handle<Any, Child<&R>>> + Clone, Error> {
-        Ok((0..self.len()?).map(move |index| {
+        Ok((0..usize::try_from(self.len()?)?).map(move |index| {
             Handle::new(Child {
                 parent: &self.location,
                 index,
@@ -133,8 +133,7 @@ impl<V: Value, C: AsRef<[V]>> Children for Slice<V, C> {
 }
 #[derive(Clone, Copy)]
 pub struct CreateTree<C> {
-    children: C,
-    tag: bool,
+    pub(super) children: C,
 }
 impl<C: Children> CreateTree<C> {
     fn query<T>(
@@ -145,15 +144,24 @@ impl<C: Children> CreateTree<C> {
     ) -> Result<T, Error> {
         if let Some(entry) = path {
             child(self.children.child(entry.index)?, entry.next)
-        } else if self.tag && self.children.is_empty() {
-            Err(Error::OutOfBounds)
         } else {
             root(self)
         }
     }
-    pub fn tag(mut self) -> Self {
-        self.tag = true;
-        self
+    pub(super) fn build(&self, depth: Option<usize>) -> Result<(), Error> {
+        unsafe extern "C" fn child<C: Children>(context: *const (), index: usize) -> u32 {
+            let children = unsafe { &*context.cast::<C>() };
+            code(children.child(index).and_then(|child| child.build_at(None)))
+        }
+        status(unsafe {
+            fix_sdk_tree(
+                self.children.len(),
+                depth.is_some() as i32,
+                depth.unwrap_or(0),
+                child::<C>,
+                (&self.children as *const C).cast(),
+            )
+        })
     }
 }
 impl<C: Children> Value for CreateTree<C> {
@@ -161,20 +169,7 @@ impl<C: Children> Value for CreateTree<C> {
     fn build_at(&self, path: Option<&Path<'_>>) -> Result<(), Error> {
         self.query(
             path,
-            |tree| {
-                unsafe extern "C" fn child<C: Children>(context: *const (), index: usize) -> u32 {
-                    let children = unsafe { &*context.cast::<C>() };
-                    code(children.child(index).and_then(|child| child.build_at(None)))
-                }
-                status(unsafe {
-                    fix_sdk_tree(
-                        tree.children.len(),
-                        tree.tag as i32,
-                        child::<C>,
-                        (&tree.children as *const C).cast(),
-                    )
-                })
-            },
+            |tree| tree.build(None),
             |child, path| child.build_at(path),
         )
     }
@@ -199,19 +194,15 @@ impl<C: Children> Value for CreateTree<C> {
             |child, path| child.encode_type_at(path),
         )
     }
-    fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
+    fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
         self.query(
             path,
-            |tree| Ok(tree.children.len()),
+            |tree| Ok(tree.children.len() as u64),
             |child, path| child.len_at(path),
         )
     }
     fn is_tag_at(&self, path: Option<&Path<'_>>) -> Result<bool, Error> {
-        self.query(
-            path,
-            |tree| Ok(tree.tag),
-            |child, path| child.is_tag_at(path),
-        )
+        self.query(path, |_| Ok(false), |child, path| child.is_tag_at(path))
     }
     fn read_at(
         &self,
@@ -244,7 +235,7 @@ macro_rules! tuples {
             type Error = Error;
             fn try_from(value: Handle<Object<Tree>, R>) -> Result<Self, Error> {
                 let length = [$(stringify!($t)),+].len();
-                if value.len()? != length {
+                if value.len()? != length as u64 {
                     return Err(Error::WrongType);
                 }
                 Ok(($(Handle::<Any, _>::new(Child {
@@ -267,7 +258,7 @@ macro_rules! tuples {
         {
             type Error = Error;
             fn try_from(value: CreateTree<Storage>) -> Result<Self, Error> {
-                if value.len()? != [$(stringify!($t)),+].len() { return Err(Error::WrongType); }
+                if value.len()? != [$(stringify!($t)),+].len() as u64 { return Err(Error::WrongType); }
                 Ok(($(checked(Select { parent: value.clone(), index: $index })?,)+))
             }
         }
@@ -276,7 +267,7 @@ macro_rules! tuples {
         {
             type Error = Error;
             fn try_from(value: &'a dyn Value<Type = Object<Tree>>) -> Result<Self, Error> {
-                if value.len()? != [$(stringify!($t)),+].len() { return Err(Error::WrongType); }
+                if value.len()? != [$(stringify!($t)),+].len() as u64 { return Err(Error::WrongType); }
                 Ok(($(checked(Select { parent: value, index: $index })?,)+))
             }
         }
@@ -329,7 +320,7 @@ impl<C: Children> CreateTree<C> {
 }
 impl Tree {
     pub fn create<V: Value, C: AsRef<[V]>>(children: C) -> CreateTree<Slice<V, C>> {
-        Self::__create(Slice(children, PhantomData), false)
+        Self::__create(Slice(children, PhantomData))
     }
     #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I: IntoIterator>(children: I) -> CreateTree<Iter<I::IntoIter>>
@@ -337,25 +328,29 @@ impl Tree {
         I::IntoIter: Clone,
         I::Item: Value,
     {
-        Self::__create(Iter(children.into_iter()), false)
+        Self::__create(Iter(children.into_iter()))
     }
-    pub fn tag<I: IntoIterator>(children: I) -> CreateTree<Iter<I::IntoIter>>
+    pub fn tag<'a, I: IntoIterator>(
+        children: I,
+        combination: &'a Handle<Object<Tree>, Focus>,
+        depth: usize,
+    ) -> Result<CreateTag<'a, Iter<I::IntoIter>>, Error>
     where
         I::IntoIter: Clone,
         I::Item: Value,
     {
-        Self::from_iter(children).tag()
+        Self::from_iter(children).tag(combination, depth)
     }
     #[doc(hidden)]
-    pub fn __create<C: Children>(children: C, tag: bool) -> CreateTree<C> {
-        CreateTree { children, tag }
+    pub fn __create<C: Children>(children: C) -> CreateTree<C> {
+        CreateTree { children }
     }
 }
 #[macro_export]
 macro_rules! tree {
     (@tuple) => { $crate::__Nil };
     (@tuple $first:expr $(, $rest:expr)* $(,)?) => { $crate::__Cons($first, $crate::tree!(@tuple $($rest),*)) };
-    ($($child:expr),* $(,)?) => { $crate::Tree::__create($crate::tree!(@tuple $($child),*), false) };
+    ($($child:expr),* $(,)?) => { $crate::Tree::__create($crate::tree!(@tuple $($child),*)) };
 }
 
 #[derive(Clone, Copy)]

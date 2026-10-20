@@ -15,10 +15,12 @@ pub enum CliError {
     Repository(RepositoryError),
     Handle(Error),
     Io(ErrorKind),
+    Trust(crate::arca::trust::TrustError),
 }
 impl core::fmt::Display for CliError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Trust(error) => write!(f, "{error}"),
             Self::Usage(message) | Self::Scheduler(message) => f.write_str(message),
             Self::Repository(RepositoryError::NotInitialized) => {
                 f.write_str("no Fix repository found; run 'fix init'")
@@ -163,7 +165,15 @@ pub fn configure_directory(mut arguments: &[String]) -> Result<&[String], CliErr
     Ok(arguments)
 }
 
-pub fn run(arguments: &[String]) -> Result<u8, CliError> {
+pub fn run(mut arguments: &[String]) -> Result<u8, CliError> {
+    let trust = if let [flag, contents, rest @ ..] = arguments
+        && flag == "--trust"
+    {
+        arguments = rest;
+        crate::arca::trust::Trust::parse(contents).map_err(CliError::Trust)?
+    } else {
+        crate::arca::trust::Trust::default()
+    };
     let Some(command) = arguments.first().map(String::as_str) else {
         return Err(CliError::Usage("expected a command"));
     };
@@ -220,6 +230,10 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
         return Ok(0);
     }
     if command == "eval" || command == "think" {
+        let memoize = command == "eval" && arguments.first().is_some_and(|arg| arg == "--memoize");
+        if memoize {
+            arguments.remove(0);
+        }
         let arguments = values(&arguments)?;
         if arguments.len() != 1 {
             return Err(CliError::Usage("expected exactly one value"));
@@ -228,7 +242,12 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
         let storage = alloc::sync::Arc::new(crate::storage::repository::RepositoryStorage::new(
             repository,
         ));
-        let runtime = crate::arca::FixOnArca::new(storage.clone());
+        let runtime = if memoize {
+            crate::arca::FixOnArca::memoized(storage.clone())
+        } else {
+            crate::arca::FixOnArca::new(storage.clone())
+        }
+        .with_trust(trust);
         let result = if command == "think" {
             crate::Evaluator::new(runtime).think(Thunk::try_from(value)?)
         } else if kernel::ncores() == 1 {
@@ -244,12 +263,29 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
         return Ok(0);
     }
     if command == "visit" {
+        let paths = arguments.first().is_some_and(|arg| arg == "--paths");
+        if paths {
+            arguments.remove(0);
+        }
         let arguments = values(&arguments)?;
         if arguments.len() != 1 {
             return Err(CliError::Usage("visit requires one value"));
         }
-        repository.visit(resolve(&repository, &arguments[0])?, |object| {
-            output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
+        let value = resolve(&repository, &arguments[0])?;
+        if paths
+            && !(arguments[0].len() == 64
+                && arguments[0].bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            output.try_write_all(format!(".fix/labels/{}\0", arguments[0]).as_bytes())?;
+        }
+        repository.visit(value, |object| {
+            if paths {
+                for path in repository.object_paths(object)? {
+                    output.try_write_all(format!("{path}\0").as_bytes())?;
+                }
+            } else {
+                output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
+            }
             Ok(())
         })?;
         return Ok(0);
@@ -389,7 +425,7 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
                     | "get-encode-type"
                     | "len"
                     | "is-tag"
-                    | "is-eq"
+                    | "is-comparable"
                     | "create-ref"
                     | "create-identification-thunk"
                     | "create-application-thunk"
@@ -454,13 +490,15 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
                     };
                     output.try_write_all(format!("{kind}\n").as_bytes())?;
                 }
-                "len" => output.try_write_all(format!("{}\n", value.checked_len()?).as_bytes())?,
+                "len" => output.try_write_all(
+                    format!("{}\n", reference(value)?.handle().checked_len()?).as_bytes(),
+                )?,
                 "is-tag" => {
                     return Ok(u8::from(
                         !Tree::try_from(value).is_ok_and(|tree| tree.is_tag()),
                     ));
                 }
-                "is-eq" => return Ok(u8::from(!value.is_eq())),
+                "is-comparable" => return Ok(u8::from(!value.is_comparable())),
                 _ => {
                     return {
                         let created = construct(command, value)?;

@@ -13,7 +13,6 @@ DEPS = [
     "//fix/handle",
     "@crates//:log",
     "@crates//:serde",
-    "@crates//:postcard",
     "@crates//:derive_more",
     "@crates//:async-lock",
     "@crates//:hex",
@@ -47,7 +46,6 @@ rust_library(
             "//tests:__subpackages__",
             "//programs/fix:__subpackages__",
             "//programs/flatware:__subpackages__",
-            "//coupon:__pkg__",
             "//flatware:__pkg__",
             "//fix:__subpackages__",
         ],
@@ -56,12 +54,20 @@ rust_library(
             "src/main.rs",
             "src/testing.rs",
         ],
-        compile_data = ["//programs/fix/parser:parser_elf"] if test else [],
+        compile_data = [
+            "//programs/fix/parser:parser_elf",
+            "//tests/fix:privileged_native",
+            "//fix/proof/collector:collector_elf",
+        ] if test else [],
         crate_name = "fix",
         crate_root = "src/main.rs",
         linker_script = "etc/memmap.ld",
         proc_macro_deps = ["//tools/macros"],
-        rustc_env = {"FIX_PARSER": "$(execpath //programs/fix/parser:parser_elf)"} if test else {},
+        rustc_env = {
+            "FIX_COLLECTOR": "$(execpath //fix/proof/collector:collector_elf)",
+            "FIX_PRIVILEGED": "$(execpath //tests/fix:privileged_native)",
+            "FIX_PARSER": "$(execpath //programs/fix/parser:parser_elf)",
+        } if test else {},
         deps = [":runtime"] + DEPS,
     )
     for test, rule in [(False, kernel_program), (True, kernel_test)]

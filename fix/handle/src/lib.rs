@@ -19,7 +19,8 @@ pub enum Error {
     WrongType,
     NonCanonicalChild,
     HashMismatch,
-    InvalidEq,
+    InvalidComparisonBit,
+    InvalidValueBit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +207,7 @@ impl Handle {
                 return Err(Error::LiteralPadding);
             }
         } else {
-            if bytes[30] & 0xf8 != 0 {
+            if bytes[30] & 0xf0 != 0 {
                 return Err(Error::ReservedBits);
             }
             match bytes[30] & 3 {
@@ -271,12 +272,21 @@ impl Handle {
         self.bytes_view().is_canonical()
     }
     #[inline]
-    pub fn is_eq(&self) -> bool {
-        self.0[31] & 0x0f == 0 && (self.0[31] & 0xe0 <= 0x80 || self.eq_bit() == Some(true))
+    pub fn is_comparable(&self) -> bool {
+        self.0[31] & 0x0f == 0
+            && (self.0[31] & 0xe0 <= 0x80 || self.comparability_bit() == Some(true))
     }
     #[inline]
-    pub fn eq_bit(&self) -> Option<bool> {
-        self.bytes_view().eq_bit()
+    pub fn comparability_bit(&self) -> Option<bool> {
+        self.bytes_view().comparability_bit()
+    }
+    #[inline]
+    pub fn is_value(&self) -> bool {
+        self.bytes_view().is_value()
+    }
+    #[inline]
+    pub fn value_bit(&self) -> Option<bool> {
+        self.bytes_view().value_bit()
     }
     #[inline]
     pub fn name(&self) -> Name<'_> {
@@ -339,8 +349,17 @@ impl<'a> HandleBytes<'a> {
         self.0[31] & 0xe0 == 0 || self.0[30] & 3 == 0
     }
     #[inline]
-    pub fn eq_bit(self) -> Option<bool> {
+    pub fn comparability_bit(self) -> Option<bool> {
         (self.0[31] & 0xe0 != 0).then_some(self.0[30] & 4 != 0)
+    }
+    #[inline]
+    pub fn value_bit(self) -> Option<bool> {
+        (self.0[31] & 0xe0 != 0).then_some(self.0[30] & 8 != 0)
+    }
+    #[inline]
+    pub fn is_value(self) -> bool {
+        let tag = self.0[31];
+        tag & 3 == 0 && (tag & 0x1f != 0 || !self.is_tree_data() || self.value_bit() == Some(true))
     }
     #[inline]
     pub fn name(self) -> Name<'a> {
@@ -429,8 +448,14 @@ impl Blob {
     /// Local addresses must identify live data of the declared size in the
     /// address space where the Handle is used. Encoding checks do not establish this.
     #[inline]
-    pub unsafe fn named(name: Name<'_>, byte_len: u64, eq_bit: bool) -> Result<Self, Error> {
-        Ok(Self(unsafe { named(name, byte_len, eq_bit, 0x80)? }))
+    pub unsafe fn named(
+        name: Name<'_>,
+        byte_len: u64,
+        comparability_bit: bool,
+    ) -> Result<Self, Error> {
+        Ok(Self(unsafe {
+            named(name, byte_len, comparability_bit, true, 0x80)?
+        }))
     }
     #[inline]
     pub fn literal_bytes(&self) -> Option<&[u8]> {
@@ -441,8 +466,11 @@ impl Blob {
     }
     #[inline]
     pub fn verify(&self, contents: &[u8]) -> Result<(), Error> {
-        if self.0.eq_bit() == Some(false) {
-            return Err(Error::InvalidEq);
+        if self.0.comparability_bit() == Some(false) {
+            return Err(Error::InvalidComparisonBit);
+        }
+        if self.0.value_bit() == Some(false) {
+            return Err(Error::InvalidValueBit);
         }
         if self.byte_len() != contents.len() as u64 {
             return Err(Error::HashMismatch);
@@ -469,8 +497,15 @@ impl Tree {
     /// Local addresses must identify live data of the declared size in the
     /// address space where the Handle is used. Encoding checks do not establish this.
     #[inline]
-    pub unsafe fn named(name: Name<'_>, byte_len: u64, eq_bit: bool) -> Result<Self, Error> {
-        Ok(Self(unsafe { named(name, byte_len, eq_bit, 0xa0)? }))
+    pub unsafe fn named(
+        name: Name<'_>,
+        byte_len: u64,
+        comparability_bit: bool,
+        value_bit: bool,
+    ) -> Result<Self, Error> {
+        Ok(Self(unsafe {
+            named(name, byte_len, comparability_bit, value_bit, 0xa0)?
+        }))
     }
     #[inline]
     pub fn canonical(children: &[Handle]) -> Result<Self, Error> {
@@ -478,26 +513,34 @@ impl Tree {
             .checked_mul(HANDLE_SIZE as u64)
             .ok_or(Error::LengthOverflow)?;
         let mut hasher = blake3::Hasher::new();
+        let mut comparable = true;
+        let mut value = true;
         for child in children {
             if !child.is_canonical() {
                 return Err(Error::NonCanonicalChild);
             }
             hasher.update(child.as_bytes());
+            comparable &= child.is_comparable();
+            value &= child.is_value();
         }
         let hash = hasher.finalize();
         unsafe {
             Self::named(
                 Name::Canonical(hash.as_bytes()[..24].try_into().expect("hash width")),
                 len,
-                children.iter().all(Handle::is_eq),
+                comparable,
+                value,
             )
         }
     }
     #[inline]
     pub fn verify(&self, children: &[Handle]) -> Result<(), Error> {
         let expected = Self::canonical(children)?;
-        if self.0.eq_bit() != expected.0.eq_bit() {
-            return Err(Error::InvalidEq);
+        if self.0.comparability_bit() != expected.0.comparability_bit() {
+            return Err(Error::InvalidComparisonBit);
+        }
+        if self.0.value_bit() != expected.0.value_bit() {
+            return Err(Error::InvalidValueBit);
         }
         if self.byte_len() != expected.byte_len() {
             return Err(Error::HashMismatch);
@@ -606,13 +649,19 @@ impl From<Object> for Ref {
     }
 }
 
-unsafe fn named(name: Name<'_>, len: u64, eq_bit: bool, tag: u8) -> Result<Handle, Error> {
+unsafe fn named(
+    name: Name<'_>,
+    len: u64,
+    comparability_bit: bool,
+    value_bit: bool,
+    tag: u8,
+) -> Result<Handle, Error> {
     if len > MAX_BYTE_LEN {
         return Err(Error::LengthOverflow);
     }
     let mut bytes = [0; HANDLE_SIZE];
     bytes[24..30].copy_from_slice(&len.to_le_bytes()[..6]);
-    bytes[30] = if eq_bit { 4 } else { 0 };
+    bytes[30] = (if comparability_bit { 4 } else { 0 }) | (if value_bit { 8 } else { 0 });
     bytes[31] = tag;
     match name {
         Name::Canonical(hash) => bytes[..24].copy_from_slice(hash),

@@ -31,18 +31,19 @@ __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
     fix_handle copied = wasm_table_get(destination, 2);
     check(fix_get_type(copied) == FIX_OBJECT &&
           fix_get_data_type(copied) == FIX_BLOB);
-    check(fix_is_eq(number) && fix_equals(number, fix_create_blob_i64(42)));
+    check(fix_is_comparable(number) &&
+          fix_equals(number, fix_create_blob_i64(42)));
     check(!fix_equals(number, fix_create_blob_i64(43)));
     fix_handle reference = fix_create_ref(copied);
     check(fix_get_type(reference) == FIX_REF &&
           fix_get_data_type(reference) == FIX_BLOB);
-    check(fix_is_eq(reference) && !fix_equals(number, reference));
+    check(fix_is_comparable(reference) && !fix_equals(number, reference));
     check(fix_equals(reference, fix_create_ref(fix_create_blob_i64(42))));
     fix_handle identification = fix_create_identification_thunk(reference);
     wasm_table_fill(destination, 0, number, 4);
     fix_handle tree = fix_create_tree(1, 4);
     check(fix_get_data_type(tree) == FIX_TREE && fix_len(tree) == 4);
-    check(fix_is_eq(tree));
+    check(fix_is_comparable(tree));
     fix_handle tree_ref = fix_create_ref(tree);
     fix_handle application = fix_create_application_thunk(tree_ref);
     fix_handle selection = fix_create_selection_thunk(tree_ref);
@@ -50,9 +51,9 @@ __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
     check(fix_get_type(application) == FIX_THUNK &&
           fix_get_type(selection) == FIX_THUNK);
     fix_handle strict = fix_create_strict_encode(identification);
-    check(!fix_is_eq(identification) && !fix_is_eq(strict));
+    check(!fix_is_comparable(identification) && !fix_is_comparable(strict));
     wasm_table_set(destination, 0, strict);
-    check(!fix_is_eq(fix_create_tree(1, 1)));
+    check(!fix_is_comparable(fix_create_tree(1, 1)));
     fix_handle shallow = fix_create_shallow_encode(application);
     check(fix_get_type(strict) == FIX_ENCODE &&
           fix_get_encode_type(strict) == FIX_STRICT);

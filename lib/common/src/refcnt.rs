@@ -1,5 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use core::{
+    clone::CloneToUninit,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -69,9 +70,9 @@ impl<T: Clone> RefCnt<T> {
         if refcnt.load(Ordering::SeqCst) == 1 {
             return unsafe { &mut *this.ptr };
         }
-        let mut b = Box::new_uninit_in(BuddyAllocator);
+        let mut b = Box::<T, _>::new_uninit_in(BuddyAllocator);
         let inner = unsafe {
-            b.write((*this.ptr).clone());
+            (*this.ptr).clone_to_uninit(b.as_mut_ptr().cast());
             b.assume_init()
         };
         let mut inner = inner.into();

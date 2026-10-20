@@ -49,11 +49,12 @@ For literal blobs
 
 In all other cases:
 
-| Byte 30, Bits | Meaning                                                 |
-|---------------|---------------------------------------------------------|
-| 0:1           | Name type (00 = canonical, 10 = machine, 11 = local)    |
-| 2             | Eq (0 = equality is undefined, 1 = equality is defined) |
-| 3:7           | Unassigned (should be zero)                             |
+| Byte 30, Bits | Meaning                                                         |
+|---------------|-----------------------------------------------------------------|
+| 0:1           | Name type (00 = canonical, 10 = machine, 11 = local)            |
+| 2             | Comparable (0 = equality is undefined, 1 = equality is defined) |
+| 3             | Value (0 = may be evaluated further, 1 = fully evaluated)       |
+| 4:7           | Unassigned (should be zero)                                     |
 
 
 ### Name

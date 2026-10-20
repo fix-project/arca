@@ -149,7 +149,7 @@ fn run<S: Storage>(
 
         if !name.starts_with(b"scheduler_") {
             f = runtime
-                .handle_effect(&name, args, k)
+                .handle_effect(&name, args, k, combination, true)
                 .ok_or("unknown scheduler object effect")?;
             continue;
         }

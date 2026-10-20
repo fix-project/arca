@@ -22,6 +22,10 @@ impl RepositoryStorage {
         }
     }
 
+    pub fn repository(&self) -> &Repository {
+        &self.repository
+    }
+
     fn backing(&self, object: Object) -> Result<ImmutableBytes, StorageError> {
         let key = *object.as_handle().as_bytes();
         let cell = self.inputs.lock().entry(key).or_default().clone();
@@ -46,16 +50,22 @@ impl RepositoryStorage {
     }
 
     pub fn save(&self, handle: Handle) -> Result<Handle, RepositoryError> {
-        let handle = self
+        let handle: Handle = self
             .memory
-            .canonicalize_handle(handle, &mut Vec::new())
-            .map_err(RepositoryError::Storage)?;
+            .canonicalize(handle)
+            .map_err(RepositoryError::Storage)?
+            .into();
         self.publish(handle)?;
         Ok(handle)
     }
 
     fn publish(&self, handle: Handle) -> Result<(), RepositoryError> {
         if self.repository.lookup(handle.as_bytes()).is_ok() {
+            if let Ok(tree) = Tree::try_from(handle)
+                && tree.is_tag()
+            {
+                self.repository.index_tag(tree)?;
+            }
             return Ok(());
         }
         let object = match handle.view() {
@@ -96,11 +106,21 @@ impl RepositoryStorage {
 }
 
 impl Storage for RepositoryStorage {
+    fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError> {
+        self.memory.canonicalize(handle)
+    }
+
     fn add_blob(&self, bytes: &[u8]) -> Blob {
         self.memory.add_blob(bytes)
     }
+    fn add_blob_backing(&self, data: ImmutableBytes) -> Blob {
+        self.memory.add_blob_backing(data)
+    }
     fn add_tree(&self, children: &[Handle]) -> Tree {
         self.memory.add_tree(children)
+    }
+    unsafe fn add_tree_backing(&self, data: ImmutableBytes) -> Tree {
+        unsafe { self.memory.add_tree_backing(data) }
     }
     fn get_blob(&self, blob: Blob) -> Result<Box<[u8]>, StorageError> {
         Ok(self.get_blob_backing(blob)?.to_bytes())

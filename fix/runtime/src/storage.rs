@@ -9,8 +9,10 @@ pub enum StorageError {
     NotFound,
     LengthMismatch,
     Cycle,
-    NotEq,
-    InvalidEq,
+    NotComparable,
+    InvalidComparisonBit,
+    InvalidValueBit,
+    InvalidSelection,
 }
 
 mod data;
@@ -24,9 +26,7 @@ pub struct CanonicalHandle(Handle);
 
 impl CanonicalHandle {
     /// # Safety
-    /// `Handle` must be canonicalized.
-    /// For blobs this means being an inline literal or containing a canonical name,
-    /// For trees this means all children `Handle`s must be canonicalized.
+    /// All names reachable through `handle` must be canonical or inline literals.
     pub unsafe fn new(handle: Handle) -> Self {
         Self(handle)
     }
@@ -79,7 +79,12 @@ impl core::hash::Hash for CanonicalHandle {
 /// An object store, capable of saving and retrieving Fix objects.
 pub trait Storage {
     fn add_blob(&self, data: &[u8]) -> Blob;
+    fn add_blob_backing(&self, data: ImmutableBytes) -> Blob;
     fn add_tree(&self, data: &[Handle]) -> Tree;
+
+    /// # Safety
+    /// Every entry must encode a handle with established naming provenance.
+    unsafe fn add_tree_backing(&self, data: ImmutableBytes) -> Tree;
 
     fn get_blob(&self, name: Blob) -> Result<Box<[u8]>, StorageError>;
     fn get_tree(&self, name: Tree) -> Result<Box<[Handle]>, StorageError>;
@@ -95,34 +100,86 @@ pub trait Storage {
     }
 
     fn equals(&self, lhs: Handle, rhs: Handle) -> Result<bool, StorageError> {
-        fn canonicalize(
-            storage: &(impl Storage + ?Sized),
-            handle: Handle,
-        ) -> Result<Handle, StorageError> {
-            let (object, reference) = match handle.view() {
-                HandleView::Object(object) => (*object, false),
-                HandleView::Ref(reference) => (reference.object_descriptor(), true),
-                _ => return Err(StorageError::NotEq),
-            };
-            let canonical: Handle = match object.view() {
-                ObjectView::Blob(blob) => storage.canonicalize_blob(*blob)?,
-                ObjectView::Tree(tree) => storage.canonicalize_tree(*tree)?,
-            }
-            .into();
-            Ok(if reference {
-                Object::try_from(canonical).unwrap().into_ref().into()
-            } else {
-                canonical
-            })
+        if !lhs.is_comparable() || !rhs.is_comparable() {
+            return Err(StorageError::NotComparable);
         }
-        if !lhs.is_eq() || !rhs.is_eq() {
-            return Err(StorageError::NotEq);
-        }
-        let lhs = canonicalize(self, lhs)?;
-        let rhs = canonicalize(self, rhs)?;
-        Ok(lhs.same_encoding(&rhs))
+        Ok(self.canonicalize(lhs)? == self.canonicalize(rhs)?)
     }
 
+    fn canonicalization_certificate(&self, handle: Handle) -> Result<Tree, StorageError> {
+        let canonical = self.canonicalize(handle)?;
+        Ok(self.certificate(0, handle, canonical.into()))
+    }
+
+    /// Selection operands must be Objects or Refs, with Object u64 indices.
+    fn select(&self, selection: Tree) -> Result<Handle, StorageError> {
+        let arguments = self.get_tree(selection)?;
+        let (target, indices) = arguments
+            .split_first()
+            .ok_or(StorageError::InvalidSelection)?;
+        let object = match target.view() {
+            HandleView::Object(object) => *object,
+            HandleView::Ref(reference) => reference.object_descriptor(),
+            _ => return Err(StorageError::InvalidSelection),
+        };
+        let read_index = |handle: Handle| -> Result<usize, StorageError> {
+            let blob = Blob::try_from(handle).map_err(|_| StorageError::InvalidSelection)?;
+            let bytes = self.get_blob(blob)?;
+            let integer = bytes
+                .as_ref()
+                .try_into()
+                .map_err(|_| StorageError::InvalidSelection)?;
+            usize::try_from(u64::from_le_bytes(integer)).map_err(|_| StorageError::InvalidSelection)
+        };
+        let (start, end, index) = match indices {
+            [index] => {
+                let start = read_index(*index)?;
+                (
+                    start,
+                    start.checked_add(1).ok_or(StorageError::InvalidSelection)?,
+                    true,
+                )
+            }
+            [start, end] => (read_index(*start)?, read_index(*end)?, false),
+            _ => return Err(StorageError::InvalidSelection),
+        };
+        if start > end || end > target.len() {
+            return Err(StorageError::InvalidSelection);
+        }
+        Ok(match object.view() {
+            ObjectView::Tree(tree) => {
+                let data = self.get_tree(*tree)?;
+                if index {
+                    data[start]
+                } else {
+                    self.add_tree(&data[start..end]).into_ref().into()
+                }
+            }
+            ObjectView::Blob(blob) => {
+                let data = self.get_blob(*blob)?;
+                self.add_blob(&data[start..end]).into_ref().into()
+            }
+        })
+    }
+
+    /// For trusted kernel/storage issuers only.
+    fn certificate(&self, kind: u64, input: Handle, result: Handle) -> Tree {
+        let claim = self.add_tree(&[self.add_blob(&kind.to_le_bytes()).into(), input, result]);
+        self.add_tree(&[self.add_tree(&[]).into(), claim.into_ref().into()])
+            .tag_descriptor()
+    }
+
+    /// Returns the assertion's Object descriptor; its data may be unavailable.
+    fn certificate_claim(&self, coupon: Tree) -> Result<Tree, StorageError> {
+        let fields = self.get_tree(coupon)?;
+        Ok(TreeRef::try_from(fields[1]).unwrap().object_descriptor())
+    }
+
+    fn selection_certificate(&self, selection: Tree) -> Result<Tree, StorageError> {
+        Ok(self.certificate(6, selection.into(), self.select(selection)?))
+    }
+
+    fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError>;
     fn canonicalize_blob(&self, blob: Blob) -> Result<CanonicalHandle, StorageError>;
     fn canonicalize_tree(&self, tree: Tree) -> Result<CanonicalHandle, StorageError>;
 }
@@ -131,8 +188,14 @@ impl<S: Storage + ?Sized> Storage for alloc::sync::Arc<S> {
     fn add_blob(&self, data: &[u8]) -> Blob {
         (**self).add_blob(data)
     }
+    fn add_blob_backing(&self, data: ImmutableBytes) -> Blob {
+        (**self).add_blob_backing(data)
+    }
     fn add_tree(&self, data: &[Handle]) -> Tree {
         (**self).add_tree(data)
+    }
+    unsafe fn add_tree_backing(&self, data: ImmutableBytes) -> Tree {
+        unsafe { (**self).add_tree_backing(data) }
     }
     fn get_blob(&self, name: Blob) -> Result<Box<[u8]>, StorageError> {
         (**self).get_blob(name)
@@ -145,6 +208,9 @@ impl<S: Storage + ?Sized> Storage for alloc::sync::Arc<S> {
     }
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
         (**self).get_tree_backing(name)
+    }
+    fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError> {
+        (**self).canonicalize(handle)
     }
     fn canonicalize_blob(&self, name: Blob) -> Result<CanonicalHandle, StorageError> {
         (**self).canonicalize_blob(name)

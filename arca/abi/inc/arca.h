@@ -44,7 +44,7 @@ int64_t arca_length(arcad value, size_t *output);
 arcad arca_tuple_get(arcad value, size_t index);
 arcad arca_table_get(arcad table, size_t index, struct arca_entry *entry);
 arcad arca_tuple_set(arcad tuple, size_t index, arcad value);
-arcad arca_table_set(arcad table, size_t index, const struct arca_entry *entry);
+arcad arca_table_set(arcad table, size_t index, struct arca_entry *entry);
 
 arcad arca_function_apply(arcad function, arcad argument);
 arcad arca_function_force(arcad function);

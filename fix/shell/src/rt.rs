@@ -33,34 +33,21 @@ const _: () = assert!(
 
 pub const FUNCREF_SIZE: usize = core::mem::size_of::<wasm_rt_funcref_t>();
 
-/*
- *  The virtual memory layout is divided into 4 GiB pieces or "slots" and allocated to
- *  memories, externref tables, and funcref tables in the order they are listed.
- *
- * idx                          base address
- * [0, NUM_MEMORIES)            SLOT_SIZE * idx
- * [0, NUM_TABLES)              SLOT_SIZE * (NUM_MEMORIES + idx)
- * [0, NUM_FUNCREF_TABLES)      SLOT_SIZE * (NUM_MEMORIES + NUM_TABLES + idx)
- */
+// Slots 0–63 hold memories, 64–126 hold tables, and 127 holds the native shell.
 pub static mut MEMORY_IDX: usize = 0;
 pub static mut TABLE_IDX: usize = 0;
-pub static mut FUNCREF_TABLE_IDX: usize = 0;
-static mut WASM_TABLE_IDX: usize = 0;
-static mut EXTERNREF_POOL: [usize; NUM_TABLES + NUM_FUNCREF_TABLES] =
-    [usize::MAX; NUM_TABLES + NUM_FUNCREF_TABLES];
 
-pub unsafe fn externref_pool(index: u32) -> usize {
+pub unsafe fn externref_table(index: u32) -> *mut wasm_rt_externref_table_t {
     unsafe {
-        assert!((index as usize) < WASM_TABLE_IDX, "table does not exist");
-        let pool = EXTERNREF_POOL[index as usize];
-        assert!(pool < NUM_TABLES, "table does not hold externrefs");
-        pool
+        assert!((index as usize) < TABLE_IDX, "table does not exist");
+        let table = TABLES[index as usize];
+        assert!(!table.is_null(), "table does not hold externrefs");
+        table
     }
 }
 
 pub const NUM_MEMORIES: usize = 64;
-pub const NUM_TABLES: usize = 32;
-pub const NUM_FUNCREF_TABLES: usize = 31;
+pub const NUM_TABLES: usize = 63;
 pub const SLOT_SIZE: usize = 1 << 32;
 pub const MAX_PAGES: u64 = (SLOT_SIZE / PAGE_SIZE as usize) as u64;
 pub const MAX_TABLE_ELEMENTS: u32 = (SLOT_SIZE / EXTERNREF_SIZE) as u32;
@@ -70,8 +57,8 @@ pub static mut MEMORIES: [*mut wasm_rt_memory_t; NUM_MEMORIES] =
     [core::ptr::null_mut(); NUM_MEMORIES];
 pub static mut TABLES: [*mut wasm_rt_externref_table_t; NUM_TABLES] =
     [core::ptr::null_mut(); NUM_TABLES];
-pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; NUM_FUNCREF_TABLES] =
-    [core::ptr::null_mut(); NUM_FUNCREF_TABLES];
+pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; NUM_TABLES] =
+    [core::ptr::null_mut(); NUM_TABLES];
 
 pub static mut MEMORY_ATTACHED: [bool; NUM_MEMORIES] = [false; NUM_MEMORIES];
 pub static mut TABLE_ATTACHED: [bool; NUM_TABLES] = [false; NUM_TABLES];
@@ -212,9 +199,6 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
             size: elements,
             max_size: max_elements,
         });
-        assert!(WASM_TABLE_IDX < NUM_TABLES + NUM_FUNCREF_TABLES);
-        EXTERNREF_POOL[WASM_TABLE_IDX] = idx;
-        WASM_TABLE_IDX += 1;
         TABLES[idx] = table;
         TABLE_IDX += 1;
     }
@@ -309,9 +293,9 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
         assert!(!table.is_null());
         max_elements = max_elements.min(MAX_FUNCREF_TABLE_ELEMENTS);
         assert!(elements <= max_elements);
-        let idx = FUNCREF_TABLE_IDX;
-        assert!(idx < NUM_FUNCREF_TABLES);
-        let data = (SLOT_SIZE * (NUM_MEMORIES + NUM_TABLES + idx)) as *mut u8;
+        let idx = TABLE_IDX;
+        assert!(idx < NUM_TABLES);
+        let data = (SLOT_SIZE * (NUM_MEMORIES + idx)) as *mut u8;
         let memory_size = map_region(data, table_bytes(elements, FUNCREF_SIZE), __MODE_read_write)
             .expect("table allocation failed") as i64;
         table.write(wasm_rt_funcref_table_t {
@@ -320,10 +304,8 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
             size: elements,
             max_size: max_elements,
         });
-        assert!(WASM_TABLE_IDX < NUM_TABLES + NUM_FUNCREF_TABLES);
-        WASM_TABLE_IDX += 1;
         FUNCREF_TABLES[idx] = table;
-        FUNCREF_TABLE_IDX += 1;
+        TABLE_IDX += 1;
     }
 }
 

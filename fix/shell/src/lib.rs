@@ -53,8 +53,6 @@ bail:
 "#
 );
 
-pub static mut _PROCEDURE: core::simd::u8x32 = core::simd::u8x32::splat(0);
-
 #[allow(
     improper_ctypes,
     reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
@@ -116,17 +114,6 @@ pub fn main() -> ! {
         let module = alloc_zeroed(layout).cast::<c_void>();
         if module.is_null() {
             handle_alloc_error(layout);
-        }
-
-        /// Read procedure handle from combination
-        {
-            let tree = Function::symbolic("get_tree")
-                .apply(Blob::new(handle))
-                .call_with_current_continuation();
-
-            let procedure_ref = &raw mut _PROCEDURE;
-            assert!(shell::fixpoint_len(core::simd::u8x32::from_array(handle)) >= 1);
-            shell::read_backing(&tree, 0, (&mut *procedure_ref).as_mut_array());
         }
 
         wasm2c_module_instantiate(module, core::ptr::null());

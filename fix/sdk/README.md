@@ -7,13 +7,18 @@ parameters, return values, and locals; Clang does not permit handle fields in
 ordinary structs or classes. The Rust SDK distinguishes existing Fix handles
 from pending Fix values.
 
+Combinations use field 0 for metadata, field 1 for the callable, and fields
+2 onward for arguments. Callable Trees also place their callable in field 1.
+Ordinary combinations currently use an empty Blob for metadata.
+
 Raw bindings reserve no resources. Memory and Table arguments are actual Wasm
 indices. Table indices include funcref Tables. Constructors retain their shell
 type preconditions: references require Objects, identification requires Data,
 application and selection require Tree Objects or TreeRefs, and strict/shallow
 encodes require Thunks. Invalid arguments can trap. Evaluation and
-continuations are not supported bindings. `is_eq` checks equality eligibility;
-`equals` compares eligible values and traps for non-Eq operands.
+continuations are not supported bindings. `is_comparable` tests whether a
+handle supports comparison without computation; `equals` compares comparable
+values and traps otherwise.
 
 ## Wasm operations from C
 
@@ -92,8 +97,14 @@ let (number, children): (fix::Cast<Object<Blob>, _>, fix::Cast<Object<Tree>, _>)
 `iter()` traverses Tree children without allocation. `Tree::from_iter` accepts
 cloneable iterators, including iterators of `Result<V, Error>`; children are
 recomputed on access. `tree!` retains heterogeneous children by value.
-`Tree::create` also accepts borrowed or owned slices of values. Calling
-`tag()` on a constructed Tree uses the same child storage to construct a Tag.
+`Tree::create` also accepts borrowed or owned slices of values.
+
+`fields.tag(combination, depth)?` constructs a Tag. Its first field is a Tree
+of additional authors. Depth zero chooses the executing combination; each
+further step follows field 1, the callable. The selected author is
+appended unless a comparable author already compares equal through Fix. Other fields
+are application-defined. Reads of the pending Tag see this final authors list.
+The C operation is `fix_create_tag(table, author_depth)`.
 
 Rust's `alloc` feature enables Blob `read()` returning `Result<Vec<u8>, Error>`
 and Tree `children()` returning a vector of child values. Existing-handle child
@@ -107,6 +118,10 @@ Rust `u32` and `u64` represent little-endian Blobs. `Blob::create` accepts
 borrowed slices, owned arrays, or owned buffers. Rust uses `len()` and
 `is_empty()`. Reads and type, length, and tag queries inspect local value
 memory or look up input handles; they do not create Fix objects.
+`Value::len()` returns `Result<u64, Error>`; C's `fix_len` returns `uint64_t`.
+Lengths count Blob bytes or Tree elements, including for Refs whose backing
+data is unavailable. Local buffers and indices use `usize`; conversions from
+Fix lengths are checked.
 
 ```rust
 use fix::{Blob, Error, Focus, Handle, Object, Tree, Value};
@@ -115,8 +130,8 @@ use fix::{Blob, Error, Focus, Handle, Object, Tree, Value};
 fn apply(combination: &Handle<Object<Tree>, Focus>)
     -> Result<impl Value<Type = Object<Blob>>, Error>
 {
-    let left: Handle<Object<Blob>, _> = combination.get(1).try_into()?;
-    let right: Handle<Object<Blob>, _> = combination.get(2).try_into()?;
+    let left: Handle<Object<Blob>, _> = combination.get(2).try_into()?;
+    let right: Handle<Object<Blob>, _> = combination.get(3).try_into()?;
     Ok(Blob::create(left.read_u64()?.wrapping_add(right.read_u64()?).to_le_bytes()))
 }
 ```
@@ -125,12 +140,12 @@ Allocator-free recursive programs can return Fix application thunks that call
 the same procedure with the next arguments. Allocating Rust clients can instead
 use `Rc<dyn Value<Type = Any>>` for a finite recursive return type.
 
-`is_eq` checks Fix equality eligibility; `equals` returns `NotEq` for
-ineligible operands. The Rust SDK delegates equality to Fix, temporarily
+`is_comparable` tests handle comparability; `equals` returns `NotComparable`
+for ineligible operands. The Rust SDK delegates equality to Fix, temporarily
 materializing pending operands. Rust SDK handles and adaptors implement
-`PartialEq` by forwarding to Fix equality: `==` returns false for non-Eq
+`PartialEq` by forwarding to Fix equality: `==` returns false for non-comparable
 operands; other comparison errors trap. They do not implement `Eq`, since
-non-Eq values compare unequal to themselves.
+non-comparable values compare unequal to themselves.
 
 The private Rust runtime in `src/rust.c` uses Memory 1 and externref Table 1
 as scratch resources; function pointers use Table 0. The bridge retains the input combination and keeps
@@ -145,3 +160,8 @@ allocating clients provide a global allocator. `#[fix::apply]` exports
 
 Rust `files` provides canonical descriptor and stat codecs. C filesystem codecs
 belong to Flatware.
+
+`fix_unsound_handle_bytes` returns a Blob containing the existing 32-byte
+encoding of a kernel-resolved handle, without canonicalizing it. It requires
+a privileged invocation and traps otherwise. Different encodings need not
+denote different Fix values.

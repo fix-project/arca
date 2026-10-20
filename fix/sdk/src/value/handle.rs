@@ -128,9 +128,9 @@ impl<T: FixType, R: Lookup> Value for Handle<T, R> {
         self.location.load(path)?;
         current_encode_type()
     }
-    fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
+    fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
         self.location.load(path)?;
-        query_current(fix_sdk_len).map(|n| n as usize)
+        query_current(fix_sdk_len)
     }
     fn is_tag_at(&self, path: Option<&Path<'_>>) -> Result<bool, Error> {
         self.location.load(path)?;

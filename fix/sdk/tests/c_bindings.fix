@@ -1,2 +1,2 @@
-program = @"c_bindings_native.elf"
-*#(program)
+program = $c_bindings_native
+*#("" program)

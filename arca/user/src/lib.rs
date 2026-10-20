@@ -241,11 +241,19 @@ impl arca::Runtime for Runtime {
     }
 
     fn set_table(
-        tuple: &mut arca::Table<Self>,
+        table: &mut arca::Table<Self>,
         index: usize,
         entry: arca::Entry<Self>,
     ) -> Result<arca::Entry<Self>, Self::Error> {
-        todo!()
+        let mut entry = write_entry(entry);
+        unsafe {
+            syscall_result_raw(arcane::arca_table_set(
+                table.inner().as_raw() as i64,
+                index,
+                &mut entry,
+            ))?;
+        }
+        Ok(read_entry(entry))
     }
 
     fn write_blob(blob: &mut arca::Blob<Self>, offset: usize, buf: &[u8]) -> usize {

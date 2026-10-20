@@ -16,8 +16,9 @@ fn apply<'a>(
     })?;
     assert_eq!(value, 43);
     {
-        let program: Handle<Object<Blob>, _> = combination.with(0, TryInto::try_into)?;
-        assert!(!program.is_empty()?);
+        let program: Handle<Object<Tree>, _> = combination.with(1, TryInto::try_into)?;
+        let elf: Cast<Object<Blob>, _> = program.get(1).try_into()?;
+        assert!(!elf.is_empty()?);
     }
     let source = tree![tree![42u64]];
     let mut calls = 0;
@@ -50,14 +51,14 @@ fn apply<'a>(
         ));
     }
     let number = Blob::create(42u64.to_le_bytes());
-    assert!(number.is_eq()?);
+    assert!(number.is_comparable()?);
     assert!(number == Blob::create(42u64.to_le_bytes()));
     assert!(number != Blob::create(43u64.to_le_bytes()));
     let thunk = number.clone().reference().identification();
     assert!(number != thunk);
     assert!(thunk != number);
     assert!(!thunk.eq(&thunk));
-    assert_eq!(number.equals(&thunk), Err(Error::NotEq));
+    assert_eq!(number.equals(&thunk), Err(Error::NotComparable));
     let stat = Stat {
         dev: 0x0102030405060708,
         filetype: 4,
@@ -112,12 +113,21 @@ fn apply<'a>(
         ));
     }
     assert_eq!(
-        Tree::tag(core::iter::empty::<Handle>()).is_tag(),
+        Tree::tag(core::iter::empty::<Handle>(), combination, 0).map(|_| ()),
         Err(Error::OutOfBounds)
     );
-    let author = combination.get(0);
+    let combination: &'a Handle<Object<Tree>, fix::Focus> = combination;
+    let author = combination.get(1);
+    {
+        let additional = tree![tree![], author].tag(combination, 1)?;
+        let tag = tree![additional].tag(combination, 1)?;
+        assert!(tag.get(0).is_tag()?);
+    }
     let content = Blob::create(7u64.to_le_bytes()).erase();
-    let tag = tree![author, content].tag();
+    let tag = tree![tree![author], content].tag(combination, 1)?;
     assert!(tag.is_tag()?);
-    Ok(Blob::create(42u64.to_le_bytes()).erase())
+    assert_eq!(Cast::<Object<Tree>, _>::try_from(tag.get(0))?.len()?, 1);
+    let tag = tree![tree![&*combination], tag].tag(combination, 0)?;
+    assert_eq!(Cast::<Object<Tree>, _>::try_from(tag.get(0))?.len()?, 2);
+    Ok(tag.erase())
 }

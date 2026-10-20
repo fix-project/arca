@@ -42,14 +42,14 @@ static uint32_t children(uint32_t length, uint32_t index, fix_sdk_child child,
         wasm_table_set_1(index, saved);
     return error;
 }
-uint32_t fix_sdk_tree(uint32_t length, int tag, fix_sdk_child child,
-                      void *context) {
+uint32_t fix_sdk_tree(uint32_t length, int tag, uint32_t author_depth,
+                      fix_sdk_child child, void *context) {
     if (tag && !length)
         return OUT_OF_BOUNDS;
     uint32_t error = children(length, 0, child, context);
     if (error)
         return error;
-    value = tag ? fix_create_tag(1) : fix_create_tree(1, length);
+    value = tag ? fix_create_tag(1, author_depth) : fix_create_tree(1, length);
     wasm_table_fill_1(0, null(), length);
     return 0;
 }
@@ -115,7 +115,7 @@ uint32_t fix_sdk_encode_type(uint32_t *out) {
     *out = fix_get_encode_type(value);
     return 0;
 }
-uint32_t fix_sdk_len(uint32_t *out) {
+uint32_t fix_sdk_len(uint64_t *out) {
     if (!fix_is_data(value))
         return WRONG_TYPE;
     *out = fix_len(value);
@@ -127,8 +127,8 @@ uint32_t fix_sdk_is_tag(uint32_t *out) {
     *out = fix_is_tag(value);
     return 0;
 }
-uint32_t fix_sdk_is_eq(uint32_t *out) {
-    *out = fix_is_eq(value);
+uint32_t fix_sdk_is_comparable(uint32_t *out) {
+    *out = fix_is_comparable(value);
     return 0;
 }
 uint32_t fix_sdk_equals(fix_sdk_callback rhs, void *context, int32_t *out) {
@@ -137,7 +137,7 @@ uint32_t fix_sdk_equals(fix_sdk_callback rhs, void *context, int32_t *out) {
     uint32_t error = rhs(context);
     if (error)
         return error;
-    if (!fix_is_eq(left) || !fix_is_eq(value))
+    if (!fix_is_comparable(left) || !fix_is_comparable(value))
         return NOT_EQ;
     *out = fix_equals(left, value);
     value = null();
@@ -146,7 +146,7 @@ uint32_t fix_sdk_equals(fix_sdk_callback rhs, void *context, int32_t *out) {
 uint32_t fix_sdk_read(uint32_t offset, void *destination, uint32_t length) {
     if (!fix_is_object(value) || fix_get_data_type(value) != FIX_BLOB)
         return WRONG_TYPE;
-    uint32_t size = fix_len(value);
+    uint64_t size = fix_len(value);
     if (offset > size || length > size - offset)
         return OUT_OF_BOUNDS;
     fix_attach_blob(value, 1);

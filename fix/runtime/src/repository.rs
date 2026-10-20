@@ -35,6 +35,7 @@ pub struct Repository {
 }
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+const INDEX_FIELDS: usize = 8;
 
 struct Temporary(Option<String>);
 impl Drop for Temporary {
@@ -48,6 +49,36 @@ impl Drop for Temporary {
 impl Repository {
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    pub fn object_paths(&self, object: Object) -> Result<Vec<String>, RepositoryError> {
+        let mut paths = alloc::vec![
+            format!(".fix/objects/{}", object.as_handle()),
+            format!(
+                ".fix/data/{}",
+                Self::data_key(object.as_handle().as_bytes())
+            ),
+        ];
+        if let ObjectView::Tree(tree) = object.view()
+            && tree.is_tag()
+        {
+            let fields = self.read_tree(*tree)?;
+            let index = Self::tag_index(&fields);
+            for index in [
+                Some(index),
+                self.claim_fields(&fields)?
+                    .map(|claim| Self::index("claims", &claim)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let entry = format!("{index}/entries/{}", object.as_handle());
+                if fs::exists(&format!("{}/{entry}", self.path))? {
+                    paths.push(format!(".fix/{entry}"));
+                }
+            }
+        }
+        Ok(paths)
     }
 
     pub fn visit(
@@ -236,6 +267,128 @@ impl Repository {
         Ok(names)
     }
 
+    /// Finds stored Tags whose fields after the authors start with `prefix`.
+    /// Index entries are hints; the stored Tag establishes provenance and contents.
+    pub fn tags(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
+        self.find_tags("tags", prefix)
+    }
+
+    /// Finds Ref-backed assertion Tags by the supplied assertion's field prefix.
+    pub fn claims(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
+        self.find_tags("claims", prefix)
+    }
+
+    fn find_tags(&self, index: &str, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
+        if prefix.iter().any(|field| !field.is_canonical()) {
+            return Err(RepositoryError::NonCanonical);
+        }
+        let mut path = format!("{}/{index}", self.path);
+        for field in prefix.iter().take(INDEX_FIELDS) {
+            path.push('/');
+            path.push_str(&format!("{field}"));
+        }
+        let mut pending = alloc::vec![(path, prefix.len().min(INDEX_FIELDS))];
+        let mut tags = Vec::new();
+        while let Some((path, depth)) = pending.pop() {
+            let names = match fs::read_dir(&path) {
+                Ok(names) => names,
+                Err(ErrorKind::NotFound) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for name in names {
+                let child = format!("{path}/{name}");
+                if name == "entries" {
+                    for name in fs::read_dir(&child)? {
+                        let mut bytes = [0; 32];
+                        if hex::decode_to_slice(&name, &mut bytes).is_err() {
+                            continue;
+                        }
+                        let Ok(handle) = self.lookup(&bytes) else {
+                            continue;
+                        };
+                        let Ok(tag) = Tree::try_from(handle) else {
+                            continue;
+                        };
+                        if tag.is_tag() {
+                            let fields = self.read_tree(tag)?;
+                            let fields = if index == "claims" {
+                                self.claim_fields(&fields)?
+                            } else {
+                                Some(fields.get(1..).unwrap_or(&[]).into())
+                            };
+                            if fields.is_some_and(|fields| {
+                                fields.len() >= prefix.len()
+                                    && fields.iter().zip(prefix).all(|(a, b)| a.same_encoding(b))
+                            }) {
+                                tags.push(tag);
+                            }
+                        }
+                    }
+                } else if depth < INDEX_FIELDS
+                    && name.len() == 64
+                    && name.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    pending.push((child, depth + 1));
+                }
+            }
+        }
+        Ok(tags)
+    }
+
+    fn claim_fields(&self, fields: &[Handle]) -> Result<Option<Box<[Handle]>>, RepositoryError> {
+        let [_, reference] = fields else {
+            return Ok(None);
+        };
+        let Ok(reference) = TreeRef::try_from(*reference) else {
+            return Ok(None);
+        };
+        match self.read_tree(reference.object_descriptor()) {
+            Ok(fields) => Ok(Some(fields)),
+            Err(RepositoryError::Io(ErrorKind::NotFound)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn index_tag(&self, tag: Tree) -> Result<(), RepositoryError> {
+        let fields = self.read_tree(tag)?;
+        self.index_entry(tag, "tags", fields.get(1..).unwrap_or(&[]))?;
+        if let Some(claim) = self.claim_fields(&fields)? {
+            self.index_entry(tag, "claims", &claim)?;
+        }
+        Ok(())
+    }
+
+    fn index_entry(
+        &self,
+        tag: Tree,
+        index: &str,
+        fields: &[Handle],
+    ) -> Result<(), RepositoryError> {
+        let count = fields.len().min(INDEX_FIELDS);
+        let path = format!("{}/{}/entries", self.path, Self::index(index, fields));
+        fs::mkdir(&path)?;
+        let target = format!("{}objects/{}", "../".repeat(count + 2), tag.as_handle());
+        let record = format!("{path}/{}", tag.as_handle());
+        match fs::symlink(&target, &record) {
+            Ok(()) => Ok(()),
+            Err(ErrorKind::AlreadyExists) if fs::read_link(&record)? == target => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn tag_index(fields: &[Handle]) -> String {
+        Self::index("tags", fields.get(1..).unwrap_or(&[]))
+    }
+
+    fn index(index: &str, fields: &[Handle]) -> String {
+        let mut path = String::from(index);
+        for field in fields.iter().take(INDEX_FIELDS) {
+            path.push('/');
+            path.push_str(&format!("{field}"));
+        }
+        path
+    }
+
     pub fn write_label(&self, name: &str, value: Handle) -> Result<(), RepositoryError> {
         let path = self.label_path(name)?;
         let value = self.lookup(value.as_bytes())?;
@@ -281,10 +434,16 @@ impl Repository {
         let target = format!("../data/{key}");
         let record = format!("{}/objects/{object}", self.path);
         match fs::symlink(&target, &record) {
-            Ok(()) => Ok(()),
-            Err(ErrorKind::AlreadyExists) if fs::read_link(&record)? == target => Ok(()),
-            Err(error) => Err(error.into()),
+            Ok(()) => (),
+            Err(ErrorKind::AlreadyExists) if fs::read_link(&record)? == target => (),
+            Err(error) => return Err(error.into()),
         }
+        if let Ok(tree) = Tree::try_from(object)
+            && tree.is_tag()
+        {
+            self.index_tag(tree)?;
+        }
+        Ok(())
     }
 
     fn write_atomic(&self, path: &str, bytes: &[u8]) -> Result<(), RepositoryError> {
