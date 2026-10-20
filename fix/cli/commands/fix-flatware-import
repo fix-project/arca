@@ -12,8 +12,9 @@ if [[ -d $path && ! -L $path ]]; then
 else
     archive=$( (cd "$(dirname "$path")"; printf '%s\0' "${path##*/}" | cpio --null -o -H newc --reproducible --owner=0:0) | "$fix" create-blob -)
 fi
-composition=$("$fix" create-tree compose flatware-normalize cpio)
-combination=$("$fix" create-tree "$composition" "$archive")
+metadata=$("$fix" create-blob --string "")
+composition=$("$fix" create-tree "$metadata" compose flatware-normalize cpio)
+combination=$("$fix" create-tree "$metadata" "$composition" "$archive")
 thunk=$("$fix" create-application-thunk "$combination")
 directory=$("$fix" eval "$("$fix" create-strict-encode "$thunk")")
 fields=$("$fix" read-tree "$directory")

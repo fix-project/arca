@@ -11,6 +11,7 @@ The document is a Fix expression:
 {
   "create-strict-encode": {
     "create-application-thunk": [
+      "",
       {"binding": "add"},
       {"u64": 2},
       {"u64": 4}
@@ -55,7 +56,7 @@ width. Emit large integers exactly, without passing them through floating-point
 numbers. Normal JSON string escaping, including surrogate pairs, is supported.
 Serde's default JSON nesting limit applies.
 
-The standalone deserializer takes `(procedure, JSON Blob[, environment Tree])`
+The standalone deserializer takes `(metadata, procedure, JSON Blob[, environment Tree])`
 and returns the constructed value. Omitting the environment supplies no external
 bindings. JSON decoding uses `serde_json` with `alloc`
 for bare Wasm. The human-readable parser remains a separate procedure.

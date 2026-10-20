@@ -204,12 +204,14 @@ def _fix_script_test(ctx):
         "FIX_TEST_CLI": path(ctx.executable.fix),
         "FIX_TEST_PARSER": path(ctx.file.parser),
         "FIX_TEST_IDENTITY": path(ctx.file.identity),
+        "FIX_TEST_SEED": path(ctx.executable.seed),
+        "FIX_TEST_COMPILE": path(ctx.file.compiler),
         "FIX_TEST_DATA": "\n".join([path(file) for file in ctx.files.data]),
         "FIX_TEST_SCRIPT": ctx.attr.script,
         "FIX_TEST_JOBS": str(ctx.attr.jobs),
         "FIX_TEST_EXPECTED": ctx.attr.expected,
     }
-    runfiles = ctx.runfiles(files = ctx.files.data + [ctx.executable.fix, ctx.file.parser, ctx.file.identity])
+    runfiles = ctx.runfiles(files = ctx.files.data + [ctx.executable.fix, ctx.file.parser, ctx.file.identity, ctx.executable.seed, ctx.file.compiler])
     for target in [ctx.attr.fix, ctx.attr.driver]:
         runfiles = runfiles.merge(target[DefaultInfo].default_runfiles)
     return [DefaultInfo(executable = executable, runfiles = runfiles), RunEnvironmentInfo(environment = environment)]
@@ -222,6 +224,8 @@ fix_script_test = rule(
         "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
         "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
         "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),
+        "seed": attr.label(default = "//bootstrap:seed_repository", executable = True, cfg = "exec"),
+        "compiler": attr.label(default = "//programs/fix:compile_elf", allow_single_file = True),
         "script": attr.string(mandatory = True),
         "data": attr.label_list(allow_files = True),
         "jobs": attr.int(default = 1),

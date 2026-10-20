@@ -30,7 +30,7 @@ if fix("get-type", values["wasm"]) == "thunk":
 file_stat = [{"u64": 0}, {"u8": 4}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
 directory_stat = [{"u64": 0}, {"u8": 3}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
 merged = {"create-application-thunk": [
-    {"binding": "wasm-merge"}, [
+    "", {"binding": "wasm-merge"}, [
         "/toolchain/usr/bin/wasm-merge", "/toolchain/share/fix/adapter.wasm", "wasi_snapshot_preview1",
         "/work/guest.wasm", "flatware_guest", "/toolchain/share/fix/control.wasm", "flatware_control",
         "--all-features", "--disable-gc", "--rename-export-conflicts", "--no-resource-imports", "-o", "/work/module.wasm",
@@ -43,5 +43,5 @@ values["merge"] = store(merged)
 result = {"create-strict-encode": {"binding": "merge"}}
 fds = {"create-strict-encode": {"create-selection-thunk": [result, {"u64": 0}]}}
 work = {"create-strict-encode": {"create-selection-thunk": [fds, {"u64": 4}]}}
-lookup = {"create-application-thunk": [{"binding": "path"}, work, ["module.wasm"]]}
+lookup = {"create-application-thunk": ["", {"binding": "path"}, work, ["module.wasm"]]}
 print(store({"create-selection-thunk": [{"create-strict-encode": lookup}, {"u64": 2}]}))

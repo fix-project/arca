@@ -154,19 +154,21 @@ link = rule(
     ),
 )
 
-def generation(name):
+def program(name, src, directory, partitions = 256, output = None):
     tools = {
         "clang": {"tool": ":host_llvm", "tool_path": "/bin/clang"},
         "wasm2c": {"tool": ":host_wasm2c", "tool_path": "/bin/wasm2c"},
-        "wasm-merge": {"tool": "//tools:wasm_merge"},
     }
+    translate(name = name + "_translate", src = src, directory = directory, partitions = partitions, tags = ["manual"], **tools["wasm2c"])
+    compile(name = name + "_compile", translation = ":" + name + "_translate", directory = directory, tags = ["manual"], **tools["clang"])
+    link(name = name + "_link", objects = ":" + name + "_compile", output = output or directory + "/program.elf", tags = ["manual"], **tools["clang"])
+
+def generation(name):
     outputs = []
     for command in COMMANDS:
         prefix = name + "_" + command
         directory = name + "/" + command
-        merge(name = prefix + "_merge", command = command, output = directory + "/module.wasm", tags = ["manual"], **tools["wasm-merge"])
-        translate(name = prefix + "_translate", src = ":" + prefix + "_merge", directory = directory, tags = ["manual"], **tools["wasm2c"])
-        compile(name = prefix + "_compile", translation = ":" + prefix + "_translate", directory = directory, tags = ["manual"], **tools["clang"])
-        link(name = prefix + "_link", objects = ":" + prefix + "_compile", output = name + "/commands/" + command + ".elf", tags = ["manual"], **tools["clang"])
+        merge(name = prefix + "_merge", command = command, output = directory + "/module.wasm", tags = ["manual"], tool = "//tools:wasm_merge")
+        program(name = prefix, src = ":" + prefix + "_merge", directory = directory, output = name + "/commands/" + command + ".elf")
         outputs.append(":" + prefix + "_link")
     stage(name = name, srcs = outputs + [":stage0", "//fix/shell:shell", "//fix/shell:wasm_rt", "//fix/shell:headers", "//fix/shell:memmap", "//flatware:adapter_wasm", "//flatware:control_wasm"], tags = ["manual"])

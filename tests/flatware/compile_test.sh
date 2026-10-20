@@ -6,6 +6,7 @@ cd "$TEST_TMPDIR"
 unset BUILD_WORKSPACE_DIRECTORY
 "$root/$1" init
 "$root/$1" import "$root/$3"
+export FIX_TRUST="$TEST_TMPDIR/.fix/trust"
 wasm=$("$root/$1" create-blob "$root/$2")
 linked=$("$root/$1" flatware-link "$wasm")
 FIX_COMPILE_PARTITIONS=2 "$root/$1" compile "$linked" > thunk
@@ -15,7 +16,8 @@ encoded=$("$root/$1" create-strict-encode "$thunk")
 for mode in serial parallel; do
     if [[ $mode == serial ]]; then jobs=1; else jobs=4; fi
     executable=$("$root/$1" eval -j "$jobs" "$encoded")
-    "$root/$1" read-blob "$executable" > "$mode.elf"
+    mapfile -t certificate < <("$root/$1" read-tree "$executable")
+    "$root/$1" read-blob "${certificate[1]}" > "$mode.elf"
     FIX_JOBS="$jobs" "$root/$1" flatware-run "$executable" < /dev/null > "$mode.stdout" 2> "$mode.stderr"
 done
 cmp serial.elf parallel.elf

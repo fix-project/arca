@@ -83,15 +83,8 @@ flatware_procedure(name = "runner_probe_native", wasm = ":runner_probe_wasm")
 sh_test(
     name = "runner_test",
     srcs = ["runner_test.sh"],
-    args = ["$(rootpath " + target + ")" for target in [
-        "//fix",
-        ":runner_probe_native",
-        "//programs/fix/json:json_elf",
-        "//flatware:cpio_elf",
-        "//flatware:normalize_elf",
-        "//programs/fix:compose_elf",
-    ]],
-    data = [":runner_probe_native", "//fix", "//programs/fix/json:json_elf", "//flatware:cpio_elf", "//flatware:normalize_elf", "//programs/fix:compose_elf"],
+    args = ["$(rootpath //fix)", "$(rootpath //tests/build:fixture.tar)"],
+    data = ["//fix", "//tests/build:fixture.tar"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local"],

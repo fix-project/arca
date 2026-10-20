@@ -17,10 +17,10 @@
              (i32.const 0))
        drop
        (call $attach_blob
-             (table.get $tab_0 (i32.const 1))
+             (table.get $tab_0 (i32.const 2))
              (i32.const 1))
        (call $attach_blob
-             (table.get $tab_0 (i32.const 2))
+             (table.get $tab_0 (i32.const 3))
              (i32.const 2))
        ;; write to rw-memory
        (i64.store (memory $mem_0)

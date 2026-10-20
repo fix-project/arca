@@ -34,5 +34,5 @@ with tempfile.TemporaryDirectory() as work:
         pairs += b"identity\0" + fix("resolve", "identity").encode() + b"\0"
         bindings = fix("create-tree", "--bindings", "-", input=pairs)
     source = fix("create-blob", "-", input=source)
-    combination = fix("create-tree", fix("resolve", "parser"), source, bindings)
+    combination = fix("create-tree", fix("create-blob", "--string", ""), fix("resolve", "parser"), source, bindings)
     print(fix("think", fix("create-application-thunk", combination)))

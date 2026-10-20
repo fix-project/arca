@@ -33,10 +33,10 @@
 
     ;; Attach the two input blobs.
     (call $attach_blob
-      (table.get $tab_0 (i32.const 1))
+      (table.get $tab_0 (i32.const 2))
       (i32.const 1))
     (call $attach_blob
-      (table.get $tab_0 (i32.const 2))
+      (table.get $tab_0 (i32.const 3))
       (i32.const 2))
 
     ;; Load both operands once.

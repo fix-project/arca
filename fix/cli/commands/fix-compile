@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import os
 import subprocess
 import sys
@@ -12,81 +11,15 @@ if help_requested or len(args) != 1:
 cli = os.environ.get("FIX", "fix")
 
 
-def fix(*args, input=None):
-    return subprocess.run([cli, *args], input=input, stdout=subprocess.PIPE, check=True).stdout.decode().rstrip("\n")
+def fix(*args):
+    return subprocess.check_output([cli, *args]).decode().rstrip("\n")
 
 
-partitions = os.environ.get("FIX_COMPILE_PARTITIONS", "8")
-if not partitions.isascii() or not partitions.isdigit() or int(partitions) < 1:
-    sys.exit("FIX_COMPILE_PARTITIONS must be a positive integer")
-partitions = int(partitions)
-values = {name: fix("resolve", name) for name in ("toolchain", "wasm2c", "clang", "path")}
-values["wasm"] = fix("resolve", args[0])
-wasm = {"binding": "wasm"}
-if fix("get-type", values["wasm"]) == "thunk":
-    wasm = {"create-strict-encode": wasm}
-
-
-def store(name, expression):
-    pairs = b"".join(key.encode() + b"\0" + value.encode() + b"\0" for key, value in values.items())
-    bindings = fix("create-tree", "--bindings", "-", input=pairs)
-    values[name] = fix("json-import", "-", bindings, input=json.dumps(expression).encode())
-    return {"binding": name}
-
-
-def strict(value):
-    return {"create-strict-encode": value}
-
-
-def select(value, index):
-    return strict({"create-selection-thunk": [value, {"u64": index}]})
-
-
-def work(result):
-    return select(select(strict(result), 0), 4)
-
-
-def output_file(result, name):
-    lookup = {"create-application-thunk": [{"binding": "path"}, work(result), [name]]}
-    return {"create-selection-thunk": [strict(lookup), {"u64": 2}]}
-
-
-file_stat = [{"u64": 0}, {"u8": 4}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
-directory_stat = [{"u64": 0}, {"u8": 3}, {"u64": 1}, *[{"u64": 0} for _ in range(4)]]
-
-
-def command(program, arguments, directory):
-    return {"create-application-thunk": [
-        {"binding": program}, ["/toolchain/usr/bin/" + program, *arguments],
-        ["TMPDIR=/work", "LC_ALL=C", "SOURCE_DATE_EPOCH=0"],
-        [["stdin", [], ""], ["stdout", [], ""], ["stderr", [], ""], {"binding": "toolchain"}, directory],
-        {"u64": 0}, {"u64": 0},
-    ]}
-
-
-flags = [
-    "--target=x86_64-unknown-linux-gnu", "-O2", "-fno-optimize-sibling-calls", "-frounding-math",
-    "-ffreestanding", "-nostdlib", "-nostdinc", "-isystem", "/toolchain/usr/lib/clang/23/include",
-    "-isystem", "/toolchain/usr/include/wasm32-wasip1", "-isystem", "/toolchain/usr/include",
-    "-mcmodel=large", "-mno-red-zone", "-march=x86-64-v3", "-static",
-    "-resource-dir=/toolchain/usr/lib/clang/23", "-no-canonical-prefixes", "-I/toolchain/share/fix", "-I/work",
-]
-translated = store("translate", command("wasm2c", [
-    "-n", "module", f"--num-outputs={partitions}", "/work/module.wasm", "-o", "/work/module.c",
-], ["/work", directory_stat, [["module.wasm", file_stat, wasm]]]))
-sources = ["module.c"] if partitions == 1 else [f"module_{i}.c" for i in range(partitions)]
-sources = [f"/work/{source}" for source in sources] + ["/toolchain/share/fix/wasm-rt.c"]
-compiled = store("compile", {"create-identification-thunk": [
-    strict(command("clang", flags + ["-c", source, "-o", "/work/object.o"], work(translated)))
-    for source in sources
-]})
-objects = [[f"object_{i}.o", file_stat, strict(output_file(
-    {"create-selection-thunk": [strict(compiled), {"u64": i}]}, "object.o",
-))] for i in range(len(sources))]
-linked = store("link", command("clang", flags + [
-    "-fuse-ld=/toolchain/usr/bin/ld.lld", "-Wl,--build-id=none", "-Wl,--threads=1",
-    "-Wl,-T,/toolchain/share/fix/memmap.ld", "-o", "/work/program.elf",
-] + [f"/work/object_{i}.o" for i in range(len(sources))] + ["/toolchain/share/fix/libfixshell.a"],
-    ["/work", directory_stat, objects]))
-store("executable", output_file(linked, "program.elf"))
-print(values["executable"])
+metadata = fix("create-blob", "--string", "")
+compiler = fix("create-tree", metadata, "fixpoint", "compile-resources")
+source = fix("resolve", args[0])
+if fix("get-type", source) == "thunk":
+    source = fix("create-strict-encode", source)
+partitions = fix("create-blob", "--u64", os.environ.get("FIX_COMPILE_PARTITIONS", "8"))
+combination = fix("create-tree", metadata, compiler, source, partitions)
+print(fix("create-application-thunk", combination))

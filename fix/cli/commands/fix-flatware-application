@@ -27,7 +27,7 @@ streams = [["stdin", [], {"binding": "input"}], ["stdout", [], ""], ["stderr", [
 descriptors = [{"create-strict-encode": {"create-selection-thunk": [{"binding": "fds"}, {"u64": i}]}}
                for i in range(int(fix("len", values["fds"])))]
 invocation = {"create-application-thunk": [
-    {"binding": "program"}, [os.environ.get("FIX_ARGV0", args[0]), *args[1:]],
+    "", {"binding": "program"}, [os.environ.get("FIX_ARGV0", args[0]), *args[1:]],
     {"binding": "environment"}, streams + descriptors, {"u64": 0}, {"u64": 0},
 ]}
 pairs = b"".join(key.encode() + b"\0" + value.encode() + b"\0" for key, value in values.items())

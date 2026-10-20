@@ -238,19 +238,19 @@ fn archive_len(
     let mut length = (110 + path_len + 1 + 3) & !3;
     if files::read_stat(&metadata)?.filetype == 3 {
         let children: Cast<Object<Tree>, _> = files::contents(&descriptor)?.try_into()?;
-        for index in 0..children.len()? {
+        for index in 0..usize::try_from(children.len()?)? {
             let child: Cast<Object<Tree>, _> = children.get(index).try_into()?;
             length = length
                 .checked_add(archive_len(
                     &child,
-                    path_len + 1 + files::name(&child)?.len()?,
+                    path_len + 1 + usize::try_from(files::name(&child)?.len()?)?,
                 )?)
                 .ok_or(Error::OutOfBounds)?;
         }
     } else {
         let contents: Cast<Object<Blob>, _> = files::contents(&descriptor)?.try_into()?;
         length = length
-            .checked_add((contents.len()? + 3) & !3)
+            .checked_add((usize::try_from(contents.len()?)? + 3) & !3)
             .ok_or(Error::OutOfBounds)?;
     }
     Ok(length)
@@ -270,7 +270,7 @@ fn pack(
         record(output, path, &stat, 0, *inode);
         let children: Cast<Object<Tree>, _> = files::contents(&descriptor)?.try_into()?;
         let mut names = alloc::collections::BTreeSet::new();
-        for index in 0..children.len()? {
+        for index in 0..usize::try_from(children.len()?)? {
             let child: Cast<Object<Tree>, _> = children.get(index).try_into()?;
             let name = files::name(&child)?.read()?;
             assert!(
@@ -289,7 +289,7 @@ fn pack(
         }
     } else {
         let contents: Cast<Object<Blob>, _> = files::contents(&descriptor)?.try_into()?;
-        let length = contents.len()?;
+        let length = usize::try_from(contents.len()?)?;
         record(output, path, &stat, length, *inode);
         let start = output.len();
         output.resize(start + length, 0);
@@ -308,10 +308,10 @@ fn pack(
 pub fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<Expression, Error> {
     assert_eq!(
         combination.len()?,
-        2,
+        3,
         "expected a CPIO Blob or Flatware directory"
     );
-    let input = combination.get(1);
+    let input = combination.get(2);
     if input.data_type()? == DataType::Blob {
         expand(&Handle::<Object<Blob>, _>::try_from(input)?)
     } else {

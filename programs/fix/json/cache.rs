@@ -51,7 +51,7 @@ impl Value for Node<'_> {
         self.value.encode_type_at(path)
     }
 
-    fn len_at(&self, path: Option<&Path<'_>>) -> Result<usize, Error> {
+    fn len_at(&self, path: Option<&Path<'_>>) -> Result<u64, Error> {
         self.value.len_at(path)
     }
 

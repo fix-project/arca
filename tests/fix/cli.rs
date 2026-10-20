@@ -2,6 +2,36 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+fn seed(directory: &Path, programs: &[(&str, &str)]) {
+    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
+        .join(std::env::var("TEST_WORKSPACE").unwrap());
+    let mut command = Command::new(root.join(env!("FIX_SEED")));
+    command
+        .args(["seed", ".fix"])
+        .arg(root.join(env!("FIX_COMPILE")));
+    for (label, path) in programs {
+        command.arg(label).arg(root.join(path));
+    }
+    let output = command.current_dir(directory).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn trust_file() -> &'static Path {
+    static TRUST: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    TRUST.get_or_init(|| {
+        let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("authority");
+        for name in ["objects", "data", "labels"] {
+            std::fs::create_dir_all(directory.join(".fix").join(name)).unwrap();
+        }
+        seed(&directory, &[]);
+        directory.join(".fix/trust")
+    })
+}
+
 fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u8> {
     let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
         .join(std::env::var("TEST_WORKSPACE").unwrap());
@@ -19,6 +49,7 @@ fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u
         .args(arguments)
         .current_dir(directory)
         .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("FIX_TRUST", trust_file())
         .env_remove("BUILD_WORKSPACE_DIRECTORY")
         .env_remove("RUNFILES_DIR")
         .env_remove("RUNFILES_MANIFEST_FILE")
@@ -48,6 +79,214 @@ fn text(bytes: Vec<u8>) -> String {
 
 fn value(directory: &Path, arguments: &[&str]) -> String {
     text(run(directory, arguments, b"", 0))
+}
+
+#[test]
+fn compiler_certificates() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("compiler");
+    std::fs::create_dir(&directory).unwrap();
+    run(&directory, &["init"], b"", 0);
+    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
+        .join(std::env::var("TEST_WORKSPACE").unwrap());
+    seed(
+        &directory,
+        &[
+            ("wasm2c", env!("FIX_IDENTITY")),
+            ("clang", env!("FIX_IDENTITY")),
+        ],
+    );
+    let compiler = value(&directory, &["resolve", "compile"]);
+    assert_eq!(
+        std::fs::read_to_string(directory.join(".fix/trust")).unwrap(),
+        format!("{compiler}\n")
+    );
+    let fixpoint = value(&directory, &["resolve", "fixpoint"]);
+    run(&directory, &["is-tag", &fixpoint], b"", 0);
+    let fields = value(&directory, &["read-tree", &fixpoint]);
+    let fields: Vec<_> = fields.lines().collect();
+    assert_eq!(value(&directory, &["read-tree", fields[0]]), compiler);
+    assert_eq!(fields[1], compiler);
+    assert_eq!(
+        run(&directory, &["read-blob", fields[2]], b"", 0),
+        b"Runnable"
+    );
+    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let empty = text(run(&directory, &["create-tree", "-"], b"", 0));
+    let body = value(&directory, &["create-tree", "wasm2c", "clang", &empty]);
+    let tag = Command::new(root.join(env!("FIX_SEED")))
+        .args(["tag", ".fix", "Bootstrap", &body])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        tag.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tag.stderr)
+    );
+    let resources = text(tag.stdout);
+    run(
+        &directory,
+        &["label", "set", "compile-resources", &resources],
+        b"",
+        0,
+    );
+    let source = value(&directory, &["create-blob", "--string", "source"]);
+    let thunk = value(&directory, &["compile", &source]);
+    let next = value(&directory, &["think", &thunk]);
+    assert_eq!(value(&directory, &["get-type", &next]), "thunk");
+    let closure = value(
+        &directory,
+        &["create-tree", &metadata, &fixpoint, &resources],
+    );
+    let phase = value(&directory, &["create-blob", "--u64", "3"]);
+    let partitions = value(&directory, &["create-blob", "--u64", "1"]);
+    let payload = value(
+        &directory,
+        &[
+            "create-tree",
+            &closure,
+            &source,
+            &partitions,
+            &phase,
+            &empty,
+        ],
+    );
+    let authors = value(&directory, &["create-tree", &compiler]);
+    let claim = value(&directory, &["create-blob", "--string", "Compilation"]);
+    let counterfeit = value(&directory, &["create-tree", &authors, &payload, &claim]);
+    let application = value(
+        &directory,
+        &["create-tree", &metadata, &closure, &counterfeit],
+    );
+    let application = value(&directory, &["create-application-thunk", &application]);
+    run(&directory, &["think", &application], b"", 1);
+}
+
+#[test]
+fn runnable_trust_configuration() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("trust");
+    std::fs::create_dir(&directory).unwrap();
+    run(&directory, &["init"], b"", 0);
+    seed(&directory, &[("identity", env!("FIX_IDENTITY"))]);
+    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let reply = value(&directory, &["create-blob", "--string", "reply"]);
+    let combination = value(&directory, &["create-tree", &metadata, "identity", &reply]);
+    let application = value(&directory, &["create-application-thunk", &combination]);
+    let config = directory.join("config");
+    std::fs::create_dir_all(config.join("fix")).unwrap();
+    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
+        .join(std::env::var("TEST_WORKSPACE").unwrap());
+    let think = |thunk: &str, trust: Option<&Path>| {
+        let mut command = Command::new(root.join(env!("FIX_CLI")));
+        command
+            .args(["think", thunk])
+            .current_dir(&directory)
+            .env_remove("BUILD_WORKSPACE_DIRECTORY")
+            .env_remove("FIX_TRUST")
+            .env("XDG_CONFIG_HOME", &config);
+        if let Some(trust) = trust {
+            command.env("FIX_TRUST", trust);
+        }
+        command.output().unwrap()
+    };
+    let denied = think(&application, None);
+    assert_eq!(denied.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("untrusted author"));
+    std::fs::copy(trust_file(), config.join("fix/trust")).unwrap();
+    let accepted = think(&application, None);
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert_eq!(text(accepted.stdout), combination);
+    let override_path = directory.join("override");
+    std::fs::write(&override_path, "").unwrap();
+    assert_eq!(
+        think(&application, Some(&override_path)).status.code(),
+        Some(1)
+    );
+    std::fs::write(&override_path, "invalid authority").unwrap();
+    assert_eq!(
+        think(&application, Some(&override_path)).status.code(),
+        Some(2)
+    );
+    std::fs::remove_file(&override_path).unwrap();
+    let missing = think(&application, Some(&override_path));
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("cannot read trust file"));
+    let bare = value(&directory, &["create-tree", &metadata, "compile", &reply]);
+    let bare = value(&directory, &["create-application-thunk", &bare]);
+    assert_eq!(think(&bare, None).status.code(), Some(1));
+
+    let request = value(&directory, &["create-strict-encode", &application]);
+    let evaluate = |directory: &Path, memoize: bool| {
+        let mut command = Command::new(root.join(env!("FIX_CLI")));
+        command.args(["eval", "-j", "1"]);
+        if memoize {
+            command.arg("--memoize");
+        }
+        command
+            .arg(&request)
+            .current_dir(&directory)
+            .env_remove("BUILD_WORKSPACE_DIRECTORY")
+            .env("FIX_TRUST", &override_path)
+            .output()
+            .unwrap()
+    };
+    std::fs::copy(trust_file(), &override_path).unwrap();
+    let code = value(&directory, &["create-blob", "--u64", "2"]);
+    let index = directory.join(".fix/claims").join(&code).join(&combination);
+    let entries = index.join(&combination).join("entries");
+    std::fs::create_dir_all(&entries).unwrap();
+    let empty = value(&directory, &["create-tree", "-"]);
+    let counterfeit = value(
+        &directory,
+        &["create-tree", &empty, &code, &combination, &reply],
+    );
+    std::os::unix::fs::symlink(
+        directory.join(".fix/objects").join(&counterfeit),
+        entries.join(&counterfeit),
+    )
+    .unwrap();
+    let first = evaluate(&directory, true);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(text(first.stdout), combination);
+    let coupons: Vec<_> = std::fs::read_dir(&entries)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.file_name().unwrap() != counterfeit.as_str())
+        .collect();
+    assert_eq!(coupons.len(), 1);
+    assert!(coupons[0].is_symlink());
+    assert!(coupons[0].exists());
+    std::fs::write(&override_path, "").unwrap();
+    assert_eq!(evaluate(&directory, false).status.code(), Some(1));
+    let reused = evaluate(&directory, true);
+    assert!(
+        reused.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reused.stderr)
+    );
+    assert_eq!(text(reused.stdout), combination);
+    let coupon = coupons[0].file_name().unwrap().to_str().unwrap();
+    run(&directory, &["label", "set", "cached", coupon], b"", 0);
+    run(&directory, &["export", "cached", "cached.tar.gz"], b"", 0);
+    let imported = directory.join("imported");
+    std::fs::create_dir(&imported).unwrap();
+    run(&imported, &["init"], b"", 0);
+    run(&imported, &["import", "../cached.tar.gz"], b"", 0);
+    let reused = evaluate(&imported, true);
+    assert!(
+        reused.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reused.stderr)
+    );
+    assert_eq!(text(reused.stdout), combination);
 }
 
 #[test]
@@ -151,19 +390,7 @@ fn persistent_plumbing() {
         .as_bytes(),
         0,
     ));
-    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
-        .join(std::env::var("TEST_WORKSPACE").unwrap());
-    run(
-        &directory,
-        &[
-            "create-blob",
-            root.join(env!("FIX_PARSER")).to_str().unwrap(),
-            "-l",
-            "parser",
-        ],
-        b"",
-        0,
-    );
+    seed(&directory, &[("parser", env!("FIX_PARSER"))]);
     let graph = text(run(
         &directory,
         &["parse", "-", &environment],
@@ -264,9 +491,10 @@ fn persistent_plumbing() {
     assert_eq!(value(&directory, &["get-data-type", "inputs"]), "tree");
     assert_eq!(value(&directory, &["len", "inputs"]), "2");
     run(&directory, &["is-tag", "inputs"], b"", 1);
-    run(&directory, &["is-eq", "inputs"], b"", 0);
+    run(&directory, &["is-comparable", "inputs"], b"", 0);
     let reference = value(&directory, &["create-ref", "inputs"]);
     assert_eq!(value(&directory, &["get-type", &reference]), "ref");
+    assert_eq!(value(&directory, &["len", &reference]), "2");
     run(&directory, &["read-tree", &reference], b"", 2);
 
     let mut children = vec![tree.clone(), reference.clone()];
@@ -278,7 +506,8 @@ fn persistent_plumbing() {
         let thunk = value(&directory, &[command, &reference]);
         assert_eq!(value(&directory, &[command, &tree]), thunk);
         assert_eq!(value(&directory, &["get-type", &thunk]), "thunk");
-        run(&directory, &["is-eq", &thunk], b"", 1);
+        run(&directory, &["is-comparable", &thunk], b"", 1);
+        run(&directory, &["len", &thunk], b"", 2);
         children.push(thunk.clone());
         for kind in ["strict", "shallow"] {
             let encode = text(run(
@@ -288,6 +517,7 @@ fn persistent_plumbing() {
                 0,
             ));
             assert_eq!(value(&directory, &["get-encode-type", &encode]), kind);
+            run(&directory, &["len", &encode], b"", 2);
             run(&directory, &["label", "set", "pending", &encode], b"", 0);
             assert_eq!(value(&directory, &["resolve", "pending"]), encode);
             children.push(encode);
@@ -301,7 +531,7 @@ fn persistent_plumbing() {
         value(&directory, &["read-tree", &pending_tree]),
         children.join("\n")
     );
-    run(&directory, &["is-eq", &pending_tree], b"", 1);
+    run(&directory, &["is-comparable", &pending_tree], b"", 1);
     run(&directory, &["create-application-thunk", &blob], b"", 2);
     run(&directory, &["get-data-type", &children[2]], b"", 2);
     run(&directory, &["label", "set", "../outside", &blob], b"", 2);
@@ -424,20 +654,14 @@ fn repository_discovery() {
     run(&directory, &["-C"], b"", 2);
     run(&directory, &["-C", "missing", "resolve", "input"], b"", 2);
 
-    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
-        .join(std::env::var("TEST_WORKSPACE").unwrap());
-    for (name, path) in [
-        ("json", env!("FIX_JSON")),
-        ("parser", env!("FIX_PARSER")),
-        ("identity", env!("FIX_IDENTITY")),
-    ] {
-        run(
-            &other,
-            &["create-blob", "-", "-l", name],
-            &std::fs::read(root.join(path)).unwrap(),
-            0,
-        );
-    }
+    seed(
+        &other,
+        &[
+            ("json", env!("FIX_JSON")),
+            ("parser", env!("FIX_PARSER")),
+            ("identity", env!("FIX_IDENTITY")),
+        ],
+    );
     std::fs::write(other.join("command.fix"), b"7u64").unwrap();
     run(
         &nested,
@@ -518,37 +742,16 @@ fn external_commands_and_filesystem_plumbing() {
         b"argument\n"
     );
 
-    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
-        .join(std::env::var("TEST_WORKSPACE").unwrap());
-    run(
+    seed(&directory, &[("json", env!("FIX_JSON"))]);
+
+    seed(
         &directory,
         &[
-            "create-blob",
-            root.join(env!("FIX_JSON")).to_str().unwrap(),
-            "-l",
-            "json",
+            ("cpio", env!("FIX_CPIO")),
+            ("flatware-normalize", env!("FIX_NORMALIZE")),
+            ("compose", env!("FIX_COMPOSE")),
         ],
-        b"",
-        0,
     );
-
-    for (label, path) in [
-        ("cpio", env!("FIX_CPIO")),
-        ("flatware-normalize", env!("FIX_NORMALIZE")),
-        ("compose", env!("FIX_COMPOSE")),
-    ] {
-        run(
-            &directory,
-            &[
-                "create-blob",
-                root.join(path).to_str().unwrap(),
-                "-l",
-                label,
-            ],
-            b"",
-            0,
-        );
-    }
 
     let input = directory.join("input");
     std::fs::create_dir(&input).unwrap();
@@ -599,27 +802,23 @@ fn json_graph_matches_parser() {
     let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("json");
     std::fs::create_dir(&directory).unwrap();
     run(&directory, &["init"], b"", 0);
-    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
-        .join(std::env::var("TEST_WORKSPACE").unwrap());
-    for (label, path) in [
-        ("json", env!("FIX_JSON")),
-        ("parser", env!("FIX_PARSER")),
-        ("identity", env!("FIX_IDENTITY")),
-    ] {
-        run(
-            &directory,
-            &[
-                "create-blob",
-                root.join(path).to_str().unwrap(),
-                "-l",
-                label,
-            ],
-            b"",
-            0,
-        );
-    }
+    seed(
+        &directory,
+        &[
+            ("json", env!("FIX_JSON")),
+            ("parser", env!("FIX_PARSER")),
+            ("identity", env!("FIX_IDENTITY")),
+        ],
+    );
     let invalid_program = value(&directory, &["create-blob", "--string", "not an ELF"]);
-    for label in ["wasm-merge", "wasm2c", "clang", "path"] {
+    for label in [
+        "wasm-merge",
+        "wasm2c",
+        "clang",
+        "path",
+        "fixpoint",
+        "compile-resources",
+    ] {
         run(
             &directory,
             &["label", "set", label, &invalid_program],
@@ -648,7 +847,7 @@ fn json_graph_matches_parser() {
         {"binding":"values"},
         {"create-ref":{"binding":"values"}},
         {"create-identification-thunk":{"binding":"values"}},
-        {"create-application-thunk":[{"binding":"identity"},{"binding":"values"}]},
+        {"create-application-thunk":["",{"binding":"identity"},{"binding":"values"}]},
         {"create-selection-thunk":[{"binding":"values"},{"u64":1}]},
         {"create-strict-encode":{"create-identification-thunk":{"binding":"values"}}},
         {"create-shallow-encode":{"create-identification-thunk":{"binding":"values"}}}
@@ -663,7 +862,7 @@ fn json_graph_matches_parser() {
         &directory,
         &["parse", "-", &environment],
         br#"values = ("quote\"\n\u03bb\u0000" 0x00ff 255u8 65535u16 4294967295u32 18446744073709551615u64)
-(values &values 'values #($identity values) [values 1u64] *'values +'values)"#,
+(values &values 'values #("" $identity values) [values 1u64] *'values +'values)"#,
         0,
     ));
     assert_eq!(graph, parsed);
@@ -714,6 +913,64 @@ fn json_graph_matches_parser() {
 }
 
 #[test]
+fn evaluation_modes() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("evaluation");
+    std::fs::create_dir(&directory).unwrap();
+    run(&directory, &["init"], b"", 0);
+    let tree = |handles: &[&str]| {
+        let arguments: Vec<_> = std::iter::once("create-tree")
+            .chain(handles.iter().copied())
+            .collect();
+        value(&directory, &arguments)
+    };
+    let encode =
+        |kind: &str, thunk: &str| value(&directory, &[&format!("create-{kind}-encode"), thunk]);
+    let blob = text(run(&directory, &["create-blob", "-"], &[42; 64], 0));
+    let reference = value(&directory, &["create-ref", &blob]);
+    let identity = value(&directory, &["create-identification-thunk", &reference]);
+    let contents = tree(&[&reference, &encode("strict", &identity)]);
+    let contents_ref = value(&directory, &["create-ref", &contents]);
+    let contents_identity = value(&directory, &["create-identification-thunk", &contents_ref]);
+    let evaluated = tree(&[&reference, &blob]);
+    let index = value(&directory, &["create-blob", "--u64", "0"]);
+    let select = |handle: &str| {
+        let container = tree(&[handle]);
+        let container_ref = value(&directory, &["create-ref", &container]);
+        let selection = tree(&[&container_ref, &index]);
+        value(&directory, &["create-selection-thunk", &selection])
+    };
+    let returned_strict = select(&encode("strict", &contents_identity));
+    let returned_shallow = select(&encode("shallow", &contents_identity));
+    let cases = [
+        (reference.clone(), reference),
+        (contents_ref.clone(), contents_ref.clone()),
+        (contents, evaluated.clone()),
+        (encode("strict", &contents_identity), evaluated.clone()),
+        (encode("shallow", &contents_identity), contents_ref.clone()),
+        (encode("shallow", &returned_strict), contents_ref),
+        (encode("strict", &returned_shallow), evaluated.clone()),
+    ];
+    for jobs in ["1", "2"] {
+        for (input, expected) in &cases {
+            assert_eq!(
+                value(&directory, &["eval", "-j", jobs, input]),
+                *expected,
+                "jobs={jobs}, input={input}"
+            );
+        }
+    }
+    for width in [0, 4, 16] {
+        let index = text(run(&directory, &["create-blob", "-"], &vec![0; width], 0));
+        let arguments = tree(&[&evaluated, &index]);
+        let thunk = value(&directory, &["create-selection-thunk", &arguments]);
+        let selection = encode("strict", &thunk);
+        for jobs in ["1", "2"] {
+            run(&directory, &["eval", "-j", jobs, &selection], b"", 1);
+        }
+    }
+}
+
+#[test]
 fn cpio_conversion_and_normalization() {
     let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("cpio");
     let input = directory.join("input");
@@ -728,27 +985,17 @@ fn cpio_conversion_and_normalization() {
         .set_times(std::fs::FileTimes::new().set_modified(time))
         .unwrap();
     run(&directory, &["init"], b"", 0);
-    let root = PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
-        .join(std::env::var("TEST_WORKSPACE").unwrap());
-    for (label, path) in [
-        ("cpio", env!("FIX_CPIO")),
-        ("flatware-normalize", env!("FIX_NORMALIZE")),
-        ("compose", env!("FIX_COMPOSE")),
-    ] {
-        run(
-            &directory,
-            &[
-                "create-blob",
-                root.join(path).to_str().unwrap(),
-                "-l",
-                label,
-            ],
-            b"",
-            0,
-        );
-    }
+    seed(
+        &directory,
+        &[
+            ("cpio", env!("FIX_CPIO")),
+            ("flatware-normalize", env!("FIX_NORMALIZE")),
+            ("compose", env!("FIX_COMPOSE")),
+        ],
+    );
+    let resources = value(&directory, &["create-blob", "--string", ""]);
     let apply = |procedure: &str, input: &str, jobs: &str| {
-        let combination = value(&directory, &["create-tree", procedure, input]);
+        let combination = value(&directory, &["create-tree", &resources, procedure, input]);
         let thunk = value(&directory, &["create-application-thunk", &combination]);
         let encode = value(&directory, &["create-strict-encode", &thunk]);
         value(&directory, &["eval", "-j", jobs, &encode])
@@ -814,12 +1061,24 @@ fn cpio_conversion_and_normalization() {
         }
         let composition = value(
             &directory,
-            &["create-tree", "compose", "flatware-normalize", "cpio"],
+            &[
+                "create-tree",
+                &resources,
+                "compose",
+                "flatware-normalize",
+                "cpio",
+            ],
         );
         assert_eq!(normalized, apply(&composition, &archive, "4"));
         let nested = value(
             &directory,
-            &["create-tree", "compose", "flatware-normalize", &composition],
+            &[
+                "create-tree",
+                &resources,
+                "compose",
+                "flatware-normalize",
+                &composition,
+            ],
         );
         assert_eq!(normalized, apply(&nested, &archive, "4"));
         let packed = apply("cpio", &descriptor, "1");
@@ -846,7 +1105,7 @@ fn cpio_conversion_and_normalization() {
                 .unwrap();
             corrupt[offset] ^= 1;
             let corrupt = text(run(&directory, &["create-blob", "-"], &corrupt, 0));
-            let combination = value(&directory, &["create-tree", "cpio", &corrupt]);
+            let combination = value(&directory, &["create-tree", &resources, "cpio", &corrupt]);
             let thunk = value(&directory, &["create-application-thunk", &combination]);
             run(&directory, &["think", &thunk], b"", 1);
         }

@@ -117,14 +117,14 @@ pub fn apply<'a>(
 ) -> Result<impl Value<Type = Any> + 'a, Error> {
     let arguments = combination.len()?;
     assert!(
-        (2..=3).contains(&arguments),
+        (3..=4).contains(&arguments),
         "expected JSON Blob and optional environment"
     );
-    let source = Handle::<Object<Blob>, _>::try_from(combination.get(1))?.read()?;
+    let source = Handle::<Object<Blob>, _>::try_from(combination.get(2))?.read()?;
     let mut bindings: BTreeMap<String, Expression<'a>> = BTreeMap::new();
-    if arguments == 3 {
-        let environment = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
-        for index in 0..environment.len()? {
+    if arguments == 4 {
+        let environment = Handle::<Object<Tree>, _>::try_from(combination.get(3))?;
+        for index in 0..usize::try_from(environment.len()?)? {
             let pair = Handle::<Object<Tree>, _>::try_from(environment.get(index))?;
             assert_eq!(pair.len()?, 2, "expected environment pair");
             let name = String::from_utf8(Handle::<Object<Blob>, _>::try_from(pair.get(0))?.read()?)

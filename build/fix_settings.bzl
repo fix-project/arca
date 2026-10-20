@@ -11,3 +11,9 @@ def _jobs(ctx):
     return [BuildSettingInfo(value = jobs), platform_common.TemplateVariableInfo({"FIX_JOBS": str(jobs)})]
 
 fix_jobs = rule(implementation = _jobs, build_setting = config.int(flag = True))
+
+def _cache(ctx):
+    value = ctx.build_setting_value
+    return [BuildSettingInfo(value = value), platform_common.TemplateVariableInfo({"FIX_CACHE": value})]
+
+fix_cache = rule(implementation = _cache, build_setting = config.string(flag = True))

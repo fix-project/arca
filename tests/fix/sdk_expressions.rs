@@ -8,7 +8,7 @@ static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 fn apply<'a>(
     combination: &'a Handle<Object<Tree>, fix::Focus>,
 ) -> Result<impl Value<Type = Object<Tree>> + 'a, Error> {
-    for argument in combination.iter()?.skip(1) {
+    for argument in combination.iter()?.skip(2) {
         assert_eq!(argument.value_type()?, ValueType::Thunk);
         assert_eq!(argument.data_type(), Err(Error::WrongType));
         assert!(matches!(

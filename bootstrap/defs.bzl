@@ -1,6 +1,7 @@
 """Bootstrap tool filesystem."""
 
 load(":configuration.bzl", "ALLOW_TRANSITION", "mode")
+load("//build:fix.bzl", "FixToolchainInfo")
 
 def _assemble_impl(ctx):
     output = ctx.actions.declare_directory(ctx.label.name)
@@ -33,21 +34,23 @@ wasm_tools = rule(implementation = _assemble_impl, cfg = mode, attrs = dict(ALLO
 
 def _repository_archive(ctx):
     output = ctx.actions.declare_file("bootstrap.tar.gz")
+    trust = ctx.actions.declare_file("bootstrap.trust")
+    handles = ctx.actions.declare_file("bootstrap.handles.json")
     inputs = [ctx.file.stage0, ctx.file.clang, ctx.file.wasm2c, ctx.file.merger,
               ctx.file.json, ctx.file.parser, ctx.file.identity, ctx.file.shell, ctx.file.runtime,
               ctx.file.memmap, ctx.file.adapter, ctx.file.control, ctx.file.path,
               ctx.file.cpio, ctx.file.normalize, ctx.file.compose]
     ctx.actions.run_shell(
         command = 'export PATH="$PWD/' + ctx.executable.fix.dirname + '/commands/bin:$PATH"; exec "$@"',
-        arguments = [ctx.executable.builder.path, ctx.executable.fix.path] + [file.path for file in inputs] + [output.path] + [file.path for file in ctx.files.headers],
-        inputs = inputs + ctx.files.headers,
-        tools = [ctx.attr.fix[DefaultInfo].files_to_run, ctx.attr.builder[DefaultInfo].files_to_run],
-        outputs = [output],
+        arguments = [ctx.executable.builder.path, ctx.executable.fix.path] + [file.path for file in inputs] + [output.path, ctx.executable.seed.path, ctx.file.compile.path, ctx.file.compile_wasm.path, ctx.file.result.path, trust.path, handles.path] + [file.path for file in ctx.files.headers],
+        inputs = inputs + ctx.files.headers + [ctx.file.compile, ctx.file.compile_wasm, ctx.file.result],
+        tools = [ctx.attr.fix[DefaultInfo].files_to_run, ctx.attr.builder[DefaultInfo].files_to_run, ctx.attr.seed[DefaultInfo].files_to_run],
+        outputs = [output, trust, handles],
         mnemonic = "BootstrapRepository",
         use_default_shell_env = True,
         execution_requirements = {"local": "1"},
     )
-    return [DefaultInfo(files = depset([output]))]
+    return [DefaultInfo(files = depset([output])), FixToolchainInfo(repository = output, trust = trust, handles = handles)]
 
 repository_archive = rule(
     implementation = _repository_archive,
@@ -55,6 +58,9 @@ repository_archive = rule(
     attrs = {
         "builder": attr.label(default = "//bootstrap:repository.sh", allow_single_file = True, executable = True, cfg = "exec"),
         "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
+        "seed": attr.label(default = "//bootstrap:seed_repository", executable = True, cfg = "exec"),
+        "compile": attr.label(default = "//bootstrap:compile_link", allow_single_file = True),
+        "compile_wasm": attr.label(default = "//programs/fix:compile_module", allow_single_file = True),
         "stage0": attr.label(default = "//bootstrap:stage0", allow_single_file = True),
         "clang": attr.label(default = "//bootstrap:stage1_clang_link", allow_single_file = True),
         "wasm2c": attr.label(default = "//bootstrap:stage1_wasm2c_link", allow_single_file = True),
@@ -63,6 +69,7 @@ repository_archive = rule(
         "cpio": attr.label(default = "//flatware:cpio_elf", allow_single_file = True),
         "normalize": attr.label(default = "//flatware:normalize_elf", allow_single_file = True),
         "compose": attr.label(default = "//programs/fix:compose_elf", allow_single_file = True),
+        "result": attr.label(default = "//flatware:result_elf", allow_single_file = True),
         "path": attr.label(default = "//programs/fix/rust:path_elf", allow_single_file = True),
         "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
         "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),

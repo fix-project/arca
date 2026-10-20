@@ -23,11 +23,11 @@
     '&4u8
 
     -- Application Thunks
-    #(1u8 2u8)
+    #("" 1u8 2u8)
 
     -- Selection Thunks
-    ["hello" 2u8] -- Zero-indexed
-    ["hello" 1u8 3u8] -- Inclusive start and exclusive end
+    ["hello" 2u64] -- Zero-indexed
+    ["hello" 1u64 3u64] -- Inclusive start and exclusive end
 
     -- Strict Encodes
     *'&2u8
@@ -39,6 +39,6 @@
     @"./target/x86_64-unknown-none/addblob"
 
     -- Primitives
-    *#($identity 2u8)
+    *#("" $identity 2u8)
 
 -}

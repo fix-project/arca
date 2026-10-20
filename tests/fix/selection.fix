@@ -1,4 +1,4 @@
 nums = &(1u8 2u8 3u8 4u8)
 word = &"hello"
 
-*[word 0u8]
+*[word 0u64]

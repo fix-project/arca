@@ -9,7 +9,8 @@ if [[ -e $2 || -L $2 ]]; then
     echo "fix: destination already exists: $2" >&2
     exit 2
 fi
-combination=$("$fix" create-tree cpio "$1")
+metadata=$("$fix" create-blob --string "")
+combination=$("$fix" create-tree "$metadata" "${FIX_CPIO:-cpio}" "$1")
 thunk=$("$fix" create-application-thunk "$combination")
 archive=$("$fix" think "$thunk")
 mkdir -- "$2"

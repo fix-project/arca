@@ -23,7 +23,7 @@ static uint64_t integer(fix_handle blob) {
 }
 
 __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle combination) {
-    uint64_t left = integer(entry(combination, 1));
-    uint64_t right = integer(entry(combination, 2));
+    uint64_t left = integer(entry(combination, 2));
+    uint64_t right = integer(entry(combination, 3));
     return fix_create_blob_i64(left + right);
 }

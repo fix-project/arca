@@ -2,13 +2,22 @@ load(":cmake.bzl", "MAPS", "patched_sources", "source_build")
 load(":defs.bzl", "wasm_tools", "repository_archive")
 load(":llvm.bzl", "llvm_bundle", "llvm_resources")
 load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
-load(":native.bzl", native_generation = "generation")
+load(":native.bzl", native_generation = "generation", native_program = "program")
 load(":fix.bzl", "generation", "verify")
 load("//flatware:build.bzl", "flatware_directory")
-load("//build:fix.bzl", "fix_blob")
+load("//build:fix.bzl", "fix_binding")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "seed_repository",
+    srcs = ["seed.rs"],
+    edition = "2024",
+    deps = ["//fix/handle", "@crates//:hex"],
+    tags = ["manual"],
+)
 
 exports_files(["toolchain-tags.patch"])
 
@@ -186,8 +195,9 @@ flatware_directory(name = "usr_graph", src = ":stage0", subdir = "usr", guest_pa
 alias(name = "usr", actual = ":usr_graph", tags = ["manual"])
 flatware_directory(name = "shell_headers_graph", inputs = {"//fix/shell:headers": "", "//fix/shell:wasm_rt": "wasm-rt.c", "//fix/shell:shell": "libfixshell.a", "//fix/shell:memmap": "memmap.ld"}, guest_path = "/include", tags = ["manual"])
 alias(name = "shell_headers", actual = ":shell_headers_graph", tags = ["manual"])
-[fix_blob(name = "stage1_" + command + "_value", src = ":stage1_" + command + "_link", tags = ["manual"]) for command in ["clang", "wasm2c", "wasm-merge"]]
+[fix_binding(name = "stage1_" + command + "_value", value = command, tags = ["manual"]) for command in ["clang", "wasm2c", "wasm-merge"]]
 native_generation("stage1")
+native_program(name = "compile", src = "//programs/fix:compile_module", directory = "compile", partitions = 8)
 generation("stage2", previous = "stage1", jobs = ":jobs", memory = ":memory")
 generation("stage3", previous = "stage2", jobs = ":jobs", memory = ":memory")
 

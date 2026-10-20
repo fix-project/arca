@@ -28,6 +28,8 @@ The default build stops at Stage1 and packages a minimal `.fix` repository in
 `bazel-bin/bootstrap/bootstrap.tar.gz`. `verify` aliases `verify1`, which builds
 Stage2 and compares its ELFs with Stage1 byte for byte. `verify2` builds Stage3
 and compares it with Stage2. Every stage converts the same original Wasm inputs.
+Rebuilt ELFs reuse their existing Runnable certificates after their canonical
+handles match. Both verification targets therefore require Stage1–Stage2 agreement.
 On puffer5, add `--jobs=256`; CMake builds use all available CPUs.
 Stage, archive, and verification targets default to release mode. Use
 `--//bootstrap:debug` to build their dependencies in debug mode.
@@ -59,8 +61,15 @@ Build or install the bootstrap repository:
 bazel build //bootstrap
 fix init
 fix import bazel-bin/bootstrap/bootstrap.tar.gz
+export FIX_TRUST="$(fix repository)/trust"
 ```
 
-The archive contains `.fix` with labels `bootstrap`, `json`, `parser`, `identity`, `path`, `clang`, `wasm2c`,
-`wasm-merge`, `cpio`, `flatware-normalize`, `compose`, and `toolchain`, plus only the objects and data reachable from
+The archive contains `.fix` with labels `bootstrap`, `compile`, `fixpoint`, `compile-resources`, `json`, `parser`, `identity`, `path`, `clang`, `wasm2c`,
+`wasm-merge`, `cpio`, `flatware-normalize`, `flatware-result`, `compose`, and `toolchain`, plus only the objects and data reachable from
 `bootstrap`. System tar can unpack it directly over an empty `.fix` repository.
+
+`compile` names the trusted compiler wrapper ELF. `fixpoint` is its self-authored
+Runnable certificate; `compile-resources` authenticates its tools and filesystem.
+The included `.fix/trust` names only `compile` as a trusted author. The wrapper's
+Wasm source is `/toolchain/share/fix/compile.wasm`; compiling it with eight C
+units reproduces `fixpoint`. No temporary zero-author certificate is exported.

@@ -1,4 +1,4 @@
-add = @"addblob.elf"
+add = $addblob
 a = 1u64
 b = 2u64
 c = 3u64
@@ -16,25 +16,25 @@ n = 14u64
 o = 15u64
 p = 16u64
 
-*#(add
-    *#(add
-        *#(add
-            *#(add a b)
-            *#(add c d)
+*#("" add
+    *#("" add
+        *#("" add
+            *#("" add a b)
+            *#("" add c d)
         )
-        *#(add
-            *#(add e f)
-            *#(add g h)
+        *#("" add
+            *#("" add e f)
+            *#("" add g h)
         )
     )
-    *#(add
-        *#(add
-            *#(add i j)
-            *#(add k l)
+    *#("" add
+        *#("" add
+            *#("" add i j)
+            *#("" add k l)
         )
-        *#(add
-            *#(add m n)
-            *#(add o p)
+        *#("" add
+            *#("" add m n)
+            *#("" add o p)
         )
     )
 )

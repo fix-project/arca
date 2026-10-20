@@ -1,4 +1,5 @@
 use clap::{Arg, ArgAction, Command as CliCommand};
+mod trust;
 use std::{
     env,
     ffi::OsString,
@@ -62,7 +63,7 @@ fn cli() -> CliCommand {
         ("get-encode-type", "Print an encode's type"),
         ("len", "Print a value's length"),
         ("is-tag", "Test whether a value is a tag"),
-        ("is-eq", "Test whether a value has Eq semantics"),
+        ("is-comparable", "Test whether a handle is comparable"),
     ] {
         let mut command = CliCommand::new(name).about(about);
         if !matches!(name, "init" | "repository") {
@@ -154,8 +155,22 @@ fn cli() -> CliCommand {
                     .help("Print matching labels beside each child handle"),
             );
         }
+        if name == "visit" {
+            command = command.arg(
+                Arg::new("paths")
+                    .long("paths")
+                    .action(ArgAction::SetTrue)
+                    .help("Print NUL-separated repository paths for archiving, relative to its parent"),
+            );
+        }
         if name == "eval" {
             command = command
+                .arg(
+                    Arg::new("memoize")
+                        .long("memoize")
+                        .action(ArgAction::SetTrue)
+                        .help("Persist and reuse zero-author application coupons"),
+                )
                 .arg(
                     Arg::new("memory")
                         .long("memory")
@@ -219,6 +234,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             1 << 34
         };
         let mut args = vec![OsString::from(command)];
+        if command == "visit" && options.get_flag("paths") {
+            args.push("--paths".into());
+        }
+        if command == "eval" && options.get_flag("memoize") {
+            args.push("--memoize".into());
+        }
         if command == "create-tree" && options.get_flag("bindings") {
             args.push("--bindings".into());
         }
@@ -264,6 +285,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             args.extend([OsString::from("-l"), label.into()]);
         }
         let mut argv = vec![String::from("fix")];
+        if matches!(command, "eval" | "think") {
+            argv.extend([String::from("--trust"), trust::load()?]);
+        }
         argv.extend(
             args.into_iter()
                 .map(OsString::into_string)

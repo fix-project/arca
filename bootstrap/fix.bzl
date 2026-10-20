@@ -27,17 +27,23 @@ def _generation_impl(ctx):
         sources.append(source)
         commands += ['echo %s >&2' % phase.label.name]
         commands += fix_graph_commands(ctx, value, source, "graph.handle", bindings = "results")
-        commands += ['"$FIX" eval --memory %d -j %d "$(cat graph.handle)" > phase.handle' % (memory, jobs),
+        commands += ['"$FIX" eval --memoize --memory %d -j %d "$(cat graph.handle)" > phase.handle' % (memory, jobs),
                      'printf "%%s\\0%%s\\0" %s "$(cat phase.handle)" >> results' % phase.label.name]
-    commands += ['cp phase.handle %s' % fix_path(handle),
-                 '"$FIX" label set result "$(cat phase.handle)"',
-                 '"$FIX" export result %s' % fix_path(repository),
-                 'children=$("$FIX" read-tree "$(cat phase.handle)")',
+    commands += ['children=$("$FIX" read-tree "$(cat phase.handle)")',
                  'mapfile -t children <<< "$children"']
     commands += ['"$FIX" read-blob "${children[%d]}" > %s' % (index, fix_path(output)) for index, output in enumerate(executables)]
-    inputs = depset([ctx.file._json] + sources, transitive = [value.inputs for value in values])
+    commands += [': > certificates']
+    for index, command in enumerate(COMMANDS):
+        commands += ['certificate=$(cat tools/%s)' % command,
+                     'fields=$("$FIX" read-tree "$certificate")',
+                     'mapfile -t fields <<< "$fields"',
+                     '[ "${children[%d]}" = "${fields[1]}" ] || { echo "%s: rebuilt ELF differs from certified ELF" >&2; exit 1; }' % (index, command),
+                     'printf "%s\\n" "$certificate" >> certificates']
+    commands += ['"$FIX" create-tree - < certificates > %s' % fix_path(handle),
+                 '"$FIX" export "$(cat %s)" %s' % (fix_path(handle), fix_path(repository))]
+    inputs = depset(sources, transitive = [value.inputs for value in values])
     repositories = depset(transitive = [value.repositories for value in values]).to_list()
-    fix_action(ctx, repositories, inputs, [repository, handle] + executables, "\n".join(commands), "BootstrapFix", jobs = jobs, memory = memory)
+    fix_action(ctx, repositories, inputs, [repository, handle] + executables, "\n".join(commands), "BootstrapFix", jobs = jobs, memory = memory, stored = [handle])
     return fix_stored(ctx, repository, handle) + [FixResultInfo(handle = handle, repository = repository), OutputGroupInfo(**{command: depset([output]) for command, output in zip(COMMANDS, executables)})]
 
 _generation = rule(implementation = _generation_impl, attrs = dict(FIX_EVAL,

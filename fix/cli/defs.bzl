@@ -28,7 +28,7 @@ def launcher(name, scripts):
     commands(name = "commands", scripts = scripts)
     rust_binary(
         name = name,
-        srcs = ["main.rs"],
+        srcs = ["main.rs", "trust.rs"],
         edition = "2024",
         deps = ["@crates//:clap", "@crates//:env_logger", "//tools/vmm:lib"],
         compile_data = ["//fix/runtime:image_elf"],

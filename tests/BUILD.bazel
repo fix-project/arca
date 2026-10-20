@@ -55,9 +55,9 @@ sh_test(
     name = "compile_test",
     srcs = ["compile_test.sh"],
     args = ["$(rootpath " + target + ")" for target in [
-        "//fix", "//programs/fix:fib_module", "//programs/fix:addblob_elf", "//bootstrap:repository_archive",
+        "//fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:repository_archive",
     ]],
-    data = ["//fix", "//programs/fix:fib_module", "//programs/fix:addblob_elf", "//bootstrap:repository_archive"],
+    data = ["//fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:repository_archive"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local", "manual"],

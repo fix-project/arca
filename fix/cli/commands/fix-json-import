@@ -16,5 +16,5 @@ def fix(*args):
 
 
 source = fix("create-blob", args[0])
-combination = fix("create-tree", fix("resolve", "json"), source, *args[1:])
+combination = fix("create-tree", fix("create-blob", "--string", ""), fix("resolve", os.environ.get("FIX_JSON", "json")), source, *args[1:])
 print(fix("think", fix("create-application-thunk", combination)))

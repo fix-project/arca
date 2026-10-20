@@ -50,20 +50,17 @@ _archive_rule = rule(implementation = _archive, attrs = {
 })
 
 def _directory_graph(ctx):
-    files = [ctx.file.archive, ctx.file._compose, ctx.file._normalize, ctx.file._converter]
-    bindings = [(str(ctx.label) + ":" + file.basename, file) for file in files]
-    archive, compose, normalize, converter = [{"binding": key} for key, _ in bindings]
-    application = {"create-application-thunk": [[compose, normalize, converter], archive]}
+    key = str(ctx.label) + ":archive"
+    archive = {"binding": key}
+    compose, normalize, converter = [{"binding": name} for name in ["compose", "flatware-normalize", "cpio"]]
+    application = {"create-application-thunk": ["", ["", compose, normalize, converter], archive]}
     directory = {"create-strict-encode": application}
     fields = [{"create-strict-encode": {"create-selection-thunk": [directory, {"u64": index}]}} for index in [1, 2]]
-    return fix_graph(ctx, [ctx.attr.guest_path] + fields, files = files, imports = bindings)
+    return fix_graph(ctx, [ctx.attr.guest_path] + fields, files = [ctx.file.archive], imports = [(key, ctx.file.archive)])
 
 _directory_rule = rule(implementation = _directory_graph, attrs = {
     "archive": attr.label(mandatory = True, allow_single_file = True),
     "guest_path": attr.string(default = "/work"),
-    "_converter": attr.label(default = "//flatware:cpio_elf", allow_single_file = True),
-    "_normalize": attr.label(default = "//flatware:normalize_elf", allow_single_file = True),
-    "_compose": attr.label(default = "//programs/fix:compose_elf", allow_single_file = True),
 })
 
 def flatware_directory(name, src = None, subdir = ".", inputs = {}, guest_path = "/work", **kwargs):
@@ -75,25 +72,21 @@ def _select(value, index):
     return {"create-strict-encode": {"create-selection-thunk": [value, {"u64": index}]}}
 
 def _work(ctx):
-    key = str(ctx.attr._result.label)
-    application = {"create-application-thunk": [{"binding": key}, fix_value(ctx.attr.src), {"u64": ctx.attr.fd}]}
-    return fix_graph(ctx, {"create-strict-encode": application}, [ctx.attr.src], files = [ctx.file._result], imports = [(key, ctx.file._result)])
+    application = {"create-application-thunk": ["", {"binding": "flatware-result"}, fix_value(ctx.attr.src), {"u64": ctx.attr.fd}]}
+    return fix_graph(ctx, {"create-strict-encode": application}, [ctx.attr.src])
 
 flatware_work = rule(implementation = _work, attrs = {
     "src": attr.label(mandatory = True, providers = [FixValueInfo]),
     "fd": attr.int(default = 3),
-    "_result": attr.label(default = "//flatware:result_elf", allow_single_file = True),
 })
 
 def _file(ctx):
-    key = str(ctx.attr._path.label)
-    lookup = {"create-application-thunk": [{"binding": key}, fix_value(ctx.attr.src), ctx.attr.path.split("/")]}
-    return fix_graph(ctx, _select({"create-strict-encode": lookup}, 2), [ctx.attr.src], files = [ctx.file._path], imports = [(key, ctx.file._path)])
+    lookup = {"create-application-thunk": ["", {"binding": "path"}, fix_value(ctx.attr.src), ctx.attr.path.split("/")]}
+    return fix_graph(ctx, _select({"create-strict-encode": lookup}, 2), [ctx.attr.src])
 
 flatware_file = rule(implementation = _file, attrs = {
     "src": attr.label(mandatory = True, providers = [FixValueInfo]),
     "path": attr.string(mandatory = True),
-    "_path": attr.label(default = "//programs/fix/rust:path_elf", allow_single_file = True),
 })
 
 def _files(ctx):
@@ -117,6 +110,7 @@ def _application(ctx):
         descriptors.append([path, metadata, contents])
     descriptors.append(fix_value(ctx.attr.work))
     combination = [
+        "",
         fix_value(ctx.attr.executable), [ctx.attr.argv0] + ctx.attr.args,
         ctx.attr.env, descriptors, {"u64": 0}, {"u64": 0},
     ]
@@ -150,7 +144,7 @@ def _outputs(ctx):
     indices = ctx.attr.indices or [-1] * len(outputs)
     if len(indices) != len(outputs):
         fail("indices must have one entry per output (-1 means the whole result)")
-    commands = ['"$FIX" create-blob %s -l cpio > /dev/null' % fix_path(ctx.file._converter), 'result=$(cat %s)' % fix_path(result.handle)]
+    commands = ['result=$(cat %s)' % fix_path(result.handle)]
     if any([index >= 0 for index in indices]):
         commands += ['children=$("$FIX" read-tree "$result")', 'mapfile -t children <<< "$children"']
     for index in sorted(depset(indices).to_list()):
@@ -165,7 +159,7 @@ def _outputs(ctx):
         for output, path, child in zip(outputs, ctx.attr.outs, indices):
             if child == index:
                 commands += ['mkdir -p "$(dirname %s)"' % fix_path(output), 'path=$(realpath -e output_%d/%s)\n[[ $path == "$repository/output_%d/"* ]]\ncp "$path" %s' % (index, shell.quote(path), index, fix_path(output))]
-    fix_action(ctx, [result.repository], depset([result.handle, ctx.file._converter]), outputs, "\n".join(commands), "FlatwareOutputs")
+    fix_action(ctx, [(result.repository, result.handle)], depset([result.handle]), outputs, "\n".join(commands), "FlatwareOutputs")
     return [DefaultInfo(files = depset(outputs)), OutputGroupInfo(**{path: depset([output]) for path, output in zip(ctx.attr.outs, outputs)})]
 
 flatware_outputs = rule(implementation = _outputs, attrs = dict(FIX_TOOL,
@@ -173,5 +167,4 @@ flatware_outputs = rule(implementation = _outputs, attrs = dict(FIX_TOOL,
     outs = attr.string_list(mandatory = True),
     indices = attr.int_list(),
     fd = attr.int(default = 3),
-    _converter = attr.label(default = "//flatware:cpio_elf", allow_single_file = True),
 ))

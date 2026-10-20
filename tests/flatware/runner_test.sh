@@ -2,15 +2,12 @@
 set -euo pipefail
 root="$TEST_SRCDIR/$TEST_WORKSPACE"
 export PATH="$root/fix/cli/commands/bin:$PATH"
-runner="$root/$1" probe="$root/$2"
+runner="$root/$1"
 cd "$TEST_TMPDIR"
 unset BUILD_WORKSPACE_DIRECTORY
 "$runner" init
-"$runner" create-blob "$root/$3" -l json
-"$runner" create-blob "$root/$4" -l cpio
-"$runner" create-blob "$root/$5" -l flatware-normalize
-"$runner" create-blob "$root/$6" -l compose
-"$runner" create-blob "$probe" -l probe
+"$runner" import "$root/$2"
+export FIX_TRUST="$TEST_TMPDIR/.fix/trust"
 greeting=$("$runner" create-blob --string GREETING=hello)
 environment=$("$runner" create-tree "$greeting")
 mkdir input

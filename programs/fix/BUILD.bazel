@@ -6,8 +6,11 @@ package(default_visibility = ["//visibility:private"])
 exports_files(glob(["fixtures/*.fix"]))
 
 [fix_wat_program(name = name) for name in FIX_PROGRAMS]
+alias(name = "addblob_module", actual = ":addblob_wasm", visibility = ["//tests:__pkg__"])
 fix_rust_program(name = "map")
 fix_rust_program(name = "compose", artifact_visibility = ["//visibility:public"])
+fix_rust_program(name = "compile", alloc = True, artifact_visibility = ["//visibility:public"])
+alias(name = "compile_module", actual = ":compile_postprocess", visibility = ["//bootstrap:__pkg__"])
 fix_rust_program(name = "mapreduce")
 fix_rust_program(name = "fib")
 alias(name = "fib_module", actual = ":fib_postprocess", visibility = ["//tests:__pkg__"])

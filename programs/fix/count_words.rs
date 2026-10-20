@@ -10,10 +10,10 @@ static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 pub fn apply(
     combination: &Handle<Object<Tree>, fix::Focus>,
 ) -> Result<impl Value<Type = Object<Blob>>, Error> {
-    if combination.len()? != 2 {
+    if combination.len()? != 3 {
         return Ok(Blob::create(u64::MAX.to_le_bytes()));
     }
-    let tuple = Handle::<Object<Tree>, _>::try_from(combination.get(1))?;
+    let tuple = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
     if tuple.len()? != 2 {
         return Ok(Blob::create(u64::MAX.to_le_bytes()));
     }

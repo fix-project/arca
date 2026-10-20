@@ -7,8 +7,8 @@ use fix::{Error, Handle, Object, Tree, Value, choose, tree};
 pub fn apply<'a>(
     combination: &'a Handle<Object<Tree>, fix::Focus>,
 ) -> Result<impl Value<Type = Object<Tree>> + 'a, Error> {
-    assert_eq!(combination.len()?, 2, "expected a Flatware descriptor");
-    let descriptor = Handle::<Object<Tree>, _>::try_from(combination.get(1))?;
+    assert_eq!(combination.len()?, 3, "expected a Flatware descriptor");
+    let descriptor = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
     assert_eq!(descriptor.len()?, 3, "expected a Flatware descriptor");
     let metadata = Handle::<Object<Tree>, _>::try_from(descriptor.get(1))?;
     let mut stat = files::read_stat(&metadata)?;
@@ -21,15 +21,21 @@ pub fn apply<'a>(
     } else {
         None
     };
-    let length = children
-        .map(|children| children.len())
-        .transpose()?
-        .unwrap_or(0);
-    let normalizer = combination.get(0);
+    let length = usize::try_from(
+        children
+            .map(|children| children.len())
+            .transpose()?
+            .unwrap_or(0),
+    )?;
+    let normalizer = combination.get(1);
     let normalized = Tree::from_iter((0..length).map(move |index| {
-        tree![normalizer, children.unwrap().get(index)]
-            .application()
-            .strict()
+        tree![
+            fix::Blob::create(b""),
+            normalizer,
+            children.unwrap().get(index)
+        ]
+        .application()
+        .strict()
     }));
     Ok(tree![
         descriptor.get(0),

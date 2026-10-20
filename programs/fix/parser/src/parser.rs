@@ -17,9 +17,9 @@ impl<'a> Parser<'a> {
         tokens: Vec<Token>,
         combination: &'a Handle<Object<Tree>, fix::Focus>,
     ) -> Result<Self, Error> {
-        let primitives = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
+        let primitives = Handle::<Object<Tree>, _>::try_from(combination.get(3))?;
         let mut environment: BTreeMap<String, Parsed<'a>> = BTreeMap::new();
-        for index in 0..primitives.len()? {
+        for index in 0..usize::try_from(primitives.len()?)? {
             let pair = Handle::<Object<Tree>, _>::try_from(primitives.get(index))?;
             assert!(pair.len()? >= 2, "expected environment pair");
             let name = String::from_utf8(Handle::<Object<Blob>, _>::try_from(pair.get(0))?.read()?)

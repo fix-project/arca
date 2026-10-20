@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .exec()
             .into());
     }
-    let mut source = format!("program = @\"{}\"\n*#(program", program.display());
+    let mut source = format!("program = @\"{}\"\n*#(\"\" program", program.display());
     for argument in args {
         source.push(' ');
         source.push_str(

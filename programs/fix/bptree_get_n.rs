@@ -16,15 +16,15 @@ fn upper_bound(keys: &[i32], key: i32) -> usize {
 pub fn apply<'a>(
     combination: &'a Handle<Object<Tree>, fix::Focus>,
 ) -> Result<impl Value<Type = fix::Any> + 'a, Error> {
-    if combination.len()? != 5 {
+    if combination.len()? != 6 {
         return Err(Error::WrongType);
     }
     let arguments = [
-        combination.get(0),
         combination.get(1),
         combination.get(2),
         combination.get(3),
         combination.get(4),
+        combination.get(5),
     ];
     let [_, keys_h, childrenordata_h, key_h, n_h] = arguments;
 
@@ -45,7 +45,7 @@ pub fn apply<'a>(
         if idx != 0 && keys[idx - 1] == key {
             let n = Handle::<Object<Blob>, _>::try_from(n_h)?.read_u64()? as usize;
             let data = Handle::<Object<Tree>, _>::try_from(childrenordata_h)?;
-            let last = data.len()? as u64 - 1;
+            let last = data.len()? - 1;
             let mut tail: Rc<dyn Value<Type = fix::Any> + 'a> = Rc::new(data.erase());
             let mut selections = Vec::with_capacity(n);
             for i in 0..n {
@@ -67,10 +67,17 @@ pub fn apply<'a>(
             .strict();
         let child_keys = tree![child, 0u64].reference().selection().strict();
         Right(Right(
-            tree![arguments[0], child_keys, child, key_h, n_h]
-                .reference()
-                .application()
-                .erase(),
+            tree![
+                Blob::create(b""),
+                arguments[0],
+                child_keys,
+                child,
+                key_h,
+                n_h
+            ]
+            .reference()
+            .application()
+            .erase(),
         ))
     })
 }

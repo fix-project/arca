@@ -17,7 +17,7 @@ use parser::Parser;
 pub fn apply<'a>(
     combination: &'a Handle<Object<Tree>, fix::Focus>,
 ) -> Result<impl Value<Type = Any> + 'a, Error> {
-    let source = Handle::<Object<Blob>, _>::try_from(combination.get(1))?.read()?;
+    let source = Handle::<Object<Blob>, _>::try_from(combination.get(2))?.read()?;
     let source = core::str::from_utf8(&source).expect("source should be valid UTF-8");
     let tokens = Lexer::new(source).tokenize().expect("failed to tokenize");
     Parser::new(tokens, combination)?.parse_program()

@@ -1,25 +1,65 @@
-load("//build:fix.bzl", "fix_application_thunk", "fix_blob", "fix_build", "fix_eval", "fix_read_blob", "fix_ref", "fix_select_index", "fix_strict_encode", "fix_tree")
+load("//build:fix.bzl", "fix_application_thunk", "fix_binding", "fix_blob", "fix_build", "fix_eval", "fix_read_blob", "fix_ref", "fix_select_index", "fix_strict_encode", "fix_tree", "fix_toolchain")
 load("//flatware:build.bzl", "flatware_application", "flatware_directory", "flatware_file", "flatware_files", "flatware_outputs", "flatware_work")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@bazel_skylib//rules:common_settings.bzl", "int_flag")
 
+genrule(
+    name = "fixture",
+    visibility = ["//tests/flatware:__pkg__"],
+    srcs = ["//fix", "//programs/fix:compile_elf", "//programs/fix/json:json_elf", "//programs/fix:addblob_elf", "//tests/flatware:runner_probe_native", "//programs/fix:compose_elf", "//flatware:normalize_elf", "//flatware:cpio_elf", "//flatware:result_elf", "//programs/fix/rust:path_elf"],
+    tools = ["//bootstrap:seed_repository"],
+    outs = ["fixture.tar", "fixture.trust", "fixture.handles.json"],
+    cmd = """set -euo pipefail
+root=$$PWD
+work=$$(mktemp -d)
+trap 'rm -rf "$$work"' EXIT
+fix="$$root/$(execpath //fix)"
+"$$fix" -C "$$work" init
+"$(execpath //bootstrap:seed_repository)" seed "$$work/.fix" "$(execpath //programs/fix:compile_elf)" \
+    json "$(execpath //programs/fix/json:json_elf)" add "$(execpath //programs/fix:addblob_elf)" \
+    probe "$(execpath //tests/flatware:runner_probe_native)" compose "$(execpath //programs/fix:compose_elf)" \
+    flatware-normalize "$(execpath //flatware:normalize_elf)" cpio "$(execpath //flatware:cpio_elf)" \
+    flatware-result "$(execpath //flatware:result_elf)" path "$(execpath //programs/fix/rust:path_elf)"
+for name in json add probe compose flatware-normalize cpio flatware-result path; do
+    printf '%s\\0%s\\0' "$$name" "$$("$$fix" -C "$$work" resolve "$$name")"
+done > "$$work/bindings"
+environment=$$("$$fix" -C "$$work" create-tree --bindings - -l bootstrap < "$$work/bindings")
+python3 - "$$work/bindings" "$$environment" "$(location fixture.handles.json)" <<'PY'
+import json
+from pathlib import Path
+import sys
+fields = Path(sys.argv[1]).read_bytes().decode().split("\\0")[:-1]
+handles = dict(zip(fields[::2], fields[1::2]))
+handles["bootstrap"] = sys.argv[2]
+Path(sys.argv[3]).write_text(json.dumps(handles) + "\\n")
+PY
+tar -C "$$work" -cf $(location fixture.tar) .fix
+cp "$$work/.fix/trust" $(location fixture.trust)
+""",
+)
+
+fix_toolchain(name = "toolchain", repository = ":fixture.tar", trust = ":fixture.trust", handles = ":fixture.handles.json")
+
 int_flag(name = "memory", build_setting_default = 64)
 
-fix_blob(name = "add", src = "//programs/fix:addblob_elf")
+fix_blob(name = "metadata", value = "")
+fix_binding(name = "add", value = "add")
 fix_blob(name = "two", value = "2", format = "u64")
 fix_blob(name = "four", value = "4", format = "u64")
 fix_tree(name = "numbers", children = [":two", ":four"])
 fix_ref(name = "numbers_ref", src = ":numbers")
 fix_select_index(name = "selected_two", src = ":numbers_ref", index = 0)
 fix_strict_encode(name = "selected", src = ":selected_two")
-fix_tree(name = "combination", children = [":add", ":selected", ":four"])
+fix_tree(name = "combination", children = [":metadata", ":add", ":selected", ":four"])
 fix_application_thunk(name = "application", src = ":combination")
 fix_strict_encode(name = "request", src = ":application")
-fix_build(name = "built", src = ":request")
-fix_eval(name = "sum", src = ":built", jobs = 2, memory = ":memory")
-fix_read_blob(name = "sum_file", src = ":sum", out = "sum.bin")
+fix_build(name = "built", toolchain = ":toolchain", src = ":request")
+fix_eval(name = "sum", toolchain = ":toolchain", src = ":built", jobs = 2, memory = ":memory")
+fix_read_blob(name = "sum_file", toolchain = ":toolchain", src = ":sum", out = "sum.bin")
+fix_blob(name = "six", value = "6", format = "u64")
+fix_read_blob(name = "direct_file", toolchain = ":toolchain", src = ":six", out = "direct.bin")
 
-fix_blob(name = "copy", src = "//tests/flatware:runner_probe_native")
+fix_binding(name = "copy", value = "probe")
 flatware_directory(name = "source", inputs = {":sum_file": "sum.bin"}, guest_path = "/input")
 flatware_application(name = "first_copy", executable = ":copy", mounts = {":source": "/input"}, args = ["copy", "/input/sum.bin", "/work/sum.bin"])
 alias(name = "first_copy_graph", actual = ":first_copy")
@@ -37,16 +77,17 @@ flatware_files(name = "inputs", files = {":intermediate": "sum.bin"}, guest_path
     for suffix in ["a", "b", "c", "d"]
 ]
 fix_tree(name = "copies", children = [":copy_a", ":copy_b", ":copy_c", ":copy_d"])
-fix_eval(name = "copied", src = ":copies", jobs = 2, memory = 512)
+fix_eval(name = "copied", toolchain = ":toolchain", src = ":copies", jobs = 2, memory = 512)
 fix_tree(name = "retained", children = [":copied"])
-fix_eval(name = "retained_result", src = ":retained", jobs = 1)
-flatware_outputs(name = "files", src = ":copied", outs = ["a.bin", "b.bin", "c.bin", "d.bin"], indices = [0, 1, 2, 3], fd = 4)
+fix_eval(name = "retained_result", toolchain = ":toolchain", src = ":retained", jobs = 1)
+flatware_outputs(name = "files", toolchain = ":toolchain", src = ":copied", outs = ["a.bin", "b.bin", "c.bin", "d.bin"], indices = [0, 1, 2, 3], fd = 4)
 
 sh_test(
     name = "rules_test",
+    visibility = ["//tests/fix:__pkg__"],
     srcs = ["rules_test.sh"],
-    data = [":files", ":retained_result"],
-    args = ["$(rootpaths :files)"],
+    data = [":files", ":retained_result", ":direct_file"],
+    args = ["$(rootpaths :files) $(rootpath :direct_file)"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local"],

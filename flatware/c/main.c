@@ -40,9 +40,14 @@ static fix_handle entry(fix_handle value, uint32_t index) {
   fix_detach_tree(0, 0);
   return child;
 }
+static size_t local_length(fix_handle value) {
+  uint64_t length = fix_len(value);
+  require(length <= SIZE_MAX);
+  return (size_t)length;
+}
 static Bytes blob(fix_handle value) {
   require(fix_is_blob_obj(value));
-  Bytes bytes = bytes_allocate(fix_len(value));
+  Bytes bytes = bytes_allocate(local_length(value));
   fix_attach_blob(value, 1);
   wasm_memory_copy_1_to_0(bytes.data, 0, bytes.len);
   fix_detach_blob(1, 0);
@@ -112,7 +117,7 @@ static size_t read_node(Filesystem *fs, size_t parent, uint32_t input_index,
 }
 static Bytes *byte_list(fix_handle value, size_t *count) {
   require(fix_is_object(value) && fix_get_data_type(value) == FIX_TREE);
-  *count = fix_len(value);
+  *count = local_length(value);
   require(*count <= SIZE_MAX / sizeof(Bytes));
   Bytes *list = malloc(*count * sizeof(Bytes));
   require(list || !*count);
@@ -125,7 +130,7 @@ static fix_handle original(fix_handle input, const Filesystem *fs,
   const Node *node = &fs->nodes[index];
   require(node->input_index != NONE);
   fix_handle parent = node->input_parent == NONE
-                          ? entry(input, 3)
+                          ? entry(input, 4)
                           : entry(original(input, fs, node->input_parent), 2);
   return entry(parent, node->input_index);
 }
@@ -164,7 +169,7 @@ void fs_load(Filesystem *fs, size_t index, unsigned fields) {
     if (!node_directory(&fs->nodes[index])) {
       require(fix_is_object(contents) &&
               fix_get_data_type(contents) == FIX_TREE);
-      for (uint32_t i = 0; i < fix_len(contents); ++i) {
+      for (uint32_t i = 0; i < local_length(contents); ++i) {
         size_t child = read_node(fs, index, i, false);
         indices_push(&fs->nodes[index].children, child);
       }
@@ -217,17 +222,17 @@ static fix_handle write_node(fix_handle input, size_t index) {
   return make_tree(3);
 }
 __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
-  tree(input, 6);
+  tree(input, 7);
   set_input(input);
   state = (State){0};
-  state.time = integer(entry(input, 5), 8);
-  mt19937_seed(&state.random, integer(entry(input, 4), 8));
-  state.arguments = byte_list(entry(input, 1), &state.argument_count);
-  state.environment = byte_list(entry(input, 2), &state.environment_count);
-  fix_handle descriptors = entry(input, 3);
+  state.time = integer(entry(input, 6), 8);
+  mt19937_seed(&state.random, integer(entry(input, 5), 8));
+  state.arguments = byte_list(entry(input, 2), &state.argument_count);
+  state.environment = byte_list(entry(input, 3), &state.environment_count);
+  fix_handle descriptors = entry(input, 4);
   require(fix_is_object(descriptors) &&
           fix_get_data_type(descriptors) == FIX_TREE);
-  for (uint32_t i = 0; i < fix_len(descriptors); ++i)
+  for (uint32_t i = 0; i < local_length(descriptors); ++i)
     indices_push(&state.fs.roots, read_node(&state.fs, NONE, i, i < 3));
   fs_init(&state.fs);
   guest_run();

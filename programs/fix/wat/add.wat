@@ -1,7 +1,7 @@
 (module
   (import "fix" "attach_tree" (func $attach_tree (param externref i32)))
   (import "fix" "detach_tree" (func $detach_tree (param i32 i32)))
-  (import "fix" "len" (func $len (param externref) (result i32)))
+  (import "fix" "len" (func $len (param externref) (result i64)))
   (import "fix" "attach_blob" (func $attach_blob (param externref i32)))
   (import "fix" "detach_blob" (func $detach_blob (param i32 i32)))
   (import "fix" "create_blob_i64" (func $integer (param i64) (result externref)))
@@ -15,7 +15,7 @@
     (local.get $value))
   (func $read_integer (param $blob externref) (result i64)
     (local $value i64)
-    (if (i32.ne (call $len (local.get $blob)) (i32.const 8)) (then unreachable))
+    (if (i64.ne (call $len (local.get $blob)) (i64.const 8)) (then unreachable))
     (call $attach_blob (local.get $blob) (i32.const 0))
     (local.set $value (i64.load (memory $scratch) (i32.const 0)))
     (call $detach_blob (i32.const 0) (i32.const 0))
@@ -23,6 +23,6 @@
   (func $apply (export "_fix_apply") (param $combination externref) (result externref)
     (call $integer
       (i64.add
-        (call $read_integer (call $entry (local.get $combination) (i32.const 1)))
-        (call $read_integer (call $entry (local.get $combination) (i32.const 2))))))
+        (call $read_integer (call $entry (local.get $combination) (i32.const 2)))
+        (call $read_integer (call $entry (local.get $combination) (i32.const 3))))))
 )

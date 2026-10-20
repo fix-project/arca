@@ -1,2 +1,2 @@
-program = @"wat_linkage_native.elf"
-*#(program)
+program = $wat_linkage_native
+*#("" program)

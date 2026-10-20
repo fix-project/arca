@@ -5,6 +5,16 @@ load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 
 FixValueInfo = provider(fields = ["expression", "nodes", "files", "stored", "inputs", "repositories"])
 FixResultInfo = provider(fields = ["handle", "repository"])
+FixToolchainInfo = provider(fields = ["repository", "trust", "handles"])
+
+def _toolchain(ctx):
+    return [FixToolchainInfo(repository = ctx.file.repository, trust = ctx.file.trust, handles = ctx.file.handles)]
+
+fix_toolchain = rule(implementation = _toolchain, attrs = {
+    "repository": attr.label(mandatory = True, allow_single_file = True),
+    "trust": attr.label(mandatory = True, allow_single_file = True),
+    "handles": attr.label(mandatory = True, allow_single_file = True),
+})
 
 def _key(ctx):
     return str(ctx.label)
@@ -73,8 +83,8 @@ def _select(ctx):
     indices = [{"u64": ctx.attr.begin}]
     if ctx.attr.end >= 0:
         indices.append({"u64": ctx.attr.end})
-    if ctx.attr.begin < 0 or (ctx.attr.end >= 0 and ctx.attr.begin >= ctx.attr.end):
-        fail("expected a nonnegative index or a nonempty range")
+    if ctx.attr.begin < 0 or (ctx.attr.end >= 0 and ctx.attr.begin > ctx.attr.end):
+        fail("expected a nonnegative index or an ordered range")
     expression = {"create-selection-thunk": [_value(ctx.attr.src)] + indices}
     return _graph(ctx, expression, [ctx.attr.src])
 
@@ -98,30 +108,30 @@ def fix_strict_encode(name, src, **kwargs):
 def fix_shallow_encode(name, src, **kwargs):
     _constructor(name = name, src = src, operation = "create-shallow-encode", **kwargs)
 
-def fix_action(ctx, repositories, inputs, outputs, command, mnemonic, jobs = 1, memory = 16384):
-    """Run plumbing in a private repository with the declared stored inputs."""
-    setup = "\n".join([
-        '"$FIX" import %s' % _path(repo)
-        for repo in repositories
-    ])
-    script = """set -euo pipefail
-shopt -s inherit_errexit
-execroot=$PWD
-export FIX="%s"
-export PATH="%s/commands/bin:$PATH"
-repository=$(mktemp -d)
-trap 'chmod -R u+w "$repository"; rm -rf "$repository"' EXIT
-"$FIX" -C "$repository" init
-cd "$repository"
-%s
-%s
-""" % ("$execroot/" + ctx.executable._fix.path, "$execroot/" + ctx.executable._fix.dirname, setup, command)
-    ctx.actions.run_shell(
-        command = script,
-        inputs = depset(repositories, transitive = [inputs]),
+def fix_action(ctx, repositories, inputs, outputs, command, mnemonic, jobs = 1, memory = 16384, stored = []):
+    """Run plumbing against the persistent repository with declared inputs."""
+    toolchain = ctx.attr.toolchain[FixToolchainInfo]
+    script = ctx.actions.declare_file(ctx.label.name + "/" + mnemonic + ".sh")
+    config = ctx.actions.declare_file(ctx.label.name + "/" + mnemonic + ".json")
+    ctx.actions.write(script, "set -euo pipefail\nshopt -s inherit_errexit\n" + command + "\n")
+    ctx.actions.write(config, json.encode({
+        "cache": ctx.attr._cache[BuildSettingInfo].value,
+        "fix": ctx.executable._fix.path,
+        "trust": toolchain.trust.path,
+        "toolchain": toolchain.handles.path,
+        "repository": toolchain.repository.path,
+        "repositories": [(archive.path, handle.path) for archive, handle in repositories],
+        "script": script.path,
+        "stored": [handle.path for handle in stored],
+    }))
+    ctx.actions.run(
+        executable = ctx.executable._action,
+        arguments = [config.path],
+        inputs = depset([file for pair in repositories for file in pair] + [toolchain.repository, toolchain.trust, toolchain.handles, config, script], transitive = [inputs]),
         tools = [ctx.attr._fix[DefaultInfo].files_to_run],
         outputs = outputs,
         mnemonic = mnemonic,
+        use_default_shell_env = True,
         execution_requirements = {
             "no-sandbox": "1",
             "no-remote-exec": "1",
@@ -132,9 +142,11 @@ cd "$repository"
     )
 
 FIX_TOOL = {
+    "toolchain": attr.label(default = "//bootstrap:repository_archive", providers = [FixToolchainInfo]),
     "_fix": attr.label(default = "//fix", executable = True, cfg = "target"),
-    "_json": attr.label(default = "//programs/fix/json:json_elf", allow_single_file = True),
     "_ndjson": attr.label(default = "//build:ndjson", executable = True, cfg = "exec"),
+    "_action": attr.label(default = "//build:fix-action", executable = True, cfg = "exec"),
+    "_cache": attr.label(default = "//build:fix-cache", providers = [BuildSettingInfo]),
 }
 
 def fix_graph_description(ctx, value, name):
@@ -157,8 +169,10 @@ def fix_graph_commands(ctx, value, source, handle, bindings = None):
     if bindings:
         commands.append('cat %s >> bindings' % shell.quote(bindings))
     commands += [
-        '"$FIX" create-blob %s -l json > /dev/null' % _path(ctx.file._json),
         'environment=$("$FIX" create-tree --bindings - < bindings)',
+        '"$FIX" read-tree "$FIX_BINDINGS" > environment.children',
+        '"$FIX" read-tree "$environment" >> environment.children',
+        'environment=$("$FIX" create-tree - < environment.children)',
         '"$FIX" json-import %s "$environment" > %s' % (_path(source), handle),
     ]
     return commands
@@ -168,9 +182,9 @@ def _materialize(ctx, value):
     graph_handle = ctx.actions.declare_file(ctx.label.name + "/graph.handle")
     source = fix_graph_description(ctx, value, "graph")
     commands = fix_graph_commands(ctx, value, source, _path(graph_handle)) + [
-        '"$FIX" label set result "$(cat %s)"\n"$FIX" export result %s' % (_path(graph_handle), _path(graph)),
+        '"$FIX" export "$(cat %s)" %s' % (_path(graph_handle), _path(graph)),
     ]
-    fix_action(ctx, value.repositories.to_list(), depset([ctx.file._json, source], transitive = [value.inputs]), [graph, graph_handle], "\n".join(commands), "FixGraph")
+    fix_action(ctx, value.repositories.to_list(), depset([source], transitive = [value.inputs]), [graph, graph_handle], "\n".join(commands), "FixGraph", stored = [graph_handle])
     return graph, graph_handle
 
 def _stored(ctx, repository, handle):
@@ -181,7 +195,7 @@ def _stored(ctx, repository, handle):
         files = depset(),
         stored = depset([("input:" + key, handle)]),
         inputs = depset([handle]),
-        repositories = depset([repository]),
+        repositories = depset([(repository, handle)]),
     ), DefaultInfo(files = depset([handle, repository]))]
 
 def fix_import(ctx, value):
@@ -214,9 +228,9 @@ def _eval(ctx):
     repository = ctx.actions.declare_file(ctx.label.name + "/result.tar")
     handle = ctx.actions.declare_file(ctx.label.name + "/result.handle")
     jobs, memory = fix_budgets(ctx)
-    options = " --memory %d -j %d" % (memory, jobs)
-    fix_action(ctx, [graph], depset([graph_handle]), [repository, handle],
-               '"$FIX" eval%s "$(cat %s)" > %s\n"$FIX" label set result "$(cat %s)"\n"$FIX" export result %s' % (options, _path(graph_handle), _path(handle), _path(handle), _path(repository)), "FixEval", jobs = jobs, memory = memory)
+    options = " --memoize --memory %d -j %d" % (memory, jobs)
+    fix_action(ctx, [(graph, graph_handle)], depset([graph_handle]), [repository, handle],
+               '"$FIX" eval%s "$(cat %s)" > %s\n"$FIX" export "$(cat %s)" %s' % (options, _path(graph_handle), _path(handle), _path(handle), _path(repository)), "FixEval", jobs = jobs, memory = memory, stored = [handle])
     return _stored(ctx, repository, handle) + [FixResultInfo(handle = handle, repository = repository), OutputGroupInfo(graph = depset([graph, graph_handle]))]
 
 FIX_EVAL = dict(FIX_TOOL,
@@ -237,17 +251,21 @@ def fix_eval(name, src, jobs = 0, memory = 16384, **kwargs):
     _eval_rule(name = name, src = src, **dict(settings, **kwargs))
 
 def _read_blob(ctx):
-    result = ctx.attr.src[FixResultInfo]
+    if FixResultInfo in ctx.attr.src:
+        result = ctx.attr.src[FixResultInfo]
+        repository, handle = result.repository, result.handle
+    else:
+        repository, handle = _materialize(ctx, ctx.attr.src[FixValueInfo])
     output = ctx.actions.declare_file(ctx.attr.out)
-    command = 'value=$(cat %s)\n' % _path(result.handle)
+    command = 'value=$(cat %s)\n' % _path(handle)
     if ctx.attr.index >= 0:
         command += 'mapfile -t children < <("$FIX" read-tree "$value")\nvalue=${children[%d]}\n' % ctx.attr.index
     command += '"$FIX" read-blob "$value" > %s' % _path(output)
-    fix_action(ctx, [result.repository], depset([result.handle]), [output], command, "FixReadBlob")
+    fix_action(ctx, [(repository, handle)], depset([handle]), [output], command, "FixReadBlob")
     return [DefaultInfo(files = depset([output]))]
 
 fix_read_blob = rule(implementation = _read_blob, attrs = dict(FIX_TOOL,
-    src = attr.label(mandatory = True, providers = [FixResultInfo]),
+    src = attr.label(mandatory = True, providers = [FixValueInfo]),
     out = attr.string(mandatory = True),
     index = attr.int(default = -1),
 ))
