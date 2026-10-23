@@ -129,7 +129,7 @@ git_override(
 http_archive(
     name = "llvm-raw",
     urls = ["https://github.com/fix-project/llvm-project/archive/3c24197a97c8f1200596d2dc3dd4335960a3bbc6.tar.gz"],
-    sha256 = "52f4e5b06eaecc30140ed60e88e97a01bc1d2706ce71c22ea83f872f761001bc",
+    sha256 = "68618cb06e716215331b565b27a937aedf4ada6918f3bc6841d6ee71ea7c4cf4",
     strip_prefix = "llvm-project-3c24197a97c8f1200596d2dc3dd4335960a3bbc6",
     build_file = "//bootstrap:llvm.BUILD.bazel",
     patches = ["//bootstrap:toolchain-tags.patch"],
@@ -143,7 +143,7 @@ bazel_dep(name = "zlib-ng", version = "2.3.3", repo_name = "llvm_zlib")
 bazel_dep(name = "zstd", version = "1.5.7.bcr.1", repo_name = "llvm_zstd")
 bazel_dep(name = "libpfm", version = "4.13.0", repo_name = "pfm")
 
-llvm_configure = use_repo_rule("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
+llvm_configure = use_repo_rule("//build:llvm_configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = ["X86", "WebAssembly"])
 
 rocq_toolchain = use_repo_rule("//build:rocq_toolchain.bzl", "rocq_toolchain")

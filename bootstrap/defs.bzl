@@ -58,7 +58,7 @@ repository_archive = rule(
     attrs = {
         "builder": attr.label(default = "//bootstrap:repository.sh", allow_single_file = True, executable = True, cfg = "exec"),
         "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
-        "seed": attr.label(default = "//bootstrap:seed_repository", executable = True, cfg = "exec"),
+        "seed": attr.label(default = "//tools:seed_repository", executable = True, cfg = "exec"),
         "compile": attr.label(default = "//bootstrap:compile_link", allow_single_file = True),
         "compile_wasm": attr.label(default = "//programs/fix:compile_module", allow_single_file = True),
         "stage0": attr.label(default = "//bootstrap:stage0", allow_single_file = True),

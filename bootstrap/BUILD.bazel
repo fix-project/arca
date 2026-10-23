@@ -7,17 +7,8 @@ load(":fix.bzl", "generation", "verify")
 load("//flatware:build.bzl", "flatware_directory")
 load("//build:fix.bzl", "fix_binding")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(default_visibility = ["//visibility:public"])
-
-rust_binary(
-    name = "seed_repository",
-    srcs = ["seed.rs"],
-    edition = "2024",
-    deps = ["//fix/handle", "@crates//:hex"],
-    tags = ["manual"],
-)
 
 exports_files(["toolchain-tags.patch"])
 

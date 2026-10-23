@@ -18,6 +18,7 @@ exports_files([
     "FIX.md",
     "cc_checks.bzl",
     "repositories.bzl",
+    "llvm_configure.bzl",
     "rules_rust.patch",
     "blake3-custom-target.patch",
     "defs.bzl",

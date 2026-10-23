@@ -8,6 +8,14 @@ package(default_visibility = ["//visibility:public"])
 exports_files(["lsp.sh", "format.sh", "cc_format.sh", "cc_lint.sh"])
 
 rust_binary(
+    name = "seed_repository",
+    srcs = ["seed.rs"],
+    edition = "2024",
+    deps = ["//fix/handle", "@crates//:hex"],
+    tags = ["manual"],
+)
+
+rust_binary(
     name = "bindgen",
     srcs = ["bindgen.rs"],
     edition = "2024",

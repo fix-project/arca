@@ -23,6 +23,17 @@ filegroup(
 )
 
 test_suite(
+    name = "tests",
+    tests = [
+        ":host_tests",
+        ":guest_tests",
+        "//fix/sdk:tests",
+        "//fix/sdk:format_test",
+        "//fix/sdk:lint",
+    ],
+)
+
+test_suite(
     name = "host_tests",
     tests = [
         "//arca/api:tests",

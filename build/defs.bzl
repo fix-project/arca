@@ -224,7 +224,7 @@ fix_script_test = rule(
         "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
         "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
         "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),
-        "seed": attr.label(default = "//bootstrap:seed_repository", executable = True, cfg = "exec"),
+        "seed": attr.label(default = "//tools:seed_repository", executable = True, cfg = "exec"),
         "compiler": attr.label(default = "//programs/fix:compile_elf", allow_single_file = True),
         "script": attr.string(mandatory = True),
         "data": attr.label_list(allow_files = True),

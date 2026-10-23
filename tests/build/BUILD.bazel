@@ -7,7 +7,7 @@ genrule(
     name = "fixture",
     visibility = ["//tests/flatware:__pkg__"],
     srcs = ["//fix", "//programs/fix:compile_elf", "//programs/fix/json:json_elf", "//programs/fix:addblob_elf", "//tests/flatware:runner_probe_native", "//programs/fix:compose_elf", "//flatware:normalize_elf", "//flatware:cpio_elf", "//flatware:result_elf", "//programs/fix/rust:path_elf"],
-    tools = ["//bootstrap:seed_repository"],
+    tools = ["//tools:seed_repository"],
     outs = ["fixture.tar", "fixture.trust", "fixture.handles.json"],
     cmd = """set -euo pipefail
 root=$$PWD
@@ -15,7 +15,7 @@ work=$$(mktemp -d)
 trap 'rm -rf "$$work"' EXIT
 fix="$$root/$(execpath //fix)"
 "$$fix" -C "$$work" init
-"$(execpath //bootstrap:seed_repository)" seed "$$work/.fix" "$(execpath //programs/fix:compile_elf)" \
+"$(execpath //tools:seed_repository)" seed "$$work/.fix" "$(execpath //programs/fix:compile_elf)" \
     json "$(execpath //programs/fix/json:json_elf)" add "$(execpath //programs/fix:addblob_elf)" \
     probe "$(execpath //tests/flatware:runner_probe_native)" compose "$(execpath //programs/fix:compose_elf)" \
     flatware-normalize "$(execpath //flatware:normalize_elf)" cpio "$(execpath //flatware:cpio_elf)" \

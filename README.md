@@ -13,7 +13,7 @@ Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installa
 git submodule update --init --recursive
 bazel query //... --output=label_kind
 bazel build //:artifacts
-bazel test -- //... -//fix/proof/...
+bazel test //:tests
 bazel test //tests:format //tests:lint
 bazel run //:format
 bazel run //programs/kernel:hello -- Ada
@@ -59,7 +59,7 @@ bazel run //:lsp
 
 ## Environment-dependent tests
 
-`bazel test //...` requires `/dev/kvm`; without it, use
+`bazel test //:tests` requires `/dev/kvm`; without it, use
 `bazel test //:host_tests`. The optional proof test requires opam, Python 3.11+,
 and the native build prerequisites listed in [fix/proof/README.md](fix/proof/README.md).
 Bazel provisions its own pinned OCaml/Rocq toolchain on the first run:
