@@ -15,4 +15,5 @@ pub enum Response {
     Length(usize),
     Bytes(Vec<u8>),
     Ack,
+    Err(super::control::IoErrorKind),
 }

@@ -14,7 +14,6 @@ rust_library(
         "//lib/common",
         "@crates//:anyhow",
         "@crates//:clap",
-        "@crates//:ctrlc",
         "@crates//:elf",
         "@crates//:env_logger",
         "@crates//:kvm-bindings",
@@ -27,6 +26,7 @@ rust_library(
         "@crates//:rustc-demangle",
         "@crates//:serde",
         "@crates//:vmm-sys-util",
+        "@crates//:ureq",
     ],
 )
 
@@ -37,6 +37,7 @@ rust_binary(
         ":lib",
         "@crates//:anyhow",
         "@crates//:clap",
+        "@crates//:ctrlc",
         "@crates//:env_logger",
     ],
 )

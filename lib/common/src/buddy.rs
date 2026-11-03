@@ -43,7 +43,32 @@ pub fn init(size: usize, reserved_until: usize) {
 }
 
 pub fn export() -> BuddyAllocatorRawData {
-    BUDDY.clone().into_raw_parts()
+    BuddyAllocator.deref().clone().into_raw_parts()
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static CURRENT_ALLOCATOR: core::cell::Cell<*const BuddyAllocatorImpl> = const { core::cell::Cell::new(core::ptr::null()) };
+}
+
+#[cfg(feature = "std")]
+pub fn current_allocator() -> BuddyAllocatorImpl {
+    BuddyAllocator.deref().clone()
+}
+
+/// # Safety
+/// Buddy allocations must be accessed and freed with their original allocator
+/// installed. Any worker using them must retain that allocator until it exits.
+#[cfg(feature = "std")]
+pub unsafe fn with_allocator<R>(allocator: &BuddyAllocatorImpl, action: impl FnOnce() -> R) -> R {
+    struct Restore(*const BuddyAllocatorImpl);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CURRENT_ALLOCATOR.with(|current| current.set(self.0));
+        }
+    }
+    let _restore = CURRENT_ALLOCATOR.with(|current| Restore(current.replace(allocator)));
+    action()
 }
 
 /// # Safety
@@ -252,6 +277,9 @@ struct AllocatorMetadata {
     request_count: [AtomicUsize; 64],
 }
 
+/// Set once no holder can ever release the lock.
+const ABANDONED: u64 = 2;
+
 #[repr(C)]
 #[derive(Debug)]
 struct AllocatorInner {
@@ -377,14 +405,23 @@ impl AllocatorInner {
             .is_ok()
     }
 
-    unsafe fn lock(self: Pin<&Self>) {
+    /// Returns false once the lock is abandoned.
+    unsafe fn lock(self: Pin<&Self>) -> bool {
         while !self.try_lock() {
+            if self.lock.load(Ordering::SeqCst) & ABANDONED != 0 {
+                return false;
+            }
             core::hint::spin_loop();
         }
+        true
     }
 
     unsafe fn unlock(self: Pin<&Self>) {
-        self.lock.store(0, Ordering::SeqCst);
+        self.lock.fetch_and(!1, Ordering::SeqCst);
+    }
+
+    fn abandon(self: Pin<&Self>) {
+        self.lock.fetch_or(ABANDONED, Ordering::SeqCst);
     }
 
     pub fn reserve(
@@ -394,7 +431,11 @@ impl AllocatorInner {
         size_log2: u32,
     ) -> Result<usize, AllocationError> {
         unsafe {
-            self.lock();
+            if !self.lock() {
+                return Err(AllocationError::SpaceExhausted {
+                    size: 1 << size_log2,
+                });
+            }
             let result = self.reserve_unchecked(base, index, size_log2);
             self.unlock();
             result
@@ -680,9 +721,17 @@ impl BuddyAllocatorImpl {
         }
     }
 
+    /// Makes every later allocation fail and every later free leak, for when a holder of the
+    /// lock will never run again.
+    pub fn abandon(&self) {
+        self.inner.abandon();
+    }
+
     pub fn allocate_raw(&self, size: usize) -> *mut () {
         unsafe {
-            self.inner.lock();
+            if !self.inner.lock() {
+                return core::ptr::null_mut();
+            }
             let result = self.allocate_raw_unchecked(size);
             self.inner.unlock();
             result
@@ -709,7 +758,9 @@ impl BuddyAllocatorImpl {
 
     pub fn allocate_many_raw(&self, size: usize, ptrs: &mut [*mut ()]) -> usize {
         unsafe {
-            self.inner.lock();
+            if !self.inner.lock() {
+                return 0;
+            }
             for (i, item) in ptrs.iter_mut().enumerate() {
                 let result = self.allocate_raw_unchecked(size);
                 if result.is_null() {
@@ -755,7 +806,9 @@ impl BuddyAllocatorImpl {
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn free_raw(&self, ptr: *mut (), size: usize) {
         unsafe {
-            self.inner.lock();
+            if !self.inner.lock() {
+                return;
+            }
             self.free_raw_unchecked(ptr, size);
             self.inner.unlock();
         }
@@ -763,7 +816,9 @@ impl BuddyAllocatorImpl {
 
     pub fn free_many_raw(&self, size: usize, ptrs: &[*mut ()]) {
         unsafe {
-            self.inner.lock();
+            if !self.inner.lock() {
+                return;
+            }
             for item in ptrs.iter() {
                 self.free_raw_unchecked(*item, size);
             }
@@ -954,7 +1009,21 @@ impl Deref for BuddyAllocator {
     type Target = BuddyAllocatorImpl;
 
     fn deref(&self) -> &Self::Target {
-        &BUDDY
+        #[cfg(feature = "std")]
+        {
+            CURRENT_ALLOCATOR.with(|current| {
+                let allocator = current.get();
+                if allocator.is_null() {
+                    &*BUDDY
+                } else {
+                    unsafe { &*allocator }
+                }
+            })
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            &BUDDY
+        }
     }
 }
 
@@ -1155,11 +1224,11 @@ unsafe impl Allocator for BuddyAllocatorImpl {
 
 unsafe impl Allocator for BuddyAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        BUDDY.allocate(layout)
+        self.deref().allocate(layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        BUDDY.deallocate(ptr, layout)
+        self.deref().deallocate(ptr, layout)
     }
 }
 

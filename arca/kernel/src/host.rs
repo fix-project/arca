@@ -98,8 +98,7 @@ pub mod os {
     use common::protocol::*;
 
     pub fn argv() -> Vec<String> {
-        let mut binding = crate::pipe::HOST.lock();
-        let host = binding.get_mut().unwrap();
+        let host = crate::pipe::HOST.get().unwrap();
         let control::Response::Args(args) = host.request(&control::Request::GetArgs) else {
             panic!("bad response");
         };
@@ -107,9 +106,8 @@ pub mod os {
     }
 
     pub fn set_current_dir(path: &str) -> Result<(), control::ErrorKind> {
-        let mut binding = crate::pipe::HOST.lock();
-        match binding
-            .get_mut()
+        match crate::pipe::HOST
+            .get()
             .unwrap()
             .request(&control::Request::SetCurrentDirectory(path.into()))
         {
@@ -140,19 +138,21 @@ pub mod net {
     use crate::pipe::*;
     use crate::prelude::*;
     use common::protocol::*;
+    use control::ErrorKind;
 
     pub struct TcpListener {
         pipe: KMutex<ListenerPipe>,
     }
 
-    pub struct TcpStream {
+    pub struct Stream {
         pipe: StreamPipe,
     }
 
+    pub type TcpStream = Stream;
+
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
+            let host = crate::pipe::HOST.get().unwrap();
             let ip = *ip;
             let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
             else {
@@ -187,40 +187,61 @@ pub mod net {
         }
     }
 
-    impl TcpStream {
+    impl Stream {
         pub fn connect(hostname: &str, port: u16) -> TcpStream {
-            let mut binding = crate::pipe::HOST.lock();
-            let host = binding.get_mut().unwrap();
-            let control::Response::Pipe(id) = host.request(&control::Request::Connect {
+            Self::try_connect(hostname, port).expect("host TCP connect failed")
+        }
+
+        pub fn try_connect(hostname: &str, port: u16) -> Result<TcpStream, ErrorKind> {
+            let host = crate::pipe::HOST.get().unwrap();
+            Self::from_response(host.request(&control::Request::Connect {
                 host: hostname.into(),
                 port,
-            }) else {
-                todo!();
-            };
-            unsafe {
-                TcpStream {
-                    pipe: StreamPipe::new(get_pipe(id)),
-                }
+            }))
+        }
+
+        pub fn open_uri(uri: &str) -> Result<Stream, ErrorKind> {
+            let host = crate::pipe::HOST.get().unwrap();
+            Self::from_response(host.request(&control::Request::OpenUri(uri.into())))
+        }
+
+        fn from_response(response: control::Response) -> Result<TcpStream, ErrorKind> {
+            match response {
+                control::Response::Pipe(id) => unsafe {
+                    Ok(TcpStream {
+                        pipe: StreamPipe::new(get_pipe(id)),
+                    })
+                },
+                control::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
 
         pub fn send(&mut self, bytes: &[u8]) -> usize {
-            let stream::Response::Length(len) =
-                self.pipe.request(&stream::Request::Send(bytes.into()))
-            else {
-                panic!("bad response");
-            };
-            len
+            self.try_send(bytes).expect("host TCP send failed")
+        }
+
+        pub fn try_send(&mut self, bytes: &[u8]) -> Result<usize, ErrorKind> {
+            match self.pipe.request(&stream::Request::Send(bytes.into())) {
+                stream::Response::Length(len) if len <= bytes.len() => Ok(len),
+                stream::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
+            }
         }
 
         pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
-            let stream::Response::Bytes(buf) =
-                self.pipe.request(&stream::Request::Receive(bytes.len()))
-            else {
-                panic!("bad response");
-            };
-            bytes[..buf.len()].copy_from_slice(&buf);
-            bytes.len()
+            self.try_recv(bytes).expect("host TCP receive failed")
+        }
+
+        pub fn try_recv(&mut self, bytes: &mut [u8]) -> Result<usize, ErrorKind> {
+            match self.pipe.request(&stream::Request::Receive(bytes.len())) {
+                stream::Response::Bytes(buf) if buf.len() <= bytes.len() => {
+                    bytes[..buf.len()].copy_from_slice(&buf);
+                    Ok(buf.len())
+                }
+                stream::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
+            }
         }
 
         pub fn close(self) {
@@ -253,7 +274,7 @@ pub mod net {
 pub mod fs {
     use super::get_pipe;
     use crate::pipe::*;
-    use alloc::{string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, string::String, vec, vec::Vec};
     use common::buffer::Buffer;
     pub use common::protocol::file::Whence;
     use common::{
@@ -270,8 +291,7 @@ pub mod fs {
     /// `mkdir -p`.  Mirrors [`File::open`], but the host has nothing to stream
     /// back, so success is a bare ack and failure carries an [`ErrorKind`].
     pub fn mkdir(path: &str) -> Result<(), ErrorKind> {
-        let mut binding = crate::pipe::HOST.lock();
-        let host = binding.get_mut().unwrap();
+        let host = crate::pipe::HOST.get().unwrap();
         match host.request(&control::Request::Mkdir(path.into())) {
             control::Response::Ack => Ok(()),
             control::Response::Err(e) => Err(e.into()),
@@ -284,8 +304,7 @@ pub mod fs {
     }
 
     fn request_serialized(request: &impl serde::Serialize) -> Result<control::Response, ErrorKind> {
-        let mut binding = crate::pipe::HOST.lock();
-        match binding.get_mut().unwrap().request_serialized(request) {
+        match crate::pipe::HOST.get().unwrap().request_serialized(request) {
             control::Response::Err(e) => Err(e.into()),
             response => Ok(response),
         }
@@ -313,27 +332,13 @@ pub mod fs {
     }
 
     pub fn read(path: &str) -> Result<Vec<u8>, ErrorKind> {
-        let mut bytes = vec![0; 4096];
-        loop {
-            let mut buffer = crate::allocator::buffer(bytes);
-            let response = request_serialized(&control::Request::ReadFile(
-                path.into(),
-                buffer.slice_mut(..),
-            ))?;
-            bytes = buffer.into_inner();
-            let control::Response::Length(length) = response else {
-                return Err(ErrorKind::Other);
-            };
-            if length <= bytes.len() {
-                bytes.truncate(length);
-                return Ok(bytes);
-            }
-            let length = length.max(bytes.len().saturating_mul(2));
-            bytes
-                .try_reserve(length - bytes.len())
-                .map_err(|_| ErrorKind::OutOfMemory)?;
-            bytes.resize(length, 0);
-        }
+        let control::Response::Bytes(region) = request(control::Request::ReadFile(path.into()))?
+        else {
+            return Err(ErrorKind::Other);
+        };
+        let (bytes, _) = Box::into_raw_with_allocator(unsafe { region.into_owned() });
+        // The kernel's global allocator is the Buddy allocator.
+        Ok(unsafe { Box::from_raw(bytes) }.into_vec())
     }
 
     pub fn write(path: &str, bytes: &[u8]) -> Result<(), ErrorKind> {

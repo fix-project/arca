@@ -34,6 +34,7 @@ talc = "=4.4.3"
 time = { version = "=0.3.55", default-features = false, features = ["alloc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 serde_json = { version = "=1.0.152", features = ["std"] }
 bindgen = "=0.73.2"
 clap = { version = "=4.6.6", features = ["derive", "env"] }

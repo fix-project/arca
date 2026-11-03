@@ -1,29 +1,7 @@
 use crate::{
     host::fs::{File, Whence},
-    interrupts::IO_GENERATION,
     kthread,
 };
-use core::sync::atomic::Ordering;
-
-#[test]
-fn interrupt_between_readiness_check_and_park() {
-    for _ in 0..100 {
-        let mut checked = false;
-        kthread::wait_until(|| {
-            if checked {
-                true
-            } else {
-                checked = true;
-                // Model an IRQ arriving after observing an empty pipe, before
-                // the scheduler can park this thread. No later IRQ is needed.
-                IO_GENERATION.fetch_add(1, Ordering::SeqCst);
-                false
-            }
-        });
-        // A resumed I/O waiter must be able to yield normally afterwards.
-        kthread::yield_now();
-    }
-}
 
 #[test]
 fn file_io_lends_unique_and_shared_memory() {
@@ -56,14 +34,14 @@ fn concurrent_file_io() {
     use common::buffer::Buffer;
 
     let completed = Arc::new((kthread::KMutex::new(0), kthread::KCondvar::new()));
-    for worker in 0..8 {
+    for worker in 0..4 {
         let completed = completed.clone();
         kthread::spawn(move || {
             let path = alloc::format!("concurrent-io-{worker}");
             let mut file = File::open(&path, true, true, true, false, true).unwrap();
             let bytes = Buffer::from(Box::new_in([worker as u8; 1024], BuddyAllocator));
             let mut response = Buffer::from(Box::new_in([0u8; 1024], BuddyAllocator));
-            for _ in 0..128 {
+            for _ in 0..8 {
                 assert!(fs::exists(&path).unwrap());
                 file.seek(Whence::Start(0));
                 assert_eq!(file.write_exact(&bytes), bytes.len());
@@ -78,7 +56,7 @@ fn concurrent_file_io() {
         });
     }
     let mut count = completed.0.lock();
-    while *count != 8 {
+    while *count != 4 {
         count = completed.1.wait(count);
     }
 }

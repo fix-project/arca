@@ -146,7 +146,7 @@ unsafe extern "C" fn _start(
     core::arch::asm!("sti");
     crate::kthread::init();
     if id == 0 {
-        use crate::pipe::{ControlPipe, HostPipe};
+        use crate::pipe::{ControlClient, HostPipe};
         use common::pipe::{Pipe as RawPipe, Reader, Writer};
         let rxp: *const u8 = BuddyAllocator.from_offset(rxp);
         let txp: *const u8 = BuddyAllocator.from_offset(txp);
@@ -158,8 +158,9 @@ unsafe extern "C" fn _start(
         let tx_avail = VMToHostDoorBell::from_raw_parts(VMToHostDoorBellData { datamatch: 1 });
         let pipe = RawPipe::from_inner(rx, tx, rx_avail, tx_avail);
         let pipe = HostPipe::new(pipe);
-        let host = crate::pipe::HOST.lock();
-        host.set(ControlPipe::new(pipe)).unwrap();
+        if crate::pipe::HOST.set(ControlClient::new(pipe)).is_err() {
+            panic!("host control channel started twice");
+        }
 
         BuddyAllocator.set_caching(true);
         crate::kthread::spawn(|| {

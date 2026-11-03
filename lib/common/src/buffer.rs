@@ -126,6 +126,37 @@ impl Region {
                 .is_some_and(|end| end <= BuddyAllocator.len())
     }
 
+    /// Transfers ownership of `bytes` to the receiver of this region.
+    pub fn from_owned(bytes: Box<[u8], BuddyAllocator>) -> Self {
+        let len = bytes.len();
+        if len == 0 {
+            return Self { offset: 0, len };
+        }
+        let (bytes, _) = Box::into_raw_with_allocator(bytes);
+        Self {
+            offset: BuddyAllocator.to_offset(bytes),
+            len,
+        }
+    }
+
+    /// # Safety
+    /// The region must come from [`Region::from_owned`] and be taken at most once.
+    pub unsafe fn into_owned(self) -> Box<[u8], BuddyAllocator> {
+        if self.len == 0 {
+            return Vec::new_in(BuddyAllocator).into_boxed_slice();
+        }
+        assert!(self.is_valid(), "buffer is outside Buddy memory");
+        unsafe {
+            Box::from_raw_in(
+                core::ptr::slice_from_raw_parts_mut(
+                    BuddyAllocator.from_offset::<u8>(self.offset),
+                    self.len,
+                ),
+                BuddyAllocator,
+            )
+        }
+    }
+
     /// # Safety
     /// The sender must keep the region initialized and immutably borrowed until completion.
     pub unsafe fn as_slice(&self) -> &[u8] {

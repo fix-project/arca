@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 
 pub use embedded_io::ErrorKind;
 
+/// A control message and the id that pairs a response with its request.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Tagged<T> {
+    pub id: u64,
+    pub message: T,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
     GetArgs,
@@ -29,10 +36,11 @@ pub enum Request<B = Region> {
         host: String,
         port: u16,
     },
+    OpenUri(String),
     ReadDirectory(String),
     Exists(String),
-    /// Returns bytes read, or a required buffer length greater than the supplied capacity.
-    ReadFile(String, B),
+    /// Returns the file's contents as [`Response::Bytes`].
+    ReadFile(String),
     WriteFile(String, B, FileMode),
 }
 
@@ -46,6 +54,8 @@ pub enum Response {
     Err(IoErrorKind),
     Names(Vec<String>),
     Length(usize),
+    /// A Buddy allocation whose ownership passes to the receiver.
+    Bytes(Region),
 }
 
 /// Wire-serializable mirror of [`embedded_io::ErrorKind`], which is

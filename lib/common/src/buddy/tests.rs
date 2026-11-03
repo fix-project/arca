@@ -965,3 +965,28 @@ fn reserved_block_prevents_coalescing() {
     assert!(!p2.is_null());
     a.free_raw(p2, parent);
 }
+
+#[test]
+#[cfg(feature = "std")]
+fn scoped_allocators_keep_allocations_and_exports_in_their_own_arena() {
+    let first = BuddyAllocatorImpl::new(32 << 20);
+    let second = BuddyAllocatorImpl::new(32 << 20);
+    unsafe {
+        with_allocator(&first, || {
+            let outer = Box::new_in([7u8; 4096], BuddyAllocator);
+            assert!(first.to_offset(&*outer) < first.len());
+
+            with_allocator(&second, || {
+                let inner = Box::new_in([9u8; 4096], BuddyAllocator);
+                assert!(second.to_offset(&*inner) < second.len());
+                assert_eq!(*inner, [9; 4096]);
+                let exported = export();
+                assert_eq!(exported.base, second.base());
+                drop(BuddyAllocatorImpl::from_raw_parts(exported));
+            });
+
+            assert_eq!(BuddyAllocator.base(), first.base());
+            assert_eq!(*outer, [7; 4096]);
+        });
+    }
+}

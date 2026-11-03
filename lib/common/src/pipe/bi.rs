@@ -2,14 +2,26 @@ use super::doorbell::DoorBell;
 use super::error::Result;
 use super::uni::{Reader, Writer, channel};
 
+/// The receiving direction of a pipe; reading notifies the peer that it may write.
+#[derive(Debug)]
+pub struct ReadHalf<D: DoorBell> {
+    rx: Option<Reader>,
+    notify: D,
+    pending: bool,
+}
+
+/// The sending direction of a pipe; writing notifies the peer that it may read.
+#[derive(Debug)]
+pub struct WriteHalf<D: DoorBell> {
+    tx: Option<Writer>,
+    notify: D,
+    pending: bool,
+}
+
 #[derive(Debug)]
 pub struct Pipe<D: DoorBell> {
-    rx: Option<Reader>,
-    tx: Option<Writer>,
-    rx_avail: D,
-    tx_avail: D,
-    read_pending: bool,
-    write_pending: bool,
+    rx: ReadHalf<D>,
+    tx: WriteHalf<D>,
 }
 
 pub fn pipe<D0: DoorBell, D1: DoorBell>(
@@ -21,27 +33,15 @@ pub fn pipe<D0: DoorBell, D1: DoorBell>(
 ) -> (Pipe<D0>, Pipe<D1>) {
     let (r0, w0) = channel(len);
     let (r1, w1) = channel(len);
-    (
-        Pipe {
-            rx: Some(r0),
-            tx: Some(w1),
-            rx_avail: rx_avail0,
-            tx_avail: tx_avail0,
-            read_pending: false,
-            write_pending: false,
-        },
-        Pipe {
-            rx: Some(r1),
-            tx: Some(w0),
-            rx_avail: rx_avail1,
-            tx_avail: tx_avail1,
-            read_pending: false,
-            write_pending: false,
-        },
-    )
+    unsafe {
+        (
+            Pipe::from_inner(r0, w1, rx_avail0, tx_avail0),
+            Pipe::from_inner(r1, w0, rx_avail1, tx_avail1),
+        )
+    }
 }
 
-impl<D: DoorBell> Pipe<D> {
+impl<D: DoorBell> ReadHalf<D> {
     pub fn read(&mut self, data: &mut [u8]) -> Result<usize> {
         let res = self.read_deferred(data);
         self.flush();
@@ -54,16 +54,34 @@ impl<D: DoorBell> Pipe<D> {
         if let Ok(s) = res
             && s > 0
         {
-            self.read_pending = true;
+            self.pending = true;
         }
         res
     }
 
     /// Whether a read can complete, including reporting a peer hangup.
     pub fn can_read(&self) -> bool {
-        !self.rx.as_ref().unwrap().is_empty() || self.rx.as_ref().unwrap().is_closed()
+        let rx = self.rx.as_ref().unwrap();
+        !rx.is_empty() || rx.is_closed()
     }
 
+    /// Sends a pending notification to the peer.
+    pub fn flush(&mut self) {
+        if core::mem::take(&mut self.pending) {
+            self.notify.ring();
+        }
+    }
+
+    fn into_inner(mut self) -> (Reader, D) {
+        self.flush();
+        let rx = self.rx.take().unwrap();
+        let this = core::mem::ManuallyDrop::new(self);
+        // SAFETY: this is never dropped and the doorbell is moved exactly once.
+        (rx, unsafe { core::ptr::read(&this.notify) })
+    }
+}
+
+impl<D: DoorBell> WriteHalf<D> {
     pub fn write(&mut self, data: &[u8]) -> Result<usize> {
         let res = self.write_deferred(data);
         self.flush();
@@ -76,41 +94,95 @@ impl<D: DoorBell> Pipe<D> {
         if let Ok(s) = res
             && s > 0
         {
-            self.write_pending = true;
+            self.pending = true;
         }
         res
     }
 
+    /// Whether a write can complete, including reporting a peer hangup.
+    pub fn can_write(&self) -> bool {
+        let tx = self.tx.as_ref().unwrap();
+        !tx.is_empty() || tx.is_closed()
+    }
+
+    /// Sends a pending notification to the peer.
+    pub fn flush(&mut self) {
+        if core::mem::take(&mut self.pending) {
+            self.notify.ring();
+        }
+    }
+
+    fn into_inner(mut self) -> (Writer, D) {
+        self.flush();
+        let tx = self.tx.take().unwrap();
+        let this = core::mem::ManuallyDrop::new(self);
+        // SAFETY: this is never dropped and the doorbell is moved exactly once.
+        (tx, unsafe { core::ptr::read(&this.notify) })
+    }
+}
+
+impl<D: DoorBell> Drop for ReadHalf<D> {
+    fn drop(&mut self) {
+        // Publish the hangup before notifying the peer, just as for cursor updates.
+        if self.rx.take().is_some() {
+            self.notify.ring();
+        }
+    }
+}
+
+impl<D: DoorBell> Drop for WriteHalf<D> {
+    fn drop(&mut self) {
+        if self.tx.take().is_some() {
+            self.notify.ring();
+        }
+    }
+}
+
+impl<D: DoorBell> Pipe<D> {
+    pub fn read(&mut self, data: &mut [u8]) -> Result<usize> {
+        self.rx.read(data)
+    }
+
+    /// Defers the space-available notification until `flush`. Flush before waiting for the peer.
+    pub fn read_deferred(&mut self, data: &mut [u8]) -> Result<usize> {
+        self.rx.read_deferred(data)
+    }
+
+    /// Whether a read can complete, including reporting a peer hangup.
+    pub fn can_read(&self) -> bool {
+        self.rx.can_read()
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> Result<usize> {
+        self.tx.write(data)
+    }
+
+    /// Defers the data-available notification until `flush`. Flush before waiting for the peer.
+    pub fn write_deferred(&mut self, data: &[u8]) -> Result<usize> {
+        self.tx.write_deferred(data)
+    }
+
     /// Sends pending notifications to the peer.
     pub fn flush(&mut self) {
-        if core::mem::take(&mut self.read_pending) {
-            self.tx_avail.ring();
-        }
-        if core::mem::take(&mut self.write_pending) {
-            self.rx_avail.ring();
-        }
+        self.rx.flush();
+        self.tx.flush();
     }
 
     /// Whether a write can complete, including reporting a peer hangup.
     pub fn can_write(&self) -> bool {
-        !self.tx.as_ref().unwrap().is_empty() || self.tx.as_ref().unwrap().is_closed()
+        self.tx.can_write()
     }
 
-    pub fn into_inner(mut self) -> (Reader, Writer, D, D) {
-        self.flush();
-        // Suppress hangup notifications while transferring ownership of the pipe.
-        let rx = self.rx.take().unwrap();
-        let tx = self.tx.take().unwrap();
-        let this = core::mem::ManuallyDrop::new(self);
-        // SAFETY: this is never dropped and each doorbell is moved exactly once.
-        unsafe {
-            (
-                rx,
-                tx,
-                core::ptr::read(&this.rx_avail),
-                core::ptr::read(&this.tx_avail),
-            )
-        }
+    /// Separates the two directions so that each can be used independently.
+    pub fn split(self) -> (ReadHalf<D>, WriteHalf<D>) {
+        (self.rx, self.tx)
+    }
+
+    pub fn into_inner(self) -> (Reader, Writer, D, D) {
+        // Transferring ownership of the pipe must not notify the peer of a hangup.
+        let (rx, tx_avail) = self.rx.into_inner();
+        let (tx, rx_avail) = self.tx.into_inner();
+        (rx, tx, rx_avail, tx_avail)
     }
 
     /// # Safety
@@ -118,24 +190,16 @@ impl<D: DoorBell> Pipe<D> {
     /// from into_inner.
     pub unsafe fn from_inner(rx: Reader, tx: Writer, rx_avail: D, tx_avail: D) -> Self {
         Pipe {
-            rx: Some(rx),
-            tx: Some(tx),
-            rx_avail,
-            tx_avail,
-            read_pending: false,
-            write_pending: false,
-        }
-    }
-}
-
-impl<D: DoorBell> Drop for Pipe<D> {
-    fn drop(&mut self) {
-        // Publish hangups before notifying the peer, just as for cursor updates.
-        if self.rx.take().is_some() {
-            self.tx_avail.ring();
-        }
-        if self.tx.take().is_some() {
-            self.rx_avail.ring();
+            rx: ReadHalf {
+                rx: Some(rx),
+                notify: tx_avail,
+                pending: false,
+            },
+            tx: WriteHalf {
+                tx: Some(tx),
+                notify: rx_avail,
+                pending: false,
+            },
         }
     }
 }
@@ -219,18 +283,18 @@ mod tests {
         );
         assert_eq!(p.write_deferred(b"abc"), Ok(3));
         assert_eq!(p.write_deferred(b"def"), Ok(3));
-        assert_eq!(p.rx_avail.count.load(Ordering::SeqCst), 0);
+        assert_eq!(p.tx.notify.count.load(Ordering::SeqCst), 0);
         p.flush();
-        assert_eq!(p.rx_avail.count.load(Ordering::SeqCst), 1);
+        assert_eq!(p.tx.notify.count.load(Ordering::SeqCst), 1);
         let mut bytes = [0; 3];
         assert_eq!(q.read_deferred(&mut bytes), Ok(3));
         assert_eq!(&bytes, b"abc");
         assert_eq!(q.read_deferred(&mut bytes), Ok(3));
         assert_eq!(&bytes, b"def");
-        assert_eq!(q.tx_avail.count.load(Ordering::SeqCst), 0);
+        assert_eq!(q.rx.notify.count.load(Ordering::SeqCst), 0);
         q.flush();
         q.flush();
-        assert_eq!(q.tx_avail.count.load(Ordering::SeqCst), 1);
+        assert_eq!(q.rx.notify.count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

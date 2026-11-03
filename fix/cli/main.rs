@@ -194,7 +194,7 @@ fn cli() -> CliCommand {
     cli
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<u8, Box<dyn std::error::Error>> {
     let matches = cli().get_matches();
     if let Some(directories) = matches.get_many::<PathBuf>("directory") {
         for directory in directories {
@@ -204,7 +204,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Some((command, options)) = matches.subcommand() else {
         cli().print_help()?;
         println!();
-        return Ok(());
+        return Ok(0);
     };
     let available = std::thread::available_parallelism()?.get();
     let builtin = cli().find_subcommand(command).is_some();
@@ -296,8 +296,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
         let kernel: &[u8] = include_bytes!(env!("FIX_KERNEL"));
-        vmm::runtime::Runtime::new(jobs, memory, kernel.into()).run(argv);
-        Ok(())
+        Ok(vmm::runtime::Runtime::new(jobs, memory, kernel.into()).run(argv))
     } else {
         if command.contains('/') || command == "." || command == ".." {
             return Err("invalid command name".into());
@@ -331,7 +330,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status),
         Err(error) => {
             eprintln!("fix: {error}");
             ExitCode::from(2)

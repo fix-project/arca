@@ -1,16 +1,20 @@
 use std::{
     collections::HashMap,
     io::{self, Read},
-    process::ExitCode,
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU8, AtomicUsize, Ordering},
     },
     thread::{Scope, ScopedJoinHandle},
-    time::{Duration, Instant},
 };
 
-use common::{BuddyAllocator, buddy::MEM_BASE, hypercall};
+use common::{
+    BuddyAllocator,
+    buddy::{BuddyAllocatorImpl, BuddyAllocatorRawData, MEM_BASE},
+    hypercall,
+};
 use elf::{ElfBytes, endian::AnyEndian, segment::ProgramHeader};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, kvm_userspace_memory_region};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
@@ -19,7 +23,42 @@ pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::{comm::new_pipe, doorbell::HostToVMDoorBell};
+use crate::{comm::new_pipe, doorbell::HostToVMDoorBell, session::Session};
+
+struct StopOnDrop(Arc<Session>);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop(1);
+    }
+}
+
+struct ArmedCpu(Arc<Mutex<Option<(usize, libc::pthread_t)>>>);
+impl Drop for ArmedCpu {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+extern "C" fn kick_signal(_: libc::c_int) {}
+
+fn kick_signal_number() -> libc::c_int {
+    static SIGNAL: OnceLock<libc::c_int> = OnceLock::new();
+    *SIGNAL.get_or_init(|| unsafe {
+        for signal in libc::SIGRTMIN()..=libc::SIGRTMAX() {
+            let mut previous: libc::sigaction = core::mem::zeroed();
+            assert_eq!(libc::sigaction(signal, core::ptr::null(), &mut previous), 0);
+            if previous.sa_sigaction != libc::SIG_DFL {
+                continue;
+            }
+            let mut action: libc::sigaction = core::mem::zeroed();
+            action.sa_sigaction = kick_signal as *const () as usize;
+            libc::sigemptyset(&mut action.sa_mask);
+            assert_eq!(libc::sigaction(signal, &action, core::ptr::null_mut()), 0);
+            return signal;
+        }
+        panic!("no unused real-time signal for KVM interruption")
+    })
+}
 
 fn new_cpu<'scope>(
     i: usize,
@@ -28,6 +67,7 @@ fn new_cpu<'scope>(
     elf: &'scope ElfBytes<AnyEndian>,
     args: &[u64; 6],
     cpuid: &CpuId,
+    session: Arc<Session>,
 ) -> ScopedJoinHandle<'scope, ()> {
     // set up the CPU in long mode
     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
@@ -50,7 +90,7 @@ fn new_cpu<'scope>(
     };
     use common::controlreg::*;
     vcpu_sregs.cr0 |= ControlReg0::PG | ControlReg0::PE | ControlReg0::MP | ControlReg0::WP;
-    vcpu_sregs.cr0 &= !ControlReg0::EM;
+    vcpu_sregs.cr0 &= !(ControlReg0::EM | ControlReg0::CD | ControlReg0::NW);
     vcpu_sregs.cr3 = BuddyAllocator.to_offset(pml4) as u64 + MEM_BASE;
     vcpu_sregs.cr4 = ControlReg4::PAE
         | ControlReg4::PGE
@@ -135,19 +175,42 @@ fn new_cpu<'scope>(
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
-    // the Drop impl will wait for the child thread to exit, so we can pretend the allocator
-    // lives forever
-    let exit = Arc::new(AtomicBool::new(false));
-    let flag = exit.clone();
+    let allocator = common::buddy::current_allocator();
+    let signal = kick_signal_number();
     std::thread::Builder::new()
         .name(format!("Arca vCPU {i}"))
-        .spawn_scoped(scope, move || {
-            run_cpu(vcpu_fd, elf, flag);
+        .spawn_scoped(scope, move || unsafe {
+            common::buddy::with_allocator(&allocator, || {
+                let mut vcpu_fd = vcpu_fd;
+                let immediate = &raw mut vcpu_fd.get_kvm_run().immediate_exit;
+                let armed = Arc::new(Mutex::new(Some((immediate as usize, libc::pthread_self()))));
+                let _armed = ArmedCpu(armed.clone());
+                session.on_stop(move || {
+                    if let Some((address, thread)) = *armed.lock().unwrap() {
+                        (&*(address as *const AtomicU8)).store(1, Ordering::Release);
+                        libc::pthread_kill(thread, signal);
+                    }
+                });
+                let mut signals: libc::sigset_t = core::mem::zeroed();
+                libc::sigemptyset(&mut signals);
+                libc::sigaddset(&mut signals, signal);
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_UNBLOCK, &signals, core::ptr::null_mut()),
+                    0
+                );
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_cpu(&mut vcpu_fd, elf, &session)
+                }))
+                .is_err()
+                {
+                    session.stop(1);
+                }
+            })
         })
         .unwrap()
 }
 
-fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>) {
+fn run_cpu(vcpu_fd: &mut VcpuFd, elf: &ElfBytes<AnyEndian>, session: &Arc<Session>) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -168,17 +231,34 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
         })
     };
 
-    while !exit.load(Ordering::Acquire) {
+    while !session.stopped() {
         vcpu_fd
             .set_mp_state(kvm_bindings::kvm_mp_state {
                 mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
             })
             .unwrap();
-        let vcpu_exit = vcpu_fd.run().expect("run failed");
+        let vcpu_exit = match vcpu_fd.run() {
+            Ok(exit) => exit,
+            Err(error) if error.errno() == libc::EINTR || error.errno() == libc::EAGAIN => continue,
+            Err(error) => {
+                log::error!("KVM_RUN failed: {error}");
+                session.stop(1);
+                return;
+            }
+        };
         match vcpu_exit {
+            VcpuExit::Intr => continue,
             VcpuExit::IoIn(addr, data) => match addr {
                 0xe9 => {
-                    io::stdin().read_exact(data).unwrap();
+                    if session.captures_output() {
+                        data.fill(0);
+                    } else {
+                        let mut input = io::stdin();
+                        if session.wait(input.as_raw_fd(), libc::POLLIN).is_err() {
+                            return;
+                        }
+                        input.read_exact(data).unwrap();
+                    }
                 }
                 addr => println!(
                     "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
@@ -192,13 +272,8 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                     let args = &[regs.rdi, regs.rsi, regs.rcx, regs.r10, regs.r8, regs.r9];
                     match code {
                         hypercall::EXIT => {
-                            // let code = args[0] as u8;
-                            std::process::exit(args[0] as i32);
-                            // if code == 0 {
-                            // ExitCode::from(args[0] as u8).exit_process();
-                            // } else {
-                            //     ExitCode::from(args[0] as u8).exit_process();
-                            // }
+                            session.stop(args[0] as u8);
+                            return;
                         }
                         hypercall::LOG => {
                             let record: *const common::LogRecord =
@@ -248,7 +323,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                         }
                         hypercall::SYMNAME => {
                             let record: *mut common::SymtabRecord =
-                                BuddyAllocator.from_offset(args[0] as usize);
+                                BuddyAllocator.from_offset(args[0] as usize - MEM_BASE as usize);
                             let record: &mut common::SymtabRecord = unsafe { &mut *record };
                             let target = record.addr;
                             if let Some((name, addr)) = lookup(target) {
@@ -256,7 +331,7 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                                 let (ptr, cap) = record.file_buffer;
                                 let buffer: &mut [u8] = unsafe {
                                     core::slice::from_raw_parts_mut(
-                                        BuddyAllocator.from_offset(ptr),
+                                        BuddyAllocator.from_offset(ptr - MEM_BASE as usize),
                                         cap,
                                     )
                                 };
@@ -273,22 +348,24 @@ fn run_cpu(mut vcpu_fd: VcpuFd, elf: &ElfBytes<AnyEndian>, exit: Arc<AtomicBool>
                             }
                         }
                         hypercall::MEMSET => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let ptr =
+                                BuddyAllocator.from_offset(args[0] as usize - MEM_BASE as usize);
                             let chr = args[1] as u8;
                             let len = args[2] as usize;
                             unsafe {
                                 let mem = core::slice::from_raw_parts_mut(ptr, len);
                                 mem.fill(chr);
-                                regs.rax = mem.as_ptr() as u64;
+                                regs.rax = args[0];
                             }
                         }
                         hypercall::MEMCLR => {
-                            let ptr = BuddyAllocator.from_offset(args[0] as usize);
+                            let ptr =
+                                BuddyAllocator.from_offset(args[0] as usize - MEM_BASE as usize);
                             let len = args[1] as usize;
                             unsafe {
                                 let mem = core::slice::from_raw_parts_mut(ptr, len);
                                 mem.fill(0);
-                                regs.rax = mem.as_ptr() as u64;
+                                regs.rax = args[0];
                             }
                         }
                         x => unimplemented!("hypercall {x}"),
@@ -328,9 +405,14 @@ pub struct Runtime {
     elf: Arc<[u8]>,
     next_pipe_idx: Arc<AtomicUsize>,
     doorbell: HostToVMDoorBell,
+    interrupt: Arc<EventFd>,
+    allocator: BuddyAllocatorImpl,
+    guest_allocator: Option<BuddyAllocatorRawData>,
+    session: Option<Arc<Session>>,
 }
 
 impl Runtime {
+    /// Reserves an unused real-time signal for interrupting KVM_RUN.
     pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
@@ -355,36 +437,20 @@ impl Runtime {
             .unwrap_or(0)
             .max(9 << 20);
         assert!(kernel_end <= ram, "kernel image exceeds guest memory");
-        common::buddy::init(ram, kernel_end);
+        let allocator = BuddyAllocatorImpl::new_with_reserved(ram, kernel_end);
 
         let mem_region = kvm_userspace_memory_region {
             slot: 0,
             guest_phys_addr: MEM_BASE,
-            memory_size: BuddyAllocator.len() as u64,
-            userspace_addr: BuddyAllocator.base() as u64,
+            memory_size: allocator.len() as u64,
+            userspace_addr: allocator.base() as u64,
             flags: 0,
         };
         unsafe { vm.set_user_memory_region(mem_region).unwrap() };
 
-        let int = EventFd::new(EFD_NONBLOCK).unwrap();
-
-        vm.register_irqfd(&int, 1).unwrap();
-
-        let mut last_time = None;
-        ctrlc::set_handler(move || {
-            let now = Instant::now();
-            let diff = last_time.map(|last_time| now.duration_since(last_time));
-            if let Some(diff) = diff
-                && diff < Duration::from_secs(1)
-            {
-                log::warn!("got ^C^C; forcing immediate shutdown");
-                ExitCode::from(130).exit_process();
-            }
-            log::info!("got ^C; sending soft shutdown");
-            int.write(1).unwrap();
-            last_time = Some(now);
-        })
-        .unwrap();
+        let interrupt = Arc::new(EventFd::new(EFD_NONBLOCK).unwrap());
+        vm.register_irqfd(&interrupt, 1).unwrap();
+        let _ = kick_signal_number();
 
         let mut x = Self {
             kvm,
@@ -393,8 +459,13 @@ impl Runtime {
             cores,
             elf: elf.clone(),
             next_pipe_idx: Arc::new(AtomicUsize::new(0)),
+            interrupt,
+            allocator,
+            guest_allocator: None,
+            session: None,
         };
-        x.load_elf(&elf_bytes);
+        let allocator = x.allocator.clone();
+        unsafe { common::buddy::with_allocator(&allocator, || x.load_elf(&elf_bytes)) };
         x
     }
 
@@ -455,15 +526,77 @@ impl Runtime {
         }
     }
 
-    pub fn run(&mut self, argv: Vec<String>) {
+    pub fn interrupt_handle(&self) -> Arc<EventFd> {
+        self.interrupt.clone()
+    }
+
+    pub fn run(&mut self, argv: Vec<String>) -> u8 {
+        let directory = std::env::current_dir().expect("current directory");
+        self.run_with_io(argv, directory, false).0
+    }
+
+    pub fn run_captured(&mut self, argv: Vec<String>, directory: &Path) -> (u8, Vec<u8>) {
+        self.run_with_io(argv, directory.to_owned(), true)
+    }
+
+    fn run_with_io(
+        &mut self,
+        argv: Vec<String>,
+        directory: PathBuf,
+        capture: bool,
+    ) -> (u8, Vec<u8>) {
+        self.run_session(argv, directory, Session::new(capture))
+    }
+
+    pub fn run_stream(
+        &mut self,
+        argv: Vec<String>,
+        directory: &Path,
+        stream: std::os::unix::net::UnixStream,
+    ) -> u8 {
+        self.run_session(
+            argv,
+            directory.to_owned(),
+            Session::with_stdio(false, Some(stream)),
+        )
+        .0
+    }
+
+    fn run_session(
+        &mut self,
+        argv: Vec<String>,
+        directory: PathBuf,
+        session: Arc<Session>,
+    ) -> (u8, Vec<u8>) {
+        assert!(self.session.is_none(), "Runtime may only be run once");
+        self.session = Some(session.clone());
+        self.doorbell = self.doorbell.clone().with_session(session.clone());
+        let allocator = self.allocator.clone();
+        unsafe {
+            common::buddy::with_allocator(&allocator, || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.run_inner(argv, directory, session.clone());
+                }));
+                if result.is_err() {
+                    session.stop(1);
+                }
+                session.join();
+            })
+        };
+        (session.status(), session.output())
+    }
+
+    fn run_inner(&mut self, argv: Vec<String>, directory: PathBuf, session: Arc<Session>) {
         let elf = ElfBytes::<AnyEndian>::minimal_parse(&self.elf)
             .expect("could not read kernel elf file");
 
         let allocator_raw = common::buddy::export();
+        self.guest_allocator = Some(allocator_raw);
         let allocator_raw =
             Box::into_raw_with_allocator(Box::new_in(allocator_raw, BuddyAllocator)).0;
 
         std::thread::scope(|s| {
+            let _stop = StopOnDrop(session.clone());
             let mut cpus = vec![];
 
             let (p, q) = new_pipe(&self.vm, 8192, &self.next_pipe_idx, &self.doorbell);
@@ -472,13 +605,16 @@ impl Runtime {
             let next_pipe_cl = self.next_pipe_idx.clone();
             let doorbell = self.doorbell.clone();
 
-            let comm = s.spawn(move || {
+            let control_session = session.clone();
+            session.spawn(move || {
                 crate::comm::control_thread(
                     vm_cl,
                     next_pipe_cl,
                     doorbell,
                     argv,
-                    crate::pipe::ControlPipe::new(q),
+                    q,
+                    control_session,
+                    directory,
                 );
             });
 
@@ -523,12 +659,27 @@ impl Runtime {
                         txn as u64,
                     ],
                     &kvm_cpuid,
+                    session.clone(),
                 ));
             }
             for cpu in cpus {
                 cpu.join().unwrap();
             }
-            comm.join().unwrap();
+            self.allocator.abandon();
         });
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(session) = &self.session {
+            session.stop(1);
+            session.join();
+        }
+        if let Some(allocator) = self.guest_allocator.take() {
+            unsafe {
+                drop(BuddyAllocatorImpl::from_raw_parts(allocator));
+            }
+        }
     }
 }
