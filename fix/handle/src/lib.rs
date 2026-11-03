@@ -153,8 +153,8 @@ wrapper!(TreeRef, |h: &Handle| h.0[31] & 0x1f == 0x10
 impl Handle {
     /// # Safety
     /// The caller must establish naming provenance for the resulting Handle.
-    /// Local addresses must identify live data of the declared size in the
-    /// address space where the Handle is used. Encoding checks do not establish this.
+    /// Local addresses must identify live storage in the runtime that resolves
+    /// them. Encoding checks do not establish this.
     #[inline]
     pub unsafe fn parse(bytes: [u8; HANDLE_SIZE]) -> Result<Self, Error> {
         Self::validate(&bytes)?;
@@ -162,8 +162,8 @@ impl Handle {
     }
     /// # Safety
     /// The caller must establish naming provenance for the resulting Handle.
-    /// Local addresses must identify live data of the declared size in the
-    /// address space where the Handle is used. Encoding checks do not establish this.
+    /// Local addresses must identify live storage in the runtime that resolves
+    /// them. Encoding checks do not establish this.
     #[inline]
     pub unsafe fn parse_native(native: u8x32) -> Result<Self, Error> {
         Self::validate(native.as_array())?;
@@ -492,6 +492,10 @@ impl Blob {
 }
 
 impl Tree {
+    pub fn empty() -> Self {
+        Self::canonical(&[]).expect("empty tree")
+    }
+
     /// # Safety
     /// The caller must establish naming provenance for the resulting Handle.
     /// Local addresses must identify live data of the declared size in the

@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "repository",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "fixrepository",
+    edition = "2024",
+    deps = [
+        "//fix/handle",
+        "//lib/common",
+        "@crates//:hashbrown",
+        "@crates//:hex",
+    ] + select({
+        "//build/platforms:linux": [],
+        "//conditions:default": ["//arca/kernel"],
+    }),
+)
+
+rust_test(
+    name = "tests",
+    crate = ":repository",
+    edition = "2024",
+    timeout = "short",
+)

@@ -5,6 +5,9 @@ load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
 
 HOST = [
+    "//fix/api",
+    "//fix/storage",
+    "//fix/repository",
     "//tools/vmm:vmm",
     "//tools:bindgen",
     "//tools:postprocess",
