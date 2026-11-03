@@ -14,6 +14,7 @@ genrule(
     cmd = """
         build="$$PWD/$(@D)/wabt-build"
         source="$$PWD/$(@D)/wabt-source"
+        rm -rf "$$source" "$$build"
         cp -R -L $$(dirname $(location @wabt_src//:CMakeLists.txt)) "$$source"
         chmod -R u+w "$$source"
         $(execpath @local_tools//:cmake) -DSOURCE="$$source" -P $(location //build:wabt-externref.cmake)

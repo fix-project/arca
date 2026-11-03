@@ -1,17 +1,14 @@
 use crate::prelude::*;
 use common::elfloader;
 
-const ADD: &[u8] = include_bytes!(env!("ARCA_ADD_PROGRAM"));
-const CURRY: &[u8] = include_bytes!(env!("ARCA_CURRY_PROGRAM"));
-const MAP: &[u8] = include_bytes!(env!("ARCA_MAP_PROGRAM"));
-
 /// Maps a partially applied curried add over a tuple, preserving each input's
 /// independent continuation and evaluating the resulting applications.
 #[test]
 fn test_map_curried_add() {
-    let add: Function = elfloader::load_elf(ADD).unwrap();
-    let curry: Function = elfloader::load_elf(CURRY).unwrap();
-    let map: Function = elfloader::load_elf(MAP).unwrap();
+    let add: Function = elfloader::load_elf(crate::testing::fixture("ARCA_ADD_PROGRAM")).unwrap();
+    let curry: Function =
+        elfloader::load_elf(crate::testing::fixture("ARCA_CURRY_PROGRAM")).unwrap();
+    let map: Function = elfloader::load_elf(crate::testing::fixture("ARCA_MAP_PROGRAM")).unwrap();
     let curried_add: Function = curry
         .apply(add)
         .apply(2u64)

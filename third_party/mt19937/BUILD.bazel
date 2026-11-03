@@ -12,7 +12,7 @@ genrule(
 cc_library(
     name = "mt19937",
     srcs = ["mt19937.c"],
-    hdrs = ["mt19937.h", ":reference"],
+    hdrs = ["mt19937.h", "stdio.h", ":reference"],
     includes = ["."],
     copts = ["-std=c17"],
 )

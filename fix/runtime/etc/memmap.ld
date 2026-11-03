@@ -12,6 +12,7 @@ SECTIONS {
     _stext = .;
     KEEP(*(.text.start))
     *(.text*)
+    *(.ltext*)
     . = ALIGN(16);
     _etext = .;
   } > upper 
@@ -20,6 +21,7 @@ SECTIONS {
     . = ALIGN(16);
     _srodata = .;
     *(.rodata*)
+    *(.lrodata*)
     *(.note*)
     . = ALIGN(16);
     _erodata = .;
@@ -48,6 +50,7 @@ SECTIONS {
     . = ALIGN(16);
     _sdata = .;
     *(.data*)
+    *(.ldata*)
     . = ALIGN(16);
     _edata = .;
   } > upper 
@@ -57,6 +60,7 @@ SECTIONS {
     _sbss = .;
     *(.sbss*)
     *(.bss*)
+    *(.lbss*)
     . = ALIGN(16);
     _ebss = .;
   } > upper 

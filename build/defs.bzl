@@ -4,7 +4,7 @@ load("@rules_cc//cc:cc_import.bzl", "cc_import")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("//build:cc.bzl", "cc_object")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-nostdlib", "-nostartfiles", "-mcmodel=large", "-mno-red-zone", "-march=x86-64-v3", "-static"]
 
@@ -34,7 +34,7 @@ def kernel_program(name, srcs, image_name = None, linker_script = "//arca/kernel
     )
     vm_run(name = name, kernel = ":" + image_name, visibility = visibility)
 
-def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:etc/memmap.ld", rustc_flags = [], visibility = None, image_visibility = ["//visibility:private"], **kwargs):
+def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:etc/memmap.ld", rustc_flags = [], visibility = None, image_visibility = ["//visibility:private"], fixtures = {}, timeout = "short", **kwargs):
     """Build a kernel test image and run it under the VMM."""
     image_name = image_name or name + "_image"
     guest_binary(
@@ -46,11 +46,21 @@ def kernel_test(name, srcs, image_name = None, linker_script = "//arca/kernel:et
         rustc_flags = rustc_flags + ["--test"],
         **kwargs
     )
-    vm_test(
+    rust_test(
         name = name,
+        srcs = ["//build:guest_test.rs"],
+        crate_name = "guest_test",
+        edition = "2024",
+        use_libtest_harness = False,
+        data = [":" + image_name, "//tools/vmm:vmm"] + fixtures.values(),
+        rustc_env = {
+            "GUEST_TEST_IMAGE": "$(rlocationpath :" + image_name + ")",
+            "GUEST_TEST_VMM": "$(rlocationpath //tools/vmm:vmm)",
+            "GUEST_TEST_FIXTURES": "\n".join([key + "=$(rlocationpath " + value + ")" for key, value in fixtures.items()]),
+        },
+        deps = ["@rules_rust//tools/runfiles"],
         size = "large",
-        timeout = "short",
-        kernel = ":" + image_name,
+        timeout = timeout,
         tags = ["kvm", "local"],
         visibility = visibility,
     )

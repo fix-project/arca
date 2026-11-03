@@ -4,24 +4,17 @@ use syn::{ItemFn, parse_macro_input};
 
 pub fn test(_: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
-    let mut inner = item.clone();
-    let ident = item.sig.ident;
-    inner.sig.ident = format_ident!("test_case");
+    let ident = &item.sig.ident;
+    let registration = format_ident!("__ARCA_TEST_{}", ident);
     quote! {
-        #[test_case]
-        fn #ident() {
-            #inner
+        #item
 
-            use ::kernel::debugcon::CONSOLE;
-            use core::fmt::Write;
-            let mut console = CONSOLE.lock();
-            write!(console, "Running Test {}::{}: ", module_path!(), stringify!(#ident)).unwrap();
-            ::kernel::prelude::SpinLock::unlock(console);
-            test_case();
-            let mut console = CONSOLE.lock();
-            write!(console, "PASS\n").unwrap();
-            ::kernel::prelude::SpinLock::unlock(console);
-        }
+        #[test_case]
+        #[allow(non_upper_case_globals)]
+        const #registration: ::kernel::testing::TestCase = ::kernel::testing::TestCase {
+            name: concat!(module_path!(), "::", stringify!(#ident)),
+            run: #ident,
+        };
     }
     .into()
 }

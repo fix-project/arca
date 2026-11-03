@@ -43,3 +43,5 @@ rust_binary(
 )
 
 py_binary(name = "rocq_dependencies", srcs = ["rocq_dependencies.py"])
+
+exports_files(["guest_test.rs"])

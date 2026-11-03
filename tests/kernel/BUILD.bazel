@@ -1,6 +1,7 @@
 load("//build:defs.bzl", "guest_binary", "vm_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
-package(default_visibility = ["//:__pkg__"])
+package(default_visibility = ["//:__pkg__", "//tests:__pkg__"])
 
 guest_binary(
     name = "threads_image",
@@ -27,7 +28,43 @@ vm_test(
     tags = ["kvm", "local"],
 )
 
+guest_binary(
+    name = "harness_image",
+    testonly = True,
+    srcs = ["harness.rs"],
+    linker_script = "//arca/kernel:etc/memmap.ld",
+    rustc_flags = ["--test"],
+    crate_name = "harness_probe",
+    deps = ["//arca/kernel"],
+    proc_macro_deps = ["//tools/macros"],
+)
+
+rust_binary(
+    name = "harness_probe",
+    testonly = True,
+    srcs = ["//build:guest_test.rs"],
+    edition = "2024",
+    data = [":harness_image", "//tools/vmm:vmm"],
+    rustc_env = {
+        "GUEST_TEST_IMAGE": "$(rlocationpath :harness_image)",
+        "GUEST_TEST_VMM": "$(rlocationpath //tools/vmm:vmm)",
+        "GUEST_TEST_FIXTURES": "",
+    },
+    deps = ["@rules_rust//tools/runfiles"],
+)
+
+rust_test(
+    name = "harness_test",
+    srcs = ["harness_test.rs"],
+    edition = "2024",
+    data = [":harness_probe"],
+    rustc_env = {"GUEST_HARNESS_PROBE": "$(rlocationpath :harness_probe)"},
+    deps = ["@rules_rust//tools/runfiles"],
+    tags = ["kvm", "local"],
+    timeout = "short",
+)
+
 test_suite(
     name = "tests",
-    tests = [":threads_test"],
+    tests = [":threads_test", ":harness_test"],
 )

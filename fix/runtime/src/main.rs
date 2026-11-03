@@ -94,7 +94,7 @@ mod tests {
     use fix::storage::CanonicalHandle;
     use fixhandle::{Blob, Tree};
 
-    #[test_case]
+    #[kernel::test]
     fn runnable_authorities() {
         use fix::arca::trust::{Trust, TrustError};
 
@@ -135,7 +135,7 @@ mod tests {
         assert!(Trust::parse(&format!("{}\n", compiler.as_handle())).is_err());
     }
 
-    #[test_case]
+    #[kernel::test]
     fn evaluation_certificates() {
         use fix::coupon::Exchange;
 
@@ -336,7 +336,7 @@ mod tests {
         parallel.shutdown();
     }
 
-    #[test_case]
+    #[kernel::test]
     fn privileged_collector() {
         let runtime = test_runtime();
         let storage = runtime.storage();
@@ -395,7 +395,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[kernel::test]
     fn application_coupons() {
         let runtime = test_runtime();
         let storage = runtime.storage();
@@ -429,7 +429,7 @@ mod tests {
         assert!(assertion[2].same_encoding(&combination.into()));
     }
 
-    #[test_case]
+    #[kernel::test]
     fn canonicalization_certificates() {
         let runtime = test_runtime();
         let storage = runtime.storage();
@@ -468,7 +468,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[kernel::test]
     fn privileged_handle_bytes() {
         let runtime = test_runtime();
         let storage = runtime.storage();
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(&*reason, b"exception");
     }
 
-    #[test_case]
+    #[kernel::test]
     fn canonical_blob_round_trip() {
         let storage = storage::memory::MemoryStorage::default();
         let bytes = [42u8; 64];
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(storage.get_blob(decoded).unwrap().as_ref(), &bytes);
     }
 
-    #[test_case]
+    #[kernel::test]
     fn canonical_tree_round_trip() {
         fn build(storage: &storage::memory::MemoryStorage) -> Tree {
             let blob = storage.add_blob(&[42; 64]);
@@ -592,7 +592,7 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[kernel::test]
     fn equality_of_aliases_and_computed_values() {
         use fix::storage::{StorageError, memory::MemoryStorage};
         let storage = MemoryStorage::default();
@@ -674,7 +674,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[kernel::test]
     fn equality_after_encoded_substitution() {
         let evaluator = Evaluator::new(test_runtime());
         let storage = evaluator.storage();
@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(storage.equals(first, second), Ok(true));
     }
 
-    #[test_case]
+    #[kernel::test]
     fn evaluation_preserves_access_and_tags() {
         fn check(storage: &dyn storage::Storage, eval: impl Fn(Handle) -> Handle) {
             let blob = storage.add_blob(b"ok");
@@ -794,7 +794,7 @@ mod tests {
         parallel.shutdown();
     }
 
-    #[test_case]
+    #[kernel::test]
     fn independent_applications_run_in_parallel() {
         use core::sync::atomic::{AtomicUsize, Ordering};
         struct Runtime {
@@ -865,7 +865,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[kernel::test]
     fn test_memory_storage_handle_boundaries() {
         use fix::storage::{StorageError, memory::MemoryStorage};
 
@@ -973,7 +973,7 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[kernel::test]
     fn test_shared_storage_pages() {
         use fix::storage::memory::MemoryStorage;
         use kernel::types::Entry;
@@ -1040,7 +1040,7 @@ mod tests {
         assert!(a.with_ref(|p| p[2 * HANDLE_SIZE..].iter().all(|b| *b == 0)));
     }
 
-    #[test_case]
+    #[kernel::test]
     fn test_nested_shared_backing() {
         use fix::storage::ImmutableBytes;
         use kernel::types::Entry;
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(&*backing.to_bytes(), bytes.as_slice());
     }
 
-    #[test_case]
+    #[kernel::test]
     fn immutable_backing_edits_share_unchanged_pages() {
         use fix::storage::ImmutableBytes;
         let bytes = vec![0x29; 1 << 21];
@@ -1105,7 +1105,7 @@ mod tests {
         assert_eq!(&extended.to_bytes()[length..], &[7; 32]);
     }
 
-    #[test_case]
+    #[kernel::test]
     fn test_sparse_chunk_container() {
         use kernel::types::{Entry, Page, Table, Value};
         let mut first = Table::new(1 << 30);
@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(start.with_ref(|page| page[0]), 0x5a);
     }
 
-    #[test_case]
+    #[kernel::test]
     fn test_number() {
         let evaluator = Evaluator::new(test_runtime());
 

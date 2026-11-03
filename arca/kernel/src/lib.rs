@@ -24,6 +24,7 @@ pub extern crate macros;
 
 use common::hypercall;
 pub use macros::core_local;
+pub use macros::test;
 
 pub mod allocator;
 pub mod cpu;
@@ -52,8 +53,7 @@ mod rsstart;
 mod tss;
 mod xstate;
 
-#[cfg(test)]
-mod testing;
+pub mod testing;
 #[cfg(test)]
 mod tests;
 

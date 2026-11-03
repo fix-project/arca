@@ -1,10 +1,9 @@
 use crate::prelude::*;
 use common::elfloader;
 
-const PROGRAM: &[u8] = include_bytes!(env!("ARCA_SIMD_PROGRAM"));
-
 fn suspend(byte: u8) -> Function {
-    let program: Function = elfloader::load_elf(PROGRAM).unwrap();
+    let program: Function =
+        elfloader::load_elf(crate::testing::fixture("ARCA_SIMD_PROGRAM")).unwrap();
     program
         .apply(Blob::new([byte; 32]))
         .force()
@@ -48,7 +47,7 @@ fn test_simd_continuations() {
     resume(clone, 28);
 }
 
-/// Exercises explicit unloading as well as the swap used to capture continuations.
+/// Preserves register state through an explicit load and unload.
 #[test]
 fn test_simd_load_unload() {
     let mut function = suspend(91).into_inner();
