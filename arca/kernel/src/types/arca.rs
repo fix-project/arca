@@ -1,5 +1,9 @@
-use alloc::{collections::vec_deque::VecDeque, vec::Vec};
+use alloc::{
+    collections::{BinaryHeap, vec_deque::VecDeque},
+    vec::Vec,
+};
 use arcane::SyscallError;
+use core::cmp::Reverse;
 
 use crate::{cpu::ExitReason, prelude::*};
 
@@ -142,18 +146,20 @@ impl<'a> LoadedArca<'a> {
         &self.descriptors
     }
 
+    pub(crate) fn descriptors_and_cpu(&mut self) -> (&mut Descriptors, &mut Cpu) {
+        (&mut self.descriptors, self.cpu)
+    }
+
+    pub(crate) fn cpu_mut(&mut self) -> &mut Cpu {
+        self.cpu
+    }
+
     pub fn descriptors_mut(&'_ mut self) -> DescriptorsProxy<'_, 'a> {
         DescriptorsProxy { arca: self }
     }
 
     pub fn unload(self) -> Arca {
         self.unload_with_cpu().0
-    }
-
-    pub fn take(&mut self) -> Arca {
-        let mut original = Default::default();
-        self.swap(&mut original);
-        original
     }
 
     pub fn unload_with_cpu(self) -> (Arca, &'a mut Cpu) {
@@ -171,14 +177,6 @@ impl<'a> LoadedArca<'a> {
         )
     }
 
-    pub fn swap(&mut self, other: &mut Arca) {
-        self.register_file.save();
-        other.register_file.restore();
-        core::mem::swap(&mut self.register_file, &mut other.register_file);
-        core::mem::swap(&mut self.descriptors, &mut other.descriptors);
-        self.cpu.swap_address_space(other.page_table.inner_mut());
-    }
-
     pub fn cpu(&'_ mut self) -> CpuProxy<'_, 'a> {
         CpuProxy { arca: self }
     }
@@ -190,18 +188,26 @@ pub enum DescriptorError {
     OutOfBounds,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Descriptors {
     descriptors: Vec<Value>,
+    /// Holds every empty slot after slot 0, assuming `get_mut` callers never empty a slot.
+    empty: BinaryHeap<Reverse<usize>>,
 }
+
+impl PartialEq for Descriptors {
+    fn eq(&self, other: &Self) -> bool {
+        self.descriptors == other.descriptors
+    }
+}
+
+impl Eq for Descriptors {}
 
 pub type Result<T> = core::result::Result<T, DescriptorError>;
 
 impl Descriptors {
     pub fn new() -> Descriptors {
-        Descriptors {
-            descriptors: vec![Value::default()],
-        }
+        Descriptors::from(Vec::new())
     }
 
     pub fn get(&self, index: usize) -> Result<&Value> {
@@ -223,26 +229,31 @@ impl Descriptors {
         if index == 0 {
             return Ok(Value::default());
         }
-        Ok(core::mem::take(
+        let value = core::mem::take(
             self.descriptors
                 .get_mut(index)
                 .ok_or(DescriptorError::OutOfBounds)?,
-        ))
+        );
+        if value.datatype() != DataType::Null {
+            self.empty.push(Reverse(index));
+        }
+        Ok(value)
     }
 
     pub fn insert(&mut self, value: Value) -> usize {
         if value.datatype() == DataType::Null {
             return 0;
         }
-        for (i, x) in self.descriptors.iter_mut().enumerate().skip(1) {
-            if x.datatype() == DataType::Null {
-                *x = value;
-                return i;
+        match self.empty.pop() {
+            Some(Reverse(i)) => {
+                self.descriptors[i] = value;
+                i
+            }
+            None => {
+                self.descriptors.push(value);
+                self.descriptors.len() - 1
             }
         }
-        let i = self.descriptors.len();
-        self.descriptors.push(value);
-        i
     }
 
     pub fn iter(&'_ self) -> Iter<'_> {
@@ -280,7 +291,14 @@ impl From<Vec<Value>> for Descriptors {
         } else {
             value[0] = Default::default();
         }
-        Descriptors { descriptors: value }
+        let empty = (1..value.len())
+            .filter(|&i| value[i].datatype() == DataType::Null)
+            .map(Reverse)
+            .collect();
+        Descriptors {
+            descriptors: value,
+            empty,
+        }
     }
 }
 

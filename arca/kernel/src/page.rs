@@ -14,14 +14,133 @@ pub type Page2MB = [u8; 1 << 21];
 pub type Page1GB = [u8; 1 << 30];
 
 pub type UniquePage<T> = Box<T, BuddyAllocator>;
-pub type SharedPage<T> = RefCnt<T>;
+#[repr(align(4096))]
+struct ZeroPage(Page4KB);
 
-// TODO: cloning a unique page should produce two shared pages (somehow)
-#[derive(Debug, Clone, Eq, PartialEq)]
+static ZERO_PAGE: ZeroPage = ZeroPage([0; 4096]);
+
+pub struct SharedPage<T> {
+    pointer: *mut T,
+}
+
+unsafe impl<T: Send + Sync> Send for SharedPage<T> {}
+unsafe impl<T: Send + Sync> Sync for SharedPage<T> {}
+
+impl SharedPage<Page4KB> {
+    pub fn zero() -> Self {
+        Self {
+            pointer: (&raw const ZERO_PAGE.0).cast_mut(),
+        }
+    }
+}
+
+impl<T> SharedPage<T> {
+    fn is_zero(&self) -> bool {
+        self.pointer.cast::<u8>() == (&raw const ZERO_PAGE.0).cast::<u8>().cast_mut()
+    }
+
+    pub fn into_raw(this: Self) -> *mut T {
+        let pointer = this.pointer;
+        core::mem::forget(this);
+        pointer
+    }
+
+    /// # Safety
+    /// `pointer` must own a reference returned by `into_raw`.
+    pub unsafe fn from_raw(pointer: *mut T) -> Self {
+        Self { pointer }
+    }
+
+    /// # Safety
+    /// `pointer` must own a reference returned by `into_raw`.
+    pub unsafe fn from_raw_in(pointer: *mut T, _: BuddyAllocator) -> Self {
+        unsafe { Self::from_raw(pointer) }
+    }
+}
+
+impl<T: Clone> SharedPage<T> {
+    pub fn into_unique_retained(this: Self) -> (UniquePage<T>, Option<Self>) {
+        if this.is_zero() {
+            let unique = unsafe { UniquePage::<T>::new_zeroed_in(BuddyAllocator).assume_init() };
+            (unique, None)
+        } else {
+            let (unique, retained) =
+                unsafe { RefCnt::into_unique_retained(RefCnt::from_raw(Self::into_raw(this))) };
+            let retained = retained.map(|page| unsafe { Self::from_raw(RefCnt::into_raw(page)) });
+            (unique, retained)
+        }
+    }
+
+    pub fn into_unique(this: Self) -> UniquePage<T> {
+        if this.is_zero() {
+            // Only the immutable, all-zero page can bypass reference counting.
+            unsafe { UniquePage::<T>::new_zeroed_in(BuddyAllocator).assume_init() }
+        } else {
+            unsafe { RefCnt::into_unique(RefCnt::from_raw(Self::into_raw(this))) }
+        }
+    }
+}
+
+impl<T> Clone for SharedPage<T> {
+    fn clone(&self) -> Self {
+        if !self.is_zero() {
+            let original = core::mem::ManuallyDrop::new(unsafe { RefCnt::from_raw(self.pointer) });
+            let _ = RefCnt::into_raw(RefCnt::clone(&original));
+        }
+        Self {
+            pointer: self.pointer,
+        }
+    }
+}
+
+impl<T> Drop for SharedPage<T> {
+    fn drop(&mut self) {
+        if !self.is_zero() {
+            drop(unsafe { RefCnt::from_raw(self.pointer) });
+        }
+    }
+}
+
+impl<T> Deref for SharedPage<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.pointer }
+    }
+}
+
+impl<T> From<UniquePage<T>> for SharedPage<T> {
+    fn from(page: UniquePage<T>) -> Self {
+        Self {
+            pointer: RefCnt::into_raw(page.into()),
+        }
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for SharedPage<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: PartialEq> PartialEq for SharedPage<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pointer == other.pointer || **self == **other
+    }
+}
+impl<T: Eq> Eq for SharedPage<T> {}
+
+#[derive(Debug, Clone)]
 pub enum CowPage<T> {
     Unique(UniquePage<T>),
     Shared(SharedPage<T>),
 }
+
+impl<T: PartialEq> PartialEq for CowPage<T> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(&**self, &**other) || **self == **other
+    }
+}
+impl<T: Eq> Eq for CowPage<T> {}
 
 impl<T> CowPage<T> {
     pub fn new() -> Self {
@@ -60,7 +179,7 @@ impl<T> CowPage<T> {
     pub fn into_raw(this: Self) -> (bool, *mut T) {
         match this {
             CowPage::Unique(page) => (true, Box::into_raw_with_allocator(page).0),
-            CowPage::Shared(page) => (false, RefCnt::into_raw(page)),
+            CowPage::Shared(page) => (false, SharedPage::into_raw(page)),
         }
     }
 
@@ -72,7 +191,7 @@ impl<T> CowPage<T> {
             if unique {
                 CowPage::Unique(Box::from_raw_in(ptr, BuddyAllocator))
             } else {
-                CowPage::Shared(RefCnt::from_raw(ptr))
+                CowPage::Shared(SharedPage::from_raw(ptr))
             }
         }
     }

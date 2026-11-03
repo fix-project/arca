@@ -166,7 +166,7 @@ unsafe extern "C" fn isr_entry(registers: &mut IsrRegisterFile) {
 
         if !escape.is_null() {
             log::debug!(
-                "user program provided invalid address to kernel: {:p}",
+                "fault during guarded user-memory access: {:p}",
                 crate::registers::read_cr2() as *const u8,
             );
             registers.rip = escape as usize as u64;

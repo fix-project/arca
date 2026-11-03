@@ -110,7 +110,7 @@ impl<S: Storage> FixOnArca<S> {
             }
         };
         let elf = self.storage.get_blob(executable).unwrap();
-        let f: Function = common::elfloader::load_elf(&elf).unwrap();
+        let f: Function = common::elfloader::load_elf(elf.as_ref()).unwrap();
         drop(elf);
         let f = f.apply(pack_handle(combination));
         self.run(f, combination, privileged)

@@ -27,6 +27,8 @@ impl<T, F: FnOnce() -> T> LazyLock<T, F> {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn force(this: &Self) -> &T {
         if this
             .stat

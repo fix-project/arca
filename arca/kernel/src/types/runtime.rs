@@ -1,7 +1,11 @@
 use super::internal;
+use crate::prelude::{CowPage, OnceLock, Page, SharedPage, Table};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct Runtime;
+
+#[crate::core_local]
+static ZERO_TABLES: OnceLock<[Table; 2]> = OnceLock::new();
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Error {
@@ -44,6 +48,32 @@ impl arca::Runtime for Runtime {
 
     fn create_table(len: usize) -> arca::Table<Self> {
         arca::Table::from_inner(internal::Table::new(len))
+    }
+
+    fn create_zeroed_entry(len: usize) -> arca::Entry<Self> {
+        use crate::prelude::Entry;
+        assert!([1 << 12, 1 << 21, 1 << 30].contains(&len));
+        let zero = Page::from_inner(internal::Page::Page4KB(CowPage::Shared(SharedPage::zero())));
+        if len == 4096 {
+            return Entry::RWPage(zero.clone());
+        }
+        let tables = ZERO_TABLES.get_or_init(|| {
+            let mut child = Entry::RWPage(zero.clone());
+            core::array::from_fn(|level| {
+                let mut table = Table::new(1usize << (21 + level * 9));
+                for index in 0..512 {
+                    table.set(index, child.clone()).unwrap();
+                }
+                let table = Table::from_inner(table.into_inner().shared());
+                child = Entry::RWTable(table.clone());
+                table
+            })
+        });
+        match len {
+            x if x == 1 << 21 => Entry::RWTable(tables[0].clone()),
+            x if x == 1 << 30 => Entry::RWTable(tables[1].clone()),
+            _ => unreachable!(),
+        }
     }
 
     fn create_function(data: arca::Value<Self>) -> Result<arca::Function<Self>, Self::Error> {

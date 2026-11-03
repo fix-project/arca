@@ -98,8 +98,10 @@ pub struct TableDescriptor {
     available_1: u8,
     #[bits(40)]
     address: usize,
-    #[bits(11)]
+    #[bits(9)]
     available_2: u16,
+    copy_on_write: bool,
+    available_3: bool,
     execute_disable: bool,
 }
 
@@ -121,8 +123,9 @@ pub struct HugePageDescriptor {
     page_attribute_table: bool,
     #[bits(39)]
     address: usize,
-    #[bits(7)]
+    #[bits(6)]
     available_2: u8,
+    copy_on_write: bool,
     #[bits(4)]
     protection_key: u8,
     execute_disable: bool,
@@ -144,8 +147,9 @@ pub struct PageDescriptor {
     available_0: u8,
     #[bits(40)]
     address: usize,
-    #[bits(7)]
+    #[bits(6)]
     available_2: u8,
+    copy_on_write: bool,
     #[bits(4)]
     protection_key: u8,
     execute_disable: bool,

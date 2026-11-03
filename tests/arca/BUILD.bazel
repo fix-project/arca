@@ -1,6 +1,36 @@
 load("//build:defs.bzl", "ARCA_USER", "guest_binary")
 
 guest_binary(
+    name = "zeroed_regions_elf",
+    testonly = True,
+    visibility = ["//arca/kernel:__pkg__"],
+    srcs = ["zeroed_regions.rs"],
+    linker_script = ":zeroed_regions.ld",
+    platform = ARCA_USER,
+    deps = ["//arca/api", "//arca/user"],
+)
+
+guest_binary(
+    name = "builder_elf",
+    testonly = True,
+    visibility = ["//arca/kernel:__pkg__"],
+    srcs = ["builder.rs"],
+    linker_script = "//arca/user:etc/memmap.ld",
+    platform = ARCA_USER,
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)
+
+guest_binary(
+    name = "continuations_elf",
+    testonly = True,
+    visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],
+    srcs = ["continuations.rs"],
+    linker_script = "//arca/user:etc/memmap.ld",
+    platform = ARCA_USER,
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)
+
+guest_binary(
     name = "simd_elf",
     testonly = True,
     visibility = ["//arca/kernel:__pkg__", "//tests:__pkg__"],

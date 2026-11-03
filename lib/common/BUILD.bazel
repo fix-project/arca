@@ -23,6 +23,7 @@ rust_library(
         "//arca/api",
         "@crates//:async-channel",
         "@crates//:async-lock",
+        "@crates//:bytes",
         "@crates//:derive_more",
         "@crates//:elf",
         "@crates//:embedded-io",

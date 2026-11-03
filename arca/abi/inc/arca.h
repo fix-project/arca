@@ -8,6 +8,28 @@
 
 typedef int64_t arcad;
 
+#define ARCA_BUILD_CLONE 0
+#define ARCA_BUILD_WORD 1
+#define ARCA_BUILD_BLOB 2
+#define ARCA_BUILD_TUPLE 3
+#define ARCA_BUILD_FUNCTION 4
+#define ARCA_BUILD_APPLY 5
+#define ARCA_BUILD_TAKE 6
+#define ARCA_BUILD_CALL 7
+
+struct arca_build_step {
+  uint64_t op;
+  uint64_t value;
+  uint64_t size;
+};
+
+/* Postfix program producing one value. CLONE clones an existing Arca
+ * descriptor; BLOB reads size bytes from value; TUPLE consumes size values.
+ * TAKE consumes a descriptor; CALL consumes the final function and calls it
+ * with the current continuation. At most 4096 steps. Failure consumes TAKE
+ * operands already reached; CLONE operands remain unchanged. */
+arcad arca_build(const struct arca_build_step *steps, size_t count);
+
 struct arca_entry {
   unsigned mode;
   unsigned datatype;

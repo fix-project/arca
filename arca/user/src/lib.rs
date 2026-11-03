@@ -25,6 +25,11 @@ use prelude::*;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Runtime;
 
+pub fn build(steps: &[arcane::arca_build_step]) -> Result<arca::Value<Runtime>, ArcaError> {
+    unsafe { syscall_result(arcane::arca_build(steps.as_ptr(), steps.len())) }
+        .map(|value| unsafe { Runtime::raw_convert(value) })
+}
+
 static RUNTIME: Runtime = Runtime;
 
 #[derive(Copy, Clone, Debug)]
@@ -65,13 +70,16 @@ pub struct Ref {
 impl Clone for Ref {
     fn clone(&self) -> Self {
         let idx = self.as_raw();
+        if idx == 0 {
+            return Self::from_raw(0);
+        }
         unsafe { syscall_result(arca_clone(idx as i64)).unwrap() }
     }
 }
 
 impl Drop for Ref {
     fn drop(&mut self) {
-        if let Some(idx) = self.idx.take() {
+        if let Some(idx) = self.idx.take().filter(|idx| *idx != 0) {
             unsafe {
                 syscall_result_raw(arca_drop(idx as i64)).unwrap();
             }
@@ -396,6 +404,9 @@ impl Runtime {
 
     unsafe fn raw_convert(data: Ref) -> arca::Value<Self> {
         unsafe {
+            if data.as_raw() == 0 {
+                return Null::from_inner(data).into();
+            }
             match arca_type(data.as_raw() as i64) as u32 {
                 arcane::__TYPE_null => Null::from_inner(data).into(),
                 arcane::__TYPE_word => Word::from_inner(data).into(),
@@ -458,7 +469,7 @@ mod allocator {
 
     impl OomHandler for Mmap {
         fn handle_oom(talc: &mut Talc<Self>, layout: core::alloc::Layout) -> Result<(), ()> {
-            const PAGE_SIZE: usize = 2 * 1024 * 1024;
+            const PAGE_SIZE: usize = 4096;
             let align = layout.align().max(PAGE_SIZE);
             let required_size = layout.size().checked_add(128).ok_or(())?.max(PAGE_SIZE);
             let total_size = required_size.checked_next_multiple_of(align).ok_or(())?;

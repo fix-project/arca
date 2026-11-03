@@ -13,7 +13,14 @@ use crate::{
 
 pub type Result<T> = core::result::Result<T, SyscallError>;
 
-pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> ControlFlow<Value> {
+pub enum Action {
+    Return(Value),
+    Suspend,
+    Call(Function),
+    Capture,
+}
+
+pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> ControlFlow<Action> {
     let regs = arca.registers();
     let num = regs[Register::RAX];
     let args = [
@@ -30,17 +37,13 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_drop => sys_drop(args, arca),
         arcane::__NR_clone => sys_clone(args, arca),
 
-        arcane::__NR_exit => sys_exit(args, arca)?,
+        arcane::__NR_exit => sys_exit(args, arca).map_break(Action::Return)?,
         arcane::__NR_get_argument => {
             if let Some(front) = argv.pop_front() {
                 arca.descriptors_mut().insert(front)
             } else {
                 arca.registers_mut()[Register::RAX] = (-(arcane::__ERR_interrupted as i32)) as u64;
-                let arca = arca.take();
-                let argv = core::mem::take(argv);
-                return ControlFlow::Break(Value::Function(Function::from_inner(
-                    internal::Function::arcane_with_args(arca, argv),
-                )));
+                return ControlFlow::Break(Action::Suspend);
             }
         }
         arcane::__NR_length => sys_len(args, arca),
@@ -56,6 +59,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_create_page => sys_create_page(args, arca),
         arcane::__NR_create_table => sys_create_table(args, arca),
         arcane::__NR_create_function => sys_create_function(args, arca),
+        arcane::__NR_build => sys_build(args, arca)?,
 
         arcane::__NR_apply => sys_apply(args, arca),
         // arcane::__NR_force => sys_force(args, arca),
@@ -67,7 +71,7 @@ pub fn handle_syscall(arca: &mut LoadedArca, argv: &mut VecDeque<Value>) -> Cont
         arcane::__NR_call_with_current_continuation => {
             sys_call_with_current_continuation(args, arca)?
         }
-        arcane::__NR_get_continuation => sys_get_continuation(args, arca),
+        arcane::__NR_get_continuation => return ControlFlow::Break(Action::Capture),
 
         arcane::__NR_debug_show => sys_show(args, arca),
         arcane::__NR_debug_log => sys_log(args, arca),
@@ -126,7 +130,7 @@ pub fn sys_len(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         Value::Table(table) => table.len(),
         _ => return Err(SyscallError::BadType),
     };
-    copy_kernel_to_user(ptr, &len.to_ne_bytes())?;
+    copy_kernel_to_user(arca.cpu_mut(), ptr, &len.to_ne_bytes())?;
     Ok(0)
 }
 
@@ -164,7 +168,7 @@ pub fn sys_set(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
                 todo!();
             };
             let entry = write_entry(arca, entry);
-            copy_kernel_to_user(ptr, unsafe {
+            copy_kernel_to_user(arca.cpu_mut(), ptr, unsafe {
                 &*(&entry as *const arcane::arca_entry
                     as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
             })?;
@@ -187,7 +191,7 @@ pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             let ptr = args[2] as usize;
             let entry = table.get(inner_idx)?;
             let entry = write_entry(arca, entry);
-            copy_kernel_to_user(ptr, unsafe {
+            copy_kernel_to_user(arca.cpu_mut(), ptr, unsafe {
                 &*(&entry as *const arcane::arca_entry
                     as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
             })?;
@@ -199,11 +203,12 @@ pub fn sys_get(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 
 pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let idx = args[0] as usize;
-    match arca.descriptors_mut().get_mut(idx)? {
+    let (descriptors, cpu) = arca.descriptors_and_cpu();
+    match descriptors.get_mut(idx)? {
         Value::Word(word) => {
             let ptr = args[1] as usize;
             let word = word.read();
-            copy_kernel_to_user(ptr, &word.to_ne_bytes())?;
+            copy_kernel_to_user(cpu, ptr, &word.to_ne_bytes())?;
             Ok(8)
         }
         Value::Blob(blob) => {
@@ -211,7 +216,7 @@ pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             let ptr = args[2] as usize;
             let len = args[3] as usize;
             let len = core::cmp::min(len, blob.len() - offset);
-            copy_kernel_to_user(ptr, &blob.inner()[offset..offset + len])?;
+            copy_kernel_to_user(cpu, ptr, &blob.inner()[offset..offset + len])?;
             Ok(len)
         }
         Value::Page(page) => {
@@ -219,7 +224,7 @@ pub fn sys_read(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
             let ptr = args[2] as usize;
             let len = args[3] as usize;
             let len = core::cmp::min(len, page.len() - offset);
-            copy_kernel_to_user(ptr, &page.inner()[offset..offset + len])?;
+            copy_kernel_to_user(cpu, ptr, &page.inner()[offset..offset + len])?;
             Ok(len)
         }
         Value::Function(_) => todo!(),
@@ -274,10 +279,8 @@ pub fn sys_create_word(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_create_blob(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let ptr = args[0] as usize;
     let len = args[1] as usize;
-    let mut buffer = Box::new_uninit_slice(len);
-    let buffer = copy_user_to_kernel(&mut buffer, ptr)?;
-    arca.descriptors_mut()
-        .insert(Value::Blob(Blob::new(buffer)))
+    let blob = copy_blob_from_user(ptr, len)?;
+    arca.descriptors_mut().insert(blob.into())
 }
 
 pub fn sys_create_tuple(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -304,6 +307,97 @@ pub fn sys_create_function(args: [u64; 6], arca: &mut LoadedArca) -> Result<usiz
     let data = arca.descriptors_mut().take(data)?;
     let result = Function::new(data)?;
     arca.descriptors_mut().insert(result.into())
+}
+
+enum Built {
+    Value(Value),
+    Call(Function),
+}
+
+pub fn sys_build(args: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Action, Result<usize>> {
+    match build(args, arca) {
+        Ok(Built::Value(value)) => ControlFlow::Continue(arca.descriptors_mut().insert(value)),
+        Ok(Built::Call(function)) => ControlFlow::Break(Action::Call(function)),
+        Err(error) => ControlFlow::Continue(Err(error)),
+    }
+}
+
+fn build(args: [u64; 6], arca: &mut LoadedArca) -> Result<Built> {
+    let ptr = args[0] as usize;
+    let count = args[1] as usize;
+    if count == 0 || count > 4096 {
+        return Err(SyscallError::BadArgument);
+    }
+    let bytes = count
+        .checked_mul(core::mem::size_of::<arcane::arca_build_step>())
+        .ok_or(SyscallError::BadArgument)?;
+    let mut instructions = vec![0u8; bytes];
+    copy_user_to_kernel_buf(&mut instructions, ptr)?;
+    let mut stack: Vec<Value> = Vec::new();
+    for (index, chunk) in instructions
+        .as_chunks::<{ core::mem::size_of::<arcane::arca_build_step>() }>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        let op = u64::from_ne_bytes(chunk[0..8].try_into().unwrap());
+        let value = u64::from_ne_bytes(chunk[8..16].try_into().unwrap());
+        let size = u64::from_ne_bytes(chunk[16..24].try_into().unwrap());
+        if op == u64::from(arcane::ARCA_BUILD_CALL) {
+            if index + 1 != count || stack.len() != 1 {
+                return Err(SyscallError::BadArgument);
+            }
+            let function = stack
+                .pop()
+                .unwrap()
+                .try_into()
+                .map_err(|_| SyscallError::BadType)?;
+            return Ok(Built::Call(function));
+        }
+        let next: Value = match op as u32 {
+            arcane::ARCA_BUILD_TAKE if op == u64::from(arcane::ARCA_BUILD_TAKE) => {
+                arca.descriptors_mut().take(value as usize)?
+            }
+            arcane::ARCA_BUILD_CLONE if op == u64::from(arcane::ARCA_BUILD_CLONE) => {
+                arca.descriptors().get(value as usize)?.clone()
+            }
+            arcane::ARCA_BUILD_WORD if op == u64::from(arcane::ARCA_BUILD_WORD) => {
+                Word::new(value).into()
+            }
+            arcane::ARCA_BUILD_BLOB if op == u64::from(arcane::ARCA_BUILD_BLOB) => {
+                copy_blob_from_user(value as usize, size as usize)?.into()
+            }
+            arcane::ARCA_BUILD_TUPLE if op == u64::from(arcane::ARCA_BUILD_TUPLE) => {
+                let count = size as usize;
+                if count > stack.len() {
+                    return Err(SyscallError::BadArgument);
+                }
+                let fields = stack.split_off(stack.len() - count);
+                Tuple::from_inner(internal::Tuple::new(fields)).into()
+            }
+            arcane::ARCA_BUILD_FUNCTION if op == u64::from(arcane::ARCA_BUILD_FUNCTION) => {
+                let data = stack.pop().ok_or(SyscallError::BadArgument)?;
+                Function::new(data)
+                    .map_err(|_| SyscallError::BadType)?
+                    .into()
+            }
+            arcane::ARCA_BUILD_APPLY if op == u64::from(arcane::ARCA_BUILD_APPLY) => {
+                let argument = stack.pop().ok_or(SyscallError::BadArgument)?;
+                let function: Function = stack
+                    .pop()
+                    .ok_or(SyscallError::BadArgument)?
+                    .try_into()
+                    .map_err(|_| SyscallError::BadType)?;
+                function.apply(argument).into()
+            }
+            _ => return Err(SyscallError::BadArgument),
+        };
+        stack.push(next);
+    }
+    if stack.len() != 1 {
+        return Err(SyscallError::BadArgument);
+    }
+    Ok(Built::Value(stack.pop().unwrap()))
 }
 
 pub fn sys_apply(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -366,7 +460,7 @@ pub fn sys_map(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         .map(addr, entry)
         .map_err(|_| SyscallError::BadArgument)?;
     let entry = write_entry(arca, entry);
-    copy_kernel_to_user(ptr, unsafe {
+    copy_kernel_to_user(arca.cpu_mut(), ptr, unsafe {
         &*(&entry as *const arcane::arca_entry
             as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
     })?;
@@ -394,7 +488,7 @@ pub fn sys_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
         .map(addr, entry)
         .map_err(|_| SyscallError::BadArgument)?;
     let entry = write_entry(arca, entry);
-    copy_kernel_to_user(ptr, unsafe {
+    copy_kernel_to_user(arca.cpu_mut(), ptr, unsafe {
         &*(&entry as *const arcane::arca_entry
             as *const [u8; core::mem::size_of::<arcane::arca_entry>()])
     })?;
@@ -448,53 +542,32 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
     let len = args[1] as usize;
     let mode = args[2] as u32;
 
-    if mode != arcane::__MODE_none && mode != arcane::__MODE_read_write {
-        unimplemented!("mode: {mode}");
+    if !matches!(
+        mode,
+        arcane::__MODE_none | arcane::__MODE_read_only | arcane::__MODE_read_write
+    ) {
+        return Err(SyscallError::BadArgument);
+    }
+
+    if mode != arcane::__MODE_none {
+        return arca
+            .cpu_mut()
+            .replace_zero_range(addr, len, mode == arcane::__MODE_read_write)
+            .map_err(|_| SyscallError::BadArgument);
     }
 
     let mut p = addr;
     while p < addr + len {
-        // Remaining number of bytes to mmap
         let remaining = addr + len - p;
-        if p.is_multiple_of(Page1GB::SIZE) && remaining >= Page1GB::SIZE {
-            if mode == arcane::__MODE_none {
-                let entry = Entry::Null(Page1GB::SIZE);
-                arca.cpu().map(p, entry).unwrap();
-            } else if mode == arcane::__MODE_read_write {
-                let page = Page::new(Page1GB::SIZE);
-                // TODO: handle failure
-                let entry = Entry::RWPage(page);
-                arca.cpu().map(p, entry).unwrap();
-            }
-            p += Page1GB::SIZE;
-            continue;
-        }
-        if p.is_multiple_of(Page2MB::SIZE) && remaining >= Page2MB::SIZE {
-            if mode == arcane::__MODE_none {
-                let entry = Entry::Null(Page2MB::SIZE);
-                arca.cpu().map(p, entry).unwrap();
-            } else if mode == arcane::__MODE_read_write {
-                let page = Page::new(Page2MB::SIZE);
-                // TODO: handle failure
-                let entry = Entry::RWPage(page);
-                arca.cpu().map(p, entry).unwrap();
-            }
-            p += Page2MB::SIZE;
-            continue;
-        }
-        if p.is_multiple_of(Page4KB::SIZE) {
-            if mode == arcane::__MODE_none {
-                let entry = Entry::Null(Page4KB::SIZE);
-                arca.cpu().map(p, entry).unwrap();
-            } else if mode == arcane::__MODE_read_write {
-                let page = Page::new(Page4KB::SIZE);
-                let entry = Entry::RWPage(page);
-                arca.cpu().map(p, entry).unwrap();
-            }
-            p += Page4KB::SIZE;
-            continue;
-        }
-        panic!("unaligned mmap or bad size: {p:#x}+{len:#x}");
+        let span = [Page1GB::SIZE, Page2MB::SIZE, Page4KB::SIZE]
+            .iter()
+            .copied()
+            .find(|span| p.is_multiple_of(*span) && (*span <= remaining || *span == Page4KB::SIZE))
+            .ok_or(SyscallError::BadArgument)?;
+        arca.cpu()
+            .map(p, Entry::Null(span))
+            .map_err(|_| SyscallError::BadArgument)?;
+        p += span;
     }
 
     let size_mapped = p - addr;
@@ -505,7 +578,7 @@ pub fn sys_compat_mmap(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
 pub fn sys_call_with_current_continuation(
     args: [u64; 6],
     arca: &mut LoadedArca,
-) -> ControlFlow<Value, Result<usize>> {
+) -> ControlFlow<Action, Result<usize>> {
     let func = args[0] as usize;
     let func = match arca.descriptors_mut().take(func) {
         Ok(x) => x,
@@ -514,25 +587,7 @@ pub fn sys_call_with_current_continuation(
     let Ok(func) = Function::try_from(func) else {
         return ControlFlow::Continue(Err(SyscallError::BadType));
     };
-    let k: Value = Function::from_inner(internal::Function::arcane_with_args(
-        arca.take(),
-        Default::default(),
-    ))
-    .into();
-    ControlFlow::Break(func.apply(k).into())
-}
-
-pub fn sys_get_continuation(_: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
-    let mut unloaded = arca.take();
-    let mut new = unloaded.clone();
-    new.registers_mut()[Register::RAX] = -(arcane::__ERR_interrupted as i64) as u64;
-    let k: Value = Function::from_inner(internal::Function::arcane_with_args(
-        new,
-        Default::default(),
-    ))
-    .into();
-    arca.swap(&mut unloaded);
-    arca.descriptors_mut().insert(k)
+    ControlFlow::Break(Action::Call(func))
 }
 
 pub fn sys_show(args: [u64; 6], arca: &mut LoadedArca) -> Result<usize> {
@@ -577,12 +632,20 @@ pub fn sys_log_int(args: [u64; 6], _: &mut LoadedArca) -> Result<usize> {
     Ok(0)
 }
 
-fn copy_kernel_to_user(dst: usize, src: &[u8]) -> Result<()> {
-    if crate::vm::copy_kernel_to_user(dst, src) {
+fn copy_kernel_to_user(cpu: &mut Cpu, dst: usize, src: &[u8]) -> Result<()> {
+    if crate::vm::copy_kernel_to_user(cpu, dst, src) {
         Ok(())
     } else {
         Err(SyscallError::BadArgument)
     }
+}
+
+fn copy_blob_from_user(ptr: usize, len: usize) -> Result<Blob> {
+    let mut buffer = Box::new_uninit_slice(len);
+    copy_user_to_kernel(&mut buffer, ptr)?;
+    // A successful copy initializes the entire buffer.
+    let buffer = unsafe { buffer.assume_init() };
+    Ok(Blob::from_inner(internal::Blob::new(buffer)))
 }
 
 fn copy_user_to_kernel(dst: &mut [MaybeUninit<u8>], src: usize) -> Result<&mut [u8]> {
@@ -678,6 +741,61 @@ impl From<crate::types::Error> for SyscallError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mprotect_writable_leaf_preserves_readonly_siblings() {
+        let address = 1 << 30;
+        let mut table = Table::new(1 << 21);
+        for (offset, value) in [(0, 0x29), (4096, 0x37)] {
+            let mut page = Page::new(4096);
+            page.write(0, &[value]);
+            assert!(table.map(offset, Entry::RWPage(page)).is_ok());
+        }
+        let mut original = Arca::new();
+        assert!(
+            original
+                .mappings_mut()
+                .map(address, Entry::ROTable(table))
+                .is_ok()
+        );
+        let mut cpu = CPU.borrow_mut();
+        let mut loaded = original.clone().load(&mut cpu);
+        for offset in [0, 4096] {
+            let mut byte = [MaybeUninit::uninit()];
+            assert!(crate::vm::copy_user_to_kernel(&mut byte, address + offset).is_some());
+        }
+        assert_eq!(
+            sys_mprotect(
+                [address as u64, arcane::__MODE_read_write as u64, 0, 0, 0, 0],
+                &mut loaded,
+            ),
+            Ok(0)
+        );
+        assert!(crate::vm::copy_kernel_to_user(
+            loaded.cpu_mut(),
+            address,
+            &[0x5a]
+        ));
+        assert!(!crate::vm::copy_kernel_to_user(
+            loaded.cpu_mut(),
+            address + 4096,
+            &[0x44]
+        ));
+        let updated = loaded.unload();
+        for (mapping, offset, expected) in [
+            (&updated, 0, 0x5a),
+            (&updated, 4096, 0x37),
+            (&original, 0, 0x29),
+            (&original, 4096, 0x37),
+        ] {
+            let mut byte = [0];
+            assert_eq!(
+                mapping.mappings().inner().read(address + offset, &mut byte),
+                1
+            );
+            assert_eq!(byte, [expected]);
+        }
+    }
+
     // Verifies memory mapping rounds up to the nearest 4KB page without over allocation
     #[test]
     fn test_mmap_fits_request() {
@@ -689,8 +807,15 @@ mod tests {
         let mut arca = loaded_arca.unload();
         let mappings = arca.mappings_mut();
 
-        assert_eq!(mappings.unmap(0).unwrap().len(), Page2MB::SIZE);
-        assert_eq!(mappings.unmap(Page2MB::SIZE).unwrap().len(), Page4KB::SIZE);
+        for offset in (0..len).step_by(Page4KB::SIZE) {
+            let Entry::RWPage(page) = mappings.unmap(offset).unwrap() else {
+                panic!("expected writable page");
+            };
+            assert_eq!(page.len(), Page4KB::SIZE);
+            let mut byte = [1];
+            assert_eq!(page.read(0, &mut byte), 1);
+            assert_eq!(byte, [0]);
+        }
         assert!(matches!(mappings.unmap(len), Some(Entry::Null(_))));
     }
 }

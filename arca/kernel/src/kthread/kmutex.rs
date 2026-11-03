@@ -1,5 +1,5 @@
 use super::KThread;
-use alloc::boxed::Box;
+use alloc::{boxed::Box, collections::VecDeque};
 use common::util::spinlock::SpinLock;
 use core::{
     cell::UnsafeCell,
@@ -7,10 +7,13 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Most critical sections are far shorter than putting a thread to sleep and waking it.
+const SPIN_CYCLES: u64 = 1 << 15;
+
 #[derive(Debug, Default)]
 pub struct KMutex<T: ?Sized> {
     lock: AtomicBool,
-    waiters: SpinLock<Option<Box<KThread>>>,
+    waiters: SpinLock<VecDeque<Box<KThread>>>,
     data: UnsafeCell<T>,
 }
 
@@ -20,6 +23,10 @@ pub struct KMutexGuard<'a, T: ?Sized> {
     data: &'a mut T,
 }
 
+fn cycles() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
 impl<T: ?Sized> KMutex<T> {
     pub const fn new(data: T) -> KMutex<T>
     where
@@ -27,7 +34,7 @@ impl<T: ?Sized> KMutex<T> {
     {
         KMutex {
             lock: AtomicBool::new(false),
-            waiters: SpinLock::new(None),
+            waiters: SpinLock::new(VecDeque::new()),
             data: UnsafeCell::new(data),
         }
     }
@@ -52,8 +59,22 @@ impl<T: ?Sized> KMutex<T> {
             if let Some(guard) = self.try_lock() {
                 return guard;
             }
-            super::wait_for_mutex(&self.lock, &self.waiters);
+            if !self.spin() {
+                super::wait_for_mutex(&self.lock, &self.waiters);
+            }
         }
+    }
+
+    /// Waits briefly for the holder to release the lock; returns whether it did.
+    fn spin(&self) -> bool {
+        let start = cycles();
+        while self.lock.load(Ordering::Relaxed) {
+            if cycles() - start > SPIN_CYCLES {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        true
     }
 
     pub fn get(&self) -> *mut T {
@@ -78,8 +99,7 @@ impl<T: ?Sized> Drop for KMutexGuard<'_, T> {
     fn drop(&mut self) {
         let mut waiters = self.lock.waiters.lock();
         self.lock.lock.store(false, Ordering::Release);
-        if let Some(mut thread) = waiters.take() {
-            *waiters = thread.next.take();
+        if let Some(thread) = waiters.pop_front() {
             drop(waiters);
             super::enqueue(thread);
         }

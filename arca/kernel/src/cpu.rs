@@ -260,6 +260,9 @@ unsafe extern "C" {
 
 impl Cpu {
     pub fn activate_address_space(&mut self, table: Table) {
+        if self.pml4.entry(0).is_some_and(|entry| entry.present()) {
+            drop(self.deactivate_address_space());
+        }
         match table {
             Table::Table2MB(table) => {
                 let mut pd = self.pd.take().unwrap_or_else(AugmentedPageTable::new);
@@ -284,60 +287,62 @@ impl Cpu {
         }
     }
 
-    pub fn swap_address_space(&mut self, new: &mut Table) {
-        // TODO: unnecessary TLB invalidation
-        unsafe {
-            let replacement = core::ptr::read(new);
-            core::ptr::write(new, self.deactivate_address_space());
-            self.activate_address_space(replacement);
-        }
-    }
-
     pub fn deactivate_address_space(&mut self) -> Table {
-        let AugmentedUnmappedPage::UniqueTable(mut pdpt) = self.pml4.unmap(0) else {
+        let AugmentedUnmappedPage::UniqueTable(mut pdpt) = self.pml4.entry_mut(0).unmap() else {
             todo!();
         };
-        if pdpt.len() > 1 {
+        if pdpt.len() != 1 || pdpt.offset() != 0 {
             return Table::Table512GB(pdpt.into());
         }
-        let offset = pdpt.offset();
-        let AugmentedUnmappedPage::UniqueTable(mut pd) = pdpt.unmap(offset) else {
-            todo!();
+        let mut pd = match pdpt.unmap(0) {
+            AugmentedUnmappedPage::UniqueTable(pd) => pd,
+            entry => {
+                pdpt.entry_mut(0).replace(entry);
+                return Table::Table512GB(pdpt.into());
+            }
         };
-        debug_assert!(pdpt.is_empty());
-        debug_assert!(self.pdpt.is_none());
         self.pdpt = Some(pdpt);
-        if pd.len() > 1 {
+        if pd.len() != 1 || pd.offset() != 0 {
             return Table::Table1GB(pd.into());
         }
-        let offset = pd.offset();
-        let AugmentedUnmappedPage::UniqueTable(pt) = pd.unmap(offset) else {
-            todo!();
+        let pt = match pd.unmap(0) {
+            AugmentedUnmappedPage::UniqueTable(pt) => pt,
+            entry => {
+                pd.entry_mut(0).replace(entry);
+                return Table::Table1GB(pd.into());
+            }
         };
-        debug_assert!(pd.is_empty());
-        debug_assert!(self.pd.is_none());
         self.pd = Some(pd);
-        if pt.len() > 1 {
-            return Table::Table2MB(pt.into());
-        }
-        Table::default()
+        Table::Table2MB(pt.into())
     }
 
     pub fn map(&mut self, address: usize, entry: Entry) -> Result<Entry, crate::types::Error> {
-        assert!(crate::vm::is_user(address));
+        let length = entry.len();
+        if length == 0 {
+            return Ok(entry);
+        }
+        if ![1 << 12, 1 << 21, 1 << 30].contains(&length)
+            || !address.is_multiple_of(length)
+            || address.checked_add(length).is_none_or(|end| end > 1 << 39)
+        {
+            return Err(crate::types::Error::MapError);
+        }
+
+        if !self.pml4.can_map(address, length) {
+            return Err(crate::types::Error::MapError);
+        }
+        let relaxed = matches!(&entry, arca::Entry::RWPage(_) | arca::Entry::RWTable(_))
+            && self.pml4.prepare_write_path(address, length);
 
         let i_512gb = (address >> 39) & 0x1ff;
         assert_eq!(i_512gb, 0);
 
         let pml4 = &mut self.pml4;
-        // TODO: check behavior when inserting unique into shared
         let pdpt = match pml4.entry_mut(i_512gb).unmap() {
-            AugmentedUnmappedPage::None => {
-                todo!("inserting into larger-than-1GB address space");
-                // AugmentedPageTable::new()
-            }
+            AugmentedUnmappedPage::None => AugmentedPageTable::new(),
             AugmentedUnmappedPage::UniqueTable(pt) => pt,
-            AugmentedUnmappedPage::SharedTable(pt) => RefCnt::into_unique(pt),
+            AugmentedUnmappedPage::SharedTable(pt)
+            | AugmentedUnmappedPage::CopyOnWriteTable(pt) => SharedPage::into_unique(pt),
             _ => todo!(),
         };
         let table = Table::from(CowPage::Unique(pdpt));
@@ -345,27 +350,108 @@ impl Cpu {
         let result = table.map(address, entry).map_err(|e| match e {
             arca::table::MapError::Runtime(e) => e,
             arca::table::MapError::MapExists => crate::types::Error::MapError,
-        })?;
+        });
         match table.into_inner() {
             Table::Table512GB(page) => pml4.entry_mut(i_512gb).chain_unique(page.unique()),
             _ => todo!(),
         };
-        unsafe {
-            core::arch::asm!("invlpg [{pg}]", pg=in(reg)address);
+        if relaxed {
+            self.flush_user_translations();
+        } else {
+            self.invalidate(address, length);
         }
-        Ok(result)
+        result
+    }
+
+    fn invalidate(&mut self, address: usize, length: usize) {
+        unsafe {
+            if length == 4096 {
+                core::arch::asm!("invlpg [{}]", in(reg) address);
+            } else {
+                self.flush_user_translations();
+            }
+        }
+    }
+
+    fn flush_user_translations(&mut self) {
+        unsafe { set_pt(ka2pa(Box::as_ptr(&self.pml4))) };
+    }
+
+    pub(crate) fn replace_zero_range(
+        &mut self,
+        address: usize,
+        length: usize,
+        writable: bool,
+    ) -> Result<usize, crate::types::Error> {
+        if length == 0 {
+            return Ok(0);
+        }
+        let length = length
+            .checked_next_multiple_of(4096)
+            .ok_or(crate::types::Error::MapError)?;
+        let end = address
+            .checked_add(length)
+            .filter(|end| *end <= 1 << 39)
+            .ok_or(crate::types::Error::MapError)?;
+        if !address.is_multiple_of(4096) || !self.pml4.can_replace_zero_range(address..end) {
+            return Err(crate::types::Error::MapError);
+        }
+        let page_table = ka2pa(Box::as_ptr(&self.pml4));
+        let mut retired = common::arrayvec::ArrayVec::<crate::paging::RetiredLeaf, 512>::new();
+        let changed = self
+            .pml4
+            .replace_zero_range(address..end, 0, writable, &mut |_, old| {
+                if !matches!(old, AugmentedUnmappedPage::None) {
+                    retired.push(old).unwrap();
+                    if retired.is_full() {
+                        // No user-memory access occurs during this walk.
+                        unsafe { set_pt(page_table) };
+                        retired.empty();
+                    }
+                }
+            });
+        if changed {
+            self.flush_user_translations();
+        } else if !retired.is_empty() {
+            self.invalidate(address, length);
+        }
+        drop(retired);
+        Ok(length)
+    }
+
+    pub(crate) fn resolve_cow(&mut self, address: usize) -> bool {
+        if !crate::vm::is_user(address) {
+            return false;
+        }
+        let root = ka2pa(Box::as_ptr(&self.pml4));
+        self.pml4.resolve_cow(address, &mut |all| unsafe {
+            if all {
+                set_pt(root);
+            } else {
+                core::arch::asm!("invlpg [{}]", in(reg) address);
+            }
+        })
     }
 
     /// # Safety
     /// An appropriate page table must have been set before calling this function.
     pub unsafe fn run(&mut self, registers: &mut RegisterFile) -> ExitReason {
-        let syscall_safe = registers[Register::RCX] == registers.rip
-            && registers[Register::R11] == registers.flags
-            && registers.mode == Mode::User;
-        if syscall_safe {
-            unsafe { syscall_call_user(registers).into() }
-        } else {
-            unsafe { isr_call_user(registers).into() }
+        loop {
+            let syscall_safe = registers[Register::RCX] == registers.rip
+                && registers[Register::R11] == registers.flags
+                && registers.mode == Mode::User;
+            let result: ExitReason = if syscall_safe {
+                unsafe { syscall_call_user(registers).into() }
+            } else {
+                unsafe { isr_call_user(registers).into() }
+            };
+            if let ExitReason::PageFault { addr, error } = result
+                && error == 7
+                && self.resolve_cow(addr)
+            {
+                continue;
+            }
+            return result;
         }
     }
 }

@@ -17,6 +17,21 @@ pub trait Runtime: Sized + core::fmt::Debug + Eq + PartialEq + Clone {
     fn create_tuple(len: usize) -> Tuple<Self>;
     fn create_page(len: usize) -> Page<Self>;
     fn create_table(len: usize) -> Table<Self>;
+    /// Creates a writable zero-filled mapping of 4 KiB, 2 MiB, or 1 GiB,
+    /// backed by 4 KiB data pages.
+    fn create_zeroed_entry(len: usize) -> Entry<Self> {
+        assert!([1 << 12, 1 << 21, 1 << 30].contains(&len));
+        if len == 4096 {
+            return Entry::RWPage(Self::create_page(len));
+        }
+        let mut table = Self::create_table(len);
+        for index in 0..512 {
+            table
+                .set(index, Self::create_zeroed_entry(len / 512))
+                .expect("zero-filled table entry");
+        }
+        Entry::RWTable(table)
+    }
     fn create_function(data: Value<Self>) -> Result<Function<Self>, Self::Error>;
 
     fn value_len(value: ValueRef<Self>) -> usize;

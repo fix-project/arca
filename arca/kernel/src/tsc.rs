@@ -33,7 +33,7 @@ sync_and_rdtsc:
     lfence
     rdtsc
     lfence
-    shr rdx, 32
+    shl rdx, 32
     or rax, rdx
     ret
 "
@@ -102,7 +102,7 @@ pub fn time(mut f: impl FnMut()) -> Duration {
         core::arch::x86_64::_mm_mfence();
     }
     let end = read_cycles();
-    cycles_to_duration(end - start)
+    cycles_to_duration(end.saturating_sub(start))
 }
 
 #[inline]

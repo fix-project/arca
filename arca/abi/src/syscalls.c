@@ -109,6 +109,10 @@ arcad arca_function_create(arcad data) {
   return syscall1(__NR_create_function, data);
 }
 
+arcad arca_build(const struct arca_build_step *steps, size_t count) {
+  return syscall2(__NR_build, steps, count);
+}
+
 arcad arca_word_read(arcad word, uint64_t *output) {
   return syscall2(__NR_read, word, output);
 }

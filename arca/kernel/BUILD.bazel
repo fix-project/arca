@@ -21,7 +21,7 @@ PROC_MACROS = [
     "@crates//:bitfield-struct",
 ]
 
-exports_files(["etc/memmap.ld"], visibility = ["//programs:__subpackages__", "//tests/kernel:__pkg__", "//fix/runtime:__pkg__"])
+exports_files(["etc/memmap.ld"], visibility = ["//programs:__subpackages__", "//tests/kernel:__pkg__", "//fix/runtime:__pkg__", "//arca/benchmarks:__pkg__", "//fix/benchmarks:__pkg__"])
 
 native_archive(
     name = "assembly",
@@ -58,6 +58,9 @@ kernel_test(
         "ARCA_CURRY_PROGRAM": "//programs/arca:curry_elf",
         "ARCA_MAP_PROGRAM": "//programs/arca:map_elf",
         "ARCA_SIMD_PROGRAM": "//tests/arca:simd_elf",
+        "ARCA_CONTINUATIONS": "//tests/arca:continuations_elf",
+        "ARCA_BUILDER": "//tests/arca:builder_elf",
+        "ARCA_ZEROED_REGIONS": "//tests/arca:zeroed_regions_elf",
     },
-    deps = DEPS,
+    deps = DEPS + ["@crates//:bytes"],
 )

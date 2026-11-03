@@ -484,7 +484,7 @@ mod tests {
                 .as_ref(),
             combination.as_handle().as_bytes()
         );
-        let function = common::elfloader::load_elf(elf).unwrap();
+        let function = common::elfloader::load_elf(elf.as_slice()).unwrap();
         let argument =
             kernel::prelude::Blob::new(Blob::literal(b"").unwrap().as_handle().into_bytes());
         let effect: kernel::prelude::Function =

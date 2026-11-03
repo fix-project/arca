@@ -16,14 +16,28 @@ pub const USER_MEMORY_LIMIT: usize = 0x00007fffffffffff;
 
 unsafe extern "C" {
     fn copy_user_to_kernel_asm(dst: *mut (), src: usize, len: usize) -> bool;
-    fn copy_kernel_to_user_asm(dst: usize, src: *const (), len: usize) -> bool;
+    fn copy_kernel_to_user_asm(dst: usize, src: *const (), len: usize) -> CopyResult;
 }
 
-pub(crate) fn copy_kernel_to_user(dst: usize, src: &[u8]) -> bool {
+#[repr(C)]
+struct CopyResult {
+    success: usize,
+    fault: usize,
+}
+
+pub(crate) fn copy_kernel_to_user(cpu: &mut crate::cpu::Cpu, dst: usize, src: &[u8]) -> bool {
     let len = core::mem::size_of_val(src);
     let src = src.as_ptr();
     if (len <= USER_MEMORY_LIMIT) && (dst <= (USER_MEMORY_LIMIT - len)) {
-        unsafe { copy_kernel_to_user_asm(dst, src as *const (), len) }
+        loop {
+            let result = unsafe { copy_kernel_to_user_asm(dst, src as *const (), len) };
+            if result.success != 0 {
+                return true;
+            }
+            if !cpu.resolve_cow(result.fault) {
+                return false;
+            }
+        }
     } else {
         false
     }

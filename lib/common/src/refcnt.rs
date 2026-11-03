@@ -81,13 +81,26 @@ impl<T: Clone> RefCnt<T> {
         unsafe { &mut *this.ptr }
     }
 
+    pub fn into_unique_retained(this: Self) -> (Box<T, BuddyAllocator>, Option<Self>) {
+        if Self::refcnt(&this).load(Ordering::SeqCst) == 1 {
+            assert_eq!(Self::refcnt(&this).swap(0, Ordering::SeqCst), 1);
+            let unique = unsafe { Box::from_raw_in(this.ptr, BuddyAllocator) };
+            core::mem::forget(this);
+            (unique, None)
+        } else {
+            let mut unique = Box::<T, _>::new_uninit_in(BuddyAllocator);
+            let unique = unsafe {
+                (*this.ptr).clone_to_uninit(unique.as_mut_ptr().cast());
+                unique.assume_init()
+            };
+            (unique, Some(this))
+        }
+    }
+
     pub fn into_unique(this: Self) -> Box<T, BuddyAllocator> {
-        let mut this = this;
-        Self::make_mut(&mut this);
-        assert_eq!(Self::refcnt(&this).swap(0, Ordering::SeqCst), 1);
-        let x = unsafe { Box::from_raw_in(this.ptr, BuddyAllocator) };
-        core::mem::forget(this);
-        x
+        let (unique, retained) = Self::into_unique_retained(this);
+        drop(retained);
+        unique
     }
 }
 
@@ -98,7 +111,6 @@ impl<T: ?Sized> Drop for RefCnt<T> {
         if decrement == 1 {
             unsafe {
                 let _ = Box::from_raw_in(self.ptr, BuddyAllocator);
-                assert_eq!(Self::refcnt(self).swap(0, Ordering::SeqCst), 0);
             }
         }
     }
@@ -162,6 +174,34 @@ mod tests {
         let z = y.clone();
         core::mem::drop(y);
         core::mem::drop(z);
+    }
+
+    #[test]
+    fn concurrent_allocation_and_final_drop() {
+        struct Count<'a>(&'a AtomicUsize, usize);
+        impl Drop for Count<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let dropped = &dropped;
+                scope.spawn(move || {
+                    for iteration in 0..512 {
+                        let expected = worker * 512 + iteration;
+                        let value: RefCnt<_> =
+                            Box::new_in(Count(dropped, expected), BuddyAllocator).into();
+                        let copy = value.clone();
+                        drop(value);
+                        assert_eq!(copy.1, expected);
+                    }
+                });
+            }
+        });
+        assert_eq!(dropped.load(Ordering::SeqCst), 4 * 512);
     }
 
     #[test]

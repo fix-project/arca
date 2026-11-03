@@ -49,6 +49,22 @@ impl Default for Table {
 }
 
 impl Table {
+    pub fn page(&self, offset: usize) -> Option<(Page, usize)> {
+        match self {
+            Self::Table2MB(table) => table.page(offset),
+            Self::Table1GB(table) => table.page(offset),
+            Self::Table512GB(table) => table.page(offset),
+        }
+    }
+
+    pub fn read(&self, offset: usize, bytes: &mut [u8]) -> usize {
+        match self {
+            Table::Table2MB(table) => table.read(offset, bytes),
+            Table::Table1GB(table) => table.read(offset, bytes),
+            Table::Table512GB(table) => table.read(offset, bytes),
+        }
+    }
+
     pub fn set(&mut self, index: usize, entry: Entry) -> Result<Entry, Entry> {
         Ok(match self {
             Table::Table2MB(table) => table.entry_mut(index).replace(entry.try_into()?).into(),
@@ -83,6 +99,42 @@ impl Table {
     }
 }
 
+trait PageAt {
+    fn page(&self, offset: usize) -> Option<(Page, usize)>;
+}
+
+impl PageAt for AugmentedPageTable<Impossible> {
+    fn page(&self, _: usize) -> Option<(Page, usize)> {
+        None
+    }
+}
+
+impl<P: HardwarePage, T: HardwarePageTable> PageAt
+    for AugmentedPageTable<[crate::paging::Entry<P, T>; 512]>
+where
+    [crate::paging::Entry<P, T>; 512]: HardwarePageTable<Entry = crate::paging::Entry<P, T>>,
+    crate::paging::Entry<P, T>: HardwarePageTableEntry<Page = P, Table = T>,
+    Page: From<CowPage<P>>,
+    AugmentedPageTable<T>: PageAt,
+{
+    fn page(&self, offset: usize) -> Option<(Page, usize)> {
+        let span = <[crate::paging::Entry<P, T>; 512] as HardwarePageTable>::SIZE / 512;
+        let entry = self.entry(offset / span)?;
+        let offset = offset % span;
+        if let Some(table) = entry.table() {
+            return table.page(offset);
+        }
+        let page = match entry.clone().unmap() {
+            AugmentedUnmappedPage::UniquePage(page) => CowPage::Unique(page),
+            AugmentedUnmappedPage::SharedPage(page) | AugmentedUnmappedPage::CopyOnWrite(page) => {
+                CowPage::Shared(page)
+            }
+            _ => return None,
+        };
+        Some((page.into(), offset))
+    }
+}
+
 impl<P: HardwarePage, T: HardwarePageTable> From<AugmentedUnmappedPage<P, T>> for Entry
 where
     Page: From<CowPage<P>>,
@@ -94,6 +146,9 @@ where
             AugmentedUnmappedPage::UniquePage(page) => {
                 arca::Entry::RWPage(arca::Page::from_inner(CowPage::Unique(page).into()))
             }
+            AugmentedUnmappedPage::CopyOnWrite(page) => {
+                arca::Entry::RWPage(arca::Page::from_inner(CowPage::Shared(page).into()))
+            }
             AugmentedUnmappedPage::SharedPage(page) => {
                 arca::Entry::ROPage(arca::Page::from_inner(CowPage::Shared(page).into()))
             }
@@ -101,8 +156,11 @@ where
             AugmentedUnmappedPage::UniqueTable(page) => {
                 arca::Entry::RWTable(arca::Table::from_inner(CowPage::Unique(page).into()))
             }
-            AugmentedUnmappedPage::SharedTable(page) => {
+            AugmentedUnmappedPage::CopyOnWriteTable(page) => {
                 arca::Entry::RWTable(arca::Table::from_inner(CowPage::Shared(page).into()))
+            }
+            AugmentedUnmappedPage::SharedTable(page) => {
+                arca::Entry::ROTable(arca::Table::from_inner(CowPage::Shared(page).into()))
             }
         }
     }
@@ -125,13 +183,16 @@ where
                     .map_err(|x| arca::Entry::ROPage(arca::Page::from_inner(x)))?;
                 page.shared()
             }),
-            arca::Entry::RWPage(page) => AugmentedUnmappedPage::UniquePage({
+            arca::Entry::RWPage(page) => {
                 let page: CowPage<P> = page
                     .into_inner()
                     .try_into()
                     .map_err(|x| arca::Entry::RWPage(arca::Page::from_inner(x)))?;
-                page.unique()
-            }),
+                match page {
+                    CowPage::Unique(page) => AugmentedUnmappedPage::UniquePage(page),
+                    CowPage::Shared(page) => AugmentedUnmappedPage::CopyOnWrite(page),
+                }
+            }
             arca::Entry::ROTable(table) => AugmentedUnmappedPage::SharedTable({
                 let table: CowPage<AugmentedPageTable<T>> = table
                     .into_inner()
@@ -139,13 +200,16 @@ where
                     .map_err(|x| arca::Entry::ROTable(arca::Table::from_inner(x)))?;
                 table.shared()
             }),
-            arca::Entry::RWTable(table) => AugmentedUnmappedPage::UniqueTable({
+            arca::Entry::RWTable(table) => {
                 let table: CowPage<AugmentedPageTable<T>> = table
                     .into_inner()
                     .try_into()
                     .map_err(|x| arca::Entry::RWTable(arca::Table::from_inner(x)))?;
-                table.unique()
-            }),
+                match table {
+                    CowPage::Unique(table) => AugmentedUnmappedPage::UniqueTable(table),
+                    CowPage::Shared(table) => AugmentedUnmappedPage::CopyOnWriteTable(table),
+                }
+            }
         })
     }
 }
@@ -218,6 +282,27 @@ impl TryFrom<Table> for CowPage<Table512GB> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_nested_mappings() {
+        let mut table = arca::Table::<Runtime>::new(1 << 39);
+        for (address, value) in [(0x3ff000, 7), (0x400000, 9)] {
+            let mut page = arca::Page::<Runtime>::new(4096);
+            assert_eq!(page.write(0, &[value; 4096]), 4096);
+            assert!(table.map(address, Entry::RWPage(page)).is_ok());
+        }
+        let mut bytes = [0; 64];
+        assert_eq!(table.inner().read(0x3fffe0, &mut bytes), 64);
+        assert_eq!(&bytes[..32], &[7; 32]);
+        assert_eq!(&bytes[32..], &[9; 32]);
+        assert_eq!(table.inner().read(0x400fe0, &mut bytes), 32);
+        assert_eq!(table.inner().read(0x401000, &mut bytes), 0);
+        assert_eq!(table.inner().read(1 << 39, &mut bytes), 0);
+        table = arca::Table::from_inner(table.into_inner().shared());
+        assert_eq!(table.inner().read(0x3fffe0, &mut bytes), 64);
+        assert_eq!(&bytes[..32], &[7; 32]);
+        assert_eq!(&bytes[32..], &[9; 32]);
+    }
 
     /// Verifies table size selection at tier boundaries (2MB, 1GB).
     #[test]

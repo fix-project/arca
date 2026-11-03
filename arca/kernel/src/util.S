@@ -48,7 +48,7 @@ copy_user_to_kernel_asm:
   // rdi: dst
   // rsi: src
   // rdx: len
-  // return: 1 if successful, 0 if error
+  // rax: success; rdx: fault address on failure
 
   cli
 
@@ -65,6 +65,10 @@ copy_user_to_kernel_asm:
   mov rax, 1
 
 1:
+  test rax, rax
+  jnz 2f
+  mov rdx, cr2
+2:
   clac
   mov qword ptr gs:[SEGFAULT_ESCAPE_ADDR], 0
 

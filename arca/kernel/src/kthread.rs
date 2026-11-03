@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use common::util::{initcell::LazyLock, spinlock::SpinLock};
 use crossbeam_queue::SegQueue;
 
@@ -47,10 +47,10 @@ static IDLE: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 #[derive(Debug)]
 struct MutexWait {
     locked: *const AtomicBool,
-    waiters: *const SpinLock<Option<Box<KThread>>>,
+    waiters: *const SpinLock<VecDeque<Box<KThread>>>,
 }
 
-fn wait_for_mutex(locked: &AtomicBool, waiters: &SpinLock<Option<Box<KThread>>>) {
+fn wait_for_mutex(locked: &AtomicBool, waiters: &SpinLock<VecDeque<Box<KThread>>>) {
     {
         let mut current = CURRENT_THREAD.borrow_mut();
         current.mutex_wait = Some(MutexWait { locked, waiters });
@@ -267,8 +267,7 @@ pub(crate) unsafe fn run_scheduler() {
         } else if let Some(wait) = next.mutex_wait.take() {
             let mut waiters = unsafe { &*wait.waiters }.lock();
             if unsafe { &*wait.locked }.load(Ordering::Acquire) {
-                next.next = waiters.take();
-                *waiters = Some(next);
+                waiters.push_back(next);
             } else {
                 enqueue(next);
             }

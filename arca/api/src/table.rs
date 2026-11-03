@@ -34,44 +34,61 @@ impl<R: Runtime> Table<R> {
     // Given the heterogeneity of page sizes, handling overlapping map requests involves
     // a bunch of cases (e.g. attempt to map a 4 KiB page in the middle of an existing 2 MiB page, etc.)
     pub fn map(&mut self, address: usize, entry: Entry<R>) -> Result<Entry<R>, MapError<R>> {
-        use MapError::*;
         if entry.is_empty() {
             return Ok(entry);
         }
-        let result = if address + entry.len() > self.len() {
-            try_replace_with(self, |this: Self| -> Result<Self, R::Error> {
-                let mut embiggened = R::create_table(this.len() * 512);
-                embiggened.set(0, Entry::RWTable(this))?;
-                Ok(embiggened)
-            })
-            .map_err(Runtime)?;
-            self.map(address, entry)?
-        } else if entry.len() == self.len() / 512 {
-            let shift = entry.len().ilog2();
-            let index = address >> shift;
-            assert!(index < 512);
-            self.set(index, entry).map_err(Runtime)?
-        } else {
-            let shift = (self.len() / 512).ilog2();
-            let index = (address >> shift) & 0x1ff;
-            let offset = address & !(0x1ff << shift);
+        self.update(address, entry.len(), |old| (entry, old))
+    }
 
-            let mut smaller = match self.set(index, Entry::Null(0)).map_err(Runtime)? {
-                Entry::ROTable(table) => table,
-                Entry::RWTable(table) => table,
-                Entry::Null(_) => R::create_table(self.len() / 512),
-                Entry::ROPage(_) | Entry::RWPage(_) => return Err(MapExists),
-            };
-            assert!(self.len() > smaller.len());
-            let replaced = smaller.map(offset, entry)?;
-            self.set(index, Entry::RWTable(smaller)).map_err(Runtime)?;
-            replaced
+    /// Transforms an owned entry of `length` bytes at an aligned address.
+    pub fn update<T>(
+        &mut self,
+        address: usize,
+        length: usize,
+        transform: impl FnOnce(Entry<R>) -> (Entry<R>, T),
+    ) -> Result<T, MapError<R>> {
+        use MapError::*;
+        assert!(length.is_power_of_two() && length >= 4096);
+        assert!(address.is_multiple_of(length));
+        let end = address.checked_add(length).expect("mapping range overflow");
+        if end > self.len() || length > self.len() / 512 {
+            let larger = R::create_table(self.len() * 512);
+            let smaller = core::mem::replace(self, larger);
+            self.set(0, Entry::RWTable(smaller)).map_err(Runtime)?;
+            return self.update(address, length, transform);
+        }
+        let span = self.len() / 512;
+        let index = address / span;
+        if length == span {
+            let old = self.take(index).map_err(Runtime)?;
+            let (replacement, result) = transform(old);
+            assert!(replacement.is_empty() || replacement.len() == length);
+            self.set(index, replacement).map_err(Runtime)?;
+            return Ok(result);
+        }
+        assert!(length < span);
+        let entry = self.take(index).map_err(Runtime)?;
+        let (mut smaller, readonly) = match entry {
+            Entry::ROTable(table) => (table, true),
+            Entry::RWTable(table) => (table, false),
+            Entry::Null(_) => (R::create_table(span), false),
+            entry => {
+                self.set(index, entry).map_err(Runtime)?;
+                return Err(MapExists);
+            }
         };
-        Ok(result)
+        let result = smaller.update(address % span, length, transform);
+        let restored = if readonly {
+            Entry::ROTable(smaller)
+        } else {
+            Entry::RWTable(smaller)
+        };
+        self.set(index, restored).map_err(Runtime)?;
+        result
     }
 
     pub fn unmap(&mut self, address: usize) -> Option<Entry<R>> {
-        if address > self.len() {
+        if address >= self.len() {
             None
         } else {
             let shift = (self.len() / 512).ilog2();
@@ -106,15 +123,6 @@ impl<R: Runtime> Table<R> {
     #[cfg(feature = "alloc")]
     pub fn with_ref<T>(&self, f: impl FnOnce(&[Entry<R>]) -> T) -> T {
         R::with_table_as_ref(self, f)
-    }
-}
-
-fn try_replace_with<T, E>(x: &mut T, f: impl FnOnce(T) -> Result<T, E>) -> Result<(), E> {
-    unsafe {
-        let old = core::ptr::read(x);
-        let new = f(old)?;
-        core::ptr::write(x, new);
-        Ok(())
     }
 }
 

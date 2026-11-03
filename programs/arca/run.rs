@@ -39,7 +39,9 @@ fn parse_value(spec: &str) -> Value {
             }
             items.into()
         }
-        "elf" => elfloader::load_elf(&read_file(value)).unwrap().into(),
+        "elf" => elfloader::load_elf(read_file(value).as_slice())
+            .unwrap()
+            .into(),
         _ => panic!("unknown Arca argument: {spec}"),
     }
 }

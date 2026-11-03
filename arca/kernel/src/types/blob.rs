@@ -30,7 +30,7 @@ impl Blob {
     pub fn into_inner(self) -> Box<[u8]> {
         match self {
             Blob::Raw(items) => items,
-            Blob::String(s) => s.as_bytes().into(),
+            Blob::String(s) => s.into_bytes().into(),
         }
     }
 

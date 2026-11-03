@@ -8,19 +8,27 @@ use super::arca::Arca;
 use crate::{
     cpu::ExitReason,
     prelude::*,
-    types::{function::syscall::handle_syscall, internal},
+    types::{
+        function::syscall::{Action, handle_syscall},
+        internal,
+    },
     xstate::XState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
+    data: Box<FunctionData>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FunctionData {
     defn: Definition,
     args: VecDeque<Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Definition {
-    Symbolic(Box<Value>),
+    Symbolic(Value),
     Arcane(Arca),
 }
 
@@ -29,9 +37,11 @@ impl Function {
         let Value::Tuple(mut x) = value else {
             return None;
         };
-        let t = x.take(0);
-        let arca = t == Value::Blob("Arcane".into());
-        let symbolic = t == Value::Blob("Symbolic".into());
+        let Value::Blob(tag) = x.take(0) else {
+            return None;
+        };
+        let arca = &*tag == b"Arcane";
+        let symbolic = &*tag == b"Symbolic";
         let data = x.take(1);
         let args = if x.len() < 3 {
             Tuple::new(0)
@@ -99,12 +109,19 @@ impl Function {
         Some(value)
     }
 
+    pub fn into_symbolic(self) -> Option<(Value, VecDeque<Value>)> {
+        match self.data.defn {
+            Definition::Symbolic(symbol) => Some((symbol, self.data.args)),
+            Definition::Arcane(_) => None,
+        }
+    }
+
     pub fn read(self) -> Value {
-        let args = Vec::from_iter(self.args);
+        let args = Vec::from_iter(self.data.args);
         let args = Tuple::from_inner(internal::Tuple::new(args));
-        match self.defn {
+        match self.data.defn {
             Definition::Symbolic(value) => {
-                Value::Tuple(Tuple::from((Blob::from("Symbolic"), *value, args)))
+                Value::Tuple(Tuple::from((Blob::from("Symbolic"), value, args)))
             }
             Definition::Arcane(arca) => Value::Tuple(Tuple::from((
                 Blob::from("Arcane"),
@@ -129,20 +146,24 @@ impl Function {
 
     pub fn arcane_with_args(arca: Arca, args: VecDeque<Value>) -> Self {
         Self {
-            defn: Definition::Arcane(arca),
-            args,
+            data: Box::new(FunctionData {
+                defn: Definition::Arcane(arca),
+                args,
+            }),
         }
     }
 
     pub fn symbolic_with_args(symbol: impl Into<Value>, args: VecDeque<Value>) -> Self {
         Self {
-            defn: Definition::Symbolic(Box::new(symbol.into())),
-            args,
+            data: Box::new(FunctionData {
+                defn: Definition::Symbolic(symbol.into()),
+                args,
+            }),
         }
     }
 
     pub fn apply(&mut self, arg: impl Into<Value>) {
-        self.args.push_back(arg.into());
+        self.data.args.push_back(arg.into());
     }
 
     pub fn force(self) -> Value {
@@ -151,7 +172,7 @@ impl Function {
     }
 
     pub fn force_on(mut self, cpu: &mut Cpu) -> Value {
-        match self.defn {
+        match self.data.defn {
             Definition::Symbolic(_) => Value::Function(arca::Function::from_inner(self)),
             Definition::Arcane(arca) => {
                 let mut arca = arca.load(cpu);
@@ -180,8 +201,32 @@ impl Function {
                             ));
                         }
                     }
-                    if let ControlFlow::Break(result) = handle_syscall(&mut arca, &mut self.args) {
-                        return result;
+                    match handle_syscall(&mut arca, &mut self.data.args) {
+                        ControlFlow::Continue(()) => {}
+                        ControlFlow::Break(Action::Return(value)) => return value,
+                        ControlFlow::Break(Action::Suspend) => {
+                            return Value::Function(arca::Function::from_inner(
+                                Function::arcane_with_args(arca.unload(), self.data.args),
+                            ));
+                        }
+                        ControlFlow::Break(Action::Call(function)) => {
+                            let continuation = arca::Function::from_inner(
+                                Function::arcane_with_args(arca.unload(), VecDeque::new()),
+                            );
+                            return function.apply(continuation).into();
+                        }
+                        ControlFlow::Break(Action::Capture) => {
+                            let (mut original, cpu) = arca.unload_with_cpu();
+                            let mut snapshot = original.clone();
+                            snapshot.registers_mut()[Register::RAX] =
+                                -(arcane::__ERR_interrupted as i64) as u64;
+                            let continuation = arca::Function::from_inner(
+                                Function::arcane_with_args(snapshot, VecDeque::new()),
+                            );
+                            let result = original.descriptors_mut().insert(continuation.into());
+                            original.registers_mut()[Register::RAX] = result as u64;
+                            arca = original.load(cpu);
+                        }
                     }
                 }
             }
@@ -189,11 +234,11 @@ impl Function {
     }
 
     pub fn is_arcane(&self) -> bool {
-        matches!(self.defn, Definition::Arcane(_))
+        matches!(self.data.defn, Definition::Arcane(_))
     }
 
     pub fn arca_mut(&mut self) -> Option<&mut Arca> {
-        match &mut self.defn {
+        match &mut self.data.defn {
             Definition::Symbolic(_) => None,
             Definition::Arcane(arca) => Some(arca),
         }

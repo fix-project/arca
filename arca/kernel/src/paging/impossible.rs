@@ -52,6 +52,10 @@ impl HardwarePageTableEntry for Impossible {
         unreachable!()
     }
 
+    unsafe fn clone_leaf(&self) -> Self {
+        unreachable!()
+    }
+
     unsafe fn new(_: u64) -> Self {
         unreachable!()
     }
