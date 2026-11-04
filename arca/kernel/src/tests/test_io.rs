@@ -94,3 +94,19 @@ fn whole_file_io() {
     assert!(!fs::exists(path).unwrap());
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn owned_file_buffers_preserve_contents_across_heap_growth() {
+    use crate::{host::fs, prelude::*};
+
+    for length in [0, 37, 4097] {
+        let expected: Vec<u8> = (0..length).map(|index| index as u8).collect();
+        fs::write("owned-buffer-test", &expected).unwrap();
+        let mut actual = fs::read("owned-buffer-test").unwrap();
+        assert_eq!(actual, expected);
+        actual.reserve(length + 1);
+        actual.extend_from_slice(&expected);
+        assert_eq!(&actual[..length], &expected);
+        assert_eq!(&actual[length..], &expected);
+    }
+}

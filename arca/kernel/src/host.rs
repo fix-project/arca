@@ -337,7 +337,7 @@ pub mod fs {
             return Err(ErrorKind::Other);
         };
         let (bytes, _) = Box::into_raw_with_allocator(unsafe { region.into_owned() });
-        // The kernel's global allocator is the Buddy allocator.
+        // The global allocator accepts page-aligned Buddy allocations.
         Ok(unsafe { Box::from_raw(bytes) }.into_vec())
     }
 

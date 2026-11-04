@@ -1,3 +1,4 @@
+pub mod test_allocator;
 pub mod test_builder;
 pub mod test_combinators;
 pub mod test_continuations;
