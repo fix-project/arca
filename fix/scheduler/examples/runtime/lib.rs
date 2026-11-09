@@ -1,10 +1,22 @@
 #![no_std]
 extern crate alloc;
 
-use effects::{storage, worker};
 use fix::coupon::Statement;
 use fix::{Blob, Error, Handle, Object, Tree, Value};
-pub use fixscheduler::*;
+pub use fixscheduler::{kernel, shell, storage};
+use kernel::worker;
+pub use shell::{Root, as_tree, child, fields, root};
+pub mod advice;
+pub mod collector;
+pub mod evaluation;
+pub mod request;
+pub mod serial;
+pub mod todo;
+pub use collector::{CachedClaims, Claims, Collector, Evidence, InputRetention, Proofs};
+pub use evaluation::{EvaluationState, EvaluationStep};
+pub use request::Request;
+pub type Key = [u8; 32];
+pub type Resolved = alloc::collections::BTreeMap<(u64, Key), Evidence>;
 pub mod composition;
 pub mod graph;
 pub use composition::*;
@@ -30,41 +42,31 @@ impl Mode {
     }
 }
 
-pub fn run<E: Executor>(
-    combination: &Handle<Object<Tree>, fix::Focus>,
-    graph: &Graph,
-    executor: &E,
-) -> Result<Root, Error> {
+pub fn input(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<Option<Request>, Error> {
     assert_eq!(combination.len()?, 4);
     let mode = Mode::read(&root(combination.get(0))?)?;
-    let worker = worker::id()?;
-    let execute = match mode {
+    let statement = match mode {
         Mode::Eval => Statement::Eval,
         Mode::Think => Statement::Think,
         Mode::Todo => {
-            if worker != 0 {
-                loop {
-                    let notification = worker::listen()?;
-                    if worker::stopped()? {
-                        break;
-                    }
-                    notification.wait()?;
-                }
-                return Ok(root(Tree::from_iter(core::iter::empty::<&Root>()))?);
+            if worker::id()? == 0 {
+                let result = todo::run(&root(combination.get(3))?)?;
+                worker::finish(&result)?;
             }
-            let result = todo::run(&root(combination.get(3))?)?;
-            worker::finish(&result)?;
-            return Ok(result);
+            return Ok(None);
         }
     };
+    Ok(Some(Request::new(statement, &root(combination.get(3))?)?))
+}
 
-    let input = if worker == 0 {
-        Some(Request::new(execute, &root(combination.get(3))?)?)
-    } else {
-        None
-    };
-    let result = graph.run(executor, input)?;
-    finish(result)
+pub fn wait() -> Result<Root, Error> {
+    loop {
+        let notification = worker::listen()?;
+        if worker::stopped()? {
+            return root(fix::tree![]);
+        }
+        notification.wait()?;
+    }
 }
 
 pub fn finish(result: Evidence) -> Result<Root, Error> {

@@ -1419,6 +1419,53 @@ fn persistent_continuation() {
 }
 
 #[test]
+fn serial_and_parallel_schedulers_evaluate_applications_and_selections() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("scheduler_sdk");
+    std::fs::create_dir(&directory).unwrap();
+    run(&directory, &["init"], b"", 0);
+    seed(
+        &directory,
+        &[
+            ("serial", env!("SERIAL_SCHEDULER")),
+            ("parallel", env!("FIX_SCHEDULER")),
+            ("advisor", env!("SDK_ADVISOR")),
+        ],
+    );
+    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let first = value(&directory, &["create-blob", "--string", "first"]);
+    let second = value(&directory, &["create-blob", "--string", "second"]);
+    let combination = value(&directory, &["create-tree", &metadata, "advisor", &first]);
+    let application = value(&directory, &["create-application-thunk", &combination]);
+    let application = value(&directory, &["create-strict-encode", &application]);
+    let values = value(&directory, &["create-tree", &first, &second]);
+    let index = value(&directory, &["create-blob", "--u64", "1"]);
+    let selection = value(&directory, &["create-tree", &values, &index]);
+    let selection = value(&directory, &["create-selection-thunk", &selection]);
+    let selection = value(&directory, &["create-strict-encode", &selection]);
+    let input = value(&directory, &["create-tree", &application, &selection]);
+    for (scheduler, workers) in [
+        ("serial", "1"),
+        ("serial", "4"),
+        ("parallel", "1"),
+        ("parallel", "4"),
+    ] {
+        let output = evaluate(
+            &directory,
+            "eval",
+            scheduler,
+            &input,
+            &["-j", workers, "--memoize=never"],
+            0,
+        );
+        let fields = value(&directory, &["read-tree", &output]);
+        assert_eq!(
+            fields.lines().collect::<Vec<_>>(),
+            [first.as_str(), second.as_str()]
+        );
+    }
+}
+
+#[test]
 fn canonicalization_advice_stays_with_the_requested_input() {
     for workers in ["1", "4"] {
         let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap())
@@ -1453,6 +1500,38 @@ fn canonicalization_advice_stays_with_the_requested_input() {
             evaluate(&directory, "eval", "evaluator", &second, &options, 0),
             expected
         );
+    }
+}
+
+#[test]
+fn canonicalization_advice_does_not_acquire_unavailable_references() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("unavailable_advice");
+    std::fs::create_dir(&directory).unwrap();
+    run(&directory, &["init"], b"", 0);
+    seed(&directory, &[("advisor", env!("SDK_UNAVAILABLE_ADVISOR"))]);
+    let object = text(run(&directory, &["create-blob", "-"], &[b'x'; 64], 0));
+    let reference = value(&directory, &["create-ref", &object]);
+    let record = directory.join(".fix/objects").join(&object);
+    let backing = record
+        .parent()
+        .unwrap()
+        .join(std::fs::read_link(&record).unwrap());
+    std::fs::remove_file(&backing).unwrap();
+    let empty = value(&directory, &["create-blob", "--string", ""]);
+    let combination = value(&directory, &["create-tree", &empty, "advisor", &reference]);
+    let application = value(&directory, &["create-application-thunk", &combination]);
+    let input = value(&directory, &["create-strict-encode", &application]);
+    for workers in ["1", "4"] {
+        let result = evaluate(
+            &directory,
+            "eval",
+            "evaluator",
+            &input,
+            &["--memoize=never", "-j", workers],
+            0,
+        );
+        assert_eq!(run(&directory, &["read-blob", &result], b"", 0), b"ok");
+        assert!(!backing.exists());
     }
 }
 

@@ -4,58 +4,66 @@ use kernel::prelude::Vec;
 
 #[kernel::test]
 fn scheduler_evaluates_wide_application_graphs() {
-    let evaluator = Evaluation::with_workers(test_runtime(), 2);
-    let storage = evaluator.storage();
-    let program = test_program(storage, stdlib::PRIMITIVES[0].1);
-    let values: Vec<Handle> = (0u64..256)
-        .map(|index| {
-            let value = storage.add_blob(&index.to_le_bytes());
-            let leaf = storage.add_tree(&[value.into()]);
-            let data = storage.add_tree(&[leaf.into()]);
-            storage
-                .add_tree(&[
-                    Blob::literal(b"").unwrap().into(),
-                    program.into(),
-                    data.into(),
-                ])
-                .into()
-        })
-        .collect();
-    let encodes: Vec<_> = values
-        .iter()
-        .map(|value| {
-            Tree::try_from(*value)
-                .unwrap()
-                .into_ref()
-                .application()
-                .strict()
-                .into()
-        })
-        .collect();
-    let input = storage.add_tree(&encodes);
-    let expected = storage.add_tree(&values);
-    let result = evaluator.eval(input.into());
-    assert!(storage.equals(result, expected.into()).unwrap());
+    for evaluator in [
+        Evaluation::new(test_runtime()),
+        Evaluation::with_workers(test_runtime(), 2),
+    ] {
+        let storage = evaluator.storage();
+        let program = test_program(storage, stdlib::PRIMITIVES[0].1);
+        let values: Vec<Handle> = (0u64..256)
+            .map(|index| {
+                let value = storage.add_blob(&index.to_le_bytes());
+                let leaf = storage.add_tree(&[value.into()]);
+                let data = storage.add_tree(&[leaf.into()]);
+                storage
+                    .add_tree(&[
+                        Blob::literal(b"").unwrap().into(),
+                        program.into(),
+                        data.into(),
+                    ])
+                    .into()
+            })
+            .collect();
+        let encodes: Vec<_> = values
+            .iter()
+            .map(|value| {
+                Tree::try_from(*value)
+                    .unwrap()
+                    .into_ref()
+                    .application()
+                    .strict()
+                    .into()
+            })
+            .collect();
+        let input = storage.add_tree(&encodes);
+        let expected = storage.add_tree(&values);
+        let result = evaluator.eval(input.into());
+        assert!(storage.equals(result, expected.into()).unwrap());
+    }
 }
 
 #[kernel::test]
 fn scheduler_resolves_long_force_chains() {
-    let evaluator = Evaluation::with_workers(test_runtime(), 2);
-    let storage = evaluator.storage();
-    let expected: Handle = storage.add_blob(b"result").into();
-    let mut input = expected;
-    for _ in 0..256 {
-        let values = storage.add_tree(&[input]);
-        let arguments =
-            storage.add_tree(&[values.into(), storage.add_blob(&0u64.to_le_bytes()).into()]);
-        input = arguments.into_ref().selection().into();
+    for evaluator in [
+        Evaluation::new(test_runtime()),
+        Evaluation::with_workers(test_runtime(), 2),
+    ] {
+        let storage = evaluator.storage();
+        let expected: Handle = storage.add_blob(b"result").into();
+        let mut input = expected;
+        for _ in 0..256 {
+            let values = storage.add_tree(&[input]);
+            let arguments =
+                storage.add_tree(&[values.into(), storage.add_blob(&0u64.to_le_bytes()).into()]);
+            input = arguments.into_ref().selection().into();
+        }
+        let input = Thunk::try_from(input).unwrap().strict();
+        assert!(
+            storage
+                .equals(evaluator.eval(input.into()), expected)
+                .unwrap()
+        );
     }
-    let input = Thunk::try_from(input).unwrap().strict();
-    assert!(
-        storage
-            .equals(evaluator.eval(input.into()), expected)
-            .unwrap()
-    );
 }
 
 #[kernel::test]
@@ -88,8 +96,11 @@ fn scheduler_thinks_once_and_forces_through_thunks() {
 
 #[kernel::test]
 fn scheduler_evaluates_shared_dependencies() {
-    for workers in [1, 4] {
-        let evaluator = Evaluation::with_workers(test_runtime(), workers);
+    for evaluator in [
+        Evaluation::new(test_runtime()),
+        Evaluation::with_workers(test_runtime(), 1),
+        Evaluation::with_workers(test_runtime(), 4),
+    ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
         let shared = storage.add_tree(&[Blob::literal(b"shared").unwrap().into(), program.into()]);
@@ -130,8 +141,11 @@ fn scheduler_evaluates_shared_dependencies() {
 
 #[kernel::test]
 fn scheduler_preserves_tree_order_and_duplicate_premises() {
-    for workers in [1, 4] {
-        let evaluator = Evaluation::with_workers(test_runtime(), workers);
+    for evaluator in [
+        Evaluation::new(test_runtime()),
+        Evaluation::with_workers(test_runtime(), 1),
+        Evaluation::with_workers(test_runtime(), 4),
+    ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
         let values: Vec<Handle> = (0u64..16)
@@ -171,8 +185,11 @@ fn scheduler_preserves_tree_order_and_duplicate_premises() {
 
 #[kernel::test]
 fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
-    for workers in [1, 4] {
-        let evaluator = Evaluation::with_workers(test_runtime(), workers);
+    for evaluator in [
+        Evaluation::new(test_runtime()),
+        Evaluation::with_workers(test_runtime(), 1),
+        Evaluation::with_workers(test_runtime(), 4),
+    ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
         let leaf: Handle = storage.add_blob(b"leaf").into();

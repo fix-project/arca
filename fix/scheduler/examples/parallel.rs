@@ -24,5 +24,14 @@ fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, E
             },
         },
     };
-    scheduler_example::run(combination, &graph, &executor)
+    let Some(input) = scheduler_example::input(combination)? else {
+        return scheduler_example::wait();
+    };
+    let input = if scheduler_example::kernel::worker::id()? == 0 {
+        Some(input)
+    } else {
+        None
+    };
+    let result = graph.run(&executor, input)?;
+    scheduler_example::finish(result)
 }

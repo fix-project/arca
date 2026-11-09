@@ -1,6 +1,6 @@
 use crate::advice;
-use crate::effects::{self, callable, storage};
 use crate::{Claims, Evidence, Executor, Key, Proofs, Request, Resolved, Root, todo};
+use crate::{kernel, storage};
 use alloc::vec::Vec;
 use fix::{Error, coupon::Exchange};
 
@@ -70,7 +70,7 @@ pub struct Effects<A, H> {
 }
 impl<A: Acquisition, H: advice::Handler> Operations for Effects<A, H> {
     fn apply(&self, input: &Root) -> Result<Evidence, Error> {
-        Evidence::invocation(callable::apply(input, &self.advice)?)
+        Evidence::invocation(advice::resume(kernel::apply(input)?, input, &self.advice)?)
     }
     fn select(&self, input: &Root) -> Result<Evidence, Error> {
         Evidence::cache(storage::select(input)?)
@@ -79,51 +79,10 @@ impl<A: Acquisition, H: advice::Handler> Operations for Effects<A, H> {
         Evidence::cache(storage::eval(input)?)
     }
     fn object(&self, input: &Root) -> Result<Root, Error> {
-        let (status, result) =
-            effects::coordinate(b"storage_identify", core::slice::from_ref(input))?;
-        match status {
-            0 => Ok(result),
-            1 => self.acquisition.acquire(input)?.ok_or(Error::OutOfBounds),
-            _ => Err(Error::WrongType),
+        match storage::identify(input)? {
+            Some(object) => Ok(object),
+            None => self.acquisition.acquire(input)?.ok_or(Error::OutOfBounds),
         }
-    }
-}
-
-pub trait Evaluator {
-    type State: Default;
-    fn step<B: Backend>(
-        &self,
-        request: &Request,
-        state: &mut Self::State,
-        context: &mut Context<'_, B>,
-    ) -> Result<Option<Evidence>, Error>;
-}
-
-pub struct Context<'a, B> {
-    pub backend: &'a B,
-    resolved: &'a Resolved,
-    missing: &'a mut Vec<Request>,
-}
-
-impl<'a, B: Backend> Context<'a, B> {
-    pub fn new(backend: &'a B, resolved: &'a Resolved, missing: &'a mut Vec<Request>) -> Self {
-        Self {
-            backend,
-            resolved,
-            missing,
-        }
-    }
-    pub fn require(&mut self, request: &Request) -> Result<Option<Evidence>, Error> {
-        let key = request.key();
-        let value = self
-            .resolved
-            .get(&key)
-            .cloned()
-            .or_else(|| self.backend.known(&key));
-        if value.is_none() {
-            self.missing.push(request.clone());
-        }
-        Ok(value)
     }
 }
 
@@ -132,7 +91,7 @@ pub struct Execution<B> {
 }
 
 impl<B: Backend> Executor for Execution<B> {
-    type State = fixscheduler::EvaluationState;
+    type State = crate::EvaluationState;
     fn known(&self, key: &(u64, Key)) -> Option<Evidence> {
         self.backend.known(key)
     }
@@ -149,40 +108,27 @@ impl<B: Backend> Executor for Execution<B> {
         resolved: &Resolved,
         missing: &mut Vec<Request>,
     ) -> Result<Option<Evidence>, Error> {
-        FixRules.step(
-            request,
-            state,
-            &mut Context {
-                backend: &self.backend,
-                resolved,
-                missing,
-            },
-        )
-    }
-}
-
-pub struct FixRules;
-impl Evaluator for FixRules {
-    type State = fixscheduler::EvaluationState;
-    fn step<B: Backend>(
-        &self,
-        request: &Request,
-        state: &mut Self::State,
-        context: &mut Context<'_, B>,
-    ) -> Result<Option<Evidence>, Error> {
-        let backend = context.backend;
         match state.step(
             request,
-            backend,
-            |dependency| context.require(dependency),
-            |input| backend.object(input),
+            &self.backend,
+            |dependency| {
+                let value = resolved
+                    .get(&dependency.key())
+                    .cloned()
+                    .or_else(|| self.backend.known(&dependency.key()));
+                if value.is_none() {
+                    missing.push(dependency.clone());
+                }
+                Ok(value)
+            },
+            |input| self.backend.object(input),
         )? {
-            fixscheduler::EvaluationStep::Complete(value) => Ok(Some(value)),
-            fixscheduler::EvaluationStep::Dependencies(_) => Ok(None),
-            fixscheduler::EvaluationStep::Primitive(request) => match request.statement {
-                fix::coupon::Statement::Apply => backend.apply(&request.input).map(Some),
-                fix::coupon::Statement::Select => backend.select(&request.input).map(Some),
-                fix::coupon::Statement::Eval => backend.eval(&request.input).map(Some),
+            crate::EvaluationStep::Complete(value) => Ok(Some(value)),
+            crate::EvaluationStep::Dependencies(_) => Ok(None),
+            crate::EvaluationStep::Primitive(request) => match request.statement {
+                fix::coupon::Statement::Apply => self.backend.apply(&request.input).map(Some),
+                fix::coupon::Statement::Select => self.backend.select(&request.input).map(Some),
+                fix::coupon::Statement::Eval => self.backend.eval(&request.input).map(Some),
                 _ => Err(Error::WrongType),
             },
         }

@@ -13,11 +13,15 @@ pub(super) struct Evaluation {
 
 impl Evaluation {
     pub(super) fn new(runtime: FixOnArca) -> Self {
-        Self::with_workers(runtime, 1)
+        Self::with_scheduler(runtime, 1, "FIX_SERIAL_SCHEDULER")
     }
 
     pub(super) fn with_workers(runtime: FixOnArca, workers: usize) -> Self {
-        let scheduler = test_program(runtime.storage(), kernel::testing::fixture("FIX_SCHEDULER"));
+        Self::with_scheduler(runtime, workers, "FIX_SCHEDULER")
+    }
+
+    fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
+        let scheduler = test_program(runtime.storage(), kernel::testing::fixture(fixture));
         let collector = test_program(runtime.storage(), kernel::testing::fixture("FIX_COLLECTOR"));
         let compiler = Blob::canonical(stdlib::PRIMITIVES[0].1)
             .unwrap()

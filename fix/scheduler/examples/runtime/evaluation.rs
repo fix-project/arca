@@ -1,4 +1,4 @@
-use crate::effects::storage;
+use crate::shell;
 use crate::{Evidence, Proofs, Request, Root, as_tree, fields, root};
 use alloc::vec::Vec;
 use fix::{
@@ -106,7 +106,7 @@ impl EvaluationState {
                                     .exchange(
                                         Exchange::Think,
                                         input,
-                                        &storage::reference(&data)?,
+                                        &shell::reference(&data)?,
                                         &[],
                                     )
                                     .map(EvaluationStep::Complete);
@@ -164,7 +164,7 @@ impl EvaluationState {
                     let result = if input.is_strict()? {
                         (context.object)(&forced.result)?
                     } else {
-                        storage::reference(&forced.result)?
+                        shell::reference(&forced.result)?
                     };
                     *stage = Stage::EncodeEval(forced, Request::new(Statement::Eval, &result)?);
                 }

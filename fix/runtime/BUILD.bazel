@@ -78,6 +78,7 @@ kernel_test(
     fixtures = {
         "FIX_WORKER_EVENTS": "//tests/fix:worker_events_native",
         "FIX_CONCURRENT_MAP": "//tests/fix:concurrent_map_native",
+        "FIX_SERIAL_SCHEDULER": "//fix/scheduler:serial",
         "FIX_SCHEDULER": "//programs/fix:scheduler_elf",
         "FIX_COLLECTOR": "//fix/proof/collector:collector_elf",
         "FIX_PRIVILEGED": "//tests/fix:privileged_native",

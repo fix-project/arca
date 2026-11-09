@@ -231,7 +231,7 @@ rust_test(
     srcs = ["cli.rs"],
     edition = "2024",
     deps = ["//fix/handle", "//fix/repository"],
-    data = ["//programs/fix/parser:parser_elf", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
+    data = ["//programs/fix/parser:parser_elf", "//fix/scheduler:unavailable_advisor", "//fix/scheduler:serial", "//fix/scheduler:advisor", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
     rustc_env = {
         "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
         "FIX_CLI": "$(rootpath //fix/cli:fix)",
@@ -243,6 +243,9 @@ rust_test(
         "FIX_TAGGER": "$(rootpath //fix/sdk:tagger_native)",
         "FIX_CONTINUATION": "$(rootpath :continuation_native)",
         "USER_SCHEDULER": "$(rootpath :user_scheduler_elf)",
+        "SERIAL_SCHEDULER": "$(rootpath //fix/scheduler:serial)",
+        "SDK_ADVISOR": "$(rootpath //fix/scheduler:advisor)",
+        "SDK_UNAVAILABLE_ADVISOR": "$(rootpath //fix/scheduler:unavailable_advisor)",
         "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
     },
     size = "large",

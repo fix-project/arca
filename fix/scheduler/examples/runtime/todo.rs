@@ -1,4 +1,4 @@
-use super::effects::storage;
+use super::storage;
 use super::{Root, as_tree, child, root};
 use alloc::vec::Vec;
 use fix::{Blob, Error, Tree, Value};
@@ -97,4 +97,11 @@ pub fn acquire(value: &Root) -> Result<Option<Root>, Error> {
         }
     }
     Ok(None)
+}
+
+pub fn object(value: &Root) -> Result<Root, Error> {
+    if let Some(object) = storage::identify(value)? {
+        return Ok(object);
+    }
+    acquire(value)?.ok_or(Error::OutOfBounds)
 }

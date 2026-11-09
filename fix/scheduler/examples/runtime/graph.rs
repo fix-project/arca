@@ -1,10 +1,10 @@
-use super::effects::{queue::Queue, worker};
+use super::kernel::{queue::Queue, worker};
 use super::{Key, Resolved, as_tree, fields, root};
+use crate::{Evidence, Request};
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::RefCell;
 use fix::map::Map;
 use fix::{Error, Tree, Value, coupon::Statement, tree};
-use fixscheduler::{Evidence, Request};
 
 pub trait Executor {
     type State: Default;
@@ -68,7 +68,7 @@ impl Graph {
         } else {
             loop {
                 let notification = worker::listen()?;
-                if super::effects::queue::count()? != 0 && Map::count()? >= 5 {
+                if super::kernel::queue::count()? != 0 && Map::count()? >= 5 {
                     break;
                 }
                 notification.wait()?;
@@ -78,7 +78,7 @@ impl Graph {
     }
 
     pub fn create(workers: u64) -> Result<Self, Error> {
-        Ok(Self {
+        let graph = Self {
             nodes: [
                 Map::create()?,
                 Map::create()?,
@@ -89,7 +89,9 @@ impl Graph {
             ready: Queue::create(65536)?,
             overflow: RefCell::new(Vec::new()),
             workers,
-        })
+        };
+        worker::wake()?;
+        Ok(graph)
     }
 
     pub fn open(workers: u64) -> Self {
@@ -139,6 +141,8 @@ impl Graph {
     fn offer(&self, request: Request) -> Result<(), Error> {
         if !self.ready.push(&request.value()?)? {
             self.overflow.borrow_mut().push(request);
+        } else {
+            worker::wake_one()?;
         }
         Ok(())
     }

@@ -1,19 +1,18 @@
-# Scheduler components
+# Scheduler SDK
 
-This library provides operations that a scheduler can call from its own loop. It does not choose an event loop, work placement, ownership, transport, or scheduling policy.
+The SDK provides Rust bindings to existing interfaces:
 
-- `Request` describes a Fix statement and input.
-- `EvaluationState::step` advances one evaluation using supplied dependency results, proof operations, and object lookup. It returns `Complete`, `Dependencies`, or `Primitive`. Apply, Select, and value-Eval primitives are returned for the caller to execute locally or send elsewhere.
-- `Collector`, `CachedClaims`, and `Evidence` provide proof construction and claim lookup. `Evidence::admit` checks a returned coupon against the requested statement/input and accepted authority. Advice is never evidence. The host still verifies the final result.
-- `effects` exposes callable invocation, storage, queues, and the current driver's worker services. Advice is delivered through an invocation callback; no central advice registry is imposed.
-- `//fix/scheduler/dependencies` tracks a suspended computation's resolved and missing dependency slots. It does not run computations, send messages, or choose their location.
+- `shell` re-exports the Fix SDK's handles, constructors, inspection, attachment, and backend operations.
+- `kernel` exposes callable execution and continuations, maps, queues, worker notifications, and streams through the current host interface. Apply and Invoke return either a result or an advice event with a continuation. Resumption and queue notifications are explicit.
+- `collector` encodes the coupon collector's exchange request: `[metadata, collector, rule, lhs, rhs, witnesses]`. Each witness contains a coupon and its assertion Object. The collector checks supplied premises; it does not find dependencies or load references. `request` constructs a callable combination; `exchange` invokes it.
+- `storage` exposes object identification, claim lookup, certificates, persistence, and acquisition metadata. `identify` returns `None` for an unavailable object without acquiring it.
 
-A caller can match the result of `state.step(...)`: store a completed proof, enqueue missing dependencies according to its own policy, or execute/offload a primitive request. The current core's loop owns all these choices. Using the evaluation component requires no scheduler trait or dispatch protocol.
+The SDK contains no scheduler loop, task graph, evaluator, cache policy, or advice handler. Its operations use the existing host ABI; the worker bindings describe the current kernel-thread harness, not a new execution model. Local handles and continuation tokens are scoped to that host and are not network identities.
 
-`tests/primitives.rs` contains a complete small scheduler with its own stack and loop. It executes selection locally and sends application primitives through a queue to another worker, admitting their returned coupons before resuming evaluation. Its integration test compares semantic results with one and four workers.
+## Examples
 
-Complete schedulers are examples: `examples/runtime` contains the existing work-sharing engine used by `programs/fix/scheduler.rs`; `examples/control` contains a centralized mailbox implementation and its own command protocol. Their loops and interfaces are not SDK requirements. These examples use the existing worker harness, whose native driver still creates kernel threads; direct integration into native per-core loops is separate work.
+`examples/serial.rs` evaluates dependencies inline through recursive calls. It has no dependency graph or work queue. `examples/parallel.rs` owns a shared dependency graph, ready queue, worker stacks, and notification policy. `//programs/fix:scheduler_elf` builds the parallel example used by the CLI. `//fix/scheduler:serial` builds the serial example.
 
-`Request::key` uses local handle identity. A network scheduler must choose canonical task identities, transfer the corresponding objects and certificates, and admit received proofs into the local store. `fix::stream` provides byte-stream transport, but this library specifies no network protocol.
+The examples share their own proof, caching, advice, and acquisition code in `examples/runtime`. Their serial evaluator and parallel evaluation state machine are also example code, not SDK interfaces. Both retain the existing canonicalization-advice policy: only available targets are recorded, recommendations propagate through input-preserving proof steps, and policy state lasts for one run.
 
-The supplied `Canonicalize` policy records only available advised targets and does not acquire or evaluate data solely because of a hint. Its recommendation applies to the matching invocation coupon; `InputRetention` propagates that recommendation through input-preserving proof steps. Policy state lasts for one scheduler run. Source compilation and execution currently use separate runs, so hints from compilation do not carry into execution. Other handlers may ignore advice or implement a different policy.
+Runtime and CLI integration tests exercise both examples, including shared dependencies, repeated premises, applications, selection, and coupon verification.

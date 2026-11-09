@@ -16,7 +16,6 @@ rust_library(
     name = "example_runtime",
     visibility = [
         "//fix/scheduler:__pkg__",
-        "//fix/scheduler/examples/control:__pkg__",
         "//programs/fix:__pkg__",
     ],
     crate_name = "scheduler_example",
@@ -26,3 +25,37 @@ rust_library(
     deps = [":sdk", "//fix/sdk:sdk_import"],
     target_compatible_with = ["@platforms//cpu:wasm32"],
 )
+
+exports_files(["examples/parallel.rs"])
+
+alias(name = "parallel", actual = "//programs/fix:scheduler_elf")
+
+rust_shared_library(
+    name = "serial_wasm",
+    srcs = ["examples/serial.rs"],
+    crate_root = "examples/serial.rs",
+    edition = "2024",
+    platform = WASM,
+    deps = [":sdk", ":example_runtime", "//fix/sdk:sdk_import", "@crates//:dlmalloc"],
+)
+fix_procedure(name = "serial", wasm = ":serial_wasm", memories = 4, tables = 4)
+
+rust_shared_library(
+    name = "advisor_wasm",
+    srcs = ["tests/advisor.rs"],
+    crate_root = "tests/advisor.rs",
+    edition = "2024",
+    platform = WASM,
+    deps = ["//fix/sdk"],
+)
+fix_procedure(name = "advisor", wasm = ":advisor_wasm", memories = 3, tables = 3)
+
+rust_shared_library(
+    name = "unavailable_advisor_wasm",
+    srcs = ["tests/unavailable.rs"],
+    crate_root = "tests/unavailable.rs",
+    edition = "2024",
+    platform = WASM,
+    deps = ["//fix/sdk"],
+)
+fix_procedure(name = "unavailable_advisor", wasm = ":unavailable_advisor_wasm", memories = 3, tables = 3)

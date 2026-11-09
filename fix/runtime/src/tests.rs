@@ -2489,8 +2489,11 @@ mod tests {
             );
             assert_eq!(eval(references.into()).as_bytes(), loaded.as_bytes());
         }
-        for workers in [1, 2] {
-            let evaluator = Evaluation::with_workers(test_runtime(), workers);
+        for evaluator in [
+            Evaluation::new(test_runtime()),
+            Evaluation::with_workers(test_runtime(), 1),
+            Evaluation::with_workers(test_runtime(), 2),
+        ] {
             check(evaluator.storage(), |value| {
                 let expected = fix_reference::eval(evaluator.runtime(), value);
                 let actual = evaluator.eval(value);

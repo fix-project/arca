@@ -1,4 +1,0 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-package(default_visibility = ["//visibility:public"])
-rust_library(name = "dependencies", crate_name = "scheduler_dependencies", srcs = ["lib.rs", "state.rs"], crate_root = "lib.rs", edition = "2024")
-rust_test(name = "tests", srcs = ["lib.rs", "state.rs", "tests.rs"], crate_root = "lib.rs", edition = "2024")
