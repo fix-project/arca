@@ -4,6 +4,7 @@ load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory_bin_action")
 load("@bazel_lib//lib:directory_path.bzl", "DirectoryPathInfo", "directory_path")
 load("@bazel_lib//lib:paths.bzl", "to_repository_relative_path")
 load(":configuration.bzl", "ALLOW_TRANSITION", "mode")
+load(":tools.bzl", "LLVM_TOOL_NAMES")
 
 COPY_TOOLCHAIN = "@bazel_lib//lib:copy_to_directory_toolchain_type"
 
@@ -62,6 +63,10 @@ def wasm_tools(name, llvm = ":wasm_llvm", sysroot = ":wasi_sysroot", wasm2c = ":
         target = name + "_" + role
         directory_path(name = target, directory = directory, path = path, tags = ["manual"])
         sources[":" + target] = destination
+    for tool in LLVM_TOOL_NAMES:
+        target = name + "_" + tool
+        directory_path(name = target, directory = llvm, path = "usr/bin/" + tool, tags = ["manual"])
+        sources[":" + target] = "usr/bin/" + tool
     mapped_directory(name = name, srcs = sources, allow_overwrites = True, **kwargs)
 
 def toolchain_files(name, stage0, resources, **kwargs):

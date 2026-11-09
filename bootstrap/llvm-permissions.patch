@@ -1,0 +1,18 @@
+--- a/llvm/lib/Support/FileUtilities.cpp
++++ b/llvm/lib/Support/FileUtilities.cpp
+@@ -318,10 +318,12 @@
+     sys::fs::perms Perm = Status.permissions();
+     if (OutputFilename != InputFilename)
+       Perm = static_cast<sys::fs::perms>(Perm & ~sys::fs::getUmask() & ~06000);
++    if (OStat.permissions() != Perm) {
+ #ifdef _WIN32
+-    if (std::error_code EC = sys::fs::setPermissions(OutputFilename, Perm))
++      if (std::error_code EC = sys::fs::setPermissions(OutputFilename, Perm))
+ #else
+-    if (std::error_code EC = sys::fs::setPermissions(FD, Perm))
++      if (std::error_code EC = sys::fs::setPermissions(FD, Perm))
+ #endif
+-      return createFileError(OutputFilename, EC);
++        return createFileError(OutputFilename, EC);
++    }
+   }

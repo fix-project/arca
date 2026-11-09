@@ -72,13 +72,11 @@ fn populate(repository: &Repository, author: Handle, entries: &[String]) -> Resu
             if !fs::metadata(path)?.is_dir() {
                 return Err(Failure("expected a directory".into()));
             }
-            let directory = flatware_tree::import(
+            flatware_tree::import_contents(
                 repository,
                 Path::new(path),
-                b"",
                 flatware_tree::Symlinks::Follow,
-            )?;
-            repository.read_tree(directory)?[2]
+            )?
         } else if blob {
             repository.create_blob(&fs::read(path)?)?.into()
         } else {

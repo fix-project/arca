@@ -13,7 +13,7 @@ def _configuration_impl(settings, attr):
         "//command_line_option:features": ["-supports_start_end_lib"],
         "//command_line_option:host_features": ["-supports_start_end_lib"],
         "//command_line_option:copt": flags + (["-fPIC", "-fwasm-exceptions"] if attr.wasi else []),
-        "//command_line_option:cxxopt": ["-std=c++17"],
+        "//command_line_option:cxxopt": ["-std=c++17"] + (["-fno-exceptions"] if attr.wasi else []),
         "//command_line_option:host_copt": flags,
         "//command_line_option:host_cxxopt": ["-std=c++17"],
         "//command_line_option:linkopt": ["-fwasm-exceptions", "-Wl,-z,stack-size=8388608", "--no-wasm-opt"] if attr.wasi else ["-fuse-ld=bfd"],

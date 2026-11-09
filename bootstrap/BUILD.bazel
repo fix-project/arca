@@ -9,13 +9,13 @@ load(":llvm.bzl", "llvm_bundle", "llvm_resources")
 load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
 load(":native.bzl", "UNITS", native_generation = "generation", native_program = "program")
 load(":configuration.bzl", "stage")
-load(":tools.bzl", "SEED_MODULES", "compilation_script")
+load(":tools.bzl", "COMMANDS", "LLVM_FILES", "SEED_MODULES", "compilation_script")
 load("//build:fix.bzl", "fix_run")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["toolchain-tags.patch"])
+exports_files(["toolchain-tags.patch", "llvm-permissions.patch"])
 
 rust_binary(
     name = "seed_tool",
@@ -162,7 +162,7 @@ llvm_bundle(
         "@llvm-project//lld:ld.lld": "usr/bin/ld.lld",
         "@llvm-project//lld:wasm-ld": "usr/bin/wasm-ld",
         "@llvm-project//clang:builtin_headers_gen": "usr/lib/clang/23/include/",
-    },
+    } | LLVM_FILES,
     tags = ["manual"],
 )
 
@@ -246,9 +246,9 @@ seed_repository(
         ":collector_link": "collector",
         ":stage1_lld_link": "lld",
         ":stage1_wasm-merge_link": "wasm-merge",
-    },
+    } | {":stage1_" + name + "_link": name for name in COMMANDS.keys() if name not in ["clang", "wasm2c", "lld", "wasm-merge"]},
     blobs = {
-        "//flatware:adapter_wasm": "flatware",
+        "//flatware:merged_wasm": "flatware",
         "//flatware:control_wasm": "flatware-control",
     },
     directories = {":wasip1_sysroot": "wasip1-sysroot"},
