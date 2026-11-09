@@ -24,6 +24,8 @@ exports_files([
     "defs.bzl",
     "hedron-bazel9.patch",
     "wabt.BUILD.bazel",
+    "wabt-externrefs.patch",
+    "wabt_repository.bzl",
     "wabt-externref.cmake",
     "rocq.bzl",
     "rocq-toolchain.opam",

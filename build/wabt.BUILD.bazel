@@ -1,4 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "simde",
+    textual_hdrs = glob(["third_party/simde/simde/**/*.h"]),
+    includes = ["third_party/simde"],
+)
 
 filegroup(
     name = "sources",
@@ -17,3 +25,8 @@ filegroup(
 )
 
 exports_files(["CMakeLists.txt"])
+
+filegroup(
+    name = "simde_headers",
+    srcs = glob(["third_party/simde/simde/**/*.h"]),
+)

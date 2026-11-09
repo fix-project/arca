@@ -176,3 +176,10 @@ rocq_toolchain(name = "rocq_toolchain")
 rocq_host = use_repo_rule("//build:rocq.bzl", "rocq_host")
 
 rocq_host(name = "rocq_host")
+
+wabt_repository = use_repo_rule("//build:wabt_repository.bzl", "wabt_repository")
+wabt_repository(
+    name = "wabt_rooted_src",
+    build_file = "//build:wabt.BUILD.bazel",
+    patch = "//build:wabt-externrefs.patch",
+)
