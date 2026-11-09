@@ -1,0 +1,13 @@
+(module
+  (import "fix" "create_blob" (func $blob (param i32 i32) (result externref)))
+  (import "fix" "create_tree" (func $tree (param i32 i32) (result externref)))
+  (memory 1)
+  (table 5 externref)
+  (func (export "_fix_apply") (param externref) (result externref)
+    (memory.fill (i32.const 0) (i32.const 41) (i32.const 64))
+    (table.set (i32.const 0) (call $blob (i32.const 0) (i32.const 64)))
+    (table.set (i32.const 1) (table.get (i32.const 0)))
+    (table.set (i32.const 2) (call $tree (i32.const 0) (i32.const 2)))
+    (table.set (i32.const 3) (table.get (i32.const 2)))
+    (table.set (i32.const 4) (call $tree (i32.const 0) (i32.const 4)))
+    (call $tree (i32.const 0) (i32.const 5))))

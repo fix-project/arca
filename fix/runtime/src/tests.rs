@@ -970,6 +970,99 @@ mod tests {
     }
 
     #[kernel::test]
+    fn application_preserves_indistinguishability() {
+        fn assert_indistinguishable(evaluator: &Evaluation, left: Handle, right: Handle) {
+            if left.same_encoding(&right) {
+                return;
+            }
+            assert_eq!(left.is_comparable(), right.is_comparable());
+            let storage = evaluator.storage();
+            match (left.view(), right.view()) {
+                (HandleView::Object(left), HandleView::Object(right)) => {
+                    match (left.view(), right.view()) {
+                        (ObjectView::Blob(left), ObjectView::Blob(right)) => {
+                            assert_eq!(
+                                storage.equals((*left).into(), (*right).into()),
+                                Ok(true),
+                                "indistinguishable inputs produced distinguishable Blob contents"
+                            );
+                        }
+                        (ObjectView::Tree(left), ObjectView::Tree(right)) => {
+                            assert_eq!(left.is_tag(), right.is_tag());
+                            assert_eq!(left.len(), right.len());
+                            let left = storage.get_tree(*left).unwrap();
+                            let right = storage.get_tree(*right).unwrap();
+                            for (left, right) in left.iter().zip(right.iter()) {
+                                assert_indistinguishable(evaluator, *left, *right);
+                            }
+                        }
+                        _ => panic!("different Object types"),
+                    }
+                }
+                (HandleView::Ref(left), HandleView::Ref(right)) => {
+                    assert_indistinguishable(
+                        evaluator,
+                        left.object_descriptor().into(),
+                        right.object_descriptor().into(),
+                    );
+                }
+                (HandleView::Thunk(left), HandleView::Thunk(right)) => {
+                    assert_indistinguishable(
+                        evaluator,
+                        evaluator.think(*left),
+                        evaluator.think(*right),
+                    );
+                }
+                (HandleView::Encode(left_encode), HandleView::Encode(right_encode)) => {
+                    assert!(matches!(
+                        (left_encode.view(), right_encode.view()),
+                        (EncodeView::Strict(_), EncodeView::Strict(_))
+                            | (EncodeView::Shallow(_), EncodeView::Shallow(_))
+                    ));
+                    assert_indistinguishable(
+                        evaluator,
+                        evaluator.eval(left),
+                        evaluator.eval(right),
+                    );
+                }
+                _ => panic!("different value types"),
+            }
+        }
+
+        let evaluator = Evaluation::new(test_runtime());
+        let storage = evaluator.storage();
+        let program = test_program(
+            storage,
+            kernel::testing::fixture("FIX_INDISTINGUISHABILITY"),
+        );
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let value: Handle = storage.add_blob(&[42; 64]).into();
+        let short = storage.add_tree(&[metadata, program.into(), value]);
+        let long = storage.add_tree(&[metadata, program.into(), value, metadata]);
+        let request = storage.add_tree(&[storage.add_blob(b"test").into()]);
+        let target = storage.add_tree(&[value]);
+        let selection =
+            storage.add_tree(&[target.into(), storage.add_blob(&0u64.to_le_bytes()).into()]);
+        let thunks = [
+            short.into_ref().application(),
+            long.into_ref().application(),
+            selection.into_ref().selection(),
+        ];
+        let inputs = thunks.map(|thunk| {
+            assert_eq!(storage.equals(evaluator.think(thunk), value), Ok(true));
+            storage.add_tree(&[metadata, program.into(), thunk.into(), request.into()])
+        });
+        for input in &inputs {
+            assert_indistinguishable(&evaluator, inputs[0].into(), (*input).into());
+        }
+
+        let results = inputs.map(|input| apply(evaluator.runtime(), input));
+        for result in &results {
+            assert_indistinguishable(&evaluator, results[0], *result);
+        }
+    }
+
+    #[kernel::test]
     fn eval_resumes_with_evaluated_argument() {
         let evaluator = Evaluation::new(test_runtime());
         let storage = evaluator.storage();
@@ -1189,6 +1282,209 @@ mod tests {
             ]);
             let result = evaluator.eval(combination.into_ref().application().strict().into());
             assert_eq!(storage.equals(result, argument), Ok(true));
+        }
+    }
+
+    #[kernel::test]
+    fn determinism_across_sdk_eval_and_capture_reuse() {
+        let evaluator = Evaluation::new(test_runtime());
+        let storage = evaluator.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
+        let identity = test_program(storage, stdlib::PRIMITIVES[0].1);
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let argument: Handle = storage.add_blob(&[42; 64]).into();
+        let combination = storage.add_tree(&[
+            metadata,
+            program.into(),
+            argument,
+            identity.into(),
+            Blob::literal(&3u64.to_le_bytes()).unwrap().into(),
+            Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
+        ]);
+        let canonical = Tree::try_from(Handle::from(
+            storage.canonicalize(combination.into()).unwrap(),
+        ))
+        .unwrap();
+        let mut runs = Vec::new();
+        for combination in [combination, canonical] {
+            let mut result = apply(evaluator.runtime(), combination);
+            let mut checkpoints = Vec::new();
+            let mut replay = None;
+            while let Ok(thunk) = Thunk::try_from(result) {
+                let ThunkView::Application(request) = thunk.view() else {
+                    panic!("expected eval continuation")
+                };
+                let request = storage.get_tree(request.object_descriptor()).unwrap();
+                if replay.is_none() {
+                    replay = Some(storage.canonicalize(result).unwrap());
+                }
+                let checkpoint = storage.canonicalize(request[1]).unwrap();
+                let value = evaluator.eval(request[2]);
+                let resumed = storage.add_tree(&[metadata, checkpoint.into(), value]);
+                result = apply(evaluator.runtime(), resumed);
+                checkpoints.push(checkpoint);
+            }
+            assert_eq!(storage.equals(result, argument), Ok(true));
+            let replay = Thunk::try_from(Handle::from(replay.unwrap())).unwrap();
+            assert_eq!(
+                storage.equals(evaluator.eval(replay.strict().into()), argument),
+                Ok(true)
+            );
+            runs.push(checkpoints);
+        }
+        assert_eq!(runs[0], runs[1]);
+    }
+
+    #[kernel::test]
+    fn recursive_local_graph_preserves_aliases() {
+        let evaluator = Evaluation::new(test_runtime());
+        let storage = evaluator.storage();
+        let program = test_program(
+            storage,
+            kernel::testing::fixture("FIX_RECURSIVE_LOCAL_ALIASES"),
+        );
+        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let result = apply(evaluator.runtime(), combination);
+        let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+        assert_eq!(fields.len(), 5);
+        assert!(fields[0].same_encoding(&fields[1]));
+        assert!(fields[2].same_encoding(&fields[3]));
+        assert_eq!(storage.equals(fields[0], fields[1]), Ok(true));
+        assert_eq!(storage.equals(fields[2], fields[3]), Ok(true));
+        let bytes = storage
+            .get_blob(Blob::try_from(fields[0]).unwrap())
+            .unwrap();
+        assert_eq!(bytes.as_ref(), &[0x29; 64]);
+        let pair = storage
+            .get_tree(Tree::try_from(fields[2]).unwrap())
+            .unwrap();
+        assert_eq!(pair.len(), 2);
+        for field in pair.iter() {
+            assert!(field.same_encoding(&fields[0]));
+            assert_eq!(storage.equals(*field, fields[0]), Ok(true));
+        }
+        let nested = storage
+            .get_tree(Tree::try_from(fields[4]).unwrap())
+            .unwrap();
+        assert_eq!(nested.len(), 4);
+        for (actual, expected) in nested.iter().zip(fields.iter()) {
+            assert!(actual.same_encoding(expected));
+            assert_eq!(storage.equals(*actual, *expected), Ok(true));
+        }
+    }
+
+    #[kernel::test]
+    fn large_local_graph_preserves_each_blob() {
+        let evaluator = Evaluation::new(test_runtime());
+        let storage = evaluator.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_LARGE_LOCAL_GRAPH"));
+        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let result = apply(evaluator.runtime(), combination);
+        let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+        assert_eq!(fields.len(), 5000);
+        for (index, field) in fields.iter().enumerate() {
+            let bytes = storage.get_blob(Blob::try_from(*field).unwrap()).unwrap();
+            let mut expected = [0u8; 64];
+            expected[..4].copy_from_slice(&(index as u32).to_le_bytes());
+            assert_eq!(bytes.as_ref(), &expected);
+        }
+    }
+
+    #[kernel::test]
+    fn kernel_effects_preserve_outgoing_values() {
+        selective_lifting(false);
+    }
+
+    #[kernel::test]
+    fn capture_preserves_partially_lifted_graphs() {
+        selective_lifting(true);
+    }
+
+    fn selective_lifting(escape: bool) {
+        use fix::arca::EffectAction;
+        use fix::storage::memory::MemoryStorage;
+
+        let memory = Arc::new(MemoryStorage::default());
+        let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
+            .unwrap()
+            .object()
+            .into_ref();
+        let runtime = FixOnArca::new(memory.clone()).with_trust(
+            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+        );
+        let storage = runtime.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_SELECTIVE_LIFTING"));
+        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let mut count = 0;
+        let mut leaf = None;
+        let result = runtime
+            .execute_with_effects(combination, false, &mut |effect| {
+                if count == 0 {
+                    let fields = storage.get_tree(Tree::try_from(effect).unwrap()).unwrap();
+                    let blob = Blob::try_from(fields[0]).unwrap();
+                    assert_eq!(storage.get_blob(blob).unwrap().as_ref(), &[7; 64]);
+                    assert!(fields[1].same_encoding(&blob.into_ref().into()));
+                    assert!(
+                        storage
+                            .get_tree(Tree::try_from(fields[2]).unwrap())
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(
+                        fields[3].same_encoding(&blob.into_ref().identification().strict().into())
+                    );
+                    leaf = Some(blob);
+                } else {
+                    assert!(effect.same_encoding(&leaf.unwrap().into_ref().into()));
+                }
+                count += 1;
+                if escape && count == 2 {
+                    EffectAction::Unhandled
+                } else {
+                    EffectAction::Resume(Blob::literal(b"").unwrap().into())
+                }
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+        let results = if escape {
+            let pair = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+            let canonical: Handle = storage.canonicalize(pair[1]).unwrap().into();
+            [pair[1], canonical]
+                .map(|continuation| {
+                    let combination = storage.add_tree(&[
+                        Blob::literal(b"").unwrap().into(),
+                        continuation,
+                        Blob::literal(b"").unwrap().into(),
+                    ]);
+                    runtime
+                        .execute_with_effects(combination, false, &mut |_| {
+                            panic!("unexpected effect")
+                        })
+                        .unwrap()
+                })
+                .to_vec()
+        } else {
+            vec![result]
+        };
+        for result in results {
+            let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+            assert_eq!(fields.len(), 3);
+            let hidden = storage
+                .get_tree(Tree::try_from(fields[0]).unwrap())
+                .unwrap();
+            assert!(hidden[0].same_encoding(&fields[1]));
+            assert!(hidden[1].same_encoding(&fields[2]));
+            assert_eq!(
+                storage
+                    .get_blob(Blob::try_from(fields[1]).unwrap())
+                    .unwrap()
+                    .as_ref(),
+                &[9; 128]
+            );
+            let request = storage
+                .get_tree(Tree::try_from(fields[2]).unwrap())
+                .unwrap();
+            assert!(storage.equals(request[0], leaf.unwrap().into()).unwrap());
         }
     }
 
@@ -1513,6 +1809,402 @@ mod tests {
                 .as_ref(),
             &42u64.to_le_bytes()
         );
+    }
+
+    fn capture_determinism(mode: u64, fixture: &str) -> Vec<(CanonicalHandle, CanonicalHandle)> {
+        capture_with_history(mode, fixture, 0)
+    }
+
+    fn capture_with_history(
+        mode: u64,
+        fixture: &str,
+        history: usize,
+    ) -> Vec<(CanonicalHandle, CanonicalHandle)> {
+        let runtime = test_runtime();
+        let storage = runtime.storage();
+        for index in 0..history {
+            let blob = storage.add_blob(&[index as u8; 64]);
+            storage.add_tree(&[blob.into()]);
+        }
+        let program = test_program(storage, kernel::testing::fixture(fixture));
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let value: Handle = storage.add_blob(&[42; 64]).into();
+        let canonical_value: Handle = storage.canonicalize(value).unwrap().into();
+        let request = storage.add_tree(&[Blob::literal(b"capture").unwrap().into()]);
+        let fields = [
+            metadata,
+            program.into(),
+            value,
+            request.into(),
+            storage.add_blob(&mode.to_le_bytes()).into(),
+        ];
+        let original = storage.add_tree(&fields);
+        let canonical =
+            Tree::try_from(Handle::from(storage.canonicalize(original.into()).unwrap())).unwrap();
+        let mut mixed = fields;
+        mixed[2] = canonical_value;
+        let mixed = storage.add_tree(&mixed);
+        let backing = storage.get_tree_backing(original).unwrap();
+        let mut mapping = kernel::prelude::Table::new(1 << 30);
+        assert!(
+            mapping
+                .map(
+                    0,
+                    Entry::ROTable(backing.mapped_value().try_into().unwrap())
+                )
+                .is_ok()
+        );
+        let alternate = unsafe {
+            storage.add_tree_backing(storage::ImmutableBytes::from_tables(
+                vec![mapping],
+                backing.len(),
+            ))
+        };
+        let expected = if mode == 2 {
+            let mut children = vec![value; 260];
+            children[128] = metadata;
+            children[129] = metadata;
+            storage.add_tree(&children).into()
+        } else {
+            value
+        };
+        let expected = storage.canonicalize(expected).unwrap();
+        let resume = |continuation| {
+            apply(
+                &runtime,
+                storage.add_tree(&[
+                    metadata,
+                    continuation,
+                    Blob::literal(b"reply").unwrap().into(),
+                ]),
+            )
+        };
+        let pair = |result| {
+            let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                storage.canonicalize(fields[0]).unwrap(),
+                storage.canonicalize(request.into()).unwrap()
+            );
+            fields[1]
+        };
+        let mut checkpoints = Vec::new();
+        for combination in [original, canonical, mixed, alternate] {
+            let first = pair(apply(&runtime, combination));
+            let second = pair(resume(first));
+            assert_eq!(storage.canonicalize(resume(second)).unwrap(), expected);
+            let first = storage.canonicalize(first).unwrap();
+            let second = storage.canonicalize(second).unwrap();
+            let replayed = pair(resume(first.into()));
+            assert_eq!(storage.canonicalize(replayed).unwrap(), second);
+            for _ in 0..2 {
+                assert_eq!(
+                    storage.canonicalize(resume(second.into())).unwrap(),
+                    expected
+                );
+            }
+            checkpoints.push((first, second));
+        }
+        for checkpoint in &checkpoints[1..] {
+            assert_eq!(
+                *checkpoint, checkpoints[0],
+                "checkpoint exposes input representation in scenario {mode}"
+            );
+        }
+        checkpoints
+    }
+
+    #[kernel::test]
+    fn determinism_across_capture_in_exception_handlers() {
+        capture_determinism(0, "FIX_CAPTURE_DETERMINISM");
+    }
+
+    #[kernel::test]
+    fn determinism_across_capture_before_exception_unwind() {
+        capture_determinism(1, "FIX_CAPTURE_DETERMINISM");
+    }
+
+    #[kernel::test]
+    fn determinism_across_bulk_tables_and_replay() {
+        capture_determinism(2, "FIX_CAPTURE_DETERMINISM");
+    }
+
+    #[kernel::test]
+    fn determinism_across_large_table_snapshots() {
+        capture_determinism(0, "FIX_LARGE_TABLES");
+    }
+
+    #[kernel::test]
+    fn determinism_across_exception_references() {
+        capture_determinism(3, "FIX_CAPTURE_DETERMINISM");
+    }
+
+    #[kernel::test]
+    fn determinism_across_handle_operations_and_globals() {
+        capture_determinism(0, "FIX_CONTINUATION_STATE");
+    }
+
+    #[kernel::test]
+    fn determinism_across_attachment_lifetimes_and_funcrefs() {
+        capture_determinism(1, "FIX_CONTINUATION_STATE");
+    }
+
+    #[kernel::test]
+    fn determinism_across_return_cc() {
+        capture_determinism(4, "FIX_CONTINUATION_STATE");
+    }
+
+    #[kernel::test]
+    fn determinism_across_externref_invalidation() {
+        capture_determinism(0, "FIX_INVALIDATE_EXTERNREFS");
+    }
+
+    #[kernel::test]
+    fn determinism_across_partial_tree_attachments() {
+        capture_determinism(0, "FIX_PARTIAL_TREE");
+    }
+
+    #[kernel::test]
+    fn resumption_preserves_results_after_externref_use() {
+        let runtime = test_runtime();
+        let storage = runtime.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_EXTERNREF_REUSE"));
+        for count in [32u64, 512] {
+            let combination = storage.add_tree(&[
+                Blob::literal(b"").unwrap().into(),
+                program.into(),
+                Blob::literal(&count.to_le_bytes()).unwrap().into(),
+            ]);
+            let pair = storage
+                .get_tree(Tree::try_from(apply(&runtime, combination)).unwrap())
+                .unwrap();
+            let resumed = storage.add_tree(&[
+                Blob::literal(b"").unwrap().into(),
+                pair[1],
+                Blob::literal(b"resumed").unwrap().into(),
+            ]);
+            assert!(
+                apply(&runtime, resumed).same_encoding(&Blob::literal(b"resumed").unwrap().into())
+            );
+        }
+    }
+
+    #[kernel::test]
+    fn determinism_across_sdk_capture_lifetimes() {
+        let runtime = test_runtime();
+        let storage = runtime.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_SDK_REUSE"));
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let pair = |result| {
+            let pair = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+            assert_eq!(pair.len(), 2);
+            assert!(pair[0].same_encoding(&Blob::literal(&0u64.to_le_bytes()).unwrap().into()));
+            pair[1]
+        };
+        for count in [32u64, 512] {
+            let combination = storage.add_tree(&[
+                metadata,
+                program.into(),
+                Blob::literal(&count.to_le_bytes()).unwrap().into(),
+            ]);
+            let canonical = Tree::try_from(Handle::from(
+                storage.canonicalize(combination.into()).unwrap(),
+            ))
+            .unwrap();
+            let mut checkpoints = Vec::new();
+            for combination in [combination, canonical] {
+                let first = pair(apply(&runtime, combination));
+                let first = storage.canonicalize(first).unwrap();
+                let resumed = storage.add_tree(&[metadata, first.into(), metadata]);
+                let second = pair(apply(&runtime, resumed));
+                let second = storage.canonicalize(second).unwrap();
+                let resumed = storage.add_tree(&[metadata, second.into(), metadata]);
+                let result = apply(&runtime, resumed);
+                assert_eq!(
+                    storage
+                        .get_blob(Blob::try_from(result).unwrap())
+                        .unwrap()
+                        .as_ref(),
+                    &42u64.to_le_bytes()
+                );
+                checkpoints.push((first, second));
+            }
+            assert_eq!(checkpoints[0], checkpoints[1]);
+        }
+    }
+
+    #[kernel::test]
+    fn determinism_across_storage_histories() {
+        let expected = capture_with_history(0, "FIX_CONTINUATION_STATE", 0);
+        for history in [1, 17] {
+            assert_eq!(
+                capture_with_history(0, "FIX_CONTINUATION_STATE", history),
+                expected
+            );
+        }
+    }
+
+    #[kernel::test]
+    fn determinism_across_reply_representations() {
+        use fix::storage::memory::MemoryStorage;
+        let memory = Arc::new(MemoryStorage::default());
+        let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
+            .unwrap()
+            .object()
+            .into_ref();
+        let runtime = FixOnArca::new(memory.clone()).with_trust(
+            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+        );
+        let storage = runtime.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION_STATE"));
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let value: Handle = storage.add_blob(&[42; 64]).into();
+        let canonical: Handle = storage.canonicalize(value).unwrap().into();
+        let duplicate: Handle = storage.add_blob(&[42; 64]).into();
+        let mut page = Page::new(4096);
+        page.write(0, &[42; 64]);
+        let mut mapping = kernel::prelude::Table::new(1 << 30);
+        assert!(mapping.map(0, Entry::ROPage(page)).is_ok());
+        let alternate: Handle = storage
+            .add_blob_backing(storage::ImmutableBytes::from_tables(vec![mapping], 64))
+            .into();
+        let request = storage.add_tree(&[Blob::literal(b"capture").unwrap().into()]);
+        let combination = storage.add_tree(&[
+            metadata,
+            program.into(),
+            value,
+            request.into(),
+            Blob::literal(&3u64.to_le_bytes()).unwrap().into(),
+        ]);
+        let pair = |result| {
+            let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+            assert_eq!(fields.len(), 2);
+            assert_eq!(storage.equals(fields[0], request.into()), Ok(true));
+            fields[1]
+        };
+        let mut checkpoints = Vec::new();
+        for reply in [value, canonical, duplicate, alternate] {
+            for serialized in [false, true] {
+                let first = pair(apply(&runtime, combination));
+                let first = if serialized {
+                    storage.canonicalize(first).unwrap().into()
+                } else {
+                    first
+                };
+                let second = pair(apply(&runtime, storage.add_tree(&[metadata, first, reply])));
+                let checkpoint = storage.canonicalize(second).unwrap();
+                let resumed = memory.add_tree(&[metadata, checkpoint.into(), value]);
+                let fresh = FixOnArca::new(memory.clone());
+                let result = fresh
+                    .execute_with_effects(resumed, false, &mut |_| panic!("unexpected effect"))
+                    .unwrap();
+                assert_eq!(storage.equals(result, value), Ok(true));
+                checkpoints.push(checkpoint);
+            }
+        }
+        assert!(
+            checkpoints
+                .iter()
+                .all(|checkpoint| *checkpoint == checkpoints[0])
+        );
+    }
+
+    #[kernel::test]
+    fn determinism_across_eval_and_call_cc() {
+        for (fixture, mode) in [("FIX_EVAL", 0u64), ("FIX_EVAL", 1), ("FIX_CONTINUATION", 1)] {
+            let evaluator = Evaluation::new(test_runtime());
+            let storage = evaluator.storage();
+            let program = test_program(storage, kernel::testing::fixture(fixture));
+            let metadata: Handle = Blob::literal(b"").unwrap().into();
+            let argument = Blob::literal(&41u64.to_le_bytes()).unwrap();
+            let mode = Blob::literal(&mode.to_le_bytes()).unwrap();
+            let fields = if fixture == "FIX_EVAL" {
+                vec![metadata, program.into(), argument.into(), mode.into()]
+            } else {
+                vec![metadata, program.into(), mode.into()]
+            };
+            let original = storage.add_tree(&fields);
+            let canonical =
+                Tree::try_from(Handle::from(storage.canonicalize(original.into()).unwrap()))
+                    .unwrap();
+            let mut checkpoints = Vec::new();
+            for combination in [original, canonical] {
+                let result = apply(evaluator.runtime(), combination);
+                checkpoints.push(storage.canonicalize(result).unwrap());
+                let result = evaluator.eval(Thunk::try_from(result).unwrap().strict().into());
+                assert_eq!(
+                    storage
+                        .get_blob(Blob::try_from(result).unwrap())
+                        .unwrap()
+                        .as_ref(),
+                    &42u64.to_le_bytes()
+                );
+            }
+            assert_eq!(checkpoints[0], checkpoints[1]);
+        }
+    }
+
+    #[kernel::test]
+    fn determinism_during_concurrent_replay_and_materialization() {
+        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let runtime = Arc::new(test_runtime());
+        let storage = runtime.storage();
+        let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION"));
+        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let combination = storage.add_tree(&[
+            metadata,
+            program.into(),
+            Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
+        ]);
+        let capture = || {
+            let pair = Tree::try_from(apply(&*runtime, combination)).unwrap();
+            storage.get_tree(pair).unwrap()[1]
+        };
+        let continuation = capture();
+        let expected = storage.canonicalize(capture()).unwrap();
+        let ready = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicUsize::new(0));
+        for index in 0..4 {
+            let runtime = runtime.clone();
+            let ready = ready.clone();
+            let start = start.clone();
+            let finished = finished.clone();
+            kernel::kthread::spawn(move || {
+                ready.fetch_add(1, Ordering::Release);
+                while !start.load(Ordering::Acquire) {
+                    kernel::kthread::yield_now();
+                }
+                let storage = runtime.storage();
+                if index < 2 {
+                    let reply = 7u64 + index;
+                    let combination = storage.add_tree(&[
+                        metadata,
+                        continuation,
+                        Blob::literal(&reply.to_le_bytes()).unwrap().into(),
+                    ]);
+                    let result = apply(&*runtime, combination);
+                    assert_eq!(
+                        storage.canonicalize(result).unwrap(),
+                        storage
+                            .canonicalize(Blob::literal(&(reply + 1).to_le_bytes()).unwrap().into())
+                            .unwrap()
+                    );
+                } else {
+                    assert_eq!(storage.canonicalize(continuation).unwrap(), expected);
+                }
+                finished.fetch_add(1, Ordering::Release);
+            });
+        }
+        while ready.load(Ordering::Acquire) != 4 {
+            kernel::kthread::yield_now();
+        }
+        start.store(true, Ordering::Release);
+        while finished.load(Ordering::Acquire) != 4 {
+            kernel::kthread::yield_now();
+        }
+        assert_eq!(storage.canonicalize(continuation).unwrap(), expected);
     }
 
     #[kernel::test]

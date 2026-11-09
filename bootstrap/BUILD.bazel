@@ -293,3 +293,7 @@ sh_test(
     data = [":release_fix", ":seed", ":compilations", ":compilations_handle"],
     tags = ["manual", "kvm", "local"],
 )
+
+native_program(name = "cpp_transfers", src = "//tests/fix:cpp_transfers_wasm", directory = "cpp_transfers", partitions = 2)
+
+stage(name = "cpp_transfers_program", srcs = [":cpp_transfers_link"], tags = ["manual"])

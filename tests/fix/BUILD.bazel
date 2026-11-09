@@ -13,6 +13,9 @@ fix_procedure(name = "privileged_native", wasm = ":privileged_wasm")
 wat_module(name = "linear_effects_wasm", src = "linear_effects.wat")
 fix_procedure(name = "linear_effects_native", wasm = ":linear_effects_wasm")
 
+wat_module(name = "selective_lifting_wasm", src = "selective_lifting.wat")
+fix_procedure(name = "selective_lifting_native", wasm = ":selective_lifting_wasm")
+
 wat_module(name = "eval_wasm", src = "eval.wat")
 fix_procedure(name = "eval_native", wasm = ":eval_wasm")
 
@@ -28,11 +31,38 @@ fix_procedure(name = "advice_capture_native", wasm = ":advice_capture_wasm")
 wat_module(name = "read_blob_wasm", src = "read_blob.wat")
 fix_procedure(name = "read_blob_native", wasm = ":read_blob_wasm")
 
+wat_module(name = "recursive_local_aliases_wasm", src = "recursive_local_aliases.wat")
+fix_procedure(name = "recursive_local_aliases_native", wasm = ":recursive_local_aliases_wasm")
+
+wat_module(name = "large_local_graph_wasm", src = "large_local_graph.wat")
+fix_procedure(name = "large_local_graph_native", wasm = ":large_local_graph_wasm")
+
 wat_module(name = "local_result_wasm", src = "local_result.wat")
 fix_procedure(name = "local_result_native", wasm = ":local_result_wasm")
 
 wat_module(name = "continuation_wasm", src = "continuation.wat")
 fix_procedure(name = "continuation_native", wasm = ":continuation_wasm")
+
+wat_module(name = "capture_determinism_wasm", src = "capture_determinism.wat")
+fix_procedure(name = "capture_determinism_native", wasm = ":capture_determinism_wasm")
+
+wat_module(name = "continuation_state_wasm", src = "continuation_state.wat")
+fix_procedure(name = "continuation_state_native", wasm = ":continuation_state_wasm")
+
+wat_module(name = "externref_reuse_wasm", src = "externref_reuse.wat")
+fix_procedure(name = "externref_reuse_native", wasm = ":externref_reuse_wasm")
+
+wat_module(name = "invalidate_externrefs_wasm", src = "invalidate_externrefs.wat")
+fix_procedure(name = "invalidate_externrefs_native", wasm = ":invalidate_externrefs_wasm")
+
+wat_module(name = "large_tables_wasm", src = "large_tables.wat")
+fix_procedure(name = "large_tables_native", wasm = ":large_tables_wasm")
+
+wat_module(name = "partial_tree_wasm", src = "partial_tree.wat")
+fix_procedure(name = "partial_tree_native", wasm = ":partial_tree_wasm")
+
+wat_module(name = "indistinguishability_wasm", src = "indistinguishability.wat")
+fix_procedure(name = "indistinguishability_native", wasm = ":indistinguishability_wasm")
 
 wat_module(name = "slowaddblob_wasm", src = "slowaddblob.wat")
 fix_procedure(name = "slowaddblob_native", wasm = ":slowaddblob_wasm")
@@ -115,6 +145,8 @@ test_suite(
         ":slowaddblob_test",
         ":sdk_expressions_test",
         ":wat_linkage_test",
+        ":cpp_transfers_test",
+        ":cpp_partitioned_test",
     ],
 )
 
@@ -226,3 +258,23 @@ fix_cc_wasm(
 )
 
 fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")
+
+wat_module(name = "cpp_transfers_wasm", src = "cpp_transfers.wat", visibility = ["//bootstrap:__pkg__", "//tests/fix:__pkg__"])
+fix_procedure(name = "cpp_transfers_native", wasm = ":cpp_transfers_wasm")
+fix_script_test(
+    name = "cpp_transfers_test",
+    script = "cpp_transfers.fix",
+    data = ["cpp_transfers.fix", ":cpp_transfers_native"],
+    expected = "2a00000000000000",
+    timeout = "long",
+    tags = ["kvm", "local"],
+)
+
+fix_script_test(
+    name = "cpp_partitioned_test",
+    script = "cpp_partitioned.fix",
+    data = ["cpp_partitioned.fix", "//bootstrap:cpp_transfers_program", ":cpp_transfers_wasm", ":check_result_native"],
+    expected = "2a00000000000000",
+    timeout = "long",
+    tags = ["kvm", "local"],
+)
