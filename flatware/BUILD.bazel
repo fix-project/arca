@@ -1,6 +1,6 @@
 load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("//build:defs.bzl", "wat_module")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//programs/fix:defs.bzl", "fix_rust_program")
 
 package(default_visibility = ["//visibility:public"])
@@ -28,3 +28,13 @@ exports_files(["build.bzl"])
 fix_rust_program(name = "cpio", alloc = True, artifact_visibility = ["//visibility:public"])
 fix_rust_program(name = "normalize", artifact_visibility = ["//visibility:public"])
 fix_rust_program(name = "result", artifact_visibility = ["//visibility:public"])
+
+
+rust_library(
+    name = "tree",
+    srcs = ["tree.rs"],
+    crate_name = "flatware_tree",
+    crate_root = "tree.rs",
+    edition = "2024",
+    deps = ["//fix/handle", "//fix/repository"],
+)
