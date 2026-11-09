@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 pub use fix::coupon::{Exchange, Statement};
 use fix::{Error, Tree, tree};
 
+#[derive(Clone)]
 pub struct Witness {
     pub coupon: Root,
     pub assertion: Root,

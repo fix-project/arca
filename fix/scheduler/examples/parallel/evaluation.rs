@@ -1,10 +1,10 @@
-use crate::shell;
-use crate::{Evidence, Proofs, Request, Root, as_tree, fields, root};
+use crate::{Evidence, Request, Root, Scheduler, as_tree, fields, root};
 use alloc::vec::Vec;
 use fix::{
     Any, Error, Handle, Object, ThunkType, Tree, Value, ValueType,
     coupon::{Exchange, Statement},
 };
+use fixscheduler::shell;
 
 fn thunk(
     object: &mut impl FnMut(&Root) -> Result<Root, Error>,
@@ -26,13 +26,13 @@ pub enum EvaluationStep {
     Primitive(Request),
 }
 
-struct Context<'a, P, R, O> {
-    proofs: &'a P,
+struct Context<'a, R, O> {
+    proofs: &'a Scheduler,
     resolve: R,
     object: O,
     missing: Vec<Request>,
 }
-impl<P, R, O> Context<'_, P, R, O>
+impl<R, O> Context<'_, R, O>
 where
     R: FnMut(&Request) -> Result<Option<Evidence>, Error>,
 {
@@ -65,7 +65,7 @@ impl EvaluationState {
     pub fn step(
         &mut self,
         request: &Request,
-        proofs: &impl Proofs,
+        proofs: &Scheduler,
         resolve: impl FnMut(&Request) -> Result<Option<Evidence>, Error>,
         object: impl FnMut(&Root) -> Result<Root, Error>,
     ) -> Result<EvaluationStep, Error> {

@@ -1,10 +1,23 @@
 #![no_std]
+extern crate alloc;
 
-use fix::{Error, Handle, Object, Tree, Value};
-use scheduler_example::{
-    CachedClaims, Collector, Effects, Execution, Graph, InputRetention, Services, TodoAcquisition,
-    advice::Canonicalize, root,
+#[path = "parallel/evaluation.rs"]
+mod evaluation;
+#[path = "parallel/graph.rs"]
+mod graph;
+#[path = "parallel/policy.rs"]
+mod policy;
+#[path = "parallel/request.rs"]
+mod request;
+use fix::{Error, Handle, Object, Tree, Value, coupon::Statement, map::Map};
+use fixscheduler::{
+    kernel::worker,
+    shell::{Root, as_tree, child, fields, root},
 };
+use graph::Graph;
+use policy::*;
+use request::Request;
+type Resolved = alloc::collections::BTreeMap<(u64, [u8; 32]), Evidence>;
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
@@ -12,26 +25,46 @@ static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 #[fix::apply]
 fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, Error> {
     let graph = Graph::join()?;
-    let advice = Canonicalize::new(scheduler_example::shared_map(5)?);
-    let retention = InputRetention::new(scheduler_example::shared_map(6)?);
-    let executor = Execution {
-        backend: Services {
-            proofs: Collector::new(root(combination.get(2))?, advice, retention),
-            claims: CachedClaims::default(),
-            operations: Effects {
-                acquisition: TodoAcquisition,
-                advice,
-            },
-        },
+    let scheduler = Scheduler::new(root(combination.get(2))?, shared_map(5)?, shared_map(6)?);
+    assert_eq!(combination.len()?, 4);
+    let mode = combination.get(0);
+    let input = root(combination.get(3))?;
+    if mode.equals(fix::Blob::create(b"todo"))? {
+        if worker::id()? == 0 {
+            let result = todo(&input)?;
+            worker::finish(&result)?;
+            return Ok(result);
+        }
+        return wait();
+    }
+    let statement = if mode.equals(fix::Blob::create(b"eval"))? {
+        Statement::Eval
+    } else if mode.equals(fix::Blob::create(b"think"))? {
+        Statement::Think
+    } else {
+        return Err(Error::WrongType);
     };
-    let Some(input) = scheduler_example::input(combination)? else {
-        return scheduler_example::wait();
-    };
-    let input = if scheduler_example::kernel::worker::id()? == 0 {
-        Some(input)
+    let input = if worker::id()? == 0 {
+        Some(Request::new(statement, &input)?)
     } else {
         None
     };
-    let result = graph.run(&executor, input)?;
-    scheduler_example::finish(result)
+    finish(graph.run(&scheduler, input)?)
+}
+
+fn shared_map(index: u64) -> Result<Map, Error> {
+    if worker::id()? == 0 {
+        let map = Map::create()?;
+        assert_eq!(map.id(), index);
+        worker::wake()?;
+        Ok(map)
+    } else {
+        loop {
+            let notification = worker::listen()?;
+            if Map::count()? > index {
+                return Ok(Map::open(index));
+            }
+            notification.wait()?;
+        }
+    }
 }

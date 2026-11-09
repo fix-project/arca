@@ -1,39 +1,28 @@
-use super::kernel::{queue::Queue, worker};
-use super::{Key, Resolved, as_tree, fields, root};
-use crate::{Evidence, Request};
+use super::evaluation::{EvaluationState, EvaluationStep};
+use crate::{Evidence, Request, Resolved, Scheduler, as_tree, fields, object, root};
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::RefCell;
 use fix::map::Map;
 use fix::{Error, Tree, Value, coupon::Statement, tree};
+use fixscheduler::kernel::{
+    queue::{self, Queue},
+    worker,
+};
 
-pub trait Executor {
-    type State: Default;
-    fn known(&self, key: &(u64, Key)) -> Option<Evidence>;
-    fn cached(&self, request: &Request) -> Result<Option<Evidence>, Error>;
-    fn remember(&self, request: &Request, evidence: &Evidence) -> Result<(), Error>;
-    fn step(
-        &self,
-        request: &Request,
-        state: &mut Self::State,
-        resolved: &Resolved,
-        missing: &mut Vec<Request>,
-    ) -> Result<Option<Evidence>, Error>;
-}
-
-struct Frame<S> {
+struct Frame {
     request: Request,
     dependencies: Vec<Request>,
     resolved: Resolved,
-    stage: S,
+    stage: EvaluationState,
 }
 
-impl<S: Default> Frame<S> {
+impl Frame {
     fn new(request: Request) -> Self {
         Self {
             request,
             dependencies: Vec::new(),
             resolved: Resolved::new(),
-            stage: S::default(),
+            stage: EvaluationState::default(),
         }
     }
 }
@@ -68,7 +57,7 @@ impl Graph {
         } else {
             loop {
                 let notification = worker::listen()?;
-                if super::kernel::queue::count()? != 0 && Map::count()? >= 5 {
+                if queue::count()? != 0 && Map::count()? >= 5 {
                     break;
                 }
                 notification.wait()?;
@@ -114,16 +103,8 @@ impl Graph {
         }]
     }
 
-    fn cached<E: Executor>(
-        &self,
-        executor: &E,
-        request: &Request,
-    ) -> Result<Option<Evidence>, Error> {
-        executor.cached(request)
-    }
-
-    fn claim<E: Executor>(&self, executor: &E, request: &Request) -> Result<Claim, Error> {
-        if let Some(evidence) = executor.known(&request.key()) {
+    fn claim(&self, services: &Scheduler, request: &Request) -> Result<Claim, Error> {
+        if let Some(evidence) = services.known(&request.key()) {
             return Ok(Claim::Done(evidence));
         }
         let nodes = self.nodes(request.statement);
@@ -131,7 +112,7 @@ impl Graph {
         if !owned {
             return Ok(Claim::Busy);
         }
-        if let Some(evidence) = self.cached(executor, request)? {
+        if let Some(evidence) = services.cached(request.statement, &request.input)? {
             self.finish(request)?;
             return Ok(Claim::Done(evidence));
         }
@@ -190,20 +171,28 @@ impl Graph {
         Ok(())
     }
 
-    fn step<E: Executor>(
-        &self,
-        executor: &E,
-        frame: &mut Frame<E::State>,
-    ) -> Result<Option<Evidence>, Error> {
-        let mut missing = Vec::new();
-        let result = executor.step(
+    fn step(&self, services: &Scheduler, frame: &mut Frame) -> Result<Option<Evidence>, Error> {
+        let (result, missing) = match frame.stage.step(
             &frame.request,
-            &mut frame.stage,
-            &frame.resolved,
-            &mut missing,
-        )?;
+            services,
+            |dependency| {
+                Ok(frame
+                    .resolved
+                    .get(&dependency.key())
+                    .cloned()
+                    .or_else(|| services.known(&dependency.key())))
+            },
+            |input| object(input),
+        )? {
+            EvaluationStep::Complete(value) => (Some(value), Vec::new()),
+            EvaluationStep::Dependencies(missing) => (None, missing),
+            EvaluationStep::Primitive(request) => (
+                Some(services.primitive(request.statement, &request.input)?),
+                Vec::new(),
+            ),
+        };
         if let Some(evidence) = &result {
-            executor.remember(&frame.request, evidence)?;
+            services.remember(frame.request.statement, &frame.request.input, evidence)?;
         }
         if result.is_none() {
             frame.dependencies = if missing.len() <= 1 {
@@ -218,7 +207,7 @@ impl Graph {
             assert!(!frame.dependencies.is_empty());
             if self.workers > 1 {
                 for dependency in frame.dependencies.iter().skip(1) {
-                    match self.claim(executor, dependency)? {
+                    match self.claim(services, dependency)? {
                         Claim::Owned => self.offer(dependency.clone())?,
                         Claim::Done(evidence) => {
                             frame.resolved.insert(dependency.key(), evidence);
@@ -231,7 +220,7 @@ impl Graph {
         Ok(result)
     }
 
-    fn next<E: Executor>(&self, executor: &E, frame: &mut Frame<E::State>) -> Result<Next, Error> {
+    fn next(&self, services: &Scheduler, frame: &mut Frame) -> Result<Next, Error> {
         let mut blocked = None;
         let mut index = 0;
         while let Some(dependency) = frame.dependencies.get(index) {
@@ -240,7 +229,7 @@ impl Graph {
                 frame.dependencies.remove(index);
                 continue;
             }
-            match self.claim(executor, dependency)? {
+            match self.claim(services, dependency)? {
                 Claim::Done(evidence) => {
                     frame.resolved.insert(key, evidence);
                     frame.dependencies.remove(index);
@@ -255,14 +244,10 @@ impl Graph {
         Ok(blocked.map_or(Next::Step, Next::Blocked))
     }
 
-    pub fn run<E: Executor>(
-        &self,
-        executor: &E,
-        initial: Option<Request>,
-    ) -> Result<Evidence, Error> {
+    pub fn run(&self, services: &Scheduler, initial: Option<Request>) -> Result<Evidence, Error> {
         let mut stack = Vec::new();
         if let Some(request) = &initial {
-            match self.claim(executor, request)? {
+            match self.claim(services, request)? {
                 Claim::Owned => stack.push(Frame::new(request.clone())),
                 Claim::Done(evidence) => return Ok(evidence),
                 Claim::Busy => {}
@@ -276,7 +261,7 @@ impl Graph {
             let Some(frame) = stack.last_mut() else {
                 let notification = worker::listen()?;
                 if let Some(request) = &initial
-                    && let Some(result) = self.cached(executor, request)?
+                    && let Some(result) = services.cached(request.statement, &request.input)?
                 {
                     return Ok(result);
                 }
@@ -288,7 +273,7 @@ impl Graph {
                 notification.wait()?;
                 continue;
             };
-            match self.next(executor, frame)? {
+            match self.next(services, frame)? {
                 Next::Child(request) => stack.push(Frame::new(request)),
                 Next::Blocked(dependency) => {
                     if self.depend(Some(&frame.request), &dependency)? {
@@ -296,7 +281,7 @@ impl Graph {
                     }
                 }
                 Next::Step => {
-                    if let Some(evidence) = self.step(executor, frame)? {
+                    if let Some(evidence) = self.step(services, frame)? {
                         let frame = stack.pop().unwrap();
                         self.finish(&frame.request)?;
                         if let Some(parent) = stack.last_mut() {
