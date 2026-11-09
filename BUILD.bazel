@@ -1,3 +1,4 @@
+load("//build/benchmarks:defs.bzl", "benchmark_suite")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//programs/arca:defs.bzl", "ARCA_COMBINATORS", "ARCA_PROGRAMS")
@@ -80,4 +81,9 @@ sh_binary(
 sh_binary(
     name = "format",
     srcs = ["//tools:format.sh"],
+)
+
+benchmark_suite(
+    name = "benchmarks",
+    suites = ["//arca:benchmarks", "//fix:benchmarks"],
 )

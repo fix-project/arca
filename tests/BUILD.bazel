@@ -5,6 +5,11 @@ load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
 
 HOST = [
+    "//:benchmarks",
+    "//arca/benchmarks:core",
+    "//arca/benchmarks:continuations",
+    "//fix/benchmarks:invocation",
+    "//fix/benchmarks:continuations",
     "//fix/api",
     "//fix/storage",
     "//fix/repository",
@@ -24,6 +29,13 @@ HOST = [
 ]
 
 GUEST = [
+    "//arca/benchmarks:core_image",
+    "//arca/benchmarks:continuations_image",
+    "//fix/benchmarks:invocation_image",
+    "//fix/benchmarks:continuations_image",
+    "//arca/benchmarks:fixture_guest",
+    "//arca/benchmarks:function_effect_guest",
+    "//arca/benchmarks:effect_handler_guest",
     "//fix/runtime:image_elf",
     "//arca/kernel:test_image",
     "//fix/runtime:test_image",

@@ -1,0 +1,72 @@
+load("//build/benchmarks:defs.bzl", "benchmark_suite", "guest_benchmark")
+load("//build:defs.bzl", "ARCA_USER", "guest_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+guest_binary(
+    name = "fixture_guest",
+    srcs = ["fixture.rs"],
+    platform = ARCA_USER,
+    linker_script = "//arca/user:etc/memmap.ld",
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)
+
+genrule(
+    name = "fixture",
+    srcs = [":fixture_guest"],
+    outs = ["fixture.elf"],
+    cmd = "cp $< $@",
+)
+
+guest_binary(
+    name = "function_effect_guest",
+    srcs = ["function_effect.rs"],
+    platform = ARCA_USER,
+    linker_script = "//arca/user:etc/memmap.ld",
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)
+
+genrule(
+    name = "function_effect",
+    srcs = [":function_effect_guest"],
+    outs = ["function_effect.elf"],
+    cmd = "cp $< $@",
+)
+
+guest_binary(
+    name = "effect_handler_guest",
+    srcs = ["effect_handler.rs"],
+    platform = ARCA_USER,
+    linker_script = "//arca/user:etc/memmap.ld",
+    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+)
+
+genrule(
+    name = "effect_handler",
+    srcs = [":effect_handler_guest"],
+    outs = ["effect_handler.elf"],
+    cmd = "cp $< $@",
+)
+
+guest_benchmark(
+    name = "core",
+    src = "core.rs",
+    cases = "core_cases.rs",
+    fixtures = {"ARCA": ":fixture"},
+)
+
+guest_benchmark(
+    name = "continuations",
+    src = "continuations.rs",
+    cases = "continuation_cases.rs",
+    fixtures = {
+        "ARCA": ":fixture",
+        "ARCA_FUNCTION_EFFECT": ":function_effect",
+        "ARCA_EFFECT_HANDLER": ":effect_handler",
+    },
+)
+
+benchmark_suite(
+    name = "benchmarks",
+    suites = [":core", ":continuations"],
+)

@@ -3,3 +3,9 @@ alias(
     actual = "//fix/cli:fix",
     visibility = ["//visibility:public"],
 )
+
+alias(
+    name = "benchmarks",
+    actual = "//fix/benchmarks:benchmarks",
+    visibility = ["//visibility:public"],
+)

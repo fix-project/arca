@@ -1,0 +1,16 @@
+(module
+  (import "fix" "get_tree_element" (func $get (param externref i32) (result externref)))
+  (import "fix" "attach_blob" (func $attach (param externref i32)))
+  (import "fix" "create_blob_i64" (func $blob (param i64) (result externref)))
+  (import "fix" "return_cc" (func $return_cc (param externref) (result externref)))
+  (memory $name 0)
+  (func (export "_fix_apply") (param $combination externref) (result externref)
+    (local $request externref) (local $epoch i64)
+    (loop $again
+      (local.set $request (call $return_cc (call $blob (local.get $epoch))))
+      (call $attach (call $get (local.get $request) (i32.const 0)) (i32.const 0))
+      (if (i32.ne (i32.load $name (i32.const 0)) (i32.const 0x636e6562)) (then unreachable))
+      (if (i32.ne (i32.load8_u $name (i32.const 4)) (i32.const 104)) (then unreachable))
+      (local.set $epoch (i64.add (local.get $epoch) (i64.const 1)))
+      (br $again))
+    unreachable))

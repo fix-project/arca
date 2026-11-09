@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["defs.bzl", "host.rs", "suite.rs"])
+
+rust_library(
+    name = "protocol",
+    srcs = ["protocol.rs"],
+    crate_name = "benchmark_protocol",
+)
+
+rust_library(
+    name = "guest",
+    srcs = ["guest.rs"],
+    crate_name = "benchmark_guest",
+    target_compatible_with = GUEST_ONLY,
+    deps = [":protocol", "//arca/kernel", "//lib/common"],
+)
