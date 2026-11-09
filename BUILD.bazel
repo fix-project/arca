@@ -41,6 +41,8 @@ test_suite(
         "//fix/importers/git:tests",
         "//fix/storage:tests",
         "//fix/repository:tests",
+        "//fix/scheduler/dependencies:tests",
+        "//fix/scheduler/examples/control:tests",
         "//tests/flatware:filesystem_test",
         "//lib/common:tests",
         "//tools/vmm:tests",
