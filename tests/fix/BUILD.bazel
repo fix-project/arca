@@ -131,10 +131,21 @@ rust_shared_library(
 
 fix_procedure(name = "concurrent_map_native", wasm = ":concurrent_map_wasm", memories = 3, tables = 3)
 
+rust_shared_library(
+    name = "importer_wasm",
+    srcs = ["importer.rs"],
+    platform = WASM,
+    deps = ["//fix/sdk:sdk_import", "@crates//:dlmalloc"],
+)
+
+fix_procedure(name = "importer_native", wasm = ":importer_wasm", memories = 3, tables = 3)
+
 test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
         ":cli_test",
+        ":expressions_test",
+        ":todos_test",
         ":mapreduce_cases_test",
         ":addblob_extended_test",
         ":addblob_test",
@@ -261,6 +272,50 @@ fix_cc_wasm(
 )
 
 fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")
+
+
+BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//fix/cli:precompiled"]
+
+BOOTSTRAP_ENV = {
+    "FIX_CLI": "$(rootpath //fix/cli:fix)",
+    "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",
+    "FIX_BOOTSTRAP": "$(rootpath //fix/cli:precompiled)",
+}
+
+rust_test(
+    name = "todos_test",
+    srcs = ["todos.rs", "directory.rs"],
+    crate_root = "todos.rs",
+    compile_data = ["//fix/importers/git:tests/fixture.pack", "//fix/importers/git:tests/fixture.refs", "//fix/importers/git:tests/payload.bin"],
+    edition = "2024",
+    data = BOOTSTRAP_DATA + [":importer_native"],
+    rustc_env = BOOTSTRAP_ENV | {
+        "FIX_IMPORTER": "$(rootpath :importer_native)",
+        "FIX_GIT_PACK": "$(execpath //fix/importers/git:tests/fixture.pack)",
+        "FIX_GIT_REFS": "$(execpath //fix/importers/git:tests/fixture.refs)",
+        "FIX_GIT_PAYLOAD": "$(execpath //fix/importers/git:tests/payload.bin)",
+    },
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local"],
+)
+
+rust_test(
+    name = "expressions_test",
+    srcs = ["expressions.rs", "directory.rs"],
+    crate_root = "expressions.rs",
+    edition = "2024",
+    deps = ["//fix/api", "//fix/cli:client"],
+    data = BOOTSTRAP_DATA + ["//programs/fix:identity_elf", "//programs/fix:addblob_module", "//fix/sdk:tagger_native"],
+    rustc_env = BOOTSTRAP_ENV | {
+        "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
+        "FIX_TAGGER": "$(rootpath //fix/sdk:tagger_native)",
+        "FIX_ADD_MODULE": "$(rootpath //programs/fix:addblob_module)",
+    },
+    size = "large",
+    timeout = "long",
+    tags = ["kvm", "local"],
+)
 
 wat_module(name = "cpp_transfers_wasm", src = "cpp_transfers.wat", visibility = ["//bootstrap:__pkg__", "//tests/fix:__pkg__"])
 fix_procedure(name = "cpp_transfers_native", wasm = ":cpp_transfers_wasm")
