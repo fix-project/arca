@@ -13,12 +13,14 @@ wat_module(
     tags = ["manual"],
 )
 
+alias(name = "module", actual = ":wasm", visibility = ["//bootstrap:__pkg__"])
+
 fix_procedure(
     name = "collector",
     wasm = ":wasm",
     runnable = True,
     visibility = ["//visibility:public"],
-    artifact_visibility = ["//fix/runtime:__pkg__"],
+    artifact_visibility = ["//visibility:public"],
     tags = ["manual"],
 )
 
@@ -26,7 +28,6 @@ rocq_module(
     name = "Completeness",
     namespace = "FixProof.Collector",
     deps = [
-        "//fix/proof/shell:TagCreation",
         "//fix/proof/evaluation:Adequacy",
         "//fix/proof/semantics:ApplyTree",
         "//fix/proof/semantics:Handle",
@@ -49,7 +50,6 @@ rocq_module(
     name = "Exchanges",
     namespace = "FixProof.Collector",
     deps = [
-        "//fix/proof/shell:TagCreation",
         "//fix/proof/semantics:ApplyTree",
         "//fix/proof/semantics:Handle",
         ":Encoding",

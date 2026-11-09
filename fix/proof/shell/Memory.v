@@ -171,4 +171,127 @@ Section Attachment.
     destruct (attachment_page_shape _ _ Page) as [_ Length].
     unfold load; rewrite Length; cbn; rewrite Width in Read; exact Read.
   Qed.
+  Lemma blob_copy_shape before destination bytes after :
+    write_bytes_meminst before destination bytes = Some after ->
+    meminst_type after = meminst_type before /\ mem_length after = mem_length before.
+  Proof.
+    unfold write_bytes_meminst, write_bytes, write_bytes_gen.
+    destruct (mem_update_gen destination (N.of_nat (List.length bytes))
+      (fun offset => match lookup_N bytes offset with Some byte => byte | None => Integers.Byte.zero end)
+      (meminst_data before)) as [data|] eqn:Write; [|discriminate].
+    intro Copied; inversion Copied; subst; split; [reflexivity|].
+    change (memory.mem_length data = memory.mem_length (meminst_data before)).
+    symmetry; eapply mem_update_gen_length; exact Write.
+  Qed.
+
+  Lemma blob_copy_typing before destination bytes after old_store new_store typ :
+    write_bytes_meminst before destination bytes = Some after ->
+    meminst_typing old_store before = Some typ ->
+    meminst_typing new_store after = Some typ.
+  Proof.
+    intros Copied Typed; destruct (blob_copy_shape _ _ _ _ Copied) as [TypeOf Length].
+    unfold meminst_typing in *.
+    destruct before as [before_type before_data], after as [after_type after_data]; cbn in TypeOf.
+    subst after_type; cbn -[mem_length] in *.
+    rewrite Length; exact Typed.
+  Qed.
+
+  Lemma blob_copy_extension before destination bytes after :
+    write_bytes_meminst before destination bytes = Some after -> mem_extension before after = true.
+  Proof.
+    intro Copied; destruct (blob_copy_shape _ _ _ _ Copied) as [TypeOf Length].
+    unfold mem_extension, limits_extension; rewrite TypeOf, Length.
+    rewrite !N.leb_refl, eqtype.eq_refl; reflexivity.
+  Qed.
+
+  Lemma blob_copy_store_extension store before destination bytes after :
+    s_mems store = [before] -> write_bytes_meminst before destination bytes = Some after ->
+    store_extension store (upd_s_mem store [after]) = true.
+  Proof.
+    intros Memory Copied.
+    change ((((((component_extension func_extension (s_funcs store) (s_funcs store) &&
+      component_extension table_extension (s_tables store) (s_tables store)) &&
+      component_extension mem_extension (s_mems store) [after]) &&
+      component_extension global_extension (s_globals store) (s_globals store)) &&
+      component_extension elem_extension (s_elems store) (s_elems store)) &&
+      component_extension data_extension (s_datas store) (s_datas store))%bool = true).
+    rewrite (component_extension_same_refl (s_funcs store) func_extension_refl),
+      (component_extension_same_refl (s_tables store) table_extension_refl),
+      (component_extension_same_refl (s_globals store) global_extension_refl),
+      (component_extension_same_refl (s_elems store) elem_extension_refl),
+      (component_extension_same_refl (s_datas store) data_extension_refl), Memory.
+    repeat rewrite Bool.andb_true_r; cbn -[component_extension].
+    change ((mem_extension before after && true)%bool = true).
+    rewrite Bool.andb_true_r; eapply blob_copy_extension; exact Copied.
+  Qed.
+
+  Lemma blob_copy_store_typing store before destination bytes after :
+    s_mems store = [before] -> write_bytes_meminst before destination bytes = Some after ->
+    store_typing store -> store_typing (upd_s_mem store [after]).
+  Proof.
+    intros Memory Copied Typed.
+    pose proof (blob_copy_store_extension _ _ _ _ _ Memory Copied) as Extension.
+    destruct store as [functions tables memories globals elements data].
+    cbn in Memory; subst memories.
+    destruct Typed as [Functions [Tables [Memories [Globals [Elements Data]]]]].
+    inversion Memories as [|unused empty Head Tail]; subst.
+    destruct Head as [typ BeforeTyped].
+    cbn [upd_s_mem store_typing]; repeat split; try solve [eauto using store_extension_funcs_typing,
+      store_extension_tables_typing, store_extension_globals_typing,
+      store_extension_elems_typing, store_extension_datas_typing].
+    constructor; [|constructor].
+    exists typ; eapply blob_copy_typing; eassumption.
+  Qed.
+
+  Lemma blob_copy_exists before destination bytes :
+    (destination + N.of_nat (List.length bytes) <= mem_length before)%N ->
+    exists after, write_bytes_meminst before destination bytes = Some after.
+  Proof.
+    intro Bound; unfold write_bytes_meminst, write_bytes, write_bytes_gen.
+    pose proof (mem_update_gen_ib (n := destination) (len := N.of_nat (List.length bytes))
+      (gen := fun offset => match lookup_N bytes offset with
+        Some byte => byte | None => Integers.Byte.zero end)
+      (m := meminst_data before) Bound) as Exists.
+    destruct (mem_update_gen destination (N.of_nat (List.length bytes))
+      (fun offset => match lookup_N bytes offset with Some byte => byte | None => Integers.Byte.zero end)
+      (meminst_data before)); [eexists; reflexivity|contradiction].
+  Qed.
+
+  Lemma blob_copy_read before destination bytes after :
+    write_bytes_meminst before destination bytes = Some after ->
+    read_bytes after destination (List.length bytes) = Some bytes.
+  Proof.
+    unfold write_bytes_meminst, write_bytes, write_bytes_gen.
+    destruct (mem_update_gen destination (N.of_nat (List.length bytes))
+      (fun offset => match lookup_N bytes offset with Some byte => byte | None => Integers.Byte.zero end)
+      (meminst_data before)) as [data|] eqn:Write; [|discriminate].
+    intro Copied; inversion Copied; subst; unfold read_bytes; apply those_spec.
+    - rewrite List.length_map, size_iota; reflexivity.
+    - intros index byte Byte.
+      assert (Index : Peano.lt index (List.length bytes)).
+      { apply (proj1 (List.nth_error_Some bytes index)); rewrite Byte; discriminate. }
+      rewrite List.nth_error_map.
+      assert (Offset : List.nth_error (iota 0 (List.length bytes)) index = Some index).
+      { apply iota_lookup; exact (ssrbool.introT ssrnat.ltP Index). }
+      rewrite Offset.
+      change (Some (mem_lookup (destination + N.of_nat index)%N data) = Some (Some byte)).
+      rewrite (mem_update_gen_lookup Write) by lia.
+      unfold lookup_N; rewrite Nat2N.id, Byte; reflexivity.
+  Qed.
+
+  Lemma blob_copy_preserves_other_bytes before destination bytes after offset :
+    write_bytes_meminst before destination bytes = Some after ->
+    ((offset < destination)%N \/ (destination + N.of_nat (List.length bytes) <= offset)%N) ->
+    mem_lookup offset (meminst_data after) = mem_lookup offset (meminst_data before).
+  Proof.
+    unfold write_bytes_meminst, write_bytes, write_bytes_gen.
+    destruct (mem_update_gen destination (N.of_nat (List.length bytes))
+      (fun position => match lookup_N bytes position with Some byte => byte | None => Integers.Byte.zero end)
+      (meminst_data before)) as [data|] eqn:Write; [|discriminate].
+    intros Copied Outside; inversion Copied; subst; cbn.
+    destruct Outside as [Before|After].
+    - eapply mem_update_gen_lookup_lt; eassumption.
+    - eapply mem_update_gen_lookup_ge; [exact Write|lia].
+  Qed.
+
 End Attachment.

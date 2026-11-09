@@ -131,6 +131,31 @@ Module Indistinguishability (S : STORAGE) (P : PROGRAM S).
       [assumption|match goal with H : same_observations _ _ |- _ => inversion H; assumption end].
   Qed.
 
+  (** Handles with the same observations agree on full evaluation. *)
+  Lemma observations_value h1 h2 : same_observations h1 h2 ->
+    is_value h1 = is_value h2.
+  Proof.
+    enough (Trees : forall t1 t2, same_observations (HTreeObj t1) (HTreeObj t2) ->
+      tree_value t1 = tree_value t2).
+    { intro Related; destruct Related; try reflexivity.
+      apply Trees; constructor; assumption. }
+    intro t1; induction t1 as [t1 IH] using (well_founded_induction wfp_tree_child).
+    intros t2 Related; inversion Related as [| |left right Tag Comparable Children| | | |]; subst.
+    rewrite !tree_value_contents.
+    assert (Members : forall x, In x (get_tree_raw t1) -> forall y,
+      same_observations x y -> is_value x = is_value y).
+    { intros x Member y Same; revert Member; destruct Same; intro Member; try reflexivity.
+      apply IH; [exact Member|constructor; assumption]. }
+    clear - Children Members.
+    revert Members Children; generalize (get_tree_raw t2) as ys;
+      generalize (get_tree_raw t1) as xs.
+    induction xs as [|x xs Rest]; intros ys Members Children;
+      inversion Children as [|x' y xs' ys' Same Others]; subst; [reflexivity|].
+    cbn [forallb]; rewrite (Members x (or_introl eq_refl) y Same).
+    rewrite (Rest ys'); [reflexivity| |exact Others].
+    intros z Member w Related; exact (Members z (or_intror Member) w Related).
+  Qed.
+
   (** Pointwise observationally matching child lists have the same length. *)
   Lemma observed_children_length xs ys : observed_children xs ys -> length xs = length ys.
   Proof. revert ys; induction xs; intros ys Related; inversion Related; subst; simpl; auto. Qed.

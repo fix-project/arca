@@ -6,6 +6,8 @@ pub enum Token {
     String(String),
     Bytes(Vec<u8>),
     Primitive(String),
+    LBrace,
+    RBrace,
     LParen,
     RParen,
     LBracket,

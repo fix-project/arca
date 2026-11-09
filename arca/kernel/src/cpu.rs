@@ -76,12 +76,14 @@ impl Default for RegisterFile {
 pub struct CompleteRegisterFile {
     pub registers: RegisterFile,
     pub fsbase: u64,
+    pub gsbase: u64,
     pub xstate: XState,
 }
 
 impl CompleteRegisterFile {
     pub(crate) fn save(&mut self) {
         self.xstate.save();
+        self.gsbase = unsafe { crate::msr::rdmsr(0xC0000102) };
         unsafe {
             core::arch::asm!(
                 "rdfsbase {base}",
@@ -93,6 +95,7 @@ impl CompleteRegisterFile {
 
     pub(crate) fn restore(&self) {
         self.xstate.restore();
+        unsafe { crate::msr::wrmsr(0xC0000102, self.gsbase) };
         unsafe {
             core::arch::asm!(
                 "wrfsbase {base}",

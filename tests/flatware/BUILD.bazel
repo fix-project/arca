@@ -1,7 +1,6 @@
 load("//build:cc.bzl", "cc_object")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//build:defs.bzl", "fix_script_test", "wat_module")
 load("//flatware:defs.bzl", "flatware_procedure")
 
@@ -59,7 +58,7 @@ fix_script_test(
 
 test_suite(
     name = "tests",
-    tests = [":flatware_guest_test", ":flatware_return_status_test", ":filesystem_test", ":runner_test"],
+    tests = [":flatware_guest_test", ":flatware_return_status_test", ":filesystem_test", ":read_preserves_tree_test", ":set_access_time_test"],
 )
 
 cc_test(
@@ -80,22 +79,15 @@ rust_binary(
 
 flatware_procedure(name = "runner_probe_native", wasm = ":runner_probe_wasm")
 
-sh_test(
-    name = "runner_test",
-    srcs = ["runner_test.sh"],
-    args = ["$(rootpath //fix)", "$(rootpath //tests/build:fixture.tar)"],
-    data = ["//fix", "//tests/build:fixture.tar"],
-    size = "large",
-    timeout = "moderate",
-    tags = ["kvm", "local"],
-)
-
-sh_test(
-    name = "compile_test",
-    srcs = ["compile_test.sh"],
-    args = ["$(rootpath //fix)", "$(rootpath :flatware_guest_return_wasm)", "$(rootpath //bootstrap:repository_archive)"],
-    data = ["//fix", ":flatware_guest_return_wasm", "//bootstrap:repository_archive"],
-    size = "large",
-    timeout = "long",
-    tags = ["kvm", "local", "manual"],
-)
+[
+    fix_script_test(
+        name = name + "_test",
+        size = "large",
+        timeout = "short",
+        script = name + ".fix",
+        data = [name + ".fix", ":runner_probe_native", "//tests/fix:check_result_native"],
+        expected = "2a00000000000000",
+        tags = ["kvm", "local"],
+    )
+    for name in ["read_preserves_tree", "set_access_time"]
+]

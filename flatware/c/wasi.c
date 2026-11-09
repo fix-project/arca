@@ -135,8 +135,7 @@ static uint32_t transfer(uint32_t fd, uint32_t pointer, uint32_t count,
   uint32_t error = operation == IO_WRITE
                        ? fs_write(&state.fs, fd, total, positioned, offset,
                                   state.time, &bytes)
-                       : fs_read(&state.fs, fd, total, positioned, offset,
-                                 state.time, &bytes);
+                       : fs_read(&state.fs, fd, total, positioned, offset, &bytes);
   size_t cursor = 0;
   for (size_t i = 0; !error && i < count; i++) {
     uint32_t pointer = (uint32_t)load_le(vectors_bytes.data + i * 8, 4);

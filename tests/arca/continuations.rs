@@ -8,6 +8,10 @@ use user::prelude::*;
 #[unsafe(no_mangle)]
 pub extern "C" fn _rsstart() -> ! {
     let seed: Word = os::argument().try_into().unwrap();
+    let expected_gs = seed.read() << 12;
+    unsafe {
+        core::arch::asm!("wrgsbase {}", in(reg) expected_gs, options(nostack, preserves_flags));
+    }
     let mut bytes = [seed.read() as u8; 64];
     assert_eq!(
         unsafe { arcane::arca_call_with_current_continuation(-1) },
@@ -23,10 +27,20 @@ pub extern "C" fn _rsstart() -> ! {
         os::exit(Tuple::from((snapshot, Blob::new(bytes))));
     }
     assert_eq!(bytes, [seed.read() as u8; 64]);
+    let actual_gs: u64;
+    unsafe {
+        core::arch::asm!("rdgsbase {}", out(reg) actual_gs, options(nostack, preserves_flags));
+    }
+    assert_eq!(actual_gs, expected_gs);
     let reply = os::argument();
     let result = Function::symbolic("captured")
         .apply(seed)
         .apply(reply)
         .call_with_current_continuation();
+    let actual_gs: u64;
+    unsafe {
+        core::arch::asm!("rdgsbase {}", out(reg) actual_gs, options(nostack, preserves_flags));
+    }
+    assert_eq!(actual_gs, expected_gs);
     os::exit(result);
 }

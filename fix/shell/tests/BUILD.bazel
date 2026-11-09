@@ -1,0 +1,8 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+cc_test(
+    name = "memory",
+    visibility = ["//:__pkg__"],
+    srcs = ["memory.c", "//fix/shell:headers"],
+    copts = ["-O3", "-UNDEBUG", "-ffreestanding", "-march=x86-64-v3"],
+)

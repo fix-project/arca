@@ -1,23 +1,34 @@
-load(":cmake.bzl", "MAPS", "patched_sources", "source_build")
-load(":defs.bzl", "wasm_tools", "repository_archive")
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
+load("@bazel_lib//lib:directory_path.bzl", "directory_path")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":cmake.bzl", "MAPS", "source_build")
+load(":defs.bzl", "seed_repository")
+load(":files.bzl", "wasm_tools", "toolchain_files", "mapped_directory")
 load(":llvm.bzl", "llvm_bundle", "llvm_resources")
 load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
-load(":native.bzl", native_generation = "generation", native_program = "program")
-load(":fix.bzl", "generation", "verify")
-load("//flatware:build.bzl", "flatware_directory")
-load("//build:fix.bzl", "fix_binding")
+load(":native.bzl", "UNITS", native_generation = "generation", native_program = "program")
+load(":configuration.bzl", "stage")
+load(":tools.bzl", "SEED_MODULES", "compilation_script")
+load("//build:fix.bzl", "fix_run")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(["toolchain-tags.patch"])
 
-int_flag(name = "jobs", build_setting_default = 0)
-int_flag(name = "memory", build_setting_default = 0)
+rust_binary(
+    name = "seed_tool",
+    srcs = ["seed.rs"],
+    crate_root = "seed.rs",
+    edition = "2024",
+    deps = ["//fix/handle", "//fix/repository", "//flatware:tree"],
+)
+
 bool_flag(name = "debug", build_setting_default = False)
 config_setting(name = "debug_enabled", flag_values = {":debug": "true"})
 
-exports_files(["defs.bzl", "cmake.bzl", "native.bzl", "fix.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "repository.sh", "README.md"])
+exports_files(["defs.bzl", "files.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "tools.bzl", "README.md"])
 
 HOST = "$${EXT_BUILD_ROOT}/$(execpath :host_llvm)"
 SYSROOT = "$${EXT_BUILD_ROOT}/$(execpath :wasi_sysroot)"
@@ -30,11 +41,10 @@ WASI_TARGET = {
     "CMAKE_ASM_COMPILER_TARGET": "wasm32-unknown-wasip1",
 }
 
-patched_sources(
+copy_to_directory(
     name = "wabt_sources",
-    root = "@wabt_src//:CMakeLists.txt",
-    sources = "@wabt_src//:sources",
-    patch = "//build:wabt-externref.cmake",
+    srcs = ["@wabt_src//:sources"],
+    include_external_repositories = ["**"],
     tags = ["manual"],
 )
 
@@ -182,20 +192,104 @@ source_build(
 )
 
 wasm_tools(name = "stage0", tags = ["manual"])
-flatware_directory(name = "usr_graph", src = ":stage0", subdir = "usr", guest_path = "/usr", tags = ["manual"])
-alias(name = "usr", actual = ":usr_graph", tags = ["manual"])
-flatware_directory(name = "shell_headers_graph", inputs = {"//fix/shell:headers": "", "//fix/shell:wasm_rt": "wasm-rt.c", "//fix/shell:shell": "libfixshell.a", "//fix/shell:memmap": "memmap.ld"}, guest_path = "/include", tags = ["manual"])
-alias(name = "shell_headers", actual = ":shell_headers_graph", tags = ["manual"])
-[fix_binding(name = "stage1_" + command + "_value", value = command, tags = ["manual"]) for command in ["clang", "wasm2c", "wasm-merge"]]
 native_generation("stage1")
-native_program(name = "compile", src = "//programs/fix:compile_module", directory = "compile", partitions = 8)
-generation("stage2", previous = "stage1", jobs = ":jobs", memory = ":memory")
-generation("stage3", previous = "stage2", jobs = ":jobs", memory = ":memory")
+native_program(name = "compile", src = "//programs/fix:compile_module", directory = "compile")
+native_program(name = "scheduler", src = "//programs/fix:scheduler_module", directory = "scheduler")
+native_program(name = "collector", src = "//fix/proof/collector:module", directory = "collector")
 
-verify(name = "verify1", left = "stage1", right = "stage2")
-verify(name = "verify2", left = "stage2", right = "stage3")
+copy_to_directory(
+    name = "simde_headers",
+    srcs = ["@wabt_src//:simde_headers"],
+    include_external_repositories = ["**"],
+    root_paths = ["third_party/simde"],
+    tags = ["manual"],
+)
 
-alias(name = "bootstrap", actual = ":repository_archive", tags = ["manual"])
-alias(name = "verify", actual = ":verify1", tags = ["manual"])
+directory_path(
+    name = "simde_include",
+    directory = ":simde_headers",
+    path = "simde",
+    tags = ["manual"],
+)
 
-repository_archive(name = "repository_archive", tags = ["manual"])
+toolchain_files(
+    name = "toolchain_files",
+    stage0 = ":stage0",
+    resources = {
+        ":simde_include": "usr/include/simde",
+        "//fix/shell:shell": "share/fix/libfixshell.a",
+        "//fix/shell:wasm_rt": "share/fix/wasm-rt.c",
+        "//fix/shell:cpp_support": "share/fix/cpp-support.cc",
+        "//fix/shell:cpp_runtime": "share/fix/",
+        "//fix/shell:cpp_headers": "share/fix/c++",
+        "//fix/shell:memmap": "share/fix/memmap.ld",
+        "//fix/shell:headers": "share/fix/",
+    },
+    tags = ["manual"],
+)
+
+mapped_directory(
+    name = "wasip1_sysroot",
+    srcs = {":wasi_sysroot": ".", ":wasi_resources": "lib/clang/23"},
+    allow_overwrites = True,
+    tags = ["manual"],
+)
+
+seed_repository(
+    name = "seed",
+    compiler = ":compile_link",
+    wasm2c = ":stage1_wasm2c_link",
+    clang = ":stage1_clang_link",
+    toolchain = ":toolchain_files",
+    programs = {
+        ":scheduler_link": "scheduler",
+        ":collector_link": "collector",
+        ":stage1_lld_link": "lld",
+        ":stage1_wasm-merge_link": "wasm-merge",
+    },
+    blobs = {
+        "//flatware:adapter_wasm": "flatware",
+        "//flatware:control_wasm": "flatware-control",
+    },
+    directories = {":wasip1_sysroot": "wasip1-sysroot"},
+    tags = ["manual"],
+)
+
+alias(name = "bootstrap", actual = ":seed", tags = ["manual"])
+
+# The seed's modules, in the seed's configuration.
+[
+    stage(name = name + "_module", srcs = [module], tags = ["manual"])
+    for name, module in SEED_MODULES.items()
+]
+
+compilation_script(
+    name = "compilation_script",
+    modules = SEED_MODULES.keys(),
+    units = UNITS,
+    tags = ["manual"],
+)
+
+# Rebuilds every seed ELF inside Fix; the archive carries the compile coupons.
+fix_run(
+    name = "compilations",
+    expression = '@script("compile.fix")',
+    bindings = {"compile": '@label("compile")'},
+    data = {":compilation_script": "compile.fix"} | {":" + name + "_module": name + ".wasm" for name in SEED_MODULES},
+    archives = ["//fix/cli:precompiled"],
+    fix = ":release_fix",
+    tags = ["manual"],
+)
+
+# Stage2 measures the bootstrap, so its CLI is a release build.
+stage(name = "release_fix", srcs = ["//fix/cli:fix"], tags = ["manual"])
+
+filegroup(name = "compilations_handle", srcs = [":compilations"], output_group = "handle", tags = ["manual"])
+
+sh_test(
+    name = "stage2",
+    srcs = ["stage2_test.sh"],
+    args = ["$(rootpath :release_fix)", "$(rootpath :seed)", "$(rootpath :compilations)", "$(rootpath :compilations_handle)"],
+    data = [":release_fix", ":seed", ":compilations", ":compilations_handle"],
+    tags = ["manual", "kvm", "local"],
+)

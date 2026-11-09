@@ -1105,6 +1105,9 @@ impl BuddyAllocatorImpl {
                 *spot = cache.pop().unwrap();
             }
             if self.try_free_many_raw(size, &space).is_none() {
+                for entry in space.into_iter().rev() {
+                    cache.push(entry).unwrap();
+                }
                 return false;
             }
             return true;

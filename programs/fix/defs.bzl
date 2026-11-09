@@ -18,26 +18,32 @@ def fix_wat_program(name):
         artifact_visibility = ["//visibility:public"],
     )
 
-def fix_rust_program(name, alloc = False, artifact_visibility = ["//tests/fix:__pkg__"]):
+def fix_rust_program(name, alloc = False, importers = False, memories = 3, tables = 3, artifact_visibility = ["//tests/fix:__pkg__"], deps = []):
     """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
+    sdk = "//fix/sdk"
+    if importers:
+        sdk = "//fix/sdk:sdk_import"
+    elif alloc:
+        sdk = "//fix/sdk:sdk_alloc"
     rust_shared_library(
         name = name + "_wasm",
         visibility = ["//tests:__pkg__"],
-        srcs = [name + ".rs"],
+        srcs = [name + ".rs"] + native.glob([name + "/**/*.rs"], allow_empty = True),
+        crate_root = name + ".rs",
         platform = WASM,
-        deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"] if alloc else ["//fix/sdk"],
+        deps = [sdk] + deps + (["@crates//:dlmalloc"] if alloc or importers else []),
     )
     fix_procedure(
         name = name,
         wasm = ":" + name + "_wasm",
-        memories = 2,
-        tables = 2,
+        memories = memories,
+        tables = tables,
         runnable = True,
         visibility = ["//visibility:public"],
         artifact_visibility = artifact_visibility,
     )
 
-FIX_LANGUAGE_PROGRAMS = ["blob", "add", "path"]
+FIX_LANGUAGE_PROGRAMS = ["blob", "add"]
 
 def fix_language_programs(language):
     """Build the same standalone programs and integration tests in each language."""
@@ -63,20 +69,10 @@ def fix_language_programs(language):
         fix_procedure(
             name = name,
             wasm = ":" + wasm,
-            memories = 2 if language == "rust" else None,
-            tables = 2 if language == "rust" else None,
+            memories = 3 if language == "rust" else None,
+            tables = 3 if language == "rust" else None,
             runnable = True,
             artifact_visibility = ["//visibility:public"],
         )
 
     native.filegroup(name = "programs", srcs = [":" + name for name in FIX_LANGUAGE_PROGRAMS])
-    fix_script_test(
-        name = "path_test",
-        size = "large",
-        timeout = "short",
-        script = "path.fix",
-        data = ["//programs/fix:fixtures/path.fix", ":path_elf", "//tests/fix:check_result_native"],
-        expected = "2a00000000000000",
-        tags = ["kvm", "local"],
-    )
-    native.test_suite(name = "tests", tests = [":path_test"])

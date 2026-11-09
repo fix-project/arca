@@ -11,7 +11,7 @@ rocq_dependencies(
         "//fix/proof/shell:TagProperties",
         "//fix/proof/collector:Completeness",
         "//fix/proof/collector:Preservation",
-        "//fix/proof/collector/wasm:Refinement",
+        "//fix/proof/collector/wasm:Entry",
     ],
     tags = ["manual"],
 )

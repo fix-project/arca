@@ -1,7 +1,7 @@
 """Discover native build tools on the host."""
 
 def _local_tools_impl(ctx):
-    tools = ["bash", "gcc", "g++", "clang", "ar", "ranlib", "cmake", "make", "nproc", "cpio"]
+    tools = ["bash", "gcc", "g++", "clang", "ar", "ranlib", "cmake", "make", "nproc"]
     for tool in tools:
         path = ctx.which(tool)
         if not path:
@@ -10,9 +10,7 @@ def _local_tools_impl(ctx):
     cores = ctx.execute([str(ctx.which("nproc"))])
     if cores.return_code:
         fail(cores.stderr)
-    cache_home = ctx.getenv("XDG_CACHE_HOME", "")
-    cache = cache_home + "/fix/bazel" if cache_home else ""
-    ctx.file("cores.bzl", "HOST_CPUS = %d\nHOST_FIX_CACHE = %s\n" % (int(cores.stdout.strip()), repr(cache)))
+    ctx.file("cores.bzl", "HOST_CPUS = %d\n" % int(cores.stdout.strip()))
     for tool in ["clang-format", "clang-tidy"]:
         path = ctx.which(tool)
         if path:

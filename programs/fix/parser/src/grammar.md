@@ -5,7 +5,8 @@ P ::= (name = A newline+)* A
 
 A ::= O | K | E             Any
     | name                  Identifier
-    | $name                 Stdlib primitive
+    | $name                 External binding
+    | $0                    Positional argument
 
 int ::= num_u8              Integer
       | num_u16
@@ -15,7 +16,7 @@ int ::= num_u8              Integer
 
 B ::= int                   Blob
     | string
-    | @"/path/"             File contents
+    | @file("/path/")       File contents (preprocessed)
 
 T ::= (A*)                  Tree
 
@@ -39,11 +40,13 @@ comment ::= --              Single line
 ### Example
 
 ```
-compiler = @"/path/"
+compiler = @file("/path/")
 *#(*#(compiler $def_limits
     "int f(int x, int y) {return x + y;}")
     $def_limits 19u32 4u32)
 ```
 
 Strings support escaped quotes, backslashes, control characters, and Unicode
-scalar escapes. File expansion happens on the host.
+scalar escapes. Preprocessing happens on Linux; parsing runs in Fix. See the
+[CLI expression interface](../../../../fix/cli/README.md) for imports and script
+argument scopes.

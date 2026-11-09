@@ -1,7 +1,6 @@
 load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("//build:defs.bzl", "wat_module")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
-load("//programs/fix:defs.bzl", "fix_rust_program")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -23,12 +22,14 @@ rust_binary(
 
 wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
 
-exports_files(["build.bzl"])
 
-fix_rust_program(name = "cpio", alloc = True, artifact_visibility = ["//visibility:public"])
-fix_rust_program(name = "normalize", artifact_visibility = ["//visibility:public"])
-fix_rust_program(name = "result", artifact_visibility = ["//visibility:public"])
-
+genrule(
+    name = "merged_wasm",
+    srcs = [":adapter_wasm", ":control_wasm"],
+    tools = ["//tools:wasm_merge"],
+    outs = ["flatware.wasm"],
+    cmd = "$(execpath //tools:wasm_merge) $(location :adapter_wasm) wasi_snapshot_preview1 $(location :control_wasm) flatware_control --rename-export-conflicts -o $@",
+)
 
 rust_library(
     name = "tree",

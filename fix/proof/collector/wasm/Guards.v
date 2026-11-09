@@ -16,9 +16,9 @@ Definition evaluation_tree :=
 
 (** The parsed Tree guard has the expected type-checking body. *)
 Lemma evaluation_tree_body : modfunc_body evaluation_tree =
-  [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N;
+  [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N;
    BI_local_get 0%N; BI_call 1%N; BI_const_num (VAL_int32 (Wasm_int.int_of_Z i32m 1%Z));
-   BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N].
+   BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N].
 Proof. reflexivity. Qed.
 
 Definition evaluation_size :=
@@ -28,15 +28,15 @@ Definition evaluation_arity :=
 
 (** The parsed size helper has the expected Tree and index-bound checks. *)
 Lemma evaluation_size_body : modfunc_body evaluation_size =
-  [BI_local_get 0%N; BI_call 20%N; BI_local_get 0%N; BI_call 6%N;
-   BI_const_num (VAL_int64 (Wasm_int.int_of_Z i64m 4294967295%Z));
-   BI_relop T_i64 (Relop_i (ROI_le SX_U)); BI_call 18%N;
+  [BI_local_get 0%N; BI_call 23%N; BI_local_get 0%N; BI_call 6%N;
+   BI_const_num (VAL_int64 (Wasm_int.int_of_Z i64m 134217729%Z));
+   BI_relop T_i64 (Relop_i (ROI_lt SX_U)); BI_call 21%N;
    BI_local_get 0%N; BI_call 6%N; BI_cvtop T_i32 CVO_wrap T_i64 None].
 Proof. reflexivity. Qed.
 (** The parsed arity helper has the expected size-equality guard. *)
 Lemma evaluation_arity_body : modfunc_body evaluation_arity =
-  [BI_local_get 0%N; BI_call 21%N; BI_local_get 1%N;
-   BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N].
+  [BI_local_get 0%N; BI_call 24%N; BI_local_get 1%N;
+   BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N].
 Proof. reflexivity. Qed.
 
 Definition evaluation_object :=
@@ -44,8 +44,8 @@ Definition evaluation_object :=
 
 (** The parsed Object witness helper has the expected reference-authentication body. *)
 Lemma evaluation_object_body : modfunc_body evaluation_object =
-  [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N;
-   BI_local_get 0%N; BI_local_get 1%N; BI_call 11%N; BI_call 19%N].
+  [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N;
+   BI_local_get 0%N; BI_local_get 1%N; BI_call 12%N; BI_call 22%N].
 Proof. reflexivity. Qed.
 
 Definition evaluation_same :=
@@ -53,7 +53,7 @@ Definition evaluation_same :=
 
 (** The parsed identity helper has the expected privileged-byte comparison body. *)
 Lemma evaluation_same_body : modfunc_body evaluation_same =
-  [BI_local_get 0%N; BI_call 4%N; BI_local_get 1%N; BI_call 4%N; BI_call 5%N; BI_call 18%N].
+  [BI_local_get 0%N; BI_local_get 1%N; BI_call 4%N; BI_call 21%N].
 Proof. reflexivity. Qed.
 
 Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
@@ -68,7 +68,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Variable combination : S.TreeName.
     Variable handle_bytes : nat -> S.handle -> option S.BlobName.
     Local Instance collector_host : host :=
-      E.H.shell_host combination E.collector_instance true handle_bytes.
+      E.H.shell_host combination E.collector_instance true true handle_bytes.
 
     (** The modeled query import returns the requested property of a handle stored in a
         local. *)
@@ -79,7 +79,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       lookup_N locals local = Some (extern_value value) ->
       (match shell_signature operation with Tf parameters _ =>
         parameters = [T_ref T_externref] end) ->
-      E.H.host_values combination E.collector_instance true handle_bytes state store
+      E.H.host_values combination E.collector_instance true true handle_bytes state store
         operation [extern_value value] = Some values ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
@@ -126,7 +126,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       lookup_N locals local = Some (extern_value value) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          to_e_list [BI_local_get local; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N])
+          to_e_list [BI_local_get local; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N])
         (state, store, Build_frame locals E.collector_instance,
           match value with Data (Object _) => [] | _ => [AI_trap] end).
     Proof.
@@ -134,9 +134,9 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       eapply rt_trans with (y := (state, store,
         Build_frame locals E.collector_instance,
         [v_to_e (VAL_num (VAL_int32 (E.H.W.i32_of_nat (E.H.W.H.value_type value))));
-         AI_basic (BI_testop T_i32 TO_eqz); AI_basic (BI_call 18%N)])).
+         AI_basic (BI_testop T_i32 TO_eqz); AI_basic (BI_call 21%N)])).
       - eapply E.collector_runs_context with (prefix := [])
-          (suffix := [AI_basic (BI_testop T_i32 TO_eqz); AI_basic (BI_call 18%N)])
+          (suffix := [AI_basic (BI_testop T_i32 TO_eqz); AI_basic (BI_call 21%N)])
           (instructions := [AI_basic (BI_local_get local); AI_basic (BI_call 0%N)])
           (instructions' := [v_to_e (VAL_num (VAL_int32
             (E.H.W.i32_of_nat (E.H.W.H.value_type value))))]).
@@ -148,8 +148,8 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       - eapply rt_trans with (y := (state, store,
           Build_frame locals E.collector_instance,
           [v_to_e (VAL_num (VAL_int32 (wasm_bool (app_testop_i i32m TO_eqz
-            (E.H.W.i32_of_nat (E.H.W.H.value_type value)))))); AI_basic (BI_call 18%N)])).
-        + apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 18%N)]);
+            (E.H.W.i32_of_nat (E.H.W.H.value_type value)))))); AI_basic (BI_call 21%N)])).
+        + apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 21%N)]);
             [apply r_simple, rs_testop_i32|reflexivity|reflexivity].
         + destruct value as [[object|reference]|thunk|encode];
             first [apply E.collector_require_executes with (condition := true)
@@ -164,7 +164,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         (state, store, Build_frame [extern_value (Data (Object object))] E.collector_instance,
           to_e_list [BI_local_get 0%N; BI_call 1%N;
             BI_const_num (VAL_int32 (Wasm_int.int_of_Z i32m 1%Z));
-            BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N])
+            BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N])
         (state, store, Build_frame [extern_value (Data (Object object))] E.collector_instance,
           match object with TreeObj _ => [] | BlobObj _ => [AI_trap] end).
     Proof.
@@ -175,10 +175,10 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       eapply rt_trans with (y := (state, store,
         Build_frame [extern_value (Data (Object object))] E.collector_instance,
         [v_to_e (VAL_num word); v_to_e (VAL_num one);
-         AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)])).
+         AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)])).
       - eapply E.collector_runs_context with (prefix := [])
           (suffix := [v_to_e (VAL_num one); AI_basic (BI_relop T_i32 (Relop_i ROI_eq));
-            AI_basic (BI_call 18%N)])
+            AI_basic (BI_call 21%N)])
           (instructions := [AI_basic (BI_local_get 0%N); AI_basic (BI_call 1%N)])
           (instructions' := [v_to_e (VAL_num word)]).
         eapply collector_query_local with (operation := shell_get_data_type)
@@ -189,8 +189,8 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       - eapply rt_trans with (y := (state, store,
           Build_frame [extern_value (Data (Object object))] E.collector_instance,
           [v_to_e (VAL_num (VAL_int32 (wasm_bool
-            (app_relop (Relop_i ROI_eq) word one)))); AI_basic (BI_call 18%N)])).
-        + apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 18%N)]).
+            (app_relop (Relop_i ROI_eq) word one)))); AI_basic (BI_call 21%N)])).
+        + apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 21%N)]).
           * apply r_simple; apply rs_relop with (v1 := word) (v2 := one)
               (t := T_i32) (op := Relop_i ROI_eq); reflexivity.
           * reflexivity.
@@ -213,10 +213,10 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       intro Functions; rewrite evaluation_tree_body.
       set (suffix := to_e_list [BI_local_get 0%N; BI_call 1%N;
         BI_const_num (VAL_int32 (Wasm_int.int_of_Z i32m 1%Z));
-        BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N]).
+        BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N]).
       change (reduce_trans
         (state, store, Build_frame [extern_value value] E.collector_instance,
-          to_e_list [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N] ++ suffix)
+          to_e_list [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N] ++ suffix)
         (state, store, Build_frame [extern_value value] E.collector_instance,
           match value with Data (Object (TreeObj _)) => [] | _ => [AI_trap] end)).
       destruct value as [[object|reference]|thunk|encode].
@@ -236,7 +236,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       s_funcs store = s_funcs E.allocated_store ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value value] ++ [AI_basic (BI_call 20%N)])
+          v_to_e_list [extern_value value] ++ [AI_basic (BI_call 23%N)])
         (state, store, Build_frame locals E.collector_instance,
           match value with Data (Object (TreeObj _)) => [] | _ => [AI_trap] end).
     Proof.
@@ -247,7 +247,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         by (destruct value as [[[]|reference]|thunk|encode]; reflexivity).
       eapply E.collector_call_void with (code := evaluation_tree)
         (parameters := [T_ref T_externref]) (defaults := [])
-        (index := 20%N) (address := 20%N) (arguments := [extern_value value])
+        (index := 23%N) (address := 23%N) (arguments := [extern_value value])
         (final_frame := Build_frame [extern_value value] E.collector_instance);
         try reflexivity.
       - rewrite Functions; reflexivity.
@@ -266,10 +266,10 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Proof.
       intros Functions NotTree; rewrite evaluation_size_body.
       collector_execute_under E.collector_runs_context (@nil datatypes.value)
-        (E.collector_local_get combination true handle_bytes state store [extern_value value] 0%N
+        (E.collector_local_get combination true true handle_bytes state store [extern_value value] 0%N
           (extern_value value) eq_refl).
       eapply E.collector_trap_suffix with
-        (instructions := v_to_e_list [extern_value value] ++ [AI_basic (BI_call 20%N)]).
+        (instructions := v_to_e_list [extern_value value] ++ [AI_basic (BI_call 23%N)]).
       pose proof (collector_tree_executes state store [extern_value value] value Functions) as Guard.
       destruct value as [[[]|reference]|thunk|encode]; try exact Guard.
       exfalso; eapply NotTree; reflexivity.
@@ -281,13 +281,13 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       (forall tree, value <> Data (Object (TreeObj tree))) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value value] ++ [AI_basic (BI_call 21%N)])
+          v_to_e_list [extern_value value] ++ [AI_basic (BI_call 24%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions NotTree.
       eapply E.collector_call with (code := evaluation_size)
         (parameters := [T_ref T_externref]) (results := [T_num T_i32]) (defaults := [])
-        (index := 21%N) (address := 21%N) (arguments := [extern_value value])
+        (index := 24%N) (address := 24%N) (arguments := [extern_value value])
         (values := [VAL_num (VAL_int32 (wasm_nat 0))]) (accepted := false)
         (final_frame := Build_frame [extern_value value] E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
@@ -323,7 +323,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         (state, store, Build_frame [extern_value (Data (Object (TreeObj tree)))] E.collector_instance,
           to_e_list (modfunc_body evaluation_size))
         (state, store, Build_frame [extern_value (Data (Object (TreeObj tree)))] E.collector_instance,
-          if Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z
+          if Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z
           then v_to_e_list [VAL_num (VAL_int32 (wasm_nat (List.length (get_tree_raw tree))))] else [AI_trap]).
     Proof.
       intros Functions Wide.
@@ -331,28 +331,28 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       set (length := List.length (get_tree_raw tree)).
       rewrite evaluation_size_body.
       collector_execute_under E.collector_runs_context (@nil value)
-        (E.collector_local_get combination true handle_bytes state store locals 0%N
+        (E.collector_local_get combination true true handle_bytes state store locals 0%N
           (extern_value (Data (Object (TreeObj tree)))) eq_refl).
       collector_execute_under E.collector_runs_context (@nil value)
         (collector_tree_executes state store locals (Data (Object (TreeObj tree))) Functions).
       collector_execute_under E.collector_runs_context (@nil value)
         (collector_length_local state store locals 0%N tree Functions eq_refl Wide).
       eapply rt_trans with (y := (state, store, Build_frame locals E.collector_instance,
-        [v_to_e (VAL_num (VAL_int32 (wasm_bool (Z.ltb (Z.of_nat length) (2 ^ 32)%Z)))); AI_basic (BI_call 18%N);
+        [v_to_e (VAL_num (VAL_int32 (wasm_bool (Z.ltb (Z.of_nat length) (Z.of_N native_table_limit + 1)%Z)))); AI_basic (BI_call 21%N);
          AI_basic (BI_local_get 0%N); AI_basic (BI_call 6%N); AI_basic (BI_cvtop T_i32 CVO_wrap T_i64 None)])).
-      - pose proof (wasm_nat64_fits32 length Wide) as Fits.
+      - pose proof (native_size_comparison length Wide) as Fits.
         rewrite <- Fits.
         apply rt_step; eapply r_label with (lh := LH_base []
-          [AI_basic (BI_call 18%N); AI_basic (BI_local_get 0%N); AI_basic (BI_call 6%N);
+          [AI_basic (BI_call 21%N); AI_basic (BI_local_get 0%N); AI_basic (BI_call 6%N);
            AI_basic (BI_cvtop T_i32 CVO_wrap T_i64 None)]).
         + apply r_simple; apply rs_relop with (v1 := VAL_int64 (wasm_nat64 length))
-            (v2 := VAL_int64 (Wasm_int.int_of_Z i64m 4294967295%Z))
-            (t := T_i64) (op := Relop_i (ROI_le SX_U)); reflexivity.
+            (v2 := VAL_int64 (Wasm_int.int_of_Z i64m 134217729%Z))
+            (t := T_i64) (op := Relop_i (ROI_lt SX_U)); reflexivity.
         + reflexivity.
         + reflexivity.
-      - destruct (Z.ltb (Z.of_nat length) (2 ^ 32)%Z) eqn:Fits.
+      - destruct (Z.ltb (Z.of_nat length) (Z.of_N native_table_limit + 1)%Z) eqn:Fits.
         + collector_execute_under E.collector_runs_context (@nil value)
-            (E.collector_require_executes combination true handle_bytes state store locals true
+            (E.collector_require_executes combination true true handle_bytes state store locals true
               ltac:(rewrite Functions; reflexivity)).
           collector_execute_under E.collector_runs_context (@nil value)
             (collector_length_local state store locals 0%N tree Functions eq_refl Wide).
@@ -362,17 +362,17 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
             try reflexivity.
           apply wasm_nat64_wrap; exact Wide.
         + eapply E.collector_trap_suffix with
-            (instructions := [v_to_e (VAL_num (VAL_int32 (wasm_bool false))); AI_basic (BI_call 18%N)]).
+            (instructions := [v_to_e (VAL_num (VAL_int32 (wasm_bool false))); AI_basic (BI_call 21%N)]).
           apply E.collector_require_executes with (condition := false); rewrite Functions; reflexivity.
     Qed.
 
     (** The native size call returns a Tree's length when it fits the native index bound. *)
     Lemma collector_size_executes state store locals tree :
       s_funcs store = s_funcs E.allocated_store ->
-      (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 32)%Z ->
+      native_size_bound (List.length (get_tree_raw tree)) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 21%N)])
+          v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 24%N)])
         (state, store, Build_frame locals E.collector_instance,
           v_to_e_list [VAL_num (VAL_int32
             (E.H.W.i32_of_nat (E.H.Tables.T.O.data_length (Object (TreeObj tree)))))]).
@@ -380,15 +380,15 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       intros Functions Bound.
       eapply E.collector_call with (code := evaluation_size)
         (parameters := [T_ref T_externref]) (results := [T_num T_i32]) (defaults := [])
-        (index := 21%N) (address := 21%N)
+        (index := 24%N) (address := 24%N)
         (arguments := [extern_value (Data (Object (TreeObj tree)))])
         (values := [VAL_num (VAL_int32
           (E.H.W.i32_of_nat (E.H.Tables.T.O.data_length (Object (TreeObj tree)))))]) (accepted := true)
         (final_frame := Build_frame [extern_value (Data (Object (TreeObj tree)))] E.collector_instance);
         try reflexivity.
       - rewrite Functions; reflexivity.
-      - pose proof (collector_size_body_executes state store tree Functions ltac:(cbn in Bound |- *; lia)) as Run.
-        assert (Fits : Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z = true)
+      - pose proof (collector_size_body_executes state store tree Functions ltac:(pose proof (native_size_bound_word _ Bound); lia)) as Run.
+        assert (Fits : Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z = true)
           by (apply Z.ltb_lt; exact Bound).
         rewrite Fits in Run; exact Run.
     Qed.
@@ -396,21 +396,21 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     (** The native size call traps on a Tree too large for the native index range. *)
     Lemma collector_size_rejects_large state store locals tree :
       s_funcs store = s_funcs E.allocated_store ->
-      (2 ^ 32 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z ->
+      (Z.of_N native_table_limit + 1 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 21%N)])
+          v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 24%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions [Large Wide].
       eapply E.collector_call with (code := evaluation_size)
         (parameters := [T_ref T_externref]) (results := [T_num T_i32]) (defaults := [])
-        (index := 21%N) (address := 21%N) (arguments := [extern_value (Data (Object (TreeObj tree)))])
+        (index := 24%N) (address := 24%N) (arguments := [extern_value (Data (Object (TreeObj tree)))])
         (values := [VAL_num (VAL_int32 (wasm_nat 0))]) (accepted := false)
         (final_frame := Build_frame [extern_value (Data (Object (TreeObj tree)))] E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
       - pose proof (collector_size_body_executes state store tree Functions Wide) as Run.
-        assert (Fits : Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z = false)
+        assert (Fits : Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z = false)
           by (apply Z.ltb_ge; exact Large).
         rewrite Fits in Run; exact Run.
     Qed.
@@ -420,10 +420,10 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Lemma collector_size_rejects_shape state store locals h :
       s_funcs store = s_funcs E.allocated_store ->
       (forall tree, h = Data (Object (TreeObj tree)) ->
-        (2 ^ 32 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z) ->
+        (Z.of_N native_table_limit + 1 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value h] ++ [AI_basic (BI_call 21%N)])
+          v_to_e_list [extern_value h] ++ [AI_basic (BI_call 24%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions Invalid; destruct h as [[[]|reference]|thunk|encode].
@@ -437,7 +437,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     (** The arity helper body accepts a Tree with the requested bounded length. *)
     Lemma collector_arity_body_executes state store tree length :
       s_funcs store = s_funcs E.allocated_store ->
-      (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 32)%Z ->
+      native_size_bound (List.length (get_tree_raw tree)) ->
       reduce_trans
         (state, store, Build_frame
           [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 length)] E.collector_instance,
@@ -454,35 +454,35 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       set (value := extern_value (Data (Object (TreeObj tree)))).
       set (word := VAL_int32 (E.H.W.i32_of_nat (E.H.Tables.T.O.data_length (Object (TreeObj tree))))).
       eapply rt_trans with (y := (state, store, frame,
-        [v_to_e value; AI_basic (BI_call 21%N); AI_basic (BI_local_get 1%N);
-         AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)])).
+        [v_to_e value; AI_basic (BI_call 24%N); AI_basic (BI_local_get 1%N);
+         AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)])).
       - apply rt_step; eapply r_label with (lh := LH_base []
-          [AI_basic (BI_call 21%N); AI_basic (BI_local_get 1%N);
-           AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)]).
+          [AI_basic (BI_call 24%N); AI_basic (BI_local_get 1%N);
+           AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)]).
         + eapply r_local_get with (j := 0%N) (v := value); reflexivity.
         + reflexivity.
         + reflexivity.
       - eapply rt_trans with (y := (state, store, frame,
           [v_to_e (VAL_num word); AI_basic (BI_local_get 1%N);
-           AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)])).
+           AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)])).
         + eapply E.collector_runs_context with (prefix := [])
             (suffix := [AI_basic (BI_local_get 1%N);
-              AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)])
-            (instructions := v_to_e_list [value] ++ [AI_basic (BI_call 21%N)])
+              AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)])
+            (instructions := v_to_e_list [value] ++ [AI_basic (BI_call 24%N)])
             (instructions' := [v_to_e (VAL_num word)]).
           apply collector_size_executes; assumption.
         + eapply rt_trans with (y := (state, store, frame,
             [v_to_e (VAL_num word); v_to_e (VAL_num (VAL_int32 length));
-             AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)])).
+             AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)])).
           * apply rt_step; eapply r_label with (lh := LH_base [VAL_num word]
-              [AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 18%N)]).
+              [AI_basic (BI_relop T_i32 (Relop_i ROI_eq)); AI_basic (BI_call 21%N)]).
             -- eapply r_local_get with (j := 1%N) (v := VAL_num (VAL_int32 length)); reflexivity.
             -- reflexivity.
             -- reflexivity.
           * eapply rt_trans with (y := (state, store, frame,
               [v_to_e (VAL_num (VAL_int32 (wasm_bool
-                (app_relop (Relop_i ROI_eq) word (VAL_int32 length))))); AI_basic (BI_call 18%N)])).
-            -- apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 18%N)]).
+                (app_relop (Relop_i ROI_eq) word (VAL_int32 length))))); AI_basic (BI_call 21%N)])).
+            -- apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_call 21%N)]).
                ++ apply r_simple; apply rs_relop with (v1 := word) (v2 := VAL_int32 length)
                     (t := T_i32) (op := Relop_i ROI_eq); reflexivity.
                ++ reflexivity.
@@ -493,11 +493,11 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     (** The native arity call accepts a Tree with the requested bounded length. *)
     Lemma collector_arity_executes state store locals tree length :
       s_funcs store = s_funcs E.allocated_store ->
-      (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 32)%Z ->
+      native_size_bound (List.length (get_tree_raw tree)) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
           v_to_e_list [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 length)] ++
-            [AI_basic (BI_call 22%N)])
+            [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance,
           if app_relop (Relop_i ROI_eq)
             (VAL_int32 (E.H.W.i32_of_nat (E.H.Tables.T.O.data_length (Object (TreeObj tree)))))
@@ -506,7 +506,7 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       intros Functions Bound.
       eapply E.collector_call_void with (code := evaluation_arity)
         (parameters := [T_ref T_externref; T_num T_i32]) (defaults := [])
-        (index := 22%N) (address := 22%N)
+        (index := 25%N) (address := 25%N)
         (arguments := [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 length)])
         (final_frame := Build_frame
           [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 length)] E.collector_instance);
@@ -521,34 +521,34 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       (forall tree, value <> Data (Object (TreeObj tree))) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value value; VAL_num (VAL_int32 length)] ++ [AI_basic (BI_call 22%N)])
+          v_to_e_list [extern_value value; VAL_num (VAL_int32 length)] ++ [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions NotTree.
       set (arguments := [extern_value value; VAL_num (VAL_int32 length)]).
       eapply E.collector_call_void with (code := evaluation_arity)
         (parameters := [T_ref T_externref; T_num T_i32]) (defaults := [])
-        (index := 22%N) (address := 22%N) (arguments := arguments) (accepted := false)
+        (index := 25%N) (address := 25%N) (arguments := arguments) (accepted := false)
         (final_frame := Build_frame arguments E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
       - rewrite evaluation_arity_body.
         collector_execute_under E.collector_runs_context (@nil datatypes.value)
-          (E.collector_local_get combination true handle_bytes state store arguments 0%N
+          (E.collector_local_get combination true true handle_bytes state store arguments 0%N
             (extern_value value) eq_refl).
         eapply E.collector_trap_suffix with
-          (instructions := v_to_e_list [extern_value value] ++ [AI_basic (BI_call 21%N)]).
+          (instructions := v_to_e_list [extern_value value] ++ [AI_basic (BI_call 24%N)]).
         apply collector_size_rejects_non_tree; assumption.
     Qed.
 
     (** The native arity call traps when the Tree length differs from the requested arity. *)
     Lemma collector_arity_rejects_length state store locals tree expected :
       s_funcs store = s_funcs E.allocated_store ->
-      (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 32)%Z -> (Z.of_nat expected < 2 ^ 32)%Z ->
+      native_size_bound (List.length (get_tree_raw tree)) -> (Z.of_nat expected < 2 ^ 32)%Z ->
       List.length (get_tree_raw tree) <> expected ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
           v_to_e_list [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 (wasm_nat expected))] ++
-            [AI_basic (BI_call 22%N)])
+            [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions Bound Expected Different.
@@ -556,11 +556,11 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       change (reduce_trans
         (state, store, Build_frame locals E.collector_instance,
           v_to_e_list [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 (wasm_nat expected))] ++
-            [AI_basic (BI_call 22%N)])
+            [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance,
           if Wasm_int.int_eq i32m (wasm_nat (List.length (get_tree_raw tree))) (wasm_nat expected)
           then [] else [AI_trap])) in Run.
-      rewrite (wasm_nat_equal _ _ Bound Expected) in Run.
+      rewrite (wasm_nat_equal _ _ (native_size_bound_word _ Bound) Expected) in Run.
       assert (Mismatch : Nat.eqb (List.length (get_tree_raw tree)) expected = false)
         by (apply Nat.eqb_neq; exact Different).
       rewrite Mismatch in Run; exact Run.
@@ -569,26 +569,26 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     (** The native arity call traps when the Tree exceeds the supported index bound. *)
     Lemma collector_arity_rejects_large state store locals tree expected :
       s_funcs store = s_funcs E.allocated_store ->
-      (2 ^ 32 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z ->
+      (Z.of_N native_table_limit + 1 <= Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
           v_to_e_list [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 expected)] ++
-            [AI_basic (BI_call 22%N)])
+            [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions Large.
       set (arguments := [extern_value (Data (Object (TreeObj tree))); VAL_num (VAL_int32 expected)]).
       eapply E.collector_call_void with (code := evaluation_arity)
         (parameters := [T_ref T_externref; T_num T_i32]) (defaults := [])
-        (index := 22%N) (address := 22%N) (arguments := arguments) (accepted := false)
+        (index := 25%N) (address := 25%N) (arguments := arguments) (accepted := false)
         (final_frame := Build_frame arguments E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
       - rewrite evaluation_arity_body.
         collector_execute_under E.collector_runs_context (@nil value)
-          (E.collector_local_get combination true handle_bytes state store arguments 0%N
+          (E.collector_local_get combination true true handle_bytes state store arguments 0%N
             (extern_value (Data (Object (TreeObj tree)))) eq_refl).
         eapply E.collector_trap_suffix with
-          (instructions := v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 21%N)]).
+          (instructions := v_to_e_list [extern_value (Data (Object (TreeObj tree)))] ++ [AI_basic (BI_call 24%N)]).
         apply collector_size_rejects_large; assumption.
     Qed.
 
@@ -599,13 +599,13 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 64)%Z /\ List.length (get_tree_raw tree) <> expected) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value h; VAL_num (VAL_int32 (wasm_nat expected))] ++ [AI_basic (BI_call 22%N)])
+          v_to_e_list [extern_value h; VAL_num (VAL_int32 (wasm_nat expected))] ++ [AI_basic (BI_call 25%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions Expected Invalid; destruct h as [[[blob|tree]|reference]|thunk|encode].
       - apply collector_arity_rejects_non_tree; [exact Functions|intros; discriminate].
       - destruct (Invalid _ eq_refl) as [Wide Different].
-        destruct (Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z) eqn:Fits.
+        destruct (Z.ltb (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z) eqn:Fits.
         + apply collector_arity_rejects_length; try assumption; apply Z.ltb_lt; exact Fits.
         + apply collector_arity_rejects_large; [exact Functions|split; [apply Z.ltb_ge; exact Fits|exact Wide]].
       - apply collector_arity_rejects_non_tree; [exact Functions|intros; discriminate].
@@ -630,62 +630,35 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       intros Functions Left Right Compared; rewrite evaluation_same_body.
       set (frame := Build_frame [extern_value lhs; extern_value rhs] E.collector_instance).
       set (a := extern_value lhs); set (b := extern_value rhs).
-      set (bytes_a := extern_value (HBlobObj lhs_bytes)).
-      set (bytes_b := extern_value (HBlobObj rhs_bytes)).
       eapply rt_trans with (y := (state, store, frame,
-        [v_to_e a; AI_basic (BI_call 4%N); AI_basic (BI_local_get 1%N);
-         AI_basic (BI_call 4%N); AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])).
+        [v_to_e a; AI_basic (BI_local_get 1%N); AI_basic (BI_call 4%N); AI_basic (BI_call 21%N)])).
       - apply rt_step; eapply r_label with
-          (lh := LH_base [] [AI_basic (BI_call 4%N); AI_basic (BI_local_get 1%N);
-            AI_basic (BI_call 4%N); AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)]).
+          (lh := LH_base [] [AI_basic (BI_local_get 1%N); AI_basic (BI_call 4%N);
+            AI_basic (BI_call 21%N)]).
         + eapply r_local_get with (j := 0%N) (v := a); reflexivity.
         + reflexivity.
         + reflexivity.
-      - eapply rt_trans with (y := (Datatypes.S state, store, frame,
-          [v_to_e bytes_a; AI_basic (BI_local_get 1%N); AI_basic (BI_call 4%N);
-           AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])).
-        + eapply E.collector_runs_context with (prefix := [])
-            (suffix := [AI_basic (BI_local_get 1%N); AI_basic (BI_call 4%N);
-              AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])
-            (instructions := v_to_e_list [a] ++ [AI_basic (BI_call 4%N)])
-            (instructions' := v_to_e_list [bytes_a]).
-          eapply E.collector_import_executes with (operation := shell_handle_bytes)
-            (index := 4%N) (address := 4%N) (arguments := [a])
-            (result := result_values [bytes_a]); try reflexivity.
-          * rewrite Functions; reflexivity.
-          * eapply E.H.handle_bytes_result; [reflexivity|exact Left].
-        + eapply rt_trans with (y := (Datatypes.S state, store, frame,
-            [v_to_e bytes_a; v_to_e b; AI_basic (BI_call 4%N);
-             AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])).
-          * apply rt_step; eapply r_label with
-              (lh := LH_base [bytes_a] [AI_basic (BI_call 4%N);
-                AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)]).
-            -- eapply r_local_get with (j := 1%N) (v := b); reflexivity.
-            -- reflexivity.
-            -- reflexivity.
-          * eapply rt_trans with (y := (Datatypes.S (Datatypes.S state), store, frame,
-              [v_to_e bytes_a; v_to_e bytes_b; AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])).
-            -- eapply E.collector_runs_context with (prefix := [bytes_a])
-                (suffix := [AI_basic (BI_call 5%N); AI_basic (BI_call 18%N)])
-                (instructions := v_to_e_list [b] ++ [AI_basic (BI_call 4%N)])
-                (instructions' := v_to_e_list [bytes_b]).
-               eapply E.collector_import_executes with (operation := shell_handle_bytes)
-                 (index := 4%N) (address := 4%N) (arguments := [b])
-                 (result := result_values [bytes_b]); try reflexivity.
-               ++ rewrite Functions; reflexivity.
-               ++ eapply E.H.handle_bytes_result; [reflexivity|exact Right].
-            -- eapply rt_trans with (y := (Datatypes.S (Datatypes.S state), store, frame,
-                 [v_to_e (VAL_num (VAL_int32 (wasm_bool equal))); AI_basic (BI_call 18%N)])).
-               ++ eapply E.collector_runs_context with (prefix := []) (suffix := [AI_basic (BI_call 18%N)])
-                    (instructions := v_to_e_list [bytes_a; bytes_b] ++ [AI_basic (BI_call 5%N)])
-                    (instructions' := [v_to_e (VAL_num (VAL_int32 (wasm_bool equal)))]).
-                  eapply E.collector_import_executes with (operation := shell_equals)
-                    (index := 5%N) (address := 5%N) (arguments := [bytes_a; bytes_b])
-                    (result := result_values [VAL_num (VAL_int32 (wasm_bool equal))]); try reflexivity.
-                  ** rewrite Functions; reflexivity.
-                  ** eapply E.H.compare_blobs_result; exact Compared.
-               ++ eapply E.collector_require_executes with (condition := equal).
-                  rewrite Functions; reflexivity.
+      - eapply rt_trans with (y := (state, store, frame,
+          [v_to_e a; v_to_e b; AI_basic (BI_call 4%N); AI_basic (BI_call 21%N)])).
+        + apply rt_step; eapply r_label with
+            (lh := LH_base [a] [AI_basic (BI_call 4%N); AI_basic (BI_call 21%N)]).
+          * eapply r_local_get with (j := 1%N) (v := b); reflexivity.
+          * reflexivity.
+          * reflexivity.
+        + eapply rt_trans with (y := (Datatypes.S (Datatypes.S state), store, frame,
+            [v_to_e (VAL_num (VAL_int32 (wasm_bool equal))); AI_basic (BI_call 21%N)])).
+          * eapply E.collector_runs_context with (prefix := [])
+              (suffix := [AI_basic (BI_call 21%N)])
+              (instructions := v_to_e_list [a; b] ++ [AI_basic (BI_call 4%N)])
+              (instructions' := [v_to_e (VAL_num (VAL_int32 (wasm_bool equal)))]).
+            eapply E.collector_import_executes with (operation := shell_same_handle_bytes)
+              (index := 4%N) (address := 4%N) (arguments := [a; b])
+              (result := result_values [VAL_num (VAL_int32 (wasm_bool equal))]); try reflexivity.
+            -- rewrite Functions; reflexivity.
+            -- eapply E.H.same_handle_bytes_result;
+                 [reflexivity|exact Left|exact Right|exact Compared].
+          * eapply E.collector_require_executes with (condition := equal).
+            rewrite Functions; reflexivity.
     Qed.
 
     (** The native identity-check call succeeds when privileged byte observations compare
@@ -697,14 +670,14 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       E.H.Tables.T.O.compare_handles (HBlobObj lhs_bytes) (HBlobObj rhs_bytes) = Some equal ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value lhs; extern_value rhs] ++ [AI_basic (BI_call 19%N)])
+          v_to_e_list [extern_value lhs; extern_value rhs] ++ [AI_basic (BI_call 22%N)])
         (Datatypes.S (Datatypes.S state), store, Build_frame locals E.collector_instance,
           if equal then [] else [AI_trap]).
     Proof.
       intros Functions Left Right Compared.
       eapply E.collector_call_void with (code := evaluation_same)
         (parameters := [T_ref T_externref; T_ref T_externref]) (defaults := [])
-        (index := 19%N) (address := 19%N) (arguments := [extern_value lhs; extern_value rhs])
+        (index := 22%N) (address := 22%N) (arguments := [extern_value lhs; extern_value rhs])
         (accepted := equal) (final_frame := Build_frame [extern_value lhs; extern_value rhs] E.collector_instance);
         try reflexivity.
       - rewrite Functions; reflexivity.
@@ -763,27 +736,27 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         E.collector_instance).
       set (result := Data (Ref (E.H.W.H.data_reference (Object object)))).
       eapply rt_trans with (y := (state, store, frame,
-        to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 11%N; BI_call 19%N])).
+        to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 12%N; BI_call 22%N])).
       - eapply E.collector_runs_context with (prefix := [])
-          (suffix := to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 11%N; BI_call 19%N])
+          (suffix := to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 12%N; BI_call 22%N])
           (instructions := to_e_list
-            [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N])
+            [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N])
           (instructions' := []).
         apply collector_type_guard_executes with (value := Data (Object object));
           [exact Functions|reflexivity].
       - eapply rt_trans with (y := (state, store, frame,
           [v_to_e (extern_value reference); AI_basic (BI_local_get 1%N);
-           AI_basic (BI_call 11%N); AI_basic (BI_call 19%N)])).
+           AI_basic (BI_call 12%N); AI_basic (BI_call 22%N)])).
         + apply rt_step; eapply r_label with (lh := LH_base []
-            [AI_basic (BI_local_get 1%N); AI_basic (BI_call 11%N); AI_basic (BI_call 19%N)]).
+            [AI_basic (BI_local_get 1%N); AI_basic (BI_call 12%N); AI_basic (BI_call 22%N)]).
           * eapply r_local_get with (j := 0%N) (v := extern_value reference); reflexivity.
           * reflexivity.
           * reflexivity.
         + eapply rt_trans with (y := (state, store, frame,
-            [v_to_e (extern_value reference); v_to_e (extern_value result); AI_basic (BI_call 19%N)])).
+            [v_to_e (extern_value reference); v_to_e (extern_value result); AI_basic (BI_call 22%N)])).
           * eapply E.collector_runs_context with (prefix := [extern_value reference])
-              (suffix := [AI_basic (BI_call 19%N)])
-              (instructions := [AI_basic (BI_local_get 1%N); AI_basic (BI_call 11%N)])
+              (suffix := [AI_basic (BI_call 22%N)])
+              (instructions := [AI_basic (BI_local_get 1%N); AI_basic (BI_call 12%N)])
               (instructions' := [v_to_e (extern_value result)]).
             eapply collector_query_local with (operation := shell_create_ref)
               (value := Data (Object object)) (values := [extern_value result]); try reflexivity.
@@ -802,14 +775,14 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       E.H.Tables.T.O.compare_handles (HBlobObj reference_bytes) (HBlobObj object_bytes) = Some equal ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value reference; extern_value (Data (Object object))] ++ [AI_basic (BI_call 25%N)])
+          v_to_e_list [extern_value reference; extern_value (Data (Object object))] ++ [AI_basic (BI_call 28%N)])
         (Datatypes.S (Datatypes.S state), store, Build_frame locals E.collector_instance,
           if equal then [] else [AI_trap]).
     Proof.
       intros Functions Reference ObjectBytes Compared.
       eapply E.collector_call_void with (code := evaluation_object)
         (parameters := [T_ref T_externref; T_ref T_externref]) (defaults := [])
-        (index := 25%N) (address := 25%N)
+        (index := 28%N) (address := 28%N)
         (arguments := [extern_value reference; extern_value (Data (Object object))]) (accepted := equal)
         (final_frame := Build_frame [extern_value reference; extern_value (Data (Object object))]
           E.collector_instance); try reflexivity.
@@ -823,22 +796,22 @@ Module WasmGuards (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       (forall object, value <> Data (Object object)) ->
       reduce_trans
         (state, store, Build_frame locals E.collector_instance,
-          v_to_e_list [extern_value reference; extern_value value] ++ [AI_basic (BI_call 25%N)])
+          v_to_e_list [extern_value reference; extern_value value] ++ [AI_basic (BI_call 28%N)])
         (state, store, Build_frame locals E.collector_instance, [AI_trap]).
     Proof.
       intros Functions NotObject.
       eapply E.collector_call_void with (code := evaluation_object)
         (parameters := [T_ref T_externref; T_ref T_externref]) (defaults := [])
-        (index := 25%N) (address := 25%N)
+        (index := 28%N) (address := 28%N)
         (arguments := [extern_value reference; extern_value value]) (accepted := false)
         (final_frame := Build_frame [extern_value reference; extern_value value] E.collector_instance);
         try reflexivity.
       - rewrite Functions; reflexivity.
       - rewrite evaluation_object_body.
-        set (suffix := to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 11%N; BI_call 19%N]).
+        set (suffix := to_e_list [BI_local_get 0%N; BI_local_get 1%N; BI_call 12%N; BI_call 22%N]).
         eapply collector_guard_prefix with (accepted := false) (result := suffix)
           (instructions := to_e_list
-            [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 18%N])
+            [BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N])
           (suffix := suffix); [|apply rt_refl].
         pose proof (collector_type_guard_executes state store
           [extern_value reference; extern_value value] 1%N value Functions eq_refl) as Guard.

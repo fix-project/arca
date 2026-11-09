@@ -6,3 +6,11 @@ filegroup(
     name = "sources",
     srcs = glob(["**"], exclude = ["BUILD.bazel", "**/test/**", "**/unittests/**", "**/.git/**"]),
 )
+
+filegroup(
+    name = "cpp_runtime_sources",
+    srcs = glob(
+        ["runtimes/**", "cmake/**", "llvm/cmake/**", "llvm/CMakeLists.txt", "libunwind/**", "libcxxabi/**", "libcxx/**"],
+        exclude = ["**/test/**", "**/benchmarks/**"],
+    ),
+)

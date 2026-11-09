@@ -113,21 +113,24 @@ fn apply<'a>(
         ));
     }
     assert_eq!(
-        Tree::tag(core::iter::empty::<Handle>(), combination, 0).map(|_| ()),
+        Tree::tag(core::iter::empty::<Handle>()).map(|_| ()),
         Err(Error::OutOfBounds)
     );
     let combination: &'a Handle<Object<Tree>, fix::Focus> = combination;
     let author = combination.get(1);
     {
-        let additional = tree![tree![], author].tag(combination, 1)?;
-        let tag = tree![additional].tag(combination, 1)?;
-        assert!(tag.get(0).is_tag()?);
+        let additional = tree![author, author].tag()?;
+        let tag = tree![author, additional].tag()?;
+        assert!(tag.get(1).is_tag()?);
     }
     let content = Blob::create(7u64.to_le_bytes()).erase();
-    let tag = tree![tree![author], content].tag(combination, 1)?;
+    let tag = tree![author, content].tag()?;
     assert!(tag.is_tag()?);
-    assert_eq!(Cast::<Object<Tree>, _>::try_from(tag.get(0))?.len()?, 1);
-    let tag = tree![tree![&*combination], tag].tag(combination, 0)?;
-    assert_eq!(Cast::<Object<Tree>, _>::try_from(tag.get(0))?.len()?, 2);
+    assert!(tag.get(0).equals(&author)?);
+    let tag = tree![&*combination, tag].tag()?;
+    assert_eq!(
+        Cast::<Object<Tree>, _>::try_from(tag.get(0))?.len()?,
+        combination.len()?
+    );
     Ok(tag.erase())
 }

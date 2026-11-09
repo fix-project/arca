@@ -7,7 +7,7 @@ PROGRAMS = ["ls", "wc", "cat", "head"]
 
 filegroup(
     name = "programs",
-    srcs = [":" + name for name in PROGRAMS],
+    srcs = [":" + name + "_elf" for name in PROGRAMS],
 )
 
 [
@@ -26,7 +26,7 @@ filegroup(
         name = name,
         wasm = ":" + name + "_wasm",
         runnable = True,
-        artifact_visibility = ["//tests/flatware:__pkg__"],
+        artifact_visibility = ["//tests/flatware:__pkg__", "//tests/fix:__pkg__"],
     )
     for name in PROGRAMS
 ]

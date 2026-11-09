@@ -12,7 +12,7 @@ pub enum Error {
 }
 
 /// create a vector of queues (empty)
-pub struct WorkQueues<T: Copy> {
+pub struct WorkQueues<T> {
     queues: Vec<VecDeque<T>>,
     capacities: Vec<usize>,
     closed: Vec<bool>,
@@ -20,7 +20,7 @@ pub struct WorkQueues<T: Copy> {
     max_queues: usize,
 }
 
-impl<T: Copy> WorkQueues<T> {
+impl<T> WorkQueues<T> {
     pub fn new(workers: usize, max_capacity: usize, max_queues: usize) -> Self {
         assert!(workers > 0);
 

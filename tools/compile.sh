@@ -10,7 +10,7 @@ case "$mode" in
         "$checker" "$output" "$output"
         ;;
     translate)
-        "$1" -n module "$2" -o "$3"
+        "$1" --enable-threads --enable-custom-page-sizes --enable-compact-imports -n module "$2" -o "$3"
         ;;
     link)
         compiler=$1 flags_file=$2 memmap=$3 shell=$4 output=$5

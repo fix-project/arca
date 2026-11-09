@@ -82,10 +82,10 @@ static void files_and_preopens(void) {
   assert(write_bytes(&fs, fd, &data, false, 0, 14) == 0);
   assert(fs_seek(&fs, fd, 0, 0, &offset) == 0);
   Bytes output = {0};
-  assert(fs_read(&fs, fd, 100, false, 0, 15, &output) == 0);
+  assert(fs_read(&fs, fd, 100, false, 0, &output) == 0);
   assert(bytes_equal(&output, (const uint8_t *)"first\0\0last", 11));
   output = (Bytes){0};
-  assert(fs_read(&fs, fd, 2, true, 7, 16, &output) == 0 &&
+  assert(fs_read(&fs, fd, 2, true, 7, &output) == 0 &&
          bytes_equal(&output, (const uint8_t *)"la", 2));
   Bytes renamed = text("renamed", 7);
   assert(fs_rename(&fs, 3, &path, 3, &renamed, 18) == 0);
@@ -97,7 +97,7 @@ static void files_and_preopens(void) {
   assert(fs_unlink(&fs, 3, &renamed, false, 20) == 0 &&
          fs.nodes[3].children.len == 0);
   output = (Bytes){0};
-  assert(fs_read(&fs, fd, 4, true, 0, 21, &output) == 0 &&
+  assert(fs_read(&fs, fd, 4, true, 0, &output) == 0 &&
          bytes_equal(&output, (const uint8_t *)"firs", 4));
   assert(fs.nodes[node].stat.nlink == 0);
   fs_destroy(&fs);
@@ -150,7 +150,7 @@ static void descriptor_flags(void) {
   data = text(" last", 5);
   assert(write_bytes(&fs, fd, &data, false, 0, 14) == 0);
   Bytes output = {0};
-  assert(fs_read(&fs, fd, 100, true, 0, 15, &output) == 0 &&
+  assert(fs_read(&fs, fd, 100, true, 0, &output) == 0 &&
          bytes_equal(&output, (const uint8_t *)"first last", 10));
   assert(fs_set_flags(&fs, fd, 32) == INVAL && fs.descriptors[fd].flags == 31);
   uint32_t reader;

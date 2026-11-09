@@ -6,11 +6,12 @@
   (import "fix" "create_blob" (func $create_blob (param i32 i32) (result externref)))
   (import "fix" "create_blob_i64" (func $create_blob_i64 (param i64) (result externref)))
   (import "fix" "create_tree" (func $create_tree (param i32 i32) (result externref)))
-  (import "fix" "create_tag" (func $create_tag (param i32 i32) (result externref)))
+  (import "fix" "create_tag" (func $create_tag (param i32) (result externref)))
+  (import "fix" "equals" (func $equals (param externref externref) (result i32)))
   (import "fix" "is_comparable" (func $is_comparable (param externref) (result i32)))
   (import "fix" "is_tag" (func $is_tag (param externref) (result i32)))
   (import "fix" "is_data" (func $is_data (param externref) (result i32)))
-  (tag $large (param i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64))
+  (tag $large (param i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64))
   (tag $small (param i32))
   (type $answer_type (func (result i64)))
   (memory $source 33 40)
@@ -23,38 +24,29 @@
   (table $tag 4 externref)
   (table $functions 1 2 funcref)
   (table $large_tree 65537 externref)
-  (table $authors 2 externref)
   (elem declare func $answer)
+  (elem $nulls externref (ref.null extern) (ref.null extern))
   (func $assert (param $condition i32)
     (if (i32.eqz (local.get $condition)) (then unreachable)))
   (func $assert_blob (param $blob externref)
     (call $attach_blob (local.get $blob) (i32.const 1))
     (call $assert (i64.eq (i64.load $attached (i32.const 0)) (i64.const 42))))
-  (func $assert_tag (param $author externref) (param $blob externref) (param $depth i32)
+  (func $assert_tag (param $author externref) (param $blob externref)
     (local $tag externref)
-    (local $additional externref)
-    (table.set $authors (i32.const 0) (local.get $blob))
-    (table.set $authors (i32.const 1) (local.get $author))
-    (local.set $additional (call $create_tree (i32.const 6) (i32.const 2)))
-    (table.set $tag (i32.const 0) (local.get $additional))
+    (table.set $tag (i32.const 0) (local.get $author))
     (table.set $tag (i32.const 1) (local.get $blob))
     (table.set $tag (i32.const 2) (local.get $blob))
     (table.set $tag (i32.const 3) (local.get $blob))
-    (local.set $tag (call $create_tag (i32.const 3) (local.get $depth)))
+    (local.set $tag (call $create_tag (i32.const 3)))
     (call $assert (call $is_tag (local.get $tag)))
     (call $attach_tree (local.get $tag) (i32.const 2))
     (call $assert (i32.eq (table.size $attached_tree) (i32.const 4)))
     (call $assert_blob (table.get $attached_tree (i32.const 3)))
-    (call $attach_tree (table.get $attached_tree (i32.const 0)) (i32.const 2))
-    (call $assert (i32.eq (table.size $attached_tree)
-      (i32.sub (i32.const 3) (call $is_comparable (local.get $author)))))
-    (call $assert_blob (table.get $attached_tree (i32.const 0)))
-    (call $attach_tree (local.get $additional) (i32.const 2))
-    (call $assert (i32.eq (table.size $attached_tree) (i32.const 2)))
-    (call $assert_blob (table.get $attached_tree (i32.const 0))))
+    (if (call $is_comparable (local.get $author)) (then
+      (call $assert (call $equals (table.get $attached_tree (i32.const 0)) (local.get $author))))))
   (func $answer (type $answer_type) (result i64) (i64.const 42))
   (func $throw_large
-    (throw $large (i64.const 1) (i64.const 2) (i64.const 3) (i64.const 4) (i64.const 5) (i64.const 6) (i64.const 7) (i64.const 8) (i64.const 9) (i64.const 10) (i64.const 11) (i64.const 12) (i64.const 13) (i64.const 14) (i64.const 15) (i64.const 16) (i64.const 17) (i64.const 18) (i64.const 19) (i64.const 20) (i64.const 21) (i64.const 22) (i64.const 23) (i64.const 24) (i64.const 25) (i64.const 26) (i64.const 27) (i64.const 28) (i64.const 29) (i64.const 30) (i64.const 31) (i64.const 32) (i64.const 33) (i64.const 34) (i64.const 35) (i64.const 36) (i64.const 37) (i64.const 38) (i64.const 39) (i64.const 40)))
+    (throw $large (i64.const 1) (i64.const 2) (i64.const 3) (i64.const 4) (i64.const 5) (i64.const 6) (i64.const 7) (i64.const 8) (i64.const 9) (i64.const 10) (i64.const 11) (i64.const 12) (i64.const 13) (i64.const 14) (i64.const 15) (i64.const 16) (i64.const 17) (i64.const 18) (i64.const 19) (i64.const 20) (i64.const 21) (i64.const 22) (i64.const 23) (i64.const 24) (i64.const 25) (i64.const 26) (i64.const 27) (i64.const 28) (i64.const 29) (i64.const 30) (i64.const 31) (i64.const 32)))
   (func $throw_small (throw $small (i32.const 7)))
   (func $nested_small
     (try
@@ -64,14 +56,6 @@
     (try
       (do (call $throw_large) unreachable)
       (catch $large
-        drop
-        drop
-        drop
-        drop
-        drop
-        drop
-        drop
-        drop
         drop
         drop
         drop
@@ -141,15 +125,7 @@
         i64.add
         i64.add
         i64.add
-        i64.add
-        i64.add
-        i64.add
-        i64.add
-        i64.add
-        i64.add
-        i64.add
-        i64.add
-        (call $assert (i64.eq (i64.const 820))))))
+        (call $assert (i64.eq (i64.const 528))))))
   (func (export "_fix_apply") (param $input externref) (result externref)
     (local $blob externref)
     (local $tree externref)
@@ -202,9 +178,25 @@
     (call $assert (i32.eqz (memory.grow $empty (i32.const 1))))
     (call $assert (i64.eqz (i64.load $empty (i32.const 0))))
     (table.fill $source_tree (i32.const 0) (local.get $blob) (i32.const 2049))
+    (table.set $source_tree (i32.const 1) (call $create_blob_i64 (i64.const 7)))
     (local.set $tree (call $create_tree (i32.const 1) (i32.const 2049)))
     (table.set $source_tree (i32.const 0) (ref.null extern))
     (call $attach_tree (local.get $tree) (i32.const 2))
+    (call $assert_blob (table.get $attached_tree (i32.const 0)))
+    (table.copy $source_tree $attached_tree (i32.const 0) (i32.const 0) (i32.const 2))
+    (call $assert_blob (table.get $source_tree (i32.const 0)))
+    (call $attach_blob (table.get $source_tree (i32.const 1)) (i32.const 1))
+    (call $assert (i64.eq (i64.load $attached (i32.const 0)) (i64.const 7)))
+    (table.init $source_tree $nulls (i32.const 10) (i32.const 0) (i32.const 2))
+    (call $assert (ref.is_null (table.get $source_tree (i32.const 10))))
+    (call $assert (ref.is_null (table.get $source_tree (i32.const 11))))
+    (call $assert_blob (table.get $source_tree (i32.const 12)))
+    (table.copy $source_tree $source_tree (i32.const 1) (i32.const 0) (i32.const 2))
+    (call $assert_blob (table.get $source_tree (i32.const 1)))
+    (call $attach_blob (table.get $source_tree (i32.const 2)) (i32.const 1))
+    (call $assert (i64.eq (i64.load $attached (i32.const 0)) (i64.const 7)))
+    (table.set $source_tree (i32.const 1) (local.get $blob))
+    (call $attach_tree (call $create_tree (i32.const 2) (i32.const 2049)) (i32.const 2))
     (call $assert_blob (table.get $attached_tree (i32.const 0)))
     (table.set $source_tree (i32.const 0) (local.get $blob))
     (call $assert (i32.eq (table.grow $attached_tree (local.get $blob) (i32.const 1)) (i32.const -1)))
@@ -238,14 +230,16 @@
     (call $assert (i32.eq (table.grow $functions (ref.func $answer) (i32.const 0)) (i32.const 2)))
     (call $assert (i32.eq (table.grow $functions (ref.func $answer) (i32.const 1)) (i32.const -1)))
     (call $assert (i64.eq (call_indirect $functions (type $answer_type) (i32.const 1)) (i64.const 42)))
-    (call $assert_tag (local.get $input) (local.get $blob) (i32.const 0))
-    (call $assert_tag (table.get $combination (i32.const 1)) (local.get $blob) (i32.const 1))
+    (if (call $is_comparable (local.get $input)) (then
+      (call $assert_tag (local.get $input) (local.get $blob))))
+    (call $assert_tag (table.get $combination (i32.const 1)) (local.get $blob))
     (call $attach_tree (table.get $combination (i32.const 1)) (i32.const 2))
-    (call $assert_tag (table.get $attached_tree (i32.const 1)) (local.get $blob) (i32.const 2))
+    (call $assert_tag (table.get $attached_tree (i32.const 1)) (local.get $blob))
     (call $detach_tree (i32.const 2) (i32.const 0))
     (call $assert (i32.eqz (table.size $attached_tree)))
     (call $assert (i32.eqz (table.grow $attached_tree (ref.null extern) (i32.const 1))))
     (call $assert (ref.is_null (table.get $attached_tree (i32.const 0))))
+    (table.set $attached_tree (i32.const 0) (local.get $blob))
     (call $attach_tree (call $create_tree (i32.const 1) (i32.const 0)) (i32.const 2))
     (call $assert (i32.eqz (table.size $attached_tree)))
     (call $assert (i32.eq (table.grow $attached_tree (ref.null extern) (i32.const 1)) (i32.const -1)))

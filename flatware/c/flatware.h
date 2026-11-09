@@ -107,8 +107,7 @@ uint32_t fs_open(Filesystem *, uint32_t, const Bytes *, uint32_t, uint64_t,
                  uint64_t, uint32_t, uint64_t, uint32_t *);
 // I/O ranges borrow node storage until the next filesystem mutation.
 // Write ranges must be filled before another filesystem operation.
-uint32_t fs_read(Filesystem *, uint32_t, size_t, bool, uint64_t, uint64_t,
-                 Bytes *);
+uint32_t fs_read(Filesystem *, uint32_t, size_t, bool, uint64_t, Bytes *);
 uint32_t fs_write(Filesystem *, uint32_t, size_t, bool, uint64_t, uint64_t,
                   Bytes *);
 uint32_t fs_seek(Filesystem *, uint32_t, int64_t, uint32_t, uint64_t *);

@@ -1,334 +1,373 @@
-use clap::{Arg, ArgAction, Command as CliCommand};
-mod trust;
+mod repl;
+
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use fixapi::Fix;
+use fixcli::{Client, Memoization, Options, Value, commands, expressions::Expressions};
 use std::{
     env,
-    ffi::OsString,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
-    path::PathBuf,
-    process::{Command, ExitCode},
+    io::Write,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    process::ExitCode,
 };
 
-fn memory_size(value: &str) -> Result<usize, String> {
-    let mib: usize = value.parse().map_err(|_| "memory must be an integer")?;
-    if mib < 16 || !mib.is_power_of_two() {
-        return Err("memory must be a power of two, at least 16 MiB".into());
-    }
-    mib.checked_mul(1 << 20)
-        .ok_or_else(|| "memory size overflow".into())
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Evaluates Fix expressions and manages Fix repositories.
+///
+/// With no command, parses EXPRESSION, evaluates its imports, and prints the
+/// resulting handle. Expression imports are @handle, @label, @file, @script,
+/// and @todo.
+#[derive(Parser)]
+#[command(name = "fix", subcommand_value_name = "COMMAND")]
+struct Cli {
+    #[command(flatten)]
+    global: Global,
+    #[command(subcommand)]
+    command: Option<Command>,
+    /// A Fix expression.
+    expression: Option<String>,
 }
 
-fn cli() -> CliCommand {
-    let mut cli = CliCommand::new("fix")
-        .about("Create, inspect, and evaluate Fix values")
-        .arg(Arg::new("directory").short('C').value_name("DIR").value_parser(clap::value_parser!(PathBuf))
-            .action(ArgAction::Append).help("Change directory before running the command"))
-        .allow_external_subcommands(true)
-        .after_help("External commands are found in .fix/commands and PATH.\nBundled commands: parse, run, flatware-application, flatware-run, flatware-link, compile, json-import, import, export, flatware-import, flatware-export.");
-    for (name, about) in [
-        ("init", "Initialize a Fix repository"),
-        (
-            "repository",
-            "Print the absolute path to the active .fix directory",
-        ),
-        ("eval", "Evaluate a value and store its result"),
-        (
-            "user_scheduler",
-            "Run an experimental user scheduler on a value",
-        ),
-        ("think", "Perform one thunk reduction and store its result"),
-        (
-            "visit",
-            "Print reachable stored Objects without evaluating thunks",
-        ),
-        (
-            "create-blob",
-            "Create a Blob from a file, stdin, text, or an integer",
-        ),
-        ("create-tree", "Create a Tree from values"),
-        ("read-blob", "Write a Blob to standard output"),
-        ("read-tree", "Print a Tree's children"),
-        ("create-ref", "Create an object reference"),
-        (
-            "create-identification-thunk",
-            "Create an identification thunk",
-        ),
-        ("create-application-thunk", "Create an application thunk"),
-        ("create-selection-thunk", "Create a selection thunk"),
-        ("create-strict-encode", "Create a strict encode"),
-        ("create-shallow-encode", "Create a shallow encode"),
-        ("label", "List, read, or assign labels"),
-        ("resolve", "Resolve a value or label"),
-        ("get-type", "Print a value's Fix type"),
-        ("get-data-type", "Print an object's data type"),
-        ("get-encode-type", "Print an encode's type"),
-        ("len", "Print a value's length"),
-        ("is-tag", "Test whether a value is a tag"),
-        ("is-comparable", "Test whether a handle is comparable"),
-    ] {
-        let mut command = CliCommand::new(name).about(about);
-        if !matches!(name, "init" | "repository") {
-            command = command.arg_required_else_help(true);
-        }
-        if name.starts_with("create-") {
-            command = command.arg(
-                Arg::new("label")
-                    .short('l')
-                    .long("label")
-                    .value_name("NAME"),
-            );
-        }
-        command = match name {
-            "init" | "repository" => command,
-            "user_scheduler" => command.arg(
-                Arg::new("values")
-                    .num_args(3)
-                    .value_names(["VALUE", "SCHEDULER_ELF", "WORKERS"])
-                    .required(true),
-            ),
-            "create-blob" => command.arg(
-                Arg::new("values")
-                    .value_name("FILE")
-                    .num_args(1..)
-                    .required_unless_present_any(["format", "files-from"])
-                    .conflicts_with_all(["format", "files-from"])
-                    .help("Input file; use - for stdin"),
-            ),
-            "label" => command
-                .subcommand_required(true)
-                .subcommand(CliCommand::new("list").about("List defined labels"))
-                .subcommand(
-                    CliCommand::new("get")
-                        .about("Read a label")
-                        .arg(Arg::new("name").required(true)),
-                )
-                .subcommand(
-                    CliCommand::new("set")
-                        .about("Assign a label to a value")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("value").required(true)),
-                ),
-            "create-tree" => command.arg(
-                Arg::new("values")
-                    .num_args(1..)
-                    .required(true)
-                    .help("Values or labels; use - to read children from stdin"),
-            ),
-            _ => command.arg(
-                Arg::new("values")
-                    .required(true)
-                    .help("Value or label; use - for stdin"),
-            ),
-        };
-        if matches!(name, "create-blob" | "read-blob") {
-            for format in ["string", "u8", "u32", "u64"] {
-                let mut argument = Arg::new(format).long(format).group("format");
-                argument = if name == "create-blob" {
-                    argument.value_name("VALUE").allow_hyphen_values(true)
-                } else {
-                    argument.action(ArgAction::SetTrue)
-                };
-                command = command.arg(argument);
+#[derive(Args)]
+#[command(next_help_heading = "Global options")]
+struct Global {
+    /// Change to DIR first (repeatable).
+    #[arg(short = 'C', value_name = "DIR", global = true)]
+    directories: Vec<PathBuf>,
+    /// Label the result.
+    #[arg(short, long, value_name = "NAME", global = true)]
+    label: Option<String>,
+    /// Bind NAME to the value of EXPRESSION (repeatable).
+    #[arg(short, long = "bind", value_name = "NAME=EXPRESSION", value_parser = binding, global = true)]
+    bindings: Vec<(String, String)>,
+    /// Evaluation parallelism [default: all CPUs]
+    #[arg(short, long, value_name = "N", env = "FIX_JOBS", global = true)]
+    jobs: Option<NonZeroUsize>,
+    /// VM memory budget in MiB, a power of two.
+    #[arg(long, value_name = "MIB", default_value_t = 16384, global = true)]
+    memory: usize,
+    /// Persist coupons: auto, always, or never.
+    #[arg(long, value_name = "MODE", default_value_t = Memoization::Auto, global = true)]
+    memoize: Memoization,
+    /// Scheduler Runnable.
+    #[arg(
+        long,
+        value_name = "NAME",
+        env = "FIX_SCHEDULER",
+        default_value = "scheduler",
+        global = true
+    )]
+    scheduler: String,
+    /// Coupon collector.
+    #[arg(
+        long,
+        value_name = "NAME",
+        env = "FIX_COLLECTOR",
+        default_value = "collector",
+        global = true
+    )]
+    collector: String,
+    /// Report evaluation timings on stderr.
+    #[arg(long, global = true)]
+    profile: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Create a repository. With SEED, import it and add the expression parser
+    /// (label `fix-parser`) into the repository.
+    Init {
+        /// Bootstrap seed archive to import.
+        seed: Option<PathBuf>,
+        /// Also compile, with SEED's compiler, the modules `init` adds: the expression
+        /// parser. Later commands
+        /// reuse these compilations; without this flag, each compiles on first use.
+        #[arg(long, requires = "seed")]
+        precompile: bool,
+    },
+    /// Read and evaluate low-level Fix expressions interactively.
+    Repl,
+    /// Evaluate an expression.
+    Eval { expression: String },
+    /// Take one Think step.
+    Think { expression: String },
+    /// Compile a Wasm module with `compile`.
+    Compile {
+        expression: String,
+        /// Number of C translation units [default: one per 128 KiB of Wasm]
+        units: Option<u64>,
+    },
+    /// Record or list where Todo values can be fetched.
+    #[command(subcommand)]
+    Todo(Todo),
+    /// Parse a script (`-` for stdin) without evaluating it.
+    Parse { file: String },
+    /// Parse and evaluate a script (`-` for stdin).
+    Run { file: String },
+    /// Write the objects reachable from expressions to an archive.
+    Export {
+        /// Export EXPRESSION's handle without its data.
+        #[arg(long = "without-backing", value_name = "EXPRESSION")]
+        without_backing: Vec<String>,
+        expression: String,
+        archive: PathBuf,
+        /// More values to export.
+        expressions: Vec<String>,
+    },
+    /// Write a Flatware tree to PATH.
+    FlatwareExport { expression: String, path: PathBuf },
+    #[command(flatten)]
+    Plumbing(commands::Plumbing),
+}
+
+#[derive(Subcommand)]
+enum Todo {
+    /// `add URI` imports a Todo for URI; `add EXPRESSION URI...` records URIs for a value.
+    Add {
+        #[arg(required = true, value_name = "ARGUMENT")]
+        arguments: Vec<String>,
+    },
+    /// Print the URIs recorded for a value.
+    List { expression: String },
+}
+
+fn binding(argument: &str) -> std::result::Result<(String, String), String> {
+    let (name, expression) = argument.split_once('=').ok_or("expected NAME=EXPRESSION")?;
+    let mut characters = name.chars();
+    let valid = characters
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        && characters.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+    if !valid {
+        return Err(format!("invalid binding name {name:?}"));
+    }
+    Ok((name.into(), expression.into()))
+}
+
+fn is_command(argument: &str) -> bool {
+    argument.starts_with(|ch: char| ch.is_ascii_lowercase())
+        && argument
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+impl Global {
+    fn options(&self) -> Result<Options> {
+        Ok(Options {
+            scheduler: self.scheduler.clone(),
+            collector: self.collector.clone(),
+            jobs: match self.jobs {
+                Some(jobs) => jobs,
+                None => std::thread::available_parallelism()?,
             }
-        }
-        if name == "create-blob" {
-            command = command.arg(
-                Arg::new("files-from")
-                    .long("files-from")
-                    .value_name("MANIFEST")
-                    .conflicts_with("format")
-                    .help("Read NUL-separated filenames; use - for stdin"),
-            );
-        }
-        if name == "create-tree" {
-            command = command.arg(
-                Arg::new("bindings")
-                    .long("bindings")
-                    .action(ArgAction::SetTrue)
-                    .help("Read NUL-separated name/value pairs from stdin"),
-            );
-        }
-        if name == "read-tree" {
-            command = command.arg(
-                Arg::new("labels")
-                    .long("labels")
-                    .action(ArgAction::SetTrue)
-                    .help("Print matching labels beside each child handle"),
-            );
-        }
-        if name == "visit" {
-            command = command.arg(
-                Arg::new("paths")
-                    .long("paths")
-                    .action(ArgAction::SetTrue)
-                    .help("Print NUL-separated repository paths for archiving, relative to its parent"),
-            );
-        }
-        if name == "eval" {
-            command = command
-                .arg(
-                    Arg::new("memoize")
-                        .long("memoize")
-                        .action(ArgAction::SetTrue)
-                        .help("Persist and reuse zero-author application coupons"),
-                )
-                .arg(
-                    Arg::new("memory")
-                        .long("memory")
-                        .value_name("MiB")
-                        .value_parser(memory_size)
-                        .default_value("16384")
-                        .help("VM memory budget (power of two, in MiB)"),
-                )
-                .arg(
-                    Arg::new("jobs")
-                        .short('j')
-                        .long("jobs")
-                        .env("FIX_JOBS")
-                        .value_name("N")
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Evaluation parallelism (default: available CPUs)"),
-                );
-        }
-        cli = cli.subcommand(command);
+            .get(),
+            memory_mib: self.memory,
+            memoize: self.memoize,
+            ..Options::default()
+        })
     }
-    cli
+
+    fn open(&self, options: Options) -> Result<Client> {
+        let mut client = Client::open(Path::new("."), options)?;
+        client.set_profile(self.profile);
+        Ok(client)
+    }
+
+    fn finish(&self, client: &mut Client, value: &Value) -> Result<u8> {
+        if let Some(label) = &self.label {
+            client.label(label, value)?;
+        }
+        println!("{}", client.save(value)?);
+        Ok(0)
+    }
 }
 
-fn run() -> Result<u8, Box<dyn std::error::Error>> {
-    let matches = cli().get_matches();
-    if let Some(directories) = matches.get_many::<PathBuf>("directory") {
-        for directory in directories {
-            env::set_current_dir(directory)?;
-        }
+/// Converts expression operands to persisted handle names.
+fn handles(expressions: &mut Expressions, sources: &[String]) -> Result<Vec<String>> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
     }
-    let Some((command, options)) = matches.subcommand() else {
-        cli().print_help()?;
-        println!();
-        return Ok(0);
+    let values = expressions.arguments(sources)?;
+    values
+        .iter()
+        .map(|value| Ok(expressions.client.save(value)?))
+        .collect()
+}
+
+fn one(expressions: &mut Expressions, source: &str) -> Result<Value> {
+    Ok(expressions.arguments(&[source.to_owned()])?.remove(0))
+}
+
+fn run() -> Result<u8> {
+    let Cli {
+        global,
+        command,
+        expression,
+    } = Cli::parse();
+    for directory in &global.directories {
+        env::set_current_dir(directory)?;
+    }
+    let options = global.options()?;
+    let bindings = global.bindings.clone();
+    let Some(command) = command else {
+        let Some(expression) = expression else {
+            Cli::command().print_help()?;
+            return Ok(0);
+        };
+        if is_command(&expression) {
+            return Err(format!("unknown command {expression:?}; see 'fix --help'").into());
+        }
+        let mut client = global.open(options)?;
+        let mut expressions = Expressions::new(&mut client, bindings);
+        let parsed = expressions.parse(&expression, &env::current_dir()?)?;
+        let value = expressions.realize(parsed)?;
+        return global.finish(&mut client, &value);
     };
-    let available = std::thread::available_parallelism()?.get();
-    let builtin = cli().find_subcommand(command).is_some();
-    if builtin {
-        let jobs = if command == "eval" {
-            *options.get_one::<usize>("jobs").unwrap_or(&available)
-        } else if command == "user_scheduler" {
-            let workers = options
-                .get_many::<String>("values")
-                .unwrap()
-                .nth(2)
-                .unwrap()
-                .parse::<usize>()?;
-            if !(1..=256).contains(&workers) {
-                return Err("worker count must be 1..=256".into());
-            }
-            workers
-        } else {
-            1
-        };
-        if jobs == 0 {
-            return Err("jobs must be a positive integer".into());
+    if !bindings.is_empty() && matches!(command, Command::Init { .. } | Command::Plumbing(_)) {
+        return Err("this command takes no -b bindings".into());
+    }
+    if global.label.is_some()
+        && matches!(
+            command,
+            Command::Init { .. }
+                | Command::Todo(_)
+                | Command::Export { .. }
+                | Command::FlatwareExport { .. }
+                | Command::Repl
+        )
+    {
+        return Err("-l labels an expression result".into());
+    }
+    match command {
+        Command::Repl => repl::run(global.open(options)?, bindings),
+        Command::Eval { ref expression }
+        | Command::Think { ref expression }
+        | Command::Compile { ref expression, .. } => {
+            let mut client = global.open(options)?;
+            let mut expressions = Expressions::new(&mut client, bindings);
+            let input = one(&mut expressions, expression)?;
+            let value = match command {
+                Command::Eval { .. } => client.eval(&input)?,
+                Command::Think { .. } => client.think(&input)?,
+                Command::Compile { units, .. } => {
+                    let input = if client.value_type(&input)? == fixapi::ValueType::Thunk {
+                        client.strict(&input)?
+                    } else {
+                        input
+                    };
+                    client.compilation(&input, units)?
+                }
+                _ => unreachable!(),
+            };
+            global.finish(&mut client, &value)
         }
-        let memory = if command == "eval" {
-            *options.get_one::<usize>("memory").unwrap()
-        } else {
-            1 << 34
-        };
-        let mut args = vec![OsString::from(command)];
-        if command == "visit" && options.get_flag("paths") {
-            args.push("--paths".into());
-        }
-        if command == "eval" && options.get_flag("memoize") {
-            args.push("--memoize".into());
-        }
-        if command == "create-tree" && options.get_flag("bindings") {
-            args.push("--bindings".into());
-        }
-        if command == "create-blob"
-            && let Some(path) = options.get_one::<String>("files-from")
-        {
-            args.extend(["--files-from".into(), path.into()]);
-        }
-        if command == "read-tree" && options.get_flag("labels") {
-            args.push("--labels".into());
-        }
-        if command == "label" {
-            let (action, options) = options.subcommand().unwrap();
-            args.push(action.into());
-            if matches!(action, "get" | "set") {
-                args.push(options.get_one::<String>("name").unwrap().into());
-            }
-            if action == "set" {
-                args.push(options.get_one::<String>("value").unwrap().into());
-            }
-        }
-        if matches!(command, "create-blob" | "read-blob") {
-            for format in ["string", "u8", "u32", "u64"] {
-                if command == "create-blob" {
-                    if let Some(value) = options.get_one::<String>(format) {
-                        args.extend([format!("--{format}").into(), value.into()]);
+        Command::Todo(todo) => {
+            let mut client = global.open(options)?;
+            match todo {
+                Todo::Add { arguments } => match arguments.as_slice() {
+                    [uri] => {
+                        let value = client.todo_import(uri)?;
+                        global.finish(&mut client, &value)
                     }
-                } else if options.get_flag(format) {
-                    args.push(format!("--{format}").into());
+                    [source, uris @ ..] => {
+                        let mut expressions = Expressions::new(&mut client, bindings);
+                        let value = one(&mut expressions, source)?;
+                        client.todo_add(&value, uris)?;
+                        Ok(0)
+                    }
+                    [] => unreachable!(),
+                },
+                Todo::List { expression } => {
+                    let mut expressions = Expressions::new(&mut client, bindings);
+                    let value = one(&mut expressions, &expression)?;
+                    let mut stdout = std::io::stdout().lock();
+                    for uri in client.todo_list(&value)? {
+                        stdout.write_all(&uri)?;
+                        stdout.write_all(b"\n")?;
+                    }
+                    Ok(0)
                 }
             }
         }
-        if command != "init"
-            && command != "repository"
-            && command != "label"
-            && let Some(values) = options.get_many::<String>("values")
-        {
-            args.extend(values.map(OsString::from));
+        Command::Parse { ref file } | Command::Run { ref file } => {
+            let mut client = global.open(options)?;
+            let mut expressions = Expressions::new(&mut client, bindings);
+            let parsed = if file == "-" {
+                let source = std::io::read_to_string(std::io::stdin())?;
+                expressions.parse(&source, &env::current_dir()?)?
+            } else {
+                expressions.parse_script(Path::new(file))?
+            };
+            let value = match command {
+                Command::Run { .. } => client.eval(&parsed)?,
+                _ => parsed,
+            };
+            global.finish(&mut client, &value)
         }
-        if command.starts_with("create-")
-            && let Some(label) = options.get_one::<String>("label")
-        {
-            args.extend([OsString::from("-l"), label.into()]);
+        Command::Export {
+            without_backing,
+            expression,
+            archive,
+            expressions: more,
+        } => {
+            let mut client = global.open(options)?;
+            let mut expressions = Expressions::new(&mut client, bindings);
+            let excluded = handles(&mut expressions, &without_backing)?;
+            let roots = handles(&mut expressions, &[[expression].as_slice(), &more].concat())?;
+            commands::visit(&roots, &excluded, true, Some(&archive))?;
+            Ok(0)
         }
-        let mut argv = vec![String::from("fix")];
-        if matches!(command, "eval" | "think") {
-            argv.extend([String::from("--trust"), trust::load()?]);
+        Command::FlatwareExport { expression, path } => {
+            let mut client = global.open(options)?;
+            let mut expressions = Expressions::new(&mut client, bindings);
+            let tree = handles(&mut expressions, &[expression])?.remove(0);
+            commands::flatware_export(&tree, &path)?;
+            Ok(0)
         }
-        argv.extend(
-            args.into_iter()
-                .map(OsString::into_string)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| "arguments must be UTF-8")?,
-        );
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-        let kernel: &[u8] = include_bytes!(env!("FIX_KERNEL"));
-        Ok(vmm::runtime::Runtime::new(jobs, memory, kernel.into()).run(argv))
-    } else {
-        if command.contains('/') || command == "." || command == ".." {
-            return Err("invalid command name".into());
+        Command::Init { seed, precompile } => {
+            commands::init()?;
+            let Some(seed) = seed else {
+                return Ok(0);
+            };
+            commands::run(
+                commands::Plumbing::Import { archive: seed },
+                None,
+                options.clone(),
+                global.profile,
+            )?;
+            let options = if precompile {
+                Options {
+                    trust: Some(env::current_dir()?.join(".fix/trust")),
+                    ..options
+                }
+            } else {
+                options
+            };
+            let mut client = global.open(options)?;
+            let parser = fixcli::expressions::install(&mut client)?;
+            let compilations = vec![("the expression parser".to_owned(), parser)];
+            if precompile {
+                eprintln!("fix: precompiling {} modules", compilations.len());
+                let requests: Vec<_> = compilations
+                    .into_iter()
+                    .map(|(_, request)| request)
+                    .collect();
+                client.precompile(&requests)?;
+            }
+            Ok(0)
         }
-        let name = format!("fix-{command}");
-        let local = env::current_dir()?.ancestors().find_map(|dir| {
-            let repo = dir.join(".fix");
-            repo.exists().then(|| repo.join("commands").join(&name))
-        });
-        let path = local
-            .filter(|path| path.is_file())
-            .or_else(|| {
-                env::split_paths(&env::var_os("PATH").unwrap_or_default())
-                    .map(|dir| dir.join(&name))
-                    .find(|path| {
-                        path.metadata().is_ok_and(|metadata| {
-                            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                        })
-                    })
-            })
-            .ok_or_else(|| format!("unknown command {command:?}; see 'fix --help'"))?;
-        let mut child = Command::new(path);
-        child.args(options.get_many::<OsString>("").into_iter().flatten());
-        child.env("FIX", env::current_exe()?);
-        if env::var_os("FIX_JOBS").is_none() {
-            child.env("FIX_JOBS", available.to_string());
-        }
-        Err(child.exec().into())
+        Command::Plumbing(plumbing) => Ok(commands::run(
+            plumbing,
+            global.label,
+            options,
+            global.profile,
+        )?),
     }
 }
 
 fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     match run() {
         Ok(status) => ExitCode::from(status),
         Err(error) => {

@@ -49,25 +49,25 @@ Module CouponClaims (S : STORAGE).
   Module H := Handles S.
   Import H.
 
-  Definition witness authors code lhs rhs :=
+  Definition witness author code lhs rhs :=
     let claim := create_tree [HBlobObj (create_blob (from_nat code)); lhs; rhs] in
-    let tag := create_tree_tagged true [HTreeObj authors; HTreeRef claim] in
+    let tag := create_tree_tagged true [author; HTreeRef claim] in
     HTreeObj (create_tree [HTreeObj tag; HTreeObj claim]).
 
-  Definition encode kind authors lhs rhs :=
-    omap (fun code => witness authors code lhs rhs) (Code.statement_code kind).
+  Definition encode kind author lhs rhs :=
+    omap (fun code => witness author code lhs rhs) (Code.statement_code kind).
 
   (** Only Objects supplied in the witness are inspected, never a Ref's backing data. *)
   Definition decode supplied := match supplied with
     | Data (Object (TreeObj bundle)) => match get_tree_raw bundle with
       | [Data (Object (TreeObj tag)); Data (Object (TreeObj claim))] =>
         if tree_tag tag then match get_tree_raw tag with
-          | [Data (Object (TreeObj authors)); reference] =>
+          | [author; reference] =>
             if API.handle_eqb reference (HTreeRef claim) then
               match get_tree_raw claim with
               | [Data (Object (BlobObj code)); lhs; rhs] =>
                 obind (to_nat (get_blob_data code)) (fun n =>
-                  omap (fun kind => (kind, authors, lhs, rhs)) (Code.statement_kind n))
+                  omap (fun kind => (kind, author, lhs, rhs)) (Code.statement_kind n))
               | _ => None end
             else None
           | _ => None end
@@ -75,14 +75,25 @@ Module CouponClaims (S : STORAGE).
       | _ => None end
     | _ => None end.
 
+  Definition author supplied := match supplied with
+    | Data (Object (TreeObj bundle)) => match get_tree_raw bundle with
+      | [Data (Object (TreeObj tag)); Data (Object (TreeObj claim))] =>
+        if tree_tag tag then match get_tree_raw tag, get_tree_raw claim with
+          | [issuing_author; reference], [_; _; _] =>
+            if API.handle_eqb reference (HTreeRef claim) then Some issuing_author else None
+          | _, _ => None end
+        else None
+      | _ => None end
+    | _ => None end.
+
   #[export] Hint Rewrite get_tree_raw_create_tree get_tree_raw_create_tree_tagged
     tree_tag_create_tree_tagged get_blob_data_create_blob API.handle_eqb_refl : coupon_claims.
 
-  (** Encoding and then decoding a certificate witness recovers its kind, authors, and
+  (** Encoding and then decoding a certificate witness recovers its kind, author, and
       endpoints. *)
-  Theorem encode_decode kind authors lhs rhs encoded :
-    encode kind authors lhs rhs = Some encoded ->
-    decode encoded = Some (kind, authors, lhs, rhs).
+  Theorem encode_decode kind author lhs rhs encoded :
+    encode kind author lhs rhs = Some encoded ->
+    decode encoded = Some (kind, author, lhs, rhs).
   Proof.
     unfold encode; destruct (Code.statement_code kind) as [code|] eqn:Code;
       cbn [omap]; intro Encoded; [inversion Encoded; subst encoded|discriminate].
@@ -96,12 +107,12 @@ Module CouponClaims (S : STORAGE).
 
   (** A decoded claim is tied to the assertion Object named by a real Tag. Supplying a
       correctly shaped but different assertion cannot change what the certificate says. *)
-  Theorem decode_authenticates supplied kind authors lhs rhs :
-    decode supplied = Some (kind, authors, lhs, rhs) ->
+  Theorem decode_authenticates supplied kind author lhs rhs :
+    decode supplied = Some (kind, author, lhs, rhs) ->
     exists bundle tag claim code n,
       supplied = HTreeObj bundle /\
       get_tree_raw bundle = [HTreeObj tag; HTreeObj claim] /\
-      get_tree_raw tag = [HTreeObj authors; HTreeRef claim] /\
+      get_tree_raw tag = [author; HTreeRef claim] /\
       tree_tag tag = true /\
       get_tree_raw claim = [HBlobObj code; lhs; rhs] /\
       to_nat (get_blob_data code) = Some n /\
@@ -115,7 +126,7 @@ Module CouponClaims (S : STORAGE).
     destruct (get_tree_raw bundle) as [|[[[b|tag]|ref]|th|e] [|[[[b'|claim]|ref']|th'|e'] rest]] eqn:Bundle;
       try discriminate; destruct rest; try discriminate.
     destruct (tree_tag tag) eqn:Tagged; [|discriminate].
-    destruct (get_tree_raw tag) as [|[[[b|a]|ref]|th|e] [|reference rest]] eqn:Fields;
+    destruct (get_tree_raw tag) as [|a [|reference rest]] eqn:Fields;
       try discriminate; destruct rest; try discriminate.
     destruct (API.handle_eqb reference (HTreeRef claim)) eqn:Same; [|discriminate].
     apply API.handle_eqb_spec in Same; subst reference.
@@ -128,12 +139,23 @@ Module CouponClaims (S : STORAGE).
     intro Decoded; inversion Decoded; subst k a l r.
     exists bundle, tag, claim, code, n; repeat split; assumption || reflexivity.
   Qed.
-  (** Successful decoding determines the Tag as the authors Tree followed by the assertion
+  Lemma decode_author supplied kind issuing_author lhs rhs :
+    decode supplied = Some (kind, issuing_author, lhs, rhs) ->
+    author supplied = Some issuing_author.
+  Proof.
+    intro Decoded; pose proof (decode_authenticates _ _ _ _ _ Decoded)
+      as [bundle [tag [claim [code [n [Supplied [Bundle [Tag [Tagged [Claim _]]]]]]]]]].
+    subst supplied; unfold author; cbn [HTreeObj]; rewrite Bundle.
+    cbn [HTreeObj]; rewrite Tagged, Tag, Claim.
+    rewrite API.handle_eqb_refl; reflexivity.
+  Qed.
+
+  (** Successful decoding determines the Tag as its author followed by the assertion
       Ref. *)
-  Lemma decode_tag_shape tag claim kind authors lhs rhs :
+  Lemma decode_tag_shape tag claim kind author lhs rhs :
     decode (HTreeObj (create_tree [HTreeObj tag; HTreeObj claim])) =
-      Some (kind, authors, lhs, rhs) ->
-    tag = create_tree_tagged true [HTreeObj authors; HTreeRef claim].
+      Some (kind, author, lhs, rhs) ->
+    tag = create_tree_tagged true [author; HTreeRef claim].
   Proof.
     intro Decoded.
     hauto cases: - db: coupon_claims
@@ -141,16 +163,16 @@ Module CouponClaims (S : STORAGE).
       unfold!: HTreeObj.
   Qed.
 
-  (** Replacing a decoded Tag's authors preserves its authenticated claim and endpoints. *)
-  Lemma decode_replace_authors tag claim kind authors new_authors lhs rhs :
+  (** Replacing a decoded Tag's author preserves its authenticated claim and endpoints. *)
+  Lemma decode_replace_author tag claim kind author new_author lhs rhs :
     decode (HTreeObj (create_tree [HTreeObj tag; HTreeObj claim])) =
-      Some (kind, authors, lhs, rhs) ->
+      Some (kind, author, lhs, rhs) ->
     decode (HTreeObj (create_tree
-      [HTreeObj (create_tree_tagged true [HTreeObj new_authors; HTreeRef claim]); HTreeObj claim])) =
-      Some (kind, new_authors, lhs, rhs).
+      [HTreeObj (create_tree_tagged true [new_author; HTreeRef claim]); HTreeObj claim])) =
+      Some (kind, new_author, lhs, rhs).
   Proof.
     (* Claim authentication depends on the Ref of the assertion Object, not on the author
-        list's representation. Changing that list can alter trust requirements while
+        representation. Changing that author can alter trust requirements while
         leaving the asserted operation and endpoints fixed, which is the separation used
         by authority preservation. *)
     intro Decoded.

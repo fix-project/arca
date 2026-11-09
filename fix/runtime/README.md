@@ -26,9 +26,9 @@ whitespace-separated value from stdin when their argument is `-`.
 | Command | Input and result |
 | --- | --- |
 | `repository` | Print the absolute path to the active `.fix` directory |
-| `think THUNK` | Perform one thunk reduction and store its returned value, without recursively evaluating that value |
+| `schedule [-j N] [--memoize=auto|always|never] [--trusted-tagger CALLABLE]… COMBINATION` | Run a Fix combination with kernel scheduler effects; persist and print its result |
 | `visit [--paths] VALUE` | Print reachable stored Objects once each; `--paths` prints NUL-separated data, record, index, and explicitly selected label paths relative to the repository's parent; omit literal Blobs and do not evaluate thunks |
-| `eval [-j N] [--memoize] VALUE` | Evaluate using serial (`-j 1`) or parallel evaluator; persist and print result |
+
 | `create-blob FILE… \| --files-from MANIFEST \| --string TEXT \| --u8 NUMBER \| --u32 NUMBER \| --u64 NUMBER` | File bytes or formatted argument → Blob handle(s); manifests contain NUL-separated paths, `-` reads stdin |
 | `create-tree [--bindings] VALUE… \| -` | Arguments, or stdin tokens → ordered Tree handle; `--bindings -` reads NUL-separated name/value pairs |
 | `read-blob [--string \| --u8 \| --u32 \| --u64] VALUE` | Blob Object → bytes, text, or unsigned decimal integer |
@@ -78,7 +78,22 @@ Evaluation defaults to the host's available parallelism. Input objects are read
 from the repository on demand; newly produced objects are persisted before the
 result handle is printed.
 
-`eval --memoize` saves application coupons and reuses existing zero-author
+`eval` and `think` are wrapper commands. Both accept `--scheduler CALLABLE` and
+`--collector CALLABLE`, defaulting to `FIX_SCHEDULER`/`FIX_COLLECTOR` or repository
+labels `scheduler`/`collector`. These callables need ordinary Runnable admission.
+The wrappers construct `[metadata, scheduler, collector, input]`, run `schedule`
+with a tagging grant for the collector alone, and print the certified result.
+They check the returned coupon’s claim and reject assumptions other than the
+configured collector.
+The scheduler returns an Eval coupon by default; an eight-byte metadata Blob
+containing 4 requests a Think coupon. `--memoize=auto` (the default) keeps
+intermediate coupons in memory and persists only the final evaluation coupon. `always` persists intermediate coupons too;
+`never` disables automatic persistence and disk cache lookup. In `never` mode the scheduler returns the result directly; generated coupons
+are not published and the wrappers skip coupon verification.
+`-j 1` uses the same userspace evaluator serially; multiple workers share a work
+queue and help execute queued work while waiting for their child evaluations.
+
+`eval --memoize=always` saves application coupons and reuses existing zero-author
 application coupons for the same canonical combination. A hit returns the
 existing certificate unchanged. Conditional coupons are indexed but not reused;
 their assumptions must first be propagated through collector derivations.
@@ -102,60 +117,32 @@ trusts no authors; an explicitly selected file must exist. Repository trust
 files are never loaded automatically. To use an explicitly trusted bootstrap,
 set `FIX_TRUST` to its `.fix/trust` file.
 
-## External commands
+## Commands
 
-The host launcher runs `fix-COMMAND` from the nearest repository's
-`.fix/commands` directory, then from `PATH`.
-Core Fix API commands take precedence. External commands inherit the command
-directory selected by `-C`; they run without starting the VM. `FIX` names the
-executable for helpers that compose core operations. The CLI embeds the VMM
-library and Fix kernel; it requires no separate VMM executable or kernel file.
-
-The bundled helper commands require an initialized repository:
+The CLI embeds the VMM library and Fix kernel; it requires no separate VMM
+executable or kernel file. Besides the plumbing above, it provides:
 
 | Command | Input and result |
 | --- | --- |
-| `parse SCRIPT [BINDINGS]` | Construct a value using `parser`; batch-import file expansions (`-` reads stdin) |
-| `run SCRIPT [BINDINGS]` | Parse and evaluate a script; `FIX_JOBS` sets parallelism |
-| `json-import DOCUMENT [BINDINGS]` | Construct a value using the JSON deserializer (`-` reads stdin) |
-| `compile WASM_VALUE` | Construct a Thunk producing a Runnable certificate for a native Fix Wasm module |
-| `flatware-link WASM_VALUE` | Attach the WASIp1 adapter, producing a Wasm-producing Thunk |
+| `parse SCRIPT [-b NAME=EXPRESSION]...` | Construct a value from a script (`-` reads stdin) |
+| `run SCRIPT [-b NAME=EXPRESSION]...` | Parse and evaluate a script |
+| `compile EXPRESSION [UNITS]` | Evaluate `compile` applied to a Wasm module, yielding a Runnable or an Error Tag |
 | `flatware-import PATH [NAME]` | UNIX file, directory, or symlink → Flatware descriptor |
-| `flatware-export VALUE PATH` | Flatware descriptor → UNIX filesystem |
-| `flatware-application EXECUTABLE [ARGS…]` | Construct an application Thunk, reading host stdin |
-| `flatware-run EXECUTABLE [ARGS…]` | Evaluate an invocation and forward streams and status |
-| `export LABEL ARCHIVE.tar.gz [LABELS…]` | Package the specified labels and their reachable records and data |
-| `import ARCHIVE.tar.gz` | Unpack a trusted repository archive using system tar |
+| `flatware-export EXPRESSION PATH` | Flatware descriptor → new UNIX path |
+| `export [--without-backing EXPRESSION]... EXPRESSION ARCHIVE [EXPRESSION...]` | Package values and their reachable records and data |
+| `import ARCHIVE` | Unpack a trusted repository archive using system tar |
 
-Imports use timestamps zero and link counts one; entry names default to the
-input basename. Directory snapshots exclude `.fix`. Extraction requires a
-nonexistent destination. These helpers encode Flatware's directory format,
-rather than adding filesystem semantics to Fix itself. See [Flatware](../../flatware/README.md).
-
-The native CLI bundles its VMM and kernel. External helpers own their tools;
-Bazel supplies a command directory on PATH, without compiler resource variables.
-`parse` uses `fix-preprocess` from PATH. The graph helpers use Python 3 and its standard library.
-[fix-compile](../cli/commands/fix-compile) applies the trusted [compiler wrapper](../../programs/fix/compile.rs)
-using the `fixpoint` and `compile-resources` labels. The wrapper authenticates its
-resources and phase state, checks command exit statuses, and returns a
-`[authors, ELF, "Runnable"]` Tag or an Error Tag containing the failed Flatware result.
-`FIX_COMPILE_PARTITIONS` sets the number of C units (default 8).
-`flatware-link` uses `wasm-merge`, `path`, and `toolchain`; its merger must support
-`--no-resource-imports`. Both accept a Wasm Blob or a Thunk producing one.
-Bootstrap archives are trusted store contents. They can also be extracted over
-an empty repository with `tar -xzf ARCHIVE.tar.gz`.
+The [compiler wrapper](../../programs/fix/compile.rs) behind `compile`
+authenticates its resources and phase state, checks command exit statuses, and
+returns a `[author, ELF, "Runnable"]` Tag or an Error Tag containing the failed
+Flatware result. Flatware import and export use the native library described in
+[Flatware](../../flatware/README.md).
 
 `create-blob FILE` reads a file; `create-blob -` reads raw stdin. `--string TEXT` constructs UTF-8 bytes;
 `--u8 NUMBER`, `--u32 NUMBER`, and `--u64 NUMBER` construct unsigned little-endian
 integers with checked bounds. `read-blob` writes raw bytes by default; matching
 format flags read UTF-8 text or decimal integers of the specified exact width.
 
-Construction and evaluation are separate:
-`parse`, `json-import`, `compile`, `flatware-link`, and `flatware-application` construct values.
-`run` and `flatware-run` wrap evaluation. A bare Thunk is forced through
-`create-strict-encode` followed by `eval`.
-
-Parser bindings are `(name, value)` pairs. Flatware settings use environment
-variables: `FIX_ENV` is a Tree of `NAME=VALUE` Blobs, `FIX_FDS` contains preopens,
-and `FIX_ARGV0` overrides the process name. `FIX_JOBS` controls evaluation;
-`FIX_RESULT_LABEL` optionally labels the result of `flatware-run`.
+Construction and evaluation are separate: `parse` constructs a value and `run`
+evaluates it. A bare Thunk is forced through `create-strict-encode` followed by
+`eval`.

@@ -1,18 +1,16 @@
 #![no_main]
 #![no_std]
 
+pub mod api;
 pub mod cli;
 pub mod computation;
-pub mod coupon;
-pub mod evaluator;
-pub mod parallel_evaluator;
-pub mod preprocessor;
+pub use fixcoupon as coupon;
 pub mod repository;
 pub mod runtime;
-mod scheduler;
 pub mod stdlib;
 pub mod storage;
 pub mod task_graph;
+pub mod user_maps;
 pub mod user_queues;
 pub mod user_scheduler_driver;
 
@@ -20,8 +18,6 @@ pub mod handle {
     pub use fixhandle::*;
 }
 
-pub use evaluator::*;
 pub use handle::*;
-pub use preprocessor::*;
 pub use runtime::*;
 pub use storage::*;

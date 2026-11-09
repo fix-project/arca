@@ -11,7 +11,8 @@ and correctness of the coupon collector against those rules.
 | Blob-content safety | Equivalent Blob Objects have identical contents | [`coupon_blob_same_data`](collector/Logic.v) |
 | Full exchange soundness | Every accepted exchange preserves the logical judgement and the assumptions of its premises | `CouponExchanges.check_sound`, `issue_conditional` in [`Exchanges.v`](collector/Exchanges.v) |
 | Evaluation certification | Every terminating evaluation has a finite trace through public exchanges; issued claims are sound | [`terminating_evaluation_is_certifiable`, `certification_sound`](collector/Completeness.v) |
-| Native validation and issuance | Execution implements the abstract exchange checker and issuer | [`collector_refinement`](collector/wasm/Refinement.v) |
+| Native validation and issuance | Execution implements the abstract exchange checker and issuer | [`exported_exchange_refinement`](collector/wasm/Entry.v) |
+| Tag reconstruction | Authorized reconstruction returns an Eval result with the supplied fields | [`exported_tree_exchange_sound`](collector/wasm/Entry.v), [`collector_reconstruction`](collector/wasm/Refinement.v) |
 
 Evaluation is partial and uses big-step rules. Adequacy characterizes successful
 runs; it does not assert that every non-Value can take a step. Invalid applications
@@ -21,16 +22,25 @@ evaluation can be justified through collector exchanges.
 `//fix/proof/collector:collector` builds `collector/collector.wat`. Its request is
 `[metadata, collector, rule, lhs, rhs, witnesses]`, with an explicit eight-byte
 little-endian rule code. The exchange codes and conclusion kinds are defined in
-[`fix/runtime/src/coupon.rs`](../runtime/src/coupon.rs).
+[`fix/coupon/lib.rs`](../coupon/lib.rs).
 It exposes equivalence, Eval, Think, Force, Apply, and Select claims.
+Eval on a Tree also constructs the evaluated Tag when its input is a Tag and its
+proposed result is an untagged fields Tree. It accepts only kernel-authored or
+current-collector-authored evidence and returns the normal Eval coupon.
+The reconstructed Tag preserves its evaluated author exactly. Every exchange
+accepts only kernel-authored or current-collector-authored premises. Reconstruction needs
+an explicit trusted-tagger grant in scheduler mode.
 Witnesses are ordered; the collector does not search for a derivation.
 
 The abstract exchange checker is sound, including conditional authority
-propagation. Native validation covers all 26 exchanges, constructor guards, and
-Tree loops. The exported entry point implements `check` and `issue`, or traps.
+propagation. The public API has 15 operations, selected by name and operand types.
+Native validation covers their 26 primitive inference cases, constructor guards,
+and Tree loops. Ordinary requests satisfy `check` and `issue`, or trap.
+`collector/wasm/Entry.v` verifies the exported dispatch and Tag reconstruction;
+`reconstruct_tag_sound` proves reconstruction against the unchanged Eval relation.
 `issue_conditional` supplies authority soundness for the issued claim. These
 statements use explicit host-interface and resource contracts.
-All 26 success paths also have execution proofs with explicit comparison-readiness
+All 26 primitive success paths also have execution proofs with explicit comparison-readiness
 requirements: different representations of the same abstract handle can cause
 exact comparison to reject a derivation.
 
@@ -41,14 +51,14 @@ and Eval certificates are derived.
 In `collector/Logic.v`, `h =[ Rule ]=> r` denotes a coupon judgement. The collector only
 validates performed computation; it never evaluates its inputs. Its fixed-order
 witnesses are `[Tag, assertion Object]` pairs. Each Tag contains
-`[authors, Ref([operation, input, result])]`; checking the supplied assertion
+`[author, Ref([operation, input, result])]`; checking the supplied assertion
 against its Ref requires no storage access. The Ref preserves the claim under
 Tag evaluation. Apply certificates require Value combinations; storage Select
 certificates do not evaluate their operands.
 
-Conditional validity means that trusting every author implies the claim.
-Additional authors remain unrestricted. Preservation across Tag evaluation uses
-the stronger issuance invariant that stable authors suffice for the claim.
+Conditional validity means that trusting the author implies the claim. An
+untagged empty Tree author denotes the kernel. Preservation across Tag evaluation
+uses the stronger issuance invariant that a stable author suffices for the claim.
 Evaluation of an authenticated Ref-backed Tag preserves its operation, input,
 result, and conditional validity with the same supplied assertion Object.
 `collector/Preservation.v` and `shell/TagCreation.v` supply the supporting results.
@@ -89,7 +99,7 @@ with the original Isabelle development and records assumptions.
 Implementation requirements are owned by the API they describe:
 
 - [`storage/Interface.v`](storage/Interface.v): immutable Object storage,
-  comparability, and well-founded Tree containment.
+  comparability, full evaluation, and well-founded Tree containment.
 - [`shell/Interface.v`](shell/Interface.v): deterministic programs modelled as
   sequences of Fix Shell operations.
 - [`shell/Externref.v`](shell/Externref.v): embedding handles in Wasm externrefs.
@@ -100,6 +110,7 @@ Implementation requirements are owned by the API they describe:
 The native modules assemble these interfaces in `collector/wasm/Backend.v`.
 `Refinement.v` connects the parsed collector binary to the abstract checker and
 issuer; authority soundness follows from `issue_conditional`.
+`Authors.v` verifies that in-place author compaction preserves the premise assumptions.
 
 `computational_equiv` is computational equivalence; `handle_eqb` tests exact
 handle identity, while `compare_handles` is the Comparable-handle operation.
@@ -111,12 +122,12 @@ execution of the collector binary.
 
 Requests are `[metadata, collector, rule, lhs, rhs, witnesses]`. Rule and statement
 codes are unsigned 64-bit little-endian Blobs. Each witness is
-`[Tag([authors, Ref(assertion)]), assertion]`, where the supplied assertion Object
+`[Tag([author, Ref(assertion)]), assertion]`, where the supplied assertion Object
 is `[statement, lhs, rhs]`. The collector authenticates its Ref and checks the
 premises in the order below. It never loads Refs or performs evaluation.
 
-The result is `Tag([authors, Ref([statement, lhs, rhs])])`, with the premise
-authorities and the collector's issuing identity. Statement codes are
+The result is `Tag([collector, Ref([statement, lhs, rhs])])`. Every premise must
+be authored by that collector or by the kernel. Statement codes are
 Equivalent `0`, Eval `1`, Apply `2`, Force `3`, Think `4`, Select `6`.
 Storage-issued canonicalization facts use ordinary equivalence certificates.
 
@@ -125,39 +136,31 @@ Thunks; `Strict` and `Shallow` construct Encodes. All endpoints are supplied in
 the request. Lowering turns an Object into its Ref; lifting turns a Ref into
 its Object. A lifting exchange requires that Object as an explicit endpoint.
 
-| Code | Rule | Conclusion | Ordered premises |
+| Code | Operation | Conclusion | Ordered premises |
 | --- | --- | --- | --- |
-| 0 | TreeEq | `Tree(xs) ≃ Tree(ys)` | `xs[i] ≃ ys[i]` for each child |
+| 0 | Congruence | `C(a) ≃ C(b)` | `a ≃ b`; Trees use one equivalence per child |
 | 1 | ForceResultEq | `a ≃ b` | `Force(a, x)`, `Force(b, y)`, `x ≃ y` |
-| 2 | ThinkApplication | `Think(App(t), r)` | `Eval(t, u)`, `Apply(u, r)` |
+| 2 | Think | `Think(t, r)` | Application: Eval then Apply; selection: Eval then Select; identification: none |
 | 3 | ThinkToForce | `Force(t, d)` | `Think(t, d)`, with Data result `d` |
-| 4 | EqApplication | `App(t) ≃ App(u)` | `t ≃ u` |
-| 5 | EvalLeaf | `Eval(x, x)` | None; `x` is a Blob Object, Ref, or bare Thunk |
-| 6 | EvalTree | `Eval(Tree(xs), Tree(ys))` | `Eval(xs[i], ys[i])` for each child |
-| 7 | ForceToEncodeStrict | `Strict(t) ≃ lift(d)` | `Force(t, d)` |
+| 5 | Eval | `Eval(x, r)` | Trees: one Eval per child; leaves: none and `r = x` |
+| 7 | ForceToEncode | `Strict(t) ≃ lift(d)` or `Shallow(t) ≃ lower(d)` | `Force(t, d)` |
 | 8 | EvalEq | `Eval(b, r)` | `Eval(a, r)`, `a ≃ b` |
-| 9 | EqEncodeStrict | `Strict(a) ≃ Strict(b)` | `a ≃ b` |
 | 10 | Symmetry | `a ≃ b` | `b ≃ a` |
 | 11 | Transitivity | `a ≃ c` | `a ≃ b`, `b ≃ c` |
 | 12 | Reflexivity | `a ≃ a` | None |
 | 13 | ThunkEq | `a ≃ b` | `Think(a, b)`, with bare Thunk result `b` |
 | 14 | ThunkStrictEq | `a ≃ b` | `Think(a, Strict(b))` |
 | 15 | ThunkShallowEq | `a ≃ b` | `Think(a, Shallow(b))` |
-| 16 | ForceToEncodeShallow | `Shallow(t) ≃ lower(d)` | `Force(t, d)` |
-| 17 | EqSelection | `Sel(t) ≃ Sel(u)` | `t ≃ u` |
-| 18 | EqIdentification | `Id(a) ≃ Id(b)` | `a ≃ b`, with Ref endpoints |
-| 19 | EqEncodeShallow | `Shallow(a) ≃ Shallow(b)` | `a ≃ b` |
 | 20 | EvalResultEq | `a ≃ b` | `Eval(a, b)` |
-| 21 | TreeRefEq | `Ref(t) ≃ Ref(u)` | `t ≃ u`, with Tree Object endpoints |
-| 22 | BlobRefEq | `Ref(a) ≃ Ref(b)` | `a ≃ b`, with Blob Object endpoints |
 | 24 | ForceEq | `Force(b, r)` | `a ≃ b`, `Force(a, r)` |
-| 25 | ThinkSelection | `Think(Sel(t), r)` | `Eval(t, u)`, `Select(u, r)` |
-| 26 | ThinkIdentification | `Think(Id(r), r)` | None; `r` is a Ref |
 
-Tree rules require equally sized Object Trees with matching Tag markers.
-Application and selection congruence take Tree Objects. Encode congruence takes
-bare Thunks. Apply and Select premises are issued by the kernel and storage,
-respectively. All exchanges validate supplied facts without performing computation.
+Congruence supports Trees, Blob/Tree Refs, application/selection/identification
+Thunks, and strict/shallow Encodes. The left operand's constructor selects the
+primitive inference before any witness is inspected. `get_thunk_type` is a
+privileged Shell operation; ordinary procedures trap. No exchange searches its
+witnesses to choose an inference. Tree rules require matching lengths and Tag
+markers, except that Eval may reconstruct a Tag from untagged result fields.
+Apply and Select premises are issued by the kernel and storage, respectively.
 
 ## Checking
 

@@ -4,6 +4,24 @@ load("//build:rocq.bzl", "rocq_module")
 package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
+    name = "Authority",
+    namespace = "FixProof.Collector.wasm",
+    deps = [":Backend", ":Support", ":Witnesses", ":Refinement"],
+)
+
+rocq_module(
+    name = "Resolution",
+    namespace = "FixProof.Collector.wasm",
+    deps = [":Backend", ":Support", ":Refinement"],
+)
+
+rocq_module(
+    name = "Entry",
+    namespace = "FixProof.Collector.wasm",
+    deps = [":Backend", ":Support", ":Witnesses", ":Acceptance", ":Refinement", ":Resolution", ":Authority"],
+)
+
+rocq_module(
     name = "Acceptance",
     namespace = "FixProof.Collector.wasm",
     deps = [
@@ -102,6 +120,7 @@ rocq_module(
     deps = [
         ":Backend",
         ":Support",
+        ":Resources",
         ":Witnesses",
         ":Acceptance",
         ":Output",
@@ -117,6 +136,12 @@ rocq_module(
 )
 
 rocq_module(
+    name = "Resources",
+    namespace = "FixProof.Collector.wasm",
+    deps = [":Backend", ":Support"],
+)
+
+rocq_module(
     name = "Witnesses",
     namespace = "FixProof.Collector.wasm",
     deps = [
@@ -128,6 +153,7 @@ rocq_module(
 test_suite(
     name = "check",
     tests = [
+        ":Entry_check", ":Resolution_check", ":Authority_check",
         ":Acceptance_check",
         ":Binary_check",
         ":Backend_check",
@@ -137,6 +163,7 @@ test_suite(
         ":Output_check",
         ":Refinement_check",
         ":Support_check",
+        ":Resources_check",
         ":Witnesses_check",
     ],
     tags = ["manual", "proof"],

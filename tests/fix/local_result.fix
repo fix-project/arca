@@ -1,0 +1,4 @@
+program = $local_result_native
+checker = $check_result_native
+result = *#("" program)
+*#("" checker result ((42u64 42u64) 7u64))

@@ -1,0 +1,8 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "coupon",
+    srcs = ["lib.rs"],
+    crate_name = "fixcoupon",
+    visibility = ["//visibility:public"],
+)

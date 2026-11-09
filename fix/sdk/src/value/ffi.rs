@@ -7,7 +7,7 @@ pub(crate) fn status(code: u32) -> Result<(), Error> {
         2 => Err(Error::OutOfBounds),
         3 => Err(Error::WrongType),
         4 => Err(Error::NotComparable),
-        6 => Err(Error::AllOccupied),
+        6 => Err(Error::Busy),
         _ => unreachable!(),
     }
 }
@@ -27,11 +27,34 @@ pub fn __finish(output: impl Value) -> Result<(), Error> {
     Ok(())
 }
 unsafe extern "C" {
+    pub(super) fn fix_sdk_read_exact(destination: *mut u8, length: usize) -> u32;
+    pub(super) fn fix_sdk_eval(capture: *mut usize) -> u32;
+    pub(super) fn fix_sdk_effect(capture: *mut usize) -> u32;
+    pub(super) fn fix_sdk_advise(
+        key: *const u8,
+        key_length: usize,
+        payload: *const u8,
+        payload_length: usize,
+    ) -> u32;
+    pub(super) fn fix_sdk_coordinate(
+        name: *const u8,
+        name_length: usize,
+        length: usize,
+        child: unsafe extern "C" fn(*const (), usize) -> u32,
+        context: *const (),
+        reply_status: *mut u64,
+        capture: *mut usize,
+    ) -> u32;
+    pub(super) fn fix_sdk_keep(capture: *mut usize) -> u32;
+    pub(super) fn fix_sdk_handle_bytes(capture: *mut usize) -> u32;
+    pub(super) fn fix_sdk_read_handle_bytes(bytes: *mut [u8; 32]) -> u32;
+    pub(super) fn fix_sdk_tag_unchecked(capture: *mut usize) -> u32;
+    pub(super) fn fix_sdk_capture(index: usize) -> u32;
+    pub(super) fn fix_sdk_release_capture(index: usize);
     pub(super) fn fix_sdk_blob(bytes: *const u8, length: usize) -> u32;
     pub(super) fn fix_sdk_tree(
         length: usize,
         tag: i32,
-        author_depth: usize,
         child: unsafe extern "C" fn(*const (), usize) -> u32,
         context: *const (),
     ) -> u32;
@@ -45,15 +68,18 @@ unsafe extern "C" {
     pub(super) fn fix_sdk_value_type(out: *mut u32) -> u32;
     pub(super) fn fix_sdk_data_type(out: *mut u32) -> u32;
     pub(super) fn fix_sdk_encode_type(out: *mut u32) -> u32;
+    pub(super) fn fix_sdk_thunk_type(out: *mut u32) -> u32;
     pub(super) fn fix_sdk_len(out: *mut u64) -> u32;
     pub(super) fn fix_sdk_is_tag(out: *mut u32) -> u32;
     pub(super) fn fix_sdk_is_comparable(out: *mut u32) -> u32;
+    pub(super) fn fix_sdk_is_value(out: *mut u32) -> u32;
     pub(super) fn fix_sdk_read(offset: usize, destination: *mut u8, length: usize) -> u32;
     pub(super) fn fix_sdk_equals(
         rhs: unsafe extern "C" fn(*const ()) -> u32,
         context: *const (),
         out: *mut i32,
     ) -> u32;
+    pub(crate) fn fix_sdk_invalidate_externrefs() -> u32;
     pub(super) fn fix_sdk_root();
     pub(super) fn fix_sdk_finish();
 }

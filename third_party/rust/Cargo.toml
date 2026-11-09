@@ -10,8 +10,8 @@ path = "empty.rs"
 
 [dependencies]
 anyhow = "=1.0.104"
-wasm-encoder = { version = "=0.245.1", features = ["wasmparser"] }
-wasmparser = "=0.245.1"
+wasm-encoder = { version = "=0.245.1", default-features = false }
+wasmparser = { version = "=0.245.1", default-features = false }
 async-channel = { version = "=2.5.0", default-features = false }
 async-lock = { version = "=3.4.2", default-features = false }
 bitfield-struct = "=0.13.0"
@@ -34,6 +34,8 @@ talc = "=4.4.3"
 time = { version = "=0.3.55", default-features = false, features = ["alloc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+wasm-encoder = { version = "=0.245.1", features = ["std", "wasmparser"] }
+wasmparser = "=0.245.1"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 serde_json = { version = "=1.0.152", features = ["std"] }
 bindgen = "=0.73.2"
@@ -56,3 +58,7 @@ vmm-sys-util = "=0.15.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 dlmalloc = { version = "=0.2.14", features = ["global"] }
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+wasm-encoder = { version = "=0.245.1", features = ["std", "wasmparser"] }
+wasmparser = "=0.245.1"

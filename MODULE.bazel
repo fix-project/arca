@@ -66,6 +66,9 @@ crate.annotation(
     version = "1.8.7",
     patches = ["//build:blake3-custom-target.patch"],
     patch_args = ["-p1"],
+    # Hashing dominates debug builds otherwise.
+    rustc_flags = ["-Copt-level=3", "-Cdebug-assertions=off", "-Coverflow-checks=off"],
+    build_script_env = {"OPT_LEVEL": "3", "DEBUG": "false"},
 )
 crate.from_cargo(
     name = "crates",
@@ -108,10 +111,11 @@ local_tools(name = "local_tools")
 
 new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
 
-new_local_repository(
+wabt_repository = use_repo_rule("//build:wabt_repository.bzl", "wabt_repository")
+wabt_repository(
     name = "wabt_src",
     build_file = "//build:wabt.BUILD.bazel",
-    path = "third_party/wabt",
+    patch = "//build:wabt-externrefs.patch",
 )
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
@@ -161,6 +165,7 @@ http_archive(
 
 bazel_dep(name = "llvm", version = "0.8.5")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "bazel_lib", version = "3.7.2")
 bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "zlib-ng", version = "2.3.3", repo_name = "llvm_zlib")
 bazel_dep(name = "zstd", version = "1.5.7.bcr.1", repo_name = "llvm_zstd")
@@ -176,10 +181,3 @@ rocq_toolchain(name = "rocq_toolchain")
 rocq_host = use_repo_rule("//build:rocq.bzl", "rocq_host")
 
 rocq_host(name = "rocq_host")
-
-wabt_repository = use_repo_rule("//build:wabt_repository.bzl", "wabt_repository")
-wabt_repository(
-    name = "wabt_rooted_src",
-    build_file = "//build:wabt.BUILD.bazel",
-    patch = "//build:wabt-externrefs.patch",
-)

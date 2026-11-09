@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(portable_simd, simd_ffi)]
 #![allow(unused)]
 #![feature(slice_from_ptr_range)]
 #![feature(atomic_ptr_null)]
@@ -7,7 +6,7 @@
 
 extern crate alloc;
 
-use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use alloc::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use core::{
     arch::{asm, global_asm},
     ffi::c_void,
@@ -20,14 +19,15 @@ use user::{error, os, prelude::*};
 
 use crate::{
     fixpoint::w2c_fix,
-    rt::{
-        wasm_rt_externref_t, wasm_rt_free, wasm_rt_init, wasm_rt_module_alignment,
-        wasm_rt_module_size,
-    },
+    rt::{wasm_rt_externref_t, wasm_rt_init, wasm_rt_module_alignment, wasm_rt_module_size},
 };
 
-mod exceptions;
+mod continuation;
+mod cpp;
 mod fixpoint;
+mod handles;
+mod locals;
+mod references;
 mod rt;
 pub mod shell;
 
@@ -53,10 +53,6 @@ bail:
 "#
 );
 
-#[allow(
-    improper_ctypes,
-    reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
-)]
 unsafe extern "C" {
     static mut _sbss: c_void;
     static mut _ebss: c_void;
@@ -64,8 +60,9 @@ unsafe extern "C" {
     fn wasm2c_module_free(module: *mut c_void);
     fn w2c_module_0x5Ffix_apply(
         module: *const c_void,
+        result: wasm_rt_externref_t,
         combination: wasm_rt_externref_t,
-    ) -> wasm_rt_externref_t;
+    );
 }
 
 /// The Rust entrypoint for Fix-on-Arca programs.  This function performs the minimal runtime setup
@@ -101,13 +98,9 @@ pub fn main() -> ! {
         },
         0
     );
-    let combination = os::argument();
-    let combination =
-        Blob::try_from(combination).expect("fix programs must receive a handle as input");
-    let mut handle = [0; 32];
-    assert_eq!(combination.len(), handle.len());
-    assert_eq!(combination.read(0, &mut handle), handle.len());
+    let handle = continuation::read_reply(os::argument());
     let result = unsafe {
+        references::init();
         wasm_rt_init();
         let layout =
             Layout::from_size_align(wasm_rt_module_size(), wasm_rt_module_alignment()).unwrap();
@@ -118,15 +111,9 @@ pub fn main() -> ! {
 
         wasm2c_module_instantiate(module, core::ptr::null());
 
-        let wasm_rt_externref_t { bytes: result } = w2c_module_0x5Ffix_apply(
-            module,
-            wasm_rt_externref_t {
-                bytes: core::simd::u8x32::from_array(handle),
-            },
-        );
-        wasm_rt_free();
-        dealloc(module.cast(), layout);
+        let result = references::wasm_rt_ref_reserve(1);
+        w2c_module_0x5Ffix_apply(module, result, handle);
         result
     };
-    os::exit(result.as_array().as_slice());
+    continuation::finish(result);
 }

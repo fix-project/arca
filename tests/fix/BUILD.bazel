@@ -1,6 +1,7 @@
+load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_test")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
-load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test", "guest_binary", "ARCA_USER", "wat_library", "wat_module")
+load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test", "wat_library", "wat_module")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -8,6 +9,30 @@ exports_files(glob(["*.fix"]))
 
 wat_module(name = "privileged_wasm", src = "privileged.wat")
 fix_procedure(name = "privileged_native", wasm = ":privileged_wasm")
+
+wat_module(name = "linear_effects_wasm", src = "linear_effects.wat")
+fix_procedure(name = "linear_effects_native", wasm = ":linear_effects_wasm")
+
+wat_module(name = "eval_wasm", src = "eval.wat")
+fix_procedure(name = "eval_native", wasm = ":eval_wasm")
+
+wat_module(name = "exception_parameters_wasm", src = "exception_parameters.wat")
+fix_procedure(name = "exception_parameters_native", wasm = ":exception_parameters_wasm")
+
+wat_module(name = "advice_wasm", src = "advice.wat")
+fix_procedure(name = "advice_native", wasm = ":advice_wasm")
+
+wat_module(name = "advice_capture_wasm", src = "advice_capture.wat")
+fix_procedure(name = "advice_capture_native", wasm = ":advice_capture_wasm")
+
+wat_module(name = "read_blob_wasm", src = "read_blob.wat")
+fix_procedure(name = "read_blob_native", wasm = ":read_blob_wasm")
+
+wat_module(name = "local_result_wasm", src = "local_result.wat")
+fix_procedure(name = "local_result_native", wasm = ":local_result_wasm")
+
+wat_module(name = "continuation_wasm", src = "continuation.wat")
+fix_procedure(name = "continuation_native", wasm = ":continuation_wasm")
 
 wat_module(name = "slowaddblob_wasm", src = "slowaddblob.wat")
 fix_procedure(name = "slowaddblob_native", wasm = ":slowaddblob_wasm")
@@ -52,21 +77,41 @@ rust_shared_library(
 fix_procedure(
     name = "sdk_expressions_native",
     wasm = ":sdk_expressions_wasm",
-    memories = 2,
-    tables = 2,
+    memories = 3,
+    tables = 3,
 )
+
+rust_shared_library(
+    name = "worker_events_wasm",
+    srcs = ["worker_events.rs"],
+    crate_name = "worker_events",
+    crate_root = "worker_events.rs",
+    platform = WASM,
+    deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
+)
+
+fix_procedure(name = "worker_events_native", wasm = ":worker_events_wasm", memories = 3, tables = 3)
+
+rust_shared_library(
+    name = "concurrent_map_wasm",
+    srcs = ["concurrent_map.rs"],
+    platform = WASM,
+    deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
+)
+
+fix_procedure(name = "concurrent_map_native", wasm = ":concurrent_map_wasm", memories = 3, tables = 3)
 
 test_suite(
     name = "tests",
     tests = [":" + name + "_test" for name in FIX_RUST_PROGRAMS] + [
         ":cli_test",
-        "//tests/build:rules_test",
         ":mapreduce_cases_test",
         ":addblob_extended_test",
         ":addblob_test",
         ":parallel_addblob_test",
         ":selection_test",
         ":shell_test",
+        ":local_result_test",
         ":slowaddblob_test",
         ":sdk_expressions_test",
         ":wat_linkage_test",
@@ -102,7 +147,7 @@ rust_shared_library(
     link_deps = [":wat_operations"],
 )
 
-fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 2, tables = 2)
+fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 3, tables = 3)
 
 rust_shared_library(
     name = "check_result_wasm",
@@ -110,7 +155,7 @@ rust_shared_library(
     platform = WASM,
     deps = ["//fix/sdk"],
 )
-fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 2, tables = 2)
+fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 3, tables = 3)
 
 [
     fix_script_test(
@@ -129,7 +174,8 @@ fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memorie
         ("selection_test", "selection.fix", 1, [], "68"),
         ("parallel_addblob_test", "addblob.fix", 2, ["//programs/fix:addblob_elf"], "0600000000000000"),
         ("shell_test", "shell.fix", 1, [":shell_native"], "2a00000000000000"),
-        ("sdk_expressions_test", "sdk_expressions.fix", 1, [":sdk_expressions_native"], "2a00000000000000"),
+        ("local_result_test", "local_result.fix", 1, [":local_result_native", ":check_result_native"], "2a00000000000000"),
+        ("sdk_expressions_test", "sdk_expressions.fix", 1, [":sdk_expressions_native", "//programs/fix:identity_elf"], "2a00000000000000"),
         ("bptree_get_test", "bptree_get.fix", 1, ["//programs/fix:bptree_get_elf"], "36"),
         ("bptree_get_n_test", "bptree_get_n.fix", 1, ["//programs/fix:bptree_get_n_elf"], "35"),
         ("map_test", "map.fix", 1, ["//programs/fix:addblob_elf", "//programs/fix:map_elf"], "0a00000000000000"),
@@ -140,22 +186,43 @@ fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memorie
     ]
 ]
 
+rust_shared_library(
+    name = "compiler_tool_wasm",
+    srcs = ["compiler_tool.rs"],
+    platform = WASM,
+    deps = ["//fix/sdk"],
+)
+fix_procedure(name = "compiler_tool_native", wasm = ":compiler_tool_wasm", memories = 3, tables = 3)
+
 rust_test(
     name = "cli_test",
     srcs = ["cli.rs"],
     edition = "2024",
-    data = [":user_scheduler_elf", "//tools:seed_repository", "//programs/fix:compile_elf", "//flatware:cpio_elf", "//flatware:normalize_elf", "//programs/fix:compose_elf", "//programs/fix/json:json_elf", "//fix/cli:fix", "//fix/cli:commands", "//programs/fix/parser:parser_elf", "//programs/fix:identity_elf"],
-    rustc_env = {"USER_SCHEDULER": "$(rootpath :user_scheduler_elf)", "FIX_SEED": "$(rootpath //tools:seed_repository)", "FIX_COMPILE": "$(rootpath //programs/fix:compile_elf)", "FIX_CPIO": "$(rootpath //flatware:cpio_elf)", "FIX_NORMALIZE": "$(rootpath //flatware:normalize_elf)", "FIX_COMPOSE": "$(rootpath //programs/fix:compose_elf)", "FIX_JSON": "$(rootpath //programs/fix/json:json_elf)", "FIX_CLI": "$(rootpath //fix/cli:fix)", "FIX_COMMANDS": "$(rootpath //fix/cli:commands)", "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)", "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)"},
+    deps = ["//fix/handle", "//fix/repository"],
+    data = ["//programs/fix/parser:parser_elf", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
+    rustc_env = {
+        "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
+        "FIX_CLI": "$(rootpath //fix/cli:fix)",
+        "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",
+        "FIX_COMPILER_TOOL": "$(rootpath :compiler_tool_native)",
+        "FIX_COMPILE": "$(rootpath //programs/fix:compile_elf)",
+        "FIX_SCHEDULER": "$(rootpath //programs/fix:scheduler_elf)",
+        "FIX_COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
+        "FIX_TAGGER": "$(rootpath //fix/sdk:tagger_native)",
+        "FIX_CONTINUATION": "$(rootpath :continuation_native)",
+        "USER_SCHEDULER": "$(rootpath :user_scheduler_elf)",
+        "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
+    },
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local"],
 )
 
-guest_binary(
-    name = "user_scheduler_elf",
-    testonly = True,
-    srcs = ["user_scheduler.rs"],
-    linker_script = "//arca/user:etc/memmap.ld",
-    platform = ARCA_USER,
-    deps = ["//arca/abi", "//arca/api", "//arca/user"],
+fix_cc_wasm(
+    name = "user_scheduler_wasm",
+    srcs = ["user_scheduler.c"],
+    memories = 3,
+    copts = ["-Wall", "-Wextra", "-Werror"],
 )
+
+fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")

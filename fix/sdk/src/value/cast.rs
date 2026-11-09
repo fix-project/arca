@@ -11,9 +11,7 @@ impl<T: FixType, V: Value> Value for Cast<T, V> {
     delegate_value!(this, &this.0);
 }
 pub(crate) fn checked<T: FixType, V: Value>(value: V) -> Result<Cast<T, V>, Error> {
-    if let Some(kind) = T::VALUE
-        && value.value_type()? != kind
-    {
+    if !T::VALUES.is_empty() && !T::VALUES.contains(&value.value_type()?) {
         return Err(Error::WrongType);
     }
     if let Some(kind) = T::DATA

@@ -21,8 +21,10 @@ fix_procedure(
     name = "parser",
     visibility = ["//visibility:public"],
     artifact_visibility = ["//visibility:public"],
-    memories = 2,
-    tables = 2,
+    memories = 3,
+    tables = 3,
     runnable = True,
     wasm = ":wasm",
 )
+
+alias(name = "parser_module", actual = ":parser_postprocess", visibility = ["//visibility:public"])

@@ -1,75 +1,60 @@
 # Bootstrap
 
-The bootstrap builds LLVM, wasm2c, and the Wasm merger from pinned source,
-then converts them into Fix executables. The first LLVM build uses the host
-C/C++ compiler. The WASIp1 sysroot and C/C++ headers are included.
+The bootstrap builds LLVM, wasm2c, and the Wasm merger from pinned source, then
+converts the Fix compiler wrapper, clang, wasm2c, the scheduler, and the coupon
+collector into Fix ELFs on Linux. A seeding tool writes them into a seed
+repository. Nothing in this process runs inside Fix.
 
-| Phase | Target | What it does | Minutes on puffer5 |
-|---|---|---|---|
-| Host LLVM | `//bootstrap:host_llvm` | Builds native Clang and LLD | 5 |
-| Stage0 | `//bootstrap:stage0` | Builds the WASIp1 tools and sysroot | 5 |
-| Stage1 | `//bootstrap:stage1` | Native tools merge Wasm with Flatware, translate to C, and compile/link Fix ELFs | 5 |
-| Stage2 | `//bootstrap:stage2` | Stage1 tools repeat the conversion inside Fix | 10 |
-| Stage3 | `//bootstrap:stage3` | Stage2 tools repeat it inside Fix | 10 |
+| Target | What it does |
+|---|---|
+| `//bootstrap:host_llvm` | Builds native Clang and LLD |
+| `//bootstrap:stage0` | Builds the WASIp1 tools and sysroot |
+| `//bootstrap:stage1` | Merges the tools with Flatware, translates them to C, and compiles that output as C++ into native Fix ELFs |
+| `//bootstrap` (`:seed`) | Writes the seed repository archive |
+| `//bootstrap:compilations` | Rebuilds every seed ELF inside Fix; its archive carries the compile coupons |
+| `//bootstrap:stage2` | Opt-in test: the rebuilt certificates equal the seed's |
 
-Estimates use release builds on puffer5 with 256 jobs and 256 C units per command,
-after prerequisites are built, rounded to the nearest five minutes. With one
-repository per stage, Stage2 took 8 minutes 53 seconds and Stage3 took 9 minutes
-11 seconds.
-Cache hits take seconds.
+Every native ELF uses `UNITS` translated C++ units (`native.bzl`, currently 512);
+`compile.fix` uses the same count, so Stage2 reproduces the seed byte for byte.
+LLVM libc++abi and libunwind provide native exception cleanup. Both are built
+from the pinned LLVM source.
 
-```sh
-bazel build //bootstrap
-bazel run //bootstrap:verify
-bazel run //bootstrap:verify2
-```
-
-The default build stops at Stage1 and packages a minimal `.fix` repository in
-`bazel-bin/bootstrap/bootstrap.tar.gz`. `verify` aliases `verify1`, which builds
-Stage2 and compares its ELFs with Stage1 byte for byte. `verify2` builds Stage3
-and compares it with Stage2. Every stage converts the same original Wasm inputs.
-Rebuilt ELFs reuse their existing Runnable certificates after their canonical
-handles match. Both verification targets therefore require Stage1–Stage2 agreement.
-On puffer5, add `--jobs=256`; CMake builds use all available CPUs.
-Stage, archive, and verification targets default to release mode. Use
-`--//bootstrap:debug` to build their dependencies in debug mode.
-Stages 2 and 3 each use one Bazel action and one private Fix repository, with
-separate evaluations for preparation, merging, translation, compilation, and
-linking. Compilation submits all three tools' 256 C units and runtime units
-together. Intermediate values stay in that repository; only the final result
-archive and executables are retained. Bazel caches each completed stage. NDJSON
-node references share graph construction.
-Configure Bazel caches in a user or site Bazelrc.
-
-Verification uses available cores by default. `--//build:fix-jobs=N` sets the
-default for all Fix evaluations; `--//bootstrap:jobs=N` overrides it for bootstrap.
-Memory defaults to 1 GiB per worker, rounded up to a power of two with a 16 GiB
-minimum. Override with `--//bootstrap:memory=MIB`; memory must be a power of two.
-A 256-job compilation batch (771 units across all three tools) took about
-6 minutes 40 seconds and peaked at 151.7 GiB RSS on puffer5 with a 256 GiB VM.
-This diagnostic run included scheduler counters; all objects matched native
-compilation byte for byte. It excludes graph construction, translation, linking,
-and export.
-
-The complete tool filesystem is `bazel-bin/bootstrap/stage0`; mount its `usr`
-directory at `/usr` in Flatware. Each stage exposes its ELF commands through
-`//bootstrap:stageN_COMMAND_link` targets.
-
-Build or install the bootstrap repository:
+`--//bootstrap:debug` builds the seed's dependencies in debug mode.
 
 ```sh
 bazel build //bootstrap
-fix init
-fix import bazel-bin/bootstrap/bootstrap.tar.gz
+fix init bazel-bin/bootstrap/seed.tar --precompile
 export FIX_TRUST="$(fix repository)/trust"
 ```
 
-The archive contains `.fix` with labels `bootstrap`, `compile`, `fixpoint`, `compile-resources`, `json`, `parser`, `identity`, `path`, `clang`, `wasm2c`,
-`wasm-merge`, `cpio`, `flatware-normalize`, `flatware-result`, `compose`, and `toolchain`, plus only the objects and data reachable from
-`bootstrap`. System tar can unpack it directly over an empty `.fix` repository.
+## Seed
 
-`compile` names the trusted compiler wrapper ELF. `fixpoint` is its self-authored
-Runnable certificate; `compile-resources` authenticates its tools and filesystem.
-The included `.fix/trust` names only `compile` as a trusted author. The wrapper's
-Wasm source is `/toolchain/share/fix/compile.wasm`; compiling it with eight C
-units reproduces `fixpoint`. No temporary zero-author certificate is exported.
+`bootstrap/seed.rs` writes the seed: `seed create DIRECTORY COMPILER WASM2C
+CLANG TOOLCHAIN [NAME=ELF]...`. The trusted author, and the sole `.fix/trust`
+entry, is a Ref to the compiler wrapper ELF. The tool issues directly:
+
+- `fixpoint`, the wrapper's Runnable certificate authored by itself;
+- Runnables for clang, wasm2c, and each `NAME=ELF`;
+- the `compile-resources` Bootstrap tag, authored by the trusted author, over
+  `(wasm2c clang toolchain)`. `toolchain` is the `/toolchain` Flatware tree
+  (`usr/` from Stage0 plus `share/fix/` shell resources), imported natively
+  with symlinks followed.
+
+The seed has no coupons and four labels: `trusted-compiler`, `compile` (the
+closure `("" fixpoint compile-resources)`), `scheduler`, and `collector`.
+Applying `compile` to a Wasm module, as in `#("" compile module)`, yields a
+Runnable for that module, compiled as one translated C++ unit per 128 KiB of Wasm.
+An explicit unit count, as in `#("" compile module 512u64)`, overrides that;
+`compile.fix` passes the count the native seed build used.
+`seed add DIRECTORY NAME=ELF...` issues further Runnables authored by an
+existing seed's `trusted-compiler`; tests use it to add their programs.
+
+## Stage2
+
+`compile.fix` applies `compile` to the compiler wrapper, wasm2c, clang,
+scheduler, and collector modules and returns the `compile` closure followed by
+the rebuilt Runnables. Fix can reproduce Runnable certificates because `compile`
+issues them with the trusted author; it cannot issue the Bootstrap tag, so the
+closure reuses the seed's. `//bootstrap:stage2` checks that the closure and every
+rebuilt Runnable equal the seed's. Import `//bootstrap:compilations` to reuse
+those compilations elsewhere.

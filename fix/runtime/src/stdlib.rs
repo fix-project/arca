@@ -9,10 +9,9 @@ pub fn build_environment(storage: &dyn Storage) -> Handle {
     for (name, blob) in PRIMITIVES {
         let name = storage.add_blob(name.as_bytes());
         let primitive = storage.add_blob(blob);
-        let authors = storage.add_tree(&[primitive.into()]);
         let primitive = storage
             .add_tree(&[
-                authors.into(),
+                primitive.object().into_ref().into(),
                 primitive.into(),
                 Blob::literal(b"Runnable").unwrap().into(),
             ])

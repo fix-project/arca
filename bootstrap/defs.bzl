@@ -1,84 +1,40 @@
-"""Bootstrap tool filesystem."""
+"""The Linux-issued seed repository."""
 
 load(":configuration.bzl", "ALLOW_TRANSITION", "mode")
-load("//build:fix.bzl", "FixToolchainInfo")
 
-def _assemble_impl(ctx):
-    output = ctx.actions.declare_directory(ctx.label.name)
-    inputs = [ctx.file.llvm, ctx.file.sysroot, ctx.file.wasm2c, ctx.file.merge]
+def _seed_impl(ctx):
+    archive = ctx.actions.declare_file(ctx.label.name + ".tar")
+    programs = {name: target.files.to_list()[0] for target, name in ctx.attr.programs.items()}
+    blobs = {name: target.files.to_list()[0] for target, name in ctx.attr.blobs.items()}
+    directories = {name: target.files.to_list()[0] for target, name in ctx.attr.directories.items()}
+    tool = ctx.attr._tool[DefaultInfo].files_to_run
+    inputs = [ctx.file.compiler, ctx.file.wasm2c, ctx.file.clang, ctx.file.toolchain]
+    arguments = ["create", "$work"] + [file.path for file in inputs] + [name + "=" + file.path for name, file in programs.items()]
+    for name, file in blobs.items():
+        arguments.extend(["--blob", name + "=" + file.path])
+    for name, file in directories.items():
+        arguments.extend(["--directory", name + "=" + file.path])
     ctx.actions.run_shell(
-        inputs = inputs,
-        outputs = [output],
-        arguments = [f.path for f in inputs] + [output.path],
-        command = """
-set -euo pipefail
-mkdir -p "$5/usr/bin" "$5/commands"
-cp -R -L "$2/." "$5/usr/"
-chmod -R u+w "$5/usr"
-cp -R -L "$1/usr/lib/clang/." "$5/usr/lib/clang/"
-cp "$1/usr/bin/clang" "$5/commands/clang.wasm"
-cp "$1/usr/bin/ld.lld" "$1/usr/bin/wasm-ld" "$5/usr/bin/"
-cp "$3/wasm2c.wasm" "$5/commands/wasm2c.wasm"
-cp "$4" "$5/commands/wasm-merge.wasm"
-""",
-        mnemonic = "BootstrapWasmTools",
+        command = 'set -euo pipefail\nwork=$(mktemp -d)\ntrap \'rm -rf "$work"\' EXIT\n"$1" %s\ntar --create --file "$2" --mtime=@0 --owner=0 --group=0 --numeric-owner --sort=name --directory "$work" .fix\n' % " ".join(['"%s"' % argument for argument in arguments]),
+        arguments = [tool.executable.path, archive.path],
+        inputs = inputs + programs.values() + blobs.values() + directories.values(),
+        tools = [tool],
+        outputs = [archive],
+        mnemonic = "BootstrapSeed",
     )
-    return [DefaultInfo(files = depset([output]))]
+    return [DefaultInfo(files = depset([archive]))]
 
-wasm_tools = rule(implementation = _assemble_impl, cfg = mode, attrs = dict(ALLOW_TRANSITION, **{
-    "llvm": attr.label(default = "//bootstrap:wasm_llvm", allow_single_file = True),
-    "sysroot": attr.label(default = "//bootstrap:wasi_sysroot", allow_single_file = True),
-    "wasm2c": attr.label(default = "//bootstrap:wasm2c", allow_single_file = True),
-    "merge": attr.label(default = "//tools:wasm_merge_wasm", allow_single_file = True),
-}))
-
-def _repository_archive(ctx):
-    output = ctx.actions.declare_file("bootstrap.tar.gz")
-    trust = ctx.actions.declare_file("bootstrap.trust")
-    handles = ctx.actions.declare_file("bootstrap.handles.json")
-    inputs = [ctx.file.stage0, ctx.file.clang, ctx.file.wasm2c, ctx.file.merger,
-              ctx.file.json, ctx.file.parser, ctx.file.identity, ctx.file.shell, ctx.file.runtime,
-              ctx.file.memmap, ctx.file.adapter, ctx.file.control, ctx.file.path,
-              ctx.file.cpio, ctx.file.normalize, ctx.file.compose]
-    ctx.actions.run_shell(
-        command = 'export PATH="$PWD/' + ctx.executable.fix.dirname + '/commands/bin:$PATH"; exec "$@"',
-        arguments = [ctx.executable.builder.path, ctx.executable.fix.path] + [file.path for file in inputs] + [output.path, ctx.executable.seed.path, ctx.file.compile.path, ctx.file.compile_wasm.path, ctx.file.result.path, trust.path, handles.path] + [file.path for file in ctx.files.headers],
-        inputs = inputs + ctx.files.headers + [ctx.file.compile, ctx.file.compile_wasm, ctx.file.result],
-        tools = [ctx.attr.fix[DefaultInfo].files_to_run, ctx.attr.builder[DefaultInfo].files_to_run, ctx.attr.seed[DefaultInfo].files_to_run],
-        outputs = [output, trust, handles],
-        mnemonic = "BootstrapRepository",
-        use_default_shell_env = True,
-        execution_requirements = {"local": "1"},
-    )
-    return [DefaultInfo(files = depset([output])), FixToolchainInfo(repository = output, trust = trust, handles = handles)]
-
-repository_archive = rule(
-    implementation = _repository_archive,
+seed_repository = rule(
+    implementation = _seed_impl,
     cfg = mode,
-    attrs = {
-        "builder": attr.label(default = "//bootstrap:repository.sh", allow_single_file = True, executable = True, cfg = "exec"),
-        "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
-        "seed": attr.label(default = "//tools:seed_repository", executable = True, cfg = "exec"),
-        "compile": attr.label(default = "//bootstrap:compile_link", allow_single_file = True),
-        "compile_wasm": attr.label(default = "//programs/fix:compile_module", allow_single_file = True),
-        "stage0": attr.label(default = "//bootstrap:stage0", allow_single_file = True),
-        "clang": attr.label(default = "//bootstrap:stage1_clang_link", allow_single_file = True),
-        "wasm2c": attr.label(default = "//bootstrap:stage1_wasm2c_link", allow_single_file = True),
-        "merger": attr.label(default = "//bootstrap:stage1_wasm-merge_link", allow_single_file = True),
-        "json": attr.label(default = "//programs/fix/json:json_elf", allow_single_file = True),
-        "cpio": attr.label(default = "//flatware:cpio_elf", allow_single_file = True),
-        "normalize": attr.label(default = "//flatware:normalize_elf", allow_single_file = True),
-        "compose": attr.label(default = "//programs/fix:compose_elf", allow_single_file = True),
-        "result": attr.label(default = "//flatware:result_elf", allow_single_file = True),
-        "path": attr.label(default = "//programs/fix/rust:path_elf", allow_single_file = True),
-        "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
-        "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),
-        "shell": attr.label(default = "//fix/shell:shell", allow_single_file = True),
-        "runtime": attr.label(default = "//fix/shell:wasm_rt", allow_single_file = True),
-        "memmap": attr.label(default = "//fix/shell:memmap", allow_single_file = True),
-        "adapter": attr.label(default = "//flatware:adapter_wasm", allow_single_file = True),
-        "control": attr.label(default = "//flatware:control_wasm", allow_single_file = True),
-        "headers": attr.label(default = "//fix/shell:headers", allow_files = True),
-        "_allowlist_function_transition": ALLOW_TRANSITION["_allowlist_function_transition"],
-    },
+    attrs = dict(ALLOW_TRANSITION, **{
+        "compiler": attr.label(mandatory = True, allow_single_file = True),
+        "wasm2c": attr.label(mandatory = True, allow_single_file = True),
+        "clang": attr.label(mandatory = True, allow_single_file = True),
+        "toolchain": attr.label(mandatory = True, allow_single_file = True),
+        "programs": attr.label_keyed_string_dict(allow_files = True),
+        "blobs": attr.label_keyed_string_dict(allow_files = True),
+        "directories": attr.label_keyed_string_dict(allow_files = True),
+        "_tool": attr.label(default = "//bootstrap:seed_tool", executable = True, cfg = "exec"),
+    }),
 )

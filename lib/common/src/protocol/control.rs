@@ -42,6 +42,7 @@ pub enum Request<B = Region> {
     /// Returns the file's contents as [`Response::Bytes`].
     ReadFile(String),
     WriteFile(String, B, FileMode),
+    ReadDirectoryUri(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +57,21 @@ pub enum Response {
     Length(usize),
     /// A Buddy allocation whose ownership passes to the receiver.
     Bytes(Region),
+    DirectoryEntries(Vec<DirectoryEntry>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DirectoryEntry {
+    pub name: Vec<u8>,
+    pub kind: DirectoryEntryKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum DirectoryEntryKind {
+    File,
+    Directory,
+    Symlink(Vec<u8>),
+    Unsupported,
 }
 
 /// Wire-serializable mirror of [`embedded_io::ErrorKind`], which is

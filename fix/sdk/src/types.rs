@@ -20,3 +20,11 @@ pub enum EncodeType {
     Strict = 0,
     Shallow = 1,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ThunkType {
+    Application = 0,
+    Selection = 1,
+    Identification = 2,
+}

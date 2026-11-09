@@ -1,7 +1,7 @@
 (** Instantiates the collector module and proves reusable Wasm reduction
     rules for calls, frames, instruction contexts, loops, and traps. *)
 
-From Wasm Require Import datatypes operations opsem properties instantiation_func interp_instantiate_sound.
+From Wasm Require Import datatypes operations opsem properties instantiation_func interp_instantiate_sound instantiation_sound.
 From FixProof.Semantics Require Import Handle ApplyTree.
 From FixProof.Collector Require Import Matching.
 From FixProof.Shell Require Import ABI Externref Host.
@@ -20,16 +20,27 @@ Module WasmExecution (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Definition host_store : store_record := Build_store_record
       (map (fun operation => FC_func_host (shell_signature operation) operation) imported_functions)
       [] [] [] [] [].
-    Definition import_values := map (fun index => EV_func (N.of_nat index)) (seq 0 18).
+    Definition import_values := map (fun index => EV_func (N.of_nat index)) (seq 0 (List.length imported_functions)).
     Definition module_allocation := interp_alloc_module host_store evaluation_module import_values [] [].
     Definition allocated_store := fst module_allocation.
     Definition collector_instance := snd module_allocation.
 
     Variable combination : S.TreeName.
     Variable privileged : bool.
+    Variable trusted_tagger : bool.
     Variable handle_bytes : nat -> S.handle -> option S.BlobName.
     Local Instance collector_host : host :=
-      H.shell_host combination collector_instance privileged handle_bytes.
+      H.shell_host combination collector_instance privileged trusted_tagger handle_bytes.
+
+    Lemma collector_host_store_typing : store_typing host_store.
+    Proof.
+      unfold store_typing, host_store; split.
+      - apply Forall_forall; intros function Function.
+        apply in_map_iff in Function as [operation [Function Present]]; subst function.
+        exists (shell_signature operation); split; [reflexivity|].
+        destruct operation; reflexivity.
+      - repeat split; constructor.
+    Qed.
 
     (** The supplied host imports instantiate the parsed collector module with the modeled
         initial store and instance. *)
@@ -45,9 +56,18 @@ Module WasmExecution (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         (allocated_store, Build_frame [] collector_instance, []).
     Proof. eapply interp_instantiate_imp_instantiate; exact collector_module_instantiated. Qed.
 
+    Lemma collector_allocated_store_typing : store_typing allocated_store.
+    Proof.
+      destruct (instantiation_sound (s := host_store) (m := evaluation_module)
+        (v_imps := import_values) (s' := allocated_store)
+        (f := Build_frame [] collector_instance) (exps := [])
+        collector_host_store_typing collector_module_instantiation_sound) as [Typed Rest].
+      exact Typed.
+    Qed.
+
     (** The instantiated collector uses the expected function, table, and memory indices. *)
     Lemma collector_resource_indices :
-      inst_tables collector_instance = [0%N; 1%N; 2%N] /\
+      inst_tables collector_instance = [0%N; 1%N; 2%N; 3%N; 4%N; 5%N; 6%N; 7%N; 8%N; 9%N] /\
       inst_mems collector_instance = [0%N].
     Proof. split; reflexivity. Qed.
 
@@ -430,15 +450,15 @@ Module WasmExecution (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
 
     (** The native require call accepts a true condition and traps on a false condition. *)
     Lemma collector_require_executes state store locals (condition : bool) :
-      lookup_N (s_funcs store) 18%N =
+      lookup_N (s_funcs store) 21%N =
         Some (FC_func_native (Tf [T_num T_i32] []) collector_instance evaluation_require) ->
       reduce_trans
         (state, store, Build_frame locals collector_instance,
-          [v_to_e (VAL_num (VAL_int32 (wasm_bool condition))); AI_basic (BI_call 18%N)])
+          [v_to_e (VAL_num (VAL_int32 (wasm_bool condition))); AI_basic (BI_call 21%N)])
         (state, store, Build_frame locals collector_instance, if condition then [] else [AI_trap]).
     Proof.
       intro Closure; eapply collector_call_void with (code := evaluation_require)
-        (parameters := [T_num T_i32]) (defaults := []) (index := 18%N) (address := 18%N)
+        (parameters := [T_num T_i32]) (defaults := []) (index := 21%N) (address := 21%N)
         (arguments := [VAL_num (VAL_int32 (wasm_bool condition))]) (accepted := condition)
         (final_frame := Build_frame [VAL_num (VAL_int32 (wasm_bool condition))] collector_instance);
         try reflexivity; try exact Closure.
@@ -452,7 +472,7 @@ Module WasmExecution (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
         Some (FC_func_host (shell_signature operation) operation) ->
       (match shell_signature operation with Tf parameters _ =>
         List.length arguments = List.length parameters end) ->
-      H.host_result combination collector_instance privileged handle_bytes state store
+      H.host_result combination collector_instance privileged trusted_tagger handle_bytes state store
         (shell_signature operation) operation arguments = (next, result) ->
       reduce_trans
         (state, store, frame, v_to_e_list arguments ++ [AI_basic (BI_call index)])
@@ -468,7 +488,7 @@ Module WasmExecution (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
           try reflexivity; try eassumption.
         split; [reflexivity|].
         change (Some (next, result) = Some (H.host_result combination collector_instance
-          privileged handle_bytes state store (Tf parameters results) operation arguments)).
+          privileged trusted_tagger handle_bytes state store (Tf parameters results) operation arguments)).
         rewrite Result; reflexivity.
     Qed.
   End Execution.

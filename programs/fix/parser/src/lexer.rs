@@ -19,16 +19,23 @@ impl<'a> Lexer<'a> {
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, String> {
         let mut tokens = Vec::new();
-        let mut depth: usize = 0;
+        let mut scopes = alloc::vec![0usize];
 
         loop {
             let token = self.next_token()?;
             match token {
-                Token::LParen | Token::LBracket => depth += 1,
-                Token::RParen | Token::RBracket => {
-                    depth = depth.checked_sub(1).ok_or("unexpected closing delimiter")?;
+                Token::LBrace => scopes.push(0),
+                Token::RBrace => {
+                    if scopes.len() == 1 || scopes.pop() != Some(0) {
+                        return Err(String::from("unexpected closing scope"));
+                    }
                 }
-                Token::Newline if depth > 0 => continue,
+                Token::LParen | Token::LBracket => *scopes.last_mut().unwrap() += 1,
+                Token::RParen | Token::RBracket => {
+                    let depth = scopes.last_mut().unwrap();
+                    *depth = depth.checked_sub(1).ok_or("unexpected closing delimiter")?;
+                }
+                Token::Newline if *scopes.last().unwrap() > 0 => continue,
                 Token::Eof => {
                     tokens.push(token);
                     break;
@@ -48,6 +55,8 @@ impl<'a> Lexer<'a> {
         };
 
         let token = match character {
+            '{' => Token::LBrace,
+            '}' => Token::RBrace,
             '(' => Token::LParen,
             ')' => Token::RParen,
             '[' => Token::LBracket,

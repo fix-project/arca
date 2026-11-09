@@ -45,6 +45,15 @@ impl Handle<Object<Tree>, Focus> {
     }
 }
 
+impl Handle<Object<Tree>, Capture> {
+    pub fn get(&self, index: usize) -> Handle<Any, Child<&Capture>> {
+        Handle::new(Child {
+            parent: &self.location,
+            index,
+        })
+    }
+}
+
 pub trait Children {
     type Child<'a>: Value<Type = Any>
     where
@@ -136,6 +145,26 @@ pub struct CreateTree<C> {
     pub(super) children: C,
 }
 impl<C: Children> CreateTree<C> {
+    pub fn coordinate(&self, name: &[u8]) -> Result<(u64, Handle<Any, Capture>), Error> {
+        unsafe extern "C" fn child<C: Children>(context: *const (), index: usize) -> u32 {
+            let children = unsafe { &*context.cast::<C>() };
+            code(children.child(index).and_then(|child| child.build_at(None)))
+        }
+        let mut reply_status = 0;
+        let mut capture = 0;
+        status(unsafe {
+            fix_sdk_coordinate(
+                name.as_ptr(),
+                name.len(),
+                self.children.len(),
+                child::<C>,
+                (&self.children as *const C).cast(),
+                &mut reply_status,
+                &mut capture,
+            )
+        })?;
+        Ok((reply_status, eval::from_index(capture)))
+    }
     fn query<T>(
         &self,
         path: Option<&Path<'_>>,
@@ -148,7 +177,7 @@ impl<C: Children> CreateTree<C> {
             root(self)
         }
     }
-    pub(super) fn build(&self, depth: Option<usize>) -> Result<(), Error> {
+    pub(super) fn build(&self, tag: bool) -> Result<(), Error> {
         unsafe extern "C" fn child<C: Children>(context: *const (), index: usize) -> u32 {
             let children = unsafe { &*context.cast::<C>() };
             code(children.child(index).and_then(|child| child.build_at(None)))
@@ -156,8 +185,7 @@ impl<C: Children> CreateTree<C> {
         status(unsafe {
             fix_sdk_tree(
                 self.children.len(),
-                depth.is_some() as i32,
-                depth.unwrap_or(0),
+                tag as i32,
                 child::<C>,
                 (&self.children as *const C).cast(),
             )
@@ -169,7 +197,7 @@ impl<C: Children> Value for CreateTree<C> {
     fn build_at(&self, path: Option<&Path<'_>>) -> Result<(), Error> {
         self.query(
             path,
-            |tree| tree.build(None),
+            |tree| tree.build(false),
             |child, path| child.build_at(path),
         )
     }
@@ -203,6 +231,13 @@ impl<C: Children> Value for CreateTree<C> {
     }
     fn is_tag_at(&self, path: Option<&Path<'_>>) -> Result<bool, Error> {
         self.query(path, |_| Ok(false), |child, path| child.is_tag_at(path))
+    }
+    fn read_exact_at(&self, path: Option<&Path<'_>>, bytes: &mut [u8]) -> Result<(), Error> {
+        self.query(
+            path,
+            |_| Err(Error::WrongType),
+            |child, path| child.read_exact_at(path, bytes),
+        )
     }
     fn read_at(
         &self,
@@ -330,16 +365,12 @@ impl Tree {
     {
         Self::__create(Iter(children.into_iter()))
     }
-    pub fn tag<'a, I: IntoIterator>(
-        children: I,
-        combination: &'a Handle<Object<Tree>, Focus>,
-        depth: usize,
-    ) -> Result<CreateTag<'a, Iter<I::IntoIter>>, Error>
+    pub fn tag<I: IntoIterator>(children: I) -> Result<CreateTag<Iter<I::IntoIter>>, Error>
     where
         I::IntoIter: Clone,
         I::Item: Value,
     {
-        Self::from_iter(children).tag(combination, depth)
+        Self::from_iter(children).tag()
     }
     #[doc(hidden)]
     pub fn __create<C: Children>(children: C) -> CreateTree<C> {

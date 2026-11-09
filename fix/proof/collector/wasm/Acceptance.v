@@ -19,7 +19,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
   Local Notation blobh := G.E.H.W.H.HBlobObj.
   Local Notation lower := X.D.EC.E.EP.E.lower.
   Local Notation lift := X.D.EC.E.EP.E.lift.
-  Local Notation local_get_run := (G.E.collector_local_get combination true handle_bytes).
+  Local Notation local_get_run := (G.E.collector_local_get combination true true handle_bytes).
 
   Section Execution.
     Definition endpoint_ready witness claim := exists bundle,
@@ -33,20 +33,22 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       nth_error (get_tree_raw claim) (if left then 1 else 2) = Some value ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [ext witness] ++ [AI_basic (BI_call (if left then 28%N else 29%N))])
+          v_to_e_list [ext (supplied_claim witness)] ++ [AI_basic (BI_call (if left then 31%N else 32%N))])
         (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext value]).
     Proof.
-      intros Functions [bundle [Witness Claim]] Field; subst witness.
+      intros Functions Ready Field.
+      assert (Claim : supplied_claim witness = treeh claim).
+      { destruct Ready as [bundle [Witness Field1]]; subst witness.
+        unfold supplied_claim, treeh; rewrite Field1; reflexivity. }
+      rewrite Claim.
       eapply G.E.collector_call with (code := exchange_endpoint left)
         (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-        (address := if left then 28%N else 29%N) (defaults := []) (values := [ext value])
-        (accepted := true) (final_frame := Build_frame [ext (treeh bundle)] G.E.collector_instance);
+        (address := if left then 31%N else 32%N) (defaults := []) (values := [ext value])
+        (accepted := true) (final_frame := Build_frame [ext (treeh claim)] G.E.collector_instance);
         try (destruct left; reflexivity).
       - rewrite Functions; destruct left; reflexivity.
       - rewrite exchange_endpoint_body.
         native_pure.
-        execute (child_run state store [ext (treeh bundle)] bundle 1 (treeh claim) Functions
-          ltac:(vm_compute; reflexivity) Claim).
         apply child_run; [exact Functions|destruct left; vm_compute; reflexivity|exact Field].
     Qed.
 
@@ -55,18 +57,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       s_funcs store = s_funcs G.E.allocated_store ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [ext (Data input)] ++ [AI_basic (BI_call 30%N)])
+          v_to_e_list [ext (Data input)] ++ [AI_basic (BI_call 33%N)])
         (state, store, Build_frame locals G.E.collector_instance, []).
     Proof.
       intro Functions.
       eapply G.E.collector_call_void with (code := native_data)
-        (parameters := [T_ref T_externref]) (defaults := []) (address := 30%N)
+        (parameters := [T_ref T_externref]) (defaults := []) (address := 33%N)
         (arguments := [ext (Data input)]) (accepted := true)
         (final_frame := Build_frame [ext (Data input)] G.E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
       - change (reduce_trans (state, store, Build_frame [ext (Data input)] G.E.collector_instance,
           to_e_list [BI_local_get 0%N; BI_call 0%N; BI_const_num (VAL_int32 (wasm_nat 2));
-            BI_relop T_i32 (Relop_i (ROI_lt SX_U)); BI_call 18%N])
+            BI_relop T_i32 (Relop_i (ROI_lt SX_U)); BI_call 21%N])
           (state, store, Build_frame [ext (Data input)] G.E.collector_instance, [])).
         execute (native_type_query state store [ext (Data input)] 0%N (Data input) Functions eq_refl).
         destruct input; do 2 native_pure; apply rt_refl.
@@ -79,14 +81,14 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       let result := Thunk (if application then G.E.H.W.H.Application tree else G.E.H.W.H.Selection tree) in
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [word mode; ext (treeh tree)] ++ [AI_basic (BI_call 31%N)])
+          v_to_e_list [word mode; ext (treeh tree)] ++ [AI_basic (BI_call 34%N)])
         (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext result]).
     Proof.
       intro Functions; cbn zeta.
       set (arguments := [word (if application then 0 else 1); ext (treeh tree)]).
       eapply G.E.collector_call_return with (code := native_map)
         (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-        (defaults := []) (address := 31%N) (arguments := arguments)
+        (defaults := []) (address := 34%N) (arguments := arguments)
         (values := [ext (Thunk (if application then G.E.H.W.H.Application tree else G.E.H.W.H.Selection tree))])
         (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] [])
@@ -102,11 +104,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         all: native_pure.
         all: execute (G.collector_tree_executes combination handle_bytes state store arguments (treeh tree) Functions).
         all: native_pure.
-        + execute (native_value_import state store arguments 13%N shell_application [ext (treeh tree)]
+        + execute (native_value_import state store arguments 14%N shell_application [ext (treeh tree)]
             [ext (Thunk (G.E.H.W.H.Application tree))] Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
           apply rt_refl.
-        + execute (native_value_import state store arguments 14%N shell_selection [ext (treeh tree)]
+        + execute (native_value_import state store arguments 15%N shell_selection [ext (treeh tree)]
             [ext (Thunk (G.E.H.W.H.Selection tree))] Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
           apply rt_refl.
@@ -119,14 +121,14 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       let result := Encode (if strict then G.E.H.W.H.Strict th else G.E.H.W.H.Shallow th) in
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [word mode; ext (Thunk th)] ++ [AI_basic (BI_call 31%N)])
+          v_to_e_list [word mode; ext (Thunk th)] ++ [AI_basic (BI_call 34%N)])
         (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext result]).
     Proof.
       intro Functions; cbn zeta.
       set (arguments := [word (if strict then 3 else 4); ext (Thunk th)]).
       eapply G.E.collector_call_return with (code := native_map)
         (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-        (defaults := []) (address := 31%N) (arguments := arguments)
+        (defaults := []) (address := 34%N) (arguments := arguments)
         (values := [ext (Encode (if strict then G.E.H.W.H.Strict th else G.E.H.W.H.Shallow th))])
         (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] [])
@@ -142,11 +144,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         all: execute (native_type_query state store arguments 1%N (Thunk th) Functions eq_refl).
         all: do 2 native_pure.
         all: native_pure.
-        + execute (native_value_import state store arguments 16%N shell_strict [ext (Thunk th)]
+        + execute (native_value_import state store arguments 17%N shell_strict [ext (Thunk th)]
             [ext (Encode (G.E.H.W.H.Strict th))] Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
           apply rt_refl.
-        + execute (native_value_import state store arguments 17%N shell_shallow [ext (Thunk th)]
+        + execute (native_value_import state store arguments 18%N shell_shallow [ext (Thunk th)]
             [ext (Encode (G.E.H.W.H.Shallow th))] Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
           apply rt_refl.
@@ -157,7 +159,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       s_funcs store = s_funcs G.E.allocated_store ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [word 2; ext (Data (Ref reference))] ++ [AI_basic (BI_call 31%N)])
+          v_to_e_list [word 2; ext (Data (Ref reference))] ++ [AI_basic (BI_call 34%N)])
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [ext (Thunk (G.E.H.W.H.Identification reference))]).
     Proof.
@@ -165,7 +167,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       set (arguments := [word 2; ext (Data (Ref reference))]).
       eapply G.E.collector_call_return with (code := native_map)
         (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-        (defaults := []) (address := 31%N) (arguments := arguments)
+        (defaults := []) (address := 34%N) (arguments := arguments)
         (values := [ext (Thunk (G.E.H.W.H.Identification reference))])
         (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 12 (modfunc_body native_map))));
@@ -178,7 +180,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           apply G.E.collector_runs_label.
         execute (native_type_query state store arguments 1%N (Data (Ref reference)) Functions eq_refl).
         do 3 native_pure.
-        execute (native_value_import state store arguments 15%N shell_identification
+        execute (native_value_import state store arguments 16%N shell_identification
           [ext (Data (Ref reference))] [ext (Thunk (G.E.H.W.H.Identification reference))]
           Functions eq_refl eq_refl eq_refl
           ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
@@ -216,7 +218,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [word (match object with BlobObj _ => 5 | TreeObj _ => 6 end);
-            ext (Data (Object object))] ++ [AI_basic (BI_call 31%N)])
+            ext (Data (Object object))] ++ [AI_basic (BI_call 34%N)])
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [ext (Data (Ref (G.E.H.W.H.data_reference (Object object))))]).
     Proof.
@@ -225,7 +227,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         ext (Data (Object object))]).
       eapply G.E.collector_call with (code := native_map)
         (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-        (defaults := []) (address := 31%N) (arguments := arguments)
+        (defaults := []) (address := 34%N) (arguments := arguments)
         (values := [ext (Data (Ref (G.E.H.W.H.data_reference (Object object))))])
         (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true); try reflexivity.
       - rewrite Functions; reflexivity.
@@ -238,7 +240,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           unfold native_map in Guard; cbn [modfunc_body mod_funcs evaluation_module nth firstn skipn] in Guard.
           execute Guard.
           native_pure.
-          execute (native_value_import state store arguments 11%N shell_create_ref
+          execute (native_value_import state store arguments 12%N shell_create_ref
             [ext (Data (Object (BlobObj blob)))] [ext (Data (Ref (BlobRef blob)))]
             Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
@@ -247,7 +249,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           unfold native_map in Guard; cbn [modfunc_body mod_funcs evaluation_module nth firstn skipn] in Guard.
           execute Guard.
           native_pure.
-          execute (native_value_import state store arguments 11%N shell_create_ref
+          execute (native_value_import state store arguments 12%N shell_create_ref
             [ext (Data (Object (TreeObj tree)))] [ext (Data (Ref (TreeRef tree)))]
             Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
@@ -264,7 +266,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       s_funcs store = s_funcs G.E.allocated_store -> X.construct kind input = Some result ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 31%N)])
+          v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 34%N)])
         (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext result]).
     Proof.
 
@@ -286,7 +288,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       s_funcs store = s_funcs G.E.allocated_store -> observed_same state lhs rhs ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [ext lhs; ext rhs] ++ [AI_basic (BI_call 19%N)])
+          v_to_e_list [ext lhs; ext rhs] ++ [AI_basic (BI_call 22%N)])
         (state + 2, store, Build_frame locals G.E.collector_instance, []).
     Proof.
       intros Functions Compared; replace (state + 2) with (S (S state)) by lia.
@@ -304,20 +306,20 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       premise_ready (state + 4) store witness 0 a b state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [word (native_constructor_index kind); ext lhs; ext rhs; ext witness] ++
-            [AI_basic (BI_call 32%N)])
+          v_to_e_list [word (native_constructor_index kind); ext lhs; ext rhs; ext (supplied_claim witness)] ++
+            [AI_basic (BI_call 35%N)])
         (state', store', Build_frame locals G.E.collector_instance, []).
     Proof.
 
       intros Functions Ready Left Right ConstructLeft ConstructRight SameLeft SameRight Premise.
-      set (arguments := [word (native_constructor_index kind); ext lhs; ext rhs; ext witness]).
+      set (arguments := [word (native_constructor_index kind); ext lhs; ext rhs; ext (supplied_claim witness)]).
       set (empty := VAL_ref (VAL_ref_null T_externref)).
       set (initial := arguments ++ [empty; empty]).
       set (with_left := arguments ++ [ext a; empty]).
       set (inside := arguments ++ [ext a; ext b]).
       eapply G.E.collector_call_void with (code := native_mapped)
         (parameters := [T_num T_i32; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (defaults := [empty; empty]) (address := 32%N) (arguments := arguments)
+        (defaults := [empty; empty]) (address := 35%N) (arguments := arguments)
         (accepted := true) (final_frame := Build_frame inside G.E.collector_instance); try reflexivity.
       - rewrite Functions; reflexivity.
       - unfold native_mapped at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
@@ -347,13 +349,14 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       | X.Application => 4 | X.Strict => 9 | X.Selection => 17 | X.Identification => 18
       | X.Shallow => 19 | X.TreeReference => 21 | X.BlobReference => 22 end.
     Definition native_mapped_tail kind := match kind with
-      | X.Application => 52 | X.Strict => 56 | X.Selection => 60 | X.Identification => 64
-      | X.Shallow => 68 | X.TreeReference => 72 | X.BlobReference => 76 end.
+      | X.Application => 51 | X.Strict => 55 | X.Selection => 59 | X.Identification => 63
+      | X.Shallow => 67 | X.TreeReference => 71 | X.BlobReference => 75 end.
 
     (** With ready witnesses, the mapped-congruence exchange returns the Equivalent claim
         code. *)
     Lemma native_mapped_exchange_accepts state store locals kind lhs rhs witnesses witness claim a b state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some a -> nth_error (get_tree_raw claim) 2 = Some b ->
       X.construct kind a = Some lhs -> X.construct kind b = Some rhs ->
@@ -362,19 +365,19 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 (native_mapped_rule kind)));
-            ext lhs; ext rhs; ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext lhs; ext rhs; ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Ready Left Right ConstructLeft ConstructRight SameLeft SameRight Premise.
+      intros Functions Retained Fields Ready Left Right ConstructLeft ConstructRight SameLeft SameRight Premise.
       set (arguments := [VAL_num (VAL_int64 (wasm_nat64 (native_mapped_rule kind)));
         ext lhs; ext rhs; ext (treeh witnesses)]).
       set (empty := VAL_ref (VAL_ref_null T_externref)).
       set (initial := arguments ++ [empty; empty; empty; empty]).
-      set (inside := arguments ++ [ext witness; empty; empty; empty]).
+      set (inside := arguments ++ [ext (supplied_claim witness); empty; empty; empty]).
       assert (Arity : reduce_trans
         (state, store, Build_frame initial G.E.collector_instance,
-          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 1)); BI_call 22%N])])
+          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 1)); BI_call 25%N])])
         (state, store, Build_frame initial G.E.collector_instance, [])).
       { eapply rt_trans; [apply G.E.collector_runs_label|apply rt_step, r_simple, rs_label_const; reflexivity].
         native_pure.
@@ -384,7 +387,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         Functions Ready Left Right ConstructLeft ConstructRight SameLeft SameRight Premise) as Map.
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 0))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] [])
@@ -394,9 +397,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         destruct kind; cbn [native_mapped_rule native_mapped_tail arguments] in *.
         all: repeat native_pure.
         all: execute Arity.
-        all: native_pure.
-        all: execute (child_run state store initial witnesses 0 witness Functions
-          ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
+        all: execute (retained_claim_run state store initial (get_tree_raw witnesses) 0 witness ltac:(vm_compute; reflexivity) Retained ltac:(rewrite Fields; reflexivity)).
         all: native_pure.
         all: repeat native_pure.
         all: cbn [lfill].
@@ -411,12 +412,13 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         dispatcher. *)
     Lemma native_unary_dispatch state store locals index lhs rhs witnesses witness
         result state' store' (accepted : bool) :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       index < 13 ->
       let arguments := [VAL_num (VAL_int64 (wasm_nat64 (nth index native_unary_codes 0)));
         ext lhs; ext rhs; ext (treeh witnesses)] in
       let empty := VAL_ref (VAL_ref_null T_externref) in
-      let inside := arguments ++ [ext witness; empty; empty; empty] in
+      let inside := arguments ++ [ext (supplied_claim witness); empty; empty; empty] in
       reduce_trans
         (state, store, Build_frame inside G.E.collector_instance, to_e_list (native_unary_body index))
         (state', store', Build_frame inside G.E.collector_instance,
@@ -424,15 +426,15 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           else [AI_trap]) ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list arguments ++ [AI_basic (BI_call 34%N)])
+          v_to_e_list arguments ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           if accepted then v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 result))] else [AI_trap]).
     Proof.
-      intros Functions Fields Bound arguments empty inside Body.
+      intros Functions Retained Fields Bound arguments empty inside Body.
       set (initial := arguments ++ [empty; empty; empty; empty]).
       assert (Arity : reduce_trans
         (state, store, Build_frame initial G.E.collector_instance,
-          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 1)); BI_call 22%N])])
+          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 1)); BI_call 25%N])])
         (state, store, Build_frame initial G.E.collector_instance, [])).
       { eapply rt_trans; [apply G.E.collector_runs_label|apply rt_step, r_simple, rs_label_const; reflexivity].
         native_pure.
@@ -440,20 +442,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           ltac:(rewrite Fields; reflexivity) ltac:(vm_compute; reflexivity)). }
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 result))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := accepted)
         (context := LH_rec [] 0 [] (LH_base [] [])
-          (to_e_list (skipn (52 + 4 * index) (modfunc_body native_exchange)))); try reflexivity.
+          (to_e_list (skipn (51 + 4 * index) (modfunc_body native_exchange)))); try reflexivity.
       - rewrite Functions; reflexivity.
       - let finish := ltac:(
           cbn [native_unary_codes arguments initial inside nth] in *;
           unfold native_exchange at 1; cbn [modfunc_body mod_funcs evaluation_module nth];
           repeat native_pure;
           execute Arity;
-          native_pure;
-          execute (child_run state store initial witnesses 0 witness Functions
-            ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity));
+          execute (retained_claim_run state store initial (get_tree_raw witnesses) 0 witness ltac:(vm_compute; reflexivity) Retained ltac:(rewrite Fields; reflexivity));
           native_pure;
           repeat native_pure;
           cbn [lfill]; rewrite ?List.app_nil_r;
@@ -475,16 +475,17 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
 
     (** With a ready reversed equivalence witness, the native symmetry exchange accepts. *)
     Lemma native_symmetry state store locals lhs rhs witnesses witness state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       premise_ready state store witness 0 rhs lhs state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 10)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Premise.
+      intros Functions Retained Fields Premise.
       eapply native_unary_dispatch with (index := 8) (witness := witness) (accepted := true);
         try solve [assumption | lia].
       cbn [native_unary_body native_exchange modfunc_body mod_funcs evaluation_module nth Nat.add Nat.mul].
@@ -493,16 +494,17 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
 
     (** With a ready Eval witness, the native Eval-to-equivalence exchange accepts. *)
     Lemma native_eval_result_eq state store locals lhs rhs witnesses witness state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       premise_ready state store witness 1 lhs rhs state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 20)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Premise.
+      intros Functions Retained Fields Premise.
       eapply native_unary_dispatch with (index := 12) (witness := witness) (accepted := true);
         try solve [assumption | lia].
       cbn [native_unary_body native_exchange modfunc_body mod_funcs evaluation_module nth Nat.add Nat.mul].
@@ -512,16 +514,17 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** With a ready Think witness returning Data, the native Think-to-Force exchange
         accepts. *)
     Lemma native_think_to_force state store locals lhs data witnesses witness state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       premise_ready state store witness 4 lhs (Data data) state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 3)); ext lhs; ext (Data data); ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 3))]).
     Proof.
-      intros Functions Fields Premise.
+      intros Functions Retained Fields Premise.
       eapply native_unary_dispatch with (index := 7) (witness := witness) (accepted := true);
         try solve [assumption | lia].
       cbn [native_unary_body native_exchange modfunc_body mod_funcs evaluation_module nth Nat.add Nat.mul].
@@ -536,16 +539,17 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** With a ready Think witness returning a bare Thunk, the native Thunk-equivalence
         exchange accepts. *)
     Lemma native_thunk_eq state store locals lhs th witnesses witness state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       premise_ready state store witness 4 lhs (Thunk th) state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 13)); ext lhs; ext (Thunk th); ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Premise.
+      intros Functions Retained Fields Premise.
       eapply native_unary_dispatch with (index := 9) (witness := witness) (accepted := true);
         try solve [assumption | lia].
       cbn [native_unary_body native_exchange modfunc_body mod_funcs evaluation_module nth Nat.add Nat.mul].
@@ -559,17 +563,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** With a ready Think witness returning an Encode, the native exchange accepts
         equivalence to its bare Thunk. *)
     Lemma native_thunk_encode_eq state store locals lhs th witnesses witness state' store' (strict : bool) :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       premise_ready state store witness 4 lhs
         (Encode (if strict then G.E.H.W.H.Strict th else G.E.H.W.H.Shallow th)) state' store' ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 (if strict then 14 else 15)));
-            ext lhs; ext (Thunk th); ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext lhs; ext (Thunk th); ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Premise.
+      intros Functions Retained Fields Premise.
       destruct strict.
       - eapply native_unary_dispatch with (index := 10) (witness := witness) (accepted := true);
           try solve [assumption | lia].
@@ -577,7 +582,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         do 3 native_pure.
         lazymatch goal with
         | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
-            execute_under [VAL_num (VAL_int64 (wasm_nat64 4)); ext witness; ext lhs]
+            execute_under [VAL_num (VAL_int64 (wasm_nat64 4)); ext (supplied_claim witness); ext lhs]
               (native_map_thunk_executes state store inside th true Functions)
         end.
         native_use_premise Premise; apply rt_refl.
@@ -587,7 +592,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         do 3 native_pure.
         lazymatch goal with
         | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
-            execute_under [VAL_num (VAL_int64 (wasm_nat64 4)); ext witness; ext lhs]
+            execute_under [VAL_num (VAL_int64 (wasm_nat64 4)); ext (supplied_claim witness); ext lhs]
               (native_map_thunk_executes state store inside th false Functions)
         end.
         native_use_premise Premise; apply rt_refl.
@@ -601,7 +606,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 12)); ext value; ext value; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state + 2, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
@@ -611,7 +616,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       set (inside := arguments ++ [empty; empty; empty; empty]).
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 0))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 12 (modfunc_body native_exchange))));
@@ -632,8 +637,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           (instructions' := [AI_label 0 [] (v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))] ++ [AI_basic BI_return])]).
         apply G.E.collector_runs_label.
         change (reduce_trans (state, store, Build_frame inside G.E.collector_instance,
-          to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 0)); BI_call 22%N;
-            BI_local_get 1%N; BI_local_get 2%N; BI_call 19%N;
+          to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat 0)); BI_call 25%N;
+            BI_local_get 1%N; BI_local_get 2%N; BI_call 22%N;
             BI_const_num (VAL_int64 (wasm_nat64 0)); BI_return])
           (state + 2, store, Build_frame inside G.E.collector_instance,
             v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))] ++ [AI_basic BI_return])).
@@ -652,10 +657,10 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           to_e_list [BI_local_get 1%N; BI_call 0%N; BI_const_num (VAL_int32 (wasm_nat 3));
-            BI_relop T_i32 (Relop_i ROI_ne); BI_call 18%N;
+            BI_relop T_i32 (Relop_i ROI_ne); BI_call 21%N;
             BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz;
             BI_if (BT_valtype None)
-              [BI_local_get 1%N; BI_call 1%N; BI_testop T_i32 TO_eqz; BI_call 18%N] []])
+              [BI_local_get 1%N; BI_call 1%N; BI_testop T_i32 TO_eqz; BI_call 21%N] []])
         (state, store, Build_frame locals G.E.collector_instance, []).
     Proof.
       intros Functions Input Leaf.
@@ -679,7 +684,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 5)); ext value; ext value; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state + 2, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 1))]).
     Proof.
@@ -689,7 +694,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       set (inside := arguments ++ [empty; empty; empty; empty]).
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 1))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 16 (modfunc_body native_exchange))));
@@ -717,7 +722,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 26)); ext (Thunk (G.E.H.W.H.Identification reference));
-            ext (Data (Ref reference)); ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext (Data (Ref reference)); ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state + 2, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 4))]).
     Proof.
@@ -729,7 +734,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       set (inside := arguments ++ [empty; empty; empty; empty]).
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 4))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 20 (modfunc_body native_exchange))));
@@ -744,7 +749,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         execute (arity_run state store inside witnesses 0 Functions ltac:(rewrite Fields; reflexivity) ltac:(vm_compute; reflexivity)).
         execute (native_type_query state store inside 2%N (Data (Ref reference)) Functions eq_refl).
         do 4 native_pure.
-        execute_under [ext th] (native_value_import state store inside 15%N shell_identification
+        execute_under [ext th] (native_value_import state store inside 16%N shell_identification
           [ext (Data (Ref reference))] [ext th] Functions eq_refl eq_refl eq_refl
           ltac:(unfold th, G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
         execute (native_same state store inside th th Functions Same).
@@ -765,7 +770,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         including its success or trap result. *)
     Lemma native_endpoint_dispatch state store locals index lhs rhs witnesses witness claim a b
         result state' store' (accepted : bool) :
-      s_funcs store = s_funcs G.E.allocated_store -> index < 7 ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> index < 7 ->
       List.length (get_tree_raw witnesses) = (if (index =? 1) || (index =? 4) then 1 else 2) ->
       nth_error (get_tree_raw witnesses) 0 = Some witness ->
       endpoint_ready witness claim ->
@@ -773,7 +779,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       let arguments := [VAL_num (VAL_int64 (wasm_nat64 (nth index native_endpoint_codes 0)));
         ext lhs; ext rhs; ext (treeh witnesses)] in
       let empty := VAL_ref (VAL_ref_null T_externref) in
-      let inside := arguments ++ [ext witness; empty; ext a; ext b] in
+      let inside := arguments ++ [ext (supplied_claim witness); empty; ext a; ext b] in
       reduce_trans
         (state, store, Build_frame inside G.E.collector_instance, to_e_list (native_endpoint_body index))
         (state', store', Build_frame inside G.E.collector_instance,
@@ -781,18 +787,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           else [AI_trap]) ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list arguments ++ [AI_basic (BI_call 34%N)])
+          v_to_e_list arguments ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           if accepted then v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 result))] else [AI_trap]).
     Proof.
-      intros Functions Bound Count Witness Ready Left Right arguments empty inside Body.
+      intros Functions Retained Bound Count Witness Ready Left Right arguments empty inside Body.
       set (initial := arguments ++ [empty; empty; empty; empty]).
-      set (with_p := arguments ++ [ext witness; empty; empty; empty]).
-      set (with_a := arguments ++ [ext witness; empty; ext a; empty]).
+      set (with_p := arguments ++ [ext (supplied_claim witness); empty; empty; empty]).
+      set (with_a := arguments ++ [ext (supplied_claim witness); empty; ext a; empty]).
       assert (Arity : reduce_trans
         (state, store, Build_frame initial G.E.collector_instance,
           [AI_label 0 [] (to_e_list [BI_local_get 3%N;
-            BI_const_num (VAL_int32 (wasm_nat (if (index =? 1) || (index =? 4) then 1 else 2))); BI_call 22%N])])
+            BI_const_num (VAL_int32 (wasm_nat (if (index =? 1) || (index =? 4) then 1 else 2))); BI_call 25%N])])
         (state, store, Build_frame initial G.E.collector_instance, [])).
       { eapply rt_trans; [apply G.E.collector_runs_label|apply rt_step, r_simple, rs_label_const; reflexivity].
         native_pure.
@@ -800,20 +806,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
           ltac:(destruct index as [|[|[|[|[|index]]]]]; vm_compute; reflexivity)). }
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 result))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := accepted)
         (context := LH_rec [] 0 [] (LH_base [] [])
-          (to_e_list (skipn (110 + 4 * index) (modfunc_body native_exchange)))); try reflexivity.
+          (to_e_list (skipn (109 + 4 * index) (modfunc_body native_exchange)))); try reflexivity.
       - rewrite Functions; reflexivity.
       - let finish := ltac:(
           cbn [native_endpoint_codes arguments initial with_p with_a inside nth] in *;
           unfold native_exchange at 1; cbn [modfunc_body mod_funcs evaluation_module nth];
           repeat native_pure;
           execute Arity;
-          native_pure;
-          execute (child_run state store initial witnesses 0 witness Functions
-            ltac:(vm_compute; reflexivity) Witness);
+          execute (retained_claim_run state store initial (get_tree_raw witnesses) 0 witness ltac:(vm_compute; reflexivity) Retained Witness);
           repeat native_pure;
           execute (exchange_endpoint_executes state store with_p witness claim a true Functions Ready Left);
           do 2 native_pure;
@@ -827,16 +831,18 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     Qed.
 
     Ltac native_binary_premises first_premise second_premise fields :=
-      do 3 native_pure; native_use_premise first_premise; native_pure;
+      do 3 native_pure; native_use_premise first_premise;
       let tree := lazymatch type of fields with get_tree_raw ?tree = _ => tree end in
       lazymatch type of second_premise with
       | premise_ready ?state ?store ?witness ?kind ?lhs ?rhs ?state' ?store' =>
+        let next_retained := fresh "Retained" in
+        assert (next_retained : retained_claims store (get_tree_raw tree))
+          by (eapply premise_ready_retained; [exact first_premise|assumption]);
         lazymatch goal with
         | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
           execute_under [VAL_num (VAL_int64 (wasm_nat64 kind))]
-            (child_run state store inside tree 1 witness
-              (premise_ready_functions _ _ _ _ _ _ _ _ second_premise)
-              ltac:(vm_compute; reflexivity) ltac:(rewrite fields; reflexivity))
+            (retained_claim_run state store inside (get_tree_raw tree) 1 witness
+              ltac:(vm_compute; reflexivity) next_retained ltac:(rewrite fields; reflexivity))
         end
       end;
       do 2 native_pure; native_use_premise second_premise; apply rt_refl.
@@ -845,7 +851,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         exchange accept. *)
     Lemma native_transitivity state store locals lhs rhs witnesses witness second claim a middle
         state1 store1 state2 store2 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness; second] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness; second] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some a -> nth_error (get_tree_raw claim) 2 = Some middle ->
       premise_ready state store witness 0 lhs middle state1 store1 ->
@@ -853,11 +860,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 11)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state2, store2, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Ready Left Right First Second.
+      intros Functions Retained Fields Ready Left Right First Second.
       eapply native_endpoint_dispatch with (index := 3) (witness := witness) (claim := claim)
         (a := a) (b := middle) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -869,7 +876,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         exchange accept. *)
     Lemma native_eval_eq state store locals lhs rhs witnesses witness second claim a middle
         state1 store1 state2 store2 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness; second] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness; second] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some a -> nth_error (get_tree_raw claim) 2 = Some middle ->
       premise_ready state store witness 1 a rhs state1 store1 ->
@@ -877,11 +885,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 8)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state2, store2, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 1))]).
     Proof.
-      intros Functions Fields Ready Left Right First Second.
+      intros Functions Retained Fields Ready Left Right First Second.
       eapply native_endpoint_dispatch with (index := 2) (witness := witness) (claim := claim)
         (a := a) (b := middle) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -893,7 +901,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         accept. *)
     Lemma native_force_eq state store locals lhs rhs witnesses witness second claim a middle
         state1 store1 state2 store2 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness; second] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness; second] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some a -> nth_error (get_tree_raw claim) 2 = Some middle ->
       premise_ready state store witness 0 a lhs state1 store1 ->
@@ -901,11 +910,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 24)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state2, store2, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 3))]).
     Proof.
-      intros Functions Fields Ready Left Right First Second.
+      intros Functions Retained Fields Ready Left Right First Second.
       eapply native_endpoint_dispatch with (index := 5) (witness := witness) (claim := claim)
         (a := a) (b := middle) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -916,7 +925,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** Ready Eval and Apply witnesses make the native Think-application exchange accept. *)
     Lemma native_think_application state store locals input ready result witnesses witness second claim
         state1 store1 state2 store2 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness; second] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness; second] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some (treeh input) -> nth_error (get_tree_raw claim) 2 = Some ready ->
       observed_same state (Thunk (G.E.H.W.H.Application input)) (Thunk (G.E.H.W.H.Application input)) ->
@@ -925,11 +935,13 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 2)); ext (Thunk (G.E.H.W.H.Application input));
-            ext result; ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext result; ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state2, store2, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 4))]).
     Proof.
-      intros Functions Fields Ready Left Right Same First Second.
+      intros Functions Retained Fields Ready Left Right Same First Second.
+      assert (Retained1 : retained_claims store1 (get_tree_raw witnesses))
+        by (eapply premise_ready_retained; [exact First|exact Retained]).
       eapply native_endpoint_dispatch with (index := 0) (witness := witness) (claim := claim)
         (a := treeh input) (b := ready) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -943,13 +955,10 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
             (Thunk (G.E.H.W.H.Application input)) Functions Same)
       end.
       do 3 native_pure; native_use_premise First.
-      native_pure.
       lazymatch goal with
       | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
           execute_under [VAL_num (VAL_int64 (wasm_nat64 2))]
-            (child_run state1 store1 inside witnesses 1 second
-              (premise_ready_functions _ _ _ _ _ _ _ _ Second)
-              ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity))
+            (retained_claim_run state1 store1 inside (get_tree_raw witnesses) 1 second ltac:(vm_compute; reflexivity) Retained1 ltac:(rewrite Fields; reflexivity))
       end.
       do 2 native_pure; native_use_premise Second; apply rt_refl.
     Qed.
@@ -957,7 +966,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** Ready Eval and Select witnesses make the native Think-selection exchange accept. *)
     Lemma native_think_selection state store locals input ready result witnesses witness second claim
         state1 store1 state2 store2 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness; second] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness; second] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some (treeh input) -> nth_error (get_tree_raw claim) 2 = Some ready ->
       observed_same state (Thunk (G.E.H.W.H.Selection input)) (Thunk (G.E.H.W.H.Selection input)) ->
@@ -966,11 +976,13 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 25)); ext (Thunk (G.E.H.W.H.Selection input));
-            ext result; ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext result; ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state2, store2, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 4))]).
     Proof.
-      intros Functions Fields Ready Left Right Same First Second.
+      intros Functions Retained Fields Ready Left Right Same First Second.
+      assert (Retained1 : retained_claims store1 (get_tree_raw witnesses))
+        by (eapply premise_ready_retained; [exact First|exact Retained]).
       eapply native_endpoint_dispatch with (index := 6) (witness := witness) (claim := claim)
         (a := treeh input) (b := ready) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -984,13 +996,10 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
             (Thunk (G.E.H.W.H.Selection input)) Functions Same)
       end.
       do 3 native_pure; native_use_premise First.
-      native_pure.
       lazymatch goal with
       | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
           execute_under [VAL_num (VAL_int64 (wasm_nat64 6))]
-            (child_run state1 store1 inside witnesses 1 second
-              (premise_ready_functions _ _ _ _ _ _ _ _ Second)
-              ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity))
+            (retained_claim_run state1 store1 inside (get_tree_raw witnesses) 1 second ltac:(vm_compute; reflexivity) Retained1 ltac:(rewrite Fields; reflexivity))
       end.
       do 2 native_pure; native_use_premise Second; apply rt_refl.
     Qed.
@@ -999,7 +1008,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         Force-result-equivalence exchange accept. *)
     Lemma native_force_results state store locals lhs rhs witnesses first second third first_claim second_claim
         a b state1 store1 state2 store2 state3 store3 :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [first; second; third] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [first; second; third] ->
       endpoint_ready first first_claim -> endpoint_ready second second_claim ->
       nth_error (get_tree_raw first_claim) 2 = Some a -> nth_error (get_tree_raw second_claim) 2 = Some b ->
       premise_ready state store first 3 lhs a state1 store1 ->
@@ -1008,21 +1018,25 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 1)); ext lhs; ext rhs; ext (treeh witnesses)] ++
-            [AI_basic (BI_call 34%N)])
+            [AI_basic (BI_call 37%N)])
         (state3, store3, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields FirstReady SecondReady Left Right First Second Third.
+      intros Functions Retained Fields FirstReady SecondReady Left Right First Second Third.
       set (empty := VAL_ref (VAL_ref_null T_externref)).
       set (arguments := [VAL_num (VAL_int64 (wasm_nat64 1)); ext lhs; ext rhs; ext (treeh witnesses)]).
       set (initial := arguments ++ [empty; empty; empty; empty]).
-      set (with_p := arguments ++ [ext first; empty; empty; empty]).
-      set (with_q := arguments ++ [ext first; ext second; empty; empty]).
-      set (with_a := arguments ++ [ext first; ext second; ext a; empty]).
-      set (inside := arguments ++ [ext first; ext second; ext a; ext b]).
+      set (with_p := arguments ++ [ext (supplied_claim first); empty; empty; empty]).
+      set (with_q := arguments ++ [ext (supplied_claim first); ext (supplied_claim second); empty; empty]).
+      set (with_a := arguments ++ [ext (supplied_claim first); ext (supplied_claim second); ext a; empty]).
+      set (inside := arguments ++ [ext (supplied_claim first); ext (supplied_claim second); ext a; ext b]).
+      assert (Retained1 : retained_claims store1 (get_tree_raw witnesses))
+        by (eapply premise_ready_retained; [exact First|exact Retained]).
+      assert (Retained2 : retained_claims store2 (get_tree_raw witnesses))
+        by (eapply premise_ready_retained; [exact Second|exact Retained1]).
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 0))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 24 (modfunc_body native_exchange))));
@@ -1036,23 +1050,17 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         native_pure.
         execute (arity_run state store initial witnesses 3 Functions
           ltac:(rewrite Fields; reflexivity) ltac:(vm_compute; reflexivity)).
+        execute (retained_claim_run state store initial (get_tree_raw witnesses) 0 first ltac:(vm_compute; reflexivity) Retained ltac:(rewrite Fields; reflexivity)).
         native_pure.
-        execute (child_run state store initial witnesses 0 first Functions
-          ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
-        do 2 native_pure.
-        execute (child_run state store with_p witnesses 1 second Functions
-          ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
+        execute (retained_claim_run state store with_p (get_tree_raw witnesses) 1 second ltac:(vm_compute; reflexivity) Retained ltac:(rewrite Fields; reflexivity)).
         do 2 native_pure.
         execute (exchange_endpoint_executes state store with_q first first_claim a false Functions FirstReady Left).
         do 2 native_pure.
         execute (exchange_endpoint_executes state store with_a second second_claim b false Functions SecondReady Right).
         do 4 native_pure; native_use_premise First.
         do 3 native_pure; native_use_premise Second.
-        native_pure.
         execute_under [VAL_num (VAL_int64 (wasm_nat64 0))]
-          (child_run state2 store2 inside witnesses 2 third
-            (premise_ready_functions _ _ _ _ _ _ _ _ Third)
-            ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
+          (retained_claim_run state2 store2 inside (get_tree_raw witnesses) 2 third ltac:(vm_compute; reflexivity) Retained2 ltac:(rewrite Fields; reflexivity)).
         do 2 native_pure; native_use_premise Third; apply rt_refl.
     Qed.
 
@@ -1061,7 +1069,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       s_funcs store = s_funcs G.E.allocated_store ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [ext (Data input)] ++ [AI_basic (BI_call 24%N)])
+          v_to_e_list [ext (Data input)] ++ [AI_basic (BI_call 27%N)])
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [ext (lower (Data input))]).
     Proof.
@@ -1070,7 +1078,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       - set (arguments := [ext (Data (Object object))]).
         eapply G.E.collector_call_return with (code := native_lower)
           (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-          (address := 24%N) (defaults := []) (arguments := arguments)
+          (address := 27%N) (defaults := []) (arguments := arguments)
           (values := [ext (Data (Ref (G.E.H.W.H.data_reference (Object object))))])
           (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true)
           (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 4 (modfunc_body native_lower))));
@@ -1083,7 +1091,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
             (instructions := [AI_label 0 [] _]) (instructions' := [AI_label 0 [] _]);
             apply G.E.collector_runs_label.
           native_pure.
-          execute (native_value_import state store arguments 11%N shell_create_ref
+          execute (native_value_import state store arguments 12%N shell_create_ref
             [ext (Data (Object object))] [ext (Data (Ref (G.E.H.W.H.data_reference (Object object))))]
             Functions eq_refl eq_refl eq_refl
             ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity)).
@@ -1091,7 +1099,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       - set (arguments := [ext (Data (Ref reference))]).
         eapply G.E.collector_call with (code := native_lower)
           (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-          (address := 24%N) (defaults := []) (arguments := arguments)
+          (address := 27%N) (defaults := []) (arguments := arguments)
           (values := [ext (Data (Ref reference))])
           (final_frame := Build_frame arguments G.E.collector_instance) (accepted := true);
           try reflexivity.
@@ -1110,7 +1118,7 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       observed_same state reference (Data (Ref (G.E.H.W.H.data_reference (Object object)))) ->
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
-          v_to_e_list [ext reference; ext (Data (Object object))] ++ [AI_basic (BI_call 25%N)])
+          v_to_e_list [ext reference; ext (Data (Object object))] ++ [AI_basic (BI_call 28%N)])
         (state + 2, store, Build_frame locals G.E.collector_instance, []).
     Proof.
       intros Functions [left [right [Left [Right Compared]]]].
@@ -1128,8 +1136,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         (state, store, Build_frame locals G.E.collector_instance,
           to_e_list [BI_local_get 7%N; BI_call 0%N; BI_testop T_i32 TO_eqz;
             BI_if (BT_valtype None)
-              [BI_local_get 2%N; BI_local_get 7%N; BI_call 19%N]
-              [BI_local_get 7%N; BI_local_get 2%N; BI_call 25%N]])
+              [BI_local_get 2%N; BI_local_get 7%N; BI_call 22%N]
+              [BI_local_get 7%N; BI_local_get 2%N; BI_call 28%N]])
         (state + 2, store, Build_frame locals G.E.collector_instance, []).
     Proof.
       intros Functions Lifted Input Same; destruct input as [object|[blob|tree]].
@@ -1154,7 +1162,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** A ready Force witness and endpoint comparisons make the native strict-Encode
         equivalence exchange accept. *)
     Lemma native_force_strict state store locals th data witnesses witness claim state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some (Thunk th) ->
       nth_error (get_tree_raw claim) 2 = Some (Data data) ->
@@ -1164,11 +1173,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 7)); ext (Encode (G.E.H.W.H.Strict th));
-            ext (lift (Data data)); ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext (lift (Data data)); ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Ready Left Right Same Result Premise.
+      intros Functions Retained Fields Ready Left Right Same Result Premise.
       eapply native_endpoint_dispatch with (index := 1) (witness := witness) (claim := claim)
         (a := Thunk th) (b := Data data) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -1194,7 +1203,8 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
     (** A ready Force witness and endpoint comparisons make the native shallow-Encode
         equivalence exchange accept. *)
     Lemma native_force_shallow state store locals th data witnesses witness claim state' store' :
-      s_funcs store = s_funcs G.E.allocated_store -> get_tree_raw witnesses = [witness] ->
+      s_funcs store = s_funcs G.E.allocated_store ->
+      retained_claims store (get_tree_raw witnesses) -> get_tree_raw witnesses = [witness] ->
       endpoint_ready witness claim ->
       nth_error (get_tree_raw claim) 1 = Some (Thunk th) ->
       nth_error (get_tree_raw claim) 2 = Some (Data data) ->
@@ -1204,11 +1214,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       reduce_trans
         (state, store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 16)); ext (Encode (G.E.H.W.H.Shallow th));
-            ext (lower (Data data)); ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext (lower (Data data)); ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (state', store', Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 0))]).
     Proof.
-      intros Functions Fields Ready Left Right Same Result Premise.
+      intros Functions Retained Fields Ready Left Right Same Result Premise.
       eapply native_endpoint_dispatch with (index := 4) (witness := witness) (claim := claim)
         (a := Thunk th) (b := Data data) (accepted := true);
         try solve [assumption | lia | rewrite Fields; reflexivity].
@@ -1254,6 +1264,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       Variable lhs rhs witnesses : TreeName.
       Variable states : nat -> nat.
       Variable stores : nat -> store_record.
+      Variable initial_store middle_store : store_record.
+      Hypothesis left_attachment : G.E.H.tree_attachment_result G.E.collector_instance initial_store
+        [ext (treeh lhs); word 7] = Some (middle_store, result_values []).
+      Hypothesis right_attachment : G.E.H.tree_attachment_result G.E.collector_instance middle_store
+        [ext (treeh rhs); word 8] = Some (stores 0, result_values []).
       Let count := List.length (get_tree_raw lhs).
       (** The number of Tree children fits the native unsigned 32-bit loop counter. *)
       Hypothesis count_bound : (Z.of_nat count < 2 ^ 32)%Z.
@@ -1270,6 +1285,11 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         nth_error (get_tree_raw lhs) index = Some left /\
         nth_error (get_tree_raw rhs) index = Some right /\
         premise_ready (states index) (stores index) witness kind left right (states (S index)) (stores (S index)).
+
+      Hypothesis retained_ready : forall index, index < count ->
+        retained_claims (stores index) (get_tree_raw witnesses).
+      Hypothesis left_ready : forall index, index < count -> tree_view (stores index) 7%N lhs.
+      Hypothesis right_ready : forall index, index < count -> tree_view (stores index) 8%N rhs.
 
       Let tree_arguments :=
         [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (treeh lhs); ext (treeh rhs); ext (treeh witnesses)].
@@ -1298,15 +1318,15 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         assert (Continue : Nat.eqb index count = false) by (apply Nat.eqb_neq; lia).
         rewrite Continue in Test.
         unfold tree_frame at 1; unfold native_tree_loop.
-        execute Test; do 3 native_pure.
+        execute Test; do 2 native_pure.
         execute_under [VAL_num (VAL_int64 (wasm_nat64 kind))]
-          (child_run (states index) (stores index) (tree_locals index) witnesses index witness Functions IndexBound Witness).
-        do 2 native_pure.
-        execute_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext witness]
-          (child_run (states index) (stores index) (tree_locals index) lhs index left Functions IndexBound Left).
-        do 2 native_pure.
-        execute_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext witness; ext left]
-          (child_run (states index) (stores index) (tree_locals index) rhs index right Functions IndexBound Right).
+          (retained_claim_run (states index) (stores index) (tree_locals index) (get_tree_raw witnesses) index witness IndexBound (retained_ready index Bound) Witness).
+        native_pure.
+        execute_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness)]
+          (tree_view_run (states index) (stores index) (tree_locals index) lhs 7%N index left IndexBound (left_ready index Bound) Left).
+        native_pure.
+        execute_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness); ext left]
+          (tree_view_run (states index) (stores index) (tree_locals index) rhs 8%N index right IndexBound (right_ready index Bound) Right).
         native_use_premise Ready; native_pure.
         assert (Increment : reduce_trans
           (states (S index), stores (S index), tree_frame index,
@@ -1352,39 +1372,49 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
       (** The native Tree-rule helper accepts ready child witnesses with matching Tree
           markers and lengths. *)
       Lemma native_tree_rule_executes locals :
-        s_funcs (stores 0) = s_funcs G.E.allocated_store ->
+        s_funcs initial_store = s_funcs G.E.allocated_store ->
         reduce_trans
-          (states 0, stores 0, Build_frame locals G.E.collector_instance,
-            v_to_e_list tree_arguments ++ [AI_basic (BI_call 33%N)])
+          (states 0, initial_store, Build_frame locals G.E.collector_instance,
+            v_to_e_list tree_arguments ++ [AI_basic (BI_call 36%N)])
           (states count, stores count, Build_frame locals G.E.collector_instance, []).
       Proof.
         intro Functions; set (initial := tree_arguments ++ [word 0; word 0]).
         eapply G.E.collector_call_void with (code := native_tree_rule)
           (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-          (address := 33%N) (defaults := [word 0; word 0]) (arguments := tree_arguments)
+          (address := 36%N) (defaults := [word 0; word 0]) (arguments := tree_arguments)
           (accepted := true) (final_frame := tree_frame count); try reflexivity.
         - rewrite Functions; reflexivity.
         - unfold native_tree_rule at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
           native_pure.
-          execute (G.collector_size_executes combination handle_bytes (states 0) (stores 0) initial lhs Functions count_bound).
+          assert (NativeCount : native_size_bound count).
+          { apply native_size_bound_N.
+            exact (G.E.H.tree_attachment_result_bound _ _ _ _ _ _ left_attachment). }
+          execute (G.collector_size_executes combination handle_bytes (states 0) initial_store initial lhs Functions NativeCount).
           do 3 native_pure.
-          execute (arity_run (states 0) (stores 0) (tree_locals 0) rhs count Functions right_length count_bound).
+          execute (arity_run (states 0) initial_store (tree_locals 0) rhs count Functions right_length NativeCount).
           do 2 native_pure.
-          execute (arity_run (states 0) (stores 0) (tree_locals 0) witnesses count Functions witness_length count_bound).
-          execute (native_tag_query (states 0) (stores 0) (tree_locals 0) 1%N lhs Functions eq_refl).
-          pose proof (native_tag_query (states 0) (stores 0) (tree_locals 0) 2%N rhs Functions eq_refl) as RightTag.
+          execute (arity_run (states 0) initial_store (tree_locals 0) witnesses count Functions witness_length NativeCount).
+          execute (native_tag_query (states 0) initial_store (tree_locals 0) 1%N lhs Functions eq_refl).
+          pose proof (native_tag_query (states 0) initial_store (tree_locals 0) 2%N rhs Functions eq_refl) as RightTag.
           rewrite <- markers in RightTag.
           execute_under [VAL_num (VAL_int32 (wasm_bool (tree_tag lhs)))] RightTag.
-          destruct (tree_tag lhs); do 2 native_pure; exact tree_loop_executes.
+          assert (MiddleFunctions : s_funcs middle_store = s_funcs G.E.allocated_store).
+          { rewrite (G.E.H.tree_attachment_result_functions _ _ _ _ _ left_attachment); exact Functions. }
+          destruct (tree_tag lhs); do 2 native_pure;
+            native_pure;
+            execute (attach_tree_run (states 0) initial_store (tree_locals 0) lhs 7 middle_store Functions left_attachment);
+            native_pure;
+            execute (attach_tree_run (states 0) middle_store (tree_locals 0) rhs 8 (stores 0) MiddleFunctions right_attachment);
+            exact tree_loop_executes.
       Qed.
     End TreeRules.
 
     (** Ready pointwise Tree witnesses make the native Tree exchange return its requested
         claim code. *)
-    Lemma native_tree_exchange (evaluation : bool) lhs rhs witnesses states stores locals :
+    Lemma native_tree_exchange (evaluation : bool) lhs rhs witnesses states stores initial_store middle_store locals :
       let kind := if evaluation then 1 else 0 in
       let count := List.length (get_tree_raw lhs) in
-      s_funcs (stores 0) = s_funcs G.E.allocated_store ->
+      s_funcs initial_store = s_funcs G.E.allocated_store ->
       (Z.of_nat count < 2 ^ 32)%Z ->
       List.length (get_tree_raw rhs) = count ->
       List.length (get_tree_raw witnesses) = count ->
@@ -1394,28 +1424,39 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
         nth_error (get_tree_raw lhs) index = Some left /\
         nth_error (get_tree_raw rhs) index = Some right /\
         premise_ready (states index) (stores index) witness kind left right (states (S index)) (stores (S index))) ->
+      G.E.H.tree_attachment_result G.E.collector_instance initial_store
+        [ext (treeh lhs); word 7] = Some (middle_store, result_values []) ->
+      G.E.H.tree_attachment_result G.E.collector_instance middle_store
+        [ext (treeh rhs); word 8] = Some (stores 0, result_values []) ->
+      (forall index, index < count -> retained_claims (stores index) (get_tree_raw witnesses)) ->
+      (forall index, index < count -> tree_view (stores index) 7%N lhs) ->
+      (forall index, index < count -> tree_view (stores index) 8%N rhs) ->
       reduce_trans
-        (states 0, stores 0, Build_frame locals G.E.collector_instance,
+        (states 0, initial_store, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 (if evaluation then 6 else 0)));
-            ext (treeh lhs); ext (treeh rhs); ext (treeh witnesses)] ++ [AI_basic (BI_call 34%N)])
+            ext (treeh lhs); ext (treeh rhs); ext (treeh witnesses)] ++ [AI_basic (BI_call 37%N)])
         (states count, stores count, Build_frame locals G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 kind))]).
     Proof.
-      cbn zeta; intros Functions Bound RightLength WitnessLength Markers Entries.
+      cbn zeta; intros Functions Bound RightLength WitnessLength Markers Entries LeftAttachment RightAttachment Retained LeftView RightView.
       set (empty := VAL_ref (VAL_ref_null T_externref)).
       set (arguments := [VAL_num (VAL_int64 (wasm_nat64 (if evaluation then 6 else 0)));
         ext (treeh lhs); ext (treeh rhs); ext (treeh witnesses)]).
       set (inside := arguments ++ [empty; empty; empty; empty]).
       eapply G.E.collector_call_return with (code := native_exchange)
         (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-        (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+        (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
         (arguments := arguments) (values := [VAL_num (VAL_int64 (wasm_nat64 (if evaluation then 1 else 0)))])
         (final_frame := Build_frame inside G.E.collector_instance) (accepted := true)
         (context := LH_rec [] 0 [] (LH_base [] [])
           (to_e_list (skipn (if evaluation then 8 else 4) (modfunc_body native_exchange)))); try reflexivity.
       - rewrite Functions; reflexivity.
-      - assert (Run := native_tree_rule_executes (if evaluation then 1 else 0) lhs rhs witnesses states stores
-          Bound RightLength WitnessLength Markers Entries inside Functions).
+      - assert (Run : reduce_trans
+          (states 0, initial_store, Build_frame inside G.E.collector_instance,
+            v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 (if evaluation then 1 else 0)));
+              ext (treeh lhs); ext (treeh rhs); ext (treeh witnesses)] ++ [AI_basic (BI_call 36%N)])
+          (states (List.length (get_tree_raw lhs)), stores (List.length (get_tree_raw lhs)), Build_frame inside G.E.collector_instance, [])).
+        { eapply native_tree_rule_executes; eassumption. }
         destruct evaluation; unfold native_exchange at 1;
           cbn [modfunc_body mod_funcs evaluation_module nth];
           [do 6 native_pure|do 3 native_pure]; cbn [lfill];
@@ -1426,52 +1467,48 @@ Module WasmAcceptance (C : COLLECTOR_CONTEXT).
 
     (** The collector entry-point header reads the expected request fields into its local
         state. *)
-    Lemma collector_entry_header state initial_store opcode rule before page metadata callable value result witnesses :
+    Lemma collector_entry_header state initial_store next opcode rule page metadata callable value result witnesses :
       s_funcs initial_store = s_funcs G.E.allocated_store ->
-      s_mems initial_store = [before] ->
-      G.E.H.attachment_allowed before (get_blob_data opcode) = true ->
-      attachment_page (get_blob_data opcode) = Some page ->
+      tree_view initial_store 2%N combination -> tree_view next 2%N combination ->
+      G.E.H.blob_read_result G.E.collector_instance initial_store
+        [ext (blobh opcode); word 0; word 0; word 8] = Some (next, result_values [word 8]) ->
+      s_funcs next = s_funcs G.E.allocated_store -> s_mems next = [page] ->
+      load page 0%N 0%N 8%N = Some (get_blob_data opcode) ->
       decode_u64 (get_blob_data opcode) = Some rule ->
       get_tree_raw combination = [metadata; callable; blobh opcode; value; result; treeh witnesses] ->
       reduce_trans
         (state, initial_store,
           Build_frame [ext (treeh combination); VAL_ref (VAL_ref_null T_externref);
             VAL_ref (VAL_ref_null T_externref); VAL_num (VAL_int64 (wasm_nat64 0))] G.E.collector_instance,
-          to_e_list (firstn 20 (modfunc_body evaluation_apply)))
-        (state, upd_s_mem initial_store [page],
+          to_e_list (firstn 16 (modfunc_body evaluation_apply)))
+        (state, next,
           Build_frame [ext (treeh combination); ext value; ext result;
             VAL_num (VAL_int64 (wasm_nat64 0))] G.E.collector_instance,
           v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 rule)); ext value; ext result; ext (treeh witnesses)]).
     Proof.
-      intros Functions Memory Allowed Page Decoded Fields.
+      intros Functions InitialView NextView Read NextFunctions Memory Loaded Decoded Fields.
       set (empty := VAL_ref (VAL_ref_null T_externref)).
       set (initial := [ext (treeh combination); empty; empty; VAL_num (VAL_int64 (wasm_nat64 0))]).
+      set (with_left := [ext (treeh combination); ext value; empty; VAL_num (VAL_int64 (wasm_nat64 0))]).
       set (selected := [ext (treeh combination); ext value; ext result; VAL_num (VAL_int64 (wasm_nat64 0))]).
-        unfold evaluation_apply at 1; cbn [modfunc_body mod_funcs evaluation_module nth firstn].
-          native_pure.
-          execute (arity_run state initial_store initial combination 6 Functions
-            ltac:(rewrite Fields; reflexivity) ltac:(vm_compute; reflexivity)).
-          native_pure.
-          execute (child_run state initial_store initial combination 3 value Functions
-            ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
-          do 2 native_pure.
-          lazymatch goal with
-          | |- ?relation (_, _, Build_frame ?inside G.E.collector_instance, _) _ =>
-            execute (child_run state initial_store inside combination 4 result Functions
-              ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity))
-          end.
-          execute (local_set_run state initial_store
-            [ext (treeh combination); ext value; empty; VAL_num (VAL_int64 (wasm_nat64 0))]
-            2%N (ext result) ltac:(cbn; lia)).
-          native_pure.
-          execute (child_run state initial_store selected combination 2 (blobh opcode) Functions
-            ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
-          execute (collector_integer_executes state initial_store selected opcode rule before page
-            Functions Memory Allowed Page Decoded).
-          do 3 native_pure.
-          execute_under [VAL_num (VAL_int64 (wasm_nat64 rule)); ext value; ext result]
-            (child_run state (upd_s_mem initial_store [page]) selected combination 5 (treeh witnesses) Functions
-              ltac:(vm_compute; reflexivity) ltac:(rewrite Fields; reflexivity)).
+      unfold evaluation_apply at 1; cbn [modfunc_body mod_funcs evaluation_module nth firstn].
+      native_pure.
+      execute (arity_run state initial_store initial combination 6 Functions
+        ltac:(rewrite Fields; reflexivity) ltac:(vm_compute; reflexivity)).
+      execute (tree_view_run state initial_store initial combination 2%N 3 value
+        ltac:(vm_compute; reflexivity) InitialView ltac:(rewrite Fields; reflexivity)).
+      native_pure.
+      execute (tree_view_run state initial_store with_left combination 2%N 4 result
+        ltac:(vm_compute; reflexivity) InitialView ltac:(rewrite Fields; reflexivity)).
+      native_pure.
+      execute (tree_view_run state initial_store selected combination 2%N 2 (blobh opcode)
+        ltac:(vm_compute; reflexivity) InitialView ltac:(rewrite Fields; reflexivity)).
+      execute (collector_integer_executes state initial_store selected opcode rule next page
+        Functions Read NextFunctions Memory Loaded Decoded).
+      do 2 native_pure.
+      execute_under [VAL_num (VAL_int64 (wasm_nat64 rule)); ext value; ext result]
+        (tree_view_run state next selected combination 2%N 5 (treeh witnesses)
+          ltac:(vm_compute; reflexivity) NextView ltac:(rewrite Fields; reflexivity)).
       apply rt_refl.
     Qed.
 

@@ -1,33 +1,25 @@
+//! Imports the bootstrap seed, adds test programs as Runnables, then runs a Fix script.
+
 use runfiles::Runfiles;
 use std::{
     env, fs,
-    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 
-fn call(fix: &Path, args: &[&str], input: &[u8]) -> Vec<u8> {
-    let mut child = Command::new(fix)
+fn call(fix: &Path, args: &[&str]) -> String {
+    let output = Command::new(fix)
         .args(args)
-        .env_remove("BUILD_WORKSPACE_DIRECTORY")
         .env("FIX_JOBS", env::var("FIX_TEST_JOBS").unwrap())
         .env("FIX_TRUST", ".fix/trust")
-        .env(
-            "PATH",
-            env::join_paths(
-                std::iter::once(fix.parent().unwrap().join("commands/bin"))
-                    .chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
-            )
-            .unwrap(),
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
+        .output()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "fix {args:?} failed");
-    output.stdout
+    assert!(
+        output.status.success(),
+        "fix {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,18 +27,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let locate = |name: &str| runfiles.rlocation(name).ok_or("missing test input");
     let fix = locate(&env::var("FIX_TEST_CLI")?)?;
     env::set_current_dir(env::var_os("TEST_TMPDIR").ok_or("missing test directory")?)?;
-    call(&fix, &["init"], b"");
-    let mut seed = Command::new(locate(&env::var("FIX_TEST_SEED")?)?);
-    seed.args(["seed", ".fix"])
-        .arg(locate(&env::var("FIX_TEST_COMPILE")?)?);
-    let mut labels = Vec::new();
-    for (label, variable) in [
-        ("parser", "FIX_TEST_PARSER"),
-        ("identity", "FIX_TEST_IDENTITY"),
-    ] {
-        seed.arg(label).arg(locate(&env::var(variable)?)?);
-        labels.push(label.to_owned());
+    call(&fix, &["init"]);
+    for name in env::var("FIX_TEST_ARCHIVES")?.lines() {
+        call(
+            &fix,
+            &["import", locate(name)?.to_str().ok_or("non-UTF-8 path")?],
+        );
     }
+    let mut seed = Command::new(locate(&env::var("FIX_TEST_SEED")?)?);
+    seed.args(["add", "."]);
+    let mut labels = Vec::new();
     for name in env::var("FIX_TEST_DATA")?.lines() {
         let path = locate(name)?;
         fs::copy(
@@ -54,39 +44,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PathBuf::from(path.file_name().ok_or("missing filename")?),
         )?;
         if fs::read(&path)?.starts_with(b"\x7fELF") {
-            let label = path.file_stem().ok_or("missing program name")?;
-            seed.arg(label).arg(&path);
-            labels.push(label.to_str().ok_or("invalid program name")?.to_owned());
+            let label = path
+                .file_stem()
+                .ok_or("missing program name")?
+                .to_str()
+                .ok_or("invalid program name")?;
+            seed.arg(format!("{label}={}", path.display()));
+            labels.push(label.to_owned());
         }
     }
-    assert!(seed.status()?.success(), "test certificate seeding failed");
-    let mut bindings = String::new();
+    assert!(seed.status()?.success(), "test seeding failed");
+    let mut arguments = vec!["run".to_owned(), env::var("FIX_TEST_SCRIPT")?];
     for label in labels {
-        let handle = call(&fix, &["resolve", &label], b"");
-        bindings.push_str(&format!(
-            "{label}\0{}\0",
-            std::str::from_utf8(&handle)?.trim()
-        ));
+        arguments.extend(["-b".into(), format!("{label}=@label(\"{label}\")")]);
     }
-    let bindings = call(
-        &fix,
-        &["create-tree", "--bindings", "-"],
-        bindings.as_bytes(),
-    );
-    let handle = call(
-        &fix,
-        &[
-            "run",
-            &env::var("FIX_TEST_SCRIPT")?,
-            std::str::from_utf8(&bindings)?.trim(),
-        ],
-        b"",
-    );
-    let value = call(
-        &fix,
-        &["read-blob", std::str::from_utf8(&handle)?.trim()],
-        b"",
-    );
-    assert_eq!(hex::encode(value), env::var("FIX_TEST_EXPECTED")?);
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let handle = call(&fix, &arguments);
+    let value = Command::new(&fix).args(["read-blob", &handle]).output()?;
+    assert!(value.status.success(), "fix read-blob failed");
+    assert_eq!(hex::encode(value.stdout), env::var("FIX_TEST_EXPECTED")?);
     Ok(())
 }

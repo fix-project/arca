@@ -12,6 +12,30 @@ unsafe extern "C" {
 }
 
 fn main() {
+    if matches!(env::args().nth(1).as_deref(), Some("read" | "set-atime")) {
+        let set_atime = env::args().nth(1).as_deref() == Some("set-atime");
+        let mut file = fs::File::options()
+            .read(true)
+            .write(set_atime)
+            .open("/work/input.txt")
+            .unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"original");
+        let metadata = file.metadata().unwrap();
+        assert_eq!(metadata.len(), 8);
+        assert_eq!(
+            metadata.accessed().unwrap(),
+            UNIX_EPOCH + std::time::Duration::from_nanos(17)
+        );
+        if set_atime {
+            file.set_times(
+                fs::FileTimes::new().set_accessed(UNIX_EPOCH + std::time::Duration::from_nanos(29)),
+            )
+            .unwrap();
+        }
+        return;
+    }
     if env::args().nth(1).as_deref() == Some("copy") {
         let args: Vec<_> = env::args().collect();
         fs::write(&args[3], fs::read(&args[2]).unwrap()).unwrap();

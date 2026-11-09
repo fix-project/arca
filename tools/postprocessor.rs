@@ -12,7 +12,7 @@ struct Helper {
     type_index: u32,
     params: Vec<ValType>,
     results: Vec<ValType>,
-    instruction: Instruction<'static>,
+    instructions: Vec<Instruction<'static>>,
 }
 
 impl Helper {
@@ -46,6 +46,61 @@ impl Helper {
             );
             Ok((index, ValType::Ref(ty.element_type)))
         };
+        if name == "table_get" || name == "memory_copy_to_0" {
+            let (params, results) = if name == "table_get" {
+                (
+                    vec![I32, I32],
+                    vec![ValType::Ref(wasmparser::RefType::EXTERNREF)],
+                )
+            } else {
+                (vec![I32, I32, I32, I32], vec![])
+            };
+            let mut instructions = Vec::new();
+            let count = if name == "table_get" {
+                tables.len()
+            } else {
+                memories.len()
+            };
+            #[expect(
+                clippy::needless_range_loop,
+                reason = "Indices cover either memories or tables."
+            )]
+            for index in 0..count {
+                if name == "table_get"
+                    && tables[index].element_type != wasmparser::RefType::EXTERNREF
+                {
+                    continue;
+                }
+                if name != "table_get" {
+                    memory(&index.to_string())?;
+                }
+                instructions.extend([
+                    LocalGet(0),
+                    I32Const(index as i32),
+                    I32Eq,
+                    If(wasm_encoder::BlockType::Empty),
+                ]);
+                for argument in 1..params.len() as u32 {
+                    instructions.push(LocalGet(argument));
+                }
+                instructions.push(if name == "table_get" {
+                    TableGet(index as u32)
+                } else {
+                    MemoryCopy {
+                        src_mem: index as u32,
+                        dst_mem: 0,
+                    }
+                });
+                instructions.extend([Return, End]);
+            }
+            instructions.push(Unreachable);
+            return Ok(Self {
+                type_index,
+                params,
+                results,
+                instructions,
+            });
+        }
         let parts: Vec<_> = name.split('_').collect();
         let (params, results, instruction) = match parts.as_slice() {
             ["memory", "copy", source, "to", destination] => (
@@ -86,20 +141,23 @@ impl Helper {
             }
             _ => bail!("unknown postprocessor import {name}"),
         };
+        let instructions = (0..params.len() as u32)
+            .map(LocalGet)
+            .chain(core::iter::once(instruction))
+            .collect();
         Ok(Self {
             type_index,
             params,
             results,
-            instruction,
+            instructions,
         })
     }
 
     fn body(&self) -> Function {
         let mut function = Function::new([]);
-        for index in 0..self.params.len() as u32 {
-            function.instruction(&Instruction::LocalGet(index));
+        for instruction in &self.instructions {
+            function.instruction(instruction);
         }
-        function.instruction(&self.instruction);
         function.instruction(&Instruction::End);
         function
     }
@@ -179,6 +237,16 @@ impl Reencode for Postprocessor {
                     "function index out of bounds",
                 ))
             })
+    }
+    fn parse_custom_section(
+        &mut self,
+        module: &mut Module,
+        section: wasmparser::CustomSectionReader<'_>,
+    ) -> Result<(), reencode::Error<Self::Error>> {
+        if section.name().starts_with(".debug_") {
+            return Ok(());
+        }
+        reencode::utils::parse_custom_section(self, module, section)
     }
     fn parse_custom_name_subsection(
         &mut self,

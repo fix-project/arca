@@ -34,7 +34,7 @@ impl Blob {
         CreateBlob(bytes)
     }
 }
-macro_rules! integer {
+macro_rules! scalar {
     ($t:ty) => {
         impl Value for $t {
             type Type = Object<Blob>;
@@ -42,5 +42,18 @@ macro_rules! integer {
         }
     };
 }
-integer!(u64);
-integer!(u32);
+scalar!(u64);
+scalar!(u32);
+scalar!(u16);
+scalar!(u8);
+scalar!(i64);
+scalar!(i32);
+scalar!(i16);
+scalar!(i8);
+scalar!(f64);
+scalar!(f32);
+
+impl Value for bool {
+    type Type = Object<Blob>;
+    delegate_value!(this, Blob::create([u8::from(*this)]));
+}

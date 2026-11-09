@@ -1,5 +1,9 @@
 """Package native and WASIp1 LLVM tools built by LLVM's Bazel overlay."""
 
+load("@bazel_lib//lib:directory_path.bzl", "directory_path")
+load("@bazel_lib//lib:paths.bzl", "to_repository_relative_path")
+load(":files.bzl", "COPY_TOOLCHAIN", "mapped_directory", "mapped_directory_action")
+
 def _configuration_impl(settings, attr):
     flags = ["-ffile-prefix-map=.=/llvm-project"]
     return {
@@ -45,36 +49,20 @@ _configuration = transition(
 )
 
 def _bundle_impl(ctx):
-    output = ctx.actions.declare_directory(ctx.label.name)
-    inputs = []
-    args = ctx.actions.args()
-    args.add(output.path)
+    files = []
+    prefixes = {}
     for dep, destination in ctx.attr.files.items() + ctx.attr.native_files.items():
         for file in dep[DefaultInfo].files.to_list():
             path = destination + file.path.split("/staging/include/", 1)[1] if destination.endswith("/include/") else destination
-            inputs.append(file)
-            args.add_all([file.path, path])
-    ctx.actions.run_shell(
-        inputs = inputs,
-        outputs = [output],
-        arguments = [args],
-        command = """
-set -eu
-output="$1"
-shift
-while (( $# )); do
-    mkdir -p "$output/$(dirname "$2")"
-    cp -L "$1" "$output/$2"
-    shift 2
-done
-""",
-        mnemonic = "BootstrapLlvmBundle",
-    )
+            files.append(file)
+            prefixes[to_repository_relative_path(file)] = path
+    output = mapped_directory_action(ctx, files, prefixes)
     return [DefaultInfo(files = depset([output]))]
 
 llvm_bundle = rule(
     implementation = _bundle_impl,
     cfg = _configuration,
+    toolchains = [COPY_TOOLCHAIN],
     attrs = {
         "files": attr.label_keyed_string_dict(allow_files = True),
         "native_files": attr.label_keyed_string_dict(allow_files = True, cfg = "exec"),
@@ -83,26 +71,11 @@ llvm_bundle = rule(
     },
 )
 
-def _resources_impl(ctx):
-    output = ctx.actions.declare_directory(ctx.label.name)
-    ctx.actions.run_shell(
-        inputs = [ctx.file.host, ctx.file.builtins],
-        outputs = [output],
-        arguments = [ctx.file.host.path, ctx.file.builtins.path, output.path],
-        command = """
-set -eu
-mkdir -p "$3"
-cp -R -L "$2/lib/clang/23/." "$3/"
-cp -R -L "$1/lib/clang/23/include" "$3/"
-""",
-        mnemonic = "BootstrapLlvmResources",
+def llvm_resources(name, host, builtins, **kwargs):
+    directory_path(name = name + "_builtins", directory = builtins, path = "lib/clang/23", tags = ["manual"])
+    directory_path(name = name + "_include", directory = host, path = "lib/clang/23/include", tags = ["manual"])
+    mapped_directory(
+        name = name,
+        srcs = {":" + name + "_builtins": ".", ":" + name + "_include": "include"},
+        **kwargs
     )
-    return [DefaultInfo(files = depset([output]))]
-
-llvm_resources = rule(
-    implementation = _resources_impl,
-    attrs = {
-        "host": attr.label(allow_single_file = True),
-        "builtins": attr.label(allow_single_file = True),
-    },
-)

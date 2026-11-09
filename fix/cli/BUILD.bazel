@@ -1,14 +1,51 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
-load(":defs.bzl", "launcher")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("//build:fix.bzl", "fix_repository")
 
 package(default_visibility = ["//visibility:public"])
 
-alias(name = "host", actual = ":fix")
-rust_binary(
-    name = "preprocess",
-    srcs = ["preprocess.rs", "//fix/runtime:src/preprocessor.rs"],
-    crate_root = "preprocess.rs",
+rust_library(
+    name = "client",
+    crate_name = "fixcli",
+    srcs = ["lib.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs"],
+    crate_root = "lib.rs",
     edition = "2024",
-    deps = ["@crates//:hex"],
+    deps = [
+        "//fix/api", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
+        "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
+    ],
+    compile_data = ["//fix/runtime:image_elf", "//programs/fix/parser:parser_module"],
+    rustc_env = {
+        "FIX_KERNEL": "$(execpath //fix/runtime:image_elf)",
+        "FIX_PARSER_MODULE": "$(execpath //programs/fix/parser:parser_module)",
+    },
 )
-launcher(name = "fix", scripts = glob(["commands/*"]))
+
+rust_binary(
+    name = "fix",
+    srcs = ["main.rs", "repl.rs"],
+    edition = "2024",
+    deps = [":client", "//fix/api", "@crates//:clap", "@crates//:env_logger"],
+)
+
+rust_test(
+    name = "client_tests",
+    srcs = ["client_tests.rs"],
+    edition = "2024",
+    deps = [":client", "//fix/api", "//fix/repository"],
+    data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf"],
+    rustc_env = {
+        "BACKEND": "$(rootpath :fix)",
+        "SEED": "$(rootpath //bootstrap:seed_tool)",
+        "COMPILER": "$(rootpath //programs/fix:compile_elf)",
+        "SCHEDULER": "$(rootpath //programs/fix:scheduler_elf)",
+        "COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
+        "ADD": "$(rootpath //programs/fix:addblob_elf)",
+    },
+    size = "medium",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)
+
+
+# The seed plus the compile coupons of the modules this CLI embeds.
+fix_repository(name = "precompiled", tags = ["manual"])

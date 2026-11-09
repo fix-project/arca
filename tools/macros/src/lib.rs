@@ -39,3 +39,8 @@ pub fn kmain(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn apply(attr: TokenStream, item: TokenStream) -> TokenStream {
     fix::apply(attr, item)
 }
+
+#[proc_macro_attribute]
+pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
+    fix::main(attr, item)
+}

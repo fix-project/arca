@@ -1,0 +1,28 @@
+load("//build:defs.bzl", "WASM", "fix_procedure")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "sdk",
+    crate_name = "fixscheduler",
+    edition = "2024",
+    srcs = glob(["src/**/*.rs"]),
+    deps = ["//fix/sdk:sdk_import"],
+    target_compatible_with = ["@platforms//cpu:wasm32"],
+)
+
+rust_library(
+    name = "example_runtime",
+    visibility = [
+        "//fix/scheduler:__pkg__",
+        "//fix/scheduler/examples/control:__pkg__",
+        "//programs/fix:__pkg__",
+    ],
+    crate_name = "scheduler_example",
+    edition = "2024",
+    srcs = glob(["examples/runtime/**/*.rs"]),
+    crate_root = "examples/runtime/lib.rs",
+    deps = [":sdk", "//fix/sdk:sdk_import"],
+    target_compatible_with = ["@platforms//cpu:wasm32"],
+)

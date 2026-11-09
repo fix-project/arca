@@ -15,8 +15,8 @@ Raw bindings reserve no resources. Memory and Table arguments are actual Wasm
 indices. Table indices include funcref Tables. Constructors retain their shell
 type preconditions: references require Objects, identification requires Data,
 application and selection require Tree Objects or TreeRefs, and strict/shallow
-encodes require Thunks. Invalid arguments can trap. Evaluation and
-continuations are not supported bindings. `is_comparable` tests whether a
+encodes require Thunks. Invalid arguments can trap. C exposes `eval`, `effect`,
+`return_cc`, and `call_cc`; Rust exposes direct-style `eval`. `is_comparable` tests whether a
 handle supports comparison without computation; `equals` compares comparable
 values and traps otherwise.
 
@@ -68,6 +68,38 @@ type.
 Constructed values retain their inputs in Rust memory and are interpreted when
 the procedure returns. Static adaptors need no heap allocation.
 
+`fix::invalidate_externrefs()` resets the procedure's handle arena while
+preserving live references, Rust lookup paths, and pending values. Call it between
+operations in long-running loops. Reference slots are reclaimed automatically
+when their native function returns or unwinds.
+
+`value.eval()` evaluates through the current continuation and returns
+`Handle<Any, Capture>`. The owned capture remains valid across further evaluations
+and explicit invalidation. Borrowed views cannot outlive it; dropping the owner
+releases its entry for reuse. Captures are movable and do not implement `Clone`.
+Their storage grows with the maximum number of live captures, rather than the
+total number of evaluations. No Rust heap allocator is required.
+
+Evaluation follows Fix's ordinary rules: bare Refs and Thunks remain opaque;
+strict and shallow encodes request computation. For example:
+
+```rust
+let result = 41u64.reference().identification().strict().eval()?;
+fix::invalidate_externrefs()?;
+assert_eq!(result.read_u64()?, 41);
+```
+
+Evaluation, effects, and reclamation are supported inside construction and
+comparison callbacks. Their C-stack externrefs remain rooted across capture.
+The C bridge stores owned captures in its private Wasm Table 2 and reuse metadata
+in Memory 2; Memory 1 and Table 1 remain scratch resources. The Shell does not
+need to know the SDK's capture lifetimes.
+
+The C import `fix_invalidate_externrefs(keep)` preserves `keep`, live locals and
+globals, all externref Tables, and Blob and Tree attachments. Surviving local
+objects are promoted and the rest of the handle arena is released. Storage is not
+reclaimed. The returned reference denotes `keep`.
+
 Rust procedures receive `&mut Handle<Object<Tree>, Focus>` or a shared
 reference for read-only access. `get(index)` borrows an existing Tree's child.
 Both existing handles and pending Trees support `with(index, callback)`: it
@@ -99,12 +131,11 @@ cloneable iterators, including iterators of `Result<V, Error>`; children are
 recomputed on access. `tree!` retains heterogeneous children by value.
 `Tree::create` also accepts borrowed or owned slices of values.
 
-`fields.tag(combination, depth)?` constructs a Tag. Its first field is a Tree
-of additional authors. Depth zero chooses the executing combination; each
-further step follows field 1, the callable. The selected author is
-appended unless a comparable author already compares equal through Fix. Other fields
-are application-defined. Reads of the pending Tag see this final authors list.
-The C operation is `fix_create_tag(table, author_depth)`.
+`fields.tag()?` constructs a Tag with exactly the supplied fields. The first
+field must be a comparable author: the current combination or a callable reached
+by following field 1, either as an Object or a Ref. The Shell checks this identity
+and preserves its representation. Other fields are application-defined.
+The C operation is `fix_create_tag(table)`.
 
 Rust's `alloc` feature enables Blob `read()` returning `Result<Vec<u8>, Error>`
 and Tree `children()` returning a vector of child values. Existing-handle child
@@ -114,7 +145,8 @@ directly. Keep the returned buffers for ordinary indexing and slicing.
 construct new Fix values from slices. These operations do not construct Fix
 selection thunks. `read_into` and `read_u64` require no allocation.
 
-Rust `u32` and `u64` represent little-endian Blobs. `Blob::create` accepts
+Rust `u32` and `u64` represent little-endian Blobs; `bool` represents a one-byte
+Blob containing 0 or 1. `Blob::create` accepts
 borrowed slices, owned arrays, or owned buffers. Rust uses `len()` and
 `is_empty()`. Reads and type, length, and tag queries inspect local value
 memory or look up input handles; they do not create Fix objects.
@@ -140,7 +172,8 @@ Allocator-free recursive programs can return Fix application thunks that call
 the same procedure with the next arguments. Allocating Rust clients can instead
 use `Rc<dyn Value<Type = Any>>` for a finite recursive return type.
 
-`is_comparable` tests handle comparability; `equals` returns `NotComparable`
+`is_comparable` tests handle comparability, and `is_value` tests whether a handle
+is fully evaluated (contains no Encode); `equals` returns `NotComparable`
 for ineligible operands. The Rust SDK delegates equality to Fix, temporarily
 materializing pending operands. Rust SDK handles and adaptors implement
 `PartialEq` by forwarding to Fix equality: `==` returns false for non-comparable
@@ -156,12 +189,109 @@ Rust's `//fix/sdk` disables `alloc` and `//fix/sdk:sdk_alloc` enables it;
 allocating clients provide a global allocator. `#[fix::apply]` exports
 `_fix_apply` and interprets the returned value.
 
+`#[fix::main]` provides an allocation-free SDK calling convention:
+
+```rust
+#[fix::main]
+fn add(a: u64, b: u64) -> Result<u64, fix::Error> {
+    a.checked_add(b).ok_or(fix::Error::OutOfBounds)
+}
+```
+
+It reads the fixed number of parameters into a stack array, returns an underapplied combination unchanged,
+and applies excess arguments to the result. `Argument` converts each parameter:
+its `Argument::EVALUATION` says how far the input is evaluated first.
+`Handle<Any, Capture>` stays lazy. Object handles and scalar arguments use strict
+encodes to evaluate inputs and resolve Refs. Ref handles use shallow encodes for
+Thunks and take an Object as its Ref. `Evaluated` handles, an Object or a Ref,
+use strict encodes for Thunks and keep Refs.
+When evaluation is needed, the entrypoint returns a new application with encoded
+arguments for the scheduler to evaluate; it does not capture a continuation.
+`u64`, `u32`, and `bool` read Blob values. Booleans use one byte, 0 or 1. Functions return an SDK `Value`
+or `Result<Value, Error>`. `#[fix::main(combination)]` also passes the original
+combination as the first Rust parameter.
+
+Returned errors produce the normal effect combination `["Fix.error", message]`.
+This is an SDK convention. `#[fix::apply]` retains direct
+access to the combination and its existing error behavior. `call`, `reapply`,
+`visit_arguments`, and `apply_remaining` are also available without `alloc`.
+`arguments` collects all arguments into a `Vec` and requires `alloc`.
+
 ## File descriptors and stat
 
 Rust `files` provides canonical descriptor and stat codecs. C filesystem codecs
 belong to Flatware.
 
+## Scheduler importers
+
+`stream::Stream` wraps the TCP and read-only URI stream effects. Streams belong
+to the current worker and must be closed explicitly. `importers::blob(uri, limit)`
+reads an HTTP(S) or local `file:` URI into a Blob, returning `None` on acquisition
+failure or when the result exceeds the byte limit. These helpers require a
+scheduler execution context; ordinary Fix evaluation does not handle their effects.
+
+`//fix/sdk:sdk_import` additionally enables Git import through the memory-only
+`//fix/importers/git` library. Git protocol and object decoding run in userspace
+over the same TCP streams. This SDK variant requires a global allocator and
+provides `std::io::Read` and `Write` implementations for `Stream`.
+
+Git URIs have the form `git://HOST[:PORT]/REPO#REV:PATH`. The default port is
+9418, the default revision is `HEAD`, and an empty path selects the root tree.
+Revisions can be advertised refs, unambiguous branch/tag names, or full SHA-1
+object IDs accepted by the server. Paths are relative and percent-encoded.
+`importers::blob` selects a Blob; `importers::directory` selects a directory and
+returns its contents as a Tree of normalized Flatware child descriptors. Local
+`file:` directories are also supported. Children are
+sorted by filename bytes, timestamps and device IDs are zero, and link counts
+are one. Symlink contents are preserved; executable permissions are not represented.
+Submodules become empty directories and are not fetched recursively.
+
+`importers::fetch(uri)` infers Blob or directory from the source without a
+known output size. `fix todo add URI` uses it to import the content, persist
+the resulting object and its URI hint, and print the canonical handle.
+`fix todo add VALUE URI…` registers hints for an existing value without fetching.
+
+Git fetches a self-contained snapshot, shallow when supported by the server;
+the Blob limit bounds the selected output, not the transferred pack. Only the
+native `git://` transport and SHA-1 repositories are supported. Callers needing
+a pack/decoding budget can use the backend's `fetch_with_limit` with a `Stream`.
+Importers return ordinary Fix values. Schedulers control hints, persistence,
+and comparison with the expected canonical name.
+
 `fix_unsound_handle_bytes` returns a Blob containing the existing 32-byte
 encoding of a kernel-resolved handle, without canonicalizing it. It requires
 a privileged invocation and traps otherwise. Different encodings need not
 denote different Fix values.
+
+For repeated access, attach a value to a caller-owned Wasm resource:
+
+```rust
+let mut table = unsafe { fix::Table::from_index(3) };
+let attached = table.attach(&tree)?;
+let first = attached.get(0).read_u64()?;
+let second = attached.get(1).capture()?;
+```
+
+`Memory::attach` provides a Blob view with `read_into`. Attached reads use Wasm
+Table access or Memory copy operations. The existing handle `get` and
+`read_into` methods perform one-off reads.
+
+Declare the additional resources when postprocessing the Wasm module; indices
+0–2 belong to the SDK. `from_index` requires exclusive ownership of the declared
+resource. A view borrows its resource and detaches on drop. Capture an element to
+retain it after the view is dropped. Separate resources support simultaneous
+attachments and may remain attached across evaluation or reclamation.
+
+`fix::advise(&value, key, payload)` emits a non-normative event without
+forcing the value. Keys are UTF-8 strings and payloads are bytes. Conventional
+keys are `fix::advice::TITLE`, `PROGRESS`, and `CANONICALIZE`.
+
+```rust
+fix::advise(&combination, fix::advice::TITLE, b"compile module")?;
+fix::advise(&combination, fix::advice::CANONICALIZE, b"")?;
+```
+
+Schedulers choose how to handle or discard each event. Advice has no lookup
+operation in ordinary Fix execution and is excluded from handles and coupons.
+The runtime's `execute_observed` and `resume_observed` APIs expose events to
+host callers; unobserved execution discards them.

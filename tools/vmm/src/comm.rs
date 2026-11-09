@@ -197,6 +197,10 @@ impl Control {
                     Err(e) => Response::Err(e.kind().into()),
                 }
             }
+            Request::ReadDirectoryUri(uri) => match read_directory_uri(&uri) {
+                Ok(entries) => Response::DirectoryEntries(entries),
+                Err(error) => Response::Err(error.kind().into()),
+            },
             Request::Canonicalize(path) => {
                 match std::fs::canonicalize(self.directory.read().unwrap().join(path)) {
                     Ok(path) => match path.into_os_string().into_string() {
@@ -490,10 +494,10 @@ pub fn listener_thread(
 }
 
 fn open_uri(uri: &str) -> std::io::Result<Box<dyn Read + Send>> {
-    if let Some((scheme, path)) = uri.split_once(':')
+    if let Some((scheme, _)) = uri.split_once(':')
         && scheme.eq_ignore_ascii_case("file")
     {
-        return Ok(Box::new(File::open(file_uri_path(path)?)?));
+        return Ok(Box::new(File::open(file_uri_path(uri)?)?));
     }
     let parsed: ureq::http::Uri = uri.parse().map_err(|_| std::io::ErrorKind::InvalidInput)?;
     if !matches!(parsed.scheme_str(), Some("http" | "https")) {
@@ -503,10 +507,14 @@ fn open_uri(uri: &str) -> std::io::Result<Box<dyn Read + Send>> {
     Ok(Box::new(response.into_body().into_reader()))
 }
 
-fn file_uri_path(path: &str) -> std::io::Result<std::path::PathBuf> {
+fn file_uri_path(uri: &str) -> std::io::Result<std::path::PathBuf> {
     use std::io::ErrorKind::{InvalidInput, Unsupported};
     use std::os::unix::ffi::OsStringExt;
 
+    let (scheme, path) = uri.split_once(':').ok_or(InvalidInput)?;
+    if !scheme.eq_ignore_ascii_case("file") {
+        return Err(Unsupported.into());
+    }
     let path = if let Some(authority) = path.strip_prefix("//") {
         let (host, _) = authority.split_once('/').ok_or(InvalidInput)?;
         if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
@@ -535,6 +543,36 @@ fn file_uri_path(path: &str) -> std::io::Result<std::path::PathBuf> {
         });
     }
     Ok(std::ffi::OsString::from_vec(decoded).into())
+}
+
+fn read_directory_uri(
+    uri: &str,
+) -> std::io::Result<Vec<common::protocol::control::DirectoryEntry>> {
+    use common::protocol::control::{DirectoryEntry, DirectoryEntryKind};
+    use std::os::unix::ffi::OsStringExt;
+    std::fs::read_dir(file_uri_path(uri)?)?
+        .map(|entry| {
+            let entry = entry?;
+            let filetype = entry.file_type()?;
+            let kind = if filetype.is_symlink() {
+                DirectoryEntryKind::Symlink(
+                    std::fs::read_link(entry.path())?
+                        .into_os_string()
+                        .into_vec(),
+                )
+            } else if filetype.is_dir() {
+                DirectoryEntryKind::Directory
+            } else if filetype.is_file() {
+                DirectoryEntryKind::File
+            } else {
+                DirectoryEntryKind::Unsupported
+            };
+            Ok(DirectoryEntry {
+                name: entry.file_name().into_vec(),
+                kind,
+            })
+        })
+        .collect()
 }
 
 struct ReadOnly<R>(R);

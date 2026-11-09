@@ -983,6 +983,15 @@ impl<T: HardwarePageTableEntry> AugmentedEntry<T> {
         self.0.present()
     }
 
+    /// # Safety
+    /// The mapping must be identical in every address space until globally invalidated.
+    pub(crate) unsafe fn mark_global(&mut self) {
+        assert!(self.0.present() && self.0.leaf());
+        let mut descriptor = T::PageDescriptor::from_bits(self.0.bits());
+        descriptor.set_global(true);
+        unsafe { self.0.set_bits(descriptor.into_bits()) };
+    }
+
     pub fn map_unique(
         &mut self,
         page: UniquePage<T::Page>,

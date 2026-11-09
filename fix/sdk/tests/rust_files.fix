@@ -1,5 +1,4 @@
 program = $rust_files_native
-result = *#("" program '42u64)
-authors = *[result 0u64]
-combination = *[authors 1u64]
+result = *#("" program 42u64)
+combination = *[result 0u64]
 *[combination 2u64]

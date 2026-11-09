@@ -6,7 +6,7 @@ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("//build:cc.bzl", "cc_object")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
-FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-nostdlib", "-nostartfiles", "-mcmodel=large", "-mno-red-zone", "-march=x86-64-v3", "-static"]
+FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-nostdlib", "-nostartfiles", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3", "-static"]
 
 ARCA = "//build/platforms:arca"
 ARCA_USER = "//build/platforms:arca_user"
@@ -189,18 +189,17 @@ _vm_attrs = {
 vm_run = rule(implementation = _vm_launcher_impl, executable = True, attrs = _vm_attrs)
 vm_test = rule(implementation = _vm_launcher_impl, test = True, attrs = _vm_attrs)
 
-def fix_program_run(name, program, mode = "run", **kwargs):
+def fix_program_run(name, program, **kwargs):
     rust_binary(
         name = name,
         srcs = ["//build:fix_run.rs"],
         crate_name = "fix_run",
         edition = "2024",
-        data = ["//fix", program],
+        data = ["//fix/cli:fix", program],
         deps = ["@rules_rust//tools/runfiles"],
         rustc_env = {
-            "FIX_CLI": "$(rlocationpath //fix)",
+            "FIX_CLI": "$(rlocationpath //fix/cli:fix)",
             "FIX_PROGRAM": "$(rlocationpath " + program + ")",
-            "FIX_MODE": mode,
         },
         **kwargs
     )
@@ -210,32 +209,30 @@ def _fix_script_test(ctx):
     ctx.actions.symlink(output = executable, target_file = ctx.executable.driver, is_executable = True)
     def path(file):
         return ctx.workspace_name + "/" + file.short_path
+    archives = [file for target in ctx.attr.archives for file in target[DefaultInfo].files.to_list()]
     environment = {
         "FIX_TEST_CLI": path(ctx.executable.fix),
-        "FIX_TEST_PARSER": path(ctx.file.parser),
-        "FIX_TEST_IDENTITY": path(ctx.file.identity),
         "FIX_TEST_SEED": path(ctx.executable.seed),
-        "FIX_TEST_COMPILE": path(ctx.file.compiler),
+        "FIX_TEST_ARCHIVES": "\n".join([path(file) for file in archives]),
         "FIX_TEST_DATA": "\n".join([path(file) for file in ctx.files.data]),
         "FIX_TEST_SCRIPT": ctx.attr.script,
         "FIX_TEST_JOBS": str(ctx.attr.jobs),
         "FIX_TEST_EXPECTED": ctx.attr.expected,
     }
-    runfiles = ctx.runfiles(files = ctx.files.data + [ctx.executable.fix, ctx.file.parser, ctx.file.identity, ctx.executable.seed, ctx.file.compiler])
-    for target in [ctx.attr.fix, ctx.attr.driver]:
+    runfiles = ctx.runfiles(files = ctx.files.data + archives + [ctx.executable.fix, ctx.executable.seed])
+    for target in [ctx.attr.fix, ctx.attr.driver, ctx.attr.seed]:
         runfiles = runfiles.merge(target[DefaultInfo].default_runfiles)
     return [DefaultInfo(executable = executable, runfiles = runfiles), RunEnvironmentInfo(environment = environment)]
 
 fix_script_test = rule(
     implementation = _fix_script_test,
     test = True,
+    doc = "Runs `script` in the bootstrap seed plus the ELFs in `data` as Runnables, and checks the result Blob.",
     attrs = {
         "driver": attr.label(default = "//build:fix_test", executable = True, cfg = "exec"),
-        "fix": attr.label(default = "//fix", executable = True, cfg = "target"),
-        "parser": attr.label(default = "//programs/fix/parser:parser_elf", allow_single_file = True),
-        "identity": attr.label(default = "//programs/fix:identity_elf", allow_single_file = True),
-        "seed": attr.label(default = "//tools:seed_repository", executable = True, cfg = "exec"),
-        "compiler": attr.label(default = "//programs/fix:compile_elf", allow_single_file = True),
+        "fix": attr.label(default = "//fix/cli:fix", executable = True, cfg = "target"),
+        "seed": attr.label(default = "//bootstrap:seed_tool", executable = True, cfg = "target"),
+        "archives": attr.label_list(default = ["//fix/cli:precompiled"]),
         "script": attr.string(mandatory = True),
         "data": attr.label_list(allow_files = True),
         "jobs": attr.int(default = 1),
@@ -269,25 +266,27 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
     artifact = name + "_elf" if runnable else name
     flags = FIX_COPTS + ["-Ifix/shell/inc"]
     objects = []
-    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt"]):
+    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt", "//fix/shell:cpp_support"]):
         obj = name + "_native_object_%d" % index
         cc_object(
             name = obj,
             tags = tags,
             src = src,
             hdrs = [name + "_translate/module.h", "//fix/shell:headers"],
+            deps = ["@wabt_src//:simde", "//fix/shell:cpp_runtime"],
             include_roots = [name + "_translate/module.h"],
-            copts = flags,
+            copts = flags + (["-O3"] if index == 1 else []) + (["-x", "c++", "-std=c++20", "-fexceptions", "-funwind-tables", "-Wno-return-type-c-linkage", "-nostdinc++"] if index != 1 else []),
+            compiler = "@local_tools//:clang" if index != 1 else "@local_tools//:gcc",
             visibility = ["//visibility:private"],
         )
         objects.append(":" + obj)
     native.genrule(
         name = artifact,
         tags = tags,
-        srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
+        srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell", "//fix/shell:cpp_runtime"],
         tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
         outs = [name + ".elf"],
-        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
+        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]) + " -Wl,--start-group $(locations //fix/shell:cpp_runtime) -Wl,--end-group",
         visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:

@@ -1,6 +1,6 @@
 """WASIp1 command modules running against Flatware."""
 
-load("//build:defs.bzl", "fix_procedure", "fix_program_run")
+load("//build:defs.bzl", "fix_procedure")
 
 def flatware_procedure(name, wasm, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"]):
     native.genrule(
@@ -16,8 +16,3 @@ def flatware_procedure(name, wasm, runnable = False, visibility = None, artifact
         visibility = artifact_visibility if runnable else visibility,
         artifact_visibility = artifact_visibility,
     )
-    if runnable:
-        flatware_run(name = name, program = ":" + name + "_elf", visibility = visibility)
-
-def flatware_run(name, program, **kwargs):
-    fix_program_run(name = name, program = program, mode = "flatware", **kwargs)

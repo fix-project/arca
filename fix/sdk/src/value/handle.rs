@@ -22,14 +22,18 @@ pub struct Focus {
     pub(super) _private: (),
 }
 impl Lookup for Focus {
-    fn load(&self, mut path: Option<&Path<'_>>) -> Result<(), Error> {
+    fn load(&self, path: Option<&Path<'_>>) -> Result<(), Error> {
         unsafe { fix_sdk_root() };
-        while let Some(entry) = path {
-            status(unsafe { fix_sdk_entry(entry.index) })?;
-            path = entry.next;
-        }
-        Ok(())
+        follow(path)
     }
+}
+
+pub(super) fn follow(mut path: Option<&Path<'_>>) -> Result<(), Error> {
+    while let Some(entry) = path {
+        status(unsafe { fix_sdk_entry(entry.index) })?;
+        path = entry.next;
+    }
+    Ok(())
 }
 #[derive(Clone, Copy)]
 pub struct Child<P> {
@@ -88,13 +92,14 @@ macro_rules! narrowing {
 }
 impl<R: Lookup> Handle<Any, R> {
     pub(crate) fn checked<T: FixType>(self) -> Result<Handle<T, R>, Error> {
-        if let Some(kind) = T::VALUE
-            && self.value_type()? != kind
-        {
+        if !T::VALUES.is_empty() || T::DATA.is_some() {
+            self.location.load(None)?;
+        }
+        if !T::VALUES.is_empty() && !T::VALUES.contains(&current_value_type()?) {
             return Err(Error::WrongType);
         }
         if let Some(kind) = T::DATA
-            && self.data_type()? != kind
+            && current_data_type()? != kind
         {
             return Err(Error::WrongType);
         }
@@ -108,6 +113,9 @@ narrowing!(
     Ref<Any>,
     Ref<Blob>,
     Ref<Tree>,
+    Evaluated<Any>,
+    Evaluated<Blob>,
+    Evaluated<Tree>,
     Thunk,
     Encode
 );
@@ -135,6 +143,10 @@ impl<T: FixType, R: Lookup> Value for Handle<T, R> {
     fn is_tag_at(&self, path: Option<&Path<'_>>) -> Result<bool, Error> {
         self.location.load(path)?;
         query_current(fix_sdk_is_tag).map(|n| n != 0)
+    }
+    fn read_exact_at(&self, path: Option<&Path<'_>>, bytes: &mut [u8]) -> Result<(), Error> {
+        self.location.load(path)?;
+        status(unsafe { fix_sdk_read_exact(bytes.as_mut_ptr(), bytes.len()) })
     }
     fn read_at(
         &self,

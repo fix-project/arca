@@ -1,0 +1,12 @@
+program = $runner_probe_native
+stat = (0u64 4u8 1u64 0u64 17u64 19u64 23u64)
+directory = ("/work" (0u64 3u8 1u64 0u64 17u64 19u64 23u64) (("input.txt" stat "original")))
+filesystem = (("stdin" () "") ("stdout" () "") ("stderr" () "") directory)
+result = *#("" program ("probe" "set-atime") () filesystem 0u64 10000u64)
+directories = *[result 0u64]
+work = *[directories 3u64]
+files = *[work 2u64]
+file = *[files 0u64]
+metadata = *[file 1u64]
+checker = $check_result_native
+*#("" checker (*[metadata 4u64] *[metadata 5u64] *[file 2u64] *[result 1u64]) (29u64 19u64 "original" 0u32))

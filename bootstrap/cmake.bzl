@@ -13,40 +13,6 @@ _bundle = rule(implementation = _bundle_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def _patched_sources_impl(ctx):
-    output = ctx.actions.declare_directory(ctx.label.name)
-    paths = ctx.actions.args()
-    paths.add_all([f.path.removeprefix(ctx.file.root.dirname + "/") for f in ctx.files.sources])
-    paths.set_param_file_format("multiline")
-    paths.use_param_file("%s", use_always = True)
-    ctx.actions.run_shell(
-        inputs = ctx.files.sources + [ctx.file.patch],
-        outputs = [output],
-        tools = [ctx.executable.cmake],
-        execution_requirements = {"no-remote-exec": "1"},
-        arguments = [output.path, ctx.file.root.dirname, ctx.executable.cmake.path, ctx.file.patch.path, paths],
-        command = """
-set -eu
-output="$PWD/$1" source="$2" cmake="$PWD/$3" patch="$PWD/$4" paths="$PWD/$5"
-mkdir -p "$output"
-cd "$source"
-mapfile -t files < "$paths"
-for ((i=0; i<${#files[@]}; i+=1000)); do
-    cp --parents -L -- "${files[@]:i:1000}" "$output"
-done
-chmod -R u+w "$output"
-"$cmake" -DSOURCE="$output" -P "$patch"
-""",
-    )
-    return [DefaultInfo(files = depset([output]))]
-
-patched_sources = rule(implementation = _patched_sources_impl, attrs = {
-    "root": attr.label(allow_single_file = True),
-    "sources": attr.label(allow_files = True),
-    "patch": attr.label(allow_single_file = True),
-    "cmake": attr.label(default = "@local_tools//:cmake", executable = True, cfg = "exec", allow_files = True),
-})
-
 def source_build(name, lib_source, targets, options, working_directory = ".", copies = {}, sysroot = None, out_data_dirs = [], out_data_files = [], data = [], tags = []):
     host = "//bootstrap:host_llvm"
     data = data + [host] + ([sysroot] if sysroot else [])

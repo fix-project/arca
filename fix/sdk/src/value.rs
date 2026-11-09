@@ -1,4 +1,4 @@
-use crate::{DataType, EncodeType, Error, ValueType};
+use crate::{DataType, EncodeType, Error, ThunkType, ValueType};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -49,6 +49,11 @@ macro_rules! delegate_value {
             let $path = path;
             delegate_value!(@call $value, is_tag_at, ($route))
         }
+        fn read_exact_at(&self, path: Option<&Path<'_>>, bytes: &mut [u8]) -> Result<(), Error> {
+            let $this = self;
+            let $path = path;
+            delegate_value!(@call $value, read_exact_at, ($route, bytes))
+        }
         fn read_at(
             &self,
             path: Option<&Path<'_>>,
@@ -63,9 +68,12 @@ macro_rules! delegate_value {
 }
 
 mod adaptor;
+mod attachment;
+pub use attachment::{AttachedBlob, AttachedElement, AttachedTree, Memory, Table};
 mod blob;
 mod cast;
 mod encode;
+mod eval;
 mod ffi;
 mod handle;
 mod reference;
@@ -80,6 +88,7 @@ pub use blob::CreateBlob;
 pub use cast::Cast;
 use cast::checked;
 pub use encode::{Shallow, Strict};
+pub use eval::Capture;
 pub use ffi::__finish;
 pub(crate) use ffi::status;
 use ffi::*;
@@ -92,6 +101,51 @@ pub use types::*;
 
 pub trait Value {
     type Type: FixType;
+    /// Tags this Tree without adding an author. Requires a configured trusted tagger
+    /// running in scheduler mode; unauthorized use traps.
+    fn tag_unchecked(&self) -> Result<Handle<Object<Tree>, Capture>, Error>
+    where
+        Self: Sized,
+    {
+        eval::capture(self, fix_sdk_tag_unchecked)?.try_into()
+    }
+    /// Owns a root to this value without evaluating it.
+    fn capture(&self) -> Result<Handle<Any, Capture>, Error>
+    where
+        Self: Sized,
+    {
+        eval::capture(self, fix_sdk_keep)
+    }
+    /// Performs an effect using the current continuation and owns the reply.
+    fn effect(&self) -> Result<Handle<Any, Capture>, Error>
+    where
+        Self: Sized,
+    {
+        eval::capture(self, fix_sdk_effect)
+    }
+    /// Requires a privileged execution context; ordinary Fix execution traps.
+    fn unsound_handle_bytes(&self) -> Result<Handle<Object<Blob>, Capture>, Error>
+    where
+        Self: Sized,
+    {
+        eval::capture(self, fix_sdk_handle_bytes)?.try_into()
+    }
+    /// Requires privileged execution. Local handles are lifted before reading.
+    fn raw_handle_bytes(&self) -> Result<[u8; 32], Error>
+    where
+        Self: Sized,
+    {
+        self.build_at(None)?;
+        query_current(fix_sdk_read_handle_bytes)
+    }
+    /// Evaluates this value using the current continuation and owns the result.
+    /// Encodes are evaluated; bare Refs and Thunks remain opaque.
+    fn eval(&self) -> Result<Handle<Any, Capture>, Error>
+    where
+        Self: Sized,
+    {
+        eval::evaluate(self)
+    }
     #[doc(hidden)]
     fn build_at(&self, path: Option<&Path<'_>>) -> Result<(), Error>;
     #[doc(hidden)]
@@ -118,6 +172,13 @@ pub trait Value {
     fn is_tag_at(&self, path: Option<&Path<'_>>) -> Result<bool, Error> {
         let _ = path;
         Err(Error::WrongType)
+    }
+    #[doc(hidden)]
+    fn read_exact_at(&self, path: Option<&Path<'_>>, bytes: &mut [u8]) -> Result<(), Error> {
+        if self.len_at(path)? != bytes.len() as u64 {
+            return Err(Error::WrongType);
+        }
+        self.read_at(path, 0, bytes)
     }
     #[doc(hidden)]
     fn read_at(
@@ -160,6 +221,16 @@ pub trait Value {
     fn data_type(&self) -> Result<DataType, Error> {
         self.data_type_at(None)
     }
+    /// Requires privileged execution; ordinary Fix execution traps.
+    fn unsound_thunk_type(&self) -> Result<ThunkType, Error> {
+        self.build_at(None)?;
+        Ok(match query_current(fix_sdk_thunk_type)? {
+            0 => ThunkType::Application,
+            1 => ThunkType::Selection,
+            2 => ThunkType::Identification,
+            _ => unreachable!(),
+        })
+    }
     fn encode_type(&self) -> Result<EncodeType, Error> {
         self.encode_type_at(None)
     }
@@ -172,6 +243,10 @@ pub trait Value {
     fn is_comparable(&self) -> Result<bool, Error> {
         self.build_at(None)?;
         Ok(query_current(fix_sdk_is_comparable)? != 0)
+    }
+    fn is_value(&self) -> Result<bool, Error> {
+        self.build_at(None)?;
+        Ok(query_current(fix_sdk_is_value)? != 0)
     }
     fn equals<V: Value>(&self, other: V) -> Result<bool, Error>
     where
@@ -235,11 +310,8 @@ pub trait Value {
         self.read_at(None, offset, bytes)
     }
     fn read_u64(&self) -> Result<u64, Error> {
-        if self.len()? != 8 {
-            return Err(Error::WrongType);
-        }
         let mut bytes = [0; 8];
-        self.read_into(0, &mut bytes)?;
+        self.read_exact_at(None, &mut bytes)?;
         Ok(u64::from_le_bytes(bytes))
     }
     #[cfg(feature = "alloc")]
@@ -312,4 +384,13 @@ impl<T: FixType, S: Value, V: Value> PartialEq<V> for Cast<T, S> {
     fn eq(&self, other: &V) -> bool {
         equal(self, other)
     }
+}
+
+pub(crate) fn invalidate_externrefs() -> Result<(), Error> {
+    status(unsafe { fix_sdk_invalidate_externrefs() })
+}
+
+pub(crate) fn advise(value: &impl Value, key: &str, payload: &[u8]) -> Result<(), Error> {
+    value.build_at(None)?;
+    status(unsafe { fix_sdk_advise(key.as_ptr(), key.len(), payload.as_ptr(), payload.len()) })
 }

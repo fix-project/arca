@@ -6,7 +6,7 @@ kernel.
 ## Build
 
 Requires Linux x86-64 with x86-64-v3 and XSAVE, Bazelisk, GCC/G++, binutils, CMake, Make,
-Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), Bash, GNU coreutils 9.3+, GNU cpio, and Python 3.
+Clang/libclang, clang-format, clang-tidy, Binaryen 120 (`wasm-merge`), Bash, GNU coreutils 9.3+, and Python 3.
 Set `LIBCLANG_PATH` or `BINDGEN_EXTRA_CLANG_ARGS` for nonstandard Clang installations.
 
 ```sh
@@ -18,8 +18,7 @@ bazel test //tests:format //tests:lint
 bazel run //:format
 bazel run //programs/kernel:hello -- Ada
 bazel run //programs/arca:add -- tuple:word:2,word:3
-bazel run //fix -- init
-bazel run //fix -- import /path/to/bootstrap.tar.gz
+bazel run //fix -- init /path/to/seed.tar --precompile
 bazel run //programs/fix:addblob -- 2u64 3u64
 bazel run //fix -- run path/to/program.fix
 ```
@@ -29,6 +28,11 @@ Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 The `map` and `curry` combinators provide only `_elf` targets. Test fixtures live
 under `//tests`; SIMD and combinator tests run with `bazel test //arca/kernel:tests`.
 Integration tests for standalone programs can live beside those programs.
+
+Arca and Fix unit tests use Rust's host libtest runner with a fresh VM per case.
+List cases with `bazel test //fix/runtime:tests --test_arg=--list --test_output=all`,
+or select them with `bazel test //fix/runtime:tests --test_filter=continuations`.
+Fixtures are loaded from Bazel runfiles rather than embedded in test images.
 
 Use `--config=release` for optimized builds.
 
@@ -40,6 +44,13 @@ with its soft-float ABI.
 The optional [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
 toolchains from pinned sources and checks byte-identical generations. Shared
 caches use ordinary Bazel configuration.
+
+## Benchmarks
+
+[Microbenchmarks](build/benchmarks/README.md) cover Arca lifecycle and continuation
+operations, Fix invocation, and resident, copied, and persisted continuations.
+Run `bazel run --config=release //:benchmarks` for all numeric benchmark results,
+or select a leaf suite such as `//fix/benchmarks:continuations`.
 
 ## Formatting
 

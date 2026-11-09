@@ -36,7 +36,7 @@
     +'&2u8
 
     -- @ contents of a file in the host filesystem
-    @"./target/x86_64-unknown-none/addblob"
+    @file("./target/x86_64-unknown-none/addblob")
 
     -- Primitives
     *#("" $identity 2u8)

@@ -8,14 +8,6 @@ package(default_visibility = ["//visibility:public"])
 exports_files(["lsp.sh", "format.sh", "cc_format.sh", "cc_lint.sh"])
 
 rust_binary(
-    name = "seed_repository",
-    srcs = ["seed.rs"],
-    edition = "2024",
-    deps = ["//fix/handle", "@crates//:hex"],
-    tags = ["manual"],
-)
-
-rust_binary(
     name = "bindgen",
     srcs = ["bindgen.rs"],
     edition = "2024",
@@ -72,11 +64,6 @@ wat_module(name = "wasm_merge_app", src = "wasm_merge_app.wat")
 sh_test(
     name = "wasm_merge_test",
     srcs = ["wasm_merge_test.sh"],
-    args = ["$(rootpath " + target + ")" for target in [
-        ":wasm_merge", "//fix", ":wasm_merge_library", ":wasm_merge_app", "//bootstrap:repository_archive",
-    ]],
-    data = [":wasm_merge", "//fix", ":wasm_merge_library", ":wasm_merge_app", "//bootstrap:repository_archive"],
-    tags = ["kvm", "local", "manual"],
-    size = "large",
-    timeout = "moderate",
+    args = ["$(rootpath " + target + ")" for target in [":wasm_merge", ":wasm_merge_library", ":wasm_merge_app"]],
+    data = [":wasm_merge", ":wasm_merge_library", ":wasm_merge_app"],
 )

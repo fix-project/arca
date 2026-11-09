@@ -1,8 +1,9 @@
+From Wasm Require Import typing memory.
 (** Connects execution of the collector binary to the abstract checker and
     issuer: it returns the specified certificate or traps. Also proves
     successful execution under explicit readiness and resource conditions. *)
 
-From FixProof.Collector.wasm Require Import Backend Support Witnesses Acceptance Output.
+From FixProof.Collector.wasm Require Import Backend Support Witnesses Acceptance Output Resources.
 Import ListNotations.
 Local Open Scope list_scope.
 
@@ -16,6 +17,8 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
   Import Acceptance.
   Module Output := WasmOutput C.
   Import Output.
+  Module Resources := WasmResources C.
+  Import Resources.
   #[local] Existing Instance C.mem.
   #[local] Existing Instance C.collector_host.
 
@@ -24,7 +27,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
   Local Notation blobh := G.E.H.W.H.HBlobObj.
   Local Notation lower := X.D.EC.E.EP.E.lower.
   Local Notation lift := X.D.EC.E.EP.E.lift.
-  Local Notation local_get_run := (G.E.collector_local_get combination true handle_bytes).
+  Local Notation local_get_run := (G.E.collector_local_get combination true true handle_bytes).
 
   Section Execution.
     Section Refinement.
@@ -172,91 +175,295 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         end.
       Ltac checked_use run := checked_use_under (@nil value) run.
 
+      Lemma wasm_nat64_equal n m : (Z.of_nat n < 2 ^ 64)%Z -> (Z.of_nat m < 2 ^ 64)%Z ->
+        app_relop (Relop_i ROI_eq) (VAL_int64 (wasm_nat64 n)) (VAL_int64 (wasm_nat64 m)) = Nat.eqb n m.
+      Proof.
+        intros NBound MBound; change (Wasm_int.Int64.eq (wasm_nat64 n) (wasm_nat64 m) = Nat.eqb n m).
+        unfold Wasm_int.Int64.eq; rewrite (wasm_nat64_unsigned n NBound), (wasm_nat64_unsigned m MBound).
+        destruct (Coqlib.zeq (Z.of_nat n) (Z.of_nat m)) as [Equal|Different].
+        - symmetry; apply Nat.eqb_eq; lia.
+        - symmetry; apply Nat.eqb_neq; lia.
+      Qed.
+
       Variable other_tables : list tableinst.
       Variable witnesses : list handle.
-      (** The full accumulated premise-author list leaves room in the unsigned 32-bit
-          author table. *)
-      Hypothesis authority_budget : (Z.of_nat (List.length (X.dependencies witnesses)) < 2 ^ 32 - 1)%Z.
       (** Every supplied witness satisfies the required bounded-depth length constraints. *)
       Hypothesis witness_bounds : Forall (lengths_bounded 3) witnesses.
       (** Privileged inspection can supply handle bytes for every requested handle at every
           observation index. *)
       Hypothesis bytes_available : forall state value, exists bytes, handle_bytes state value = Some bytes.
 
-      Definition prepared store used :=
-        s_funcs store = s_funcs G.E.allocated_store /\
-        exists memory minimum,
-          s_mems store = [memory] /\
-          (forall bytes, List.length bytes = 8 -> G.E.H.attachment_allowed memory bytes = true) /\
-          s_tables store = Build_tableinst (Build_table_type (Build_limits minimum None) T_externref)
-            (map G.E.H.Tables.externref (X.dependencies used)) :: other_tables.
+      Hypothesis witnesses_authenticated : Forall (fun witness =>
+        exists claim, authenticated_claim witness claim) witnesses.
 
-      (** A prepared store retains the collector's expected functions. *)
-      Lemma prepared_functions store used : prepared store used -> s_funcs store = s_funcs G.E.allocated_store.
-      Proof. intros [Functions _]; exact Functions. Qed.
+      Record resources store : Prop := {
+        resources_functions : s_funcs store = s_funcs G.E.allocated_store;
+        resources_typing : store_typing store;
+        resources_memory : memory_capacity store;
+        resources_tables : firstn 2 (s_tables store) = other_tables;
+        resources_claim_view : view_capacity store 3%N 2;
+        resources_premise_view : view_capacity store 4%N 3;
+        resources_coupon_view : view_capacity store 6%N 2;
+        resources_combination : tree_view store 2%N combination;
+      }.
 
-      (** Validating a ready premise leaves the function store unchanged. *)
-      Lemma ready_premise_functions state store witness kind lhs rhs state' store' :
-        premise_ready state store witness kind lhs rhs state' store' -> s_funcs store' = s_funcs store.
+      Record prepared store (_used : list handle) : Prop := {
+        prepared_resources : resources store;
+        prepared_retained : retained_claims store witnesses;
+      }.
+
+      Lemma prepared_functions store used : prepared store used ->
+        s_funcs store = s_funcs G.E.allocated_store.
+      Proof. intro Prepared; exact (resources_functions _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_typing store used : prepared store used -> store_typing store.
+      Proof. intro Prepared; exact (resources_typing _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_memory store used : prepared store used -> memory_capacity store.
+      Proof. intro Prepared; exact (resources_memory _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_tables store used : prepared store used -> firstn 2 (s_tables store) = other_tables.
+      Proof. intro Prepared; exact (resources_tables _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_claim_view store used : prepared store used -> view_capacity store 3%N 2.
+      Proof. intro Prepared; exact (resources_claim_view _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_premise_view store used : prepared store used -> view_capacity store 4%N 3.
+      Proof. intro Prepared; exact (resources_premise_view _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_coupon_view store used : prepared store used -> view_capacity store 6%N 2.
+      Proof. intro Prepared; exact (resources_coupon_view _ (prepared_resources _ _ Prepared)). Qed.
+      Lemma prepared_combination store used : prepared store used -> tree_view store 2%N combination.
+      Proof. intro Prepared; exact (resources_combination _ (prepared_resources _ _ Prepared)). Qed.
+
+      Definition fresh_tree_views store :=
+        view_capacity store 7%N 0 /\ view_capacity store 8%N 0.
+
+      Lemma resources_frame before after :
+        resources before -> s_funcs after = s_funcs before -> store_typing after ->
+        memory_capacity after -> firstn 2 (s_tables after) = firstn 2 (s_tables before) ->
+        stab after G.E.collector_instance 2%N = stab before G.E.collector_instance 2%N ->
+        stab after G.E.collector_instance 3%N = stab before G.E.collector_instance 3%N ->
+        stab after G.E.collector_instance 4%N = stab before G.E.collector_instance 4%N ->
+        stab after G.E.collector_instance 6%N = stab before G.E.collector_instance 6%N ->
+        resources after.
       Proof.
-        intros [bundle [tag [claim [authors [reference [code [claimed_lhs [claimed_rhs
-          [before [page [previous [minimum [tables Ready]]]]]]]]]]]]].
-        decompose [and] Ready; subst store'; reflexivity.
+        intros Before Functions Typed Memory Prefix Combination Claim Premise Coupon.
+        destruct Before as [BeforeFunctions BeforeTyped BeforeMemory BeforePrefix BeforeClaim BeforePremise BeforeCoupon BeforeCombination].
+        constructor.
+        - rewrite Functions; exact BeforeFunctions.
+        - exact Typed.
+        - exact Memory.
+        - rewrite Prefix; exact BeforePrefix.
+        - destruct BeforeClaim as [table [Entry Shape]]; exists table; split; [rewrite Claim; exact Entry|exact Shape].
+        - destruct BeforePremise as [table [Entry Shape]]; exists table; split; [rewrite Premise; exact Entry|exact Shape].
+        - destruct BeforeCoupon as [table [Entry Shape]]; exists table; split; [rewrite Coupon; exact Entry|exact Shape].
+        - intros offset value Entry.
+          change (match stab after G.E.collector_instance 2%N with
+            | Some table => lookup_N (tableinst_elem table) (N.of_nat offset) | None => None end =
+            Some (G.E.H.Tables.externref value)).
+          rewrite Combination; exact (BeforeCombination offset value Entry).
       Qed.
 
-      (** Premise validation either traps or authenticates the requested claim and appends
-          its authors to the prepared store. *)
+      Lemma resources_after_read store arguments next result :
+        resources store ->
+        G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
+        resources next.
+      Proof.
+        intros Before Read; constructor.
+        - rewrite (G.E.H.blob_read_result_functions _ _ _ _ _ Read); exact (resources_functions _ Before).
+        - apply (proj1 (proj2 (G.E.H.blob_read_result_correct _ _ _ _ _ Read))).
+          exact (resources_typing _ Before).
+        - eapply blob_read_memory_capacity; [exact Read|exact (resources_memory _ Before)].
+        - rewrite (G.E.H.blob_read_result_tables _ _ _ _ _ Read); exact (resources_tables _ Before).
+        - eapply blob_read_capacity; [exact Read|exact (resources_claim_view _ Before)].
+        - eapply blob_read_capacity; [exact Read|exact (resources_premise_view _ Before)].
+        - eapply blob_read_capacity; [exact Read|exact (resources_coupon_view _ Before)].
+        - eapply blob_read_view; [exact Read|exact (resources_combination _ Before)].
+      Qed.
+
+      Lemma resources_after_attachment store node index next :
+        resources store -> 3 <= index -> index < 9 ->
+        (index = 3 -> List.length (get_tree_raw node) = 2) ->
+        (index = 4 -> List.length (get_tree_raw node) = 3) ->
+        (index = 6 -> List.length (get_tree_raw node) = 2) ->
+        G.E.H.tree_attachment_result G.E.collector_instance store
+          [ext (treeh node); word index] = Some (next, result_values []) ->
+        resources next.
+      Proof.
+        intros Before Lower Upper ClaimArity PremiseArity CouponArity Attached; constructor.
+        - rewrite (G.E.H.tree_attachment_result_functions _ _ _ _ _ Attached); exact (resources_functions _ Before).
+        - apply (proj1 (proj2 (G.E.H.tree_attachment_result_correct _ _ _ _ _ Attached))).
+          exact (resources_typing _ Before).
+        - eapply tree_attachment_memory_capacity; [exact Attached|exact (resources_memory _ Before)].
+        - rewrite (tree_attachment_first_two_tables store node index next ltac:(lia) ltac:(lia) Attached).
+          exact (resources_tables _ Before).
+        - destruct (Nat.eq_dec index 3) as [Same|Different].
+          + subst index.
+            pose proof (tree_attachment_capacity store node 3 2 next ltac:(vm_compute; congruence)
+              Attached (resources_claim_view _ Before)) as Capacity.
+            rewrite (ClaimArity eq_refl) in Capacity; exact Capacity.
+          + eapply tree_attachment_other_capacity with (index := index) (other := 3); try exact Attached; try lia; exact (resources_claim_view _ Before).
+        - destruct (Nat.eq_dec index 4) as [Same|Different].
+          + subst index.
+            pose proof (tree_attachment_capacity store node 4 3 next ltac:(vm_compute; congruence)
+              Attached (resources_premise_view _ Before)) as Capacity.
+            rewrite (PremiseArity eq_refl) in Capacity; exact Capacity.
+          + eapply tree_attachment_other_capacity with (index := index) (other := 4); try exact Attached; try lia; exact (resources_premise_view _ Before).
+        - destruct (Nat.eq_dec index 6) as [Same|Different].
+          + subst index.
+            pose proof (tree_attachment_capacity store node 6 2 next ltac:(vm_compute; congruence)
+              Attached (resources_coupon_view _ Before)) as Capacity.
+            rewrite (CouponArity eq_refl) in Capacity; exact Capacity.
+          + eapply tree_attachment_other_capacity with (index := index) (other := 6); try exact Attached; try lia; exact (resources_coupon_view _ Before).
+        - eapply tree_attachment_other_view with (index := index) (other := 2); try exact Attached; try lia; exact (resources_combination _ Before).
+      Qed.
+
+      Lemma resources_claim_ready store : resources store -> claim_views_ready store.
+      Proof.
+        intros Before witness WitnessArity.
+        destruct (tree_attachment_available store witness 3 2
+          (resources_typing _ Before) (resources_claim_view _ Before)
+          ltac:(rewrite WitnessArity; lia) ltac:(vm_compute; congruence)
+          ltac:(rewrite WitnessArity; vm_compute; congruence)) as [first First].
+        assert (FirstResources : resources first).
+        { eapply resources_after_attachment; try exact Before; try exact First; try lia; intros; try discriminate; exact WitnessArity. }
+        exists first; split; [exact First|]; intros tag TagArity.
+        destruct (tree_attachment_available first tag 6 2
+          (resources_typing _ FirstResources) (resources_coupon_view _ FirstResources)
+          ltac:(rewrite TagArity; lia) ltac:(vm_compute; congruence)
+          ltac:(rewrite TagArity; vm_compute; congruence)) as [second Second].
+        exists second; exact Second.
+      Qed.
+
+      Lemma prepared_after_premise state store witness kind lhs rhs state' next used :
+        prepared store used -> premise_ready state store witness kind lhs rhs state' next ->
+        prepared next (used ++ [witness]).
+      Proof.
+        intros Before Ready; constructor.
+        - destruct Ready as [claim [code [claimed_lhs [claimed_rhs [attached [page Ready]]]]]].
+          destruct Ready as [_ [_ [Fields [_ [Attached [Read _]]]]]].
+          eapply resources_after_read; [|exact Read].
+          eapply resources_after_attachment; try exact Attached; try lia;
+            try exact (prepared_resources _ _ Before); intros; try discriminate;
+            rewrite Fields; reflexivity.
+        - eapply premise_ready_retained; [exact Ready|exact (prepared_retained _ _ Before)].
+      Qed.
+
+      Lemma prepared_after_operand_attachment store node index next used :
+        prepared store used -> (index = 7 \/ index = 8) ->
+        G.E.H.tree_attachment_result G.E.collector_instance store
+          [ext (treeh node); word index] = Some (next, result_values []) ->
+        prepared next used.
+      Proof.
+        intros Before Index Attached; constructor.
+        - eapply resources_after_attachment; try exact Attached; try exact (prepared_resources _ _ Before);
+            destruct Index; subst index; try lia; intros; discriminate.
+        - eapply tree_attachment_retained_claims; try exact Attached; try exact (prepared_retained _ _ Before);
+            destruct Index; subst index; lia.
+      Qed.
+
+      Lemma prepared_premise_ready store used : prepared store used -> premise_views_ready store.
+      Proof.
+        intros Prepared claim Arity.
+        destruct (tree_attachment_available store claim 4 3
+          (prepared_typing _ _ Prepared) (prepared_premise_view _ _ Prepared)
+          ltac:(rewrite Arity; lia) ltac:(vm_compute; congruence)
+          ltac:(rewrite Arity; vm_compute; congruence)) as [attached Attached].
+        exists attached; split; [exact Attached|].
+        apply memory_capacity_integer_reads.
+        - apply (proj1 (proj2 (G.E.H.tree_attachment_result_correct _ _ _ _ _ Attached))).
+          exact (prepared_typing _ _ Prepared).
+        - eapply tree_attachment_memory_capacity; [exact Attached|].
+          exact (prepared_memory _ _ Prepared).
+      Qed.
+
+      Lemma prepared_operand_views store lhs rhs used :
+        prepared store used -> fresh_tree_views store ->
+        (N.of_nat (List.length (get_tree_raw lhs)) <= native_table_limit)%N ->
+        List.length (get_tree_raw rhs) = List.length (get_tree_raw lhs) ->
+        exists first next,
+          G.E.H.tree_attachment_result G.E.collector_instance store
+            [ext (treeh lhs); word 7] = Some (first, result_values []) /\
+          G.E.H.tree_attachment_result G.E.collector_instance first
+            [ext (treeh rhs); word 8] = Some (next, result_values []) /\
+          prepared next used /\ tree_view next 7%N lhs /\ tree_view next 8%N rhs.
+      Proof.
+        intros Before [LeftCapacity RightCapacity] Bound Length.
+        destruct (tree_attachment_available store lhs 7 0 (prepared_typing _ _ Before)
+          LeftCapacity ltac:(lia) ltac:(vm_compute; congruence)
+          Bound) as [first Left].
+        assert (FirstPrepared : prepared first used).
+        { eapply prepared_after_operand_attachment; [exact Before|left; reflexivity|exact Left]. }
+        assert (FirstRightCapacity : view_capacity first 8%N 0).
+        { eapply tree_attachment_other_capacity with (index := 7) (other := 8); try exact Left; try exact RightCapacity; lia. }
+        destruct (tree_attachment_available first rhs 8 0 (prepared_typing _ _ FirstPrepared)
+          FirstRightCapacity ltac:(lia) ltac:(vm_compute; congruence)
+          ltac:(rewrite Length; exact Bound)) as [next Right].
+        exists first, next; split; [exact Left|]; split; [exact Right|]; split.
+        - eapply prepared_after_operand_attachment; [exact FirstPrepared|right; reflexivity|exact Right].
+        - split.
+          + eapply tree_attachment_other_view with (index := 8) (other := 7); try exact Right; try lia.
+            eapply tree_attachment_view with (index := 7); [vm_compute; congruence|exact Left].
+          + eapply tree_attachment_view with (index := 8); [vm_compute; congruence|exact Right].
+      Qed.
+
+      Lemma ready_premise_functions state store witness kind lhs rhs state' store' :
+        premise_ready state store witness kind lhs rhs state' store' -> s_funcs store' = s_funcs store.
+      Proof. apply collector_ready_premise_functions. Qed.
+
+      Lemma checked_premise_preserving state store locals used witness rest kind claim_kind lhs rhs (invariant : store_record -> Prop) :
+        used ++ witness :: rest = witnesses -> prepared store used ->
+        Claims.Code.statement_kind kind = Some claim_kind ->
+        invariant store ->
+        (forall state' store', premise_ready state store witness kind lhs rhs state' store' -> invariant store') ->
+        checked
+          (state, store, Build_frame locals G.E.collector_instance,
+            v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness); ext lhs; ext rhs] ++
+              [AI_basic (BI_call 30%N)])
+          (fun final => let '(_, store', frame', instructions) := final in
+            instructions = [] /\ frame' = Build_frame locals G.E.collector_instance /\ prepared store' (used ++ [witness]) /\ invariant store' /\
+            X.read claim_kind witness = Some (lhs, rhs)).
+      Proof.
+        intros Order Prepared Kind Invariant Preserve.
+        pose proof (prepared_functions _ _ Prepared) as Functions.
+        assert (Authenticated : exists claim, authenticated_claim witness claim).
+        { rewrite <- Order in witnesses_authenticated.
+          apply Forall_app in witnesses_authenticated as [_ Tail]; exact (Forall_inv Tail). }
+        assert (Bounds : lengths_bounded 3 witness).
+        { rewrite <- Order in witness_bounds; apply Forall_app in witness_bounds as [_ Tail]; exact (Forall_inv Tail). }
+        assert (KindBound : (Z.of_nat kind < 2 ^ 64)%Z).
+        { pose proof (Claims.Code.statement_code_bound _ _ (Claims.Code.statement_kind_roundtrip _ _ Kind)); cbn; lia. }
+        destruct (collector_premise_execution state store witness kind claim_kind lhs rhs
+          Functions Bounds bytes_available Authenticated (prepared_premise_ready _ _ Prepared) KindBound Kind)
+          as [state' [store' [accepted [Run Ready]]]].
+        destruct accepted.
+        - specialize (Ready eq_refl).
+          destruct (collector_ready_premise_decodes state store witness kind lhs rhs state' store'
+            claim_kind Ready Kind) as [authors Decoded].
+          eapply checked_result; [exact (Run locals)|].
+          do 2 (split; [reflexivity|]); split.
+          + eapply prepared_after_premise; eassumption.
+          + split; [eapply Preserve; exact Ready|].
+            change (X.Wire.decode witness = Some (claim_kind, authors, lhs, rhs)) in Decoded.
+            unfold X.read; rewrite Decoded.
+            destruct (X.API.statement_kind_eq_dec claim_kind claim_kind); [reflexivity|contradiction].
+        - eapply checked_trap; exact (Run locals).
+      Qed.
+
       Lemma checked_premise state store locals used witness rest kind claim_kind lhs rhs :
         used ++ witness :: rest = witnesses -> prepared store used ->
         Claims.Code.statement_kind kind = Some claim_kind ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 kind)); ext witness; ext lhs; ext rhs] ++
-              [AI_basic (BI_call 27%N)])
+            v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness); ext lhs; ext rhs] ++
+              [AI_basic (BI_call 30%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             instructions = [] /\ frame' = Build_frame locals G.E.collector_instance /\ prepared store' (used ++ [witness]) /\
             X.read claim_kind witness = Some (lhs, rhs)).
       Proof.
         intros Order Prepared Kind.
-        destruct Prepared as [Functions [memory [minimum [Memory [Allowed Tables]]]]].
-        assert (Bounds : lengths_bounded 3 witness).
-        { rewrite <- Order in witness_bounds; apply Forall_app in witness_bounds as [_ Tail]; exact (Forall_inv Tail). }
-        assert (DependencyBudget :
-          (Z.of_nat (List.length (X.dependencies used) + List.length (X.dependencies [witness])) < 2 ^ 32 - 1)%Z).
-        { rewrite <- Order in authority_budget.
-          unfold X.dependencies in *; rewrite List.flat_map_app in authority_budget.
-          cbn [flat_map] in *; rewrite !List.length_app in *; cbn [List.length] in *; lia. }
-        assert (Offset : (Z.of_nat (List.length (X.dependencies used)) < 2 ^ 32 - 1)%Z) by lia.
-        assert (KindBound : (Z.of_nat kind < 2 ^ 64)%Z).
-        { pose proof (Claims.Code.statement_code_bound _ _ (Claims.Code.statement_kind_roundtrip _ _ Kind)); cbn; lia. }
-        assert (Budget : forall authors left right,
-          Claims.decode witness = Some (claim_kind, authors, left, right) ->
-          (Z.of_nat (List.length (X.dependencies used) + List.length (get_tree_raw authors)) < 2 ^ 32)%Z).
-        { intros authors left right Decoded.
-          change (X.Wire.decode witness = Some (claim_kind, authors, left, right)) in Decoded.
-          assert (Single : X.dependencies [witness] = get_tree_raw authors).
-          { unfold X.dependencies; cbn [flat_map]; unfold X.authors_of; rewrite Decoded.
-            cbn; apply List.app_nil_r. }
-          rewrite Single in DependencyBudget; lia. }
-        destruct (collector_premise_execution state store witness kind claim_kind lhs rhs
-          memory (X.dependencies used) minimum other_tables Functions Bounds bytes_available Memory Allowed
-          Tables Offset KindBound Kind Budget) as [state' [store' [accepted [Run Ready]]]].
-        destruct accepted.
-        - specialize (Ready eq_refl).
-          destruct (collector_ready_premise_resources state store witness kind lhs rhs state' store'
-            claim_kind (X.dependencies used) minimum other_tables Ready Kind Tables)
-            as [page [next_minimum [NextMemory [NextAllowed NextTables]]]].
-          destruct (collector_ready_premise_decodes state store witness kind lhs rhs state' store'
-            claim_kind Ready Kind) as [authors Decoded].
-          eapply checked_result; [exact (Run locals)|].
-          do 2 (split; [reflexivity|]); split.
-          + split; [rewrite (ready_premise_functions _ _ _ _ _ _ _ _ Ready); exact Functions|].
-            exists page, next_minimum; split; [exact NextMemory|]; split; [exact NextAllowed|].
-            unfold X.dependencies; rewrite List.flat_map_app; exact NextTables.
-          + change (X.Wire.decode witness = Some (claim_kind, authors, lhs, rhs)) in Decoded.
-            unfold X.read; rewrite Decoded.
-            destruct (X.API.statement_kind_eq_dec claim_kind claim_kind); [reflexivity|contradiction].
-        - eapply checked_trap; exact (Run locals).
+        eapply checked_weaken with (before := fun final =>
+          let '(_, store', frame', instructions) := final in
+          instructions = [] /\ frame' = Build_frame locals G.E.collector_instance /\
+          prepared store' (used ++ [witness]) /\ True /\ X.read claim_kind witness = Some (lhs, rhs)).
+        - eapply checked_premise_preserving with (invariant := fun _ => True); eauto.
+        - intros [[[state' store'] frame'] instructions] [Code [Frame [Prepared' [_ Read]]]].
+          exact (conj Code (conj Frame (conj Prepared' Read))).
       Qed.
 
       (** Exact-handle validation either traps or establishes identity of the supplied
@@ -265,7 +472,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext lhs; ext rhs] ++ [AI_basic (BI_call 19%N)])
+            v_to_e_list [ext lhs; ext rhs] ++ [AI_basic (BI_call 22%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ lhs = rhs).
@@ -285,7 +492,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext witness] ++ [AI_basic (BI_call (if left then 28%N else 29%N))])
+            v_to_e_list [ext witness] ++ [AI_basic (BI_call (if left then 31%N else 32%N))])
           (fun final => let '(_, store', frame', instructions) := final in
             store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             exists field, instructions = v_to_e_list [ext field]).
@@ -293,18 +500,14 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         intro Functions.
         eapply checked_call with (code := exchange_endpoint left)
           (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-          (address := if left then 28%N else 29%N) (defaults := [])
+          (address := if left then 31%N else 32%N) (defaults := [])
           (arguments := [ext witness]) (dummy := [ext witness]); try (destruct left; reflexivity).
         - rewrite Functions; destruct left; reflexivity.
         - rewrite exchange_endpoint_body.
           checked_pure.
           checked_advance (G.collector_tree_element_executes combination handle_bytes state store
-            [ext witness] witness (wasm_nat 1) Functions).
-          destruct (G.E.H.W.Api.get_tree_data_api witness (G.E.H.W.nat_of_i32 (wasm_nat 1)))
-            as [claim|]; [|eapply checked_trap, G.E.collector_trap_suffix; apply rt_refl].
-          checked_advance (G.collector_tree_element_executes combination handle_bytes state store
-            [ext witness] claim (wasm_nat (if left then 1 else 2)) Functions).
-          destruct (G.E.H.W.Api.get_tree_data_api claim
+            [ext witness] witness (wasm_nat (if left then 1 else 2)) Functions).
+          destruct (G.E.H.W.Api.get_tree_data_api witness
             (G.E.H.W.nat_of_i32 (wasm_nat (if left then 1 else 2)))) as [field|];
             [|eapply checked_trap; apply rt_refl].
           eapply checked_result; [apply rt_refl|].
@@ -318,7 +521,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext reference; ext value] ++ [AI_basic (BI_call 25%N)])
+            v_to_e_list [ext reference; ext value] ++ [AI_basic (BI_call 28%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             store' = store /\ frame' = Build_frame locals G.E.collector_instance /\ instructions = [] /\
             exists object, value = Data (Object object) /\ reference = Data (Ref (G.E.H.W.H.data_reference (Object object)))).
@@ -346,11 +549,12 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store -> lengths_bounded 1 input ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext input] ++ [AI_basic (BI_call 21%N)])
+            v_to_e_list [ext input] ++ [AI_basic (BI_call 24%N)])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             exists tree, input = treeh tree /\
               (Z.of_nat (List.length (get_tree_raw tree)) < 2 ^ 32)%Z /\
+              (N.of_nat (List.length (get_tree_raw tree)) <= native_table_limit)%N /\
               instructions = v_to_e_list [word (List.length (get_tree_raw tree))]).
       Proof.
         intros Functions Bounds.
@@ -358,10 +562,12 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           try solve [eapply checked_trap, G.collector_size_rejects_non_tree;
             [exact Functions|intros; discriminate]].
         destruct Bounds as [Wide _].
-        destruct (Z_lt_ge_dec (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z) as [Bound|Large].
+        destruct (Z_lt_ge_dec (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z) as [Bound|Large].
         - eapply checked_result; [apply G.collector_size_executes; eassumption|].
           do 3 (split; [reflexivity|]).
-          exists tree; repeat split; assumption || reflexivity.
+          exists tree; repeat split; try reflexivity.
+          + apply native_size_bound_word; exact Bound.
+          + apply native_size_bound_N; exact Bound.
         - eapply checked_trap, G.collector_size_rejects_large; [exact Functions|lia].
       Qed.
 
@@ -371,7 +577,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         (Z.of_nat expected < 2 ^ 32)%Z ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext input; word expected] ++ [AI_basic (BI_call 22%N)])
+            v_to_e_list [ext input; word expected] ++ [AI_basic (BI_call 25%N)])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ exists tree, input = treeh tree /\ List.length (get_tree_raw tree) = expected).
@@ -381,9 +587,9 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           try solve [eapply checked_trap, G.collector_arity_rejects_non_tree;
             [exact Functions|intros; discriminate]].
         destruct Bounds as [Wide _].
-        destruct (Z_lt_ge_dec (Z.of_nat (List.length (get_tree_raw tree))) (2 ^ 32)%Z) as [Bound|Large].
+        destruct (Z_lt_ge_dec (Z.of_nat (List.length (get_tree_raw tree))) (Z.of_N native_table_limit + 1)%Z) as [Bound|Large].
         - destruct (Nat.eq_dec (List.length (get_tree_raw tree)) expected) as [Length|Different].
-          + eapply checked_result; [eapply arity_run; eassumption|].
+          + eapply checked_result; [eapply arity_run; try eassumption; rewrite <- Length; exact Bound|].
             do 4 (split; [reflexivity|]).
             exists tree; split; [reflexivity|exact Length].
           + eapply checked_trap, G.collector_arity_rejects_length; eassumption.
@@ -395,7 +601,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext input] ++ [AI_basic (BI_call 30%N)])
+            v_to_e_list [ext input] ++ [AI_basic (BI_call 33%N)])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ exists data, input = Data data).
@@ -405,7 +611,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           do 4 (split; [reflexivity|]).
           exists data; reflexivity.
         - eapply checked_trap, G.E.collector_call_void with (code := native_data)
-            (parameters := [T_ref T_externref]) (defaults := []) (address := 30%N)
+            (parameters := [T_ref T_externref]) (defaults := []) (address := 33%N)
             (arguments := [ext (Thunk th)]) (accepted := false)
             (final_frame := Build_frame [ext (Thunk th)] G.E.collector_instance); try reflexivity.
           + rewrite Functions; reflexivity.
@@ -413,7 +619,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             execute (native_type_query state store [ext (Thunk th)] 0%N (Thunk th) Functions eq_refl).
             do 2 native_pure; apply rt_refl.
         - eapply checked_trap, G.E.collector_call_void with (code := native_data)
-            (parameters := [T_ref T_externref]) (defaults := []) (address := 30%N)
+            (parameters := [T_ref T_externref]) (defaults := []) (address := 33%N)
             (arguments := [ext (Encode encoded)]) (accepted := false)
             (final_frame := Build_frame [ext (Encode encoded)] G.E.collector_instance); try reflexivity.
           + rewrite Functions; reflexivity.
@@ -427,7 +633,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [ext input] ++ [AI_basic (BI_call 24%N)])
+            v_to_e_list [ext input] ++ [AI_basic (BI_call 27%N)])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = v_to_e_list [ext (lower input)] /\ exists data, input = Data data).
@@ -438,7 +644,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           exists data; reflexivity.
         - eapply checked_trap, G.E.collector_call with (code := native_lower)
             (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-            (address := 24%N) (defaults := []) (arguments := [ext (Thunk th)])
+            (address := 27%N) (defaults := []) (arguments := [ext (Thunk th)])
             (values := [ext (Thunk th)]) (final_frame := Build_frame [ext (Thunk th)] G.E.collector_instance)
             (accepted := false); try reflexivity.
           + rewrite Functions; reflexivity.
@@ -450,7 +656,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             eapply G.E.collector_trap_suffix with (instructions := [AI_trap]); apply rt_refl.
         - eapply checked_trap, G.E.collector_call with (code := native_lower)
             (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-            (address := 24%N) (defaults := []) (arguments := [ext (Encode encoded)])
+            (address := 27%N) (defaults := []) (arguments := [ext (Encode encoded)])
             (values := [ext (Encode encoded)]) (final_frame := Build_frame [ext (Encode encoded)] G.E.collector_instance)
             (accepted := false); try reflexivity.
           + rewrite Functions; reflexivity.
@@ -475,13 +681,13 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           (state, store, Build_frame [word index; ext input] G.E.collector_instance, [AI_trap]) ->
         reduce_trans
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [word index; ext input] ++ [AI_basic (BI_call 31%N)])
+            v_to_e_list [word index; ext input] ++ [AI_basic (BI_call 34%N)])
           (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
       Proof.
         intros Index Functions Body.
         eapply G.E.collector_call_return with (code := native_map)
           (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-          (defaults := []) (address := 31%N) (arguments := [word index; ext input])
+          (defaults := []) (address := 34%N) (arguments := [word index; ext input])
           (values := [ext input]) (final_frame := Build_frame [word index; ext input] G.E.collector_instance)
           (accepted := false)
           (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn (4 * S index) (modfunc_body native_map))));
@@ -502,7 +708,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store -> X.construct kind input = None ->
         reduce_trans
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 31%N)])
+            v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 34%N)])
           (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
       Proof.
         intros Functions Invalid.
@@ -515,7 +721,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
                 [lia|exact Functions|];
               unfold map_guard; cbn [native_map modfunc_body mod_funcs evaluation_module nth Nat.add Nat.mul];
               native_pure;
-              eapply G.E.collector_trap_suffix with (instructions := v_to_e_list [_] ++ [AI_basic (BI_call 20%N)]);
+              eapply G.E.collector_trap_suffix with (instructions := v_to_e_list [_] ++ [AI_basic (BI_call 23%N)]);
               apply G.collector_tree_executes; exact Functions]
           | solve [
               first [eapply native_map_guard_rejects with (index := 2)
@@ -537,7 +743,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               | |- reduce_trans (_, _, _, v_to_e_list [word ?mode; ext ?value] ++ _) _ =>
                 eapply G.E.collector_call with (code := native_map)
                   (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-                  (defaults := []) (address := 31%N) (arguments := [word mode; ext value])
+                  (defaults := []) (address := 34%N) (arguments := [word mode; ext value])
                   (values := [ext value]) (final_frame := Build_frame [word mode; ext value] G.E.collector_instance)
                   (accepted := false); try reflexivity;
                 [rewrite Functions; reflexivity|];
@@ -552,7 +758,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               | |- reduce_trans (_, _, _, v_to_e_list [word ?mode; ext ?value] ++ _) _ =>
                 eapply G.E.collector_call_return with (code := native_map)
                   (parameters := [T_num T_i32; T_ref T_externref]) (results := [T_ref T_externref])
-                  (defaults := []) (address := 31%N) (arguments := [word mode; ext value])
+                  (defaults := []) (address := 34%N) (arguments := [word mode; ext value])
                   (values := [ext value]) (final_frame := Build_frame [word mode; ext value] G.E.collector_instance)
                   (accepted := false)
                   (context := LH_rec [] 0 [] (LH_base [] []) (to_e_list (skipn 28 (modfunc_body native_map))));
@@ -579,7 +785,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 31%N)])
+            v_to_e_list [word (native_constructor_index kind); ext input] ++ [AI_basic (BI_call 34%N)])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             exists result, X.construct kind input = Some result /\ instructions = v_to_e_list [ext result]).
@@ -597,8 +803,8 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         used ++ witness :: rest = witnesses -> prepared store used ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            v_to_e_list [word (native_constructor_index kind); ext lhs; ext rhs; ext witness] ++
-              [AI_basic (BI_call 32%N)])
+            v_to_e_list [word (native_constructor_index kind); ext lhs; ext rhs; ext (supplied_claim witness)] ++
+              [AI_basic (BI_call 35%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             instructions = [] /\ frame' = Build_frame locals G.E.collector_instance /\
             prepared store' (used ++ [witness]) /\
@@ -606,10 +812,10 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
       Proof.
         intros Order Prepared; pose proof (prepared_functions _ _ Prepared) as Functions.
         set (empty := VAL_ref (VAL_ref_null T_externref)).
-        set (arguments := [word (native_constructor_index kind); ext lhs; ext rhs; ext witness]).
+        set (arguments := [word (native_constructor_index kind); ext lhs; ext rhs; ext (supplied_claim witness)]).
         eapply checked_call with (code := native_mapped)
           (parameters := [T_num T_i32; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-          (results := []) (address := 32%N) (defaults := [empty; empty]) (arguments := arguments)
+          (results := []) (address := 35%N) (defaults := [empty; empty]) (arguments := arguments)
           (dummy := []); try reflexivity.
         - rewrite Functions; reflexivity.
         - unfold native_mapped at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
@@ -617,13 +823,13 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           normalize_checked.
           let inside := match goal with
             |- checked (_, _, Build_frame ?inside G.E.collector_instance, _) _ => constr:(inside) end in
-          checked_use (checked_endpoint state store inside witness true Functions).
+          checked_use (checked_endpoint state store inside (supplied_claim witness) true Functions).
           intros [[[s1 st1] f1] c1] [Store1 [Frame1 [a Code1]]]; subst st1 f1 c1.
           do 2 checked_pure.
           normalize_checked.
           let inside := match goal with
             |- checked (_, _, Build_frame ?inside G.E.collector_instance, _) _ => constr:(inside) end in
-          checked_use (checked_endpoint s1 store inside witness false Functions).
+          checked_use (checked_endpoint s1 store inside (supplied_claim witness) false Functions).
           intros [[[s2 st2] f2] c2] [Store2 [Frame2 [b Code2]]]; subst st2 f2 c2.
           do 4 checked_pure.
           normalize_checked.
@@ -688,7 +894,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           (state, store, Build_frame locals G.E.collector_instance,
             v_to_e_list [ext input] ++ to_e_list
               [BI_call 0%N; BI_const_num (VAL_int32 (wasm_nat expected));
-               BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N])
+               BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ G.E.H.W.H.value_type input = expected).
@@ -704,7 +910,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           (state, store, Build_frame locals G.E.collector_instance,
             v_to_e_list [ext input] ++ to_e_list
               [BI_call 0%N; BI_const_num (VAL_int32 (wasm_nat expected));
-               BI_relop T_i32 (Relop_i ROI_eq); BI_call 18%N])
+               BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N])
           (state, store, Build_frame locals G.E.collector_instance,
             if Nat.eqb (G.E.H.W.H.value_type input) expected then [] else [AI_trap])).
         { execute (native_value_import state store locals 0%N shell_get_type [ext input]
@@ -727,10 +933,10 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         checked
           (state, store, Build_frame locals G.E.collector_instance,
             to_e_list [BI_local_get 1%N; BI_call 0%N; BI_const_num (VAL_int32 (wasm_nat 3));
-              BI_relop T_i32 (Relop_i ROI_ne); BI_call 18%N;
+              BI_relop T_i32 (Relop_i ROI_ne); BI_call 21%N;
               BI_local_get 1%N; BI_call 0%N; BI_testop T_i32 TO_eqz;
               BI_if (BT_valtype None)
-                [BI_local_get 1%N; BI_call 1%N; BI_testop T_i32 TO_eqz; BI_call 18%N] []])
+                [BI_local_get 1%N; BI_call 1%N; BI_testop T_i32 TO_eqz; BI_call 21%N] []])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ X.reflexive_eval input = true).
@@ -759,11 +965,11 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         lookup_N locals 7%N = Some (ext input) -> lookup_N locals 2%N = Some (ext result) ->
         checked
           (state, store, Build_frame locals G.E.collector_instance,
-            to_e_list [BI_local_get 7%N; BI_call 30%N;
+            to_e_list [BI_local_get 7%N; BI_call 33%N;
               BI_local_get 7%N; BI_call 0%N; BI_testop T_i32 TO_eqz;
               BI_if (BT_valtype None)
-                [BI_local_get 2%N; BI_local_get 7%N; BI_call 19%N]
-                [BI_local_get 7%N; BI_local_get 2%N; BI_call 25%N]])
+                [BI_local_get 2%N; BI_local_get 7%N; BI_call 22%N]
+                [BI_local_get 7%N; BI_local_get 2%N; BI_call 28%N]])
           (fun final => let '(_, store', frame', instructions) := final in
             store' = store /\ frame' = Build_frame locals G.E.collector_instance /\ instructions = [] /\
             exists data, input = Data data /\ result = lift input).
@@ -839,19 +1045,22 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         Let locals index := arguments ++ [word count; word index].
         Let frame index := Build_frame (locals index) G.E.collector_instance.
 
+        Definition loop_prepared store used := prepared store used /\
+          tree_view store 7%N lhs /\ tree_view store 8%N rhs.
+
         (** A Tree-loop iteration either traps or validates the next child pair and
-            preserves the prepared-store invariant. *)
+            preserves the loop invariant. *)
         Lemma checked_tree_iteration state store index used :
-          index < count -> used ++ skipn index witnesses = witnesses -> prepared store used ->
+          index < count -> used ++ skipn index witnesses = witnesses -> loop_prepared store used ->
           checked (state, store, frame index, to_e_list native_tree_loop)
             (fun final => let '(_, store', frame', instructions) := final in
               frame' = frame (S index) /\ instructions = [AI_basic (BI_br 0%N)] /\
               exists witness left right,
                 nth_error witnesses index = Some witness /\ nth_error (get_tree_raw lhs) index = Some left /\
                 nth_error (get_tree_raw rhs) index = Some right /\
-                prepared store' (used ++ [witness]) /\ X.read claim_kind witness = Some (left, right)).
+                loop_prepared store' (used ++ [witness]) /\ X.read claim_kind witness = Some (left, right)).
         Proof.
-          intros Index Order Prepared.
+          intros Index Order [Prepared [LeftView RightView]].
           pose proof (prepared_functions _ _ Prepared) as Functions.
           assert (IndexBound : (Z.of_nat index < 2 ^ 32)%Z) by lia.
           destruct (nth_error witnesses index) as [witness|] eqn:Witness;
@@ -866,19 +1075,26 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             IndexBound Count eq_refl eq_refl) as Test.
           assert (Continue : Nat.eqb index count = false) by (apply Nat.eqb_neq; lia).
           rewrite Continue in Test; unfold frame at 1, native_tree_loop.
-          checked_advance Test; do 3 checked_pure.
+          checked_advance Test; do 2 checked_pure.
           checked_advance_under [VAL_num (VAL_int64 (wasm_nat64 kind))]
-            (child_run state store (locals index) coupons index witness Functions IndexBound
-              ltac:(rewrite Coupons; exact Witness)).
-          do 2 checked_pure.
-          checked_advance_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext witness]
-            (child_run state store (locals index) lhs index left Functions IndexBound Left).
-          do 2 checked_pure.
-          checked_advance_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext witness; ext left]
-            (child_run state store (locals index) rhs index right Functions IndexBound RightField).
-          checked_use (checked_premise state store (locals index) used witness (skipn (S index) witnesses)
-            kind claim_kind left right Order' Prepared Kind).
-          intros [[[state' store'] frame'] instructions] [Code [Frame [Prepared' Read]]]; subst frame' instructions.
+            (retained_claim_run state store (locals index) witnesses index witness IndexBound
+              (prepared_retained _ _ Prepared) Witness).
+          checked_pure.
+          checked_advance_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness)]
+            (tree_view_run state store (locals index) lhs 7%N index left IndexBound LeftView Left).
+          checked_pure.
+          checked_advance_under [VAL_num (VAL_int64 (wasm_nat64 kind)); ext (supplied_claim witness); ext left]
+            (tree_view_run state store (locals index) rhs 8%N index right IndexBound RightView RightField).
+          checked_use (checked_premise_preserving state store (locals index) used witness
+            (skipn (S index) witnesses) kind claim_kind left right
+            (fun next => tree_view next 7%N lhs /\ tree_view next 8%N rhs)
+            Order' Prepared Kind (conj LeftView RightView)
+            ltac:(intros next_state next Ready; split;
+              [eapply premise_ready_tree_view with (address := 7%N)
+              |eapply premise_ready_tree_view with (address := 8%N)];
+              try exact Ready; try reflexivity; try discriminate; assumption)).
+          intros [[[state' store'] frame'] instructions] [Code [Frame [Prepared' [Views Read]]]];
+            subst frame' instructions.
           checked_pure.
           assert (Increment : reduce_trans
             (state', store', frame index,
@@ -899,12 +1115,12 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         Qed.
 
         (** The remaining Tree-loop iterations either trap or validate all remaining pairs
-            and accumulate their authors. *)
+            while preserving the scratch tables. *)
         Lemma checked_tree_loop remaining index state store used :
-          index + remaining = count -> used ++ skipn index witnesses = witnesses -> prepared store used ->
+          index + remaining = count -> used ++ skipn index witnesses = witnesses -> loop_prepared store used ->
           checked (state, store, frame index, G.E.collector_loop_state native_tree_loop (to_e_list native_tree_loop))
             (fun final => let '(_, store', _, instructions) := final in
-              instructions = [] /\ prepared store' witnesses /\
+              instructions = [] /\ loop_prepared store' witnesses /\
               X.children claim_kind (skipn index (get_tree_raw lhs))
                 (skipn index (get_tree_raw rhs)) (skipn index witnesses) = true).
         Proof.
@@ -938,7 +1154,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
                 exists witness left right,
                   nth_error witnesses index = Some witness /\ nth_error (get_tree_raw lhs) index = Some left /\
                   nth_error (get_tree_raw rhs) index = Some right /\
-                  prepared store' (used ++ [witness]) /\ X.read claim_kind witness = Some (left, right)).
+                  loop_prepared store' (used ++ [witness]) /\ X.read claim_kind witness = Some (left, right)).
             + apply checked_tree_iteration; [lia|exact Order|exact Prepared].
             + intros [[[state' store'] frame'] instructions] [Frame [Code [witness [left [right
                 [Witness [Left [RightField [Prepared' Read]]]]]]]]]; subst frame' instructions.
@@ -961,23 +1177,23 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
       (** The native Tree rule either traps or agrees with the accepted abstract Tree
           exchange. *)
       Lemma checked_tree_rule state store caller kind claim_kind lhs rhs coupons :
-        Claims.Code.statement_kind kind = Some claim_kind -> prepared store [] ->
+        Claims.Code.statement_kind kind = Some claim_kind -> prepared store [] -> fresh_tree_views store ->
         get_tree_raw coupons = witnesses -> lengths_bounded 1 lhs -> lengths_bounded 1 rhs ->
         lengths_bounded 1 (treeh coupons) ->
         checked
           (state, store, Build_frame caller G.E.collector_instance,
             v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 kind)); ext lhs; ext rhs; ext (treeh coupons)] ++
-              [AI_basic (BI_call 33%N)])
+              [AI_basic (BI_call 36%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             instructions = [] /\ frame' = Build_frame caller G.E.collector_instance /\
             prepared store' witnesses /\ X.tree claim_kind witnesses lhs rhs = Some claim_kind).
       Proof.
-        intros Kind Prepared Coupons LeftBound RightBound CouponBound.
+        intros Kind Prepared Fresh Coupons LeftBound RightBound CouponBound.
         pose proof (prepared_functions _ _ Prepared) as Functions.
         set (arguments := [VAL_num (VAL_int64 (wasm_nat64 kind)); ext lhs; ext rhs; ext (treeh coupons)]).
         eapply checked_call with (code := native_tree_rule)
           (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-          (results := []) (address := 33%N) (defaults := [word 0; word 0])
+          (results := []) (address := 36%N) (defaults := [word 0; word 0])
           (arguments := arguments) (dummy := []); try reflexivity.
         - rewrite Functions; reflexivity.
         - unfold native_tree_rule at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
@@ -986,7 +1202,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           let inside := match goal with
             |- checked (_, _, Build_frame ?inside G.E.collector_instance, _) _ => constr:(inside) end in
           checked_use (checked_size state store inside lhs Functions LeftBound).
-          intros [[[s1 st1] f1] c1] [State1 [Store1 [Frame1 [left [Left [Count Code1]]]]]];
+          intros [[[s1 st1] f1] c1] [State1 [Store1 [Frame1 [left [Left [Count [NativeCount Code1]]]]]]];
             subst s1 st1 f1 c1 lhs.
           do 3 checked_pure.
           normalize_checked.
@@ -1014,17 +1230,27 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           + {
             assert (WitnessCount : List.length witnesses = List.length (get_tree_raw left))
               by (rewrite <- Coupons; exact LengthCoupons).
+            destruct (prepared_operand_views store left right [] Prepared Fresh NativeCount LengthRight)
+              as [first [next [LeftAttached [RightAttached [NextPrepared [LeftView RightView]]]]]].
+            assert (FirstFunctions : s_funcs first = s_funcs G.E.allocated_store).
+            { rewrite (G.E.H.tree_attachment_result_functions _ _ _ _ _ LeftAttached); exact Functions. }
             rewrite <- Markers.
             let finish := ltac:(
               do 2 checked_pure;
+              let inside := match goal with |- checked (_, _, Build_frame ?inside _, _) _ => constr:(inside) end in
+              checked_pure;
+              checked_advance (attach_tree_run state store inside left 7 first Functions LeftAttached);
+              checked_pure;
+              checked_advance (attach_tree_run state first inside right 8 next FirstFunctions RightAttached);
               eapply checked_progress; [apply G.E.collector_loop_enter|];
               eapply checked_weaken;
               [ eapply checked_tree_loop with (lhs := left) (rhs := right) (coupons := coupons)
                   (kind := kind) (claim_kind := claim_kind) (remaining := List.length (get_tree_raw left))
-                  (index := 0) (used := []); try assumption; try reflexivity
+                  (index := 0) (used := []); try assumption; try reflexivity;
+                  unfold loop_prepared; auto
               | intros [[[state' store'] frame'] instructions] [Code [Prepared' Children]];
                 subst instructions; eapply ex_intro with (x := []);
-                split; [left; reflexivity|]; do 3 (split; [reflexivity|]); split; [exact Prepared'|];
+                split; [left; reflexivity|]; do 3 (split; [reflexivity|]); split; [exact (proj1 Prepared')|];
                 cbn [List.skipn] in Children;
                 change ((if Bool.eqb (tree_tag left) (tree_tag right) &&
                   X.children claim_kind (get_tree_raw left) (get_tree_raw right) witnesses
@@ -1035,6 +1261,75 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           + destruct (tree_tag left), (tree_tag right); try contradiction;
               do 2 checked_pure; eapply checked_trap, G.E.collector_trap_suffix
                 with (instructions := [AI_trap]); apply rt_refl.
+      Qed.
+
+      Theorem collector_reconstruction state store caller metadata callable opcode original fields coupons author body :
+        get_tree_raw combination = [metadata; callable; opcode; treeh original; treeh fields; treeh coupons] ->
+        tree_tag original = true -> get_tree_raw fields = author :: body ->
+        get_tree_raw coupons = witnesses -> prepared store [] -> fresh_tree_views store ->
+        lengths_bounded 1 (treeh original) -> lengths_bounded 1 (treeh fields) ->
+        lengths_bounded 1 (treeh coupons) ->
+        checked
+          (state, store, Build_frame caller G.E.collector_instance,
+            v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 40%N)])
+          (fun final => let '(_, store', frame', instructions) := final in
+            frame' = Build_frame caller G.E.collector_instance /\ prepared store' witnesses /\
+            exists result, instructions = v_to_e_list [ext (treeh result)] /\
+              result = create_tree_tagged true (get_tree_raw fields) /\
+              X.tree Eval witnesses (treeh original) (treeh result) = Some Eval).
+      Proof.
+        intros Combination Tagged Fields Coupons Prepared Fresh OriginalBound FieldsBound CouponsBound.
+        pose proof (prepared_functions _ _ Prepared) as Functions.
+        set (empty := VAL_ref (VAL_ref_null T_externref)).
+        set (tag := create_tree_tagged true (get_tree_raw fields)).
+        assert (TagBound : lengths_bounded 1 (treeh tag)).
+        { unfold tag; cbn [lengths_bounded G.E.H.W.H.HTreeObj];
+            rewrite get_tree_raw_create_tree_tagged; exact FieldsBound. }
+        eapply checked_call with (code := native_reconstruct) (parameters := [T_ref T_externref])
+          (results := [T_ref T_externref]) (address := 40%N) (defaults := [empty; empty; empty; empty])
+          (arguments := [ext (treeh combination)]) (dummy := [ext (treeh fields)]); try reflexivity.
+        - rewrite Functions; reflexivity.
+        - unfold native_reconstruct at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
+          checked_pure.
+          checked_advance (arity_run state store [ext (treeh combination); empty; empty; empty; empty]
+            combination 6 Functions ltac:(rewrite Combination; reflexivity) ltac:(vm_compute; reflexivity)).
+          checked_advance (tree_view_run state store [ext (treeh combination); empty; empty; empty; empty]
+            combination 2%N 3 (treeh original) ltac:(vm_compute; reflexivity)
+              (prepared_combination _ _ Prepared) ltac:(rewrite Combination; reflexivity)).
+          checked_pure.
+          checked_advance (native_tag_query state store
+            [ext (treeh combination); ext (treeh original); empty; empty; empty]
+            1%N original Functions eq_refl).
+          rewrite Tagged; checked_pure.
+          checked_advance (tree_view_run state store
+            [ext (treeh combination); ext (treeh original); empty; empty; empty]
+            combination 2%N 4 (treeh fields) ltac:(vm_compute; reflexivity)
+              (prepared_combination _ _ Prepared) ltac:(rewrite Combination; reflexivity)).
+          checked_pure.
+          checked_advance (tree_view_run state store
+            [ext (treeh combination); ext (treeh original); ext (treeh fields); empty; empty]
+            combination 2%N 5 (treeh coupons) ltac:(vm_compute; reflexivity)
+              (prepared_combination _ _ Prepared) ltac:(rewrite Combination; reflexivity)).
+          do 2 checked_pure.
+          let inside := match goal with |- checked (_, _, Build_frame ?inside _, _) _ => constr:(inside) end in
+          assert (Create : reduce_trans
+            (state, store, Build_frame inside G.E.collector_instance,
+              v_to_e_list [ext (treeh fields)] ++ [AI_basic (BI_call 19%N)])
+            (state, store, Build_frame inside G.E.collector_instance, v_to_e_list [ext (treeh tag)])).
+          { eapply native_value_import with (operation := shell_create_tag_unchecked); try reflexivity.
+            - exact Functions.
+            - unfold tag; rewrite Fields; eapply G.E.H.unchecked_tag_preserves_fields;
+                try reflexivity; exact Fields. }
+          checked_advance Create; do 4 checked_pure.
+          let inside := match goal with |- checked (_, _, Build_frame ?inside _, _) _ => constr:(inside) end in
+          checked_use (checked_tree_rule state store inside 1 Eval (treeh original) (treeh tag) coupons
+            eq_refl Prepared Fresh Coupons OriginalBound TagBound CouponsBound).
+          intros [[[state' store'] frame'] instructions] [Code [Frame [Prepared' Checked]]];
+            subst frame' instructions.
+          checked_pure.
+          eapply checked_result; [apply rt_refl|].
+          exists [ext (treeh tag)]; split; [left; reflexivity|]; split; [reflexivity|].
+          split; [reflexivity|]; split; [exact Prepared'|]; exists tag; repeat split; assumption || reflexivity.
       Qed.
 
       Definition validated rule lhs rhs finish (final : configuration) :=
@@ -1072,7 +1367,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
         s_funcs store = s_funcs G.E.allocated_store -> lengths_bounded 1 (treeh coupons) ->
         (Z.of_nat expected < 2 ^ 32)%Z -> lookup_N locals 3%N = Some (ext (treeh coupons)) ->
         checked (state, store, Build_frame locals G.E.collector_instance,
-          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat expected)); BI_call 22%N])])
+          [AI_label 0 [] (to_e_list [BI_local_get 3%N; BI_const_num (VAL_int32 (wasm_nat expected)); BI_call 25%N])])
           (fun final => let '(state', store', frame', instructions) := final in
             state' = state /\ store' = store /\ frame' = Build_frame locals G.E.collector_instance /\
             instructions = [] /\ List.length (get_tree_raw coupons) = expected).
@@ -1189,7 +1484,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               subst store' frame' instructions
             end in
           lazymatch index with
-          | 19%N =>
+          | 22%N =>
             let operands := tail 2 in let prefix := split 2 in
             lazymatch operands with
             | [VAL_ref (VAL_ref_extern (to_externref ?lhs)); VAL_ref (VAL_ref_extern (to_externref ?rhs))] =>
@@ -1200,17 +1495,17 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               intros [[[state' store'] frame'] instructions] [Store [Frame [Code Same]]];
               subst store' frame' instructions; try subst lhs; try subst rhs
             end
-          | 27%N =>
+          | 30%N =>
             let operands := tail 4 in
             lazymatch operands with
-            | [VAL_num (VAL_int64 ?bits); VAL_ref (VAL_ref_extern (to_externref ?witness));
+            | [VAL_num (VAL_int64 ?bits); VAL_ref (VAL_ref_extern (to_externref (supplied_claim ?witness)));
                 VAL_ref (VAL_ref_extern (to_externref ?lhs)); VAL_ref (VAL_ref_extern (to_externref ?rhs))] =>
               let code := eval vm_compute in (Wasm_int.nat_of_uint i64m bits) in
               validate_premise state store locals code witness lhs rhs
             end
-          | 28%N => endpoint constr:(true)
-          | 29%N => endpoint constr:(false)
-          | 31%N =>
+          | 31%N => endpoint constr:(true)
+          | 32%N => endpoint constr:(false)
+          | 34%N =>
             let operands := tail 2 in let prefix := split 2 in
             lazymatch operands with
             | [VAL_num (VAL_int32 ?bits); VAL_ref (VAL_ref_extern (to_externref ?input))] =>
@@ -1225,11 +1520,11 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               intros [[[state' store'] frame'] instructions] [State [Store [Frame [result [Construct Code]]]]];
               subst state' store' frame' instructions
             end
-          | 32%N =>
+          | 35%N =>
             let operands := tail 4 in
             lazymatch operands with
             | [VAL_num (VAL_int32 ?bits); VAL_ref (VAL_ref_extern (to_externref ?lhs));
-                VAL_ref (VAL_ref_extern (to_externref ?rhs)); VAL_ref (VAL_ref_extern (to_externref ?witness))] =>
+                VAL_ref (VAL_ref_extern (to_externref ?rhs)); VAL_ref (VAL_ref_extern (to_externref (supplied_claim ?witness)))] =>
               let number := eval vm_compute in (Wasm_int.nat_of_uint i32m bits) in
               let kind := eval cbn in (nth number [X.Application; X.Selection; X.Identification; X.Strict;
                 X.Shallow; X.BlobReference; X.TreeReference] X.Application) in
@@ -1260,7 +1555,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
                 end
               end
             end
-          | 22%N =>
+          | 25%N =>
             let operands := tail 2 in
             lazymatch operands with
             | [VAL_ref (VAL_ref_extern (to_externref (treeh ?coupons))); VAL_num (VAL_int32 ?bits)] =>
@@ -1275,7 +1570,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               subst state' store' frame' instructions; inversion Actual; subst actual;
               validate_fixed_arity coupons expected Length
             end
-          | 30%N =>
+          | 33%N =>
             let operands := tail 1 in let prefix := split 1 in
             lazymatch operands with
             | [VAL_ref (VAL_ref_extern (to_externref ?input))] =>
@@ -1287,7 +1582,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               intros [[[state' store'] frame'] instructions] [State [Store [Frame [Code [data Data]]]]];
               subst state' store' frame' instructions input
             end
-          | 24%N =>
+          | 27%N =>
             let operands := tail 1 in let prefix := split 1 in
             lazymatch operands with
             | [VAL_ref (VAL_ref_extern (to_externref ?input))] =>
@@ -1303,7 +1598,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             lazymatch constr:((stack, rest)) with
             | ([VAL_ref (VAL_ref_extern (to_externref ?input))],
                 AI_basic (BI_const_num (VAL_int32 ?bits)) :: AI_basic (BI_relop T_i32 (Relop_i ROI_eq)) ::
-                  AI_basic (BI_call 18%N) :: _) =>
+                  AI_basic (BI_call 21%N) :: _) =>
               let expected := eval vm_compute in (Wasm_int.nat_of_uint i32m bits) in
               checked_use (checked_type_guard state store locals input expected Functions ltac:(lia));
               let state' := fresh "state" in let store' := fresh "store" in let frame' := fresh "frame" in
@@ -1314,14 +1609,33 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               destruct input as [[[blob|tree]|reference]|thunk|encoded]; cbn [G.E.H.W.H.value_type] in KindTest;
                 try discriminate
             end
-          | 15%N =>
+          | 16%N =>
             lazymatch stack with
             | [VAL_ref (VAL_ref_extern (to_externref ?lhs));
                 VAL_ref (VAL_ref_extern (to_externref (Data (Ref ?reference))))] =>
-              checked_advance_under [ext lhs] (native_value_import state store locals 15%N shell_identification
+              checked_advance_under [ext lhs] (native_value_import state store locals 16%N shell_identification
                 [ext (Data (Ref reference))] [ext (Thunk (G.E.H.W.H.Identification reference))]
                 Functions eq_refl eq_refl eq_refl
                 ltac:(unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity))
+            end
+          end
+        end.
+
+      Ltac validate_retained state store locals stack :=
+        let count := eval cbn [List.length] in (List.length stack) in
+        let prefix := eval cbn [firstn List.length List.app Nat.sub] in (firstn (count - 1) stack) in
+        let operands := eval cbn [skipn List.length List.app Nat.sub] in (skipn (count - 1) stack) in
+        lazymatch operands with
+        | [VAL_num (VAL_int32 ?bits)] =>
+          let index := eval vm_compute in (Wasm_int.nat_of_uint i32m bits) in
+          match goal with
+          | Prepared : prepared store ?used, Shape : witnesses = ?values |- _ =>
+            let entry := eval cbn [nth_error] in (nth_error values index) in
+            lazymatch entry with
+            | Some ?witness =>
+              checked_advance_under prefix (retained_claim_run state store locals witnesses index witness
+                ltac:(vm_compute; reflexivity) (prepared_retained _ _ Prepared)
+                ltac:(rewrite Shape; reflexivity))
             end
           end
         end.
@@ -1337,6 +1651,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             validate_scan state store locals stack tail
           | None => lazymatch head with
             | AI_basic (BI_call ?index) => validate_import state store locals stack index tail
+            | AI_basic (BI_table_get 9%N) => validate_retained state store locals stack
             | AI_basic BI_return =>
               lazymatch stack with
               | [VAL_num (VAL_int64 ?bits)] =>
@@ -1373,7 +1688,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
                 end
               end
             | lazymatch code with
-              | AI_basic (BI_local_get 7%N) :: AI_basic (BI_call 30%N) ::
+              | AI_basic (BI_local_get 7%N) :: AI_basic (BI_call 33%N) ::
                   AI_basic (BI_local_get 7%N) :: AI_basic (BI_call 0%N) :: _ =>
                 let input_value := local_value locals 7%N in
                 let result_value := local_value locals 2%N in
@@ -1392,7 +1707,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
               | AI_label 0 [] ?body :: ?suffix =>
                 let body := eval cbn [to_e_list seq.map] in body in
                 lazymatch body with
-                | [AI_basic (BI_local_get 3%N); AI_basic (BI_const_num (VAL_int32 ?bits)); AI_basic (BI_call 22%N)] =>
+                | [AI_basic (BI_local_get 3%N); AI_basic (BI_const_num (VAL_int32 ?bits)); AI_basic (BI_call 25%N)] =>
                   let expected := eval vm_compute in (Wasm_int.nat_of_uint i32m bits) in
                   let found := local_value locals 3%N in lazymatch found with
                   | Some (VAL_ref (VAL_ref_extern (to_externref (treeh ?coupons)))) =>
@@ -1421,7 +1736,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             match goal with
             | Prepared : prepared store [] |- _ =>
               checked_use (checked_tree_rule state store locals kind claim_kind lhs rhs coupons eq_refl Prepared
-                ltac:(assumption) ltac:(assumption) ltac:(assumption) ltac:(assumption));
+                ltac:(assumption) ltac:(assumption) ltac:(assumption) ltac:(assumption) ltac:(assumption));
               let state' := fresh "state" in let store' := fresh "store" in let frame' := fresh "frame" in
               let instructions := fresh "instructions" in let Code := fresh "Code" in let Frame := fresh "Frame" in
               let Prepared' := fresh "Prepared" in let Checked := fresh "Checked" in
@@ -1441,7 +1756,7 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             let stack := eval cbn [List.app] in (stack ++ [value]) in
             validate_tree_scan state store locals stack tail
           | None => lazymatch head with
-            | AI_basic (BI_call 33%N) => validate_tree state store locals stack
+            | AI_basic (BI_call 36%N) => validate_tree state store locals stack
             end
           end
         end.
@@ -1484,25 +1799,25 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
           the abstract checker with a prepared output store. *)
       Theorem collector_dispatch_validation state store caller rule_code rule lhs rhs coupons :
         X.decode_exchange rule_code = Some rule -> get_tree_raw coupons = witnesses ->
-        prepared store [] -> lengths_bounded 1 lhs -> lengths_bounded 1 rhs ->
+        prepared store [] -> fresh_tree_views store -> lengths_bounded 1 lhs -> lengths_bounded 1 rhs ->
         lengths_bounded 1 (treeh coupons) ->
         checked
           (state, store, Build_frame caller G.E.collector_instance,
             v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 rule_code)); ext lhs; ext rhs; ext (treeh coupons)] ++
-              [AI_basic (BI_call 34%N)])
+              [AI_basic (BI_call 37%N)])
           (fun final => let '(_, store', frame', instructions) := final in
             frame' = Build_frame caller G.E.collector_instance /\ exists code claim_kind,
               instructions = v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 code))] /\
               Claims.Code.statement_kind code = Some claim_kind /\ prepared store' witnesses /\
               X.check rule witnesses lhs rhs = Some claim_kind).
       Proof.
-        intros Decoded Fields Prepared LeftBound RightBound CouponBound.
+        intros Decoded Fields Prepared Fresh LeftBound RightBound CouponBound.
         pose proof (prepared_functions _ _ Prepared) as Functions.
         set (empty := VAL_ref (VAL_ref_null T_externref)).
         set (arguments := [VAL_num (VAL_int64 (wasm_nat64 rule_code)); ext lhs; ext rhs; ext (treeh coupons)]).
         eapply checked_call with (code := native_exchange)
           (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
-          (results := [T_num T_i64]) (address := 34%N) (defaults := [empty; empty; empty; empty])
+          (results := [T_num T_i64]) (address := 37%N) (defaults := [empty; empty; empty; empty])
           (arguments := arguments) (dummy := [VAL_num (VAL_int64 (wasm_nat64 0))]); try reflexivity.
         - rewrite Functions; reflexivity.
         - eapply checked_weaken with
@@ -1571,19 +1886,67 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
             validate_scan state store locals (@nil value) instructions; validate_unknown compared
           end ].
 
-      (** Replacing memory by a Blob attachment preserves the prepared-store invariant. *)
-      Lemma prepared_attachment store used bytes page :
-        prepared store used -> attachment_page bytes = Some page ->
-        prepared (upd_s_mem store [page]) used.
+      Theorem collector_family_validation state store caller code selected_code rule lhs rhs coupons
+          (Resolve : forall state store locals,
+            s_funcs store = s_funcs G.E.allocated_store ->
+            checked (state, store, Build_frame locals G.E.collector_instance,
+              v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 code)); ext lhs] ++ [AI_basic (BI_call 43%N)])
+              (fun final => final = (state, store, Build_frame locals G.E.collector_instance,
+                v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 selected_code))]))) :
+        X.decode_exchange selected_code = Some rule -> get_tree_raw coupons = witnesses ->
+        prepared store [] -> fresh_tree_views store -> lengths_bounded 1 lhs -> lengths_bounded 1 rhs ->
+        lengths_bounded 1 (treeh coupons) ->
+        checked
+          (state, store, Build_frame caller G.E.collector_instance,
+            v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 code)); ext lhs; ext rhs; ext (treeh coupons)] ++
+              [AI_basic (BI_call 44%N)])
+          (fun final => let '(_, store', frame', instructions) := final in
+            frame' = Build_frame caller G.E.collector_instance /\ exists result_code claim_kind,
+              instructions = v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 result_code))] /\
+              Claims.Code.statement_kind result_code = Some claim_kind /\ prepared store' witnesses /\
+              X.check rule witnesses lhs rhs = Some claim_kind).
       Proof.
-        intros [Functions [before [minimum [Memory [Allowed Tables]]]]] Page.
-        split; [exact Functions|]; exists page, minimum; split; [reflexivity|]; split; [|exact Tables].
-        intros fresh Width.
-        destruct (attachment_page_shape _ _ Page) as [PageType Length].
-        destruct page as [limits data]; cbn in PageType.
-        unfold G.E.H.attachment_allowed.
-        unfold operations.mem_length in Length |- *; cbn [meminst_type meminst_data] in Length |- *.
-        rewrite PageType, Length, Width; reflexivity.
+        intros Decoded Coupons Prepared Fresh LeftBound RightBound CouponsBound.
+        pose proof (prepared_functions _ _ Prepared) as Functions.
+        set (arguments := [VAL_num (VAL_int64 (wasm_nat64 code)); ext lhs; ext rhs; ext (treeh coupons)]).
+        eapply checked_call with (code := native_family)
+          (parameters := [T_num T_i64; T_ref T_externref; T_ref T_externref; T_ref T_externref])
+          (results := [T_num T_i64]) (address := 44%N) (defaults := [])
+          (arguments := arguments) (dummy := [VAL_num (VAL_int64 (wasm_nat64 0))]); try reflexivity.
+        - rewrite Functions; reflexivity.
+        - unfold native_family at 1; cbn [modfunc_body mod_funcs evaluation_module nth].
+          do 2 checked_pure.
+          checked_use (Resolve state store arguments Functions).
+          intros [[[state' store'] frame'] instructions] Equal; inversion Equal; subst state' store' frame' instructions.
+          do 3 checked_pure.
+          checked_use (collector_dispatch_validation state store arguments selected_code rule lhs rhs coupons
+            Decoded Coupons Prepared Fresh LeftBound RightBound CouponsBound).
+          intros [[[state' store'] frame'] instructions]
+            [Frame [result_code [claim_kind [Code [Kind [Prepared' Checked]]]]]];
+            subst frame' instructions.
+          eapply checked_result; [apply rt_refl|].
+          exists [VAL_num (VAL_int64 (wasm_nat64 result_code))]; split; [left; reflexivity|].
+          split; [reflexivity|]; split; [reflexivity|].
+          exists result_code, claim_kind; auto.
+      Qed.
+
+      Lemma prepared_after_read store arguments next result used :
+        prepared store used ->
+        G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
+        prepared next used.
+      Proof.
+        intros Before Read; constructor.
+        - eapply resources_after_read; [exact (prepared_resources _ _ Before)|exact Read].
+        - eapply blob_read_retained_claims; [exact Read|exact (prepared_retained _ _ Before)].
+      Qed.
+
+      Lemma fresh_after_read store arguments next result :
+        fresh_tree_views store ->
+        G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
+        fresh_tree_views next.
+      Proof.
+        intros [Left Right] Read; split;
+          eapply blob_read_capacity; [exact Read|exact Left|exact Read|exact Right].
       Qed.
 
       (** Replacing the store's tables by the same tables leaves the store unchanged. *)
@@ -1604,98 +1967,113 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
 
         (** Under the host and resource contracts, the collector entry point traps or
             returns exactly a certificate accepted and issued by the abstract collector. *)
-        Theorem collector_refinement state initial_store caller opcode code rule metadata callable lhs rhs coupons issuing_author :
+        Theorem collector_refinement state initial_store caller opcode code selected_code rule metadata callable lhs rhs coupons issuing_author
+            (Resolve : forall state store locals,
+              s_funcs store = s_funcs G.E.allocated_store ->
+              checked (state, store, Build_frame locals G.E.collector_instance,
+                v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 code)); ext lhs] ++ [AI_basic (BI_call 43%N)])
+                (fun final => final = (state, store, Build_frame locals G.E.collector_instance,
+                  v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 selected_code))]))) :
           get_tree_raw combination = [metadata; callable; blobh opcode; lhs; rhs; treeh coupons] ->
-          decode_u64 (get_blob_data opcode) = Some code -> X.decode_exchange code = Some rule ->
-          get_tree_raw coupons = witnesses -> prepared initial_store [] ->
+          decode_u64 (get_blob_data opcode) = Some code -> X.decode_exchange selected_code = Some rule ->
+          get_tree_raw coupons = witnesses -> prepared initial_store [] -> fresh_tree_views initial_store ->
           lengths_bounded 1 lhs -> lengths_bounded 1 rhs -> lengths_bounded 1 (treeh coupons) ->
           G.E.H.Tables.T.A.author_at 1 (treeh combination) = Some issuing_author ->
           exists state' store' instructions, reduce_trans
             (state, initial_store, Build_frame caller G.E.collector_instance,
-              v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 35%N)])
+              v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 38%N)])
             (state', store', Build_frame caller G.E.collector_instance, instructions) /\
             (instructions = [AI_trap] \/ exists claim_kind tag claim,
               instructions = v_to_e_list [ext (treeh tag)] /\
               X.check rule witnesses lhs rhs = Some claim_kind /\
-              X.issue issuing_author claim_kind lhs rhs witnesses = Some (treeh (create_tree [treeh tag; treeh claim]))).
+              X.Wire.encode claim_kind issuing_author lhs rhs = Some (treeh (create_tree [treeh tag; treeh claim]))).
         Proof.
-          intros Fields Code Rule Coupons Prepared LeftBound RightBound CouponBound Author.
-          pose proof Prepared as [Functions [before [minimum [Memory [Allowed Tables]]]]].
-          destruct (attachment_page_exists (get_blob_data opcode)) as [page Page].
-          assert (OpcodeAllowed : G.E.H.attachment_allowed before (get_blob_data opcode) = true).
-          { apply Allowed; eapply decode_u64_width; exact Code. }
-          pose proof (prepared_attachment _ _ _ _ Prepared Page) as AfterOpcode.
+          intros Fields Code Rule Coupons Prepared Fresh LeftBound RightBound CouponBound Author.
+          pose proof (prepared_functions _ _ Prepared) as Functions.
+          pose proof (memory_capacity_integer_reads initial_store
+            (prepared_typing _ _ Prepared) (prepared_memory _ _ Prepared)) as Reads.
+          destruct (Reads opcode ltac:(eapply decode_u64_width; exact Code))
+            as [copied [page [Read [Memory Loaded]]]].
+          pose proof (prepared_after_read _ _ _ _ _ Prepared Read) as AfterOpcode.
+          pose proof (fresh_after_read _ _ _ _ Fresh Read) as AfterFresh.
           set (empty := VAL_ref (VAL_ref_null T_externref)).
           set (selected := [ext (treeh combination); ext lhs; ext rhs; VAL_num (VAL_int64 (wasm_nat64 0))]).
-          pose proof (collector_entry_header state initial_store opcode code
-            before page metadata callable lhs rhs coupons Functions Memory OpcodeAllowed Page Code Fields) as Header.
-          destruct (collector_dispatch_validation state (upd_s_mem initial_store [page]) selected code rule
-            lhs rhs coupons Rule Coupons AfterOpcode LeftBound RightBound CouponBound)
+          pose proof (collector_entry_header state initial_store copied opcode code page
+            metadata callable lhs rhs coupons Functions (prepared_combination _ _ Prepared)
+            (prepared_combination _ _ AfterOpcode) Read (prepared_functions _ _ AfterOpcode)
+            Memory Loaded Code Fields) as Header.
+          destruct (collector_family_validation state copied selected code selected_code rule
+            lhs rhs coupons Resolve Rule Coupons AfterOpcode AfterFresh LeftBound RightBound CouponBound)
             as [[[[state' store'] frame'] instructions] [Dispatch [Trap|Accepted]]].
           - subst instructions.
             assert (NativeRejection : reduce_trans
                 (state, initial_store, Build_frame caller G.E.collector_instance,
-                  v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 35%N)])
+                  v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 38%N)])
                 (state', store', Build_frame caller G.E.collector_instance, [AI_trap])).
             { eapply G.E.collector_call with (code := evaluation_apply)
               (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-              (address := 35%N) (defaults := [empty; empty; VAL_num (VAL_int64 (wasm_nat64 0))])
+              (address := 38%N) (defaults := [empty; empty; VAL_num (VAL_int64 (wasm_nat64 0))])
               (arguments := [ext (treeh combination)]) (values := [ext lhs])
               (accepted := false) (final_frame := frame'); try reflexivity.
               - rewrite Functions; reflexivity.
-              - rewrite <- (firstn_skipn 20 (modfunc_body evaluation_apply)) at 1.
+              - rewrite <- (firstn_skipn 16 (modfunc_body evaluation_apply)) at 1.
                 unfold to_e_list; rewrite List.map_app.
                 execute Header.
                 cbn [evaluation_apply modfunc_body mod_funcs evaluation_module nth firstn skipn List.length List.app seq.map].
                 eapply G.E.collector_trap_suffix with
                   (instructions := v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 code)); ext lhs; ext rhs; ext (treeh coupons)] ++
-                    [AI_basic (BI_call 34%N)])
-                  (suffix := to_e_list (skipn 21 (modfunc_body evaluation_apply))).
+                    [AI_basic (BI_call 44%N)])
+                  (suffix := to_e_list (skipn 17 (modfunc_body evaluation_apply))).
                 exact Dispatch.
             }
             exists state', store', [AI_trap]; auto.
           - destruct Accepted as [Frame [result_code [claim_kind [Result [Kind [Prepared' Checked]]]]]];
               subst frame' instructions.
             pose proof (prepared_functions _ _ Prepared') as FinalFunctions.
-            destruct Prepared' as [_ [last_memory [last_minimum [LastMemory [LastAllowed LastTables]]]]].
-            set (author_type := Build_table_type (Build_limits last_minimum None) T_externref).
-            set (authors := X.dependencies witnesses).
-            set (claim := create_tree [blobh (create_blob (from_nat result_code)); lhs; rhs]).
-            set (tag := create_tree_tagged true
-              [treeh (G.E.H.Tables.T.add_author (create_tree authors) issuing_author); Data (Ref (TreeRef claim))]).
+            pose proof (prepared_tables _ _ Prepared') as LastTables.
+            pose proof (prepared_combination _ _ Prepared') as LastCombination.
+            set (claim := issued_claim lhs rhs result_code).
+            set (tag := issued_tag issuing_author lhs rhs result_code).
             assert (CodeBound : (Z.of_nat result_code < 2 ^ 64)%Z).
             { pose proof (Claims.Code.statement_code_bound _ _ (Claims.Code.statement_kind_roundtrip _ _ Kind)); cbn; lia. }
-            assert (AuthorBound : (Z.of_nat (List.length authors) < 2 ^ 32)%Z)
-              by (unfold authors; lia).
-            assert (StoreReady : coupon_output_store store' authors author_type output_type assertion_type
-                lhs rhs result_code 0 0 = store').
+            assert (StoreReady : coupon_output_store store' output_type assertion_type
+                lhs rhs issuing_author result_code 0 0 = store').
             { unfold coupon_output_store, G.E.H.Tables.copied_entries.
-              cbn [List.length List.firstn List.skipn seq.take seq.drop].
-              rewrite <- (table_update_identity store') at 2; f_equal.
-              rewrite LastTables, scratch_tables; reflexivity. }
-            pose proof (collector_output_executes store' authors author_type output_type
-              assertion_type lhs rhs issuing_author result_code CodeBound FinalFunctions eq_refl output_element assertion_element
-              AuthorBound Author state') as Output.
+              change (upd_s_table store'
+                ([Build_tableinst output_type (repeat (VAL_ref_null T_externref) 2);
+                  Build_tableinst assertion_type (repeat (VAL_ref_null T_externref) 3)] ++
+                 skipn 2 (s_tables store')) = store').
+              rewrite <- scratch_tables, <- LastTables, firstn_skipn; apply table_update_identity. }
+            assert (Selected : nth_error (get_tree_raw combination) 1 = Some issuing_author).
+            { change (match nth_error (get_tree_raw combination) 1 with
+                | Some child => Some child | None => None end = Some issuing_author) in Author.
+              destruct (nth_error (get_tree_raw combination) 1) as [author|] eqn:Entry;
+                inversion Author; subst; reflexivity. }
+            assert (AuthorView : stab_elem store' G.E.collector_instance 2%N 1%N =
+                Some (G.E.H.Tables.externref issuing_author)).
+            { exact (LastCombination 1 issuing_author Selected). }
+            pose proof (collector_output_executes store' output_type assertion_type lhs rhs issuing_author
+              result_code state' CodeBound FinalFunctions output_element assertion_element Author AuthorView) as Output.
             rewrite StoreReady in Output.
-            assert (ClaimIssued : X.issue issuing_author claim_kind lhs rhs witnesses =
+            set (output_store := coupon_output_store store' output_type assertion_type
+              lhs rhs issuing_author result_code 3 2).
+            assert (ClaimIssued : X.Wire.encode claim_kind issuing_author lhs rhs =
                 Some (treeh (create_tree [treeh tag; treeh claim]))).
-            { exact (collector_output_issues authors lhs rhs issuing_author result_code
-                AuthorBound claim_kind witnesses Kind eq_refl). }
+            { eapply collector_output_encodes; exact Kind. }
             assert (NativeExecution : reduce_trans
                 (state, initial_store, Build_frame caller G.E.collector_instance,
-                  v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 35%N)])
-                (state', coupon_output_store store' authors author_type output_type assertion_type
-                  lhs rhs result_code 3 2, Build_frame caller G.E.collector_instance,
-                  v_to_e_list [ext (treeh tag)])).
+                  v_to_e_list [ext (treeh combination)] ++ [AI_basic (BI_call 38%N)])
+                (state', output_store, Build_frame caller G.E.collector_instance,
+                  if is_comparable issuing_author then v_to_e_list [ext (treeh tag)] else [AI_trap])).
             { eapply G.E.collector_call with (code := evaluation_apply)
                 (parameters := [T_ref T_externref]) (results := [T_ref T_externref])
-                (address := 35%N) (defaults := [empty; empty; VAL_num (VAL_int64 (wasm_nat64 0))])
+                (address := 38%N) (defaults := [empty; empty; VAL_num (VAL_int64 (wasm_nat64 0))])
                 (arguments := [ext (treeh combination)]) (values := [ext (treeh tag)])
-                (accepted := true)
-                (final_frame := Build_frame [ext (treeh combination); ext lhs; ext (Data (Ref (TreeRef claim)));
+                (accepted := is_comparable issuing_author)
+                (final_frame := Build_frame [ext (treeh combination); ext lhs; ext rhs;
                   VAL_num (VAL_int64 (wasm_nat64 result_code))] G.E.collector_instance); try reflexivity.
               - rewrite Functions; reflexivity.
-              - rewrite <- (firstn_skipn 20 (modfunc_body evaluation_apply)) at 1.
+              - rewrite <- (firstn_skipn 16 (modfunc_body evaluation_apply)) at 1.
                 unfold to_e_list; rewrite List.map_app.
                 execute Header.
                 cbn [evaluation_apply modfunc_body mod_funcs evaluation_module nth firstn skipn List.length List.app seq.map].
@@ -1704,12 +2082,52 @@ Module WasmRefinement (C : COLLECTOR_CONTEXT).
                 native_pure.
                 exact Output.
             }
-            exists state', (coupon_output_store store' authors author_type output_type assertion_type
-              lhs rhs result_code 3 2), (v_to_e_list [ext (treeh tag)]).
+            exists state', output_store,
+              (if is_comparable issuing_author then v_to_e_list [ext (treeh tag)] else [AI_trap]).
             split; [exact NativeExecution|].
-            right; exists claim_kind, tag, claim; auto.
+            destruct (is_comparable issuing_author); [right; exists claim_kind, tag, claim; auto|left; reflexivity].
         Qed.
       End CertifiedExecution.
     End Refinement.
   End Execution.
+  Ltac normalize_checked := cbn [in_context lfill List.app seq.cat v_to_e_list seq.map].
+      Ltac checked_advance_under stack run :=
+        normalize_checked;
+        let Run := type of run in
+        let Run := eval cbv beta iota zeta in Run in
+        lazymatch Run with
+        | ?reduction (_, _, _, ?before) (?state', ?store', ?frame', ?after) =>
+          lazymatch goal with
+          | |- checked (_, _, _, ?whole) _ =>
+            let tail := eval cbv beta iota zeta delta
+              [List.skipn List.length List.map List.app seq.cat seq.map Nat.add to_e_list v_to_e_list]
+              in (skipn (List.length stack + List.length before) whole) in
+            eapply checked_progress with (middle := (state', store', frame', v_to_e_list stack ++ after ++ tail));
+            [eapply G.E.collector_runs_context with (prefix := stack) (suffix := tail)
+              (instructions := before) (instructions' := after); exact run
+            |cbn [List.app seq.cat v_to_e_list seq.map]]
+          end
+        end.
+
+      Ltac checked_advance run := checked_advance_under (@nil value) run.
+      Ltac checked_pure := normalize_checked; eapply checked_progress; [native_pure; apply rt_refl|].
+
+      Ltac checked_use_under stack run :=
+        normalize_checked;
+        let Run := type of run in
+        let Run := eval cbv beta iota zeta in Run in
+        lazymatch Run with
+        | checked (?at_state, ?at_store, ?at_frame, ?source) ?condition =>
+          lazymatch goal with
+          | |- checked (_, _, _, ?whole) _ =>
+            let tail := eval cbv beta iota zeta delta
+              [List.skipn List.length List.map List.app seq.cat seq.map Nat.add to_e_list v_to_e_list]
+              in (skipn (List.length stack + List.length source) whole) in
+            eapply checked_context with (initial := (at_state, at_store, at_frame, source))
+              (context := LH_base stack tail) (before := condition);
+              [exact run|]
+          end
+        end.
+      Ltac checked_use run := checked_use_under (@nil value) run.
+
 End WasmRefinement.

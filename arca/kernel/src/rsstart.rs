@@ -59,6 +59,7 @@ pub(crate) static KERNEL_MAPPINGS: LazyLock<SharedPage<AugmentedPageTable<PageTa
         let mut pdpt = AugmentedPageTable::new();
         for i in 0..512 {
             pdpt.entry_mut(i).map_global(i << 30, Permissions::None);
+            pdpt.entry_mut(i).mark_global();
         }
         pdpt.into()
     });

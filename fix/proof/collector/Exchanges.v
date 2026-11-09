@@ -6,17 +6,8 @@ From Stdlib Require Import List Arith Bool Lia.
 From Hammer Require Import Tactics.
 From FixProof.Semantics Require Import Handle ApplyTree.
 From FixProof.Collector Require Import Matching Logic Encoding.
-From FixProof.Shell Require Import TagCreation.
 
-Module Type TAG_AUTHORS (S : STORAGE).
-  Parameter add_author : S.TreeName -> S.handle -> S.TreeName.
-  (** Issuing a claim retains every supplied author in the updated author list. *)
-  Parameter add_author_preserves_authors : forall authors issuing_author,
-    incl (S.get_tree_raw authors) (S.get_tree_raw (add_author authors issuing_author)).
-End TAG_AUTHORS.
-
-Module CouponExchanges (S : STORAGE) (P : PROGRAM S)
-  (T : TAG_AUTHORS S).
+Module CouponExchanges (S : STORAGE) (P : PROGRAM S).
   Module API := CouponMatching S.
   Module D := Coupon S P.
   Module Wire := CouponClaims S.
@@ -418,6 +409,29 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S)
     | _ => None
     end.
 
+  Definition select_exchange code lhs :=
+    match code with
+    | 0 => match lhs with
+      | Data (Object (TreeObj _)) => Some 0
+      | Data (Ref (TreeRef _)) => Some 21
+      | Data (Ref (BlobRef _)) => Some 22
+      | Thunk (H.Application _) => Some 4
+      | Thunk (H.Selection _) => Some 17
+      | Thunk (H.Identification _) => Some 18
+      | Encode (H.Strict _) => Some 9
+      | Encode (H.Shallow _) => Some 19
+      | _ => None end
+    | 2 => match lhs with
+      | Thunk (H.Application _) => Some 2
+      | Thunk (H.Selection _) => Some 25
+      | Thunk (H.Identification _) => Some 26
+      | _ => None end
+    | 5 => match lhs with Data (Object (TreeObj _)) => Some 6 | _ => Some 5 end
+    | 7 => match lhs with Encode (H.Strict _) => Some 7 | Encode (H.Shallow _) => Some 16 | _ => None end
+    | 1 | 3 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 20 | 24 => Some code
+    | _ => None
+    end.
+
   Definition check rule coupons lhs rhs := match rule with
     | TreeEq => tree Equivalent coupons lhs rhs
     | ForceResultEq => force_results coupons lhs rhs
@@ -474,57 +488,108 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S)
       intros a b x y Evaluated Derived; inversion Derived; subst; apply CouponEvalResultEq; exact Evaluated.
   Qed.
 
-  Definition authors_of witness := match Wire.decode witness with
-    | Some (_, authors, _, _) => get_tree_raw authors | None => [] end.
-  Definition dependencies := flat_map authors_of.
-  Definition output_authors issuing_author coupons := T.add_author (create_tree (dependencies coupons)) issuing_author.
-  Definition issue issuing_author kind lhs rhs coupons := Wire.encode kind (output_authors issuing_author coupons) lhs rhs.
-  Definition stable_conditional trusted witness := forall kind authors lhs rhs,
-    Wire.decode witness = Some (kind, authors, lhs, rhs) ->
-    Forall (fun author => value_handle author -> trusted author) (get_tree_raw authors) -> relation_of kind lhs rhs.
+  Definition kernel_author := HTreeObj (create_tree []).
 
-  (** Every authority on which a premise depends remains among the conclusion's authors.
-      This prevents an exchange from turning a conditional premise into a claim with fewer
-      trust requirements. *)
-  Lemma authors_cover issuing_author coupons witness kind authors lhs rhs :
-    In witness coupons -> Wire.decode witness = Some (kind, authors, lhs, rhs) ->
-    incl (get_tree_raw authors) (get_tree_raw (output_authors issuing_author coupons)).
+  Definition authenticated_by collector witness := match Wire.author witness with
+    | Some author => API.handle_eqb author collector || API.handle_eqb author kernel_author
+    | None => false end.
+
+  Definition reconstruction_authority collector coupons :=
+    forallb (authenticated_by collector) coupons.
+
+  Definition issue issuing_author kind lhs rhs coupons output :=
+    reconstruction_authority issuing_author coupons = true /\
+    Wire.encode kind issuing_author lhs rhs = Some output.
+
+  Definition stable_requirement trusted author :=
+    value_handle author -> author = kernel_author \/ trusted author.
+
+  Definition stable_conditional trusted witness := forall kind author lhs rhs,
+    Wire.decode witness = Some (kind, author, lhs, rhs) ->
+    stable_requirement trusted author -> relation_of kind lhs rhs.
+
+  Definition reconstruct_tag collector coupons original fields :=
+    match get_tree_raw fields with
+    | _ :: _ =>
+      if tree_tag original && reconstruction_authority collector coupons &&
+        children Eval (get_tree_raw original) (get_tree_raw fields) coupons
+      then Some (create_tree_tagged true (get_tree_raw fields)) else None
+    | _ => None end.
+
+  Lemma authenticated_author collector witness kind author lhs rhs :
+    authenticated_by collector witness = true ->
+    Wire.decode witness = Some (kind, author, lhs, rhs) ->
+    author = collector \/ author = kernel_author.
   Proof.
-    intros Member Decoded author Author; unfold output_authors; apply T.add_author_preserves_authors.
-    rewrite get_tree_raw_create_tree; unfold dependencies; apply in_flat_map.
-    exists witness; split; [exact Member|unfold authors_of; rewrite Decoded; exact Author].
+    intros Allowed Decoded; unfold authenticated_by in Allowed.
+    rewrite (Wire.decode_author _ _ _ _ _ Decoded) in Allowed.
+    apply orb_true_iff in Allowed as [Same|Kernel];
+      apply API.handle_eqb_spec in Same || apply API.handle_eqb_spec in Kernel; auto.
   Qed.
 
-  (** An accepted exchange preserves conditional authority: if the stable authors retained
-      in its output are trusted, its conclusion follows. Unrestricted extra authors can be
-      retained without becoming a source of unconditional conclusions. *)
+  Lemma conditional_evidence_valid trusted collector coupons :
+    stable_requirement trusted collector -> Forall (stable_conditional trusted) coupons ->
+    reconstruction_authority collector coupons = true -> Forall valid coupons.
+  Proof.
+    intros Trusted Conditional Allowed; rewrite Forall_forall in Conditional |- *.
+    unfold reconstruction_authority in Allowed; rewrite forallb_forall in Allowed.
+    intros witness Present kind author lhs rhs Decoded.
+    apply (Conditional _ Present _ _ _ _ Decoded).
+    destruct (authenticated_author _ _ _ _ _ _ (Allowed _ Present) Decoded) as [Same|Kernel].
+    - subst author; exact Trusted.
+    - subst author; intros _; left; reflexivity.
+  Qed.
+
+  Lemma reconstruction_evidence_valid trusted collector coupons :
+    trusted collector -> Forall (stable_conditional trusted) coupons ->
+    reconstruction_authority collector coupons = true -> Forall valid coupons.
+  Proof.
+    intros Trusted Conditional Allowed; eapply conditional_evidence_valid; eauto.
+    intros _; right; exact Trusted.
+  Qed.
+
+  Theorem reconstruction_validated_sound trusted collector coupons lhs rhs :
+    trusted collector -> Forall (stable_conditional trusted) coupons ->
+    reconstruction_authority collector coupons = true ->
+    tree Eval coupons lhs rhs = Some Eval -> D.coupon_eval lhs rhs.
+  Proof.
+    intros Trusted Conditional Allowed Checked.
+    change (relation_of Eval lhs rhs).
+    eapply tree_sound with (input := Eval) (kind := Eval);
+      [intros; apply CouponEvalTreeObj; assumption| |exact Checked].
+    eapply reconstruction_evidence_valid; eassumption.
+  Qed.
+
+  Theorem reconstruct_tag_sound trusted collector coupons original fields result :
+    trusted collector -> Forall (stable_conditional trusted) coupons ->
+    reconstruct_tag collector coupons original fields = Some result ->
+    D.coupon_eval (HTreeObj original) (HTreeObj result).
+  Proof.
+    intros Trusted Conditional Reconstructed.
+    unfold reconstruct_tag in Reconstructed.
+    destruct (get_tree_raw fields) as [|first rest] eqn:Fields; try discriminate.
+    match type of Reconstructed with
+    | (if ?condition then _ else _) = _ => destruct condition eqn:Checked
+    end; [|discriminate].
+    inversion Reconstructed; subst result.
+    apply andb_true_iff in Checked as [Prefix Children].
+    apply andb_true_iff in Prefix as [Tagged Allowed].
+    apply CouponEvalTreeObj.
+    - rewrite tree_tag_create_tree_tagged; exact Tagged.
+    - rewrite get_tree_raw_create_tree_tagged.
+      eapply children_sound with (kind := Eval); [|exact Children].
+      eapply reconstruction_evidence_valid; eassumption.
+  Qed.
+
   Theorem issue_conditional trusted issuing_author rule coupons lhs rhs kind output :
     Forall (stable_conditional trusted) coupons -> check rule coupons lhs rhs = Some kind ->
-    issue issuing_author kind lhs rhs coupons = Some output -> stable_conditional trusted output.
+    issue issuing_author kind lhs rhs coupons output -> stable_conditional trusted output.
   Proof.
-    (* Argue under the output's trust assumption. Author retention makes that assumption
-        strong enough to activate every conditional input claim. Only after obtaining
-        these premise facts is ordinary exchange soundness applicable. *)
-    intros Inputs Checked Issued operation authors left right Decoded Trusted.
+    intros Inputs Checked [Allowed Issued] operation author left right Decoded Trusted.
     apply Wire.encode_decode in Issued; rewrite Issued in Decoded;
-      inversion Decoded; subst operation authors left right.
-    (* The exchange theorem requires actual premise facts. They become available only
-        within the scope of the output trust assumption; this implication is what must be
-        preserved in the issued result. *)
-    assert (PremisesValid : Forall valid coupons).
-    { rewrite Forall_forall in Inputs |- *; intros witness Member input_kind input_authors a b Read.
-      (* A premise's required authorities are a subset of the output authorities. Thus no
-          dependency can disappear when the premise is consumed. *)
-      assert (AuthorsCovered : incl (get_tree_raw input_authors)
-        (get_tree_raw (output_authors issuing_author coupons)))
-        by (eauto using authors_cover).
-      (* Restrict the output trust assumption to this premise's stable authors. Its
-          conditional claim can now be invoked without trusting any additional party. *)
-      assert (AuthorsTrusted : Forall (fun author => value_handle author -> trusted author)
-        (get_tree_raw input_authors))
-        by (rewrite Forall_forall in Trusted |- *; hauto unfold!: incl).
-      exact (Inputs witness Member _ _ _ _ Read AuthorsTrusted). }
-    hauto cases: - use: check_sound.
+      inversion Decoded; subst operation author left right.
+    eapply check_sound; [|exact Checked].
+    eapply conditional_evidence_valid; eassumption.
   Qed.
 
 End CouponExchanges.

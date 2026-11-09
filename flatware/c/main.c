@@ -28,11 +28,32 @@ read_table_size(void) {
   return wasm_table_size_0();
 }
 static fix_handle null(void) { return __builtin_wasm_ref_null_extern(); }
-static void tree(fix_handle value, uint32_t length) {
+static fix_handle force(fix_handle value) {
+  while (!fix_is_object(value)) {
+    switch (fix_get_type(value)) {
+    case FIX_REF:
+      value = fix_create_strict_encode(fix_create_identification_thunk(value));
+      break;
+    case FIX_THUNK:
+      value = fix_create_strict_encode(value);
+      break;
+    case FIX_ENCODE:
+      break;
+    case FIX_OBJECT:
+      __builtin_unreachable();
+    }
+    value = fix_eval(value);
+  }
+  return value;
+}
+static fix_handle tree(fix_handle value, uint32_t length) {
+  value = force(value);
   require(fix_is_object(value) && fix_get_data_type(value) == FIX_TREE &&
           fix_len(value) == length);
+  return value;
 }
 static fix_handle entry(fix_handle value, uint32_t index) {
+  value = force(value);
   require(fix_is_object(value) && fix_get_data_type(value) == FIX_TREE &&
           index < fix_len(value));
   fix_attach_tree(value, 0);
@@ -41,11 +62,13 @@ static fix_handle entry(fix_handle value, uint32_t index) {
   return child;
 }
 static size_t local_length(fix_handle value) {
+  value = force(value);
   uint64_t length = fix_len(value);
   require(length <= SIZE_MAX);
   return (size_t)length;
 }
 static Bytes blob(fix_handle value) {
+  value = force(value);
   require(fix_is_blob_obj(value));
   Bytes bytes = bytes_allocate(local_length(value));
   fix_attach_blob(value, 1);
@@ -54,6 +77,7 @@ static Bytes blob(fix_handle value) {
   return bytes;
 }
 static uint64_t integer(fix_handle value, uint32_t length) {
+  value = force(value);
   require(fix_is_blob_obj(value) && fix_len(value) == length);
   uint8_t bytes[8];
   require(length <= sizeof(bytes));
@@ -81,7 +105,7 @@ static fix_handle make_tree(uint32_t length) {
   return value;
 }
 static Stat read_stat(fix_handle value) {
-  tree(value, 7);
+  value = tree(value, 7);
   fix_attach_tree(value, 0);
   Stat stat = {.dev = integer(wasm_table_get_0(0), 8),
                .filetype = (uint8_t)integer(wasm_table_get_0(1), 1),
@@ -116,6 +140,7 @@ static size_t read_node(Filesystem *fs, size_t parent, uint32_t input_index,
   return index;
 }
 static Bytes *byte_list(fix_handle value, size_t *count) {
+  value = force(value);
   require(fix_is_object(value) && fix_get_data_type(value) == FIX_TREE);
   *count = local_length(value);
   require(*count <= SIZE_MAX / sizeof(Bytes));
@@ -139,7 +164,7 @@ void fs_load(Filesystem *fs, size_t index, unsigned fields) {
   if (!fields)
     return;
   fix_handle descriptor = original(current_input(), fs, index);
-  tree(descriptor, 3);
+  descriptor = tree(descriptor, 3);
   if (fields & NODE_NAME) {
     fs->nodes[index].name = blob(entry(descriptor, 0));
     if (fs->nodes[index].parent != NONE) {
@@ -160,12 +185,12 @@ void fs_load(Filesystem *fs, size_t index, unsigned fields) {
                               : read_stat(entry(descriptor, 1));
     node->stat.ino = index + 1;
     if (!node_file(node) || !node_directory(node))
-      node->stat.size = fix_len(entry(descriptor, 2));
+      node->stat.size = fix_len(force(entry(descriptor, 2)));
   }
   fs->nodes[index].loaded |= fields & (NODE_NAME | NODE_STAT);
   if (fields & NODE_CONTENT) {
     fs_load(fs, index, NODE_STAT);
-    fix_handle contents = entry(descriptor, 2);
+    fix_handle contents = force(entry(descriptor, 2));
     if (!node_directory(&fs->nodes[index])) {
       require(fix_is_object(contents) &&
               fix_get_data_type(contents) == FIX_TREE);
@@ -222,14 +247,29 @@ static fix_handle write_node(fix_handle input, size_t index) {
   return make_tree(3);
 }
 __attribute__((export_name("_fix_apply"))) fix_handle apply(fix_handle input) {
-  tree(input, 7);
+  input = tree(input, 7);
   set_input(input);
   state = (State){0};
   state.time = integer(entry(input, 6), 8);
   mt19937_seed(&state.random, integer(entry(input, 5), 8));
   state.arguments = byte_list(entry(input, 2), &state.argument_count);
+  size_t title_length = state.argument_count ? state.argument_count - 1 : 0;
+  for (size_t i = 0; i < state.argument_count; ++i) {
+    require(state.arguments[i].len <= SIZE_MAX - title_length);
+    title_length += state.arguments[i].len;
+  }
+  Bytes title = bytes_allocate(title_length);
+  size_t title_offset = 0;
+  for (size_t i = 0; i < state.argument_count; ++i) {
+    if (i)
+      title.data[title_offset++] = ' ';
+    memcpy(title.data + title_offset, state.arguments[i].data, state.arguments[i].len);
+    title_offset += state.arguments[i].len;
+  }
+  fix_advise(input, (const uint8_t *)"fix::title", 10, title.data, title.len);
+  free(title.data);
   state.environment = byte_list(entry(input, 3), &state.environment_count);
-  fix_handle descriptors = entry(input, 4);
+  fix_handle descriptors = force(entry(input, 4));
   require(fix_is_object(descriptors) &&
           fix_get_data_type(descriptors) == FIX_TREE);
   for (uint32_t i = 0; i < local_length(descriptors); ++i)

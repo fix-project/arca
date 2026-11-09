@@ -1,0 +1,7 @@
+program = $runner_probe_native
+stat = (0u64 4u8 1u64 0u64 17u64 19u64 23u64)
+directory = ("/work" (0u64 3u8 1u64 0u64 17u64 19u64 23u64) (("input.txt" stat "original")))
+filesystem = (("stdin" () "") ("stdout" () "") ("stderr" () "") directory)
+result = *#("" program ("probe" "read") () filesystem 0u64 10000u64)
+checker = $check_result_native
+*#("" checker (*[result 0u64] *[result 1u64]) (filesystem 0u32))

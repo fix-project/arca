@@ -1,8 +1,3 @@
-#![allow(
-    improper_ctypes,
-    improper_ctypes_definitions,
-    reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
-)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -25,15 +20,11 @@ unsafe extern "C" {
 }
 
 pub const EXTERNREF_SIZE: usize = core::mem::size_of::<wasm_rt_externref_t>();
-const _: () = assert!(
-    EXTERNREF_SIZE == fixhandle::HANDLE_SIZE
-        && core::mem::align_of::<wasm_rt_externref_t>()
-            == core::mem::align_of::<fixhandle::Handle>()
-);
+const _: () = assert!(EXTERNREF_SIZE == core::mem::size_of::<usize>());
 
 pub const FUNCREF_SIZE: usize = core::mem::size_of::<wasm_rt_funcref_t>();
 
-// Slots 0–63 hold memories, 64–126 hold tables, and 127 holds the native shell.
+// Memory and table slots contain a 4 GiB payload followed by a 4 GiB guard.
 pub static mut MEMORY_IDX: usize = 0;
 pub static mut TABLE_IDX: usize = 0;
 
@@ -46,12 +37,14 @@ pub unsafe fn externref_table(index: u32) -> *mut wasm_rt_externref_table_t {
     }
 }
 
-pub const NUM_MEMORIES: usize = 64;
-pub const NUM_TABLES: usize = 63;
-pub const SLOT_SIZE: usize = 1 << 32;
-pub const MAX_PAGES: u64 = (SLOT_SIZE / PAGE_SIZE as usize) as u64;
-pub const MAX_TABLE_ELEMENTS: u32 = (SLOT_SIZE / EXTERNREF_SIZE) as u32;
-pub const MAX_FUNCREF_TABLE_ELEMENTS: u32 = (SLOT_SIZE / FUNCREF_SIZE) as u32;
+pub const NUM_MEMORIES: usize = 32;
+pub const NUM_TABLES: usize = 30;
+pub const PAYLOAD_SIZE: usize = 1 << 32;
+pub const SLOT_SIZE: usize = 2 * PAYLOAD_SIZE;
+pub const HANDLE_BASE: usize = 0x7e00000000;
+pub const MAX_PAGES: u64 = (PAYLOAD_SIZE / PAGE_SIZE as usize) as u64;
+pub const MAX_TABLE_ELEMENTS: u32 = (PAYLOAD_SIZE / fixhandle::HANDLE_SIZE) as u32;
+pub const MAX_FUNCREF_TABLE_ELEMENTS: u32 = (PAYLOAD_SIZE / FUNCREF_SIZE) as u32;
 
 pub static mut MEMORIES: [*mut wasm_rt_memory_t; NUM_MEMORIES] =
     [core::ptr::null_mut(); NUM_MEMORIES];
@@ -62,6 +55,10 @@ pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; NUM_TABLES] =
 
 pub static mut MEMORY_ATTACHED: [bool; NUM_MEMORIES] = [false; NUM_MEMORIES];
 pub static mut TABLE_ATTACHED: [bool; NUM_TABLES] = [false; NUM_TABLES];
+pub static mut MEMORY_HANDLES: [wasm_rt_externref_t; NUM_MEMORIES] =
+    [core::ptr::null_mut(); NUM_MEMORIES];
+pub static mut TABLE_HANDLES: [wasm_rt_externref_t; NUM_TABLES] =
+    [core::ptr::null_mut(); NUM_TABLES];
 
 pub unsafe fn map_region(data: *mut u8, size: usize, mode: u32) -> Option<usize> {
     if size == 0 {
@@ -82,8 +79,20 @@ pub unsafe fn replace_region(data: *mut u8, old_size: usize, size: usize) {
     }
 }
 
+pub(crate) unsafe fn copy_guest_bytes(source: usize, destination: usize, length: usize) {
+    unsafe {
+        core::arch::asm!(
+            "rep movsb",
+            inout("rsi") source => _,
+            inout("rdi") destination => _,
+            inout("rcx") length => _,
+            options(nostack),
+        );
+    }
+}
+
 fn table_bytes(elements: u32, element_size: usize) -> usize {
-    (elements as usize * element_size).next_multiple_of(PAGE_SIZE as usize)
+    (elements as usize * element_size).next_multiple_of(4096)
 }
 
 /**
@@ -189,7 +198,7 @@ pub extern "C" fn wasm_rt_allocate_externref_table(
         let data = (SLOT_SIZE * (NUM_MEMORIES + idx)) as *mut u8;
         let memory_size = map_region(
             data,
-            table_bytes(elements, EXTERNREF_SIZE),
+            table_bytes(elements, fixhandle::HANDLE_SIZE),
             __MODE_read_write,
         )
         .expect("table allocation failed") as i64;
@@ -217,16 +226,35 @@ pub extern "C" fn wasm_rt_grow_externref_table(
         }
     }
     let table = unsafe { &mut *table };
-    unsafe {
-        grow_table(
-            table.data,
-            &mut table.size,
-            table.max_size,
-            &mut table.memory_size,
-            delta,
-            init,
-        )
+    let Some(desired) = table
+        .size
+        .checked_add(delta)
+        .filter(|size| *size <= table.max_size)
+    else {
+        return u32::MAX;
+    };
+    let desired_bytes = table_bytes(desired, fixhandle::HANDLE_SIZE);
+    let current_bytes = usize::try_from(table.memory_size).unwrap();
+    if desired_bytes > current_bytes {
+        if unsafe {
+            map_region(
+                (table.data as *mut u8).add(current_bytes),
+                desired_bytes - current_bytes,
+                __MODE_read_write,
+            )
+        }
+        .is_none()
+        {
+            return u32::MAX;
+        }
+        table.memory_size = desired_bytes as i64;
     }
+    let old_size = table.size;
+    table.size = desired;
+    for index in old_size..desired {
+        unsafe { crate::fixpoint::wasm_rt_set_externref(table, index as u64, init) };
+    }
+    old_size
 }
 
 unsafe fn grow_table<T: Copy>(

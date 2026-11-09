@@ -6,14 +6,10 @@ use fix::{Blob, Error, Handle, Object, Tree, Value};
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-#[fix::apply]
-pub fn apply(
-    combination: &Handle<Object<Tree>, fix::Focus>,
+#[fix::main]
+pub fn main(
+    tuple: Handle<Object<Tree>, fix::Capture>,
 ) -> Result<impl Value<Type = Object<Blob>>, Error> {
-    if combination.len()? != 3 {
-        return Ok(Blob::create(u64::MAX.to_le_bytes()));
-    }
-    let tuple = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
     if tuple.len()? != 2 {
         return Ok(Blob::create(u64::MAX.to_le_bytes()));
     }

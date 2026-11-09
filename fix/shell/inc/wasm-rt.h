@@ -22,9 +22,16 @@
 #include <stdint.h>
 
 #define PAGE_SIZE 65536
+/* Memory bases stay fixed across growth and attachment. */
+#define WASM_RT_USE_MMAP 1
 #define WASM_RT_MEMCHECK_BOUNDS_CHECK 1
+#define WASM_RT_MASK_MEMORY32 1
 
+#ifdef __cplusplus
+#include "wasm-cpp.h"
+#else
 [[noreturn]] void abort(void);
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,7 +49,9 @@ extern "C" {
 #define LIKELY(x) (x)
 #endif
 
-#if __has_builtin(__builtin_memcpy)
+#ifdef __cplusplus
+#define wasm_rt_memcpy fixcpp::copy
+#elif __has_builtin(__builtin_memcpy)
 #define wasm_rt_memcpy __builtin_memcpy
 #else
 void *memcpy(void *, const void *, size_t);
@@ -101,8 +110,11 @@ typedef void (*wasm_rt_function_ptr_t)(void);
  * trampoline or by another tail-callee function. (The definition uses a
  * single-member struct to allow a recursive definition.)
  */
+#ifndef WASM_RT_TAIL_STACK_TYPE
+#define WASM_RT_TAIL_STACK_TYPE void *
+#endif
 typedef struct wasm_rt_tailcallee_t {
-  void (*fn)(void **instance_ptr, void *tail_call_stack,
+  void (*fn)(void **instance_ptr, WASM_RT_TAIL_STACK_TYPE tail_call_stack,
              struct wasm_rt_tailcallee_t *next);
 } wasm_rt_tailcallee_t;
 
@@ -129,25 +141,24 @@ typedef struct {
 } wasm_rt_funcref_t;
 
 /** Default (null) value of a funcref */
-static const wasm_rt_funcref_t wasm_rt_funcref_null_value;
+static const wasm_rt_funcref_t wasm_rt_funcref_null_value = {0};
 
 /** The type of an external reference (opaque to WebAssembly). */
-typedef unsigned char __attribute__((vector_size(32))) u8x32;
-typedef struct {
-  u8x32 bytes;
-} wasm_rt_externref_t;
+#include "wasm-rt-refs.h"
+#ifdef __cplusplus
+typedef fixcpp::Ref wasm_rt_externref_t;
+#else
+typedef wasm_rt_ref_value *wasm_rt_externref_t;
+#endif
+
+#define WASM_EXN_MAX_SIZE 256
 
 /** Default (null) value of an externref */
-static const wasm_rt_externref_t wasm_rt_externref_null_value = {0};
-
-static inline bool wasm_rt_externref_is_null(wasm_rt_externref_t value) {
-  for (size_t i = 0; i < sizeof(value.bytes); ++i) {
-    if (value.bytes[i] != 0) return false;
-  }
-  return true;
-}
-#define WASM_RT_EXTERNREF_IS_NULL(value) wasm_rt_externref_is_null(value)
-
+#ifdef __cplusplus
+#define wasm_rt_externref_null_value wasm_rt_externref_t{}
+#else
+#define wasm_rt_externref_null_value ((wasm_rt_externref_t){NULL})
+#endif
 
 /** A Memory object. */
 typedef struct {
@@ -179,7 +190,7 @@ typedef struct {
 /** A Table of type externref. */
 typedef struct {
   /** The table element data, with an element count of `size`. */
-  wasm_rt_externref_t *data;
+  wasm_rt_ref_value *data;
   /** The current number of bytes allocated to the table. */
   int64_t memory_size;
   /** The maximum element count of this Table object. If there is no maximum,
@@ -188,6 +199,14 @@ typedef struct {
   /** The current element count of the table. */
   uint32_t size;
 } wasm_rt_externref_table_t;
+
+void wasm_rt_get_externref(const wasm_rt_externref_table_t *, uint64_t, wasm_rt_externref_t);
+uint32_t wasm_rt_ref_is_null(wasm_rt_externref_t);
+void wasm_rt_set_externref(const wasm_rt_externref_table_t *, uint64_t, wasm_rt_externref_t);
+void wasm_rt_copy_externref_table(wasm_rt_externref_table_t *, const wasm_rt_externref_table_t *, uint64_t, uint64_t, uint64_t);
+#define WASM_RT_EXTERNREF_SET(table, index, value) wasm_rt_set_externref(table, index, value)
+#define WASM_RT_EXTERNREF_GET(table, index, out) wasm_rt_get_externref(table, index, out)
+#define WASM_RT_EXTERNREF_COPY(dest, src, dest_index, src_index, len) wasm_rt_copy_externref_table(dest, src, dest_index, src_index, len)
 
 /** Initialize the runtime. */
 void wasm_rt_init(void);

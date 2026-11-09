@@ -67,15 +67,14 @@ def _overlay_directories(repository_ctx):
 
         # Symlink source dirs (if not themselves overlaid) and files.
         src_dir = src_root.get_child(rel_dir)
-        if not src_dir.exists:
-            continue
-        for src_entry in src_dir.readdir():
-            name = src_entry.basename
-            if name in overlay_dirs.keys():
-                # Skip: overlay has a directory with this name
-                continue
+        if src_dir.exists:
+            for src_entry in src_dir.readdir():
+                name = src_entry.basename
+                if name in overlay_dirs.keys():
+                    # Skip: overlay has a directory with this name
+                    continue
 
-            repository_ctx.symlink(src_entry, target_root.get_child(rel_dir + "/" + name))
+                repository_ctx.symlink(src_entry, target_root.get_child(rel_dir + "/" + name))
 
         if not stack:
             return

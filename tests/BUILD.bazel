@@ -8,15 +8,18 @@ HOST = [
     "//fix/api",
     "//fix/storage",
     "//fix/repository",
+    "//arca/kernel:tests",
+    "//fix/runtime:tests",
+    "//tests/kernel:harness_test",
+    "//tests/kernel:harness_probe",
     "//tools/vmm:vmm",
     "//tools:bindgen",
     "//tools:postprocess",
     "//tools/module-combiner:wasm_merge",
-    "//fix/cli:host",
-    "//fix/cli:preprocess",
+    "//fix/cli:fix",
     "//build:fix_test",
     "//programs/fix:addblob",
-    "//programs/flatware:ls",
+    "//programs/flatware:ls_wasm",
     "//fix/handle",
 ]
 
@@ -25,14 +28,16 @@ GUEST = [
     "//arca/kernel:test_image",
     "//fix/runtime:test_image",
     "//tests/arca:simd_elf",
+    "//tests/arca:continuations_elf",
     "//tests/kernel:threads_image",
+    "//tests/kernel:harness_image",
 ] + ["//programs/kernel:" + name + "_image" for name in KERNEL_PROGRAMS] + [
     "//programs/arca:" + name + "_elf" for name in ARCA_PROGRAMS + ARCA_COMBINATORS + ["webserver", "webserver2"]
 ] + [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//flatware:cpio_wasm", "//flatware:normalize_wasm", "//flatware:result_wasm", "//programs/fix:compose_wasm", "//programs/fix/json:wasm", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
+CHECKS = HOST + GUEST + ["//bootstrap:seed_tool", "//flatware:tree", "//fix/preprocessor", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 
@@ -57,10 +62,8 @@ test_suite(name = "lint", tags = ["manual"], tests = [":rust_lint", "//fix/sdk:l
 sh_test(
     name = "compile_test",
     srcs = ["compile_test.sh"],
-    args = ["$(rootpath " + target + ")" for target in [
-        "//fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:repository_archive",
-    ]],
-    data = ["//fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:repository_archive"],
+    args = ["$(rootpath //fix/cli:fix)", "$(rootpath //programs/fix:fib_module)", "$(rootpath //programs/fix:addblob_module)", "$(rootpath //fix/cli:precompiled)"],
+    data = ["//fix/cli:fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//fix/cli:precompiled"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local", "manual"],

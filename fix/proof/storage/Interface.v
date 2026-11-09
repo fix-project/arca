@@ -1,4 +1,5 @@
-(** Specifies immutable Blob and Tree storage, comparability, and finite Object containment. *)
+(** Specifies immutable Blob and Tree storage, comparability, full evaluation, and finite
+    Object containment. *)
 
 From Stdlib Require Import List ZArith Arith Wellfounded Lia.
 From FixProof.Semantics Require Export Types.
@@ -19,6 +20,13 @@ Module Type STORAGE.
     | Data (Object (TreeObj t)) | Data (Ref (TreeRef t)) => tree_comparable t
     | Thunk _ | Encode _ => false
     end.
+  Parameter tree_value : TreeName -> bool.
+  Definition is_value h :=
+    match h with
+    | Data (Object (TreeObj t)) => tree_value t
+    | Data (Object (BlobObj _)) | Data (Ref _) | Thunk _ => true
+    | Encode _ => false
+    end.
   Definition create_tree := create_tree_tagged false.
   Definition to_nat := decode_u64.
   Definition from_nat := encode_u64.
@@ -33,6 +41,9 @@ Module Type STORAGE.
   (** A newly created Tree is Comparable exactly when every child is Comparable. *)
   Axiom tree_comparable_create_tree_tagged : forall tag xs,
     tree_comparable (create_tree_tagged tag xs) = forallb is_comparable xs.
+  (** A newly created Tree is fully evaluated exactly when every child is fully evaluated. *)
+  Axiom tree_value_create_tree_tagged : forall tag xs,
+    tree_value (create_tree_tagged tag xs) = forallb is_value xs.
   (** Rebuilding a Tree from its marker and children recovers the original Tree name. *)
   (** This converse to reading a newly constructed Tree rules out extra identity hidden in
       a Tree name. Reconstructing unchanged fields cannot change the represented Tree; the
@@ -44,6 +55,13 @@ Module Type STORAGE.
     tree_comparable t = forallb is_comparable (get_tree_raw t).
   Proof.
     rewrite <- (tree_comparable_create_tree_tagged (tree_tag t) (get_tree_raw t)).
+    rewrite create_tree_get_tree_raw; reflexivity.
+  Qed.
+  (** An existing Tree is fully evaluated exactly when every child is fully evaluated. *)
+  Lemma tree_value_contents t :
+    tree_value t = forallb is_value (get_tree_raw t).
+  Proof.
+    rewrite <- (tree_value_create_tree_tagged (tree_tag t) (get_tree_raw t)).
     rewrite create_tree_get_tree_raw; reflexivity.
   Qed.
   (** Reading an ordinary newly created Tree recovers its input children. *)

@@ -36,6 +36,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_program(mut self) -> Result<Parsed<'a>, Error> {
+        self.parse_body(&Token::Eof)
+    }
+
+    fn parse_body(&mut self, close: &Token) -> Result<Parsed<'a>, Error> {
         let expression = loop {
             while self.matches(&Token::Newline) {}
             if let Some(Token::Identifier(name)) = self.peek(self.position).cloned()
@@ -49,7 +53,7 @@ impl<'a> Parser<'a> {
             }
             let expression = self.parse_expr()?;
             while self.matches(&Token::Newline) {}
-            self.expect(&Token::Eof, "expected end of program");
+            self.expect(close, "expected end of script");
             break expression;
         };
         Ok(expression)
@@ -82,6 +86,25 @@ impl<'a> Parser<'a> {
             Token::Plus => {
                 let value: Cast<Thunk, _> = self.parse_expr()?.try_into()?;
                 Rc::new(value.shallow().erase())
+            }
+            Token::LBrace => {
+                let environment = self.environment.clone();
+                let mut bindings = Vec::new();
+                while self.matches(&Token::Newline) {}
+                while let Some(Token::Primitive(name)) = self.peek(self.position).cloned()
+                    && self.peek(self.position + 1) == Some(&Token::Equal)
+                {
+                    self.position += 2;
+                    bindings.push((name, self.parse_expr()?));
+                    self.expect(&Token::Newline, "expected newline after binding");
+                    while self.matches(&Token::Newline) {}
+                }
+                let context = core::mem::take(&mut self.context);
+                self.environment.extend(bindings);
+                let expression = self.parse_body(&Token::RBrace);
+                self.context = context;
+                self.environment = environment;
+                expression?
             }
             Token::LParen => Rc::new(Tree::create(self.parse_handles(&Token::RParen)?).erase()),
             Token::LBracket => Rc::new(

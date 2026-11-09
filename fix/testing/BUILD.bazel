@@ -1,0 +1,12 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//build:defs.bzl", "GUEST_ONLY")
+
+rust_library(
+    name = "reference",
+    srcs = ["lib.rs"],
+    crate_name = "fix_reference",
+    crate_root = "lib.rs",
+    target_compatible_with = GUEST_ONLY,
+    visibility = ["//fix/runtime:__pkg__", "//fix/benchmarks:__pkg__"],
+    deps = ["//fix/runtime"],
+)

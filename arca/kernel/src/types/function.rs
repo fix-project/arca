@@ -71,6 +71,16 @@ impl Function {
             } else {
                 0
             };
+            let gsbase = if data.len() > 5 {
+                let gsbase: Word = data.get(5).try_into().ok()?;
+                let gsbase = gsbase.read();
+                if !matches!((gsbase as i64) >> 47, 0 | -1) {
+                    return None;
+                }
+                gsbase
+            } else {
+                0
+            };
             let xstate = if data.len() > 4 {
                 match data.get(4) {
                     Value::Null(_) => XState::default(),
@@ -97,6 +107,7 @@ impl Function {
             let registers = CompleteRegisterFile {
                 registers: register_file,
                 fsbase,
+                gsbase,
                 xstate,
             };
             let arca = Arca::new_with(registers, memory, descriptors);
@@ -131,13 +142,14 @@ impl Function {
                     for i in 0..18 {
                         rr.set(i, Value::Word(Word::new(registers.registers[i])));
                     }
-                    (
-                        rr,
-                        t,
-                        d,
-                        Word::new(registers.fsbase),
-                        Blob::new(registers.xstate.as_bytes()),
-                    )
+                    let mut state = Tuple::new(6);
+                    state.set(0, rr);
+                    state.set(1, t);
+                    state.set(2, d);
+                    state.set(3, Word::new(registers.fsbase));
+                    state.set(4, Blob::new(registers.xstate.as_bytes()));
+                    state.set(5, Word::new(registers.gsbase));
+                    state
                 }),
                 args,
             ))),
@@ -285,23 +297,29 @@ mod tests {
         let expected: Tuple = expected.get(1).try_into().unwrap();
         assert_eq!(actual.get(3), expected.get(3));
         assert_eq!(actual.get(4), expected.get(4));
+        assert_eq!(actual.get(5), expected.get(5));
 
-        for fsbase in [0x12345678, 0x800000000000] {
+        for (field, base) in [
+            (3, 0x12345678),
+            (3, 0x800000000000),
+            (5, 0x76543210),
+            (5, 0x800000000000),
+        ] {
             let Value::Tuple(mut definition) = definition.clone() else {
                 unreachable!()
             };
             let mut data: Tuple = definition.take(1).try_into().unwrap();
-            data.set(3, Word::new(fsbase));
+            data.set(field, Word::new(base));
             definition.set(1, data);
             let definition = Value::Tuple(definition);
             let function = Function::new(definition.clone());
-            if fsbase == 0x12345678 {
+            if base < 0x800000000000 {
                 let Value::Tuple(definition) = function.unwrap().read() else {
                     unreachable!()
                 };
                 let data: Tuple = definition.get(1).try_into().unwrap();
-                let saved: Word = data.get(3).try_into().unwrap();
-                assert_eq!(saved.read(), fsbase);
+                let saved: Word = data.get(field).try_into().unwrap();
+                assert_eq!(saved.read(), base);
             } else {
                 assert!(function.is_none());
             }

@@ -7,12 +7,10 @@ From Hammer Require Import Tactics.
 From FixProof.Semantics Require Import Handle ApplyTree.
 From FixProof.Collector Require Import Matching Encoding Exchanges.
 From FixProof.Evaluation Require Import Adequacy.
-From FixProof.Shell Require Import TagCreation.
 Import ListNotations.
 
 Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
-  Module Authors := TagCreation S P.
-  Module X := CouponExchanges S P Authors.
+  Module X := CouponExchanges S P.
   Module EC := EvaluationAdequacy S P X.D.EC.E.EP.
   Import X X.D X.D.EC.E.EP X.D.EC.E.EP.E X.D.EC.E.EP.E.H.
 
@@ -24,13 +22,13 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
   Inductive issued issuing_author : handle -> Prop :=
   | IssuedApplication tree result :
       value_handle (HTreeObj tree) -> A.apply_tree tree = Some result ->
-      issued issuing_author (Wire.witness (create_tree []) 2 (HTreeObj tree) result)
+      issued issuing_author (Wire.witness (HTreeObj (create_tree [])) 2 (HTreeObj tree) result)
   | IssuedSelection tree result :
       Sl.select tree = Some result ->
-      issued issuing_author (Wire.witness (create_tree []) 6 (HTreeObj tree) result)
+      issued issuing_author (Wire.witness (HTreeObj (create_tree [])) 6 (HTreeObj tree) result)
   | IssuedExchange rule coupons lhs rhs kind output :
       Forall (issued issuing_author) coupons -> check rule coupons lhs rhs = Some kind ->
-      issue issuing_author kind lhs rhs coupons = Some output -> issued issuing_author output.
+      X.issue issuing_author kind lhs rhs coupons output -> issued issuing_author output.
 
   Definition certifies issuing_author kind lhs rhs := exists witness,
     issued issuing_author witness /\ read kind witness = Some (lhs, rhs).
@@ -41,6 +39,26 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
   Proof.
     intro Encoded; apply Wire.encode_decode in Encoded; unfold read; rewrite Encoded.
     destruct (API.statement_kind_eq_dec kind kind); [reflexivity|contradiction].
+  Qed.
+
+  Lemma issued_authorized issuing_author witness :
+    issued issuing_author witness -> authenticated_by issuing_author witness = true.
+  Proof.
+    intro Issued; destruct Issued as [tree result Value Applied|tree result Selected|
+      rule coupons lhs rhs kind output Inputs Checked [Allowed Encoded]].
+    - unfold authenticated_by.
+      rewrite (Wire.decode_author _ _ _ _ _
+        (Wire.encode_decode Apply (HTreeObj (create_tree [])) (HTreeObj tree) result _ eq_refl)).
+      change (API.handle_eqb kernel_author issuing_author || API.handle_eqb kernel_author kernel_author = true).
+      rewrite API.handle_eqb_refl, orb_true_r; reflexivity.
+    - unfold authenticated_by.
+      rewrite (Wire.decode_author _ _ _ _ _
+        (Wire.encode_decode Select (HTreeObj (create_tree [])) (HTreeObj tree) result _ eq_refl)).
+      change (API.handle_eqb kernel_author issuing_author || API.handle_eqb kernel_author kernel_author = true).
+      rewrite API.handle_eqb_refl, orb_true_r; reflexivity.
+    - unfold authenticated_by; rewrite (Wire.decode_author _ _ _ _ _
+        (Wire.encode_decode _ _ _ _ _ Encoded)).
+      rewrite API.handle_eqb_refl; reflexivity.
   Qed.
 
   (** A successful public exchange with previously issued premises can issue a certificate
@@ -54,9 +72,15 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
         representation, while the previous witnesses remain the ordered premises recorded
         in its issuance derivation. *)
     intros Inputs Checked Code.
-    assert (OutputExists : exists output, issue issuing_author kind lhs rhs coupons = Some output).
-    { unfold issue, Wire.encode; rewrite Code; eexists; reflexivity. }
-    hauto cases: - use: IssuedExchange, read_encoded unfold!: certifies.
+    assert (OutputExists : exists output, Wire.encode kind issuing_author lhs rhs = Some output).
+    { unfold Wire.encode; rewrite Code; eexists; reflexivity. }
+    destruct OutputExists as [output Encoded]; exists output; split.
+    - eapply IssuedExchange; [exact Inputs|exact Checked|].
+      split; [|exact Encoded].
+      unfold reconstruction_authority; apply forallb_forall.
+      intros witness Present; eapply issued_authorized.
+      eapply Forall_forall; eassumption.
+    - eapply read_encoded; exact Encoded.
   Qed.
 
   (** Encoding a true claim produces a valid certificate witness. *)
@@ -75,13 +99,14 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
         soundness justifies the new fact. *)
     destruct Derivation as [tree result Value Applied|tree result Selected|
       rule coupons lhs rhs kind output Inputs Checked Encoded].
-    - eapply (encoded_valid Apply (create_tree []) (HTreeObj tree) result);
+    - eapply (encoded_valid Apply (HTreeObj (create_tree [])) (HTreeObj tree) result);
         [|reflexivity].
       apply CouponApply; assumption.
-    - eapply (encoded_valid Select (create_tree []) (HTreeObj tree) result);
+    - eapply (encoded_valid Select (HTreeObj (create_tree [])) (HTreeObj tree) result);
         [|reflexivity].
       apply CouponSelect; exact Selected.
-    - eapply encoded_valid; [|exact Encoded].
+    - destruct Encoded as [_ Encoded].
+      eapply encoded_valid; [|exact Encoded].
       eapply check_sound; [|exact Checked].
       refine ((fix premises xs (Proof : Forall (issued issuing_author) xs) {struct Proof} :
         Forall valid xs := _) _ Inputs).
@@ -201,9 +226,9 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
           public Think-application exchange connects the resulting one-step computation to
           the original application Thunk. *)
       intros [p [Issued Read]] Value Applied.
-      set (q := Wire.witness (create_tree []) 2 (HTreeObj ready) result).
+      set (q := Wire.witness (HTreeObj (create_tree [])) 2 (HTreeObj ready) result).
       assert (Second : read Apply q = Some (HTreeObj ready, result)).
-      { apply (read_encoded _ (create_tree []) _ _ _); reflexivity. }
+      { apply (read_encoded _ (HTreeObj (create_tree [])) _ _ _); reflexivity. }
       assert (issued issuing_author q) by (apply IssuedApplication; assumption).
       exchange X.ThinkApplication [p; q].
     Qed.
@@ -218,9 +243,9 @@ Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
           primitive Select certificate speaks about selection from that Tree; the public
           exchange connects this storage fact back to the original selection Thunk. *)
       intros [p [Issued Read]] Selected.
-      set (q := Wire.witness (create_tree []) 6 (HTreeObj ready) result).
+      set (q := Wire.witness (HTreeObj (create_tree [])) 6 (HTreeObj ready) result).
       assert (Second : read Select q = Some (HTreeObj ready, result)).
-      { apply (read_encoded _ (create_tree []) _ _ _); reflexivity. }
+      { apply (read_encoded _ (HTreeObj (create_tree [])) _ _ _); reflexivity. }
       assert (issued issuing_author q) by (apply IssuedSelection; assumption).
       exchange X.ThinkSelection [p; q].
     Qed.

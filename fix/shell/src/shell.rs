@@ -1,19 +1,16 @@
-#![allow(
-    improper_ctypes_definitions,
-    reason = "userspace uses the System V SIMD ABI; vector layout is asserted in rt"
-)]
-use arca::{Blob, Entry, Function, Table, Value, Word};
+use crate::continuation::receive;
+use arca::{Blob, Entry, Table, Value, Word};
 use arca::{Runtime as _, Tuple};
 use arcane::{
     __MODE_read_only, __MODE_read_write, __NR_length, __TYPE_table, arca_argument,
     arca_blob_create, arca_blob_read, arca_entry, arca_mmap, arca_mprotect, arca_table_map, arcad,
 };
 
-use core::arch::x86_64::*;
+use crate::handles::Reference;
+use crate::handles::{self, Query};
 use core::ffi::{CStr, c_char, c_uint, c_void};
-use core::simd::u8x32;
-use fixhandle::*;
-use fixtypes::{DataType, EncodeType, ValueType};
+use fixhandle::HANDLE_SIZE;
+use fixtypes::{DataType, EncodeType, ThunkType, ValueType};
 
 use user::ArcaError;
 use user::Runtime;
@@ -23,17 +20,17 @@ use user::error::log_int as arca_log_int;
 /// # Safety
 /// `bytes` must encode a Handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_blob_i32(val: u32) -> u8x32 {
+pub unsafe extern "C" fn fixpoint_create_blob_i32(result: Reference, val: u32) {
     let bytes = val.to_le_bytes();
-    unsafe { fixpoint_create_blob(&bytes) }
+    unsafe { fixpoint_create_blob(result, &bytes) }
 }
 
 /// # Safety
 /// `bytes` must encode a Handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_blob_i64(val: u64) -> u8x32 {
+pub unsafe extern "C" fn fixpoint_create_blob_i64(result: Reference, val: u64) {
     let bytes = val.to_le_bytes();
-    unsafe { fixpoint_create_blob(&bytes) }
+    unsafe { fixpoint_create_blob(result, &bytes) }
 }
 
 /// Attaches a blob to a region of memory.  Returns the size (in bytes) of the mapped blob.
@@ -44,17 +41,36 @@ pub unsafe extern "C" fn fixpoint_create_blob_i64(val: u64) -> u8x32 {
 /// No Rust references may point into the slot.
 #[inline]
 pub unsafe extern "C" fn fixpoint_attach_blob(
-    handle: u8x32,
+    handle: Reference,
     addr: *mut c_void,
     old_size: usize,
 ) -> usize {
+    crate::locals::lift(&[handle]);
     if !unsafe { fixpoint_is_blob_obj(handle) } {
         arca_log("attach_blob: handle does not refer to a BlobObject");
         panic!()
     }
 
-    let result: Result<Value<Runtime>, ArcaError> = Function::symbolic("get_blob")
-        .apply(Runtime::create_blob(handle.as_array()))
+    if unsafe { handles::query(handle, handles::Query::Literal) } != 0 {
+        let len = unsafe { fixpoint_len(handle) };
+        unsafe {
+            crate::rt::replace_region(addr.cast(), old_size, 0);
+            if len != 0 {
+                crate::rt::map_region(
+                    addr.cast(),
+                    len.next_multiple_of(crate::rt::PAGE_SIZE as usize),
+                    __MODE_read_write,
+                )
+                .expect("inline Blob mapping failed");
+                crate::rt::copy_guest_bytes(handles::address(handle), addr as usize, len);
+                assert_eq!(arca_mprotect(addr, __MODE_read_only as i32), 0);
+            }
+        }
+        return len;
+    }
+
+    let result: Result<Value<Runtime>, ArcaError> = crate::continuation::operation("get_blob")
+        .blob(&handles::bytes(handle))
         .call_with_current_continuation()
         .try_into()
         .map_err(|_| ArcaError::BadType);
@@ -64,8 +80,16 @@ pub unsafe extern "C" fn fixpoint_attach_blob(
         panic!()
     };
     let len = unsafe { fixpoint_len(handle) };
-    assert!(len <= crate::rt::SLOT_SIZE);
-    unsafe { attach_data(&blob, addr.cast(), old_size, len) };
+    assert!(len <= crate::rt::PAYLOAD_SIZE);
+    unsafe {
+        attach_data(
+            blob,
+            addr.cast(),
+            old_size,
+            len,
+            len.next_multiple_of(crate::rt::PAGE_SIZE as usize),
+        )
+    };
     len
 }
 
@@ -77,7 +101,7 @@ pub unsafe extern "C" fn fixpoint_attach_blob(
 /// No Rust references may point into the slot.
 #[inline]
 pub unsafe extern "C" fn fixpoint_attach_tree(
-    handle: u8x32,
+    handle: Reference,
     addr: *mut c_void,
     old_size: usize,
 ) -> usize {
@@ -86,8 +110,15 @@ pub unsafe extern "C" fn fixpoint_attach_tree(
         panic!()
     }
 
-    let result: Result<Value<Runtime>, ArcaError> = Function::symbolic("get_tree")
-        .apply(Runtime::create_blob(handle.as_array()))
+    let len = unsafe { fixpoint_len(handle) };
+    if len == 0 {
+        unsafe { crate::rt::replace_region(addr.cast(), old_size, 0) };
+        return 0;
+    }
+    crate::locals::lift(&[handle]);
+
+    let result: Result<Value<Runtime>, ArcaError> = crate::continuation::operation("get_tree")
+        .blob(&handles::bytes(handle))
         .call_with_current_continuation()
         .try_into()
         .map_err(|_| ArcaError::BadType);
@@ -97,75 +128,101 @@ pub unsafe extern "C" fn fixpoint_attach_tree(
         panic!()
     };
 
-    let len = unsafe { fixpoint_len(handle) };
     assert!(len <= crate::rt::MAX_TABLE_ELEMENTS as usize);
-    let bytes = len * crate::rt::EXTERNREF_SIZE;
-    unsafe { attach_data(&tree, addr.cast(), old_size, bytes) };
+    let bytes = len * HANDLE_SIZE;
+    unsafe {
+        attach_data(
+            tree,
+            addr.cast(),
+            old_size,
+            bytes,
+            bytes.next_multiple_of(4096),
+        )
+    };
     len
 }
 
-pub fn backing_page(data: &Value<Runtime>, mut offset: usize) -> (arca::Page<Runtime>, usize) {
-    let mut table = match data {
-        Value::Table(table) => {
-            assert!(table.len() <= 1 << 30);
-            table.clone()
-        }
-        Value::Tuple(chunks) => {
-            assert!(chunks.len() <= 4);
-            let table: Table<Runtime> = chunks
-                .get(offset >> 30)
-                .try_into()
-                .expect("data chunk is not a Table");
-            assert_eq!(table.len(), 1 << 30);
-            offset &= (1 << 30) - 1;
-            table
-        }
-        _ => panic!("expected page-backed data"),
+pub unsafe extern "C" fn fixpoint_attach_tree_bytes(
+    handle: Reference,
+    addr: *mut c_void,
+    old_size: usize,
+) -> usize {
+    require_privilege();
+    assert!(unsafe { fixpoint_is_object(handle) && fixpoint_is_tree(handle) });
+    let bytes = unsafe { fixpoint_len(handle) }
+        .checked_mul(HANDLE_SIZE)
+        .expect("Tree byte length overflow");
+    if bytes == 0 {
+        unsafe { crate::rt::replace_region(addr.cast(), old_size, 0) };
+        return 0;
+    }
+    crate::locals::lift(&[handle]);
+    let tree: Value<Runtime> = crate::continuation::operation("get_tree")
+        .blob(&handles::bytes(handle))
+        .call_with_current_continuation();
+    unsafe {
+        attach_data(
+            tree,
+            addr.cast(),
+            old_size,
+            bytes,
+            bytes.next_multiple_of(crate::rt::PAGE_SIZE as usize),
+        )
     };
-    loop {
-        let span = table.len() / 512;
-        match table.get(offset / span).expect("attachment mapping") {
-            Entry::ROTable(child) | Entry::RWTable(child) => {
-                table = child;
-                offset %= span;
-            }
-            Entry::ROPage(page) => return (page, offset % span),
-            _ => panic!("attachment is not immutable page backing"),
-        }
+    bytes
+}
+
+unsafe fn attach_data(
+    data: Value<Runtime>,
+    addr: *mut u8,
+    old_size: usize,
+    len: usize,
+    size: usize,
+) {
+    unsafe {
+        crate::rt::replace_region(addr, old_size, 0);
+        map_data(data, addr, len, size);
     }
 }
 
-unsafe fn attach_data(data: &Value<Runtime>, addr: *mut u8, old_size: usize, len: usize) {
-    assert!(
-        matches!(data, Value::Table(_) | Value::Tuple(_)),
-        "expected page-backed data"
-    );
-    let size = len.next_multiple_of(crate::rt::PAGE_SIZE as usize);
-    unsafe { crate::rt::replace_region(addr, old_size, 0) };
-    for offset in (0..size).step_by(4096) {
-        let page = if offset < len {
-            let (page, position) = backing_page(data, offset);
-            assert_eq!(position, 0);
-            assert_eq!(page.len(), 4096);
-            if offset + 4096 > len {
-                let position = len - offset;
-                let mut padding = [0; 4096];
-                assert_eq!(
-                    page.read(position, &mut padding[..4096 - position]),
-                    4096 - position
-                );
-                assert!(padding[..4096 - position].iter().all(|byte| *byte == 0));
+pub(crate) unsafe fn map_data(data: Value<Runtime>, addr: *mut u8, len: usize, size: usize) {
+    assert!(len <= size && size.is_multiple_of(4096));
+    unsafe fn map(value: Value<Runtime>, address: *mut u8) {
+        let (datatype, data) = match value {
+            Value::Page(page) => {
+                assert_eq!(page.len(), 4096);
+                (arcane::__TYPE_page, page.into_inner().into_raw())
             }
-            page
-        } else {
-            arca::Page::<Runtime>::new(4096)
+            Value::Table(table) => (arcane::__TYPE_table, table.into_inner().into_raw()),
+            _ => panic!("expected mapping"),
         };
         let mut entry = arca_entry {
             mode: __MODE_read_only,
-            datatype: arcane::__TYPE_page,
-            data: page.into_inner().into_raw() as usize,
+            datatype,
+            data: data as usize,
         };
-        assert_eq!(unsafe { arca_mmap(addr.add(offset).cast(), &mut entry) }, 0);
+        assert_eq!(unsafe { arca_mmap(address.cast(), &mut entry) }, 0);
+        if entry.datatype != arcane::__TYPE_null {
+            assert_eq!(unsafe { arcane::arca_drop(entry.data as i64) }, 0);
+        }
+    }
+    if len != 0 {
+        match data {
+            Value::Tuple(mut chunks) => {
+                assert!(chunks.len() <= 4);
+                for index in 0..len.div_ceil(1 << 30) {
+                    unsafe {
+                        map(chunks.take(index), addr.add(index << 30));
+                    }
+                }
+            }
+            value => unsafe { map(value, addr) },
+        }
+    }
+    let mapped = len.next_multiple_of(4096);
+    if size > mapped {
+        unsafe { crate::rt::map_region(addr.add(mapped), size - mapped, __MODE_read_only) }
+            .expect("attachment padding failed");
     }
 }
 
@@ -188,18 +245,35 @@ pub unsafe fn detach_data(addr: *mut u8, size: usize, copy: bool) {
 ///
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
 #[inline]
-pub unsafe fn fixpoint_create_blob(slice: &[u8]) -> u8x32 {
-    unsafe { fixpoint_create_blob_from_memory(slice.as_ptr(), slice.len()) }
+pub unsafe fn fixpoint_create_blob(result: Reference, slice: &[u8]) {
+    unsafe { fixpoint_create_blob_from_memory(result, slice.as_ptr(), slice.len()) }
 }
 
 /// # Safety
 /// The region at `data` must contain `len` readable bytes.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_blob_from_memory(data: *const u8, len: usize) -> u8x32 {
+pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
+    result: Reference,
+    data: *const u8,
+    len: usize,
+) {
+    if len == 0 {
+        unsafe { core::ptr::write_bytes(result, 0, 1) };
+        return;
+    }
+    if len <= 30 {
+        let cell = handles::address(result);
+        unsafe {
+            core::ptr::write_bytes(cell as *mut u8, 0, HANDLE_SIZE);
+            crate::rt::copy_guest_bytes(data as usize, cell, len);
+            *((cell + 30) as *mut u8) = len as u8;
+        }
+        return;
+    }
     let raw = unsafe { arca_blob_create(data, len) };
     assert!(raw >= 0);
     let blob = Blob::<Runtime>::from_inner(user::Ref::from_raw(u32::try_from(raw).unwrap()));
-    receive(Function::symbolic("create_blob").apply(blob))
+    unsafe { crate::locals::create(result, blob.into(), len, 0x800f, alloc::vec::Vec::new()) }
 }
 
 /// Creates a tree from a region of memory.  Returns the handle,
@@ -207,33 +281,51 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(data: *const u8, len: 
 /// # Safety
 ///
 /// `slice` must be a prefix of a reserved externref table slot, containing
-/// 32-byte handles supplied by the runtime.
+/// packed handles supplied by the shell or runtime.
 #[inline]
-pub unsafe fn fixpoint_create_tree(slice: &[u8]) -> u8x32 {
+pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
     assert!(slice.len().is_multiple_of(HANDLE_SIZE));
+    let mut metadata = 0xa00fu16;
+    let mut dependencies = alloc::vec::Vec::new();
+    for offset in (0..slice.len()).step_by(HANDLE_SIZE) {
+        let cell = slice.as_ptr() as usize + offset;
+        let source = unsafe { handles::query_cell(cell, Query::LocalAddress) };
+        if source != 0 {
+            dependencies.push(source);
+        }
+        if unsafe { handles::query_cell(cell, Query::Comparable) } == 0 {
+            metadata &= !4;
+        }
+        if unsafe { handles::query_cell(cell, Query::Value) } == 0 {
+            metadata &= !8;
+        }
+    }
     let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
-    receive(
-        Function::symbolic("create_tree")
-            .apply(backing)
-            .apply(Word::<Runtime>::new(slice.len() as u64)),
-    )
+    unsafe { crate::locals::create(result, backing, slice.len(), metadata, dependencies) }
 }
 
-unsafe fn snapshot_tree(addr: *const u8, len: usize) -> Value<Runtime> {
+pub unsafe fn snapshot_tree(addr: *const u8, len: usize) -> Value<Runtime> {
     const CHUNK: usize = 1 << 30;
     assert_eq!(addr as usize % CHUNK, 0);
+    if len == 0 {
+        return arca::Page::<Runtime>::new(4096).into();
+    }
     let mut chunks = Tuple::<Runtime>::new(len.div_ceil(CHUNK).max(1));
     for index in 0..chunks.len() {
         let used = (len - index * CHUNK).min(CHUNK);
-        if used == 0 {
-            chunks.set(index, Table::<Runtime>::new(0));
-            continue;
-        }
         let position = unsafe { addr.add(index * CHUNK) };
         let mut raw = arca_entry {
             mode: arcane::__MODE_none,
             datatype: arcane::__TYPE_null,
-            data: CHUNK,
+            data: if len > CHUNK {
+                CHUNK
+            } else if used <= 4096 {
+                4096
+            } else if used <= 1 << 21 {
+                1 << 21
+            } else {
+                CHUNK
+            },
         };
         assert_eq!(
             unsafe { arca_mmap(position.cast_mut().cast(), &mut raw) },
@@ -255,8 +347,10 @@ unsafe fn snapshot_tree(addr: *const u8, len: usize) -> Value<Runtime> {
             }
             _ => panic!("missing tree mapping"),
         };
-        let Entry::ROTable(snapshot) = snapshot_tree_entry(&mut source, used) else {
-            panic!("invalid tree backing")
+        let snapshot: Value<Runtime> = match snapshot_tree_entry(&mut source, used) {
+            Entry::ROPage(page) => page.into(),
+            Entry::ROTable(table) => table.into(),
+            _ => unreachable!(),
         };
         raw.data = match source {
             Entry::ROPage(page) | Entry::RWPage(page) => page.into_inner().into_raw() as usize,
@@ -294,33 +388,11 @@ fn snapshot_tree_entry(source: &mut Entry<Runtime>, len: usize) -> Entry<Runtime
             Entry::ROTable(result)
         }
         Entry::ROPage(page) | Entry::RWPage(page) => {
-            if page.len() == 4096 {
-                return Entry::ROPage(snapshot_tree_page(page, 0, len));
-            }
-            let mut result = Table::<Runtime>::new(page.len());
-            for offset in (0..len).step_by(4096) {
-                let snapshot = snapshot_tree_page(page, offset, (len - offset).min(4096));
-                assert!(result.map(offset, Entry::ROPage(snapshot)).is_ok());
-            }
-            Entry::ROTable(result)
+            assert_eq!(page.len(), 4096);
+            Entry::ROPage(page.clone())
         }
         Entry::Null(_) => panic!("missing tree mapping"),
     }
-}
-
-fn snapshot_tree_page(
-    page: &arca::Page<Runtime>,
-    offset: usize,
-    len: usize,
-) -> arca::Page<Runtime> {
-    if page.len() == 4096 {
-        return page.clone();
-    }
-    let mut bytes = [0; 4096];
-    assert_eq!(page.read(offset, &mut bytes[..len]), len);
-    let mut snapshot = arca::Page::<Runtime>::new(4096);
-    assert_eq!(snapshot.write(0, &bytes), bytes.len());
-    snapshot
 }
 
 /// Creates a tag from a region of memory.  Returns the handle,
@@ -328,159 +400,164 @@ fn snapshot_tree_page(
 /// # Safety
 ///
 /// [addr] must refer to an region of memory which is large enough for the specified [len];  
-/// Each entry of the tree takes 32 bytes.
+/// Entries are packed handles.
 #[inline]
-pub unsafe fn fixpoint_create_tag(slice: &[u8], author_depth: u32) -> u8x32 {
-    assert!(slice.len() >= 32);
+pub unsafe fn fixpoint_create_tag(result: Reference, slice: &[u8]) {
+    crate::locals::lift_table(slice.as_ptr() as usize, slice.len() / HANDLE_SIZE);
+    let width = HANDLE_SIZE;
+    assert!(slice.len() >= width && slice.len().is_multiple_of(width));
     let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
     receive(
-        Function::symbolic("create_tag")
+        result,
+        crate::continuation::operation("create_tag")
             .apply(backing)
-            .apply(Word::<Runtime>::new(slice.len() as u64))
-            .apply(Word::<Runtime>::new(author_depth as u64)),
+            .word((slice.len() / width) as u64),
     )
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_get_type(bytes: u8x32) -> ValueType {
-    let handle = unsafe { Handle::parse_native(bytes) }.expect("get_type: invalid handle");
-    match handle.view() {
-        HandleView::Object(_) => ValueType::Object,
-        HandleView::Ref(_) => ValueType::Ref,
-        HandleView::Thunk(_) => ValueType::Thunk,
-        HandleView::Encode(_) => ValueType::Encode,
+pub unsafe extern "C" fn fixpoint_get_type(bytes: Reference) -> ValueType {
+    match unsafe { handles::query(bytes, Query::Type) } {
+        0 => ValueType::Object,
+        1 => ValueType::Ref,
+        2 => ValueType::Thunk,
+        3 => ValueType::Encode,
+        _ => panic!("invalid value type"),
     }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_get_data_type(bytes: u8x32) -> DataType {
-    let handle = unsafe { Handle::parse_native(bytes) }.expect("get_data_type: invalid handle");
-    let object = match handle.view() {
-        HandleView::Object(object) => *object,
-        HandleView::Ref(reference) => reference.object_descriptor(),
+pub unsafe extern "C" fn fixpoint_get_data_type(bytes: Reference) -> DataType {
+    match unsafe { handles::query(bytes, Query::DataType) } {
+        0 => DataType::Blob,
+        1 => DataType::Tree,
         _ => panic!("get_data_type: expected Object or Ref"),
-    };
-    match object.view() {
-        ObjectView::Blob(_) => DataType::Blob,
-        ObjectView::Tree(_) => DataType::Tree,
     }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_get_encode_type(bytes: u8x32) -> EncodeType {
-    let handle = unsafe { Handle::parse_native(bytes) }.expect("get_encode_type: invalid handle");
-    let HandleView::Encode(encode) = handle.view() else {
-        panic!("get_encode_type: expected Encode");
-    };
-    match encode.view() {
-        EncodeView::Strict(_) => EncodeType::Strict,
-        EncodeView::Shallow(_) => EncodeType::Shallow,
+/// `handle` must be a handle supplied by the runtime.
+pub unsafe fn fixpoint_get_thunk_type(handle: Reference) -> ThunkType {
+    require_privilege();
+    match unsafe { handles::query(handle, Query::ThunkType) } {
+        0 => ThunkType::Application,
+        1 => ThunkType::Selection,
+        2 => ThunkType::Identification,
+        _ => panic!("get_thunk_type: expected Thunk or Encode"),
     }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_is_blob_obj(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(fixhandle::Blob::try_from)
-        .is_ok()
-}
-
-/// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_is_blob(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(data_reference)
-        .and_then(|r| fixhandle::Blob::try_from(r.object_descriptor().handle()))
-        .is_ok()
-}
-
-/// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_is_tree(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(data_reference)
-        .and_then(|r| TreeRef::try_from(r.handle()))
-        .is_ok()
-}
-
-/// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_is_object(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(Object::try_from)
-        .is_ok()
-}
-
-/// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_is_data(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(data_reference)
-        .is_ok()
-}
-
-/// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
-#[inline]
-pub unsafe extern "C" fn fixpoint_is_tag(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .and_then(Tree::try_from)
-        .is_ok_and(|t| t.is_tag())
-}
-
-fn data_reference(handle: Handle) -> Result<fixhandle::Ref, fixhandle::Error> {
-    match handle.view() {
-        HandleView::Object(object) => Ok(object.into_ref()),
-        HandleView::Ref(reference) => Ok(*reference),
-        _ => Err(fixhandle::Error::WrongType),
+pub unsafe extern "C" fn fixpoint_get_encode_type(bytes: Reference) -> EncodeType {
+    match unsafe { handles::query(bytes, Query::EncodeType) } {
+        0 => EncodeType::Strict,
+        1 => EncodeType::Shallow,
+        _ => panic!("get_encode_type: expected Encode"),
     }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_is_comparable(bytes: u8x32) -> bool {
-    unsafe { Handle::parse_native(bytes) }
-        .expect("is_comparable: invalid handle")
-        .is_comparable()
+pub unsafe extern "C" fn fixpoint_is_blob_obj(bytes: Reference) -> bool {
+    unsafe { fixpoint_is_object(bytes) && fixpoint_is_blob(bytes) }
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_blob(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::DataType) }) == 0
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_tree(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::DataType) }) == 1
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_object(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::Type) }) == 0
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_data(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::Type) }) < 2
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_tag(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::Tag) }) == 1
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_comparable(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::Comparable) }) == 1
+}
+
+/// # Safety
+/// `bytes` must be a handle supplied by the runtime.
+#[inline]
+pub unsafe extern "C" fn fixpoint_is_value(bytes: Reference) -> bool {
+    (unsafe { handles::query(bytes, Query::Value) }) == 1
+}
+
+static mut PRIVILEGED: bool = false;
+
+pub(crate) fn clear_privilege_cache() {
+    unsafe { PRIVILEGED = false };
+}
+
+pub(crate) fn require_privilege() {
+    if unsafe { PRIVILEGED } {
+        return;
+    }
+    let privileged: Word<Runtime> = crate::continuation::operation("is_privileged")
+        .call_with_current_continuation()
+        .try_into()
+        .expect("is_privileged: return type is not a word");
+    assert_eq!(privileged.read(), 1, "operation requires privilege");
+    unsafe { PRIVILEGED = true };
 }
 
 /// # Safety
 /// `handle` must have been supplied by the runtime.
-pub unsafe fn fixpoint_unsound_handle_bytes(handle: u8x32) -> u8x32 {
-    let privileged: Word<Runtime> = Function::symbolic("is_privileged")
-        .call_with_current_continuation()
-        .try_into()
-        .expect("is_privileged: return type is not a word");
-    assert_eq!(privileged.read(), 1, "handle bytes require privilege");
+pub unsafe fn fixpoint_unsound_handle_bytes(result: Reference, handle: Reference) {
+    crate::locals::lift(&[handle]);
     receive(
-        Function::symbolic("unsound_handle_bytes").apply(Runtime::create_blob(handle.as_array())),
+        result,
+        crate::continuation::operation("unsound_handle_bytes").blob(&handles::bytes(handle)),
     )
 }
 
 /// # Safety
 /// Both operands must be Handles supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_equals(lhs: u8x32, rhs: u8x32) -> bool {
+pub unsafe extern "C" fn fixpoint_equals(lhs: Reference, rhs: Reference) -> bool {
+    crate::locals::lift(&[lhs, rhs]);
     assert!(
         unsafe { fixpoint_is_comparable(lhs) && fixpoint_is_comparable(rhs) },
         "equals: non-comparable operand"
     );
-    let result: Word<Runtime> = Function::symbolic("equals")
-        .apply(Runtime::create_blob(lhs.as_array()))
-        .apply(Runtime::create_blob(rhs.as_array()))
+    let result: Word<Runtime> = crate::continuation::operation("equals")
+        .blob(&handles::bytes(lhs))
+        .blob(&handles::bytes(rhs))
         .call_with_current_continuation()
         .try_into()
         .expect("equals: return type is not a word");
@@ -490,87 +567,80 @@ pub unsafe extern "C" fn fixpoint_equals(lhs: u8x32, rhs: u8x32) -> bool {
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_ref(bytes: u8x32) -> u8x32 {
-    Object::try_from(unsafe { Handle::parse_native(bytes) }.expect("create_ref: invalid handle"))
-        .expect("create_ref: expected object")
-        .into_ref()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_ref(result: Reference, bytes: Reference) {
+    assert!(
+        unsafe { fixpoint_is_object(bytes) },
+        "create_ref: expected Object"
+    );
+    unsafe { handles::transform(result, bytes, 0x10) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_identification_thunk(bytes: u8x32) -> u8x32 {
-    data_reference(unsafe { Handle::parse_native(bytes) }.expect("identification: invalid handle"))
-        .expect("identification: expected object or ref")
-        .identification()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_identification_thunk(result: Reference, bytes: Reference) {
+    assert!(
+        unsafe { fixpoint_is_data(bytes) },
+        "identification: expected Object or Ref"
+    );
+    unsafe { handles::transform(result, bytes, 0x18) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_application_thunk(bytes: u8x32) -> u8x32 {
-    let reference = data_reference(
-        unsafe { Handle::parse_native(bytes) }.expect("application: invalid handle"),
-    )
-    .expect("application: expected object or ref");
-    TreeRef::try_from(reference.handle())
-        .expect("application: expected tree ref")
-        .application()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_application_thunk(result: Reference, bytes: Reference) {
+    assert!(
+        unsafe { fixpoint_is_tree(bytes) },
+        "application: expected Tree Object or Ref"
+    );
+    unsafe { handles::transform(result, bytes, 0x14) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_selection_thunk(bytes: u8x32) -> u8x32 {
-    let reference =
-        data_reference(unsafe { Handle::parse_native(bytes) }.expect("selection: invalid handle"))
-            .expect("selection: expected object or ref");
-    TreeRef::try_from(reference.handle())
-        .expect("selection: expected tree ref")
-        .selection()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_selection_thunk(result: Reference, bytes: Reference) {
+    assert!(
+        unsafe { fixpoint_is_tree(bytes) },
+        "selection: expected Tree Object or Ref"
+    );
+    unsafe { handles::transform(result, bytes, 0x1c) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_strict_encode(bytes: u8x32) -> u8x32 {
-    Thunk::try_from(unsafe { Handle::parse_native(bytes) }.expect("strict: invalid handle"))
-        .expect("strict: expected thunk")
-        .strict()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_strict_encode(result: Reference, bytes: Reference) {
+    assert_eq!(
+        unsafe { fixpoint_get_type(bytes) },
+        ValueType::Thunk,
+        "strict: expected Thunk"
+    );
+    unsafe { handles::transform(result, bytes, 1) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_create_shallow_encode(bytes: u8x32) -> u8x32 {
-    Thunk::try_from(unsafe { Handle::parse_native(bytes) }.expect("shallow: invalid handle"))
-        .expect("shallow: expected thunk")
-        .shallow()
-        .handle()
-        .into_native()
+pub unsafe extern "C" fn fixpoint_create_shallow_encode(result: Reference, bytes: Reference) {
+    assert_eq!(
+        unsafe { fixpoint_get_type(bytes) },
+        ValueType::Thunk,
+        "shallow: expected Thunk"
+    );
+    unsafe { handles::transform(result, bytes, 2) }
 }
 
 /// # Safety
-/// `bytes` must encode a Handle supplied by the runtime.
+/// `bytes` must be a handle supplied by the runtime.
 #[inline]
-pub unsafe extern "C" fn fixpoint_len(bytes: u8x32) -> usize {
-    data_reference(unsafe { Handle::parse_native(bytes) }.expect("len: invalid handle"))
-        .expect("len: expected Object or Ref")
-        .handle()
-        .checked_len()
-        .expect("len: handle length exceeds address space")
+pub unsafe extern "C" fn fixpoint_len(bytes: Reference) -> usize {
+    let length = unsafe { handles::query(bytes, Query::Length) };
+    assert_ne!(length, usize::MAX, "len: expected Object or Ref");
+    length
 }
 
 // void __assert_fail(const char * assertion, const char * file, unsigned int line, const char * function);
@@ -587,15 +657,4 @@ pub unsafe extern "C" fn __assert_fail(
         let function = CStr::from_ptr(function).display();
         panic!("assertion failed at {file}:{line} in {function}: {assertion}");
     }
-}
-
-pub fn receive(function: Function<Runtime>) -> u8x32 {
-    let result: Blob<Runtime> = function
-        .call_with_current_continuation()
-        .try_into()
-        .expect("expected a handle");
-    let mut bytes = [0; 32];
-    assert_eq!(result.len(), bytes.len());
-    assert_eq!(result.read(0, &mut bytes), bytes.len());
-    u8x32::from_array(bytes)
 }

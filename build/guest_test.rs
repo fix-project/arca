@@ -112,10 +112,10 @@ fn main() -> ExitCode {
         })
         .collect();
     let mut args: Vec<_> = std::env::args().collect();
-    if let Ok(filter) = std::env::var("TESTBRIDGE_TEST_ONLY") {
-        if !filter.is_empty() {
-            args.push(filter);
-        }
+    if let Ok(filter) = std::env::var("TESTBRIDGE_TEST_ONLY")
+        && !filter.is_empty()
+    {
+        args.push(filter);
     }
     test::test_main(&args, &cases.iter().collect::<Vec<_>>())
 }

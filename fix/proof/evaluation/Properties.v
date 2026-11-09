@@ -612,6 +612,20 @@ Module EvaluationProperties (S : STORAGE) (P : PROGRAM S).
       unfold!: HTreeObj, HTreeRef.
   Qed.
 
+  Lemma eval_handle_ref_pair tagged author reference evaluated :
+    eval (HTreeObj (create_tree_tagged tagged [author; HTreeRef reference])) =
+      Some (HTreeObj evaluated) ->
+    exists evaluated_author, eval author = Some evaluated_author /\
+      evaluated = create_tree_tagged tagged [evaluated_author; HTreeRef reference].
+  Proof.
+    intro Evaluated.
+    sauto inv: Forall2 ctrs: - cases: -
+      use: eval_tree_iff, (eval_ref (TreeRef reference)),
+        (create_tree_get_tree_raw evaluated),
+        get_tree_raw_create_tree_tagged, tree_tag_create_tree_tagged
+      unfold!: HTreeObj, HTreeRef.
+  Qed.
+
   (** Evaluating a Value Tree leaves it unchanged. *)
   Lemma value_tree_eval_to_itself t : value_tree t -> eval (HTreeObj t) = Some (HTreeObj t).
   Proof.

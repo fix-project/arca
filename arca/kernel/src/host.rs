@@ -373,6 +373,13 @@ pub mod fs {
         }
     }
 
+    pub fn read_directory_uri(uri: &str) -> Result<Vec<control::DirectoryEntry>, ErrorKind> {
+        match request(control::Request::ReadDirectoryUri(uri.into()))? {
+            control::Response::DirectoryEntries(entries) => Ok(entries),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+
     pub fn rename(from: &str, to: &str) -> Result<(), ErrorKind> {
         ack(control::Request::Rename(from.into(), to.into()))
     }

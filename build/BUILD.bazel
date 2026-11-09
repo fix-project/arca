@@ -1,16 +1,9 @@
 package(default_visibility = ["//visibility:public"])
 
-load(":fix_settings.bzl", "fix_cache", "fix_jobs")
+load(":fix_settings.bzl", "fix_jobs")
 load("@rules_python//python:defs.bzl", "py_binary")
-load("@local_tools//:cores.bzl", "HOST_FIX_CACHE")
 
 fix_jobs(name = "fix-jobs", build_setting_default = 0)
-
-py_binary(name = "ndjson", srcs = ["ndjson.py"])
-
-fix_cache(name = "fix-cache", build_setting_default = HOST_FIX_CACHE)
-py_binary(name = "fix-action", srcs = ["fix_action.py"], main = "fix_action.py")
-py_binary(name = "fix-cache-reset", srcs = ["fix_action.py"], main = "fix_action.py", args = ["--reset"], toolchains = [":fix-cache"], env = {"FIX_CACHE": "$(FIX_CACHE)"})
 
 exports_files([
     "cc.bzl",
@@ -26,7 +19,6 @@ exports_files([
     "wabt.BUILD.bazel",
     "wabt-externrefs.patch",
     "wabt_repository.bzl",
-    "wabt-externref.cmake",
     "rocq.bzl",
     "rocq-toolchain.opam",
     "rocq-toolchain.opam.locked",
@@ -37,6 +29,7 @@ exports_files([
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 exports_files(["fix_run.rs"])
+exports_files(["guest_test.rs"])
 rust_binary(
     name = "fix_test",
     srcs = ["fix_test.rs"],
@@ -45,5 +38,3 @@ rust_binary(
 )
 
 py_binary(name = "rocq_dependencies", srcs = ["rocq_dependencies.py"])
-
-exports_files(["guest_test.rs"])

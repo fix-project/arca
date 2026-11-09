@@ -5,7 +5,6 @@ genrule(
     srcs = [
         "@wabt_src//:sources",
         "@wabt_src//:CMakeLists.txt",
-        "//build:wabt-externref.cmake",
     ],
     outs = [
         "wabt-bin/wasm2c",
@@ -17,7 +16,6 @@ genrule(
         rm -rf "$$source" "$$build"
         cp -R -L $$(dirname $(location @wabt_src//:CMakeLists.txt)) "$$source"
         chmod -R u+w "$$source"
-        $(execpath @local_tools//:cmake) -DSOURCE="$$source" -P $(location //build:wabt-externref.cmake)
         $(execpath @local_tools//:cmake) -S "$$source" -B "$$build" \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_LIBWASM=OFF -DBUILD_TOOLS=ON \
             -DCMAKE_C_COMPILER="$$PWD/$(execpath @local_tools//:gcc)" \
@@ -39,49 +37,12 @@ genrule(
 
 filegroup(
     name = "wasm2c",
-    visibility = ["//programs/fix:__subpackages__", "//programs/flatware:__subpackages__", "//flatware:__subpackages__", "//tests/flatware:__pkg__", "//coupon:__pkg__", "//tests:__subpackages__", "//fix:__subpackages__", "//tools:__pkg__"],
+    visibility = ["//programs/fix:__subpackages__", "//programs/flatware:__subpackages__", "//flatware:__subpackages__", "//tests/flatware:__pkg__", "//coupon:__pkg__", "//tests:__subpackages__", "//fix:__subpackages__", "//tools:__pkg__", "//benchmarks:__pkg__"],
     srcs = ["wabt-bin/wasm2c"],
 )
 
 filegroup(
     name = "wat2wasm",
-    visibility = ["//programs/fix:__subpackages__", "//coupon:__pkg__", "//tests:__subpackages__", "//flatware:__subpackages__", "//fix:__subpackages__", "//tools:__pkg__"],
+    visibility = ["//programs/fix:__subpackages__", "//coupon:__pkg__", "//tests:__subpackages__", "//flatware:__subpackages__", "//fix:__subpackages__", "//tools:__pkg__", "//benchmarks:__pkg__"],
     srcs = ["wabt-bin/wat2wasm"],
 )
-
-genrule(
-    name = "wabt_rooted",
-    srcs = [
-        "@wabt_rooted_src//:sources",
-        "@wabt_rooted_src//:CMakeLists.txt",
-    ],
-    outs = [
-        "wabt-rooted-bin/wasm2c",
-        "wabt-rooted-bin/wat2wasm",
-    ],
-    cmd = """
-        build="$$PWD/$(@D)/wabt-rooted-build"
-        source="$$PWD/$(@D)/wabt-rooted-source"
-        rm -rf "$$source" "$$build"
-        cp -R -L $$(dirname $(location @wabt_rooted_src//:CMakeLists.txt)) "$$source"
-        chmod -R u+w "$$source"
-        $(execpath @local_tools//:cmake) -S "$$source" -B "$$build" \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_LIBWASM=OFF -DBUILD_TOOLS=ON \
-            -DCMAKE_C_COMPILER="$$PWD/$(execpath @local_tools//:gcc)" \
-            -DCMAKE_CXX_COMPILER="$$PWD/$(execpath @local_tools//:g++)" \
-            -DCMAKE_AR="$$PWD/$(execpath @local_tools//:ar)" -DCMAKE_RANLIB="$$PWD/$(execpath @local_tools//:ranlib)" -DCMAKE_MAKE_PROGRAM="$$PWD/$(execpath @local_tools//:make)"
-        $(execpath @local_tools//:cmake) --build "$$build" --target wasm2c wat2wasm --parallel 2
-        cp "$$build/wasm2c" $(location wabt-rooted-bin/wasm2c)
-        cp "$$build/wat2wasm" $(location wabt-rooted-bin/wat2wasm)
-    """,
-    tools = [
-        "@local_tools//:ar",
-        "@local_tools//:cmake",
-        "@local_tools//:g++",
-        "@local_tools//:gcc",
-        "@local_tools//:make",
-        "@local_tools//:ranlib",
-    ],
-)
-
-filegroup(name = "wasm2c_rooted", srcs = ["wabt-rooted-bin/wasm2c"], visibility = ["//visibility:public"])

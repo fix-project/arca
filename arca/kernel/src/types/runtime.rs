@@ -115,14 +115,22 @@ impl arca::Runtime for Runtime {
     }
 
     fn write_blob(blob: &mut arca::Blob<Self>, offset: usize, buf: &[u8]) -> usize {
+        assert!(offset <= blob.len());
         let len = core::cmp::min(buf.len(), blob.len() - offset);
+        if len == 0 {
+            return 0;
+        }
         let end = offset + len;
         blob[offset..end].copy_from_slice(buf);
         len
     }
 
     fn write_page(page: &mut arca::Page<Self>, offset: usize, buf: &[u8]) -> usize {
+        assert!(offset <= page.len());
         let len = core::cmp::min(buf.len(), page.len() - offset);
+        if len == 0 {
+            return 0;
+        }
         let end = offset + len;
         page[offset..end].copy_from_slice(buf);
         len

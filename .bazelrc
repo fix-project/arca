@@ -1,7 +1,6 @@
 common --enable_bzlmod
 # Module-extension digests differ across supported developer environments.
 common --lockfile_mode=off
-build --repo_env=LLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-gnu
 build --@rules_rust//rust/toolchain/channel=nightly
 build --platforms=//build/platforms:host
 build --incompatible_strict_action_env
@@ -16,4 +15,4 @@ build --local_resources=fix=1
 build --compilation_mode=dbg
 build:release --compilation_mode=opt
 test --test_output=errors
-run --run_under="bash -c 'export PATH=\"$PWD/fix/cli/commands/bin:$PATH\"; cd \"$BUILD_WORKING_DIRECTORY\"; exec \"$@\"' --"
+run --run_under="bash -c 'cd \"$BUILD_WORKING_DIRECTORY\"; exec \"$@\"' --"

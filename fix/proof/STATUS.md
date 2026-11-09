@@ -18,14 +18,15 @@ readiness contracts. Exact physical comparison can reject abstractly identical
 handles with different representations. The collector never evaluates, loads
 Refs, or searches for derivations: it validates ordered supplied witnesses.
 
-Ref-backed claims survive Tag evaluation. Arbitrary additional authors are
-allowed; preservation uses the stronger issuance invariant that stable authors
-suffice for the claim. `collector/Preservation.v` and `shell/TagCreation.v`
-prove these supporting properties.
+Ref-backed claims survive Tag evaluation; preservation uses the issuance
+invariant that a stable author suffices for the claim.
+`collector/Preservation.v` proves preservation. `shell/TagCreation.v` proves
+that checked creation preserves the supplied fields, requires a comparable
+Object or Ref author on the callable path, and respects indistinguishability.
 
 Computational equivalence and indistinguishability remain distinct.
 `Indistinguishability` models observations including comparability, type, contents,
-length, and selection. Full program substitution and indistinguishability of
+length, and selection; matching observations also agree on full evaluation. Full program substitution and indistinguishability of
 computationally equivalent Thunks remain unfinished. Length is defined only for
 Objects and Refs. Digestion remains a planned operation outside the model.
 

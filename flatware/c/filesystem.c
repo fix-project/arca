@@ -269,7 +269,7 @@ uint32_t fs_open(Filesystem *fs, uint32_t fd, const Bytes *path,
   return 0;
 }
 uint32_t fs_read(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
-                 uint64_t offset, uint64_t time, Bytes *out) {
+                  uint64_t offset, Bytes *out) {
   Descriptor *d;
   TRY(fs_descriptor(fs, fd, READ | (positioned ? SEEK : 0), &d));
   Node *n = &fs->nodes[d->node];
@@ -286,10 +286,6 @@ uint32_t fs_read(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
   *out = (Bytes){.data = len ? n->bytes.data + start : NULL, .len = len};
   if (!positioned)
     d->offset = position + len;
-  if (!n->stream) {
-    n->stat.atim = time;
-    fs_changed(fs, d->node, NODE_STAT);
-  }
   return 0;
 }
 uint32_t fs_write(Filesystem *fs, uint32_t fd, size_t count, bool positioned,
