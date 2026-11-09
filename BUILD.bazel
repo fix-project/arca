@@ -38,6 +38,7 @@ test_suite(
     tests = [
         "//arca/api:tests",
         "//fix/handle:tests",
+        "//fix/importers/git:tests",
         "//fix/storage:tests",
         "//fix/repository:tests",
         "//tests/flatware:filesystem_test",

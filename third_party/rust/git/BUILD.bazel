@@ -1,0 +1,14 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(["Cargo.toml", "Cargo.lock"])
+
+rust_library(
+    name = "zlib_rs",
+    srcs = ["@git_crates__zlib-rs-0.6.8//:sources"],
+    compile_data = ["@git_crates__zlib-rs-0.6.8//:README.md"],
+    crate_root = "@git_crates__zlib-rs-0.6.8//:src/lib.rs",
+    crate_features = ["std", "rust-allocator"],
+    edition = "2021",
+    rustc_flags = ["--cap-lints=allow"],
+    visibility = ["//visibility:public"],
+)

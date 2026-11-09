@@ -62,6 +62,7 @@ register_execution_platforms("//build/platforms:host")
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.annotation(
     crate = "blake3",
+    repositories = ["crates"],
     version = "1.8.7",
     patches = ["//build:blake3-custom-target.patch"],
     patch_args = ["-p1"],
@@ -78,6 +79,28 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+# Wasm guests use Rust allocation and do not provide libc malloc/free.
+crate.annotation(
+    crate = "zlib-rs",
+    repositories = ["git_crates"],
+    version = "0.6.8",
+    additive_build_file_content = """
+filegroup(name = "sources", srcs = glob(["src/**/*.rs"]))
+exports_files(["src/lib.rs", "README.md"])
+""",
+    override_target_lib = "//third_party/rust/git:zlib_rs",
+)
+crate.from_cargo(
+    name = "git_crates",
+    cargo_lockfile = "//third_party/rust/git:Cargo.lock",
+    manifests = ["//third_party/rust/git:Cargo.toml"],
+    supported_platform_triples = [
+        "x86_64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+    ],
+)
+use_repo(crate, "git_crates", "git_crates__zlib-rs-0.6.8")
 
 local_tools = use_repo_rule("//build:repositories.bzl", "local_tools")
 

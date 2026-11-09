@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "fix-git-dependencies"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "empty.rs"
+
+[dependencies]
+gix-packetline = { version = "=0.24.1", default-features = false, features = ["blocking-io"] }
+gix-pack = { version = "=0.77.0", default-features = false, features = ["wasm", "sha1"] }
+gix-object = { version = "=0.66.1", default-features = false, features = ["sha1"] }
+gix-hash = { version = "=0.28.1", features = ["sha1"] }
+gix-zlib = "=0.4.0"

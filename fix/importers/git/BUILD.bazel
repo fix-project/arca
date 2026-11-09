@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "fixtures",
+    srcs = ["tests/fixture.pack", "tests/fixture.refs", "tests/payload.bin"],
+)
+
+rust_library(
+    name = "git",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "fixgit",
+    deps = [
+        "@git_crates//:gix-hash",
+        "@git_crates//:gix-object",
+        "@git_crates//:gix-pack",
+        "@git_crates//:gix-packetline",
+        "@git_crates//:gix-zlib",
+    ],
+)
+
+rust_test(
+    name = "tests",
+    srcs = ["tests/git.rs"],
+    compile_data = ["tests/fixture.pack", "tests/fixture.refs"],
+    deps = [":git"],
+)
