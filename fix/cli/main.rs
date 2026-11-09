@@ -44,6 +44,9 @@ struct Global {
     /// Evaluation parallelism [default: all CPUs]
     #[arg(short, long, value_name = "N", env = "FIX_JOBS", global = true)]
     jobs: Option<NonZeroUsize>,
+    /// Write a time-weighted guest call graph in Linux perf.data format.
+    #[arg(long, value_name = "PATH", global = true)]
+    perf: Option<PathBuf>,
     /// VM memory budget in MiB, a power of two.
     #[arg(long, value_name = "MIB", default_value_t = 16384, global = true)]
     memory: usize,
@@ -208,6 +211,19 @@ fn run() -> Result<u8> {
     for directory in &global.directories {
         env::set_current_dir(directory)?;
     }
+    let perf = global
+        .perf
+        .as_ref()
+        .map(fixcli::PerfCapture::start)
+        .transpose()?;
+    let result = run_command(global, command, expression);
+    if let Some(perf) = perf {
+        perf.finish()?;
+    }
+    result
+}
+
+fn run_command(global: Global, command: Option<Command>, expression: Option<String>) -> Result<u8> {
     let options = global.options()?;
     let bindings = global.bindings.clone();
     let Some(command) = command else {

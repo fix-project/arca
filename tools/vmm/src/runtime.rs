@@ -23,7 +23,7 @@ pub use common::mmap::Mmap;
 use libc::EFD_NONBLOCK;
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::{comm::new_pipe, doorbell::HostToVMDoorBell, session::Session};
+use crate::{comm::new_pipe, doorbell::HostToVMDoorBell, profiling, session::Session};
 
 struct StopOnDrop(Arc<Session>);
 impl Drop for StopOnDrop {
@@ -199,7 +199,9 @@ fn new_cpu<'scope>(
                     0
                 );
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_cpu(&mut vcpu_fd, elf, &session)
+                    profiling::record(session.profile.as_ref(), i, signal, |recorder| {
+                        run_cpu(&mut vcpu_fd, elf, &session, recorder)
+                    })
                 }))
                 .is_err()
                 {
@@ -210,7 +212,12 @@ fn new_cpu<'scope>(
         .unwrap()
 }
 
-fn run_cpu(vcpu_fd: &mut VcpuFd, elf: &ElfBytes<AnyEndian>, session: &Arc<Session>) {
+fn run_cpu(
+    vcpu_fd: &mut VcpuFd,
+    elf: &ElfBytes<AnyEndian>,
+    session: &Arc<Session>,
+    mut recorder: Option<&mut profiling::Recorder>,
+) {
     let lookup = |target| {
         let (symtab, strtab) = elf
             .symbol_table()
@@ -232,6 +239,9 @@ fn run_cpu(vcpu_fd: &mut VcpuFd, elf: &ElfBytes<AnyEndian>, session: &Arc<Sessio
     };
 
     while !session.stopped() {
+        if let Some(recorder) = &mut recorder {
+            recorder.before_run(vcpu_fd);
+        }
         vcpu_fd
             .set_mp_state(kvm_bindings::kvm_mp_state {
                 mp_state: kvm_bindings::KVM_MP_STATE_RUNNABLE,
@@ -246,6 +256,9 @@ fn run_cpu(vcpu_fd: &mut VcpuFd, elf: &ElfBytes<AnyEndian>, session: &Arc<Sessio
                 return;
             }
         };
+        if let Some(recorder) = &recorder {
+            recorder.after_run();
+        }
         match vcpu_exit {
             VcpuExit::Intr => continue,
             VcpuExit::IoIn(addr, data) => match addr {
@@ -414,6 +427,7 @@ pub struct Runtime {
 impl Runtime {
     /// Reserves an unused real-time signal for interrupting KVM_RUN.
     pub fn new(cores: usize, ram: usize, elf: Arc<[u8]>) -> Self {
+        profiling::kernel(&elf);
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         vm.create_irq_chip().unwrap();

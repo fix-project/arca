@@ -213,3 +213,58 @@ fn persistent_session_reports_invocation_errors() {
     assert!(session.call(&combination).is_err());
     session.close().unwrap();
 }
+
+#[test]
+fn perf_capture_preserves_results_and_exports_callchains() {
+    let directory = repository("perf-capture");
+    let mut session = client(&directory);
+    let mut opaque = [0; 128];
+    opaque[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    let opaque = session.blob(&opaque).unwrap();
+    session.label("opaque", &opaque).unwrap();
+    let left = session.blob(&20u64.to_le_bytes()).unwrap();
+    let right = session.blob(&22u64.to_le_bytes()).unwrap();
+    let add = session.lookup("add").unwrap();
+    let metadata = session.blob(b"").unwrap();
+    let combination = session.tree(&[metadata, add, left, right]).unwrap();
+    let combination = session.save(&combination).unwrap();
+    let expected = session.blob(&42u64.to_le_bytes()).unwrap();
+    let expected = session.save(&expected).unwrap();
+    session.close().unwrap();
+    let profile = directory.join("evaluation.perf.data");
+    let output = Command::new(input(env!("BACKEND")))
+        .arg("--perf")
+        .arg(&profile)
+        .args(["--memory", "128", "-j", "2", "call", &combination])
+        .current_dir(&directory)
+        .env("FIX_TRUST", directory.join(".fix/trust"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+    let data = std::fs::read(profile).unwrap();
+    assert_eq!(&data[..8], b"PERFILE2");
+    let number = |offset| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+    let attr_offset = number(24) as usize;
+    let sample_type = number(attr_offset + 24);
+    assert_ne!(sample_type & (1 << 5), 0);
+    let start = number(40) as usize;
+    let end = start + number(48) as usize;
+    let mut cursor = start;
+    while cursor < end {
+        let size = u16::from_le_bytes(data[cursor + 6..cursor + 8].try_into().unwrap()) as usize;
+        assert!(size >= 8 && cursor + size <= end);
+        let kind = u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap());
+        if kind == 9 {
+            let depth = number(cursor + 48) as usize;
+            assert!(depth > 0 && 56 + depth * 8 <= size);
+            assert_eq!(number(cursor + 8), number(cursor + 56));
+        }
+        cursor += size;
+    }
+    assert_eq!(cursor, end);
+}

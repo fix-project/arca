@@ -13,6 +13,7 @@ use std::{
 use vmm_sys_util::eventfd::{EFD_NONBLOCK, EventFd};
 
 pub struct Session {
+    pub(crate) profile: Option<crate::profiling::Profile>,
     status: AtomicU16,
     cancel: EventFd,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -35,6 +36,7 @@ impl Session {
     }
     pub fn with_stdio(capture: bool, stdio: Option<UnixStream>) -> Arc<Self> {
         Arc::new(Self {
+            profile: crate::profiling::Profile::start(),
             status: AtomicU16::new(256),
             cancel: EventFd::new(EFD_NONBLOCK).expect("cancellation eventfd"),
             workers: Mutex::new(Vec::new()),

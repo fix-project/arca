@@ -10,5 +10,6 @@
 pub mod comm;
 mod doorbell;
 pub mod pipe;
+pub mod profiling;
 pub mod runtime;
 pub mod session;

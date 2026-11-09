@@ -616,3 +616,5 @@ pub(crate) fn reference(value: Handle) -> Result<Ref, fixhandle::Error> {
         _ => Ref::try_from(value),
     }
 }
+
+pub use vmm::profiling::Capture as PerfCapture;
