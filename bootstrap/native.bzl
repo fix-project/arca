@@ -109,8 +109,6 @@ CFLAGS = [
     "-nostdlib",
     "-nostdinc",
     "-isystem",
-    "{work}/toolchain/share/fix/c++",
-    "-isystem",
     "{usr}/lib/clang/23/include",
     "-isystem",
     "{usr}/include/wasm32-wasip1",
@@ -136,17 +134,17 @@ _NATIVE_FLAGS = CFLAGS + [
 def _compile_impl(ctx):
     translation = ctx.attr.translation[OutputGroupInfo]
     generated = translation.sources.to_list() + translation.headers.to_list()
-    sources = translation.sources.to_list() + [ctx.file.runtime, ctx.file.cpp_support]
-    headers = translation.headers.to_list() + ctx.files.headers + [ctx.file.cpp_headers]
+    sources = translation.sources.to_list() + [ctx.file.runtime]
+    headers = translation.headers.to_list() + ctx.files.headers
     def location(file):
         if file in generated:
             return file.basename
-        return "toolchain/share/fix/" + ("c++" if file == ctx.file.cpp_headers else file.basename)
+        return "toolchain/share/fix/" + file.basename
     objects = []
     for i, source in enumerate(sources):
         output = ctx.actions.declare_file(ctx.attr.directory + "/object_%d.o" % i)
         staged = [(file.path, location(file)) for file in [source] + headers]
-        flags = _NATIVE_FLAGS + (["-O3"] if source == ctx.file.runtime else ["-x", "c++", "-std=c++20", "-fexceptions", "-funwind-tables", "-Wno-return-type-c-linkage"])
+        flags = _NATIVE_FLAGS + (["-O3"] if source == ctx.file.runtime else [])
         _invoke(ctx, [source] + headers, staged, [output], flags + ["-I{work}/.", "-c", "{work}/" + location(source), "-o", "{work}/" + output.basename], "BootstrapCompile", resource_set = _native_compile_resources)
         objects.append(output)
     return [DefaultInfo(files = depset(objects))]
@@ -158,17 +156,15 @@ compile = rule(
         translation = attr.label(providers = [OutputGroupInfo]),
         directory = attr.string(),
         runtime = attr.label(default = "//fix/shell:wasm_rt", allow_single_file = True),
-        cpp_support = attr.label(default = "//fix/shell:cpp_support", allow_single_file = True),
-        cpp_headers = attr.label(default = "//fix/shell:cpp_headers", allow_single_file = True),
         headers = attr.label(default = "//fix/shell:headers"),
     ),
 )
 
 def _link_impl(ctx):
     output = ctx.actions.declare_file(ctx.attr.output)
-    staged = [(file.path, file.basename) for file in ctx.files.objects] + [(ctx.file.shell.path, "libfixshell.a"), (ctx.file.memmap.path, "memmap.ld")] + [(file.path, file.basename) for file in ctx.files.cpp_runtime]
-    arguments = _NATIVE_FLAGS + ["-fuse-ld={tool_dir}/ld.lld", "-Wl,--build-id=none", "-Wl,--threads=1", "-Wl,-T,{work}/memmap.ld", "-o", "{work}/" + output.basename] + ["{work}/" + file.basename for file in ctx.files.objects] + ["-Wl,--start-group"] + ["{work}/" + file.basename for file in ctx.files.cpp_runtime] + ["{work}/libfixshell.a", "-Wl,--end-group"]
-    _invoke(ctx, ctx.files.objects + [ctx.file.shell, ctx.file.memmap] + ctx.files.cpp_runtime, staged, [output], arguments, "BootstrapLink")
+    staged = [(file.path, file.basename) for file in ctx.files.objects] + [(ctx.file.shell.path, "libfixshell.a"), (ctx.file.memmap.path, "memmap.ld")]
+    arguments = _NATIVE_FLAGS + ["-fuse-ld={tool_dir}/ld.lld", "-Wl,--build-id=none", "-Wl,--threads=1", "-Wl,-T,{work}/memmap.ld", "-o", "{work}/" + output.basename] + ["{work}/" + file.basename for file in ctx.files.objects] + ["{work}/libfixshell.a"]
+    _invoke(ctx, ctx.files.objects + [ctx.file.shell, ctx.file.memmap], staged, [output], arguments, "BootstrapLink")
     return [DefaultInfo(files = depset([output]))]
 
 link = rule(
@@ -178,7 +174,6 @@ link = rule(
         objects = attr.label(),
         output = attr.string(),
         shell = attr.label(default = "//fix/shell:shell", allow_single_file = True),
-        cpp_runtime = attr.label(default = "//fix/shell:cpp_runtime"),
         memmap = attr.label(default = "//fix/shell:memmap", allow_single_file = True),
     ),
 )
@@ -200,4 +195,4 @@ def generation(name):
         merge(name = prefix + "_merge", command_path = command_path, output = directory + "/module.wasm", tags = ["manual"], tool = "//tools:wasm_merge")
         program(name = prefix, src = ":" + prefix + "_merge", directory = directory, output = name + "/commands/" + command + ".elf")
         outputs.append(":" + prefix + "_link")
-    stage(name = name, srcs = outputs + [":stage0", "//fix/shell:shell", "//fix/shell:wasm_rt", "//fix/shell:cpp_support", "//fix/shell:cpp_runtime", "//fix/shell:cpp_headers", "//fix/shell:headers", "//fix/shell:memmap", "//flatware:adapter_wasm", "//flatware:control_wasm"], tags = ["manual"])
+    stage(name = name, srcs = outputs + [":stage0", "//fix/shell:shell", "//fix/shell:wasm_rt", "//fix/shell:headers", "//fix/shell:memmap", "//flatware:adapter_wasm", "//flatware:control_wasm"], tags = ["manual"])

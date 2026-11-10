@@ -2,12 +2,12 @@ use super::evaluation::{EvaluationState, EvaluationStep};
 use crate::{Evidence, Request, Resolved, Scheduler, as_tree, fields, object, root};
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::RefCell;
-use fix::map::Map;
-use fix::{Error, Tree, Value, coupon::Statement, tree};
 use fixscheduler::kernel::{
     queue::{self, Queue},
     worker,
 };
+use fixwasm::map::Map;
+use fixwasm::{Error, Tree, Value, coupon::Statement, tree};
 
 struct Frame {
     request: Request,
@@ -145,7 +145,7 @@ impl Graph {
             if nodes.compare_exchange(
                 &dependency.input,
                 entry.version,
-                Tree::create(&dependents),
+                Tree::from_iter(&dependents),
             )? {
                 return Ok(true);
             }
@@ -269,7 +269,6 @@ impl Graph {
                     stack.push(Frame::new(Request::read(&value)?));
                     continue;
                 }
-                fix::invalidate_externrefs()?;
                 notification.wait()?;
                 continue;
             };

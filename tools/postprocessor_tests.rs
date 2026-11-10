@@ -55,7 +55,7 @@ fn preserves_calls_exports_start_and_elements_when_replacing_imports() {
                 assert_eq!(tables[0].element_type, wasmparser::RefType::FUNCREF);
                 assert_eq!(tables[0].initial, 1);
                 assert!(tables[1..].iter().all(|table| table.initial == 0
-                    && table.element_type == wasmparser::RefType::EXTERNREF));
+                    && table.element_type == wasmparser::RefType::FUNCREF));
             }
             Payload::ExportSection(section) => {
                 for export in section {
@@ -125,11 +125,11 @@ fn rejects_invalid_requests() {
         ),
         ("memory_size_0", vec![], 1, 0, "requested Table count"),
         (
-            "table_copy_0_to_1",
+            "table_copy_0_to_2",
             vec![ValType::I32; 3],
             1,
             2,
-            "invalid postprocessed module",
+            "invalid __wasm_postprocessor import",
         ),
     ] {
         let input = invalid_fixture(name, &params);

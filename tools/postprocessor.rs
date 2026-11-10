@@ -46,34 +46,18 @@ impl Helper {
             );
             Ok((index, ValType::Ref(ty.element_type)))
         };
-        if name == "table_get" || name == "memory_copy_to_0" {
-            let (params, results) = if name == "table_get" {
-                (
-                    vec![I32, I32],
-                    vec![ValType::Ref(wasmparser::RefType::EXTERNREF)],
-                )
+        if matches!(
+            name,
+            "memory_copy_to_0" | "memory_copy_from_0" | "memory_grow"
+        ) {
+            let (params, results) = if name == "memory_grow" {
+                (vec![I32, I32], vec![I32])
             } else {
                 (vec![I32, I32, I32, I32], vec![])
             };
             let mut instructions = Vec::new();
-            let count = if name == "table_get" {
-                tables.len()
-            } else {
-                memories.len()
-            };
-            #[expect(
-                clippy::needless_range_loop,
-                reason = "Indices cover either memories or tables."
-            )]
-            for index in 0..count {
-                if name == "table_get"
-                    && tables[index].element_type != wasmparser::RefType::EXTERNREF
-                {
-                    continue;
-                }
-                if name != "table_get" {
-                    memory(&index.to_string())?;
-                }
+            for index in 0..memories.len() {
+                memory(&index.to_string())?;
                 instructions.extend([
                     LocalGet(0),
                     I32Const(index as i32),
@@ -83,13 +67,16 @@ impl Helper {
                 for argument in 1..params.len() as u32 {
                     instructions.push(LocalGet(argument));
                 }
-                instructions.push(if name == "table_get" {
-                    TableGet(index as u32)
-                } else {
-                    MemoryCopy {
+                instructions.push(match name {
+                    "memory_grow" => MemoryGrow(index as u32),
+                    "memory_copy_to_0" => MemoryCopy {
                         src_mem: index as u32,
                         dst_mem: 0,
-                    }
+                    },
+                    _ => MemoryCopy {
+                        src_mem: 0,
+                        dst_mem: index as u32,
+                    },
                 });
                 instructions.extend([Return, End]);
             }
@@ -204,7 +191,7 @@ impl Postprocessor {
     fn add_tables(&self, section: &mut TableSection) {
         for _ in 0..self.added_tables {
             section.table(TableType {
-                element_type: RefType::EXTERNREF,
+                element_type: RefType::FUNCREF,
                 minimum: 0,
                 maximum: None,
                 table64: false,
@@ -470,7 +457,7 @@ pub fn process(
     tables.resize(
         target_tables as usize,
         wasmparser::TableType {
-            element_type: wasmparser::RefType::EXTERNREF,
+            element_type: wasmparser::RefType::FUNCREF,
             initial: 0,
             maximum: None,
             table64: false,

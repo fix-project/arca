@@ -1,5 +1,5 @@
-pub use fixapi::Memoization;
-use fixapi::{DataType, EncodeType, Fix, ValueType};
+pub use fix::Memoization;
+use fix::{DataType, EncodeType, ValueType};
 use fixhandle::{Encode, EncodeView, Handle, HandleView, Object, Ref, Thunk, Tree, TreeRef};
 use fixrepository::Repository;
 use fixstorage::{Storage, repository::RepositoryStorage};
@@ -12,6 +12,8 @@ use std::{
 mod archive;
 pub mod commands;
 pub mod expressions;
+pub mod shell;
+pub use shell::Shell;
 mod session;
 mod trust;
 
@@ -32,6 +34,14 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl From<fix::TypeError> for Error {
+    fn from(error: fix::TypeError) -> Self {
+        match error {
+            fix::TypeError::WrongType => message("wrong Fix type"),
+        }
+    }
+}
+
 fn error(value: impl fmt::Debug) -> Error {
     Error::Backend(format!("{value:?}"))
 }
@@ -43,6 +53,13 @@ fn message(text: &str) -> Error {
 pub struct Value {
     handle: Handle,
     storage: Arc<RepositoryStorage>,
+    shell: core::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.handle.fmt(formatter)
+    }
 }
 
 #[derive(Clone)]
@@ -129,6 +146,7 @@ impl Client {
         Value {
             handle,
             storage: self.storage.clone(),
+            shell: core::marker::PhantomData,
         }
     }
     fn handle(&self, value: &Value) -> Result<Handle, Error> {
@@ -412,7 +430,7 @@ impl Client {
                 start.elapsed()
             );
         }
-        if status != 0 && status != fixapi::FIX_ERROR_STATUS {
+        if status != 0 && status != fix::FIX_ERROR_STATUS {
             if self.persistent && status == 2 {
                 return Err(Error::Backend(
                     String::from_utf8_lossy(&output).into_owned(),
@@ -432,20 +450,18 @@ impl Client {
     }
 }
 
-impl Fix for Client {
-    type Value = Value;
-    type Error = Error;
-    fn blob(&mut self, bytes: &[u8]) -> Result<Value, Error> {
+impl Client {
+    pub fn blob(&mut self, bytes: &[u8]) -> Result<Value, Error> {
         Ok(self.keep(self.storage.add_blob(bytes).into()))
     }
-    fn tree(&mut self, children: &[Value]) -> Result<Value, Error> {
+    pub fn tree(&mut self, children: &[Value]) -> Result<Value, Error> {
         let children = children
             .iter()
             .map(|v| self.handle(v))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.keep(self.storage.add_tree(&children).into()))
     }
-    fn get(&mut self, tree: &Value, index: usize) -> Result<Value, Error> {
+    pub fn get(&mut self, tree: &Value, index: usize) -> Result<Value, Error> {
         use bytes::Buf;
         let tree = Tree::try_from(self.handle(tree)?).map_err(error)?;
         if index >= tree.len() {
@@ -461,7 +477,7 @@ impl Fix for Client {
         backing.copy_to_slice(&mut bytes);
         Ok(self.keep(unsafe { Handle::parse(bytes) }.map_err(error)?))
     }
-    fn read(&mut self, blob: &Value, offset: usize, bytes: &mut [u8]) -> Result<(), Error> {
+    pub fn read(&mut self, blob: &Value, offset: usize, bytes: &mut [u8]) -> Result<(), Error> {
         use bytes::Buf;
         let blob = fixhandle::Blob::try_from(self.handle(blob)?).map_err(error)?;
         if offset
@@ -483,14 +499,14 @@ impl Fix for Client {
         }
         Ok(())
     }
-    fn len(&mut self, value: &Value) -> Result<u64, Error> {
+    pub fn len(&mut self, value: &Value) -> Result<u64, Error> {
         let value = self.handle(value)?;
         if !matches!(value.view(), HandleView::Object(_) | HandleView::Ref(_)) {
             return Err(message("length requires an Object or Ref"));
         }
         Ok(value.len() as u64)
     }
-    fn value_type(&mut self, value: &Value) -> Result<ValueType, Error> {
+    pub fn value_type(&mut self, value: &Value) -> Result<ValueType, Error> {
         Ok(match self.handle(value)?.view() {
             HandleView::Object(_) => ValueType::Object,
             HandleView::Ref(_) => ValueType::Ref,
@@ -498,7 +514,7 @@ impl Fix for Client {
             HandleView::Encode(_) => ValueType::Encode,
         })
     }
-    fn data_type(&mut self, value: &Value) -> Result<DataType, Error> {
+    pub fn data_type(&mut self, value: &Value) -> Result<DataType, Error> {
         let value = self.handle(value)?;
         if !matches!(value.view(), HandleView::Object(_) | HandleView::Ref(_)) {
             return Err(message("expected Object or Ref"));
@@ -509,7 +525,7 @@ impl Fix for Client {
             DataType::Blob
         })
     }
-    fn encode_type(&mut self, value: &Value) -> Result<EncodeType, Error> {
+    pub fn encode_type(&mut self, value: &Value) -> Result<EncodeType, Error> {
         Ok(
             match Encode::try_from(self.handle(value)?).map_err(error)?.view() {
                 EncodeView::Strict(_) => EncodeType::Strict,
@@ -517,22 +533,22 @@ impl Fix for Client {
             },
         )
     }
-    fn is_tag(&mut self, value: &Value) -> Result<bool, Error> {
+    pub fn is_tag(&mut self, value: &Value) -> Result<bool, Error> {
         Ok(Tree::try_from(self.handle(value)?).is_ok_and(|v| v.is_tag()))
     }
-    fn is_comparable(&mut self, value: &Value) -> Result<bool, Error> {
+    pub fn is_comparable(&mut self, value: &Value) -> Result<bool, Error> {
         Ok(self.handle(value)?.is_comparable())
     }
-    fn equals(&mut self, a: &Value, b: &Value) -> Result<bool, Error> {
+    pub fn equals(&mut self, a: &Value, b: &Value) -> Result<bool, Error> {
         self.storage
             .equals(self.handle(a)?, self.handle(b)?)
             .map_err(error)
     }
-    fn aliases(&self, left: &Value, right: &Value) -> bool {
+    pub fn aliases(&self, left: &Value, right: &Value) -> bool {
         Arc::ptr_eq(&left.storage, &right.storage)
             && left.handle.as_bytes() == right.handle.as_bytes()
     }
-    fn reference(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn reference(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             Object::try_from(self.handle(value)?)
                 .map_err(error)?
@@ -540,7 +556,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn identification(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn identification(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             reference(self.handle(value)?)
                 .map_err(error)?
@@ -548,7 +564,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn application(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn application(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             TreeRef::try_from(Handle::from(reference(self.handle(value)?).map_err(error)?))
                 .map_err(error)?
@@ -556,7 +572,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn selection(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn selection(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             TreeRef::try_from(Handle::from(reference(self.handle(value)?).map_err(error)?))
                 .map_err(error)?
@@ -564,7 +580,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn strict(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn strict(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             Thunk::try_from(self.handle(value)?)
                 .map_err(error)?
@@ -572,7 +588,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn shallow(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn shallow(&mut self, value: &Value) -> Result<Value, Error> {
         Ok(self.keep(
             Thunk::try_from(self.handle(value)?)
                 .map_err(error)?
@@ -580,7 +596,7 @@ impl Fix for Client {
                 .into(),
         ))
     }
-    fn eval(&mut self, value: &Value) -> Result<Value, Error> {
+    pub fn eval(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {

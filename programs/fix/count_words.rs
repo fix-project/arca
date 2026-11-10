@@ -1,20 +1,18 @@
 #![no_std]
 extern crate alloc;
 
-use fix::{Blob, Error, Handle, Object, Tree, Value};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value};
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-#[fix::main]
-pub fn main(
-    tuple: Handle<Object<Tree>, fix::Capture>,
-) -> Result<impl Value<Type = Object<Blob>>, Error> {
+#[fixwasm::main]
+pub fn main(tuple: Handle<Object<Tree>>) -> Result<impl Value<Type = Object<Blob>>, Error> {
     if tuple.len()? != 2 {
         return Ok(Blob::create(u64::MAX.to_le_bytes()));
     }
-    let needle = Handle::<Object<Blob>, _>::try_from(tuple.get(0))?.read()?;
-    let haystack = Handle::<Object<Blob>, _>::try_from(tuple.get(1))?.read()?;
+    let needle = Handle::<Object<Blob>>::try_from(tuple.get(0))?.read()?;
+    let haystack = Handle::<Object<Blob>>::try_from(tuple.get(1))?.read()?;
     let count = if needle.is_empty() {
         0
     } else {

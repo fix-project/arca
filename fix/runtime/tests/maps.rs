@@ -1,5 +1,5 @@
 use super::{test_program, test_runtime};
-use fix::{Blob, Handle, Runtime, Tree, user_scheduler_driver};
+use fixruntime::{Blob, Handle, Runtime, Tree, user_scheduler_driver};
 use kernel::prelude::{Arc, Vec, vec};
 
 #[kernel::test]

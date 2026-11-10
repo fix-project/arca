@@ -9,11 +9,11 @@ mod graph;
 mod policy;
 #[path = "parallel/request.rs"]
 mod request;
-use fix::{Error, Handle, Object, Tree, Value, coupon::Statement, map::Map};
 use fixscheduler::{
     kernel::worker,
     shell::{Root, as_tree, child, fields, root},
 };
+use fixwasm::{Error, Handle, Object, Tree, Value, coupon::Statement, map::Map};
 use graph::Graph;
 use policy::*;
 use request::Request;
@@ -22,14 +22,14 @@ type Resolved = alloc::collections::BTreeMap<(u64, [u8; 32]), Evidence>;
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-#[fix::apply]
-fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, Error> {
+#[fixwasm::apply]
+fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
     let graph = Graph::join()?;
     let scheduler = Scheduler::new(root(combination.get(2))?, shared_map(5)?, shared_map(6)?);
     assert_eq!(combination.len()?, 4);
     let mode = combination.get(0);
     let input = root(combination.get(3))?;
-    if mode.equals(fix::Blob::create(b"todo"))? {
+    if mode.equals(fixwasm::Blob::create(b"todo"))? {
         if worker::id()? == 0 {
             let result = todo(&input)?;
             worker::finish(&result)?;
@@ -37,9 +37,9 @@ fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, E
         }
         return wait();
     }
-    let statement = if mode.equals(fix::Blob::create(b"eval"))? {
+    let statement = if mode.equals(fixwasm::Blob::create(b"eval"))? {
         Statement::Eval
-    } else if mode.equals(fix::Blob::create(b"think"))? {
+    } else if mode.equals(fixwasm::Blob::create(b"think"))? {
         Statement::Think
     } else {
         return Err(Error::WrongType);

@@ -1,4 +1,4 @@
-use fixcli::{Client, expressions::Expressions};
+use fixcli::{Shell as Client, expressions::Expressions};
 use std::io::{self, BufRead, IsTerminal, Write};
 
 pub fn run(mut client: Client, bindings: Vec<(String, String)>) -> crate::Result<u8> {

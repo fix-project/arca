@@ -30,7 +30,7 @@ rust_shared_library(
     platform = WASM,
     deps = [":sdk", "//fix/sdk:sdk_import", "@crates//:dlmalloc"],
 )
-fix_procedure(name = "serial", wasm = ":serial_wasm", memories = 4, tables = 4)
+fix_procedure(name = "serial", wasm = ":serial_wasm", memories = 4)
 
 rust_shared_library(
     name = "advisor_wasm",
@@ -40,7 +40,7 @@ rust_shared_library(
     platform = WASM,
     deps = ["//fix/sdk"],
 )
-fix_procedure(name = "advisor", wasm = ":advisor_wasm", memories = 3, tables = 3)
+fix_procedure(name = "advisor", wasm = ":advisor_wasm", memories = 3)
 
 rust_shared_library(
     name = "unavailable_advisor_wasm",
@@ -50,4 +50,4 @@ rust_shared_library(
     platform = WASM,
     deps = ["//fix/sdk"],
 )
-fix_procedure(name = "unavailable_advisor", wasm = ":unavailable_advisor_wasm", memories = 3, tables = 3)
+fix_procedure(name = "unavailable_advisor", wasm = ":unavailable_advisor_wasm", memories = 3)

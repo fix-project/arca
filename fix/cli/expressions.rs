@@ -2,8 +2,11 @@
 
 use fixpreprocessor as preprocessor;
 
-use crate::{Client, Error, Value};
-use fixapi::{Fix, ValueType};
+use crate::shell::{Blob, Encode, Object, Tree};
+use crate::{Error, Shell as Client};
+use fix::ValueType;
+
+pub type Value = fix::Value<Client>;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -17,7 +20,7 @@ pub const PARSER_LABEL: &str = "fix-parser";
 
 /// Adds the expression parser module and labels its compilation; returns the compilation.
 pub fn install(client: &mut Client) -> Result<Value, Error> {
-    let module = client.blob(PARSER)?;
+    let module = Blob::new(PARSER).into_value();
     let compilation = client.compilation_request(&module, None)?;
     client.label(PARSER_LABEL, &compilation)?;
     Ok(compilation)
@@ -368,8 +371,8 @@ impl<'a> Expressions<'a> {
                     Ok(value)
                 } else {
                     let value = self.client.todo_import(&uris[0])?;
-                    let value = if self.client.value_type(&value)? == ValueType::Object {
-                        self.client.reference(&value)?
+                    let value = if value.value_type() == ValueType::Object {
+                        Object::try_from(value)?.reference().into_value()
                     } else {
                         value
                     };
@@ -400,17 +403,17 @@ impl<'a> Expressions<'a> {
             .map_err(error)?;
         let mut pairs = Vec::new();
         for (index, kind) in &imports.records {
-            let name = self.client.blob(format!("import{index}").as_bytes())?;
+            let name = Blob::new(format!("import{index}").as_bytes());
             let value = self.import(kind)?;
-            pairs.push(self.client.tree(&[name, value])?);
+            pairs.push(Tree::new(&[name.into(), value]).into_value());
         }
-        let environment = self.client.tree(&pairs)?;
-        let text = self.client.blob(expanded.as_bytes())?;
-        let limits = self.client.blob(b"")?;
+        let environment = Tree::new(&pairs);
+        let text = Blob::new(expanded.as_bytes());
+        let limits = Blob::new(b"");
         let parser = self.parser()?;
-        let combination = self.client.tree(&[limits, parser, text, environment])?;
-        let application = self.client.application(&combination)?;
-        self.client.think(&application)
+        let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
+        let application = combination.application();
+        self.client.think(application.as_value())
     }
 
     /// Parses `path` as a script invocation.
@@ -425,8 +428,8 @@ impl<'a> Expressions<'a> {
 
     /// Evaluates an outer encode, leaving other values as constructed.
     pub fn realize(&mut self, value: Value) -> Result<Value, Error> {
-        if self.client.value_type(&value)? == ValueType::Encode {
-            self.client.eval(&value)
+        if value.value_type() == ValueType::Encode {
+            Encode::try_from(value)?.eval()
         } else {
             Ok(value)
         }
@@ -436,16 +439,12 @@ impl<'a> Expressions<'a> {
     pub fn arguments(&mut self, sources: &[String]) -> Result<Vec<Value>, Error> {
         let source = format!("({})", sources.join(" "));
         let tree = self.parse(&source, &std::env::current_dir().map_err(error)?)?;
-        let count = self.client.len(&tree)? as usize;
+        let tree = Tree::try_from(tree)?;
+        let count = tree.len();
         if count != sources.len() {
             return Err(error("expression argument count mismatch"));
         }
-        (0..count)
-            .map(|index| {
-                let value = self.client.get(&tree, index)?;
-                self.realize(value)
-            })
-            .collect()
+        tree.into_iter().map(|value| self.realize(value?)).collect()
     }
 }
 

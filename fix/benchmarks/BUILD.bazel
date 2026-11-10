@@ -1,5 +1,6 @@
 load("//build/benchmarks:defs.bzl", "benchmark_suite", "guest_benchmark")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
+load("//fix/sdk:defs.bzl", "fix_cc_wasm")
 load("//build:defs.bzl", "GUEST_ONLY", "WASM", "fix_procedure", "wat_module")
 
 package(default_visibility = ["//visibility:public"])
@@ -8,8 +9,8 @@ wat_module(name = "invoke_wasm", src = "invoke.wat")
 fix_procedure(name = "invoke", wasm = ":invoke_wasm")
 wat_module(name = "continuation_wasm", src = "continuation.wat")
 fix_procedure(name = "continuation", wasm = ":continuation_wasm")
-wat_module(name = "table_continuation_wasm", src = "table_continuation.wat")
-fix_procedure(name = "table_continuation", wasm = ":table_continuation_wasm")
+fix_cc_wasm(name = "descriptor_continuation_wasm", srcs = ["descriptor_continuation.c"])
+fix_procedure(name = "descriptor_continuation", wasm = ":descriptor_continuation_wasm")
 wat_module(name = "function_effect_wasm", src = "function_effect.wat")
 fix_procedure(name = "function_effect", wasm = ":function_effect_wasm")
 wat_module(name = "effect_handler_wasm", src = "effect_handler.wat")
@@ -26,7 +27,6 @@ fix_procedure(
     name = "sdk_operations",
     wasm = ":sdk_operations_wasm",
     memories = 3,
-    tables = 4,
 )
 
 rust_library(
@@ -51,7 +51,7 @@ guest_benchmark(
     cases = "continuation_cases.rs",
     fixtures = {
         "CONTINUATION": ":continuation",
-        "TABLE_CONTINUATION": ":table_continuation",
+        "DESCRIPTOR_CONTINUATION": ":descriptor_continuation",
         "FUNCTION_EFFECT": ":function_effect",
         "EFFECT_HANDLER": ":effect_handler",
     },

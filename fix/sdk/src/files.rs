@@ -1,4 +1,4 @@
-use crate::{Blob, Cast, Error, Object, Select, Tree, Value};
+use crate::{Blob, Error, Handle, Object, Tree, Value};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
@@ -14,26 +14,20 @@ pub struct Stat {
 fn field(
     descriptor: &impl Value<Type = Object<Tree>>,
     index: usize,
-) -> Result<Select<&impl Value<Type = Object<Tree>>>, Error> {
+) -> Result<Handle<crate::Any>, Error> {
     if descriptor.len()? != 3 {
         return Err(Error::WrongType);
     }
     Ok(Value::get(descriptor, index))
 }
-pub fn name(
-    descriptor: &impl Value<Type = Object<Tree>>,
-) -> Result<impl Value<Type = Object<Blob>> + Copy + '_, Error> {
-    let name: Cast<Object<Blob>, _> = field(descriptor, 0)?.try_into()?;
+pub fn name(descriptor: &impl Value<Type = Object<Tree>>) -> Result<Handle<Object<Blob>>, Error> {
+    let name: Handle<Object<Blob>> = field(descriptor, 0)?.try_into()?;
     Ok(name)
 }
-pub fn stat(
-    descriptor: &impl Value<Type = Object<Tree>>,
-) -> Result<Select<&impl Value<Type = Object<Tree>>>, Error> {
+pub fn stat(descriptor: &impl Value<Type = Object<Tree>>) -> Result<Handle<crate::Any>, Error> {
     field(descriptor, 1)
 }
-pub fn contents(
-    descriptor: &impl Value<Type = Object<Tree>>,
-) -> Result<Select<&impl Value<Type = Object<Tree>>>, Error> {
+pub fn contents(descriptor: &impl Value<Type = Object<Tree>>) -> Result<Handle<crate::Any>, Error> {
     field(descriptor, 2)
 }
 pub fn make_file<
@@ -44,7 +38,7 @@ pub fn make_file<
     name: N,
     stat: S,
     contents: C,
-) -> impl Value<Type = Object<Tree>> {
+) -> Handle<Object<Tree>> {
     crate::tree![name, stat, contents]
 }
 pub fn read_stat(object: &impl Value<Type = Object<Tree>>) -> Result<Stat, Error> {
@@ -53,7 +47,7 @@ pub fn read_stat(object: &impl Value<Type = Object<Tree>>) -> Result<Stat, Error
     }
     let mut fields = [0u64; 7];
     for (index, field) in fields.iter_mut().enumerate() {
-        let value = Cast::<Object<Blob>, _>::try_from(Value::get(object, index))?;
+        let value = Handle::<Object<Blob>>::try_from(Value::get(object, index))?;
         *field = if index == 1 {
             if value.len()? != 1 {
                 return Err(Error::WrongType);
@@ -75,7 +69,7 @@ pub fn read_stat(object: &impl Value<Type = Object<Tree>>) -> Result<Stat, Error
         ctim: fields[6],
     })
 }
-pub fn write_stat(stat: &Stat) -> impl Value<Type = Object<Tree>> + Clone + use<> {
+pub fn write_stat(stat: &Stat) -> Handle<Object<Tree>> {
     crate::tree![
         stat.dev,
         Blob::create([stat.filetype]),

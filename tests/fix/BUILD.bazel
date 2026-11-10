@@ -10,10 +10,10 @@ exports_files(glob(["*.fix"]))
 wat_module(name = "privileged_wasm", src = "privileged.wat")
 fix_procedure(name = "privileged_native", wasm = ":privileged_wasm")
 
-wat_module(name = "linear_effects_wasm", src = "linear_effects.wat")
+fix_cc_wasm(name = "linear_effects_wasm", srcs = ["linear_effects.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "linear_effects_native", wasm = ":linear_effects_wasm")
 
-wat_module(name = "selective_lifting_wasm", src = "selective_lifting.wat")
+fix_cc_wasm(name = "selective_lifting_wasm", srcs = ["selective_lifting.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "selective_lifting_native", wasm = ":selective_lifting_wasm")
 
 wat_module(name = "eval_wasm", src = "eval.wat")
@@ -22,7 +22,7 @@ fix_procedure(name = "eval_native", wasm = ":eval_wasm")
 wat_module(name = "exception_parameters_wasm", src = "exception_parameters.wat")
 fix_procedure(name = "exception_parameters_native", wasm = ":exception_parameters_wasm")
 
-wat_module(name = "advice_wasm", src = "advice.wat")
+fix_cc_wasm(name = "advice_wasm", srcs = ["advice.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "advice_native", wasm = ":advice_wasm")
 
 wat_module(name = "advice_capture_wasm", src = "advice_capture.wat")
@@ -31,37 +31,25 @@ fix_procedure(name = "advice_capture_native", wasm = ":advice_capture_wasm")
 wat_module(name = "read_blob_wasm", src = "read_blob.wat")
 fix_procedure(name = "read_blob_native", wasm = ":read_blob_wasm")
 
-wat_module(name = "recursive_local_aliases_wasm", src = "recursive_local_aliases.wat")
+fix_cc_wasm(name = "recursive_local_aliases_wasm", srcs = ["recursive_local_aliases.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "recursive_local_aliases_native", wasm = ":recursive_local_aliases_wasm")
 
-wat_module(name = "large_local_graph_wasm", src = "large_local_graph.wat")
+fix_cc_wasm(name = "large_local_graph_wasm", srcs = ["large_local_graph.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "large_local_graph_native", wasm = ":large_local_graph_wasm")
 
-wat_module(name = "local_result_wasm", src = "local_result.wat")
+fix_cc_wasm(name = "local_result_wasm", srcs = ["local_result.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "local_result_native", wasm = ":local_result_wasm")
 
-wat_module(name = "continuation_wasm", src = "continuation.wat")
+fix_cc_wasm(name = "continuation_wasm", srcs = ["continuation.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "continuation_native", wasm = ":continuation_wasm")
 
-wat_module(name = "capture_determinism_wasm", src = "capture_determinism.wat")
+fix_cc_wasm(name = "capture_determinism_wasm", srcs = ["capture_determinism.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "capture_determinism_native", wasm = ":capture_determinism_wasm")
 
-wat_module(name = "continuation_state_wasm", src = "continuation_state.wat")
+fix_cc_wasm(name = "continuation_state_wasm", srcs = ["continuation_state.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "continuation_state_native", wasm = ":continuation_state_wasm")
 
-wat_module(name = "externref_reuse_wasm", src = "externref_reuse.wat")
-fix_procedure(name = "externref_reuse_native", wasm = ":externref_reuse_wasm")
-
-wat_module(name = "invalidate_externrefs_wasm", src = "invalidate_externrefs.wat")
-fix_procedure(name = "invalidate_externrefs_native", wasm = ":invalidate_externrefs_wasm")
-
-wat_module(name = "large_tables_wasm", src = "large_tables.wat")
-fix_procedure(name = "large_tables_native", wasm = ":large_tables_wasm")
-
-wat_module(name = "partial_tree_wasm", src = "partial_tree.wat")
-fix_procedure(name = "partial_tree_native", wasm = ":partial_tree_wasm")
-
-wat_module(name = "indistinguishability_wasm", src = "indistinguishability.wat")
+fix_cc_wasm(name = "indistinguishability_wasm", srcs = ["indistinguishability.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "indistinguishability_native", wasm = ":indistinguishability_wasm")
 
 wat_module(name = "slowaddblob_wasm", src = "slowaddblob.wat")
@@ -84,11 +72,7 @@ fix_script_test(
     tags = ["kvm", "local"],
 )
 
-wat_module(
-    name = "shell_wasm",
-    src = "shell.wat",
-    out = "shell.wasm",
-)
+fix_cc_wasm(name = "shell_wasm", srcs = ["shell.c"], hdrs = ["fixture.h"], memories = 2)
 
 fix_procedure(
     name = "shell_native",
@@ -108,7 +92,6 @@ fix_procedure(
     name = "sdk_expressions_native",
     wasm = ":sdk_expressions_wasm",
     memories = 3,
-    tables = 3,
 )
 
 rust_shared_library(
@@ -120,7 +103,7 @@ rust_shared_library(
     deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
 )
 
-fix_procedure(name = "worker_events_native", wasm = ":worker_events_wasm", memories = 3, tables = 3)
+fix_procedure(name = "worker_events_native", wasm = ":worker_events_wasm", memories = 3)
 
 rust_shared_library(
     name = "concurrent_map_wasm",
@@ -129,7 +112,7 @@ rust_shared_library(
     deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
 )
 
-fix_procedure(name = "concurrent_map_native", wasm = ":concurrent_map_wasm", memories = 3, tables = 3)
+fix_procedure(name = "concurrent_map_native", wasm = ":concurrent_map_wasm", memories = 3)
 
 rust_shared_library(
     name = "importer_wasm",
@@ -138,7 +121,7 @@ rust_shared_library(
     deps = ["//fix/sdk:sdk_import", "@crates//:dlmalloc"],
 )
 
-fix_procedure(name = "importer_native", wasm = ":importer_wasm", memories = 3, tables = 3)
+fix_procedure(name = "importer_native", wasm = ":importer_wasm", memories = 3)
 
 test_suite(
     name = "tests",
@@ -156,8 +139,6 @@ test_suite(
         ":slowaddblob_test",
         ":sdk_expressions_test",
         ":wat_linkage_test",
-        ":cpp_transfers_test",
-        ":cpp_partitioned_test",
     ],
 )
 
@@ -190,7 +171,7 @@ rust_shared_library(
     link_deps = [":wat_operations"],
 )
 
-fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 3, tables = 3)
+fix_procedure(name = "wat_linkage_native", wasm = ":wat_linkage_wasm", memories = 3)
 
 rust_shared_library(
     name = "check_result_wasm",
@@ -198,7 +179,7 @@ rust_shared_library(
     platform = WASM,
     deps = ["//fix/sdk"],
 )
-fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 3, tables = 3)
+fix_procedure(name = "check_result_native", wasm = ":check_result_wasm", memories = 3)
 
 [
     fix_script_test(
@@ -235,7 +216,7 @@ rust_shared_library(
     platform = WASM,
     deps = ["//fix/sdk"],
 )
-fix_procedure(name = "compiler_tool_native", wasm = ":compiler_tool_wasm", memories = 3, tables = 3)
+fix_procedure(name = "compiler_tool_native", wasm = ":compiler_tool_wasm", memories = 3)
 
 rust_test(
     name = "cli_test",
@@ -273,7 +254,6 @@ fix_cc_wasm(
 
 fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")
 
-
 BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//fix/cli:precompiled"]
 
 BOOTSTRAP_ENV = {
@@ -305,7 +285,7 @@ rust_test(
     srcs = ["expressions.rs", "directory.rs"],
     crate_root = "expressions.rs",
     edition = "2024",
-    deps = ["//fix/api", "//fix/cli:client"],
+    deps = ["//fix/api:api_alloc", "//fix/cli:client"],
     data = BOOTSTRAP_DATA + ["//programs/fix:identity_elf", "//programs/fix:addblob_module", "//fix/sdk:tagger_native"],
     rustc_env = BOOTSTRAP_ENV | {
         "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
@@ -317,22 +297,13 @@ rust_test(
     tags = ["kvm", "local"],
 )
 
-wat_module(name = "cpp_transfers_wasm", src = "cpp_transfers.wat", visibility = ["//bootstrap:__pkg__", "//tests/fix:__pkg__"])
-fix_procedure(name = "cpp_transfers_native", wasm = ":cpp_transfers_wasm")
-fix_script_test(
-    name = "cpp_transfers_test",
-    script = "cpp_transfers.fix",
-    data = ["cpp_transfers.fix", ":cpp_transfers_native"],
-    expected = "2a00000000000000",
-    timeout = "long",
-    tags = ["kvm", "local"],
-)
+wat_module(name = "many_memories_wasm", src = "many_memories.wat")
+fix_procedure(name = "many_memories_native", wasm = ":many_memories_wasm")
+wat_module(name = "many_tables_wasm", src = "many_tables.wat")
+fix_procedure(name = "many_tables_native", wasm = ":many_tables_wasm")
 
-fix_script_test(
-    name = "cpp_partitioned_test",
-    script = "cpp_partitioned.fix",
-    data = ["cpp_partitioned.fix", "//bootstrap:cpp_transfers_program", ":cpp_transfers_wasm", ":check_result_native"],
-    expected = "2a00000000000000",
-    timeout = "long",
-    tags = ["kvm", "local"],
-)
+wat_module(name = "memory_boundary_wasm", src = "memory_boundary.wat")
+fix_procedure(name = "memory_boundary_native", wasm = ":memory_boundary_wasm")
+
+wat_module(name = "tree_bytes_wasm", src = "tree_bytes.wat")
+fix_procedure(name = "tree_bytes_native", wasm = ":tree_bytes_wasm")

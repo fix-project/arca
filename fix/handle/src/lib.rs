@@ -1,6 +1,8 @@
 #![no_std]
 #![feature(portable_simd)]
 
+pub mod descriptors;
+
 use core::{fmt, mem, simd::u8x32};
 
 pub const HANDLE_SIZE: usize = 32;

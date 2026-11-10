@@ -1,16 +1,27 @@
 (module
-  (import "fix" "get_tree_element" (func $get (param externref i32) (result externref)))
-  (import "fix" "attach_blob" (func $attach (param externref i32)))
-  (import "fix" "effect" (func $effect (param externref) (result externref)))
-  (import "fix" "create_blob_i64" (func $blob (param i64) (result externref)))
+  (import "fix" "get_tree_element" (func $get (param i32 i32) (result i32)))
+  (import "fix" "attach_blob" (func $attach (param i32 i32) (result i32)))
+  (import "fix" "effect" (func $effect (param i32) (result i32)))
+  (import "fix" "create_blob_i64" (func $blob (param i64) (result i32)))
   (memory $control 0)
   (memory $payload 0)
-  (func (export "_fix_apply") (param $combination externref) (result externref)
-    (local $size i32) (local $offset i32) (local $epoch i32) (local $request externref) (local $limit i64)
-    (call $attach (call $get (local.get $combination) (i32.const 2)) (i32.const 0))
+  (func
+    (export "_fix_apply")
+    (param $combination i32)
+    (result i32)
+    (local $size i32)
+    (local $offset i32)
+    (local $epoch i32)
+    (local $request i32)
+    (local $limit i64)
+    (drop (call $attach (i32.const 0) (call $get (local.get $combination) (i32.const 2))))
     (local.set $size (i32.wrap_i64 (i64.load $control (i32.const 0))))
-    (if (i32.eq (memory.grow $payload (i32.div_u (i32.add (local.get $size) (i32.const 65535)) (i32.const 65536))) (i32.const -1)) (then unreachable))
-    (call $attach (call $get (local.get $combination) (i32.const 3)) (i32.const 0))
+    (if
+      (i32.eq
+        (memory.grow $payload (i32.div_u (i32.add (local.get $size) (i32.const 65535)) (i32.const 65536)))
+        (i32.const -1))
+      (then unreachable))
+    (drop (call $attach (i32.const 0) (call $get (local.get $combination) (i32.const 3))))
     (local.set $limit (i64.load $control (i32.const 0)))
     (local.set $request (call $get (local.get $combination) (i32.const 4)))
     (loop $again
@@ -18,18 +29,22 @@
       (block $done
         (loop $touch
           (br_if $done (i32.ge_u (local.get $offset) (local.get $size)))
-          (if (local.get $epoch)
+          (if
+            (local.get $epoch)
             (then
-              (if (i32.ne (i32.load8_u $payload (local.get $offset))
-                          (i32.and (i32.sub (local.get $epoch) (i32.const 1)) (i32.const 255)))
+              (if
+                (i32.ne
+                  (i32.load8_u $payload (local.get $offset))
+                  (i32.and (i32.sub (local.get $epoch) (i32.const 1)) (i32.const 255)))
                 (then unreachable))))
           (i32.store8 $payload (local.get $offset) (local.get $epoch))
           (local.set $offset (i32.add (local.get $offset) (i32.const 4096)))
           (br $touch)))
       (local.set $epoch (i32.add (local.get $epoch) (i32.const 1)))
-      (call $attach (call $effect (local.get $request)) (i32.const 0))
+      (drop (call $attach (i32.const 0) (call $effect (local.get $request))))
       (if (i64.ne (i64.load $control (i32.const 0)) (i64.extend_i32_u (local.get $epoch))) (then unreachable))
-      (if (i64.eq (i64.extend_i32_u (local.get $epoch)) (local.get $limit))
+      (if
+        (i64.eq (i64.extend_i32_u (local.get $epoch)) (local.get $limit))
         (then (return (call $blob (local.get $limit)))))
       (br $again))
     unreachable))

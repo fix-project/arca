@@ -1,2 +1,0 @@
-program = $cpp_transfers_native
-*#("" program)

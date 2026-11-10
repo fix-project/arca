@@ -266,27 +266,27 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
     artifact = name + "_elf" if runnable else name
     flags = FIX_COPTS + ["-Ifix/shell/inc"]
     objects = []
-    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt", "//fix/shell:cpp_support"]):
+    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt"]):
         obj = name + "_native_object_%d" % index
         cc_object(
             name = obj,
             tags = tags,
             src = src,
             hdrs = [name + "_translate/module.h", "//fix/shell:headers"],
-            deps = ["@wabt_src//:simde", "//fix/shell:cpp_runtime"],
+            deps = ["@wabt_src//:simde"],
             include_roots = [name + "_translate/module.h"],
-            copts = flags + (["-O3"] if index == 1 else []) + (["-x", "c++", "-std=c++20", "-fexceptions", "-funwind-tables", "-Wno-return-type-c-linkage", "-nostdinc++"] if index != 1 else []),
-            compiler = "@local_tools//:clang" if index != 1 else "@local_tools//:gcc",
+            copts = flags + (["-O3"] if index == 1 else []),
+            compiler = "@local_tools//:clang",
             visibility = ["//visibility:private"],
         )
         objects.append(":" + obj)
     native.genrule(
         name = artifact,
         tags = tags,
-        srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell", "//fix/shell:cpp_runtime"],
+        srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
         tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
         outs = [name + ".elf"],
-        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]) + " -Wl,--start-group $(locations //fix/shell:cpp_runtime) -Wl,--end-group",
+        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
         visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:

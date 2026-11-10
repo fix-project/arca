@@ -1,8 +1,8 @@
 #![no_std]
 
-use fix::arca::{EffectAction, FixOnArca, trust::Trust};
-use fix::storage::{Storage, memory::MemoryStorage};
-use fix::{Blob as FixBlob, Handle, Tree as FixTree};
+use fixruntime::arca::{EffectAction, FixOnArca, trust::Trust};
+use fixruntime::storage::{Storage, memory::MemoryStorage};
+use fixruntime::{Blob as FixBlob, Handle, Tree as FixTree};
 use kernel::prelude::*;
 
 pub fn number(value: u64) -> Handle {
@@ -31,7 +31,7 @@ impl FixState {
     pub fn new(elf: &[u8], first: u64, second: u64) -> Self {
         let memory = Arc::new(MemoryStorage::default());
         let compiler = memory
-            .add_blob(fix::stdlib::PRIMITIVES[0].1)
+            .add_blob(fixruntime::stdlib::PRIMITIVES[0].1)
             .object()
             .into_ref();
         let canonical = memory.canonicalize(compiler.into()).unwrap();

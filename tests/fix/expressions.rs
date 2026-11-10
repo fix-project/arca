@@ -581,7 +581,6 @@ fn flatware_directories_round_trip_through_native_import_and_export() {
 
 #[test]
 fn evaluation_rejects_scheduler_authored_coupons() {
-    use fixapi::Fix;
     let directory = Directory::new("untrusted_scheduler");
     bootstrap(&directory, &[("untrusted", env!("FIX_TAGGER"))]);
     let mut client = fixcli::Client::open(

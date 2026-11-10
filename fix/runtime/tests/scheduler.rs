@@ -1,5 +1,5 @@
 use super::{evaluation::Evaluation, test_program, test_runtime};
-use fix::{Blob, Handle, Thunk, Tree, stdlib};
+use fixruntime::{Blob, Handle, Thunk, Tree, stdlib};
 use kernel::prelude::Vec;
 
 #[kernel::test]

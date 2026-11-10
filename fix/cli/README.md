@@ -1,5 +1,10 @@
 # Fix CLI
 
+The CLI uses the shared `fix` SDK (`fix/api`). Its `fixcli::Shell` implementation
+provides one shell per Linux thread. Open it once with `Shell::open`; value
+operations use it implicitly. Expressions use the SDK's typed values;
+repository and process operations belong to the Linux implementation.
+
 `fix` is one binary; `fix --help` lists its commands. Value operands of the
 expression commands (a bare expression, `eval`, `think`, `compile`, `todo`,
 `parse`, `run`, `export`, and `flatware-export`) are Fix expressions. Plumbing

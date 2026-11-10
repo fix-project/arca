@@ -20,7 +20,7 @@ Leaf suites own their case definitions, guest implementation, and fixtures:
 | `//fix/benchmarks:invocation` | Fix invocation, certified invocation, invocation chains |
 | `//fix/benchmarks:continuations` | Fix capture/resume, effects, canonicalization, replay |
 | `//fix/benchmarks:scheduler` | Evaluation of eight independent applications |
-| `//fix/benchmarks:sdk` | Rust SDK reads, Tree construction, invalidation, continuation-based evaluation |
+| `//fix/benchmarks:sdk` | Rust SDK reads, Tree construction, descriptor cloning/closing, continuation-based evaluation |
 
 `//arca:benchmarks` and `//fix:benchmarks` run their respective leaf suites;
 `//:benchmarks` runs both. Each leaf is a separate Criterion executable with its
@@ -57,15 +57,14 @@ cases initialize the producer and handler once, then resume successive
 continuations on both sides. Each continuation is used at most once; initialization is outside the timer. Continuation cases use
 payloads of 0, 64 KiB, and 1 MiB and check/write one byte every 4 KiB between
 suspensions.
-The table case uses one externref per serialized Fix handle width (32 bytes)
-of the size parameter; this describes logical payload, not native table storage.
-It checks the last entry and writes the first entry between effects.
+The descriptor case keeps one open slot per 32 bytes of the size parameter.
+It checks the last slot between effects; replies are closed after use.
 
 SDK cases execute up to 512 operations per invocation. They include amortized
 invocation overhead. Tree construction includes loading its two children;
-invalidation measures reclamation with the input root and empty scratch state.
+descriptor cloning/closing measures allocation and reuse while retaining the input.
 SDK evaluation cases execute up to 32 operations per invocation through the Fix
-evaluator, including capture, resumption, root reclamation, capture release, and
+evaluator, including capture, resumption, descriptor release, and
 reading the result. They separately measure a Blob value, strict identification,
 and strict application of the identity callable. The producer starts once before
 the timer; each measured step evaluates its request and resumes to its next

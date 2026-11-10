@@ -219,9 +219,6 @@ toolchain_files(
         ":simde_include": "usr/include/simde",
         "//fix/shell:shell": "share/fix/libfixshell.a",
         "//fix/shell:wasm_rt": "share/fix/wasm-rt.c",
-        "//fix/shell:cpp_support": "share/fix/cpp-support.cc",
-        "//fix/shell:cpp_runtime": "share/fix/",
-        "//fix/shell:cpp_headers": "share/fix/c++",
         "//fix/shell:memmap": "share/fix/memmap.ld",
         "//fix/shell:headers": "share/fix/",
     },
@@ -293,7 +290,3 @@ sh_test(
     data = [":release_fix", ":seed", ":compilations", ":compilations_handle"],
     tags = ["manual", "kvm", "local"],
 )
-
-native_program(name = "cpp_transfers", src = "//tests/fix:cpp_transfers_wasm", directory = "cpp_transfers", partitions = 2)
-
-stage(name = "cpp_transfers_program", srcs = [":cpp_transfers_link"], tags = ["manual"])

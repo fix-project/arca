@@ -1,6 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_static_library")
 load("//build:defs.bzl", "ARCA_USER")
-load("//build:cpp_runtime.bzl", "cpp_runtime")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -8,7 +7,6 @@ filegroup(
     name = "headers",
     srcs = glob(["inc/*.h"]),
 )
-
 filegroup(
     name = "wasm_rt",
     srcs = ["etc/wasm-rt.c"],
@@ -22,7 +20,7 @@ filegroup(
 genrule(
     name = "bindings",
     visibility = ["//visibility:private"],
-    srcs = ["inc/wasm-rt.h", "inc/wasm-rt-refs.h"],
+    srcs = ["inc/wasm-rt.h"],
     outs = ["wasm_rt.rs"],
     cmd = "$(execpath //tools:bindgen) wasm $(location inc/wasm-rt.h) $@",
     tools = ["//tools:bindgen"],
@@ -40,12 +38,6 @@ rust_static_library(
         "//arca/api",
         "//arca/user",
         "//fix/handle",
-        "//fix/sdk:types",
+        "//fix/api:types",
     ],
 )
-
-filegroup(name = "cpp_support", srcs = ["etc/cpp-support.cc"])
-
-cpp_runtime(name = "cpp_runtime", srcs = ["@llvm-raw//:cpp_runtime_sources"], root = "@llvm-raw//:BUILD.bazel")
-
-filegroup(name = "cpp_headers", srcs = [":cpp_runtime"], output_group = "headers")

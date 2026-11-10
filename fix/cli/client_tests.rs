@@ -1,4 +1,4 @@
-use fixapi::{DataType, Fix, ValueType};
+use fix::{DataType, ValueType};
 use fixcli::{Client, Options};
 use std::{
     path::{Path, PathBuf},

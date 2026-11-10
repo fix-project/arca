@@ -4,9 +4,9 @@
 use benchmark_cases::Operation;
 use benchmark_guest::{batches, fixture, timed};
 use core::time::Duration;
-use fix::Thunk;
-use fix::storage::Storage;
 use fix_benchmark::{FixState, fix_program, number};
+use fixruntime::Thunk;
+use fixruntime::storage::Storage;
 use kernel::prelude::*;
 
 struct Benchmark(Operation);
@@ -16,9 +16,9 @@ impl benchmark_guest::Benchmark for Benchmark {
         let mode = match self.0 {
             Operation::Metadata => 6,
             Operation::Read => 0,
-            Operation::AttachedRead => 7,
+            Operation::HandleRead => 7,
             Operation::Tree => 1,
-            Operation::Invalidate => 2,
+            Operation::CloneClose => 2,
             Operation::EvalValue => 3,
             Operation::EvalIdentification => 4,
             Operation::EvalApplication => 5,
@@ -35,8 +35,11 @@ impl benchmark_guest::Benchmark for Benchmark {
                 timed(|| fix_reference::think(&state.runtime, Thunk::try_from(pending).unwrap()))
             } else if evaluates {
                 let certificate = state.memory.get_tree(state.program).unwrap();
-                let identity =
-                    fix_program(&state.memory, certificate[0], fix::stdlib::PRIMITIVES[0].1);
+                let identity = fix_program(
+                    &state.memory,
+                    certificate[0],
+                    fixruntime::stdlib::PRIMITIVES[0].1,
+                );
                 let combination = state.memory.add_tree(&[
                     number(0),
                     state.program.into(),
@@ -62,7 +65,7 @@ impl benchmark_guest::Benchmark for Benchmark {
             };
             let result = state
                 .memory
-                .get_blob(fix::Blob::try_from(result).unwrap())
+                .get_blob(fixruntime::Blob::try_from(result).unwrap())
                 .unwrap();
             let expected = if mode == 6 {
                 5

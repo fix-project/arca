@@ -115,7 +115,7 @@ wabt_repository = use_repo_rule("//build:wabt_repository.bzl", "wabt_repository"
 wabt_repository(
     name = "wabt_src",
     build_file = "//build:wabt.BUILD.bazel",
-    patch = "//build:wabt-externrefs.patch",
+    patch = "//build:wabt-memory.patch",
 )
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")

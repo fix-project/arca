@@ -1,5 +1,3 @@
 (module
-    (func (export "_fix_apply") (param $encode externref) (result externref)
-        local.get 0
-    )
-)
+  (func (export "_fix_apply") (param $value i32) (result i32)
+    (local.get $value)))

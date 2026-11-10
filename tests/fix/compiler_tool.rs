@@ -1,8 +1,8 @@
 #![no_std]
-use fix::{Blob, Error, Handle, Object, Tree, Value, tree};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value, tree};
 
-#[fix::apply]
-fn apply(_: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, Error> {
+#[fixwasm::apply]
+fn apply(_: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
     let unused = tree![].application().strict();
     let files = tree![
         tree![Blob::create(b"object.o"), tree![], Blob::create(b"object")],

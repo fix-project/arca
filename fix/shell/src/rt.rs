@@ -19,46 +19,29 @@ unsafe extern "C" {
     pub fn wasm_rt_free();
 }
 
-pub const EXTERNREF_SIZE: usize = core::mem::size_of::<wasm_rt_externref_t>();
-const _: () = assert!(EXTERNREF_SIZE == core::mem::size_of::<usize>());
-
 pub const FUNCREF_SIZE: usize = core::mem::size_of::<wasm_rt_funcref_t>();
 
-// Memory and table slots contain a 4 GiB payload followed by a 4 GiB guard.
 pub static mut MEMORY_IDX: usize = 0;
 pub static mut TABLE_IDX: usize = 0;
 
-pub unsafe fn externref_table(index: u32) -> *mut wasm_rt_externref_table_t {
-    unsafe {
-        assert!((index as usize) < TABLE_IDX, "table does not exist");
-        let table = TABLES[index as usize];
-        assert!(!table.is_null(), "table does not hold externrefs");
-        table
-    }
-}
-
-pub const NUM_MEMORIES: usize = 32;
-pub const NUM_TABLES: usize = 30;
+pub const REGION_COUNT: usize = 64;
+pub const LOCAL_REGION_COUNT: usize = 62;
+pub const NUM_MEMORIES: usize = REGION_COUNT;
+pub const NUM_TABLES: usize = REGION_COUNT;
 pub const PAYLOAD_SIZE: usize = 1 << 32;
-pub const SLOT_SIZE: usize = 2 * PAYLOAD_SIZE;
+pub const SLOT_SIZE: usize = PAYLOAD_SIZE;
+pub const LOCAL_BASE: usize = REGION_COUNT * SLOT_SIZE;
 pub const HANDLE_BASE: usize = 0x7e00000000;
 pub const MAX_PAGES: u64 = (PAYLOAD_SIZE / PAGE_SIZE as usize) as u64;
-pub const MAX_TABLE_ELEMENTS: u32 = (PAYLOAD_SIZE / fixhandle::HANDLE_SIZE) as u32;
 pub const MAX_FUNCREF_TABLE_ELEMENTS: u32 = (PAYLOAD_SIZE / FUNCREF_SIZE) as u32;
 
 pub static mut MEMORIES: [*mut wasm_rt_memory_t; NUM_MEMORIES] =
     [core::ptr::null_mut(); NUM_MEMORIES];
-pub static mut TABLES: [*mut wasm_rt_externref_table_t; NUM_TABLES] =
-    [core::ptr::null_mut(); NUM_TABLES];
 pub static mut FUNCREF_TABLES: [*mut wasm_rt_funcref_table_t; NUM_TABLES] =
     [core::ptr::null_mut(); NUM_TABLES];
 
 pub static mut MEMORY_ATTACHED: [bool; NUM_MEMORIES] = [false; NUM_MEMORIES];
-pub static mut TABLE_ATTACHED: [bool; NUM_TABLES] = [false; NUM_TABLES];
-pub static mut MEMORY_HANDLES: [wasm_rt_externref_t; NUM_MEMORIES] =
-    [core::ptr::null_mut(); NUM_MEMORIES];
-pub static mut TABLE_HANDLES: [wasm_rt_externref_t; NUM_TABLES] =
-    [core::ptr::null_mut(); NUM_TABLES];
+pub static mut MEMORY_HANDLES: [Option<u32>; NUM_MEMORIES] = [None; NUM_MEMORIES];
 
 pub unsafe fn map_region(data: *mut u8, size: usize, mode: u32) -> Option<usize> {
     if size == 0 {
@@ -120,7 +103,7 @@ pub extern "C" fn wasm_rt_allocate_memory(
         assert_eq!(page_size, PAGE_SIZE);
         assert!(initial_pages <= max_pages && max_pages <= MAX_PAGES);
         let idx = MEMORY_IDX;
-        assert!(idx < NUM_MEMORIES);
+        assert!(idx + TABLE_IDX < REGION_COUNT);
         let data = (SLOT_SIZE * idx) as *mut u8;
         let size = initial_pages * PAGE_SIZE as u64;
         map_region(data, size as usize, __MODE_read_write).expect("memory allocation failed");
@@ -176,85 +159,6 @@ pub extern "C" fn wasm_rt_grow_memory(memory: *mut wasm_rt_memory_t, pages: u64)
     memory.pages = desired;
     memory.size = desired * PAGE_SIZE as u64;
     current
-}
-
-/**
- * Initialize an externref Table object with an element count
- * of `elements` and a maximum size of `max_elements`.
- * Usage as per wasm_rt_allocate_funcref_table.
- */
-#[unsafe(no_mangle)]
-pub extern "C" fn wasm_rt_allocate_externref_table(
-    table: *mut wasm_rt_externref_table_t,
-    elements: u32,
-    mut max_elements: u32,
-) {
-    unsafe {
-        assert!(!table.is_null());
-        max_elements = max_elements.min(MAX_TABLE_ELEMENTS);
-        assert!(elements <= max_elements);
-        let idx = TABLE_IDX;
-        assert!(idx < NUM_TABLES);
-        let data = (SLOT_SIZE * (NUM_MEMORIES + idx)) as *mut u8;
-        let memory_size = map_region(
-            data,
-            table_bytes(elements, fixhandle::HANDLE_SIZE),
-            __MODE_read_write,
-        )
-        .expect("table allocation failed") as i64;
-        table.write(wasm_rt_externref_table_t {
-            data: data.cast(),
-            memory_size,
-            size: elements,
-            max_size: max_elements,
-        });
-        TABLES[idx] = table;
-        TABLE_IDX += 1;
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wasm_rt_grow_externref_table(
-    table: *mut wasm_rt_externref_table_t,
-    delta: u32,
-    init: wasm_rt_externref_t,
-) -> u32 {
-    assert!(!table.is_null());
-    for index in 0..NUM_TABLES {
-        if delta != 0 && unsafe { TABLES[index] == table && TABLE_ATTACHED[index] } {
-            return u32::MAX;
-        }
-    }
-    let table = unsafe { &mut *table };
-    let Some(desired) = table
-        .size
-        .checked_add(delta)
-        .filter(|size| *size <= table.max_size)
-    else {
-        return u32::MAX;
-    };
-    let desired_bytes = table_bytes(desired, fixhandle::HANDLE_SIZE);
-    let current_bytes = usize::try_from(table.memory_size).unwrap();
-    if desired_bytes > current_bytes {
-        if unsafe {
-            map_region(
-                (table.data as *mut u8).add(current_bytes),
-                desired_bytes - current_bytes,
-                __MODE_read_write,
-            )
-        }
-        .is_none()
-        {
-            return u32::MAX;
-        }
-        table.memory_size = desired_bytes as i64;
-    }
-    let old_size = table.size;
-    table.size = desired;
-    for index in old_size..desired {
-        unsafe { crate::fixpoint::wasm_rt_set_externref(table, index as u64, init) };
-    }
-    old_size
 }
 
 unsafe fn grow_table<T: Copy>(
@@ -322,8 +226,8 @@ pub extern "C" fn wasm_rt_allocate_funcref_table(
         max_elements = max_elements.min(MAX_FUNCREF_TABLE_ELEMENTS);
         assert!(elements <= max_elements);
         let idx = TABLE_IDX;
-        assert!(idx < NUM_TABLES);
-        let data = (SLOT_SIZE * (NUM_MEMORIES + idx)) as *mut u8;
+        assert!(idx + MEMORY_IDX < REGION_COUNT);
+        let data = (SLOT_SIZE * (REGION_COUNT - idx - 1)) as *mut u8;
         let memory_size = map_region(data, table_bytes(elements, FUNCREF_SIZE), __MODE_read_write)
             .expect("table allocation failed") as i64;
         table.write(wasm_rt_funcref_table_t {
@@ -346,14 +250,6 @@ pub extern "C" fn wasm_rt_free_memory(memory: *mut wasm_rt_memory_t) {
 }
 
 /**
- * Free an externref Table object.
- */
-#[unsafe(no_mangle)]
-pub extern "C" fn wasm_rt_free_externref_table(table: *mut wasm_rt_externref_table_t) {
-    todo!();
-}
-
-/**
  * Free a funcref Table object.
  */
 #[unsafe(no_mangle)]
@@ -370,4 +266,20 @@ pub extern "C" fn wasm_rt_free_funcref_table(table: *mut wasm_rt_funcref_table_t
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_rt_trap(trap: wasm_rt_trap_t) {
     panic!("wasm rt trap: {trap}");
+}
+
+pub unsafe fn retain_memory(index: usize, handle: crate::handles::Reference) {
+    unsafe {
+        if let Some(previous) = MEMORY_HANDLES[index].take() {
+            crate::descriptors::close(previous);
+        }
+        MEMORY_HANDLES[index] = Some(crate::descriptors::insert(handle));
+    }
+}
+pub unsafe fn release_memory(index: usize) {
+    unsafe {
+        if let Some(previous) = MEMORY_HANDLES[index].take() {
+            crate::descriptors::close(previous);
+        }
+    }
 }

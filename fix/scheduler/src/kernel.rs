@@ -1,7 +1,7 @@
 use crate::abi::{coordinate, coordinated, request};
 use crate::shell::{Root, as_tree, child, root};
-use fix::{Blob, Error, Value, tree};
-pub use fix::{map, stream};
+use fixwasm::{Blob, Error, Value, tree};
+pub use fixwasm::{map, stream};
 
 pub struct Advice {
     pub target: Root,

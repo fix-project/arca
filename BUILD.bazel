@@ -39,6 +39,7 @@ test_suite(
     tests = [
         "//arca/api:tests",
         "//fix/handle:tests",
+        "//fix/cli:typed_values_test",
         "//fix/importers/git:tests",
         "//fix/shell/tests:memory",
         "//fix/storage:tests",
@@ -56,6 +57,7 @@ test_suite(
     tests = [
         "//arca/kernel:tests",
         "//fix/runtime:tests",
+        "//fix/runtime:descriptor_tests",
         "//fix/cli:client_tests",
         "//programs/kernel:hello_test",
         "//programs/fix:tests",

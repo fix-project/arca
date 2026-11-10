@@ -1,30 +1,27 @@
-use alloc::{collections::BTreeMap, rc::Rc, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 use crate::token::Token;
-use fix::{Any, Blob, Cast, Error, Handle, Object, Thunk, Tree, Value};
+use fixwasm::{Any, Blob, Error, Handle, Object, Thunk, Tree, Value};
 
-type Parsed<'a> = Rc<dyn Value<Type = Any> + 'a>;
+type Parsed = Handle<Any>;
 
-pub struct Parser<'a> {
+pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
-    environment: BTreeMap<String, Parsed<'a>>,
-    context: BTreeMap<String, Parsed<'a>>,
+    environment: BTreeMap<String, Parsed>,
+    context: BTreeMap<String, Parsed>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(
-        tokens: Vec<Token>,
-        combination: &'a Handle<Object<Tree>, fix::Focus>,
-    ) -> Result<Self, Error> {
-        let primitives = Handle::<Object<Tree>, _>::try_from(combination.get(3))?;
-        let mut environment: BTreeMap<String, Parsed<'a>> = BTreeMap::new();
+impl Parser {
+    pub fn new(tokens: Vec<Token>, combination: &Handle<Object<Tree>>) -> Result<Self, Error> {
+        let primitives = Handle::<Object<Tree>>::try_from(combination.get(3))?;
+        let mut environment: BTreeMap<String, Parsed> = BTreeMap::new();
         for index in 0..usize::try_from(primitives.len()?)? {
-            let pair = Handle::<Object<Tree>, _>::try_from(primitives.get(index))?;
+            let pair = Handle::<Object<Tree>>::try_from(primitives.get(index))?;
             assert!(pair.len()? >= 2, "expected environment pair");
-            let name = String::from_utf8(Handle::<Object<Blob>, _>::try_from(pair.get(0))?.read()?)
+            let name = String::from_utf8(Handle::<Object<Blob>>::try_from(pair.get(0))?.read()?)
                 .expect("valid name");
-            environment.insert(name, Rc::new(pair.get(1)));
+            environment.insert(name, pair.get(1));
         }
 
         Ok(Self {
@@ -35,11 +32,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse_program(mut self) -> Result<Parsed<'a>, Error> {
+    pub fn parse_program(mut self) -> Result<Parsed, Error> {
         self.parse_body(&Token::Eof)
     }
 
-    fn parse_body(&mut self, close: &Token) -> Result<Parsed<'a>, Error> {
+    fn parse_body(&mut self, close: &Token) -> Result<Parsed, Error> {
         let expression = loop {
             while self.matches(&Token::Newline) {}
             if let Some(Token::Identifier(name)) = self.peek(self.position).cloned()
@@ -59,10 +56,10 @@ impl<'a> Parser<'a> {
         Ok(expression)
     }
 
-    fn parse_expr(&mut self) -> Result<Parsed<'a>, Error> {
+    fn parse_expr(&mut self) -> Result<Parsed, Error> {
         Ok(match self.advance() {
-            Token::String(string) => Rc::new(Blob::create(string.into_bytes()).erase()),
-            Token::Bytes(bytes) => Rc::new(Blob::create(bytes).erase()),
+            Token::String(string) => Blob::create(string.into_bytes()).erase(),
+            Token::Bytes(bytes) => Blob::create(bytes).erase(),
             Token::Identifier(name) => self
                 .context
                 .get(&name)
@@ -74,18 +71,18 @@ impl<'a> Parser<'a> {
                 .expect("undefined primitive")
                 .clone(),
             Token::Ampersand => {
-                let value: Cast<Object<Any>, _> = self.parse_expr()?.try_into()?;
-                Rc::new(value.reference().erase())
+                let value: Handle<Object<Any>> = self.parse_expr()?.try_into()?;
+                value.reference().erase()
             }
-            Token::Apostrophe => Rc::new(self.parse_expr()?.identification().erase()),
-            Token::Pound => Rc::new(self.parse_expr()?.application().erase()),
+            Token::Apostrophe => self.parse_expr()?.identification().erase(),
+            Token::Pound => self.parse_expr()?.application().erase(),
             Token::Asterisk => {
-                let value: Cast<Thunk, _> = self.parse_expr()?.try_into()?;
-                Rc::new(value.strict().erase())
+                let value: Handle<Thunk> = self.parse_expr()?.try_into()?;
+                value.strict().erase()
             }
             Token::Plus => {
-                let value: Cast<Thunk, _> = self.parse_expr()?.try_into()?;
-                Rc::new(value.shallow().erase())
+                let value: Handle<Thunk> = self.parse_expr()?.try_into()?;
+                value.shallow().erase()
             }
             Token::LBrace => {
                 let environment = self.environment.clone();
@@ -106,18 +103,16 @@ impl<'a> Parser<'a> {
                 self.environment = environment;
                 expression?
             }
-            Token::LParen => Rc::new(Tree::create(self.parse_handles(&Token::RParen)?).erase()),
-            Token::LBracket => Rc::new(
-                Tree::create(self.parse_handles(&Token::RBracket)?)
-                    .reference()
-                    .selection()
-                    .erase(),
-            ),
+            Token::LParen => Tree::from_iter(self.parse_handles(&Token::RParen)?).erase(),
+            Token::LBracket => Tree::from_iter(self.parse_handles(&Token::RBracket)?)
+                .reference()
+                .selection()
+                .erase(),
             token => panic!("unexpected token: {token:?}"),
         })
     }
 
-    fn parse_handles(&mut self, close: &Token) -> Result<Vec<Parsed<'a>>, Error> {
+    fn parse_handles(&mut self, close: &Token) -> Result<Vec<Parsed>, Error> {
         let mut handles = Vec::new();
         while !self.matches(close) {
             handles.push(self.parse_expr()?);

@@ -4,9 +4,27 @@ package(default_visibility = ["//visibility:public"])
 
 rust_library(
     name = "api",
-    crate_name = "fixapi",
-    srcs = ["src/lib.rs", "src/memoization.rs"],
+    crate_name = "fix",
+    srcs = glob(["src/*.rs"], exclude = ["src/types.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    deps = ["//fix/sdk:types", "@crates//:serde"],
+    deps = [":types"],
+)
+
+rust_library(
+    name = "api_alloc",
+    crate_name = "fix",
+    srcs = glob(["src/*.rs"], exclude = ["src/types.rs"]),
+    crate_root = "src/lib.rs",
+    crate_features = ["alloc"],
+    edition = "2024",
+    deps = [":types"],
+)
+
+exports_files(["tests/values.rs"])
+
+rust_library(
+    name = "types",
+    crate_name = "fixtypes",
+    srcs = ["src/types.rs"],
 )

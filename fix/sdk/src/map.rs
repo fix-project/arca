@@ -1,16 +1,12 @@
-use crate::value::Children;
-use crate::{Any, Capture, CreateTree, Error, Handle, Value, tree};
+use crate::{Any, Error, Handle, Object, Tree, Value, tree};
 
-fn request<C: Children>(
-    name: &[u8],
-    arguments: CreateTree<C>,
-) -> Result<(u64, Handle<Any, Capture>), Error> {
+fn request(name: &[u8], arguments: Handle<Object<Tree>>) -> Result<(u64, Handle<Any>), Error> {
     arguments.coordinate(name)
 }
 
 pub struct Entry {
     pub version: u64,
-    pub value: Handle<Any, Capture>,
+    pub value: Handle<Any>,
 }
 
 /// A shared map scoped to the current scheduler run. Keys use their exact
@@ -43,7 +39,7 @@ impl Map {
         let (status, value) = request(b"map_get", tree![self.0, key])?;
         match status {
             0 => {
-                let entry = Handle::<crate::Object<crate::Tree>, _>::try_from(&value)?;
+                let entry = Handle::<crate::Object<crate::Tree>>::try_from(&value)?;
                 Ok(Some(Entry {
                     version: entry.get(0).read_u64()?,
                     value: entry.get(1).capture()?,
@@ -54,11 +50,7 @@ impl Map {
         }
     }
 
-    pub fn insert(
-        &self,
-        key: impl Value,
-        value: impl Value,
-    ) -> Result<Option<Handle<Any, Capture>>, Error> {
+    pub fn insert(&self, key: impl Value, value: impl Value) -> Result<Option<Handle<Any>>, Error> {
         let key = key.capture()?;
         loop {
             let entry = self.get(&key)?;
@@ -84,7 +76,7 @@ impl Map {
         }
     }
 
-    pub fn remove(&self, key: impl Value) -> Result<Option<Handle<Any, Capture>>, Error> {
+    pub fn remove(&self, key: impl Value) -> Result<Option<Handle<Any>>, Error> {
         let (status, value) = request(b"map_remove", tree![self.0, key])?;
         match status {
             0 => Ok(Some(value)),

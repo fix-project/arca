@@ -1,106 +1,117 @@
-use crate::{Any, Blob, Capture, Error, Focus, Handle, Object, Thunk, Tree, Value};
-use alloc::rc::Rc;
-use fixapi::{DataType, EncodeType, Fix, Invocation, ValueType};
+use crate::{
+    Any, Blob as RawBlob, Error, Handle, Object as RawObject, Thunk as RawThunk, Tree as RawTree,
+    Value as AsValue,
+};
+use fix::{DataType, EncodeType, FixShell, Invocation, ValueType};
 
-pub struct Shell {
-    combination: Rc<Handle<Any, Capture>>,
+pub struct Shell;
+pub type Value = fix::Value<Shell>;
+pub type Blob = fix::Blob<Shell>;
+pub type Tree = fix::Tree<Shell>;
+pub type Object = fix::Object<Shell>;
+pub type Reference = fix::Reference<Shell>;
+pub type Thunk = fix::Thunk<Shell>;
+pub type Encode = fix::Encode<Shell>;
+
+static mut COMBINATION: Option<u32> = None;
+pub(crate) struct InvocationGuard;
+impl InvocationGuard {
+    pub(crate) fn new(combination: u32) -> Self {
+        unsafe {
+            assert!((&raw const COMBINATION).read().is_none());
+            (&raw mut COMBINATION).write(Some(combination));
+        }
+        Self
+    }
 }
-
-impl Shell {
-    pub fn new(combination: &Handle<Object<Tree>, Focus>) -> Result<Self, Error> {
-        Ok(Self {
-            combination: Rc::new(combination.capture()?),
-        })
+impl Drop for InvocationGuard {
+    fn drop(&mut self) {
+        unsafe { (&raw mut COMBINATION).write(None) };
     }
 }
 
-impl Fix for Shell {
-    type Value = Rc<Handle<Any, Capture>>;
+impl FixShell for Shell {
+    type Value = Handle<Any>;
     type Error = Error;
-
-    fn advise(&mut self, value: &Self::Value, key: &str, payload: &[u8]) -> Result<(), Error> {
-        crate::advise(value.as_ref(), key, payload)
+    fn advise(value: &Self::Value, key: &str, payload: &[u8]) {
+        crate::advise(value, key, payload).expect("advice exceeds address space")
     }
-    fn blob(&mut self, bytes: &[u8]) -> Result<Self::Value, Error> {
-        Ok(Rc::new(Blob::create(bytes).capture()?))
+    fn blob(bytes: &[u8]) -> Self::Value {
+        RawBlob::create(bytes).into_any()
     }
-    fn tree(&mut self, children: &[Self::Value]) -> Result<Self::Value, Error> {
-        Ok(Rc::new(Tree::create(children).capture()?))
+    fn tree(children: &[Self::Value]) -> Self::Value {
+        RawTree::create(children).into_any()
     }
-    fn get(&mut self, tree: &Self::Value, index: usize) -> Result<Self::Value, Error> {
-        let tree = Handle::<Object<Tree>, _>::try_from(tree.as_ref())?;
-        Ok(Rc::new(tree.get(index).capture()?))
+    fn get(tree: &Self::Value, index: usize) -> Result<Self::Value, Error> {
+        Ok(Handle::<RawObject<RawTree>>::try_from(tree)?.get(index))
     }
-    fn read(&mut self, blob: &Self::Value, offset: usize, bytes: &mut [u8]) -> Result<(), Error> {
-        blob.read_at(None, offset, bytes)
+    fn read(blob: &Self::Value, offset: usize, bytes: &mut [u8]) -> Result<(), Error> {
+        blob.read_into(offset, bytes)
     }
-    fn len(&mut self, value: &Self::Value) -> Result<u64, Error> {
-        value.len()
+    fn len(value: &Self::Value) -> u64 {
+        value.len().expect("Object or Ref")
     }
-    fn value_type(&mut self, value: &Self::Value) -> Result<ValueType, Error> {
-        value.value_type()
+    fn value_type(value: &Self::Value) -> ValueType {
+        value.value_type().expect("Fix value")
     }
-    fn data_type(&mut self, value: &Self::Value) -> Result<DataType, Error> {
-        value.data_type()
+    fn data_type(value: &Self::Value) -> DataType {
+        value.data_type().expect("Object or Ref")
     }
-    fn encode_type(&mut self, value: &Self::Value) -> Result<EncodeType, Error> {
-        value.encode_type()
+    fn encode_type(value: &Self::Value) -> EncodeType {
+        value.encode_type().expect("Encode")
     }
-    fn is_tag(&mut self, value: &Self::Value) -> Result<bool, Error> {
-        value.is_tag()
+    fn is_tag(value: &Self::Value) -> bool {
+        value.is_tag().expect("Fix value")
     }
-    fn is_comparable(&mut self, value: &Self::Value) -> Result<bool, Error> {
-        value.is_comparable()
+    fn is_comparable(value: &Self::Value) -> bool {
+        value.is_comparable().expect("Fix value")
     }
-    fn equals(&mut self, left: &Self::Value, right: &Self::Value) -> Result<bool, Error> {
+    fn equals(left: &Self::Value, right: &Self::Value) -> Result<bool, Error> {
         left.equals(right)
     }
-    fn aliases(&self, left: &Self::Value, right: &Self::Value) -> bool {
-        Rc::ptr_eq(left, right)
+    fn aliases(left: &Self::Value, right: &Self::Value) -> bool {
+        left.as_raw() == right.as_raw()
     }
-    fn reference(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(
-            Handle::<Object<Any>, _>::try_from(value.as_ref())?
-                .reference()
-                .capture()?,
-        ))
+    fn reference(value: &Self::Value) -> Self::Value {
+        Handle::<RawObject<Any>>::try_from(value)
+            .expect("Object")
+            .reference()
+            .into_any()
     }
-    fn identification(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(value.identification().capture()?))
+    fn identification(value: &Self::Value) -> Self::Value {
+        value.identification().into_any()
     }
-    fn application(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(value.application().capture()?))
+    fn application(value: &Self::Value) -> Self::Value {
+        value.application().into_any()
     }
-    fn selection(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(value.selection().capture()?))
+    fn selection(value: &Self::Value) -> Self::Value {
+        value.selection().into_any()
     }
-    fn strict(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(
-            Handle::<Thunk, _>::try_from(value.as_ref())?
-                .strict()
-                .capture()?,
-        ))
+    fn strict(value: &Self::Value) -> Self::Value {
+        Handle::<RawThunk>::try_from(value)
+            .expect("Thunk")
+            .strict()
+            .into_any()
     }
-    fn shallow(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(
-            Handle::<Thunk, _>::try_from(value.as_ref())?
-                .shallow()
-                .capture()?,
-        ))
+    fn shallow(value: &Self::Value) -> Self::Value {
+        Handle::<RawThunk>::try_from(value)
+            .expect("Thunk")
+            .shallow()
+            .into_any()
     }
-    fn eval(&mut self, value: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(value.eval()?))
+    fn eval(value: &Self::Value) -> Result<Self::Value, Error> {
+        value.eval()
     }
 }
-
 impl Invocation for Shell {
-    fn combination(&mut self) -> Result<Self::Value, Error> {
-        Ok(self.combination.clone())
+    fn combination() -> Self::Value {
+        let index = unsafe { (&raw const COMBINATION).read() }.expect("no Fix invocation");
+        unsafe { Handle::from_raw(crate::ffi::clone(index)) }
     }
-    fn tag(&mut self, fields: &[Self::Value]) -> Result<Self::Value, Error> {
-        Ok(Rc::new(Tree::create(fields).tag()?.capture()?))
+    fn tag(fields: &[Self::Value]) -> Result<Self::Value, Error> {
+        Ok(RawTree::create(fields).tag()?.into_any())
     }
-    fn effect(&mut self, combination: &Self::Value) -> Result<Self::Value, Error> {
-        Ok(Rc::new(combination.effect()?))
+    fn effect(combination: &Self::Value) -> Self::Value {
+        unsafe { Handle::from_raw(crate::ffi::effect(combination.as_raw())) }
     }
 }

@@ -1,27 +1,27 @@
 #![no_std]
 extern crate alloc;
-use fix::{Blob, Cast, EncodeType, Error, Handle, Object, Ref, Tree, Value, ValueType, tree};
+use fixwasm::{Blob, EncodeType, Error, Handle, Object, Ref, Tree, Value, ValueType, tree};
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-#[fix::apply]
+#[fixwasm::apply]
 fn apply<'a>(
-    combination: &'a Handle<Object<Tree>, fix::Focus>,
+    combination: &'a Handle<Object<Tree>>,
 ) -> Result<impl Value<Type = Object<Tree>> + 'a, Error> {
     for argument in combination.iter()?.skip(2) {
         assert_eq!(argument.value_type()?, ValueType::Thunk);
         assert_eq!(argument.data_type(), Err(Error::WrongType));
         assert!(matches!(
-            Handle::<Object<Blob>, _>::try_from(argument.clone()).map(|_| ()),
+            Handle::<Object<Blob>>::try_from(argument.clone()).map(|_| ()),
             Err(Error::WrongType)
         ));
     }
     let values = Tree::from_iter((0..3).map(|index| tree![index as u64, index as u64]));
     assert_eq!(values.clone().len()?, 3);
     for index in 0..3 {
-        let child = Cast::<Object<Tree>, _>::try_from(values.get(index))?;
+        let child = Handle::<Object<Tree>>::try_from(values.get(index))?;
         assert_eq!(
-            Cast::<Object<Blob>, _>::try_from(child.get(0))?.read_u64()?,
+            Handle::<Object<Blob>>::try_from(child.get(0))?.read_u64()?,
             index as u64
         );
     }
@@ -41,18 +41,18 @@ fn apply<'a>(
     let mut selected = [0; 3];
     sliced.read_into(0, &mut selected)?;
     assert_eq!(&selected, b"ite");
-    let children = values.children();
+    let children: alloc::vec::Vec<_> = values.iter()?.collect();
     assert_eq!(children.len(), 3);
     let copied = Tree::create(&children[1..]);
     assert_eq!(copied.len()?, 2);
-    let item = Cast::<Object<Tree>, _>::try_from(copied.get(0))?;
+    let item = Handle::<Object<Tree>>::try_from(copied.get(0))?;
     assert_eq!(
-        Cast::<Object<Blob>, _>::try_from(item.get(0))?.read_u64()?,
+        Handle::<Object<Blob>>::try_from(item.get(0))?.read_u64()?,
         1
     );
     let reference = literal.clone().reference();
     assert_eq!(
-        Cast::<Ref<Blob>, _>::try_from(reference.clone().erase())?.len()?,
+        Handle::<Ref<Blob>>::try_from(reference.clone().erase())?.len()?,
         7
     );
     let thunk = reference.identification();

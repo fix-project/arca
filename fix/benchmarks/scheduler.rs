@@ -4,11 +4,11 @@
 use benchmark_cases::Operation;
 use benchmark_guest::{batches, fixture, timed};
 use core::time::Duration;
-use fix::arca::{FixOnArca, trust::Trust};
-use fix::storage::{Storage, memory::MemoryStorage};
-use fix::user_scheduler_driver::{self, PersistenceOnly};
-use fix::{Blob, Handle, Tree};
 use fix_benchmark::{fix_program, number};
+use fixruntime::arca::{FixOnArca, trust::Trust};
+use fixruntime::storage::{Storage, memory::MemoryStorage};
+use fixruntime::user_scheduler_driver::{self, PersistenceOnly};
+use fixruntime::{Blob, Handle, Tree};
 use kernel::prelude::*;
 
 struct Benchmark;
@@ -18,7 +18,7 @@ impl benchmark_guest::Benchmark for Benchmark {
         batches(iterations, 1, |_| {
             let memory = Arc::new(MemoryStorage::default());
             let compiler = memory
-                .add_blob(fix::stdlib::PRIMITIVES[0].1)
+                .add_blob(fixruntime::stdlib::PRIMITIVES[0].1)
                 .object()
                 .into_ref();
             let authority: Handle = memory.canonicalize(compiler.into()).unwrap().into();
@@ -26,7 +26,11 @@ impl benchmark_guest::Benchmark for Benchmark {
             let scheduler = fix_program(&memory, compiler.into(), fixture("SCHEDULER"));
             let collector = fix_program(&memory, compiler.into(), fixture("COLLECTOR"));
             trust.add_tagger(&*memory, collector).unwrap();
-            let identity = fix_program(&memory, compiler.into(), fix::stdlib::PRIMITIVES[0].1);
+            let identity = fix_program(
+                &memory,
+                compiler.into(),
+                fixruntime::stdlib::PRIMITIVES[0].1,
+            );
             let mut values = Vec::new();
             let mut expected = Vec::new();
             for value in 0..8 {

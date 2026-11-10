@@ -1,102 +1,13 @@
 use core::ffi::c_void;
 
 use crate::handles::Reference;
-use crate::rt::{
-    EXTERNREF_SIZE, MAX_PAGES, MAX_TABLE_ELEMENTS, NUM_MEMORIES, PAGE_SIZE, SLOT_SIZE,
-    wasm_rt_externref_t, wasm_rt_externref_table_t, wasm_rt_memory_t,
-};
+use crate::rt::{MAX_PAGES, NUM_MEMORIES, PAGE_SIZE, SLOT_SIZE, wasm_rt_memory_t};
 use crate::shell;
 
 #[repr(C)]
 pub struct w2c_fix(());
 
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_invalidate_externrefs(
-    _: *mut w2c_fix,
-    result: Reference,
-    keep: wasm_rt_externref_t,
-) {
-    let value = crate::continuation::invalidate_externrefs(keep);
-    unsafe {
-        crate::handles::copy_handle(
-            crate::handles::address(value),
-            crate::handles::address(result),
-            0,
-        )
-    };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wasm_rt_get_externref(
-    table: *const wasm_rt_externref_table_t,
-    index: u64,
-    result: Reference,
-) {
-    unsafe {
-        assert!(index < (*table).size as u64);
-        crate::handles::copy_handle(
-            (*table).data as usize + index as usize * fixhandle::HANDLE_SIZE,
-            crate::handles::address(result),
-            0,
-        );
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wasm_rt_ref_is_null(value: Reference) -> u32 {
-    unsafe { crate::handles::query(value, crate::handles::Query::Null) as u32 }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wasm_rt_set_externref(
-    table: *const wasm_rt_externref_table_t,
-    index: u64,
-    value: wasm_rt_externref_t,
-) {
-    unsafe {
-        assert!(index < (*table).size as u64);
-        crate::handles::copy_handle(
-            crate::handles::address(value),
-            (*table).data as usize + index as usize * fixhandle::HANDLE_SIZE,
-            0,
-        );
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wasm_rt_copy_externref_table(
-    dest: *mut wasm_rt_externref_table_t,
-    src: *const wasm_rt_externref_table_t,
-    dest_index: u64,
-    src_index: u64,
-    len: u64,
-) {
-    unsafe {
-        assert!(dest_index + len <= (*dest).size as u64);
-        assert!(src_index + len <= (*src).size as u64);
-        let source = (*src).data as usize + src_index as usize * fixhandle::HANDLE_SIZE;
-        let destination = (*dest).data as usize + dest_index as usize * fixhandle::HANDLE_SIZE;
-        for i in 0..len as usize {
-            let index = if destination > source {
-                len as usize - i - 1
-            } else {
-                i
-            };
-            crate::handles::copy_handle(
-                source + index * fixhandle::HANDLE_SIZE,
-                destination + index * fixhandle::HANDLE_SIZE,
-                0,
-            );
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_effect(
-    _: *mut w2c_fix,
-    result: Reference,
-    combination: wasm_rt_externref_t,
-) {
+pub extern "C" fn w2c_fix_effect(_: *mut w2c_fix, result: Reference, combination: Reference) {
     crate::continuation::transfer(result, "effect", combination)
 }
 
@@ -115,10 +26,9 @@ fn memory_bytes(offset: u32, length: u32) -> alloc::vec::Vec<u8> {
     }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_advise(
     _: *mut w2c_fix,
-    value: wasm_rt_externref_t,
+    value: Reference,
     key: u32,
     key_length: u32,
     payload: u32,
@@ -130,59 +40,21 @@ pub unsafe extern "C" fn w2c_fix_advise(
     crate::continuation::advise(value, &key, &payload);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_coordinate(
-    _: *mut w2c_fix,
-    result: Reference,
-    name: u32,
-    name_length: u32,
-    table: u32,
-    count: u32,
-    status: u32,
-) {
-    let name = memory_bytes(name, name_length);
-    unsafe {
-        let memory = &*crate::rt::MEMORIES[0];
-        let status_end = (status as usize).checked_add(8).unwrap();
-        assert!(status_end <= memory.size as usize);
-        let reply = crate::continuation::coordinate(result, &name, table, count);
-        unsafe {
-            crate::rt::copy_guest_bytes(
-                reply.to_le_bytes().as_ptr() as usize,
-                memory.data as usize + status as usize,
-                8,
-            );
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_eval(_: *mut w2c_fix, result: Reference, value: wasm_rt_externref_t) {
+pub extern "C" fn w2c_fix_eval(_: *mut w2c_fix, result: Reference, value: Reference) {
     crate::continuation::transfer(result, "eval", value)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_return_cc(
-    _: *mut w2c_fix,
-    result: Reference,
-    request: wasm_rt_externref_t,
-) {
+pub extern "C" fn w2c_fix_return_cc(_: *mut w2c_fix, result: Reference, request: Reference) {
     crate::continuation::transfer(result, "return_cc", request)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn w2c_fix_call_cc(
-    _: *mut w2c_fix,
-    result: Reference,
-    callable: wasm_rt_externref_t,
-) {
+pub extern "C" fn w2c_fix_call_cc(_: *mut w2c_fix, result: Reference, callable: Reference) {
     crate::continuation::transfer(result, "call_cc", callable)
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_read_blob(
     _: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
     offset: u32,
     destination: u32,
     length: u32,
@@ -232,10 +104,9 @@ pub unsafe extern "C" fn w2c_fix_read_blob(
     count.read() as u32
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_attach_blob(
     fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
     memory_idx: u32,
 ) {
     assert!((memory_idx as usize) < NUM_MEMORIES);
@@ -248,15 +119,14 @@ pub unsafe extern "C" fn w2c_fix_attach_blob(
         (*memory).max_pages = MAX_PAGES;
         (*memory).size = (*memory).pages * PAGE_SIZE as u64;
         crate::rt::MEMORY_ATTACHED[memory_idx as usize] = true;
-        crate::handles::retain(&mut crate::rt::MEMORY_HANDLES[memory_idx as usize], handle);
+        crate::rt::retain_memory(memory_idx as usize, handle);
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn w2c_fix_get_tree_element(
     _: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
     index: u32,
 ) {
     use arca::{Blob, Word};
@@ -271,32 +141,9 @@ pub extern "C" fn w2c_fix_get_tree_element(
     )
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_attach_tree(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-    table_idx: u32,
-) {
-    unsafe {
-        let table = crate::rt::externref_table(table_idx);
-        let addr = (*table).data as usize;
-        let len = shell::fixpoint_attach_tree(
-            handle,
-            addr as *mut c_void,
-            usize::try_from((*table).memory_size).unwrap(),
-        );
-        (*table).size = len as u32;
-        (*table).memory_size = (len * fixhandle::HANDLE_SIZE).next_multiple_of(4096) as i64;
-        (*table).max_size = MAX_TABLE_ELEMENTS;
-        crate::rt::TABLE_ATTACHED[table_idx as usize] = true;
-        crate::handles::retain(&mut crate::rt::TABLE_HANDLES[table_idx as usize], handle);
-    }
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_attach_tree_bytes(
     _: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
     memory_idx: u32,
 ) {
     assert!((memory_idx as usize) < NUM_MEMORIES);
@@ -310,11 +157,10 @@ pub unsafe extern "C" fn w2c_fix_attach_tree_bytes(
         (*memory).max_pages = MAX_PAGES;
         (*memory).size = (*memory).pages * PAGE_SIZE as u64;
         crate::rt::MEMORY_ATTACHED[memory_idx as usize] = true;
-        crate::handles::retain(&mut crate::rt::MEMORY_HANDLES[memory_idx as usize], handle);
+        crate::rt::retain_memory(memory_idx as usize, handle);
     }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_detach_blob(_fixpoint: *mut w2c_fix, memory_idx: u32, copy: u32) {
     assert!((memory_idx as usize) < NUM_MEMORIES);
     assert!(copy <= 1);
@@ -325,6 +171,7 @@ pub unsafe extern "C" fn w2c_fix_detach_blob(_fixpoint: *mut w2c_fix, memory_idx
             shell::detach_data((*memory).data, (*memory).size as usize, copy != 0);
         }
         crate::rt::MEMORY_ATTACHED[memory_idx as usize] = false;
+        crate::rt::release_memory(memory_idx as usize);
         if copy == 0 {
             (*memory).pages = 0;
             (*memory).size = 0;
@@ -332,55 +179,10 @@ pub unsafe extern "C" fn w2c_fix_detach_blob(_fixpoint: *mut w2c_fix, memory_idx
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_detach_tree(_fixpoint: *mut w2c_fix, table_idx: u32, copy: u32) {
-    assert!(copy <= 1);
-    unsafe {
-        let table = crate::rt::externref_table(table_idx);
-        shell::detach_data(
-            (*table).data.cast(),
-            (*table).memory_size as usize,
-            copy != 0,
-        );
-        if copy == 0 {
-            (*table).memory_size = 0;
-        }
-        crate::rt::TABLE_ATTACHED[table_idx as usize] = false;
-        if copy == 0 {
-            (*table).size = 0;
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_create_tree(
-    fixpoint: *mut w2c_fix,
-    result: Reference,
-    table_idx: u32,
-    length: u32,
-) {
-    unsafe {
-        let table = crate::rt::externref_table(table_idx);
-        assert!(length <= (*table).size);
-        assert_eq!(
-            (*table).data as usize % core::mem::align_of::<wasm_rt_externref_t>(),
-            0
-        );
-        shell::fixpoint_create_tree(
-            result,
-            core::slice::from_raw_parts(
-                (*table).data.cast::<u8>(),
-                length as usize * fixhandle::HANDLE_SIZE,
-            ),
-        )
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn w2c_fix_create_tag_unchecked(
     _: *mut w2c_fix,
     result: Reference,
-    tree: wasm_rt_externref_t,
+    tree: Reference,
 ) {
     use arca::{Blob, Word};
     use user::Runtime;
@@ -400,29 +202,6 @@ pub extern "C" fn w2c_fix_create_tag_unchecked(
     )
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_create_tag(
-    fixpoint: *mut w2c_fix,
-    result: Reference,
-    table_idx: u32,
-) {
-    unsafe {
-        let table = crate::rt::externref_table(table_idx);
-        assert_eq!(
-            (*table).data as usize % core::mem::align_of::<wasm_rt_externref_t>(),
-            0
-        );
-        shell::fixpoint_create_tag(
-            result,
-            core::slice::from_raw_parts(
-                (*table).data.cast::<u8>(),
-                (*table).size as usize * fixhandle::HANDLE_SIZE,
-            ),
-        )
-    }
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_blob_i64(
     fixpoint: *mut w2c_fix,
     result: Reference,
@@ -431,7 +210,6 @@ pub unsafe extern "C" fn w2c_fix_create_blob_i64(
     unsafe { shell::fixpoint_create_blob_i64(result, value) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_blob_i32(
     fixpoint: *mut w2c_fix,
     result: Reference,
@@ -440,7 +218,6 @@ pub unsafe extern "C" fn w2c_fix_create_blob_i32(
     unsafe { shell::fixpoint_create_blob_i32(result, value) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_blob(
     fixpoint: *mut w2c_fix,
     result: Reference,
@@ -456,99 +233,60 @@ pub unsafe extern "C" fn w2c_fix_create_blob(
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_get_type(
-    _fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> u32 {
+pub unsafe extern "C" fn w2c_fix_get_type(_fixpoint: *mut w2c_fix, handle: Reference) -> u32 {
     (unsafe { shell::fixpoint_get_type(handle) }) as u32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_get_data_type(
-    _fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> u32 {
+pub unsafe extern "C" fn w2c_fix_get_data_type(_fixpoint: *mut w2c_fix, handle: Reference) -> u32 {
     (unsafe { shell::fixpoint_get_data_type(handle) }) as u32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_get_thunk_type(
-    _fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> u32 {
+pub unsafe extern "C" fn w2c_fix_get_thunk_type(_fixpoint: *mut w2c_fix, handle: Reference) -> u32 {
     (unsafe { shell::fixpoint_get_thunk_type(handle) }) as u32
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_get_encode_type(
     _fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) -> u32 {
     (unsafe { shell::fixpoint_get_encode_type(handle) }) as u32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_blob_obj(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_blob_obj(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_blob_obj(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_object(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_object(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_object(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_data(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_data(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_data(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_tag(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_tag(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_tag(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_comparable(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_comparable(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_comparable(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_is_value(
-    fixpoint: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
-) -> i32 {
+pub unsafe extern "C" fn w2c_fix_is_value(fixpoint: *mut w2c_fix, handle: Reference) -> i32 {
     (unsafe { shell::fixpoint_is_value(handle) }) as i32
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_unsound_handle_bytes(
     _: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_unsound_handle_bytes(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_read_handle_bytes(
     _: *mut w2c_fix,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
     destination: u32,
 ) {
     shell::require_privilege();
@@ -565,11 +303,10 @@ pub unsafe extern "C" fn w2c_fix_read_handle_bytes(
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn w2c_fix_same_handle_bytes(
     _: *mut w2c_fix,
-    lhs: wasm_rt_externref_t,
-    rhs: wasm_rt_externref_t,
+    lhs: Reference,
+    rhs: Reference,
 ) -> u32 {
     shell::require_privilege();
     crate::locals::lift(&[lhs, rhs]);
@@ -581,70 +318,62 @@ pub extern "C" fn w2c_fix_same_handle_bytes(
     }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_equals(
     fixpoint: *mut w2c_fix,
-    lhs: wasm_rt_externref_t,
-    rhs: wasm_rt_externref_t,
+    lhs: Reference,
+    rhs: Reference,
 ) -> i32 {
     (unsafe { shell::fixpoint_equals(lhs, rhs) }) as i32
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_ref(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_ref(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_identification_thunk(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_identification_thunk(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_application_thunk(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_application_thunk(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_selection_thunk(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_selection_thunk(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_strict_encode(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_strict_encode(result, handle) }
 }
 
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_shallow_encode(
     fixpoint: *mut w2c_fix,
     result: Reference,
-    handle: wasm_rt_externref_t,
+    handle: Reference,
 ) {
     unsafe { shell::fixpoint_create_shallow_encode(result, handle) }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn w2c_fix_len(fixpoint: *mut w2c_fix, handle: wasm_rt_externref_t) -> u64 {
+pub unsafe extern "C" fn w2c_fix_len(fixpoint: *mut w2c_fix, handle: Reference) -> u64 {
     unsafe { shell::fixpoint_len(handle) as u64 }
 }

@@ -27,11 +27,7 @@
 #define WASM_RT_MEMCHECK_BOUNDS_CHECK 1
 #define WASM_RT_MASK_MEMORY32 1
 
-#ifdef __cplusplus
-#include "wasm-cpp.h"
-#else
-[[noreturn]] void abort(void);
-#endif
+void abort(void) __attribute__((noreturn));
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,9 +45,7 @@ extern "C" {
 #define LIKELY(x) (x)
 #endif
 
-#ifdef __cplusplus
-#define wasm_rt_memcpy fixcpp::copy
-#elif __has_builtin(__builtin_memcpy)
+#if __has_builtin(__builtin_memcpy)
 #define wasm_rt_memcpy __builtin_memcpy
 #else
 void *memcpy(void *, const void *, size_t);
@@ -143,22 +137,14 @@ typedef struct {
 /** Default (null) value of a funcref */
 static const wasm_rt_funcref_t wasm_rt_funcref_null_value = {0};
 
-/** The type of an external reference (opaque to WebAssembly). */
-#include "wasm-rt-refs.h"
-#ifdef __cplusplus
-typedef fixcpp::Ref wasm_rt_externref_t;
-#else
-typedef wasm_rt_ref_value *wasm_rt_externref_t;
-#endif
-
-#define WASM_EXN_MAX_SIZE 256
-
-/** Default (null) value of an externref */
-#ifdef __cplusplus
-#define wasm_rt_externref_null_value wasm_rt_externref_t{}
-#else
-#define wasm_rt_externref_null_value ((wasm_rt_externref_t){NULL})
-#endif
+/* wasm2c emits these types in unused generic table helpers. */
+typedef void *wasm_rt_externref_t;
+#define wasm_rt_externref_null_value NULL
+typedef struct {
+  wasm_rt_externref_t *data;
+  uint32_t max_size;
+  uint32_t size;
+} wasm_rt_externref_table_t;
 
 /** A Memory object. */
 typedef struct {
@@ -186,27 +172,6 @@ typedef struct {
   /** The current element count of the table. */
   uint32_t size;
 } wasm_rt_funcref_table_t;
-
-/** A Table of type externref. */
-typedef struct {
-  /** The table element data, with an element count of `size`. */
-  wasm_rt_ref_value *data;
-  /** The current number of bytes allocated to the table. */
-  int64_t memory_size;
-  /** The maximum element count of this Table object. If there is no maximum,
-   * `max_size` is 0xffffffffu (i.e. UINT32_MAX). */
-  uint32_t max_size;
-  /** The current element count of the table. */
-  uint32_t size;
-} wasm_rt_externref_table_t;
-
-void wasm_rt_get_externref(const wasm_rt_externref_table_t *, uint64_t, wasm_rt_externref_t);
-uint32_t wasm_rt_ref_is_null(wasm_rt_externref_t);
-void wasm_rt_set_externref(const wasm_rt_externref_table_t *, uint64_t, wasm_rt_externref_t);
-void wasm_rt_copy_externref_table(wasm_rt_externref_table_t *, const wasm_rt_externref_table_t *, uint64_t, uint64_t, uint64_t);
-#define WASM_RT_EXTERNREF_SET(table, index, value) wasm_rt_set_externref(table, index, value)
-#define WASM_RT_EXTERNREF_GET(table, index, out) wasm_rt_get_externref(table, index, out)
-#define WASM_RT_EXTERNREF_COPY(dest, src, dest_index, src_index, len) wasm_rt_copy_externref_table(dest, src, dest_index, src_index, len)
 
 /** Initialize the runtime. */
 void wasm_rt_init(void);
@@ -282,19 +247,6 @@ void wasm_rt_allocate_funcref_table(wasm_rt_funcref_table_t *,
 void wasm_rt_free_funcref_table(wasm_rt_funcref_table_t *);
 
 /**
- * Initialize an externref Table object with an element count
- * of `elements` and a maximum size of `max_elements`.
- * Usage as per wasm_rt_allocate_funcref_table.
- */
-void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t *,
-                                      uint32_t elements, uint32_t max_elements);
-
-/**
- * Free an externref Table object.
- */
-void wasm_rt_free_externref_table(wasm_rt_externref_table_t *);
-
-/**
  * Grow a Table object by `delta` elements (giving the new elements the value
  * `init`), and return the previous element count. If this new element count is
  * greater than the maximum element count, the grow fails and 0xffffffffu
@@ -302,8 +254,6 @@ void wasm_rt_free_externref_table(wasm_rt_externref_table_t *);
  */
 uint32_t wasm_rt_grow_funcref_table(wasm_rt_funcref_table_t *, uint32_t delta,
                                     wasm_rt_funcref_t init);
-uint32_t wasm_rt_grow_externref_table(wasm_rt_externref_table_t *,
-                                      uint32_t delta, wasm_rt_externref_t init);
 
 #ifdef __cplusplus
 }

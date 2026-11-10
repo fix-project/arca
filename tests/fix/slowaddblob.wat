@@ -1,109 +1,20 @@
 (module
-  (import "fix" "create_blob_i64"
-    (func $create_blob_i64 (param i64) (result externref)))
-  (import "fix" "attach_blob"
-    (func $attach_blob (param externref) (param i32)))
-  (import "fix" "attach_tree"
-    (func $attach_tree (param externref) (param i32)))
-
-  (memory $mem_0 1)
-  (memory $mem_1 0)
-  (memory $mem_2 0)
-  (table $tab_0 0 externref)
-
-  (func (export "_fix_apply")
-    (param $encode externref)
-    (result externref)
-
+  (import "fix" "get_tree_element" (func $get (param i32 i32) (result i32)))
+  (import "fix" "access_blob" (func $read (param i32 i32 i32 i32) (result i32)))
+  (import "fix" "create_blob_i64" (func $blob (param i64) (result i32)))
+  (import "fix" "close" (func $close (param i32)))
+  (memory 1)
+  (func (export "_fix_apply") (param $combination i32) (result i32)
     (local $counter i64)
-    (local $spin i64)
-    (local $left i64)
-    (local $right i64)
-
-    ;; Attach the combination tree.
-    (call $attach_tree
-      (local.get $encode)
-      (i32.const 0))
-
-    ;; Grow rw-memory by zero pages, preserving the original behavior.
-    (memory.grow
-      (memory $mem_0)
-      (i32.const 0))
-    drop
-
-    ;; Attach the two input blobs.
-    (call $attach_blob
-      (table.get $tab_0 (i32.const 2))
-      (i32.const 1))
-    (call $attach_blob
-      (table.get $tab_0 (i32.const 3))
-      (i32.const 2))
-
-    ;; Load both operands once.
-    (local.set $left
-      (i64.load
-        (memory $mem_1)
-        (i32.const 0)))
-
-    (local.set $right
-      (i64.load
-        (memory $mem_2)
-        (i32.const 0)))
-
-    ;; Artificial CPU work before the addition.
-    ;; Change this constant to tune how slow each addition is.
+    (local $left i32) (local $right i32)
+    (local.set $left (call $get (local.get $combination) (i32.const 2)))
+    (local.set $right (call $get (local.get $combination) (i32.const 3)))
+    (drop (call $read (local.get $left) (i32.const 0) (i32.const 0) (i32.const 8)))
+    (drop (call $read (local.get $right) (i32.const 0) (i32.const 8) (i32.const 8)))
+    (call $close (local.get $left))
+    (call $close (local.get $right))
     (local.set $counter (i64.const 100000000))
-    (local.set $spin (local.get $left))
-
-    (block $spin_done
-      (loop $spin_loop
-        (br_if $spin_done
-          (i64.eqz (local.get $counter)))
-
-        (local.set $spin
-          (i64.add
-            (i64.xor
-              (local.get $spin)
-              (local.get $counter))
-            (i64.const 6364136223846793005)))
-
-        (local.set $counter
-          (i64.sub
-            (local.get $counter)
-            (i64.const 1)))
-
-        (br $spin_loop)))
-
-    ;; Store the spin result so the work is observable.
-    (i64.store
-      (memory $mem_0)
-      (i32.const 8)
-      (local.get $spin))
-
-    ;; Both branches return left + right.
-    ;; The condition depends on the spin result.
-    (i64.store
-      (memory $mem_0)
-      (i32.const 0)
-      (if (result i64)
-        (i64.eqz
-          (i64.and
-            (local.get $spin)
-            (i64.const 1)))
-        (then
-          (i64.add
-            (local.get $left)
-            (local.get $right)))
-        (else
-          (i64.sub
-            (local.get $left)
-            (i64.sub
-              (i64.const 0)
-              (local.get $right))))))
-
-    ;; Return the sum as a Fix blob.
-    (call $create_blob_i64
-      (i64.load
-        (memory $mem_0)
-        (i32.const 0))))
-)
+    (loop $spin
+      (local.set $counter (i64.sub (local.get $counter) (i64.const 1)))
+      (br_if $spin (i64.ne (local.get $counter) (i64.const 0))))
+    (call $blob (i64.add (i64.load (i32.const 0)) (i64.load (i32.const 8))))))

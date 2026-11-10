@@ -14,26 +14,22 @@ The memory map for 512 GiB-sized procedures is:
 | 0x00000000_00000000 | 4 GiB | WebAssembly Memory 0         |
 | 0x00000001_00000000 | 4 GiB | WebAssembly Memory 1         |
 | ...                 | ...   | ...                          |
-| 0x0000007f_00000000 | 4 GiB | WebAssembly Memory 127       |
-| 0x00000080_00000000 | 4 GiB | WebAssembly Table 0          |
-| 0x00000081_00000000 | 4 GiB | WebAssembly Table 1          |
+| 0x0000003f_00000000 | 4 GiB | WebAssembly Memory 63        |
+| 0x00000040_00000000 | 4 GiB | Fix Blob/Tree 0              |
+| 0x00000041_00000000 | 4 GiB | Fix Blob/Tree 1              |
 | ...                 | ...   | ...                          |
-| 0x000000ff_00000000 | 4 GiB | WebAssembly Table 127        |
-| 0x00000100_00000000 | 4 GiB | Fix Blob/Table 0             |
-| 0x00000101_00000000 | 4 GiB | Fix Blob/Table 1             |
-| ...                 | ...   | ...                          |
-| 0x000001fe_00000000 | 4 GiB | Fix Blob/Table 254           |
-| 0x000001ff_00000000 | 4 GiB | Fix runtime + wasm2c runtime |
+| 0x0000007d_00000000 | 4 GiB | Fix Blob/Tree 61             |
+| 0x0000007e_00000000 | 4 GiB | Handle Descriptor Table      |
+| 0x0000007f_00000000 | 4 GiB | Fix runtime + wasm2c runtime |
 
 
-## Memories and Tables
+## Memories
 
-WebAssembly Fix uses memories and tables to make blobs and trees visible to
-procedures. Fix-on-Arca supports up to 128 memories and tables. The same
-memory/table can be reused multiple times, making this a limitation on the
-number of _active_ mappings rather than the number of _total_ mappings.
-Furthermore, it would be possible to scale up to an alternative 256 TiB layout,
-increasing the limit to 16384 of each, if needed.
+WebAssembly Fix uses memories to make blobs visible to procedures. Fix-on-Arca
+supports up to 64 memories. The same memory can be reused multiple times,
+making this a limitation on the number of _active_ mappings rather than the
+number of _total_ mappings. Furthermore, it would be possible to scale up to an
+alternative 256 TiB layout, increasing the limit to 16384 of each, if needed.
 
 To allow for more efficient memory accesses, we give each memory a
 statically-known virtual address. This allows us to compile an instruction like:
@@ -57,8 +53,6 @@ movabs  rcx, ($mem << 32)
 mov     eax, dword ptr [rax + rcx]
 ```
 
-Similar logic applies to table lookups.
-
 ## Data Representations
 
 Fix "data" (BlobData and TreeData) are represented as Arca tables containing 4
@@ -68,7 +62,9 @@ handle; they cannot be deduced from the raw data representation in Arca.
 
 The representation of a datum must not be perceptible to a Fix procedure.  That
 is, if there are multiple valid ways to physically represent the same Fix
-datum, a Fix procedure must not be able to tell them apart.
+datum, a Fix procedure must not be able to tell them apart.  This includes
+under continuation capture, which means nondeterministic information must be
+scrubbed from continuations.
 
 ## Trust boundary
 
@@ -83,26 +79,32 @@ A fragment of the Fix runtime is resident within the same Arca process as the
 user program.  This includes the wasm2c runtime and the implementations of some
 Fix API functions.
 
-Many Fix API calls can be satisfied simply by flipping bits in a Handle.
-Handles are represented within the runtime as 32-byte vectors, compatible with
-AVX2 registers; the Fix procedure only sees a WebAssembly externref.
+Fix handles are not directly exposed to WebAssembly procedures.  They instead
+refer to handles through indices in a descriptor table, similar to file
+descriptors.  As Trees are simply memory regions containing handles, this
+descriptor table can be quickly "detached" as a Tree when capturing
+continuations.
 
-To satisfy more complicated Fix API calls (e.g., creating/attaching blobs and
-trees), the in-process Fix runtime produces an "effect" to be handled by the
-machine-level Fix runtime.  This uses Arca's continuation-capture machinery, so
-it appears to the Arca process to be a blocking system call.
+Many Fix API calls can be satisfied simply by flipping bits in a Handle.
+Handles are represented within the runtime as 32-byte vectors.
+
+To satisfy more complicated Fix API calls (e.g., creating/attaching blobs), the
+in-process Fix runtime produces an "effect" to be handled by the machine-level
+Fix runtime.  This uses Arca's continuation-capture machinery, so it appears to
+the Arca process to be a blocking system call.
 
 ## Fix "Local Handles"
 
 As a performance optimization, not every blob/tree creation is sent to the
-machine-level runtime.  Instead, when a Fix procedure tries to create a
-blob/tree from a WebAssembly memory/table, the in-process Fix runtime remaps
-that blob/tree to a higher address (0xff00000000-0x1fe00000000) and returns a
-"local handle".  The "name" in this handle is actually the virtual address of
-the blob/tree; it is distinguished from a "true" handle by metadata bits within
-the handle.  When a Fix procedure exits, the Fix Shell "upgrades" its result if
-necessary by constructing a "real" equivalent using effects. In the worst case,
-this may require a recursive traversal of the result.
+machine-level runtime immediately.  Instead, when a Fix procedure tries to
+create a blob from a WebAssembly memory, the in-process Fix runtime remaps that
+blob to a higher address (0x4000000000-0x7d00000000) and returns a "local
+handle" (a similar process applies to trees).  The "name" in this handle is
+actually the virtual address of the blob/tree; it is distinguished from a
+"true" handle by metadata bits within the handle.  When a Fix procedure exits,
+the Fix Shell "upgrades" its result if necessary by constructing a "real"
+equivalent using effects. In the worst case, this may require a recursive
+traversal of the result.
 
 There are three types of handle in total:
 - Canonical Handles: content-addressed, valid across all of space and time

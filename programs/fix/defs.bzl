@@ -18,7 +18,7 @@ def fix_wat_program(name):
         artifact_visibility = ["//visibility:public"],
     )
 
-def fix_rust_program(name, alloc = False, importers = False, memories = 3, tables = 3, artifact_visibility = ["//tests/fix:__pkg__"], deps = [], src = None, srcs = []):
+def fix_rust_program(name, alloc = False, importers = False, memories = 3, tables = None, artifact_visibility = ["//tests/fix:__pkg__"], deps = [], src = None, srcs = []):
     """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
     sdk = "//fix/sdk"
     if importers:
@@ -70,7 +70,7 @@ def fix_language_programs(language):
             name = name,
             wasm = ":" + wasm,
             memories = 3 if language == "rust" else None,
-            tables = 3 if language == "rust" else None,
+            tables = None,
             runnable = True,
             artifact_visibility = ["//visibility:public"],
         )

@@ -1,7 +1,6 @@
-use crate::continuation::reserve;
 use crate::rt::{HANDLE_BASE, PAYLOAD_SIZE};
 use core::arch::naked_asm;
-pub type Reference = crate::rt::wasm_rt_externref_t;
+pub type Reference = *mut u8;
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -22,9 +21,6 @@ pub enum Query {
 
 pub fn address(value: Reference) -> usize {
     let address = value as usize;
-    if address == 0 {
-        return HANDLE_BASE;
-    }
     assert!((HANDLE_BASE..HANDLE_BASE + PAYLOAD_SIZE).contains(&address));
     assert!(address.is_multiple_of(32));
     address
@@ -32,16 +28,6 @@ pub fn address(value: Reference) -> usize {
 
 pub fn bytes(value: Reference) -> [u8; 8] {
     (value as usize as u64).to_le_bytes()
-}
-
-/// # Safety
-/// `cell` must identify a mapped arena cell containing a valid Fix handle.
-pub unsafe fn from_cell(cell: usize) -> Reference {
-    if unsafe { observe(cell, Query::Null) } != 0 {
-        core::ptr::null_mut()
-    } else {
-        cell as Reference
-    }
 }
 
 /// # Safety
@@ -57,34 +43,15 @@ pub unsafe fn transform(result: Reference, value: Reference, flags: u8) {
 }
 
 /// # Safety
-/// `value` and an existing `root` must identify valid handles.
-pub unsafe fn retain(root: &mut Reference, value: Reference) {
-    if root.is_null() {
-        *root = allocate() as Reference;
-    }
-    unsafe { copy_handle(address(value), address(*root), 0) };
-}
-
-pub fn allocate() -> usize {
-    let destination = reserve(32, 32);
-    // Invocation setup and arena reset install the first page.
-    if destination.is_multiple_of(4096) {
-        unsafe { crate::rt::map_region(destination as *mut u8, 4096, arcane::__MODE_read_write) }
-            .expect("handle arena allocation failed");
-    }
-    destination
-}
-
-/// # Safety
 /// `cell` must be a fresh writable arena cell and `metadata` must describe `bytes`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn create_local(_cell: usize, _bytes: usize, _metadata: u16) {
+pub unsafe extern "C" fn create_local(_cell: usize, _address: usize, _bytes: usize, _metadata: u16) {
     naked_asm!(
-        "mov [rdi], rdi",
+        "mov [rdi], rsi",
         "mov qword ptr [rdi + 8], 0",
         "mov qword ptr [rdi + 16], 0",
-        "mov [rdi + 24], rsi",
-        "mov [rdi + 30], dx",
+        "mov [rdi + 24], rdx",
+        "mov [rdi + 30], cx",
         "cmp edi, edi",
         "ret",
     );

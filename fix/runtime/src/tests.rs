@@ -4,8 +4,8 @@
 #![test_runner(kernel::testing::harness)]
 #![reexport_test_harness_main = "test_main"]
 
-use fix::arca::FixOnArca;
-use fix::*;
+use fixruntime::arca::FixOnArca;
+use fixruntime::*;
 #[path = "../tests/advice.rs"]
 mod advice;
 #[path = "../tests/api.rs"]
@@ -29,11 +29,12 @@ fn test_runtime() -> FixOnArca {
         .unwrap()
         .object()
         .into_ref();
-    FixOnArca::default()
-        .with_trust(fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap())
+    FixOnArca::default().with_trust(
+        fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+    )
 }
 
-fn test_program(storage: &dyn fix::storage::Storage, bytes: &[u8]) -> fixhandle::Tree {
+fn test_program(storage: &dyn fixruntime::storage::Storage, bytes: &[u8]) -> fixhandle::Tree {
     let author = storage
         .add_blob(stdlib::PRIMITIVES[0].1)
         .object()
@@ -71,9 +72,9 @@ fn eval_program(source: &str, evaluator: &Evaluation) -> Handle {
 
 mod tests {
     use super::*;
-    use fix::runtime::Runtime;
-    use fix::storage::CanonicalHandle;
     use fixhandle::{Blob, Tree};
+    use fixruntime::runtime::Runtime;
+    use fixruntime::storage::CanonicalHandle;
 
     fn apply(runtime: &impl Runtime, combination: Tree) -> Handle {
         let coupon = runtime.execute(combination).unwrap();
@@ -169,7 +170,7 @@ mod tests {
 
     #[kernel::test]
     fn runnable_authorities() {
-        use fix::arca::trust::{Trust, TrustError};
+        use fixruntime::arca::trust::{Trust, TrustError};
 
         let runtime = test_runtime();
         let storage = runtime.storage();
@@ -231,7 +232,7 @@ mod tests {
 
     #[kernel::test]
     fn evaluation_certificates() {
-        use fix::coupon::Exchange;
+        use fixruntime::coupon::Exchange;
 
         fn number(value: u64) -> Handle {
             Blob::literal(&value.to_le_bytes()).unwrap().into()
@@ -416,7 +417,7 @@ mod tests {
             let combination = storage.add_tree(&[
                 Blob::literal(b"").unwrap().into(),
                 program.into(),
-                number(fix::coupon::Exchange::Transitivity as u64),
+                number(fixruntime::coupon::Exchange::Transitivity as u64),
                 value,
                 value,
                 witnesses.into(),
@@ -469,7 +470,7 @@ mod tests {
         let combination = storage.add_tree(&[
             Blob::literal(b"").unwrap().into(),
             program.into(),
-            number(fix::coupon::Exchange::Transitivity as u64),
+            number(fixruntime::coupon::Exchange::Transitivity as u64),
             left,
             right,
             coupons.into(),
@@ -529,7 +530,7 @@ mod tests {
             let request = storage.add_tree(&[
                 Blob::literal(b"").unwrap().into(),
                 program.into(),
-                number(fix::coupon::Exchange::Congruence as u64),
+                number(fixruntime::coupon::Exchange::Congruence as u64),
                 lhs,
                 rhs,
                 proofs.into(),
@@ -622,7 +623,7 @@ mod tests {
 
     #[kernel::test]
     fn userspace_scheduler_certifies_and_persists_evaluation() {
-        use fix::arca::trust::Trust;
+        use fixruntime::arca::trust::Trust;
         let memory = Arc::new(storage::memory::MemoryStorage::default());
         let compiler = Blob::literal(b"test compiler").unwrap();
         let program = |bytes: &[u8]| {
@@ -747,8 +748,8 @@ mod tests {
 
     #[kernel::test]
     fn collector_reconstructs_evaluated_tags() {
-        use fix::arca::trust::Trust;
-        use fix::coupon::Exchange::*;
+        use fixruntime::arca::trust::Trust;
+        use fixruntime::coupon::Exchange::*;
         let runtime = test_runtime();
         let program = test_program(runtime.storage(), kernel::testing::fixture("FIX_COLLECTOR"));
         let compiler = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -774,7 +775,7 @@ mod tests {
                 ]))
                 .unwrap()
         };
-        let issue = |rule: fix::coupon::Exchange, lhs, rhs, witnesses: &[Handle]| {
+        let issue = |rule: fixruntime::coupon::Exchange, lhs, rhs, witnesses: &[Handle]| {
             let coupon = Tree::try_from(request(rule as u64, lhs, rhs, witnesses)).unwrap();
             storage
                 .add_tree(&[
@@ -949,8 +950,20 @@ mod tests {
             );
         }
 
-        let function = common::elfloader::load_elf(elf).unwrap();
-        let argument = kernel::prelude::Blob::new(0u64.to_le_bytes());
+        let mut function: kernel::prelude::Function = common::elfloader::load_elf(elf).unwrap();
+        assert!(
+            function
+                .inner_mut()
+                .arca_mut()
+                .unwrap()
+                .mappings_mut()
+                .map(
+                    0x7e00000000,
+                    kernel::prelude::Entry::RWPage(kernel::prelude::Page::new(4096)),
+                )
+                .is_ok()
+        );
+        let argument = kernel::prelude::Blob::new(0x7e00000000u64.to_le_bytes());
         let effect: kernel::prelude::Function =
             function.apply(argument).force().try_into().unwrap();
         let description: kernel::prelude::Tuple = effect.into_inner().read().try_into().unwrap();
@@ -1164,7 +1177,7 @@ mod tests {
 
     #[kernel::test]
     fn trusted_taggers_preserve_fields_and_replay_authority() {
-        use fix::arca::trust::Trust;
+        use fixruntime::arca::trust::Trust;
         let runtime = test_runtime();
         let program = test_program(runtime.storage(), kernel::testing::fixture("FIX_TAGGER"));
         let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -1225,7 +1238,7 @@ mod tests {
 
     #[kernel::test]
     fn sdk_effects_preserve_owned_captures() {
-        use fix::arca::EffectAction;
+        use fixruntime::arca::EffectAction;
         let runtime = test_runtime();
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
@@ -1401,8 +1414,8 @@ mod tests {
     }
 
     fn selective_lifting(escape: bool) {
-        use fix::arca::EffectAction;
-        use fix::storage::memory::MemoryStorage;
+        use fixruntime::arca::EffectAction;
+        use fixruntime::storage::memory::MemoryStorage;
 
         let memory = Arc::new(MemoryStorage::default());
         let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -1410,7 +1423,7 @@ mod tests {
             .object()
             .into_ref();
         let runtime = FixOnArca::new(memory.clone()).with_trust(
-            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_SELECTIVE_LIFTING"));
@@ -1490,8 +1503,8 @@ mod tests {
 
     #[kernel::test]
     fn kernel_effects_resume_replay_and_stop() {
-        use fix::arca::EffectAction;
-        use fix::storage::memory::MemoryStorage;
+        use fixruntime::arca::EffectAction;
+        use fixruntime::storage::memory::MemoryStorage;
 
         let memory = Arc::new(MemoryStorage::default());
         let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -1499,7 +1512,7 @@ mod tests {
             .object()
             .into_ref();
         let runtime = FixOnArca::new(memory.clone()).with_trust(
-            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_LINEAR_EFFECTS"));
@@ -1609,7 +1622,7 @@ mod tests {
 
     #[kernel::test]
     fn continuations_resume_across_runtime_instances() {
-        use fix::storage::memory::MemoryStorage;
+        use fixruntime::storage::memory::MemoryStorage;
 
         let memory = Arc::new(MemoryStorage::default());
         let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -1617,7 +1630,7 @@ mod tests {
             .object()
             .into_ref();
         let runtime = FixOnArca::new(memory.clone()).with_trust(
-            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION"));
@@ -1915,28 +1928,13 @@ mod tests {
     }
 
     #[kernel::test]
-    fn determinism_across_capture_in_exception_handlers() {
-        capture_determinism(0, "FIX_CAPTURE_DETERMINISM");
-    }
-
-    #[kernel::test]
-    fn determinism_across_capture_before_exception_unwind() {
-        capture_determinism(1, "FIX_CAPTURE_DETERMINISM");
-    }
-
-    #[kernel::test]
-    fn determinism_across_bulk_tables_and_replay() {
+    fn determinism_across_descriptor_arrays_and_replay() {
         capture_determinism(2, "FIX_CAPTURE_DETERMINISM");
     }
 
     #[kernel::test]
-    fn determinism_across_large_table_snapshots() {
-        capture_determinism(0, "FIX_LARGE_TABLES");
-    }
-
-    #[kernel::test]
-    fn determinism_across_exception_references() {
-        capture_determinism(3, "FIX_CAPTURE_DETERMINISM");
+    fn determinism_across_descriptor_close_and_reuse() {
+        capture_determinism(0, "FIX_CAPTURE_DETERMINISM");
     }
 
     #[kernel::test]
@@ -1945,92 +1943,13 @@ mod tests {
     }
 
     #[kernel::test]
-    fn determinism_across_attachment_lifetimes_and_funcrefs() {
+    fn determinism_across_blob_and_descriptor_lifetimes() {
         capture_determinism(1, "FIX_CONTINUATION_STATE");
     }
 
     #[kernel::test]
     fn determinism_across_return_cc() {
         capture_determinism(4, "FIX_CONTINUATION_STATE");
-    }
-
-    #[kernel::test]
-    fn determinism_across_externref_invalidation() {
-        capture_determinism(0, "FIX_INVALIDATE_EXTERNREFS");
-    }
-
-    #[kernel::test]
-    fn determinism_across_partial_tree_attachments() {
-        capture_determinism(0, "FIX_PARTIAL_TREE");
-    }
-
-    #[kernel::test]
-    fn resumption_preserves_results_after_externref_use() {
-        let runtime = test_runtime();
-        let storage = runtime.storage();
-        let program = test_program(storage, kernel::testing::fixture("FIX_EXTERNREF_REUSE"));
-        for count in [32u64, 512] {
-            let combination = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
-                program.into(),
-                Blob::literal(&count.to_le_bytes()).unwrap().into(),
-            ]);
-            let pair = storage
-                .get_tree(Tree::try_from(apply(&runtime, combination)).unwrap())
-                .unwrap();
-            let resumed = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
-                pair[1],
-                Blob::literal(b"resumed").unwrap().into(),
-            ]);
-            assert!(
-                apply(&runtime, resumed).same_encoding(&Blob::literal(b"resumed").unwrap().into())
-            );
-        }
-    }
-
-    #[kernel::test]
-    fn determinism_across_sdk_capture_lifetimes() {
-        let runtime = test_runtime();
-        let storage = runtime.storage();
-        let program = test_program(storage, kernel::testing::fixture("FIX_SDK_REUSE"));
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
-        let pair = |result| {
-            let pair = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
-            assert_eq!(pair.len(), 2);
-            assert!(pair[0].same_encoding(&Blob::literal(&0u64.to_le_bytes()).unwrap().into()));
-            pair[1]
-        };
-        for count in [32u64, 512] {
-            let combination = storage.add_tree(&[
-                metadata,
-                program.into(),
-                Blob::literal(&count.to_le_bytes()).unwrap().into(),
-            ]);
-            let canonical = Tree::try_from(Handle::from(
-                storage.canonicalize(combination.into()).unwrap(),
-            ))
-            .unwrap();
-            let mut checkpoints = Vec::new();
-            for combination in [combination, canonical] {
-                let first = pair(apply(&runtime, combination));
-                let first = storage.canonicalize(first).unwrap();
-                let resumed = storage.add_tree(&[metadata, first.into(), metadata]);
-                let second = pair(apply(&runtime, resumed));
-                let second = storage.canonicalize(second).unwrap();
-                let resumed = storage.add_tree(&[metadata, second.into(), metadata]);
-                let result = apply(&runtime, resumed);
-                assert_eq!(
-                    storage
-                        .get_blob(Blob::try_from(result).unwrap())
-                        .unwrap()
-                        .as_ref(),
-                    &42u64.to_le_bytes()
-                );
-                checkpoints.push((first, second));
-            }
-            assert_eq!(checkpoints[0], checkpoints[1]);
-        }
     }
 
     #[kernel::test]
@@ -2046,14 +1965,14 @@ mod tests {
 
     #[kernel::test]
     fn determinism_across_reply_representations() {
-        use fix::storage::memory::MemoryStorage;
+        use fixruntime::storage::memory::MemoryStorage;
         let memory = Arc::new(MemoryStorage::default());
         let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
             .unwrap()
             .object()
             .into_ref();
         let runtime = FixOnArca::new(memory.clone()).with_trust(
-            fix::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION_STATE"));
@@ -2292,7 +2211,7 @@ mod tests {
 
     #[kernel::test]
     fn equality_of_aliases_and_computed_values() {
-        use fix::storage::{StorageError, memory::MemoryStorage};
+        use fixruntime::storage::{StorageError, memory::MemoryStorage};
         let storage = MemoryStorage::default();
         let a = storage.add_blob(&[7; 64]);
         let b = storage.add_blob(&[7; 64]);

@@ -1,24 +1,24 @@
 #![no_std]
 extern crate alloc;
 
-use fix::{Blob, Error, Handle, Object, Tree, Value, map::Map, tree};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value, map::Map, tree};
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 fn call(name: &[u8], arguments: impl Value) -> Result<u64, Error> {
-    let arguments = Handle::<Object<Tree>, _>::try_from(arguments.capture()?)?;
+    let arguments = Handle::<Object<Tree>>::try_from(arguments.capture()?)?;
     let mut fields = alloc::vec![Blob::create(name).capture()?];
     for i in 0..usize::try_from(arguments.len()?)? {
         fields.push(arguments.get(i).capture()?);
     }
-    let reply = Handle::<Object<Tree>, _>::try_from(Tree::from_iter(&fields).effect()?)?;
+    let reply = Handle::<Object<Tree>>::try_from(Tree::from_iter(&fields).effect()?)?;
     assert_eq!(reply.get(0).read_u64()?, 0);
     reply.get(1).read_u64()
 }
 
-#[fix::apply]
-fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, Error> {
+#[fixwasm::apply]
+fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
     let worker = call(b"worker_config", tree![0u64])?;
     let workers = call(b"worker_config", tree![1u64])?;
     if worker == 0 {
@@ -64,7 +64,7 @@ fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, E
     for _ in 1..workers {
         loop {
             let epoch = call(b"worker_listen", tree![])?;
-            let reply = Handle::<Object<Tree>, _>::try_from(
+            let reply = Handle::<Object<Tree>>::try_from(
                 tree![Blob::create(b"queue_pop"), 0u64].effect()?,
             )?;
             match reply.get(0).read_u64()? {
@@ -96,27 +96,26 @@ fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, E
     );
     assert!(map.get(5u64)?.is_none());
 
-    let keys = Handle::<Object<Tree>, _>::try_from(combination.get(2))?;
+    let keys = Handle::<Object<Tree>>::try_from(combination.get(2))?;
     for index in 0..usize::try_from(keys.len()?)? {
-        let pair = Handle::<Object<Tree>, _>::try_from(keys.get(index))?;
+        let pair = Handle::<Object<Tree>>::try_from(keys.get(index))?;
         assert!(map.compare_exchange(
             pair.get(0),
             0,
             tree![index as u64, &keys, tree![index as u64].application()]
         )?);
-        fix::invalidate_externrefs()?;
         if pair.get(0).raw_handle_bytes()? != pair.get(1).raw_handle_bytes()? {
             assert!(map.get(pair.get(1))?.is_none());
         }
         let entry = map.get(pair.get(0))?.unwrap();
-        let value = Handle::<Object<Tree>, _>::try_from(&entry.value)?;
+        let value = Handle::<Object<Tree>>::try_from(&entry.value)?;
         assert_eq!(value.get(0).read_u64()?, index as u64);
-        let restored = Handle::<Object<Tree>, _>::try_from(value.get(1))?;
+        let restored = Handle::<Object<Tree>>::try_from(value.get(1))?;
         assert!(restored.get(index).equals(&pair)?);
-        assert_eq!(value.get(2).value_type()?, fix::ValueType::Thunk);
+        assert_eq!(value.get(2).value_type()?, fixwasm::ValueType::Thunk);
     }
     for index in (0..usize::try_from(keys.len()?)?).rev() {
-        let pair = Handle::<Object<Tree>, _>::try_from(keys.get(index))?;
+        let pair = Handle::<Object<Tree>>::try_from(keys.get(index))?;
         assert!(map.remove(pair.get(0))?.is_some());
         assert!(map.get(pair.get(0))?.is_none());
     }

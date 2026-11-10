@@ -1,10 +1,10 @@
 use crate::{Evidence, Request, Root, Scheduler, as_tree, fields, root};
 use alloc::vec::Vec;
-use fix::{
+use fixscheduler::shell;
+use fixwasm::{
     Any, Error, Handle, Object, ThunkType, Tree, Value, ValueType,
     coupon::{Exchange, Statement},
 };
-use fixscheduler::shell;
 
 fn thunk(
     object: &mut impl FnMut(&Root) -> Result<Root, Error>,
@@ -14,7 +14,7 @@ fn thunk(
     match value.unsound_thunk_type()? {
         ThunkType::Application => root(as_tree(&data)?.application()),
         ThunkType::Identification => {
-            root(Handle::<Object<Any>, _>::try_from(data.as_ref())?.identification())
+            root(Handle::<Object<Any>>::try_from(data.as_ref())?.identification())
         }
         ThunkType::Selection => root(as_tree(&data)?.selection()),
     }
@@ -150,7 +150,7 @@ impl EvaluationState {
                         .exchange(
                             Exchange::Eval,
                             input,
-                            &root(Tree::create(&results))?,
+                            &root(Tree::from_iter(&results))?,
                             &witnesses,
                         )
                         .map(EvaluationStep::Complete);

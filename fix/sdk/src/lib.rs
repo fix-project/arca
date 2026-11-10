@@ -17,21 +17,19 @@ pub use macros::main;
 mod entry;
 #[cfg(feature = "alloc")]
 pub use entry::arguments;
-pub use entry::{
-    Argument, apply_remaining, call, error, normalize_argument, reapply, visit_arguments,
-};
+pub use entry::{Argument, apply_remaining, error, normalize_argument, visit_arguments};
 #[doc(hidden)]
-pub use entry::{apply_excess, fixed_arguments, normalize_arguments};
-pub use value::{
-    Any, Application, AttachedBlob, AttachedElement, AttachedTree, Blob, Capture, Cast, Choice,
-    CreateBlob, CreateTag, CreateTree, Encode, Erased, Evaluated, Evaluation, Focus, Handle,
-    Identification, Memory, Object, Ref, Reference, Select, Selection, Shallow, Strict, Table,
-    Thunk, Tree, Value, choose,
-};
-#[doc(hidden)]
-pub use value::{Cons as __Cons, Nil as __Nil, Path};
-
+pub use entry::{apply_excess, fixed_arguments};
 #[cfg(feature = "alloc")]
+pub use entry::{call, normalize_arguments, reapply};
+pub use value::{
+    Any, Blob, Choice, Encode, Evaluated, Evaluation, Handle, Object, RawHandle, Ref, Thunk, Tree,
+    Value, choose,
+};
+pub mod ffi;
+mod memory;
+pub use memory::{Memory, ReadOnly, ReadWrite, Unmapped};
+
 pub mod backend;
 pub mod files;
 #[cfg(feature = "alloc")]
@@ -57,25 +55,54 @@ impl From<core::num::TryFromIntError> for Error {
 }
 
 #[doc(hidden)]
-pub fn __apply(
-    callback: impl for<'a> FnOnce(&'a mut Handle<Object<Tree>, Focus>) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let mut combination = Handle::<Object<Tree>, Focus>::combination();
-    callback(&mut combination)
+pub trait Combination: Sized {
+    fn from_combination(value: Handle<Any>) -> Result<Self, Error>;
+}
+impl Combination for Handle<Object<Tree>> {
+    fn from_combination(value: Handle<Any>) -> Result<Self, Error> {
+        value.checked()
+    }
+}
+impl Combination for fix::Tree<backend::Shell> {
+    fn from_combination(value: Handle<Any>) -> Result<Self, Error> {
+        Self::try_from(fix::Value::from_inner(value)).map_err(Error::from)
+    }
+}
+impl From<fix::TypeError> for Error {
+    fn from(error: fix::TypeError) -> Self {
+        match error {
+            fix::TypeError::WrongType => Error::WrongType,
+        }
+    }
 }
 
 #[doc(hidden)]
-pub use value::__finish;
-
-/// Reclaims local object backing. Live references, Rust paths, and pending values remain valid.
-pub fn invalidate_externrefs() -> Result<(), Error> {
-    value::invalidate_externrefs()
+pub fn __apply<C: Combination>(
+    index: u32,
+    callback: impl FnOnce(&mut C) -> Result<Handle<Any>, Error>,
+) -> u32 {
+    let _invocation = backend::InvocationGuard::new(index);
+    let mut combination =
+        C::from_combination(unsafe { Handle::from_raw(index) }).expect("invalid combination");
+    callback(&mut combination)
+        .expect("Fix procedure failed")
+        .into_raw()
 }
 
 /// Emits advice about a value without evaluating it or receiving a reply.
 /// Advice does not form part of the value or its identity.
 pub fn advise(value: &impl Value, key: &str, payload: &[u8]) -> Result<(), Error> {
-    value::advise(value, key, payload)
+    let handle = value.to_handle();
+    unsafe {
+        ffi::advise(
+            handle.as_raw(),
+            key.as_ptr() as u32,
+            key.len().try_into()?,
+            payload.as_ptr() as u32,
+            payload.len().try_into()?,
+        )
+    };
+    Ok(())
 }
 
 pub mod advice {

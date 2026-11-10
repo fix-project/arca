@@ -1,8 +1,8 @@
 use crate::shell::{Root, root};
-use fix::{Blob, Error, Handle, Object, Tree, Value};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value};
 
 pub(crate) fn request(value: impl Value) -> Result<(u64, Root), Error> {
-    let reply = Handle::<Object<Tree>, _>::try_from(value.effect()?)?;
+    let reply = Handle::<Object<Tree>>::try_from(value.effect()?)?;
     Ok((reply.get(0).read_u64()?, root(reply.get(1))?))
 }
 pub(crate) fn coordinate(name: &[u8], arguments: &[Root]) -> Result<(u64, Root), Error> {

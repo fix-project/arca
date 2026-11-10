@@ -11,7 +11,6 @@ fix_cc_wasm(
     link_inputs = ["//third_party/dlmalloc:wasm", "//third_party/mt19937:wasm"],
     copts = ["-I.", "-std=c17", "-Wall", "-Wextra", "-Werror"],
     memories = 2,
-    tables = 1,
 )
 
 rust_binary(
@@ -21,7 +20,6 @@ rust_binary(
 )
 
 wat_module(name = "control_wasm", src = "control.wat", out = "control.wasm", visibility = ["//visibility:public"])
-
 
 genrule(
     name = "merged_wasm",

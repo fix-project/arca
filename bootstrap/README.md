@@ -9,15 +9,15 @@ repository. Nothing in this process runs inside Fix.
 |---|---|
 | `//bootstrap:host_llvm` | Builds native Clang and LLD |
 | `//bootstrap:stage0` | Builds the WASIp1 tools and sysroot |
-| `//bootstrap:stage1` | Merges the tools with Flatware, translates them to C, and compiles that output as C++ into native Fix ELFs |
+| `//bootstrap:stage1` | Merges the tools with Flatware, translates them to C, and compiles that output as C into native Fix ELFs |
 | `//bootstrap` (`:seed`) | Writes the seed repository archive |
 | `//bootstrap:compilations` | Rebuilds every seed ELF inside Fix; its archive carries the compile coupons |
 | `//bootstrap:stage2` | Opt-in test: the rebuilt certificates equal the seed's |
 
-Every native ELF uses `UNITS` translated C++ units (`native.bzl`, currently 512);
+Every native ELF uses `UNITS` translated C units (`native.bzl`, currently 512);
 the generated `compilation_script.fix` uses the same count, so Stage2 reproduces the seed byte for byte.
-LLVM libc++abi and libunwind provide native exception cleanup. Both are built
-from the pinned LLVM source.
+The native runtime uses C and Rust. Wasm exceptions use numeric tags and
+setjmp/longjmp.
 
 `--//bootstrap:debug` builds the seed's dependencies in debug mode.
 
@@ -61,7 +61,7 @@ tools. It excludes JITs and process-launching tools: `llvm-rc` normally launches
 a preprocessor, and `llvm-mt` requires XML support absent from this toolchain.
 
 Applying `compile` to a Wasm module, as in `#("" compile module)`, yields a
-Runnable for that module, compiled as one translated C++ unit per 128 KiB of Wasm.
+Runnable for that module, compiled as one translated C unit per 128 KiB of Wasm.
 An explicit unit count, as in `#("" compile module 512u64)`, overrides that;
 the generated script passes the count the native seed build used.
 `seed add DIRECTORY NAME=ELF...` issues further Runnables authored by an

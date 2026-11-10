@@ -820,7 +820,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 0 => worker,
                 1 => shared.executed.len(),
                 2 => usize::from(shared.stopped()),
-                3 => usize::from(runtime.memoize != fixapi::Memoization::Never),
+                3 => usize::from(runtime.memoize != fix::Memoization::Never),
                 _ => return Err(Error::Invalid),
             };
             Ok(number(value))

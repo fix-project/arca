@@ -2,7 +2,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use fix::{Blob, Error, Handle, Object, Tree, Value, tree};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value, tree};
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
@@ -13,7 +13,7 @@ fn request(name: &[u8], arguments: &[u64]) -> Result<(u64, u64), Error> {
     for argument in arguments {
         fields.push(argument.capture()?);
     }
-    let reply = Handle::<Object<Tree>, _>::try_from(Tree::from_iter(&fields).effect()?)?;
+    let reply = Handle::<Object<Tree>>::try_from(Tree::from_iter(&fields).effect()?)?;
     Ok((reply.get(0).read_u64()?, reply.get(1).read_u64()?))
 }
 
@@ -70,8 +70,8 @@ fn wake_one_queue(worker: u64, workers: u64) -> Result<u64, Error> {
     }
 }
 
-#[fix::apply]
-fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<impl Value + 'a, Error> {
+#[fixwasm::apply]
+fn apply<'a>(combination: &'a Handle<Object<Tree>>) -> Result<impl Value + 'a, Error> {
     let mode = combination.get(2).read_u64()?;
     if mode == 0 {
         for _ in 0..64 {

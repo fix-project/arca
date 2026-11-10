@@ -6,11 +6,11 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "client",
     crate_name = "fixcli",
-    srcs = ["lib.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs"],
+    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs"],
     crate_root = "lib.rs",
     edition = "2024",
     deps = [
-        "//fix/api", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
+        "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
         "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
     ],
     compile_data = ["//fix/runtime:image_elf", "//programs/fix/parser:parser_module"],
@@ -24,14 +24,14 @@ rust_binary(
     name = "fix",
     srcs = ["main.rs", "repl.rs"],
     edition = "2024",
-    deps = [":client", "//fix/api", "@crates//:clap", "@crates//:env_logger"],
+    deps = [":client", "//fix/api:api_alloc", "@crates//:clap", "@crates//:env_logger"],
 )
 
 rust_test(
     name = "client_tests",
     srcs = ["client_tests.rs"],
     edition = "2024",
-    deps = [":client", "//fix/api", "//fix/repository"],
+    deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
     data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf"],
     rustc_env = {
         "BACKEND": "$(rootpath :fix)",
@@ -46,6 +46,14 @@ rust_test(
     tags = ["kvm", "local"],
 )
 
-
 # The seed plus the compile coupons of the modules this CLI embeds.
 fix_repository(name = "precompiled", tags = ["manual"])
+
+rust_test(
+    name = "typed_values_test",
+    srcs = ["//fix/api:tests/values.rs"],
+    edition = "2024",
+    deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
+    size = "small",
+    timeout = "short",
+)

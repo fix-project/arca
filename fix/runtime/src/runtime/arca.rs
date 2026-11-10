@@ -6,7 +6,7 @@ use crate::storage::memory::MemoryStorage;
 use crate::storage::repository::RepositoryStorage;
 use crate::storage::{ImmutableBytes, Storage};
 use alloc::sync::Arc;
-use fixapi::Memoization;
+use fix::Memoization;
 mod checkpoint;
 mod continuation;
 mod handles;
@@ -441,16 +441,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             }
             Callable::Runnable(executable, arguments) => {
                 let mut function = self.image(executable);
-                handles::insert(
-                    &mut function,
-                    handles::HANDLE_BASE,
-                    Blob::literal(b"").unwrap().into(),
-                );
-                let root = handles::insert(
-                    &mut function,
-                    handles::HANDLE_BASE + HANDLE_SIZE,
-                    combination.into(),
-                );
+                let root = handles::insert(&mut function, handles::HANDLE_BASE, combination.into());
                 let profiles = if !privileged && self.profile.load(Ordering::Relaxed) {
                     alloc::vec![(*executable.as_handle().as_bytes(), arguments)]
                 } else {
@@ -605,13 +596,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let Some(Value::Blob(name)) = args.pop_back() else {
                         panic!("missing coordination name")
                     };
-                    assert!(bytes.len().is_multiple_of(HANDLE_SIZE));
-                    let arguments: Vec<Handle> = bytes
-                        .as_chunks::<HANDLE_SIZE>()
-                        .0
-                        .iter()
-                        .map(|bytes| unsafe { Handle::parse(*bytes).unwrap() })
-                        .collect();
+                    let tree = Tree::try_from(handles::resolve(&mut k, unpack_reference(&bytes)))
+                        .expect("coordination arguments must be a Tree Object");
+                    let arguments = self.get_tree(tree).unwrap();
                     let (status, result) = match callback(&name, &arguments) {
                         CoordinationAction::Resume(status, value) => (status, value),
                         CoordinationAction::Stop(value) => return Ok(Execution::Complete(value)),
@@ -720,10 +707,17 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                 }
                 b"lift" => {
-                    let tables: Tuple = args.pop_back().unwrap().try_into().unwrap();
-                    let aliases: Tuple = args.pop_back().unwrap().try_into().unwrap();
+                    let length: kernel::prelude::Word =
+                        args.pop_back().unwrap().try_into().unwrap();
+                    let address: kernel::prelude::Word =
+                        args.pop_back().unwrap().try_into().unwrap();
                     let objects: Tuple = args.pop_back().unwrap().try_into().unwrap();
-                    self.lift(&mut k, objects, aliases, tables);
+                    self.lift(
+                        &mut k,
+                        objects,
+                        address.read() as usize,
+                        length.read() as usize,
+                    );
                     k.apply(kernel::prelude::Word::new(0))
                 }
                 b"is_privileged" => {
@@ -782,13 +776,14 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     k.apply(kernel::prelude::Word::new(equal as u64))
                 }
                 b"create_tag" => {
-                    let Some(Value::Word(length)) = args.pop_back() else {
-                        panic!("missing tree length")
+                    let Some(Value::Blob(reference)) = args.pop_back() else {
+                        panic!("missing tag fields")
                     };
-                    let data = ImmutableBytes::from_value(
-                        args.pop_back().expect("missing tree backing"),
-                        (length.read() as usize).checked_mul(HANDLE_SIZE).unwrap(),
-                    );
+                    let tree =
+                        Tree::try_from(handles::resolve(&mut k, unpack_reference(&reference)))
+                            .expect("tag fields must be a Tree Object");
+                    assert!(!tree.is_empty(), "missing tag author");
+                    let data = self.get_tree_backing(tree).unwrap();
                     let author = handles::read_backing(&data, 0);
                     assert!(
                         trust::is_author(self, combination, author).unwrap(),
@@ -875,29 +870,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 }
                 b"get_tree" => {
                     let started = profile.then(kernel::tsc::read);
-                    let argument = args.pop_back().expect("missing Tree reference");
-                    let (destination, reference) = match argument {
-                        Value::Word(address) => {
-                            (Some(address.read() as usize), args.pop_back().unwrap())
-                        }
-                        reference => (None, reference),
-                    };
-                    let Value::Blob(reference) = reference else {
+                    let Some(Value::Blob(reference)) = args.pop_back() else {
                         panic!("expected Tree reference")
                     };
                     let name =
                         Tree::try_from(handles::resolve(&mut k, unpack_reference(&reference)))
                             .expect("expected tree object");
                     let backing = self.get_tree_backing(name).unwrap();
-                    if let Some(address) = destination {
-                        assert!(
-                            address >= handles::HANDLE_BASE
-                                && address
-                                    .checked_add(backing.len())
-                                    .is_some_and(|end| end <= handles::HANDLE_BASE + (1 << 32))
-                        );
-                        handles::map_backing(&mut k, address, &backing, false);
-                    }
                     let result = k.apply(backing.attachment());
                     self.record_call_time(b"get_tree", started);
                     result

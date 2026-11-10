@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
-use wasmparser::{ExternalKind, FunctionBody, Operator, Parser, Payload, RefType, TypeRef};
+use wasmparser::{ExternalKind, FunctionBody, Operator, Parser, Payload, TypeRef};
 
 fn operator_index(
     body: &FunctionBody<'_>,
@@ -11,7 +11,6 @@ fn operator_index(
     let mut result = None;
     for operator in body.get_operators_reader()? {
         let index = match (kind, operator?) {
-            ("table", Operator::TableSize { table }) => Some(table),
             ("memory", Operator::MemorySize { mem }) => Some(mem),
             (_, Operator::Call { function_index }) => {
                 let body = functions
@@ -37,7 +36,6 @@ fn validate(wasm: &[u8]) -> Result<()> {
     let mut exports = BTreeMap::new();
     let mut functions = Vec::new();
     let mut imported_functions = 0;
-    let mut tables = Vec::new();
     let mut memories = 0;
     for payload in Parser::new(0).parse_all(wasm) {
         match payload? {
@@ -53,11 +51,6 @@ fn validate(wasm: &[u8]) -> Result<()> {
                         }
                         _ => {}
                     }
-                }
-            }
-            Payload::TableSection(section) => {
-                for table in section {
-                    tables.push(table?.ty.element_type);
                 }
             }
             Payload::MemorySection(section) => memories += section.count(),
@@ -86,13 +79,6 @@ fn validate(wasm: &[u8]) -> Result<()> {
             .context("missing resource marker body")?;
         operator_index(body, kind, &functions, imported_functions)
     };
-    for (name, expected) in [("flatware_read_table_size", 0)] {
-        let actual = marker(name, "table")?;
-        ensure!(
-            actual == expected && tables.get(actual as usize) == Some(&RefType::EXTERNREF),
-            "invalid Flatware Table index or type: {name}"
-        );
-    }
     ensure!(
         marker("flatware_main_memory_size", "memory")? == 0,
         "invalid Flatware main Memory"

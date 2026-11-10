@@ -1,7 +1,7 @@
 use crate::shell::{Root, as_tree, root};
 use crate::storage;
 use alloc::vec::Vec;
-use fix::{Blob, Error, Tree, Value};
+use fixwasm::{Blob, Error, Tree, Value};
 
 fn bytes(value: &Root) -> Result<Vec<u8>, Error> {
     let mut bytes = alloc::vec![0; usize::try_from(value.len()?)?];
@@ -12,7 +12,7 @@ fn bytes(value: &Root) -> Result<Vec<u8>, Error> {
 pub fn import_source(uri: &Root) -> Result<Option<Root>, Error> {
     let text = bytes(uri)?;
     let text = core::str::from_utf8(&text).map_err(|_| Error::WrongType)?;
-    let Some(object) = fix::importers::fetch(text)? else {
+    let Some(object) = fixwasm::importers::fetch(text)? else {
         return Ok(None);
     };
     let value = storage::put(&Root::new(object))?;
@@ -37,7 +37,7 @@ fn source_tree(mut uris: Vec<Vec<u8>>) -> Result<Root, Error> {
         .iter()
         .map(|uri| root(Blob::create(uri)))
         .collect::<Result<Vec<_>, Error>>()?;
-    root(Tree::create(&uris))
+    root(Tree::from_iter(&uris))
 }
 
 pub fn sources(value: &Root) -> Result<Root, Error> {
@@ -79,8 +79,8 @@ pub fn acquire(value: &Root) -> Result<Option<Root>, Error> {
             continue;
         };
         let object = match expected[31] {
-            0x80 => fix::importers::blob(uri, size)?,
-            0xa0 => fix::importers::directory(uri)?,
+            0x80 => fixwasm::importers::blob(uri, size)?,
+            0xa0 => fixwasm::importers::directory(uri)?,
             _ => unreachable!(),
         };
         if let Some(object) = object {

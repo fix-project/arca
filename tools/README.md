@@ -6,7 +6,7 @@ postprocess input.wasm output.wasm --memories 3 --tables 4
 
 Counts are totals, including imported resources and all Table element types.
 Omitting a count preserves it. Counts below the existing totals are errors.
-Additional resources are empty, growable wasm32 Memories and externref Tables.
+Additional resources are empty, growable wasm32 Memories and funcref Tables.
 Existing resource indices remain unchanged.
 
 Function imports from `__wasm_postprocessor` become defined Wasm functions.
@@ -33,9 +33,9 @@ semantics. Invalid names, signatures, indices, or resulting modules are errors.
 `fix/sdk/include/wasm.h` provides declarations for C. For example,
 `WASM_MEMORY(2)` declares `wasm_memory_size_2`, `wasm_memory_grow_2`, and
 `wasm_memory_fill_2`; `WASM_MEMORY_COPY(0, 2)` declares
-`wasm_memory_copy_0_to_2`. `WASM_TABLE(N)` declares externref Table operations,
-and `WASM_TABLE_COPY(S, D)` declares copying. For caller-declared Tables,
-prefer Clang's Table builtins.
+`wasm_memory_copy_0_to_2`. Table operations use caller-declared funcref
+Tables. Dynamic `memory_grow`, `memory_copy_to_0`, and `memory_copy_from_0`
+helpers take a Memory index before the corresponding operation arguments.
 
 # Wasm merger
 

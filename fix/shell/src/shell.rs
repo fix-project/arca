@@ -93,55 +93,6 @@ pub unsafe extern "C" fn fixpoint_attach_blob(
     len
 }
 
-/// Attaches a tree to a region of memory.  Returns the size (in elements) of the tree.
-///
-/// # Safety
-///
-/// `addr` must start a reserved table slot containing `old_size` mapped bytes.
-/// No Rust references may point into the slot.
-#[inline]
-pub unsafe extern "C" fn fixpoint_attach_tree(
-    handle: Reference,
-    addr: *mut c_void,
-    old_size: usize,
-) -> usize {
-    if !unsafe { fixpoint_is_object(handle) && fixpoint_is_tree(handle) } {
-        arca_log("attach_tree: handle does not refer to a TreeObject");
-        panic!()
-    }
-
-    let len = unsafe { fixpoint_len(handle) };
-    if len == 0 {
-        unsafe { crate::rt::replace_region(addr.cast(), old_size, 0) };
-        return 0;
-    }
-    crate::locals::lift(&[handle]);
-
-    let result: Result<Value<Runtime>, ArcaError> = crate::continuation::operation("get_tree")
-        .blob(&handles::bytes(handle))
-        .call_with_current_continuation()
-        .try_into()
-        .map_err(|_| ArcaError::BadType);
-
-    let Ok(tree) = result else {
-        arca_log("attach_tree: failed to get TreeData");
-        panic!()
-    };
-
-    assert!(len <= crate::rt::MAX_TABLE_ELEMENTS as usize);
-    let bytes = len * HANDLE_SIZE;
-    unsafe {
-        attach_data(
-            tree,
-            addr.cast(),
-            old_size,
-            bytes,
-            bytes.next_multiple_of(4096),
-        )
-    };
-    len
-}
-
 pub unsafe extern "C" fn fixpoint_attach_tree_bytes(
     handle: Reference,
     addr: *mut c_void,
@@ -258,7 +209,7 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
     len: usize,
 ) {
     if len == 0 {
-        unsafe { core::ptr::write_bytes(result, 0, 1) };
+        unsafe { core::ptr::write_bytes(result, 0, HANDLE_SIZE) };
         return;
     }
     if len <= 30 {
@@ -270,29 +221,27 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
         }
         return;
     }
-    let raw = unsafe { arca_blob_create(data, len) };
-    assert!(raw >= 0);
-    let blob = Blob::<Runtime>::from_inner(user::Ref::from_raw(u32::try_from(raw).unwrap()));
-    unsafe { crate::locals::create(result, blob.into(), len, 0x800f, alloc::vec::Vec::new()) }
+    let address = crate::locals::region();
+    let backing = unsafe { snapshot_tree(data, len) };
+    unsafe {
+        attach_data(
+            backing.clone(),
+            address as *mut u8,
+            0,
+            len,
+            len.next_multiple_of(4096),
+        );
+        crate::locals::create(result, backing, address, len, 0x800f);
+    }
 }
 
-/// Creates a tree from a region of memory.  Returns the handle,
-///
 /// # Safety
-///
-/// `slice` must be a prefix of a reserved externref table slot, containing
-/// packed handles supplied by the shell or runtime.
-#[inline]
+/// `slice` must contain packed handles at the start of a local-data region.
 pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
     assert!(slice.len().is_multiple_of(HANDLE_SIZE));
     let mut metadata = 0xa00fu16;
-    let mut dependencies = alloc::vec::Vec::new();
     for offset in (0..slice.len()).step_by(HANDLE_SIZE) {
         let cell = slice.as_ptr() as usize + offset;
-        let source = unsafe { handles::query_cell(cell, Query::LocalAddress) };
-        if source != 0 {
-            dependencies.push(source);
-        }
         if unsafe { handles::query_cell(cell, Query::Comparable) } == 0 {
             metadata &= !4;
         }
@@ -301,7 +250,17 @@ pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
         }
     }
     let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
-    unsafe { crate::locals::create(result, backing, slice.len(), metadata, dependencies) }
+    let address = slice.as_ptr() as usize;
+    unsafe {
+        attach_data(
+            backing.clone(),
+            address as *mut u8,
+            slice.len().next_multiple_of(4096),
+            slice.len(),
+            slice.len().next_multiple_of(4096),
+        );
+        crate::locals::create(result, backing, address, slice.len(), metadata);
+    }
 }
 
 pub unsafe fn snapshot_tree(addr: *const u8, len: usize) -> Value<Runtime> {
@@ -395,23 +354,14 @@ fn snapshot_tree_entry(source: &mut Entry<Runtime>, len: usize) -> Entry<Runtime
     }
 }
 
-/// Creates a tag from a region of memory.  Returns the handle,
-///
 /// # Safety
-///
-/// [addr] must refer to an region of memory which is large enough for the specified [len];  
-/// Entries are packed handles.
-#[inline]
-pub unsafe fn fixpoint_create_tag(result: Reference, slice: &[u8]) {
-    crate::locals::lift_table(slice.as_ptr() as usize, slice.len() / HANDLE_SIZE);
-    let width = HANDLE_SIZE;
-    assert!(slice.len() >= width && slice.len().is_multiple_of(width));
-    let backing = unsafe { snapshot_tree(slice.as_ptr(), slice.len()) };
+/// `tree` must refer to a Tree Object supplied by the Shell.
+pub unsafe fn fixpoint_create_tag(result: Reference, tree: Reference) {
+    crate::locals::lift(&[tree]);
+    assert!(unsafe { fixpoint_len(tree) } != 0, "missing tag author");
     receive(
         result,
-        crate::continuation::operation("create_tag")
-            .apply(backing)
-            .word((slice.len() / width) as u64),
+        crate::continuation::operation("create_tag").blob(&handles::bytes(tree)),
     )
 }
 

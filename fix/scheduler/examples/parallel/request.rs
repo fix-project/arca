@@ -1,5 +1,5 @@
 use crate::{Root, child, root};
-use fix::{Error, Value, coupon::Statement, tree};
+use fixwasm::{Error, Value, coupon::Statement, tree};
 
 #[derive(Clone)]
 pub struct Request {

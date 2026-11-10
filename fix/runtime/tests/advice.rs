@@ -1,5 +1,5 @@
 use super::{test_program, test_runtime};
-use fix::{Blob, Handle, Runtime, Tree, arca::Execution};
+use fixruntime::{Blob, Handle, Runtime, Tree, arca::Execution};
 use kernel::prelude::Vec;
 
 #[kernel::test]

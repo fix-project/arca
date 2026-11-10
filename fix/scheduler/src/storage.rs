@@ -1,8 +1,8 @@
 use crate::abi::{coordinate, coordinated, effect, request};
 pub use crate::acquisition::{acquire, add_sources, import_source, sources};
 use crate::shell::{Root, root};
-use fix::coupon::Statement;
-use fix::{Blob, Error, tree};
+use fixwasm::coupon::Statement;
+use fixwasm::{Blob, Error, tree};
 
 pub fn cache(value: &Root, completed: bool) -> Result<Root, Error> {
     coordinated(

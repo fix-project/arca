@@ -5,12 +5,11 @@ with `wasm-merge`, retaining separate guest and adapter memories. The control
 bridge copies guest buffers and catches the adapter's exit tag.
 
 The WABT 1.0.42 translator supports legacy and modern Wasm exception handling.
-Exception references retain upstream's 256-byte inline payload limit; legacy
-exceptions continue to use dynamically sized payload storage.
+Exception payloads use a 256-byte inline buffer.
 
 The adapter uses the C Fix bindings directly. It reads and constructs descriptor
-Trees with one scratch Memory and Table. One scoped externref global holds the
-original combination; input parent and child indices locate preserved fields
+Trees using descriptor arrays and one scratch Memory. A borrowed descriptor
+global holds the original combination; input parent and child indices locate preserved fields
 after filesystem mutations. Names, metadata, directory entries, and file contents
 load on demand. Output reuses unchanged descriptors and subtrees, rebuilding
 only changed fields and their ancestors. WASI inode numbers are unique within

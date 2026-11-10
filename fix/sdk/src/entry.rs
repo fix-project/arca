@@ -1,20 +1,36 @@
+#[cfg(feature = "alloc")]
+use crate::Choice;
 use crate::value::FixType;
-use crate::{
-    Any, Blob, Capture, Choice, Error, Evaluation, Focus, Handle, Object, Tree, Value, ValueType,
-};
+use crate::{Any, Blob, Error, Evaluation, Handle, Object, Tree, Value, ValueType};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 pub trait Argument: Sized {
-    fn from_argument(value: Handle<Any, Capture>) -> Result<Self, Error>;
+    fn from_argument(value: Handle<Any>) -> Result<Self, Error>;
 }
-impl<T: FixType> Argument for Handle<T, Capture> {
-    fn from_argument(value: Handle<Any, Capture>) -> Result<Self, Error> {
+impl<T: FixType> Argument for Handle<T> {
+    fn from_argument(value: Handle<Any>) -> Result<Self, Error> {
         value.checked()
     }
 }
-fn read_argument<const N: usize>(value: Handle<Any, Capture>) -> Result<[u8; N], Error> {
-    let value = Handle::<Object<Blob>, Capture>::from_argument(value)?;
+impl Argument for fix::Value<crate::backend::Shell> {
+    fn from_argument(value: Handle<Any>) -> Result<Self, Error> {
+        Ok(Self::from_inner(value))
+    }
+}
+macro_rules! typed_argument {
+    ($($kind:ident),*) => {$(
+        impl Argument for fix::$kind<crate::backend::Shell> {
+            fn from_argument(value: Handle<Any>) -> Result<Self, Error> {
+                Self::try_from(fix::Value::from_inner(value)).map_err(Error::from)
+            }
+        }
+    )*};
+}
+typed_argument!(Blob, Tree, Object, Reference, Thunk, Encode);
+
+fn read_argument<const N: usize>(value: Handle<Any>) -> Result<[u8; N], Error> {
+    let value = Handle::<Object<Blob>>::from_argument(value)?;
     if value.len()? != N as u64 {
         return Err(Error::WrongType);
     }
@@ -25,7 +41,7 @@ fn read_argument<const N: usize>(value: Handle<Any, Capture>) -> Result<[u8; N],
 macro_rules! scalar_argument {
     ($($ty:ty),+ $(,)?) => {$ (
         impl Argument for $ty {
-            fn from_argument(value: Handle<Any, Capture>) -> Result<Self, Error> {
+            fn from_argument(value: Handle<Any>) -> Result<Self, Error> {
                 Ok(Self::from_le_bytes(read_argument(value)?))
             }
         }
@@ -33,7 +49,7 @@ macro_rules! scalar_argument {
 }
 scalar_argument!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl Argument for bool {
-    fn from_argument(value: Handle<Any, Capture>) -> Result<Self, Error> {
+    fn from_argument(value: Handle<Any>) -> Result<Self, Error> {
         match read_argument::<1>(value)? {
             [0] => Ok(false),
             [1] => Ok(true),
@@ -45,9 +61,9 @@ impl Argument for bool {
 /// Visits curried arguments in application order without evaluating them.
 pub fn visit_arguments(
     combination: &impl Value<Type = Object<Tree>>,
-    visit: &mut impl FnMut(Handle<Any, Capture>) -> Result<(), Error>,
+    visit: &mut impl FnMut(Handle<Any>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let function = Handle::<Object<Tree>, _>::try_from(combination.get(1).capture()?)?;
+    let function = Handle::<Object<Tree>>::try_from(combination.get(1).capture()?)?;
     if !function.is_tag()? {
         visit_arguments(&function, visit)?;
     }
@@ -57,11 +73,11 @@ pub fn visit_arguments(
     Ok(())
 }
 
-type CapturedArguments<const N: usize> = ([Handle<Any, Capture>; N], usize);
+type CapturedArguments<const N: usize> = ([Handle<Any>; N], usize);
 
 #[doc(hidden)]
 pub fn fixed_arguments<const N: usize>(
-    combination: &Handle<Object<Tree>, Focus>,
+    combination: &Handle<Object<Tree>>,
 ) -> Result<Option<CapturedArguments<N>>, Error> {
     let mut arguments = [const { None }; N];
     let mut count = 0;
@@ -77,9 +93,7 @@ pub fn fixed_arguments<const N: usize>(
 
 /// Flattens curried arguments without evaluating them.
 #[cfg(feature = "alloc")]
-pub fn arguments(
-    combination: &Handle<Object<Tree>, Focus>,
-) -> Result<Vec<Handle<Any, Capture>>, Error> {
+pub fn arguments(combination: &Handle<Object<Tree>>) -> Result<Vec<Handle<Any>>, Error> {
     let mut arguments = Vec::new();
     visit_arguments(combination, &mut |argument| {
         arguments.push(argument);
@@ -89,11 +103,12 @@ pub fn arguments(
 }
 
 #[doc(hidden)]
+#[cfg(feature = "alloc")]
 pub fn normalize_arguments(
-    combination: &Handle<Object<Tree>, Focus>,
-    arguments: &mut [Handle<Any, Capture>],
+    combination: &Handle<Object<Tree>>,
+    arguments: &mut [Handle<Any>],
     evaluations: &[Evaluation],
-) -> Result<Option<Handle<Any, Capture>>, Error> {
+) -> Result<Option<Handle<Any>>, Error> {
     let mut changed = false;
     for (argument, evaluation) in arguments.iter_mut().zip(evaluations) {
         if let Some(prepared) = normalize_argument(&*argument, *evaluation)? {
@@ -112,15 +127,13 @@ pub fn normalize_arguments(
 pub fn normalize_argument(
     value: &impl Value,
     evaluation: Evaluation,
-) -> Result<Option<Handle<Any, Capture>>, Error> {
-    let thunk = || Handle::<crate::Thunk, _>::try_from(value.capture()?);
+) -> Result<Option<Handle<Any>>, Error> {
+    let thunk = || Handle::<crate::Thunk>::try_from(value.capture()?);
     Ok(Some(match (evaluation, value.value_type()?) {
-        (Evaluation::Shallow, ValueType::Object) => {
-            Handle::<Object, _>::try_from(value.capture()?)?
-                .reference()
-                .erase()
-                .capture()?
-        }
+        (Evaluation::Shallow, ValueType::Object) => Handle::<Object>::try_from(value.capture()?)?
+            .reference()
+            .erase()
+            .capture()?,
         (Evaluation::Lazy, _) | (_, ValueType::Object) => return Ok(None),
         (_, ValueType::Encode) => value.capture()?,
         (Evaluation::Shallow, ValueType::Thunk) => thunk()?.shallow().erase().capture()?,
@@ -133,16 +146,17 @@ pub fn normalize_argument(
 }
 
 /// Replaces leading arguments while preserving the curried combination's frames.
+#[cfg(feature = "alloc")]
 pub fn reapply(
-    combination: &Handle<Object<Tree>, Focus>,
-    arguments: &[Handle<Any, Capture>],
-) -> Result<Handle<Any, Capture>, Error> {
+    combination: &Handle<Object<Tree>>,
+    arguments: &[Handle<Any>],
+) -> Result<Handle<Any>, Error> {
     fn rebuild(
         frame: &impl Value<Type = Object<Tree>>,
-        arguments: &[Handle<Any, Capture>],
+        arguments: &[Handle<Any>],
         offset: &mut usize,
-    ) -> Result<Handle<Any, Capture>, Error> {
-        let callee = Handle::<Object<Tree>, _>::try_from(frame.get(1).capture()?)?;
+    ) -> Result<Handle<Any>, Error> {
+        let callee = Handle::<Object<Tree>>::try_from(frame.get(1).capture()?)?;
         let function = if callee.is_tag()? {
             callee.erase().capture()?
         } else {
@@ -166,22 +180,23 @@ pub fn reapply(
         Tree::from_iter(fields).erase().capture()
     }
     let function = rebuild(combination, arguments, &mut 0)?;
-    Handle::<Object<Tree>, _>::try_from(function)?
+    Handle::<Object<Tree>>::try_from(function)?
         .application()
         .erase()
         .capture()
 }
 
 /// Constructs an SDK call; the function position is strict and arguments are lazy.
+#[cfg(feature = "alloc")]
 pub fn call(
     metadata: impl Value,
     function: impl Value,
     arguments: impl IntoIterator<Item: Value, IntoIter: Clone>,
-) -> Result<Handle<Any, Capture>, Error> {
+) -> Result<Handle<Any>, Error> {
     let function = function.erase().capture()?;
     let function = match function.value_type()? {
         ValueType::Object => function,
-        ValueType::Thunk => Handle::<crate::Thunk, _>::try_from(function)?
+        ValueType::Thunk => Handle::<crate::Thunk>::try_from(function)?
             .strict()
             .erase()
             .capture()?,
@@ -206,46 +221,59 @@ pub fn call(
 pub fn apply_remaining(
     metadata: impl Value,
     result: impl Value,
-    remaining: &[Handle<Any, Capture>],
-) -> Result<Handle<Any, Capture>, Error> {
-    let mut result = result.erase().capture()?;
+    remaining: &[Handle<Any>],
+) -> Result<Handle<Any>, Error> {
+    let mut result = result.erase();
     for argument in remaining {
-        result = call(&metadata, &result, [argument])?;
+        result = apply_one(&metadata, result, argument)?;
     }
     Ok(result)
 }
 
-/// Applies the arguments after the first `arity` to `result` in one application.
-#[doc(hidden)]
+fn apply_one(
+    metadata: impl Value,
+    function: impl Value,
+    argument: impl Value,
+) -> Result<Handle<Any>, Error> {
+    let function = function.erase();
+    let function = match function.value_type()? {
+        ValueType::Object => function,
+        ValueType::Thunk => function.strict().erase(),
+        ValueType::Ref => function.identification().strict().erase(),
+        ValueType::Encode if function.encode_type()? == crate::EncodeType::Strict => function,
+        ValueType::Encode => crate::tree![crate::tree![function], 0u64]
+            .selection()
+            .strict()
+            .erase(),
+    };
+    Ok(crate::tree![metadata, function, argument]
+        .application()
+        .erase())
+}
+
 pub fn apply_excess(
-    combination: &Handle<Object<Tree>, Focus>,
+    combination: &Handle<Object<Tree>>,
     result: impl Value,
     arity: usize,
-) -> Result<Handle<Any, Capture>, Error> {
+) -> Result<Handle<Any>, Error> {
+    let mut result = result.erase();
     let mut count = 0;
     visit_arguments(combination, &mut |_| {
         count += 1;
         Ok(())
     })?;
-    let failure = core::cell::Cell::new(None);
-    let arguments = (arity..count).filter_map(|index| {
-        argument(combination, index)
-            .map_err(|error| failure.set(Some(error)))
-            .ok()
-    });
-    let applied = call(combination.get(0), result, arguments)?;
-    match failure.take() {
-        Some(error) => Err(error),
-        None => Ok(applied),
+    for index in arity..count {
+        result = apply_one(combination.get(0), result, argument(combination, index)?)?;
     }
+    Ok(result)
 }
 
 /// The flattened argument at `index`, as `visit_arguments` would visit it.
 fn argument(
     combination: &impl Value<Type = Object<Tree>>,
     index: usize,
-) -> Result<Handle<Any, Capture>, Error> {
-    let function = Handle::<Object<Tree>, _>::try_from(combination.get(1).capture()?)?;
+) -> Result<Handle<Any>, Error> {
+    let function = Handle::<Object<Tree>>::try_from(combination.get(1).capture()?)?;
     let mut inner = 0;
     if !function.is_tag()? {
         visit_arguments(&function, &mut |_| {
@@ -260,7 +288,7 @@ fn argument(
 }
 
 /// Constructs the SDK's recoverable `Fix.error` effect.
-pub fn error(error: Error) -> Result<Handle<Any, Capture>, Error> {
+pub fn error(error: Error) -> Result<Handle<Any>, Error> {
     let message = match error {
         Error::GrowFailed => "GrowFailed",
         Error::OutOfBounds => "OutOfBounds",

@@ -1,10 +1,8 @@
 #![no_std]
-use fix::{Blob, Error, Handle, Object, Tree, Value};
+use fixwasm::{Blob, Error, Handle, Object, Tree, Value};
 
-#[fix::apply]
-fn apply(
-    combination: &Handle<Object<Tree>, fix::Focus>,
-) -> Result<impl Value<Type = Object<Blob>>, Error> {
+#[fixwasm::apply]
+fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value<Type = Object<Blob>>, Error> {
     if combination.len()? != 4 {
         return Err(Error::WrongType);
     }

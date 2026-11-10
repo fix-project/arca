@@ -10,13 +10,13 @@ exports_files(["defs.bzl"])
 
 cc_format(
     name = "format",
-    srcs = glob(["include/*.h", "src/*.c", "tests/*.c"]),
+    srcs = glob(["include/*.h", "tests/*.c"]),
     style = ".clang-format",
 )
 
 cc_lint_test(
     name = "c_lint_test",
-    srcs = glob(["src/*.c", "tests/*.c"]),
+    srcs = glob(["tests/*.c"]),
     hdrs = [":headers"],
     config = ".clang-tidy",
     copts = sdk_copts() + SDK_WARNINGS,
@@ -27,51 +27,6 @@ test_suite(name = "lint", tests = [":c_lint_test"])
 filegroup(
     name = "headers",
     srcs = glob(["include/*.h"]),
-)
-
-rust_library(
-    name = "types",
-    srcs = ["src/types.rs"],
-    crate_name = "fixtypes",
-)
-
-cc_object(
-    name = "rust_c",
-    src = "src/rust.c",
-    hdrs = [":headers"],
-    compiler = "@local_tools//:clang",
-    copts = sdk_copts() + SDK_WARNINGS,
-)
-
-wasm_library(
-    name = "rust_runtime",
-    srcs = [":rust_c"],
-    target_compatible_with = ["@platforms//cpu:wasm32"],
-)
-
-cc_object(
-    name = "reuse_c",
-    src = "tests/reuse.c",
-    hdrs = [":headers"],
-    compiler = "@local_tools//:clang",
-    copts = sdk_copts() + SDK_WARNINGS,
-)
-
-wasm_library(name = "reuse_runtime", srcs = [":reuse_c"])
-
-rust_shared_library(
-    name = "reuse_wasm",
-    srcs = ["tests/reuse.rs"],
-    platform = WASM,
-    deps = [":sdk"],
-    link_deps = [":reuse_runtime"],
-)
-
-fix_procedure(
-    name = "reuse_native",
-    wasm = ":reuse_wasm",
-    memories = 3,
-    tables = 3,
 )
 
 rust_shared_library(
@@ -87,37 +42,34 @@ rust_shared_library(
     platform = WASM,
     deps = [":sdk"],
 )
-fix_procedure(name = "attachments_native", wasm = ":attachments_wasm", memories = 5, tables = 5)
+fix_procedure(name = "attachments_native", wasm = ":attachments_wasm", memories = 5)
 
 rust_shared_library(
     name = "tagger_wasm",
     srcs = ["tests/tagger.rs"],
     platform = WASM,
-    deps = [":sdk"],
+    deps = [":sdk_alloc", "@crates//:dlmalloc"],
 )
 
 fix_procedure(
     name = "tagger_native",
     wasm = ":tagger_wasm",
     memories = 4,
-    tables = 3,
 )
 
 fix_procedure(
     name = "eval_native",
     wasm = ":eval_wasm",
     memories = 3,
-    tables = 3,
 )
 
 [
     rust_library(
         name = name,
         srcs = glob(["src/**/*.rs"]),
-        crate_name = "fix",
+        crate_name = "fixwasm",
         crate_features = features,
-        deps = [":types", "//fix/coupon"] + (["//fix/api"] if "alloc" in features else []) + (["//fix/importers/git"] if "git" in features else []),
-        link_deps = [":rust_runtime"],
+        deps = ["//fix/api:types", "//fix/coupon", "//fix/api:api_alloc" if "alloc" in features else "//fix/api"] + (["//fix/importers/git"] if "git" in features else []),
         proc_macro_deps = ["//tools/macros"],
         target_compatible_with = ["@platforms//cpu:wasm32"],
     )
@@ -128,7 +80,6 @@ fix_cc_wasm(
     name = "c_bindings_wasm",
     srcs = ["tests/bindings.c"],
     memories = 3,
-    tables = 4,
     copts = SDK_WARNINGS,
 )
 
@@ -145,7 +96,7 @@ rust_shared_library(
         name = name + "_native",
         wasm = ":" + name + "_wasm",
         memories = 3 if name == "rust_files" else None,
-        tables = 3 if name == "rust_files" else None,
+        tables = None,
     )
     for name in ["c_bindings", "rust_files"]
 ]
@@ -163,4 +114,21 @@ rust_shared_library(
     for name in ["c_bindings", "rust_files"]
 ]
 
-test_suite(name = "tests", tests = [":c_bindings_test", ":rust_files_test"])
+test_suite(name = "tests", tests = [":c_bindings_test", ":rust_files_test", ":interfaces_test"])
+
+rust_shared_library(
+    name = "interfaces_wasm",
+    srcs = ["tests/interfaces.rs"],
+    platform = WASM,
+    deps = [":sdk", "//fix/api"],
+)
+fix_procedure(name = "interfaces_native", wasm = ":interfaces_wasm", memories = 3)
+fix_script_test(
+    name = "interfaces_test",
+    script = "interfaces.fix",
+    data = [":interfaces_native", "tests/interfaces.fix"],
+    expected = "2a00000000000000",
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)

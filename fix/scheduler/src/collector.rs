@@ -1,8 +1,8 @@
 use crate::kernel::{self, Execution};
 use crate::shell::{Root, root};
 use alloc::vec::Vec;
-pub use fix::coupon::{Exchange, Statement};
-use fix::{Error, Tree, tree};
+pub use fixwasm::coupon::{Exchange, Statement};
+use fixwasm::{Error, Tree, tree};
 
 #[derive(Clone)]
 pub struct Witness {
@@ -46,7 +46,7 @@ impl Collector {
             rule as u64,
             lhs,
             rhs,
-            Tree::create(&witnesses)
+            Tree::from_iter(&witnesses)
         ])
     }
 }

@@ -1,7 +1,7 @@
-use crate::{Any, Blob, Capture, Error, Handle, Object, Tree, Value, tree};
+use crate::{Any, Blob, Error, Handle, Object, Tree, Value, tree};
 
-fn request(value: impl Value) -> Result<(u64, Handle<Any, Capture>), Error> {
-    let reply = Handle::<Object<Tree>, _>::try_from(value.effect()?)?;
+fn request(value: impl Value) -> Result<(u64, Handle<Any>), Error> {
+    let reply = Handle::<Object<Tree>>::try_from(value.effect()?)?;
     Ok((reply.get(0).read_u64()?, reply.get(1).capture()?))
 }
 
@@ -44,7 +44,7 @@ impl Stream {
         })
     }
 
-    pub fn receive(&self, length: usize) -> Result<Option<Handle<Any, Capture>>, Error> {
+    pub fn receive(&self, length: usize) -> Result<Option<Handle<Any>>, Error> {
         let (status, value) = request(tree![
             Blob::create(b"stream_receive"),
             self.0,
@@ -74,7 +74,7 @@ mod standard {
                 .receive(out.len().min(65536))
                 .map_err(io_error)?
                 .ok_or(io::ErrorKind::ConnectionReset)?;
-            let chunk = Handle::<Object<Blob>, _>::try_from(&chunk).map_err(io_error)?;
+            let chunk = Handle::<Object<Blob>>::try_from(&chunk).map_err(io_error)?;
             let length =
                 usize::try_from(chunk.len().map_err(io_error)?).map_err(io::Error::other)?;
             if length > out.len() {

@@ -1,25 +1,39 @@
 use super::test_program;
-use fix::{
+use fix::Memoization;
+use fixruntime::{
     Blob, Handle, Storage, Tree, api::Backend, arca::trust::Trust, repository::Repository,
     storage::repository::RepositoryStorage,
 };
-use fixapi::Memoization;
 use kernel::prelude::{Arc, Vec, format};
 
 #[kernel::test]
 fn backend_executes_with_the_configured_authorities() {
     let storage = Arc::new(RepositoryStorage::new(Repository::init(".fix").unwrap()));
-    let identity = test_program(&*storage, fix::stdlib::PRIMITIVES[0].1);
+    let identity = test_program(&*storage, fixruntime::stdlib::PRIMITIVES[0].1);
     let scheduler = test_program(&*storage, kernel::testing::fixture("FIX_SCHEDULER"));
     let collector = test_program(&*storage, kernel::testing::fixture("FIX_COLLECTOR"));
     let author = storage
-        .add_blob(fix::stdlib::PRIMITIVES[0].1)
+        .add_blob(fixruntime::stdlib::PRIMITIVES[0].1)
         .object()
         .into_ref();
     let author: Handle = storage.canonicalize(author.into()).unwrap().into();
     let mut trust = Trust::parse(&format!("{author}\n")).unwrap();
     trust.add_tagger(&*storage, collector).unwrap();
-    let backend = Backend::new(storage, trust, Memoization::Auto);
+    let backend = Arc::new(Backend::new(storage, trust, Memoization::Auto));
+    {
+        fixruntime::api::Shell::initialize(backend.clone(), scheduler, collector);
+        let child = {
+            let blob = fix::Blob::<fixruntime::api::Shell>::from(42u64);
+            assert_eq!(blob, blob.clone());
+            assert_eq!(fix::Blob::<fixruntime::api::Shell>::default().len(), 0);
+            let tree = fix::Tree::new(&[blob.clone().into()]);
+            assert_eq!(tree, tree.clone());
+            fix::Blob::try_from(tree.get(0).unwrap().unwrap()).unwrap()
+        };
+        let mut bytes = [0; 8];
+        child.read_exact(0, &mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 42);
+    }
     let argument = backend.blob(&[42; 64]);
     let combination = backend.tree(&[
         Blob::literal(b"").unwrap().into(),

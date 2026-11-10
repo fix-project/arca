@@ -1,0 +1,41 @@
+#[link(wasm_import_module = "fix")]
+unsafe extern "C" {
+    pub fn advise(value: u32, key: u32, key_length: u32, payload: u32, payload_length: u32);
+    pub fn coordinate(name: u32, name_length: u32, arguments: u32, status: u32) -> u32;
+    pub fn get_type(arg0: u32) -> u32;
+    pub fn close(arg0: u32);
+    pub fn create_blob(arg0: u32, arg1: u32) -> u32;
+    pub fn attach_blob(arg0: u32, arg1: u32) -> u32;
+    pub fn access_blob(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32;
+    pub fn detach_blob(arg0: u32, arg1: u32);
+    pub fn create_tree(arg0: u32, arg1: u32) -> u32;
+    pub fn access_tree(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32;
+    pub fn create_tag(arg0: u32) -> u32;
+    pub fn get_data_type(arg0: u32) -> u32;
+    pub fn create_ref(arg0: u32) -> u32;
+    pub fn len(arg0: u32) -> u64;
+    pub fn is_comparable(arg0: u32) -> u32;
+    pub fn equals(arg0: u32, arg1: u32) -> u32;
+    pub fn create_application_thunk(arg0: u32) -> u32;
+    pub fn create_identification_thunk(arg0: u32) -> u32;
+    pub fn create_selection_thunk(arg0: u32) -> u32;
+    pub fn create_strict_encode(arg0: u32) -> u32;
+    pub fn create_shallow_encode(arg0: u32) -> u32;
+    pub fn get_encode_type(arg0: u32) -> u32;
+    pub fn call_cc(arg0: u32) -> u32;
+    pub fn return_cc(arg0: u32) -> u32;
+    pub fn eval(arg0: u32) -> u32;
+    pub fn clone(arg0: u32) -> u32;
+    pub fn is_value(arg0: u32) -> u32;
+    pub fn is_tag(arg0: u32) -> u32;
+    pub fn get_thunk_type(arg0: u32) -> u32;
+    pub fn unsound_handle_bytes(arg0: u32) -> u32;
+    pub fn read_handle_bytes(arg0: u32, arg1: u32);
+    pub fn same_handle_bytes(arg0: u32, arg1: u32) -> u32;
+    pub fn create_tag_unchecked(arg0: u32) -> u32;
+    pub fn create_blob_i32(arg0: u32) -> u32;
+    pub fn create_blob_i64(arg0: u64) -> u32;
+    pub fn get_tree_element(arg0: u32, arg1: u32) -> u32;
+    pub fn attach_tree_bytes(arg0: u32, arg1: u32);
+    pub fn effect(arg0: u32) -> u32;
+}

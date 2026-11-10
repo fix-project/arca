@@ -1,44 +1,44 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::{format, rc::Rc, vec, vec::Vec};
-use fix::{Any, Blob, Cast, Error, Handle, Object, Thunk, Tree, Value, tree};
+use alloc::{format, vec, vec::Vec};
+use fixwasm::{Any, Blob, Error, Handle, Object, Thunk, Tree, Value, tree};
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-type Expression<'a> = Rc<dyn Value<Type = Any> + 'a>;
+type Expression = Handle<Any>;
 
 /// Wasm bytes per C translation unit when the request names no unit count.
 const UNIT_BYTES: u64 = 128 << 10;
 
-fn value<'a>(value: impl Value + 'a) -> Expression<'a> {
-    Rc::new(value.erase())
+fn value(value: impl Value) -> Expression {
+    value.erase()
 }
-fn text<'a>(text: &str) -> Expression<'a> {
+fn text(text: &str) -> Expression {
     value(Blob::create(text.as_bytes().to_vec()))
 }
-fn children<'a>(values: Vec<Expression<'a>>) -> Expression<'a> {
-    value(Tree::create(values))
+fn children(values: Vec<Expression>) -> Expression {
+    value(Tree::from_iter(values))
 }
-fn child(value: Expression<'_>, index: usize) -> Result<Expression<'_>, Error> {
-    value.with(index, |child| Ok(Rc::new(child) as Expression<'_>))
+fn child(value: Expression, index: usize) -> Result<Expression, Error> {
+    Ok(value.get(index))
 }
-fn application(arguments: Vec<Expression<'_>>) -> Expression<'_> {
-    value(Tree::create(arguments).application())
+fn application(arguments: Vec<Expression>) -> Expression {
+    value(Tree::from_iter(arguments).application())
 }
-fn strict(thunk: Expression<'_>) -> Result<Expression<'_>, Error> {
-    let thunk: Cast<Thunk, _> = thunk.try_into()?;
+fn strict(thunk: Expression) -> Result<Expression, Error> {
+    let thunk: Handle<Thunk> = thunk.try_into()?;
     Ok(value(thunk.strict()))
 }
-fn shallow(thunk: Expression<'_>) -> Result<Expression<'_>, Error> {
-    let thunk: Cast<Thunk, _> = thunk.try_into()?;
+fn shallow(thunk: Expression) -> Result<Expression, Error> {
+    let thunk: Handle<Thunk> = thunk.try_into()?;
     Ok(value(thunk.shallow()))
 }
-fn select(input: Expression<'_>, index: u64) -> Expression<'_> {
+fn select(input: Expression, index: u64) -> Expression {
     value(tree![input, index].selection())
 }
-fn stat(filetype: u8) -> Expression<'static> {
+fn stat(filetype: u8) -> Expression {
     value(tree![
         0u64,
         Blob::create([filetype]),
@@ -49,15 +49,15 @@ fn stat(filetype: u8) -> Expression<'static> {
         0u64
     ])
 }
-fn descriptor<'a>(name: &str, filetype: u8, contents: Expression<'a>) -> Expression<'a> {
+fn descriptor(name: &str, filetype: u8, contents: Expression) -> Expression {
     children(vec![text(name), stat(filetype), contents])
 }
-fn command<'a>(
-    executable: Expression<'a>,
-    arguments: Vec<Expression<'a>>,
-    toolchain: Expression<'a>,
-    directory: Expression<'a>,
-) -> Result<Expression<'a>, Error> {
+fn command(
+    executable: Expression,
+    arguments: Vec<Expression>,
+    toolchain: Expression,
+    directory: Expression,
+) -> Result<Expression, Error> {
     let stream = |name| value(tree![Blob::create(name), tree![], Blob::create(b"")]);
     let application = application(vec![
         text(""),
@@ -86,10 +86,10 @@ fn command<'a>(
         result,
     ]))
 }
-fn work(result: Expression<'_>) -> Result<Expression<'_>, Error> {
+fn work(result: Expression) -> Result<Expression, Error> {
     child(result, 0)
 }
-fn output<'a>(result: Expression<'a>, name: &str) -> Result<Expression<'a>, Error> {
+fn output(result: Expression, name: &str) -> Result<Expression, Error> {
     let files = child(work(result)?, 2)?;
     for index in 0..usize::try_from(files.len()?)? {
         let file = child(files.clone(), index)?;
@@ -99,7 +99,7 @@ fn output<'a>(result: Expression<'a>, name: &str) -> Result<Expression<'a>, Erro
     }
     Err(Error::OutOfBounds)
 }
-fn flags() -> Vec<Expression<'static>> {
+fn flags() -> Vec<Expression> {
     [
         "/toolchain/usr/bin/clang",
         "--target=x86_64-unknown-linux-gnu",
@@ -109,8 +109,6 @@ fn flags() -> Vec<Expression<'static>> {
         "-ffreestanding",
         "-nostdlib",
         "-nostdinc",
-        "-isystem",
-        "/toolchain/share/fix/c++",
         "-isystem",
         "/toolchain/usr/lib/clang/23/include",
         "-isystem",
@@ -132,31 +130,27 @@ fn flags() -> Vec<Expression<'static>> {
     .map(text)
     .collect()
 }
-fn authenticated<'a>(
-    tag: Expression<'a>,
-    author: &Expression<'_>,
-    claim: &str,
-) -> Result<Expression<'a>, Error> {
+fn authenticated(tag: Expression, author: &Expression, claim: &str) -> Result<Expression, Error> {
     assert!(tag.is_tag()? && tag.len()? == 3);
     assert!(child(tag.clone(), 2)?.equals(&text(claim))?);
     assert!(child(tag.clone(), 0)?.equals(author)?);
     child(tag, 1)
 }
 
-#[fix::apply]
-fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expression<'a>, Error> {
-    fix::advise(combination, fix::advice::CANONICALIZE, b"")?;
-    fix::advise(combination, fix::advice::TITLE, b"compile Wasm")?;
+#[fixwasm::apply]
+fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
+    fixwasm::advise(combination, fixwasm::advice::CANONICALIZE, b"")?;
+    fixwasm::advise(combination, fixwasm::advice::TITLE, b"compile Wasm")?;
     let closure = value(combination.get(1));
     let identity =
-        value(Cast::<Object<Any>, _>::try_from(child(child(closure.clone(), 1)?, 1)?)?.reference());
+        value(Handle::<Object<Any>>::try_from(child(child(closure.clone(), 1)?, 1)?)?.reference());
     let resources = authenticated(child(closure.clone(), 2)?, &identity, "Bootstrap")?;
     let wasm2c = child(resources.clone(), 0)?;
     let clang = child(resources.clone(), 1)?;
     let toolchain = child(resources, 2)?;
     let input = combination.get(2);
-    let (wasm, partitions, phase, results) = if input.value_type()? == fix::ValueType::Object
-        && input.data_type()? == fix::DataType::Blob
+    let (wasm, partitions, phase, results) = if input.value_type()? == fixwasm::ValueType::Object
+        && input.data_type()? == fixwasm::DataType::Blob
     {
         let partitions = match combination.len()? {
             3 => input.len()?.div_ceil(UNIT_BYTES).max(1),
@@ -178,9 +172,9 @@ fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expres
             child(state, 4)?,
         )
     };
-    fix::advise(
+    fixwasm::advise(
         combination,
-        fix::advice::PROGRESS,
+        fixwasm::advice::PROGRESS,
         match phase {
             0 => b"translate Wasm" as &[u8],
             1 => b"compile C",
@@ -191,7 +185,7 @@ fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expres
     )?;
     let partitions = usize::try_from(partitions).map_err(|_| Error::OutOfBounds)?;
     assert!(partitions > 0 && partitions < u32::MAX as usize);
-    let object_count = partitions.checked_add(2).ok_or(Error::OutOfBounds)?;
+    let object_count = partitions.checked_add(1).ok_or(Error::OutOfBounds)?;
     if phase > 0 {
         assert_eq!(
             results.len()?,
@@ -243,29 +237,14 @@ fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expres
             for index in 0..object_count {
                 let source = if index == partitions {
                     text("/toolchain/share/fix/wasm-rt.c")
-                } else if index == partitions + 1 {
-                    text("/toolchain/share/fix/cpp-support.cc")
                 } else if partitions == 1 {
                     text("/work/module.c")
                 } else {
                     text(&format!("/work/module_{index}.c"))
                 };
-                let mut arguments: Vec<Expression<'a>> = flags();
+                let mut arguments: Vec<Expression> = flags();
                 if index == partitions {
                     arguments.push(text("-O3"));
-                } else {
-                    arguments.extend(
-                        [
-                            "-x",
-                            "c++",
-                            "-std=c++20",
-                            "-fexceptions",
-                            "-funwind-tables",
-                            "-Wno-return-type-c-linkage",
-                        ]
-                        .into_iter()
-                        .map(text),
-                    );
                 }
                 arguments.extend([text("-c"), source, text("-o"), text("/work/object.o")]);
                 jobs.push(command(
@@ -279,7 +258,7 @@ fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expres
         }
         2 => {
             let mut files = Vec::new();
-            let mut arguments: Vec<Expression<'a>> = flags();
+            let mut arguments: Vec<Expression> = flags();
             arguments.extend(
                 [
                     "-fuse-ld=/toolchain/usr/bin/ld.lld",
@@ -300,17 +279,7 @@ fn apply<'a>(combination: &'a Handle<Object<Tree>, fix::Focus>) -> Result<Expres
                 ));
                 arguments.push(text(&format!("/work/object_{index}.o")));
             }
-            arguments.extend(
-                [
-                    "-Wl,--start-group",
-                    "/toolchain/share/fix/libc++abi.a",
-                    "/toolchain/share/fix/libunwind.a",
-                    "/toolchain/share/fix/libfixshell.a",
-                    "-Wl,--end-group",
-                ]
-                .into_iter()
-                .map(text),
-            );
+            arguments.extend(["/toolchain/share/fix/libfixshell.a"].into_iter().map(text));
             vec![command(
                 clang,
                 arguments,

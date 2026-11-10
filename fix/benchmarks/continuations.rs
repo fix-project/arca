@@ -6,10 +6,10 @@ use benchmark_guest::{batches, fixture, state_batch, timed};
 use core::hint::black_box;
 use core::sync::atomic::{Ordering, compiler_fence};
 use core::time::Duration;
-use fix::Handle;
-use fix::arca::EffectAction;
-use fix::storage::Storage;
 use fix_benchmark::{FixState, fix_program, number};
+use fixruntime::Handle;
+use fixruntime::arca::EffectAction;
+use fixruntime::storage::Storage;
 use kernel::prelude::*;
 
 struct Benchmark {
@@ -28,13 +28,14 @@ impl benchmark_guest::Benchmark for Benchmark {
         let size = self.size;
         assert!(iterations > 0);
         match operation {
-            Operation::FixKernelCaptureResume | Operation::FixKernelTableCaptureResume => {
+            Operation::FixKernelCaptureResume | Operation::FixKernelDescriptorCaptureResume => {
                 batches(iterations, 4096, |count| {
-                    let program = if matches!(operation, Operation::FixKernelTableCaptureResume) {
-                        fixture("TABLE_CONTINUATION")
-                    } else {
-                        fixture("CONTINUATION")
-                    };
+                    let program =
+                        if matches!(operation, Operation::FixKernelDescriptorCaptureResume) {
+                            fixture("DESCRIPTOR_CONTINUATION")
+                        } else {
+                            fixture("CONTINUATION")
+                        };
                     let state = FixState::new(program, size as u64, 0);
                     let mut start = 0;
                     let mut elapsed = Duration::ZERO;

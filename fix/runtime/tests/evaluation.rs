@@ -1,5 +1,5 @@
 use super::test_program;
-use fix::{
+use fixruntime::{
     Blob, Handle, Runtime, Storage, Thunk, Tree, arca::FixOnArca, stdlib, user_scheduler_driver,
 };
 use kernel::prelude::{Arc, format};
@@ -28,7 +28,7 @@ impl Evaluation {
             .object()
             .into_ref();
         let mut trust =
-            fix::arca::trust::Trust::parse(&format!("{}\n", compiler.as_handle())).unwrap();
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", compiler.as_handle())).unwrap();
         trust.add_tagger(runtime.storage(), collector).unwrap();
         Self {
             runtime: Arc::new(runtime.with_trust(trust)),

@@ -22,7 +22,6 @@ fix_procedure(
     visibility = ["//visibility:public"],
     artifact_visibility = ["//visibility:public"],
     memories = 3,
-    tables = 3,
     runnable = True,
     wasm = ":wasm",
 )

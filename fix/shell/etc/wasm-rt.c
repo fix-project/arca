@@ -1,49 +1,58 @@
 #include "wasm-rt.h"
+#include "fix-abi.h"
+#include "module.h"
 #include "wasm-rt-memory.h"
+
+struct w2c_fix;
+typedef void (*instantiate_empty)(w2c_module *);
+typedef void (*instantiate_fix)(w2c_module *, struct w2c_fix *);
+static void instantiate_without_context(instantiate_empty function,
+                                        w2c_module *module,
+                                        struct w2c_fix *fix) {
+  (void)fix;
+  function(module);
+}
+static void instantiate_with_context(instantiate_fix function,
+                                     w2c_module *module, struct w2c_fix *fix) {
+  function(module, fix);
+}
+size_t wasm_rt_module_size(void) { return sizeof(w2c_module); }
+size_t wasm_rt_module_alignment(void) { return _Alignof(w2c_module); }
+void wasm_rt_module_instantiate(w2c_module *module, struct w2c_fix *fix) {
+  _Generic(&wasm2c_module_instantiate,
+      instantiate_empty: instantiate_without_context,
+      instantiate_fix: instantiate_with_context)(&wasm2c_module_instantiate,
+                                                 module, fix);
+}
 
 float nearbyintf(float value) { return __builtin_nearbyintf(value); }
 
 double nearbyint(double value) { return __builtin_nearbyint(value); }
 
-extern void fix_cpp_init(void);
-void wasm_rt_init(void) { fix_cpp_init(); }
-
+void wasm_rt_init(void) {}
 bool wasm_rt_is_initialized(void) { return true; }
-
 void wasm_rt_free(void) {}
 
-wasm_rt_ref_stack wasm_rt_refs;
-
-void wasm_rt_ref_assign(wasm_rt_ref_value *destination,
-                        const wasm_rt_ref_value *source) {
-  _Static_assert(sizeof(wasm_rt_ref_value) == 32, "reference value width");
-  if (source) {
-    __asm__ volatile("movq 0(%1), %%r10\n\tmovq %%r10, 0(%0)\n\t"
-                     "movq 8(%1), %%r10\n\tmovq %%r10, 8(%0)\n\t"
-                     "movq 16(%1), %%r10\n\tmovq %%r10, 16(%0)\n\t"
-                     "movq 24(%1), %%r10\n\tmovq %%r10, 24(%0)\n\t"
-                     "xor %%r10d, %%r10d"
-                     :
-                     : "r"(destination), "r"(source)
-                     : "r10", "memory", "cc");
-  } else {
-    __asm__ volatile("movq $0, 0(%0)\n\tmovq $0, 8(%0)\n\t"
-                     "movq $0, 16(%0)\n\tmovq $0, 24(%0)"
-                     :
-                     : "r"(destination)
-                     : "memory");
-  }
+#include "wasm-rt-exceptions.h"
+static WASM_RT_UNWIND_TARGET *unwind_target;
+static wasm_rt_exnref_t exception;
+void wasm_rt_load_exception(wasm_rt_tag_t tag, uint32_t size,
+                            const void *values) {
+  if (size > WASM_EXN_MAX_SIZE)
+    wasm_rt_trap(WASM_RT_TRAP_UNCAUGHT_EXCEPTION);
+  exception.tag = tag;
+  exception.size = size;
+  memcpy(exception.data, values, size);
 }
-
-wasm_rt_ref_value *wasm_rt_ref_reserve(size_t count) {
-  wasm_rt_ref_value *frame = wasm_rt_refs.top;
-  if (count > (size_t)(wasm_rt_refs.limit - frame))
-    wasm_rt_ref_overflow();
-  wasm_rt_ref_value *end = frame + count;
-  if (end > wasm_rt_refs.mapped)
-    wasm_rt_ref_grow(frame, end);
-  wasm_rt_refs.top = end;
-  extern void fix_cpp_mark(wasm_rt_ref_value *, size_t);
-  fix_cpp_mark(frame, count);
-  return frame;
+void wasm_rt_throw(void) {
+  if (!unwind_target)
+    wasm_rt_trap(WASM_RT_TRAP_UNCAUGHT_EXCEPTION);
+  __builtin_longjmp((void **)*unwind_target, 1);
 }
+WASM_RT_UNWIND_TARGET *wasm_rt_get_unwind_target(void) { return unwind_target; }
+void wasm_rt_set_unwind_target(WASM_RT_UNWIND_TARGET *target) {
+  unwind_target = target;
+}
+wasm_rt_tag_t wasm_rt_exception_tag(void) { return exception.tag; }
+uint32_t wasm_rt_exception_size(void) { return exception.size; }
+void *wasm_rt_exception(void) { return exception.data; }

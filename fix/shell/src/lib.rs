@@ -19,15 +19,15 @@ use user::{error, os, prelude::*};
 
 use crate::{
     fixpoint::w2c_fix,
-    rt::{wasm_rt_externref_t, wasm_rt_init, wasm_rt_module_alignment, wasm_rt_module_size},
+    rt::{wasm_rt_init, wasm_rt_module_alignment, wasm_rt_module_size},
 };
 
+mod abi;
 mod continuation;
-mod cpp;
+mod descriptors;
 mod fixpoint;
 mod handles;
 mod locals;
-mod references;
 mod rt;
 pub mod shell;
 
@@ -56,13 +56,9 @@ bail:
 unsafe extern "C" {
     static mut _sbss: c_void;
     static mut _ebss: c_void;
-    fn wasm2c_module_instantiate(module: *mut c_void, combination: *const w2c_fix);
+    fn wasm_rt_module_instantiate(module: *mut c_void, combination: *const w2c_fix);
     fn wasm2c_module_free(module: *mut c_void);
-    fn w2c_module_0x5Ffix_apply(
-        module: *const c_void,
-        result: wasm_rt_externref_t,
-        combination: wasm_rt_externref_t,
-    );
+    fn w2c_module_0x5Ffix_apply(module: *const c_void, combination: u32) -> u32;
 }
 
 /// The Rust entrypoint for Fix-on-Arca programs.  This function performs the minimal runtime setup
@@ -100,7 +96,7 @@ pub fn main() -> ! {
     );
     let handle = continuation::read_reply(os::argument());
     let result = unsafe {
-        references::init();
+        let argument = descriptors::initialize(handle);
         wasm_rt_init();
         let layout =
             Layout::from_size_align(wasm_rt_module_size(), wasm_rt_module_alignment()).unwrap();
@@ -109,11 +105,10 @@ pub fn main() -> ! {
             handle_alloc_error(layout);
         }
 
-        wasm2c_module_instantiate(module, core::ptr::null());
+        wasm_rt_module_instantiate(module, core::ptr::null());
 
-        let result = references::wasm_rt_ref_reserve(1);
-        w2c_module_0x5Ffix_apply(module, result, handle);
-        result
+        let result = w2c_module_0x5Ffix_apply(module, argument);
+        descriptors::address(result)
     };
     continuation::finish(result);
 }

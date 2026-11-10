@@ -4,13 +4,6 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use fix::{
-    Error, Tree, Value, ValueType,
-    coupon::{Exchange, Statement},
-    map::Map,
-    tree,
-};
-use fix::{Handle, Object, ThunkType};
 use fixscheduler::shell;
 use fixscheduler::{
     collector::{Collector, Witness},
@@ -18,26 +11,33 @@ use fixscheduler::{
     shell::{Root, as_tree, child, fields, root},
     storage,
 };
+use fixwasm::{
+    Error, Tree, Value, ValueType,
+    coupon::{Exchange, Statement},
+    map::Map,
+    tree,
+};
+use fixwasm::{Handle, Object, ThunkType};
 
 #[global_allocator]
 static ALLOCATOR: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-#[fix::apply]
-fn apply(combination: &Handle<Object<Tree>, fix::Focus>) -> Result<impl Value, Error> {
+#[fixwasm::apply]
+fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
     if kernel::worker::id()? != 0 {
         return wait();
     }
     assert_eq!(combination.len()?, 4);
     let mode = combination.get(0);
     let input = root(combination.get(3))?;
-    if mode.equals(fix::Blob::create(b"todo"))? {
+    if mode.equals(fixwasm::Blob::create(b"todo"))? {
         let result = todo(&input)?;
         kernel::worker::finish(&result)?;
         return Ok(result);
     }
-    let statement = if mode.equals(fix::Blob::create(b"eval"))? {
+    let statement = if mode.equals(fixwasm::Blob::create(b"eval"))? {
         Statement::Eval
-    } else if mode.equals(fix::Blob::create(b"think"))? {
+    } else if mode.equals(fixwasm::Blob::create(b"think"))? {
         Statement::Think
     } else {
         return Err(Error::WrongType);
@@ -242,7 +242,7 @@ impl Scheduler {
                     advice,
                     continuation,
                 } => {
-                    if advice.key_is(fix::advice::CANONICALIZE)? {
+                    if advice.key_is(fixwasm::advice::CANONICALIZE)? {
                         let target = if matches!(
                             advice.target.value_type()?,
                             ValueType::Thunk | ValueType::Ref
@@ -353,14 +353,14 @@ fn wait() -> Result<Root, Error> {
 fn todo(input: &Root) -> Result<Root, Error> {
     let action = child(input, 0)?;
     let value = child(input, 1)?;
-    if action.equals(fix::Blob::create(b"import"))? {
+    if action.equals(fixwasm::Blob::create(b"import"))? {
         match storage::import_source(&value)? {
             Some(value) => root(tree![0u64, value]),
-            None => root(tree![1u64, fix::Blob::create(b"could not import URI")]),
+            None => root(tree![1u64, fixwasm::Blob::create(b"could not import URI")]),
         }
-    } else if action.equals(fix::Blob::create(b"add"))? {
+    } else if action.equals(fixwasm::Blob::create(b"add"))? {
         storage::add_sources(&value, &fields(&child(input, 2)?)?)
-    } else if action.equals(fix::Blob::create(b"list"))? {
+    } else if action.equals(fixwasm::Blob::create(b"list"))? {
         storage::sources(&value)
     } else {
         Err(Error::WrongType)

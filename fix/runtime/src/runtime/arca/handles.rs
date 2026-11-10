@@ -18,9 +18,9 @@ pub(super) fn read_backing(backing: &ImmutableBytes, index: usize) -> Handle {
 
 pub(super) fn reference(bytes: &[u8; 8]) -> usize {
     let address = u64::from_le_bytes(*bytes) as usize;
-    assert!(address == 0 || (HANDLE_BASE..HANDLE_END).contains(&address));
+    assert!((HANDLE_BASE..HANDLE_END).contains(&address));
     assert!(address.is_multiple_of(HANDLE_SIZE));
-    if address == 0 { HANDLE_BASE } else { address }
+    address
 }
 
 pub(super) fn read(function: &mut Function, address: usize, bytes: &mut [u8]) -> usize {
@@ -50,11 +50,7 @@ pub(super) fn insert(function: &mut Function, address: usize, handle: Handle) ->
         (Entry::RWPage(page), ())
     });
     assert!(result.is_ok());
-    if handle.same_encoding(&Blob::literal(b"").unwrap().into()) {
-        0
-    } else {
-        address
-    }
+    address
 }
 
 pub(super) fn map_backing(

@@ -1,5 +1,8 @@
 extern crate alloc;
 
+pub mod shell;
+pub use shell::{Error as ShellError, Shell};
+
 use crate::{
     handle::*,
     repository::{Repository, RepositoryError},
@@ -12,7 +15,7 @@ use crate::{
 };
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use bytes::Buf;
-use fixapi::Memoization;
+use fix::Memoization;
 
 pub type Result<T> = core::result::Result<T, String>;
 

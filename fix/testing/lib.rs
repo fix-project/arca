@@ -2,7 +2,9 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use fix::{Encode, EncodeView, Handle, HandleView, ObjectView, Runtime, Thunk, ThunkView, Tree};
+use fixruntime::{
+    Encode, EncodeView, Handle, HandleView, ObjectView, Runtime, Thunk, ThunkView, Tree,
+};
 
 fn apply(runtime: &impl Runtime, combination: Tree) -> Handle {
     let coupon = runtime

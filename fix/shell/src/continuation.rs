@@ -182,82 +182,6 @@ impl<'a> Request<'a> {
     }
 }
 
-static mut USED: usize = 2 * fixhandle::HANDLE_SIZE;
-const SCRATCH: usize = crate::references::BASE - 4096;
-
-pub fn reserve(bytes: usize, alignment: usize) -> usize {
-    unsafe {
-        let offset = USED.next_multiple_of(alignment);
-        USED = offset.checked_add(bytes).expect("handle region overflow");
-        assert!(
-            USED <= crate::references::BASE - HANDLE_BASE - 4096,
-            "handle region exhausted"
-        );
-        HANDLE_BASE + offset
-    }
-}
-
-pub fn invalidate_externrefs(keep: Reference) -> Reference {
-    use crate::rt;
-    let mut roots = alloc::vec![keep];
-    unsafe {
-        for index in 0..rt::MEMORY_IDX {
-            if rt::MEMORY_ATTACHED[index] {
-                roots.push(rt::MEMORY_HANDLES[index]);
-            }
-        }
-        for index in 0..rt::TABLE_IDX {
-            if rt::TABLE_ATTACHED[index] {
-                roots.push(rt::TABLE_HANDLES[index]);
-            }
-        }
-    }
-    crate::locals::retain(&roots);
-    assert!(roots.len() * fixhandle::HANDLE_SIZE <= 4096);
-    unsafe {
-        rt::map_region(SCRATCH as *mut u8, 4096, arcane::__MODE_read_write)
-            .expect("root allocation failed");
-        for (index, root) in roots.iter().enumerate() {
-            handles::copy_handle(handles::address(*root), SCRATCH + index * 32, 0);
-        }
-        rt::map_region(
-            HANDLE_BASE as *mut u8,
-            USED.next_multiple_of(4096),
-            arcane::__MODE_none,
-        )
-        .expect("arena unmap failed");
-        USED = fixhandle::HANDLE_SIZE;
-        rt::map_region(HANDLE_BASE as *mut u8, 4096, arcane::__MODE_read_write)
-            .expect("arena allocation failed");
-        for (index, root) in roots.iter_mut().enumerate() {
-            let cell = handles::allocate();
-            handles::copy_handle(SCRATCH + index * 32, cell, 0);
-            *root = handles::from_cell(cell);
-        }
-        rt::map_region(SCRATCH as *mut u8, 4096, arcane::__MODE_none).expect("root unmap failed");
-        let mut next = 1;
-        for index in 0..rt::MEMORY_IDX {
-            rt::MEMORY_HANDLES[index] = if rt::MEMORY_ATTACHED[index] {
-                let root = roots[next];
-                next += 1;
-                root
-            } else {
-                core::ptr::null_mut()
-            };
-        }
-        for index in 0..rt::TABLE_IDX {
-            rt::TABLE_HANDLES[index] = if rt::TABLE_ATTACHED[index] {
-                let root = roots[next];
-                next += 1;
-                root
-            } else {
-                core::ptr::null_mut()
-            };
-        }
-    }
-    roots[0]
-}
-
 pub fn receive(destination: Reference, function: Request<'_>) {
     let address = handles::address(destination);
     let result = function
@@ -285,7 +209,7 @@ pub fn transfer(destination: Reference, name: &'static str, value: Reference) {
         crate::locals::lift_all();
         crate::shell::clear_privilege_cache();
         operation("capture")
-            .word(unsafe { USED } as u64)
+            .word((crate::descriptors::range().1 * fixhandle::HANDLE_SIZE) as u64)
             .argument(attachments())
             .call_with_current_continuation()
     } else {
@@ -303,18 +227,11 @@ pub fn advise(value: Reference, key: &[u8], payload: &[u8]) {
         .call_with_current_continuation();
 }
 
-pub fn coordinate(destination: Reference, name: &[u8], table: u32, count: u32) -> u64 {
-    assert!(!unsafe { crate::rt::TABLE_ATTACHED[table as usize] });
-    let table = unsafe { &*crate::rt::externref_table(table) };
-    assert!(count <= table.size);
-    let data = table.data as usize;
-    crate::locals::lift_table(data, count as usize);
-    let bytes = unsafe {
-        core::slice::from_raw_parts(data as *const u8, count as usize * fixhandle::HANDLE_SIZE)
-    };
+pub fn coordinate(destination: Reference, name: &[u8], arguments: Reference) -> u64 {
+    crate::locals::lift(&[arguments]);
     let reply = operation("coordinate")
         .blob(name)
-        .blob(bytes)
+        .blob(&handles::bytes(arguments))
         .word(handles::address(destination) as u64)
         .call_with_current_continuation();
     let reply: Word<Runtime> = reply.try_into().expect("coordination returned no status");
@@ -331,44 +248,23 @@ pub fn finish(value: Reference) -> ! {
 
 fn attachments() -> Argument {
     use Argument::{Blob, Tuple, Value, Word};
-    let (base, length) = crate::references::range();
-    let mut entries = alloc::vec![Tuple(alloc::vec![
-        Word(base as u64),
-        Value(arca::Null::<Runtime>::new().into()),
-        Word(crate::references::mapped() as u64),
-        Word((length * fixhandle::HANDLE_SIZE) as u64),
-        Word(1),
-    ])];
+    let mut entries = alloc::vec::Vec::new();
     unsafe {
         for index in 0..crate::rt::MEMORY_IDX {
             if crate::rt::MEMORY_ATTACHED[index] {
                 entries.push(Tuple(alloc::vec![
                     Word((index * SLOT_SIZE) as u64),
-                    Blob(handles::bytes(crate::rt::MEMORY_HANDLES[index]).to_vec()),
+                    Blob(
+                        handles::bytes(crate::descriptors::address(
+                            crate::rt::MEMORY_HANDLES[index].unwrap()
+                        ))
+                        .to_vec()
+                    ),
                     Word((*crate::rt::MEMORIES[index]).size),
                     Word(0),
                     Word(0),
                 ]));
             }
-        }
-        for index in 0..crate::rt::TABLE_IDX {
-            if crate::rt::TABLES[index].is_null() {
-                continue;
-            }
-            let table = &*crate::rt::TABLES[index];
-            let attached = crate::rt::TABLE_ATTACHED[index];
-            let backing = if attached {
-                Blob(handles::bytes(crate::rt::TABLE_HANDLES[index]).to_vec())
-            } else {
-                Value(arca::Null::<Runtime>::new().into())
-            };
-            entries.push(Tuple(alloc::vec![
-                Word(((crate::rt::NUM_MEMORIES + index) * SLOT_SIZE) as u64),
-                backing,
-                Word(table.memory_size as u64),
-                Word(table.size as u64 * fixhandle::HANDLE_SIZE as u64),
-                Word((!attached) as u64),
-            ]));
         }
     }
     Tuple(entries)

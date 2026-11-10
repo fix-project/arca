@@ -2,7 +2,7 @@ use super::*;
 use crate::Tree;
 use alloc::string::String;
 
-pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any>>, Error> {
     if !uri
         .split_once(':')
         .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("file"))
@@ -10,15 +10,15 @@ pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error
         return Ok(None);
     }
     let reply = tree![Blob::create(b"uri_read_directory"), Blob::create(uri)].effect()?;
-    let reply = Handle::<Object<Tree>, _>::try_from(reply)?;
+    let reply = Handle::<Object<Tree>>::try_from(reply)?;
     if reply.get(0).read_u64()? != 0 {
         return Ok(None);
     }
-    let entries = Handle::<Object<Tree>, _>::try_from(reply.get(1).capture()?)?;
+    let entries = Handle::<Object<Tree>>::try_from(reply.get(1).capture()?)?;
     let mut named = Vec::new();
     for entry in entries.iter()? {
-        let entry = Handle::<Object<Tree>, _>::try_from(entry)?;
-        let name = Handle::<Object<Blob>, _>::try_from(entry.get(0).capture()?)?.read()?;
+        let entry = Handle::<Object<Tree>>::try_from(entry)?;
+        let name = Handle::<Object<Blob>>::try_from(entry.get(0).capture()?)?.read()?;
         if name == b".fix" {
             continue;
         }
@@ -48,7 +48,7 @@ pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error
         };
         children.push(descriptor(&name, kind, contents.len()?, contents)?);
     }
-    Ok(Some(Tree::create(children).capture()?))
+    Ok(Some(Tree::from_iter(children).capture()?))
 }
 
 fn child_uri(parent: &str, name: &[u8]) -> String {

@@ -5,10 +5,10 @@ use benchmark_cases::Operation;
 use benchmark_guest::{batches, fixture, timed};
 use core::hint::black_box;
 use core::time::Duration;
-use fix::Tree as FixTree;
-use fix::runtime::Runtime as _;
-use fix::storage::Storage;
 use fix_benchmark::{FixState, number};
+use fixruntime::Tree as FixTree;
+use fixruntime::runtime::Runtime as _;
+use fixruntime::storage::Storage;
 use kernel::prelude::*;
 
 struct Benchmark {

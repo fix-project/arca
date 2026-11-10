@@ -22,7 +22,7 @@ fn fetch(uri: &str) -> Result<Option<(Repository, GitObject)>, Error> {
     Ok(Some((repository, object)))
 }
 
-pub(super) fn blob(uri: &str, limit: usize) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub(super) fn blob(uri: &str, limit: usize) -> Result<Option<Handle<Any>>, Error> {
     let Some((_, object)) = fetch(uri)? else {
         return Ok(None);
     };
@@ -32,7 +32,7 @@ pub(super) fn blob(uri: &str, limit: usize) -> Result<Option<Handle<Any, Capture
     Ok(Some(Blob::create(object.data).capture()?))
 }
 
-pub(super) fn object(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub(super) fn object(uri: &str) -> Result<Option<Handle<Any>>, Error> {
     let Some((repository, object)) = fetch(uri)? else {
         return Ok(None);
     };
@@ -43,7 +43,7 @@ pub(super) fn object(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
     }
 }
 
-pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub(super) fn directory(uri: &str) -> Result<Option<Handle<Any>>, Error> {
     let Some((repository, object)) = fetch(uri)? else {
         return Ok(None);
     };
@@ -54,7 +54,7 @@ fn directory_contents(
     repository: &Repository,
     object: &GitObject,
     ancestors: &mut Vec<gix_hash::ObjectId>,
-) -> Result<Option<Handle<Any, Capture>>, Error> {
+) -> Result<Option<Handle<Any>>, Error> {
     if object.kind != gix_object::Kind::Tree {
         return Ok(None);
     }

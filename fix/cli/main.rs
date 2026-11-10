@@ -1,8 +1,11 @@
 mod repl;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use fixapi::Fix;
-use fixcli::{Client, Memoization, Options, Value, commands, expressions::Expressions};
+use fix::Thunk;
+use fixcli::{
+    Memoization, Options, Shell as Client, commands,
+    expressions::{Expressions, Value},
+};
 use std::{
     env,
     io::Write,
@@ -264,11 +267,14 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             let mut expressions = Expressions::new(&mut client, bindings);
             let input = one(&mut expressions, expression)?;
             let value = match command {
-                Command::Eval { .. } => client.eval(&input)?,
+                Command::Eval { .. } => input.eval()?,
                 Command::Think { .. } => client.think(&input)?,
                 Command::Compile { units, .. } => {
-                    let input = if client.value_type(&input)? == fixapi::ValueType::Thunk {
-                        client.strict(&input)?
+                    let input = if input.value_type() == fix::ValueType::Thunk {
+                        Thunk::try_from(input)
+                            .map_err(fixcli::Error::from)?
+                            .strict()
+                            .into_value()
                     } else {
                         input
                     };
@@ -316,7 +322,7 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 expressions.parse_script(Path::new(file))?
             };
             let value = match command {
-                Command::Run { .. } => client.eval(&parsed)?,
+                Command::Run { .. } => parsed.eval()?,
                 _ => parsed,
             };
             global.finish(&mut client, &value)

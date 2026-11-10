@@ -90,7 +90,7 @@ fn report(
 ) -> Result<(u8, String), CliError> {
     let (value, status) = match outcome {
         Ok(value) => (value, 0),
-        Err(request) => (request.into(), fixapi::FIX_ERROR_STATUS),
+        Err(request) => (request.into(), fix::FIX_ERROR_STATUS),
     };
     let value = backend.save(value)?;
     Ok((status, format!("{value}\n")))
@@ -125,7 +125,7 @@ fn execute(
     };
     let mut arguments = arguments[1..].to_vec();
     let repository = Repository::discover(".")?;
-    let mut memoize = fixapi::Memoization::Auto;
+    let mut memoize = fix::Memoization::Auto;
     if let Some(index) = arguments.iter().position(|arg| arg == "--memoize") {
         memoize = arguments
             .get(index + 1)

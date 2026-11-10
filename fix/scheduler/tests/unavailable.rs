@@ -1,8 +1,8 @@
 #![no_std]
-use fix::{Blob, Capture, Error, Handle, Ref, Value};
+use fixwasm::{Blob, Error, Handle, Ref, Value};
 
-#[fix::main]
-pub fn apply(value: Handle<Ref<Blob>, Capture>) -> Result<impl Value, Error> {
-    fix::advise(&value, fix::advice::CANONICALIZE, b"")?;
+#[fixwasm::main]
+pub fn apply(value: Handle<Ref<Blob>>) -> Result<impl Value, Error> {
+    fixwasm::advise(&value, fixwasm::advice::CANONICALIZE, b"")?;
     Ok(Blob::create(b"ok"))
 }

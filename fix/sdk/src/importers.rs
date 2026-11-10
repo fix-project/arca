@@ -1,6 +1,6 @@
 use crate::files::{self, Stat};
 use crate::stream::Stream;
-use crate::{Any, Blob, Capture, Error, Handle, Object, Value, tree};
+use crate::{Any, Blob, Error, Handle, Object, Value, tree};
 use alloc::vec::Vec;
 
 #[cfg(feature = "git")]
@@ -9,7 +9,7 @@ mod git;
 mod filesystem;
 
 /// Fetches file bytes or a directory's child descriptors.
-pub fn fetch(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub fn fetch(uri: &str) -> Result<Option<Handle<Any>>, Error> {
     #[cfg(feature = "git")]
     if is_git(uri) {
         return git::object(uri);
@@ -21,7 +21,7 @@ pub fn fetch(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
 }
 
 /// Imports a directory as a Tree of normalized child descriptors.
-pub fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub fn directory(uri: &str) -> Result<Option<Handle<Any>>, Error> {
     #[cfg(feature = "git")]
     if is_git(uri) {
         return git::directory(uri);
@@ -30,7 +30,7 @@ pub fn directory(uri: &str) -> Result<Option<Handle<Any, Capture>>, Error> {
 }
 
 /// Fetches a Blob, returning None if unavailable or larger than the limit.
-pub fn blob(uri: &str, limit: usize) -> Result<Option<Handle<Any, Capture>>, Error> {
+pub fn blob(uri: &str, limit: usize) -> Result<Option<Handle<Any>>, Error> {
     #[cfg(feature = "git")]
     if is_git(uri) {
         return git::blob(uri, limit);
@@ -49,7 +49,7 @@ fn is_git(uri: &str) -> bool {
         .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("git"))
 }
 
-fn read_blob(stream: &Stream, limit: usize) -> Result<Option<Handle<Any, Capture>>, Error> {
+fn read_blob(stream: &Stream, limit: usize) -> Result<Option<Handle<Any>>, Error> {
     let mut contents = Vec::new();
     loop {
         let length = limit
@@ -59,7 +59,7 @@ fn read_blob(stream: &Stream, limit: usize) -> Result<Option<Handle<Any, Capture
         let Some(chunk) = stream.receive(length)? else {
             return Ok(None);
         };
-        let chunk = Handle::<Object<Blob>, _>::try_from(&chunk)?;
+        let chunk = Handle::<Object<Blob>>::try_from(&chunk)?;
         let length = usize::try_from(chunk.len()?)?;
         if length == 0 {
             return Ok(Some(Blob::create(contents).capture()?));
@@ -78,7 +78,7 @@ fn descriptor(
     filetype: u8,
     size: u64,
     data: impl Value,
-) -> Result<Handle<Any, Capture>, Error> {
+) -> Result<Handle<Any>, Error> {
     let stat = Stat {
         filetype,
         nlink: 1,

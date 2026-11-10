@@ -1,4 +1,0 @@
-program = $program
-compiled = *#("" @label("compile") @file("cpp_transfers_wasm.wasm") 2u64)
-result = *#("" program)
-*#("" $check_result_native (result compiled) (42u64 program))
