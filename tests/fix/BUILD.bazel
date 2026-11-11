@@ -223,8 +223,10 @@ rust_test(
     srcs = ["cli.rs"],
     edition = "2024",
     deps = ["//fix/handle", "//fix/repository"],
-    data = ["//programs/fix/parser:parser_elf", "//fix/scheduler:unavailable_advisor", "//fix/scheduler:serial", "//fix/scheduler:advisor", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
+    data = ["//programs/fix:fib_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf", "//fix/scheduler:unavailable_advisor", "//fix/scheduler:serial", "//fix/scheduler:advisor", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
     rustc_env = {
+        "FIX_FIB": "$(rootpath //programs/fix:fib_elf)",
+        "FIX_ADD": "$(rootpath //programs/fix:addblob_elf)",
         "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
         "FIX_CLI": "$(rootpath //fix/cli:fix)",
         "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",

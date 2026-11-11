@@ -19,13 +19,13 @@ Each launcher uses a temporary seeded repository and compiles its Wasm through
 the Fix compiler. It prints the canonical result handle and removes the temporary
 repository on exit. Relative file arguments resolve from the calling directory.
 
-Arguments are Fix expressions. To pass another program, compile its Wasm as an
-argument:
+Arguments are Fix expressions. Fibonacci bundles its addition dependency:
 
 ```sh
-bazel build //programs/fix/wat:add_wasm
-bazel run //programs/fix:fib -- 8u64 '*#("" @label("compile") @file("bazel-bin/programs/fix/wat/add_wasm.wasm"))'
+bazel run //programs/fix:fib -- 8u64
 ```
+
+This recursively computes Fibonacci and returns the handle for `34`.
 
 `_elf` targets build native ELF artifacts.
 

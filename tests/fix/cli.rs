@@ -1622,3 +1622,28 @@ fn repl_evaluates_expressions_imports_and_recovers_from_errors() {
     );
     assert_eq!(text(output), expected.join("\n"));
 }
+
+#[test]
+fn eval_encode_executes_recursive_applications_and_identification_thunks() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("eval_encode");
+    std::fs::create_dir(&directory).unwrap();
+    seed(
+        &directory,
+        &[
+            ("fix-parser", env!("FIX_PARSER")),
+            ("fib", env!("FIX_FIB")),
+            ("add", env!("FIX_ADD")),
+        ],
+    );
+    let expression = "#(\"\" @label(\"fib\") 8u64 @label(\"add\"))";
+    let thunk = value(&directory, &["eval", expression]);
+    assert_eq!(value(&directory, &["get-type", &thunk]), "thunk");
+    let result = value(&directory, &["eval", "--encode", expression]);
+    assert_eq!(value(&directory, &["read-blob", "--u64", &result]), "34");
+    let blob = value(&directory, &["create-blob", "--string", "identified"]);
+    let reference = value(&directory, &["create-ref", &blob]);
+    let identification = value(&directory, &["create-identification-thunk", &reference]);
+    let expression = format!("@handle(\"{identification}\")");
+    assert_eq!(value(&directory, &["eval", "--encode", &expression]), blob);
+    run(&directory, &["eval", "--encode", "42u64"], b"", 2);
+}

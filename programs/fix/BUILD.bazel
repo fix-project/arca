@@ -14,7 +14,7 @@ fix_rust_program(name = "compile", alloc = True, artifact_visibility = ["//visib
 alias(name = "compile_module", actual = ":compile_postprocess", visibility = ["//bootstrap:__pkg__"])
 alias(name = "scheduler_module", actual = ":scheduler_postprocess", visibility = ["//bootstrap:__pkg__"])
 fix_rust_program(name = "mapreduce")
-fix_rust_program(name = "fib")
+fix_rust_program(name = "fib", argument_modules = [":addblob_wasm"])
 alias(name = "fib_module", actual = ":fib_postprocess", visibility = ["//tests:__pkg__"])
 fix_rust_program(name = "count_words", alloc = True)
 fix_rust_program(name = "bptree_get", alloc = True)
@@ -51,7 +51,6 @@ rust_test(
         ":addblob",
         "//programs/fix/wat:blob",
         "//programs/fix/wat:add",
-        "//programs/fix/wat:add_wasm",
         "//programs/fix/c:blob",
         "//programs/fix/c:add",
         "//programs/fix/rust:blob",
@@ -62,7 +61,6 @@ rust_test(
         "ADD_BLOB": "$(rootpath :addblob)",
         "WAT_BLOB": "$(rootpath //programs/fix/wat:blob)",
         "WAT_ADD": "$(rootpath //programs/fix/wat:add)",
-        "ADD_WASM": "$(rootpath //programs/fix/wat:add_wasm)",
         "C_BLOB": "$(rootpath //programs/fix/c:blob)",
         "C_ADD": "$(rootpath //programs/fix/c:add)",
         "RUST_BLOB": "$(rootpath //programs/fix/rust:blob)",

@@ -189,17 +189,18 @@ _vm_attrs = {
 vm_run = rule(implementation = _vm_launcher_impl, executable = True, attrs = _vm_attrs)
 vm_test = rule(implementation = _vm_launcher_impl, test = True, attrs = _vm_attrs)
 
-def fix_program_run(name, program, **kwargs):
+def fix_program_run(name, program, argument_modules = [], **kwargs):
     rust_binary(
         name = name,
         srcs = ["//build:fix_run.rs"],
         crate_name = "fix_run",
         edition = "2024",
-        data = ["//fix/cli:fix", "//fix/cli:precompiled", program],
+        data = ["//fix/cli:fix", "//fix/cli:precompiled", program] + argument_modules,
         deps = ["//fix/cli:client", "@rules_rust//tools/runfiles"],
         rustc_env = {
             "FIX_CLI": "$(rlocationpath //fix/cli:fix)",
             "FIX_PROGRAM": "$(rlocationpath " + program + ")",
+            "FIX_ARGUMENT_MODULES": "\n".join(["$(rlocationpath " + module + ")" for module in argument_modules]),
             "FIX_ARCHIVE": "$(rlocationpath //fix/cli:precompiled)",
         },
         **kwargs
@@ -241,7 +242,7 @@ fix_script_test = rule(
     },
 )
 
-def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"], tags = []):
+def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"], tags = [], argument_modules = []):
     """Wasm -> optional resource postprocessing -> C -> native Fix ELF."""
     if memories != None or tables != None:
         counts = (" --memories %d" % memories if memories != None else "") + (" --tables %d" % tables if tables != None else "")
@@ -294,6 +295,7 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         fix_program_run(
             name = name,
             program = wasm,
+            argument_modules = argument_modules,
             visibility = visibility,
             tags = tags,
         )

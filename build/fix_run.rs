@@ -84,6 +84,10 @@ fn run() -> Result<()> {
         let program = shell.compilation(&module, None)?;
         let mut fields = vec![Blob::new(b"").into_value(), program];
         fields.extend(Expressions::new(&mut shell, Vec::new()).arguments(&arguments)?);
+        for module in env!("FIX_ARGUMENT_MODULES").lines() {
+            let module = shell.file(&locate(module)?)?;
+            fields.push(shell.compilation(&module, None)?);
+        }
         let result = Tree::new(&fields).application().strict().eval()?;
         println!("{}", shell.save(&result)?);
     }

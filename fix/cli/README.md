@@ -35,8 +35,15 @@ The REPL reuses one VM, starting a new scheduler for each request.
 
 Parsing constructs a Fix value. An outer encode requests evaluation; thunks and
 Trees are otherwise retained as constructed. For example, `#(...)` constructs an
-application thunk and `*#(...)` evaluates it. No separate parsing or evaluation
-mode is needed.
+application thunk and `*#(...)` evaluates it. `fix eval --encode '#(...)'`
+wraps the input Thunk in a strict Encode before evaluation. This also works for
+identification and selection Thunks; a non-Thunk input reports a type error.
+
+With Runnable programs labelled `fib` and `add`, recursive Fibonacci evaluation is:
+
+```sh
+bazel run //fix -- eval --encode '#("" @label("fib") 8u64 @label("add"))'
+```
 
 The preprocessor runs on Linux. The parser runs in Fix. Imports are explicit:
 

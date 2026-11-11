@@ -85,14 +85,8 @@ fn standalone_programs_compile_and_run_in_private_repositories() {
         ),
         &42u64.to_le_bytes(),
     );
-    fs::copy(input(env!("ADD_WASM")), caller.join("add.wasm")).unwrap();
     result(
-        run(
-            env!("FIB"),
-            &["8u64", "*#(\"\" @label(\"compile\") @file(\"add.wasm\"))"],
-            &caller,
-            &temporary,
-        ),
+        run(env!("FIB"), &["8u64"], &caller, &temporary),
         &34u64.to_le_bytes(),
     );
     let trap = Tree::canonical(&[

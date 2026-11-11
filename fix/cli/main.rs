@@ -95,7 +95,12 @@ enum Command {
     /// Read and evaluate low-level Fix expressions interactively.
     Repl,
     /// Evaluate an expression.
-    Eval { expression: String },
+    Eval {
+        expression: String,
+        /// Wrap the input Thunk in a strict Encode before evaluating it.
+        #[arg(long)]
+        encode: bool,
+    },
     /// Take one Think step.
     Think { expression: String },
     /// Compile a Wasm module with `compile`.
@@ -260,14 +265,24 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     }
     match command {
         Command::Repl => repl::run(global.open(options)?, bindings),
-        Command::Eval { ref expression }
+        Command::Eval { ref expression, .. }
         | Command::Think { ref expression }
         | Command::Compile { ref expression, .. } => {
             let mut client = global.open(options)?;
             let mut expressions = Expressions::new(&mut client, bindings);
             let input = one(&mut expressions, expression)?;
             let value = match command {
-                Command::Eval { .. } => input.eval()?,
+                Command::Eval { encode, .. } => {
+                    let input = if encode {
+                        Thunk::try_from(input)
+                            .map_err(fixcli::Error::from)?
+                            .strict()
+                            .into_value()
+                    } else {
+                        input
+                    };
+                    input.eval()?
+                }
                 Command::Think { .. } => client.think(&input)?,
                 Command::Compile { units, .. } => {
                     let input = if input.value_type() == fix::ValueType::Thunk {

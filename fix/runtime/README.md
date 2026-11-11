@@ -144,5 +144,4 @@ integers with checked bounds. `read-blob` writes raw bytes by default; matching
 format flags read UTF-8 text or decimal integers of the specified exact width.
 
 Construction and evaluation are separate: `parse` constructs a value and `run`
-evaluates it. A bare Thunk is forced through `create-strict-encode` followed by
-`eval`.
+evaluates it. `eval --encode` wraps an input Thunk in a strict Encode before evaluation.
