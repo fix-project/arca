@@ -200,3 +200,51 @@ fn privileged_tree_bytes_remain_attached_after_closing_the_descriptor() {
     let bytes = storage.get_blob(Blob::try_from(result).unwrap()).unwrap();
     assert_eq!(&*bytes, &85u64.to_le_bytes());
 }
+
+#[kernel::test]
+fn invalid_tree_reads_return_deterministic_traps() {
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let read = program(storage, "TREE_READ");
+    let add = program(storage, "ADD_BLOB");
+    let metadata: Handle = Blob::literal(b"").unwrap().into();
+    let number: Handle = storage.add_blob(&42u64.to_le_bytes()).into();
+    let empty = storage.add_tree(&[]);
+    for (request, code) in [
+        (storage.add_tree(&[metadata, add.into()]), 1u32),
+        (storage.add_tree(&[metadata, add.into(), number]), 1),
+        (storage.add_tree(&[metadata, read.into(), number]), 5),
+        (storage.add_tree(&[metadata, read.into(), empty.into()]), 1),
+        (
+            storage.add_tree(&[metadata, read.into(), empty.into_ref().into()]),
+            5,
+        ),
+    ] {
+        let result = runtime.execute_privileged(request).unwrap();
+        let repeated = runtime.execute_privileged(request).unwrap();
+        assert!(storage.equals(result, repeated).unwrap());
+        let result = Tree::try_from(result).unwrap();
+        assert!(!result.is_tag());
+        let fields = storage.get_tree(result).unwrap();
+        assert_eq!(fields.len(), 2);
+        let marker = storage
+            .get_blob(Blob::try_from(fields[0]).unwrap())
+            .unwrap();
+        assert_eq!(marker.as_ref(), b"Wasm.trap");
+        let reason = storage
+            .get_blob(Blob::try_from(fields[1]).unwrap())
+            .unwrap();
+        assert_eq!(reason.as_ref(), code.to_le_bytes());
+    }
+    let child = storage.add_tree(&[number]);
+    let request = storage.add_tree(&[metadata, read.into(), child.into()]);
+    assert!(
+        storage
+            .equals(runtime.execute_privileged(request).unwrap(), number)
+            .unwrap()
+    );
+    let request = storage.add_tree(&[metadata, add.into(), number, number]);
+    let result = runtime.execute_privileged(request).unwrap();
+    let result = storage.get_blob(Blob::try_from(result).unwrap()).unwrap();
+    assert_eq!(result.as_ref(), 84u64.to_le_bytes());
+}

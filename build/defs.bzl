@@ -195,11 +195,12 @@ def fix_program_run(name, program, **kwargs):
         srcs = ["//build:fix_run.rs"],
         crate_name = "fix_run",
         edition = "2024",
-        data = ["//fix/cli:fix", program],
-        deps = ["@rules_rust//tools/runfiles"],
+        data = ["//fix/cli:fix", "//fix/cli:precompiled", program],
+        deps = ["//fix/cli:client", "@rules_rust//tools/runfiles"],
         rustc_env = {
             "FIX_CLI": "$(rlocationpath //fix/cli:fix)",
             "FIX_PROGRAM": "$(rlocationpath " + program + ")",
+            "FIX_ARCHIVE": "$(rlocationpath //fix/cli:precompiled)",
         },
         **kwargs
     )
@@ -292,7 +293,7 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
     if runnable:
         fix_program_run(
             name = name,
-            program = ":" + artifact,
+            program = wasm,
             visibility = visibility,
             tags = tags,
         )

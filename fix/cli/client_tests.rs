@@ -127,14 +127,30 @@ fn persistent_session_values_evaluation_and_storage() {
     session.close().unwrap();
 }
 
+fn assert_trap(client: &mut Client, result: &fixcli::Value, code: u32) {
+    assert!(!client.is_tag(result).unwrap());
+    assert_eq!(client.len(result).unwrap(), 2);
+    let marker = client.get(result, 0).unwrap();
+    let reason = client.get(result, 1).unwrap();
+    assert_eq!(client.len(&marker).unwrap(), 9);
+    assert_eq!(client.len(&reason).unwrap(), 4);
+    let mut bytes = [0; 9];
+    client.read(&marker, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"Wasm.trap");
+    let mut bytes = [0; 4];
+    client.read(&reason, 0, &mut bytes).unwrap();
+    assert_eq!(u32::from_le_bytes(bytes), code);
+}
+
 #[test]
-fn a_failed_invocation_does_not_terminate_the_host() {
+fn a_trapped_invocation_does_not_terminate_the_host() {
     let directory = repository("failed-invocation");
     let mut session = client(&directory);
     let add = session.lookup("add").unwrap();
     let metadata = session.blob(b"").unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
-    assert!(session.call(&combination).is_err());
+    let result = session.call(&combination).unwrap();
+    assert_trap(&mut session, &result, 1);
     for number in [20u64, 21] {
         let metadata = session.blob(b"").unwrap();
         let add = session.lookup("add").unwrap();
@@ -203,14 +219,15 @@ fn coupon_persistence_modes() {
 }
 
 #[test]
-fn persistent_session_reports_invocation_errors() {
+fn persistent_session_returns_guest_traps() {
     let directory = repository("failed-session");
     let mut session = client(&directory);
     session.reuse_vm();
     let add = session.lookup("add").unwrap();
     let metadata = session.blob(b"").unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
-    assert!(session.call(&combination).is_err());
+    let result = session.call(&combination).unwrap();
+    assert_trap(&mut session, &result, 1);
     session.close().unwrap();
 }
 

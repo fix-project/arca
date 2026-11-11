@@ -132,6 +132,12 @@ pub extern "C" fn w2c_fix_get_tree_element(
     use arca::{Blob, Word};
     use user::Runtime;
 
+    if !unsafe { shell::fixpoint_is_object(handle) && shell::fixpoint_is_tree(handle) } {
+        crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_UNREACHABLE);
+    }
+    if index as usize >= unsafe { shell::fixpoint_len(handle) } {
+        crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_OOB);
+    }
     crate::locals::lift(&[handle]);
     crate::continuation::receive(
         result,

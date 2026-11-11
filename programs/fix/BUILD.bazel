@@ -1,3 +1,4 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
 load(":defs.bzl", "FIX_PROGRAMS", "fix_rust_program", "fix_wat_program")
 load("//build:defs.bzl", "fix_script_test")
 
@@ -37,5 +38,36 @@ fix_script_test(
     expected = "2a00000000000000",
     size = "large",
     timeout = "short",
+    tags = ["kvm", "local"],
+)
+
+rust_test(
+    name = "launchers_test",
+    srcs = ["launchers_test.rs"],
+    edition = "2024",
+    deps = ["//fix/handle"],
+    data = [
+        ":fib",
+        ":addblob",
+        "//programs/fix/wat:blob",
+        "//programs/fix/wat:add",
+        "//programs/fix/wat:add_wasm",
+        "//programs/fix/c:blob",
+        "//programs/fix/c:add",
+        "//programs/fix/rust:blob",
+        "//programs/fix/rust:add",
+    ],
+    rustc_env = {
+        "FIB": "$(rootpath :fib)",
+        "ADD_BLOB": "$(rootpath :addblob)",
+        "WAT_BLOB": "$(rootpath //programs/fix/wat:blob)",
+        "WAT_ADD": "$(rootpath //programs/fix/wat:add)",
+        "ADD_WASM": "$(rootpath //programs/fix/wat:add_wasm)",
+        "C_BLOB": "$(rootpath //programs/fix/c:blob)",
+        "C_ADD": "$(rootpath //programs/fix/c:add)",
+        "RUST_BLOB": "$(rootpath //programs/fix/rust:blob)",
+        "RUST_ADD": "$(rootpath //programs/fix/rust:add)",
+    },
+    size = "large",
     tags = ["kvm", "local"],
 )

@@ -59,7 +59,7 @@ def fix_language_programs(language):
                 deps = ["//fix/sdk"],
             )
         elif language == "wat":
-            wat_module(name = wasm, src = name + ".wat")
+            wat_module(name = wasm, src = name + ".wat", visibility = ["//visibility:public"])
         else:
             fix_cc_wasm(
                 name = wasm,

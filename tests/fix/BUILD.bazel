@@ -307,3 +307,6 @@ fix_procedure(name = "memory_boundary_native", wasm = ":memory_boundary_wasm")
 
 wat_module(name = "tree_bytes_wasm", src = "tree_bytes.wat")
 fix_procedure(name = "tree_bytes_native", wasm = ":tree_bytes_wasm")
+
+wat_module(name = "tree_read_wasm", src = "tree_read.wat")
+fix_procedure(name = "tree_read_native", wasm = ":tree_read_wasm")

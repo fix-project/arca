@@ -119,6 +119,8 @@ kernel_test(
         "MANY_TABLES": "//tests/fix:many_tables_native",
         "MEMORY_BOUNDARY": "//tests/fix:memory_boundary_native",
         "TREE_BYTES": "//tests/fix:tree_bytes_native",
+        "TREE_READ": "//tests/fix:tree_read_native",
+        "ADD_BLOB": "//programs/fix:addblob_elf",
         "BINDINGS": "//fix/sdk:c_bindings_native",
         "CAPTURE": "//tests/fix:capture_determinism_native",
         "PARSER": "//programs/fix/parser:parser_elf",
