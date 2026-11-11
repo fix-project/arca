@@ -238,6 +238,13 @@ pub fn coordinate(destination: Reference, name: &[u8], arguments: Reference) -> 
     reply.read()
 }
 
+pub fn trap(code: u32) -> ! {
+    operation("trap")
+        .word(u64::from(code))
+        .call_with_current_continuation();
+    panic!("resumed a trapped invocation")
+}
+
 pub fn finish(value: Reference) -> ! {
     crate::locals::lift(&[value]);
     operation("return")

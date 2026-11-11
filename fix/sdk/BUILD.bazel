@@ -30,6 +30,25 @@ filegroup(
 )
 
 rust_shared_library(
+    name = "panic_wasm",
+    srcs = ["tests/panic.rs"],
+    platform = WASM,
+    deps = [":sdk"],
+)
+
+fix_procedure(name = "panic_native", wasm = ":panic_wasm", memories = 2)
+
+rust_shared_library(
+    name = "panic_std_wasm",
+    srcs = ["tests/panic.rs"],
+    crate_features = ["std"],
+    platform = WASM,
+    deps = [":sdk_std"],
+)
+
+fix_procedure(name = "panic_std_native", wasm = ":panic_std_wasm", memories = 2)
+
+rust_shared_library(
     name = "eval_wasm",
     srcs = ["tests/eval.rs"],
     platform = WASM,
@@ -73,7 +92,7 @@ fix_procedure(
         proc_macro_deps = ["//tools/macros"],
         target_compatible_with = ["@platforms//cpu:wasm32"],
     )
-    for name, features in [("sdk", []), ("sdk_alloc", ["alloc"]), ("sdk_import", ["alloc", "std", "git"])]
+    for name, features in [("sdk", []), ("sdk_alloc", ["alloc"]), ("sdk_std", ["alloc", "std"]), ("sdk_import", ["alloc", "std", "git"])]
 ]
 
 fix_cc_wasm(

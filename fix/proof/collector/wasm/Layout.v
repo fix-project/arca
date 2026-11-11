@@ -6,7 +6,7 @@ From FixProof.Support Require Import WasmNatural.
 From Wasm Require Import datatypes instantiation_func interp_instantiate_sound opsem.
 From FixProof.Collector.wasm Require Import Binary.
 From FixProof.Semantics Require Import Handle.
-From FixProof.Shell Require Import Externref ABI.
+From FixProof.Shell Require Import ABI.
 Import ListNotations.
 Local Open Scope string_scope.
 Local Open Scope list_scope.
@@ -130,132 +130,139 @@ Section Execution.
   Qed.
 End Execution.
 
-Definition evaluation_claim :=
-  nth 8 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
 
-(** The parsed claim helper has the expected witness-authentication body. *)
+Definition evaluation_claim := nth 8 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
 Lemma evaluation_claim_body : modfunc_body evaluation_claim =
-  [BI_local_get 0%N; BI_const_num (VAL_int32 (wasm_nat 2)); BI_call 25%N;
-   BI_local_get 0%N; BI_const_num (VAL_int32 (wasm_nat 3)); BI_call 8%N;
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_table_get 3%N; BI_local_set 1%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_table_get 3%N; BI_local_set 2%N;
-   BI_local_get 1%N; BI_call 3%N; BI_call 21%N;
-   BI_local_get 1%N; BI_const_num (VAL_int32 (wasm_nat 2)); BI_call 25%N;
-   BI_local_get 1%N; BI_const_num (VAL_int32 (wasm_nat 6)); BI_call 8%N;
-   BI_local_get 2%N; BI_const_num (VAL_int32 (wasm_nat 3)); BI_call 25%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_table_get 6%N;
-   BI_local_get 2%N; BI_call 28%N; BI_local_get 2%N].
+  ltac:(let code := eval cbv [modfunc_body evaluation_claim mod_funcs evaluation_module nth] in
+    (modfunc_body evaluation_claim) in exact code).
 Proof. reflexivity. Qed.
 
-Definition evaluation_integer :=
-  nth 5 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+Definition evaluation_integer := nth 5 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
 
-(** The parsed integer helper has the expected Blob-to-i64 body. *)
 Lemma evaluation_integer_body : modfunc_body evaluation_integer =
-  [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N;
-   BI_local_get 0%N; BI_call 1%N; BI_testop T_i32 TO_eqz; BI_call 21%N;
-   BI_local_get 0%N; BI_call 6%N; BI_const_num (VAL_int64 (wasm_nat64 8));
-   BI_relop T_i64 (Relop_i ROI_eq); BI_call 21%N;
-   BI_local_get 0%N; BI_const_num (VAL_int32 (wasm_nat 0));
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_const_num (VAL_int32 (wasm_nat 8)); BI_call 9%N;
-   BI_const_num (VAL_int32 (wasm_nat 8)); BI_relop T_i32 (Relop_i ROI_eq); BI_call 21%N;
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_load T_i64 None (Build_memarg 0%N 3%N)].
+  ltac:(let code := eval cbv [modfunc_body evaluation_integer mod_funcs evaluation_module nth] in
+    (modfunc_body evaluation_integer) in exact code).
 Proof. reflexivity. Qed.
 
-Definition evaluation_premise :=
-  nth 9 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+Definition evaluation_premise := nth 9 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
 
 Lemma evaluation_premise_header : modfunc_body evaluation_premise =
-  [BI_local_get 1%N; BI_const_num (VAL_int32 (wasm_nat 4)); BI_call 8%N;
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_table_get 4%N; BI_call 26%N;
-   BI_local_get 0%N; BI_relop T_i64 (Relop_i ROI_eq); BI_call 21%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_table_get 4%N;
-   BI_local_get 2%N; BI_call 22%N;
-   BI_const_num (VAL_int32 (wasm_nat 2)); BI_table_get 4%N;
-   BI_local_get 3%N; BI_call 22%N].
+  ltac:(let code := eval cbv [modfunc_body evaluation_premise mod_funcs evaluation_module nth] in
+    (modfunc_body evaluation_premise) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_lower := nth 6 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_lower_body : modfunc_body native_lower =
+  ltac:(let code := eval cbv [modfunc_body native_lower mod_funcs evaluation_module nth] in
+    (modfunc_body native_lower) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_data := nth 12 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_data_body : modfunc_body native_data =
+  ltac:(let code := eval cbv [modfunc_body native_data mod_funcs evaluation_module nth] in
+    (modfunc_body native_data) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_map := nth 13 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_map_body : modfunc_body native_map =
+  ltac:(let code := eval cbv [modfunc_body native_map mod_funcs evaluation_module nth] in
+    (modfunc_body native_map) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_mapped := nth 14 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_mapped_body : modfunc_body native_mapped =
+  ltac:(let code := eval cbv [modfunc_body native_mapped mod_funcs evaluation_module nth] in
+    (modfunc_body native_mapped) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_tree_rule := nth 15 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_tree_rule_body : modfunc_body native_tree_rule =
+  ltac:(let code := eval cbv [modfunc_body native_tree_rule mod_funcs evaluation_module nth] in
+    (modfunc_body native_tree_rule) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_exchange := nth 16 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_exchange_body : modfunc_body native_exchange =
+  ltac:(let code := eval cbv [modfunc_body native_exchange mod_funcs evaluation_module nth] in
+    (modfunc_body native_exchange) in exact code).
+Proof. reflexivity. Qed.
+
+Definition evaluation_apply := nth 17 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma evaluation_apply_body : modfunc_body evaluation_apply =
+  ltac:(let code := eval cbv [modfunc_body evaluation_apply mod_funcs evaluation_module nth] in
+    (modfunc_body evaluation_apply) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_issue := nth 20 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma evaluation_output_body : modfunc_body native_issue =
+  ltac:(let code := eval cbv [modfunc_body native_issue mod_funcs evaluation_module nth] in
+    (modfunc_body native_issue) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_authority := nth 18 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_authority_body : modfunc_body native_authority =
+  ltac:(let code := eval cbv [modfunc_body native_authority mod_funcs evaluation_module nth] in
+    (modfunc_body native_authority) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_reconstruct := nth 19 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_reconstruct_body : modfunc_body native_reconstruct =
+  ltac:(let code := eval cbv [modfunc_body native_reconstruct mod_funcs evaluation_module nth] in
+    (modfunc_body native_reconstruct) in exact code).
+Proof. reflexivity. Qed.
+
+Definition evaluation_entry := nth 21 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma evaluation_entry_body : modfunc_body evaluation_entry =
+  ltac:(let code := eval cbv [modfunc_body evaluation_entry mod_funcs evaluation_module nth] in
+    (modfunc_body evaluation_entry) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_resolve := nth 22 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_resolve_body : modfunc_body native_resolve =
+  ltac:(let code := eval cbv [modfunc_body native_resolve mod_funcs evaluation_module nth] in
+    (modfunc_body native_resolve) in exact code).
+Proof. reflexivity. Qed.
+
+Definition native_family := nth 23 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_family_body : modfunc_body native_family =
+  ltac:(let code := eval cbv [modfunc_body native_family mod_funcs evaluation_module nth] in
+    (modfunc_body native_family) in exact code).
+Proof. reflexivity. Qed.
+
+
+Definition native_witness_claim := nth 24 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+
+Lemma native_witness_claim_body : modfunc_body native_witness_claim =
+  ltac:(let code := eval cbv [modfunc_body native_witness_claim mod_funcs evaluation_module nth] in
+    (modfunc_body native_witness_claim) in exact code).
 Proof. reflexivity. Qed.
 
 Definition exchange_endpoint (left : bool) :=
   nth (if left then 10 else 11) (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-(** The parsed endpoint helpers contain the expected claim-field lookups. *)
 Lemma exchange_endpoint_body left : modfunc_body (exchange_endpoint left) =
   [BI_local_get 0%N;
    BI_const_num (VAL_int32 (wasm_nat (if left then 1 else 2))); BI_call 7%N].
 Proof. destruct left; reflexivity. Qed.
 
-Definition native_lower :=
-  nth 6 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_data :=
-  nth 12 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition native_map :=
-  nth 13 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_mapped :=
-  nth 14 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_tree_rule :=
-  nth 15 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_tree_loop :=
-  [BI_local_get 5%N; BI_local_get 4%N; BI_relop T_i32 (Relop_i ROI_eq); BI_br_if 1%N;
-   BI_local_get 0%N;
-   BI_local_get 5%N; BI_table_get 9%N;
-   BI_local_get 5%N; BI_table_get 7%N;
-   BI_local_get 5%N; BI_table_get 8%N;
-   BI_call 30%N;
-   BI_local_get 5%N; BI_const_num (VAL_int32 (wasm_nat 1)); BI_binop T_i32 (Binop_i BOI_add);
-   BI_local_set 5%N; BI_br 0%N].
-
-Definition native_exchange :=
-  nth 16 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_exchange_guard index :=
-  match nth (4 * index + 3) (modfunc_body native_exchange) BI_unreachable with
-  | BI_if _ body _ => body | _ => [] end.
-
-Definition native_unary_codes := [4; 9; 17; 18; 19; 21; 22; 3; 10; 13; 14; 15; 20].
-Definition native_unary_body index :=
-  match nth (50 + 4 * index) (modfunc_body native_exchange) BI_unreachable with
-  | BI_if _ body _ => body | _ => [] end.
-
-Definition native_endpoint_codes := [2; 7; 8; 11; 16; 24; 25].
-Definition native_endpoint_body index :=
-  match nth (108 + 4 * index) (modfunc_body native_exchange) BI_unreachable with
-  | BI_if _ body _ => body | _ => [] end.
-
-Definition evaluation_apply :=
-  nth 17 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-Definition native_issue :=
-  nth 20 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-
-(** The parsed output helper contains the expected certificate-construction instructions. *)
-Lemma evaluation_output_body : modfunc_body native_issue =
-  [BI_const_num (VAL_int32 (wasm_nat 0)); BI_local_get 3%N; BI_call 11%N; BI_table_set 1%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_local_get 1%N; BI_table_set 1%N;
-   BI_const_num (VAL_int32 (wasm_nat 2)); BI_local_get 2%N; BI_table_set 1%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_const_num (VAL_int32 (wasm_nat 3)); BI_call 10%N; BI_call 12%N; BI_local_set 2%N;
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_const_num (VAL_int32 (wasm_nat 1)); BI_table_get 2%N; BI_table_set 0%N;
-   BI_const_num (VAL_int32 (wasm_nat 1)); BI_local_get 2%N; BI_table_set 0%N;
-   BI_const_num (VAL_int32 (wasm_nat 0)); BI_call 13%N].
-Proof. reflexivity. Qed.
-
-Definition native_authority :=
-  nth 18 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition native_reconstruct :=
-  nth 19 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition evaluation_entry :=
-  nth 21 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition native_resolve :=
-  nth 22 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition native_family :=
-  nth 23 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
-Definition native_authority_loop :=
-  match nth 16 (modfunc_body native_authority) BI_unreachable with
-  | BI_block _ [BI_loop _ body] => body | _ => [] end.
-
 Lemma collector_export_entry : mod_exports evaluation_module =
-  [Build_module_export (String.list_byte_of_string "_fix_apply") (MED_func 42%N)].
+  [Build_module_export (String.list_byte_of_string "_fix_apply") (MED_func 43%N)].
 Proof. reflexivity. Qed.
+
+Lemma collector_memory_layout :
+  mod_tables evaluation_module = [] /\ mod_globals evaluation_module = [] /\
+  mod_mems evaluation_module = [Build_module_mem (Build_limits 1%N None)].
+Proof. repeat split; reflexivity. Qed.

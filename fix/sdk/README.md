@@ -67,6 +67,21 @@ slices, with iterator construction available under `alloc`.
 Memory 0 belongs to Rust. Memory 1 is the Blob staging area. No Wasm tables are
 reserved for Fix handles.
 
+## Panics and early return
+
+Rust panics return an untagged Tree `[Blob("Rust.panic"), Blob(message)]`.
+The message preserves formatting and UTF-8 without requiring the `alloc`
+feature. Both `std` and `no_std` entry points use this return path. File names
+and source locations are not added to the message. A non-string `std` panic
+payload returns `"non-string panic payload"`.
+
+`fixwasm::exit(value)` completes the invocation immediately. The C binding is
+`fix_exit(value)` (Wasm import `fix.exit`, signature `(param i32)`). Panics and
+early returns terminate without unwinding or running destructors.
+
+Wasm traps return an untagged Tree `[Blob("Wasm.trap"), Blob(code)]`, where
+`code` is a little-endian `u32` trap code.
+
 ## Memories
 
 A `Memory` exclusively owns a declared Wasm memory index. Constructing it from

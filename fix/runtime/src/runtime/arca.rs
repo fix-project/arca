@@ -80,6 +80,8 @@ pub struct FixOnArca<S = MemoryStorage> {
     pub(crate) memoize: Memoization,
 }
 
+const WASM_TRAP_UNREACHABLE: u32 = 5;
+
 type Coordinator<'a> = dyn FnMut(&[u8], &[Handle]) -> CoordinationAction + 'a;
 
 type ProfileKey = ([u8; 32], usize);
@@ -396,6 +398,12 @@ impl FixOnArca<Arc<RepositoryStorage>> {
 }
 
 impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
+    fn trap(&self, code: u32) -> Execution {
+        let marker = self.add_blob(b"Wasm.trap");
+        let code = self.add_blob(&code.to_le_bytes());
+        Execution::Complete(self.add_tree(&[marker.into(), code.into()]).into())
+    }
+
     fn execute(&self, combination: Tree, privileged: bool) -> Result<Handle, InvalidApplication> {
         self.execute_with_effects(combination, privileged, &mut |_| EffectAction::Unhandled)
     }
@@ -440,7 +448,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 (function.apply(pack_reference(reply)), author, profiles)
             }
             Callable::Runnable(executable, arguments) => {
-                let mut function = self.image(executable);
+                let mut function = self.image(executable)?;
                 let root = handles::insert(&mut function, handles::HANDLE_BASE, combination.into());
                 let profiles = if !privileged && self.profile.load(Ordering::Relaxed) {
                     alloc::vec![(*executable.as_handle().as_bytes(), arguments)]
@@ -554,18 +562,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             let value = f.force();
             self.record_force(started);
             let Value::Function(g) = value else {
-                panic!("expected a Fix effect")
+                return Err(InvalidApplication);
             };
-            let (effect, mut args) = g
-                .into_inner()
-                .into_symbolic()
-                .expect("expected symbolic effect");
-            let effect: ArcaBlob = effect.try_into().expect("expected effect name");
+            let (effect, mut args) = g.into_inner().into_symbolic().ok_or(InvalidApplication)?;
+            let effect: ArcaBlob = effect.try_into().map_err(|_| InvalidApplication)?;
             if profile {
                 self.record_kernel_call(&effect);
             }
             let Some(Value::Function(mut k)) = args.pop_back() else {
-                panic!("unexpected non-effect return");
+                return Err(InvalidApplication);
             };
 
             let result_address = if matches!(
@@ -639,6 +644,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         });
                     }
                     function
+                }
+                b"trap" => {
+                    let Some(Value::Word(code)) = args.pop_back() else {
+                        return Err(InvalidApplication);
+                    };
+                    let code = u32::try_from(code.read()).map_err(|_| InvalidApplication)?;
+                    return Ok(self.trap(code));
                 }
                 b"return" => {
                     let Some(Value::Blob(value)) = args.pop_back() else {
@@ -731,10 +743,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     k.apply(kernel::prelude::Word::new(allowed as u64))
                 }
                 b"create_tag_unchecked" => {
-                    assert!(
-                        privileged && self.trust.is_tagger(self, combination).unwrap(),
-                        "trusted tagger required"
-                    );
+                    if !privileged || !self.trust.is_tagger(self, combination).unwrap() {
+                        return Ok(self.trap(WASM_TRAP_UNREACHABLE));
+                    }
                     let Some(Value::Blob(reference)) = args.pop_back() else {
                         panic!("missing tag fields")
                     };
@@ -749,7 +760,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 }
                 b"unsound_handle_bytes" => {
                     let started = profile.then(kernel::tsc::read);
-                    assert!(privileged, "handle bytes require a privileged application");
+                    if !privileged {
+                        return Ok(self.trap(WASM_TRAP_UNREACHABLE));
+                    }
                     let Some(Value::Blob(value)) = args.pop_back() else {
                         panic!("missing handle")
                     };
@@ -785,10 +798,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     assert!(!tree.is_empty(), "missing tag author");
                     let data = self.get_tree_backing(tree).unwrap();
                     let author = handles::read_backing(&data, 0);
-                    assert!(
-                        trust::is_author(self, combination, author).unwrap(),
-                        "unauthorized tag author"
-                    );
+                    if !trust::is_author(self, combination, author).unwrap() {
+                        return Ok(self.trap(WASM_TRAP_UNREACHABLE));
+                    }
                     let value = unsafe { self.add_tree_backing(data) };
                     let value = value.tag_descriptor();
                     let value = handles::insert(&mut k, result_address, value.into());

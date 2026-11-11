@@ -3,6 +3,7 @@
 #include "module.h"
 #include <stdint.h>
 struct w2c_fix;
+_Noreturn void w2c_fix_exit(struct w2c_fix *, uint32_t);
 void w2c_fix_advise(struct w2c_fix *, uint32_t, uint32_t, uint32_t, uint32_t,
                     uint32_t);
 uint32_t w2c_fix_coordinate(struct w2c_fix *, uint32_t, uint32_t, uint32_t,

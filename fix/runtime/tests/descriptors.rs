@@ -183,10 +183,11 @@ fn memory_access_cannot_span_adjacent_regions() {
         .force()
         .try_into()
         .unwrap();
-    let description: Tuple = effect.into_inner().read().try_into().unwrap();
-    let arguments: Tuple = description.get(2).try_into().unwrap();
-    let reason: kernel::prelude::Blob = arguments.get(0).try_into().unwrap();
-    assert_eq!(&*reason, b"exception");
+    let (name, arguments) = effect.into_inner().into_symbolic().unwrap();
+    let name: kernel::prelude::Blob = name.try_into().unwrap();
+    assert_eq!(&*name, b"trap");
+    let reason: kernel::prelude::Word = arguments.front().unwrap().clone().try_into().unwrap();
+    assert_eq!(reason.read(), 1);
 }
 
 #[kernel::test]

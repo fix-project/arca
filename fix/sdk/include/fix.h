@@ -2,6 +2,8 @@
 #define FIX_SDK_FIX_H
 #include <stdint.h>
 typedef uint32_t fix_handle;
+__attribute__((import_module("fix"), import_name("exit"), noreturn)) void
+fix_exit(fix_handle value);
 typedef enum { FIX_OBJECT, FIX_REF, FIX_THUNK, FIX_ENCODE } fix_value_type;
 typedef enum { FIX_BLOB, FIX_TREE } fix_data_type;
 typedef enum { FIX_STRICT, FIX_SHALLOW } fix_encode_type;

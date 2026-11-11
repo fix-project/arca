@@ -25,16 +25,9 @@
 
   (import "fix" "get_thunk_type" (func $thunk_type (param i32) (result i32)))
 
+  (import "fix" "close" (func $close (param i32)))
+  (import "fix" "clone" (func $clone (param i32) (result i32)))
 
-
-  (global $combination_view (mut i32) (i32.const 0))
-  (global $witness_view (mut i32) (i32.const 0))
-  (global $claim_view (mut i32) (i32.const 0))
-  (global $witnesses_view (mut i32) (i32.const 0))
-  (global $coupon_view (mut i32) (i32.const 0))
-  (global $lhs_view (mut i32) (i32.const 0))
-  (global $rhs_view (mut i32) (i32.const 0))
-  (global $claims (mut i32) (i32.const 0))
   (memory $bytes 1)
 
   (func $require (param $condition i32)
@@ -76,23 +69,18 @@
   (func $claim (param $witness i32) (result i32)
     (local $coupon i32) (local $claim i32)
     (call $arity (local.get $witness) (i32.const 2))
-    (global.set $witness_view (local.get $witness))
-    (local.set $coupon (call $at (global.get $witness_view) (i32.const 0)))
-    (local.set $claim (call $at (global.get $witness_view) (i32.const 1)))
+    (local.set $coupon (call $at (local.get $witness) (i32.const 0)))
+    (local.set $claim (call $at (local.get $witness) (i32.const 1)))
     (call $require (call $is_tag (local.get $coupon)))
     (call $arity (local.get $coupon) (i32.const 2))
-    (global.set $coupon_view (local.get $coupon))
     (call $arity (local.get $claim) (i32.const 3))
-    (call $object (call $at (global.get $coupon_view) (i32.const 1)) (local.get $claim))
+    (call $object (call $at (local.get $coupon) (i32.const 1)) (local.get $claim))
     (local.get $claim))
 
-  (func $premise (param $kind i64) (param $claim i32)
-                 (param $lhs i32) (param $rhs i32)
-    (global.set $claim_view (local.get $claim))
-    (call $require (i64.eq (call $u64 (call $at (global.get $claim_view) (i32.const 0)))
-                          (local.get $kind)))
-    (call $same (call $at (global.get $claim_view) (i32.const 1)) (local.get $lhs))
-    (call $same (call $at (global.get $claim_view) (i32.const 2)) (local.get $rhs)))
+  (func $premise (param $kind i64) (param $claim i32) (param $lhs i32) (param $rhs i32)
+    (call $require (i64.eq (call $u64 (call $at (local.get $claim) (i32.const 0))) (local.get $kind)))
+    (call $same (call $at (local.get $claim) (i32.const 1)) (local.get $lhs))
+    (call $same (call $at (local.get $claim) (i32.const 2)) (local.get $rhs)))
 
   (func $left (param $claim i32) (result i32)
     (call $at (local.get $claim) (i32.const 1)))
@@ -141,18 +129,17 @@
     (call $arity (local.get $rhs) (local.get $count))
     (call $arity (local.get $witnesses) (local.get $count))
     (call $require (i32.eq (call $is_tag (local.get $lhs)) (call $is_tag (local.get $rhs))))
-    (global.set $lhs_view (local.get $lhs))
-    (global.set $rhs_view (local.get $rhs))
     (block $done (loop $children
       (br_if $done (i32.eq (local.get $index) (local.get $count)))
-      (call $premise (local.get $kind) (i32.load (i32.add (i32.const 64) (i32.shl (local.get $index) (i32.const 2))))
-        (call $at (global.get $lhs_view) (local.get $index)) (call $at (global.get $rhs_view) (local.get $index)))
+      (call $premise (local.get $kind)
+        (call $witness_claim (local.get $witnesses) (local.get $index))
+        (call $at (local.get $lhs) (local.get $index))
+        (call $at (local.get $rhs) (local.get $index)))
       (local.set $index (i32.add (local.get $index) (i32.const 1)))
       (br $children))))
 
   (func $rule (param $rule i64) (param $lhs i32) (param $rhs i32) (param $witnesses i32) (result i64)
-    (local $p i32) (local $q i32)
-    (local $a i32) (local $b i32)
+    (local $p i32) (local $q i32) (local $a i32) (local $b i32)
     ;; TreeEq
     (if (i64.eq (local.get $rule) (i64.const 0)) (then
       (call $tree_rule (i64.const 0) (local.get $lhs) (local.get $rhs) (local.get $witnesses))
@@ -183,20 +170,20 @@
     ;; ForceResultEq
     (if (i64.eq (local.get $rule) (i64.const 1)) (then
       (call $arity (local.get $witnesses) (i32.const 3))
-      (local.set $p (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 0) (i32.const 2)))))
-      (local.set $q (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))))
+      (local.set $p (call $witness_claim (local.get $witnesses) (i32.const 0)))
+      (local.set $q (call $witness_claim (local.get $witnesses) (i32.const 1)))
       (local.set $a (call $right (local.get $p)))
       (local.set $b (call $right (local.get $q)))
       (call $premise (i64.const 3) (local.get $p) (local.get $lhs) (local.get $a))
       (call $premise (i64.const 3) (local.get $q) (local.get $rhs) (local.get $b))
-      (call $premise (i64.const 0) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 2) (i32.const 2)))) (local.get $a) (local.get $b))
+      (call $premise (i64.const 0) (call $witness_claim (local.get $witnesses) (i32.const 2)) (local.get $a) (local.get $b))
       (return (i64.const 0))))
     (if (i32.or (i32.or (i64.eq (local.get $rule) (i64.const 2)) (i64.eq (local.get $rule) (i64.const 8)))
         (i32.or (i64.eq (local.get $rule) (i64.const 11)) (i32.or (i64.eq (local.get $rule) (i64.const 24))
           (i64.eq (local.get $rule) (i64.const 25)))))
       (then (call $arity (local.get $witnesses) (i32.const 2)))
       (else (call $arity (local.get $witnesses) (i32.const 1))))
-    (local.set $p (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 0) (i32.const 2)))))
+    (local.set $p (call $witness_claim (local.get $witnesses) (i32.const 0)))
     ;; EqApplication
     (if (i64.eq (local.get $rule) (i64.const 4)) (then
       (call $mapped (i32.const 0) (local.get $lhs) (local.get $rhs) (local.get $p))
@@ -257,7 +244,7 @@
     (if (i64.eq (local.get $rule) (i64.const 2)) (then
       (call $same (local.get $lhs) (call $map (i32.const 0) (local.get $a)))
       (call $premise (i64.const 1) (local.get $p) (local.get $a) (local.get $b))
-      (call $premise (i64.const 2) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))) (local.get $b) (local.get $rhs))
+      (call $premise (i64.const 2) (local.tee $q (call $witness_claim (local.get $witnesses) (i32.const 1))) (local.get $b) (local.get $rhs))
       (return (i64.const 4))))
     ;; ForceToEncodeStrict
     (if (i64.eq (local.get $rule) (i64.const 7)) (then
@@ -271,12 +258,12 @@
     ;; EvalEq
     (if (i64.eq (local.get $rule) (i64.const 8)) (then
       (call $premise (i64.const 1) (local.get $p) (local.get $a) (local.get $rhs))
-      (call $premise (i64.const 0) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))) (local.get $a) (local.get $lhs))
+      (call $premise (i64.const 0) (local.tee $q (call $witness_claim (local.get $witnesses) (i32.const 1))) (local.get $a) (local.get $lhs))
       (return (i64.const 1))))
     ;; Trans
     (if (i64.eq (local.get $rule) (i64.const 11)) (then
       (call $premise (i64.const 0) (local.get $p) (local.get $lhs) (local.get $b))
-      (call $premise (i64.const 0) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))) (local.get $b) (local.get $rhs))
+      (call $premise (i64.const 0) (local.tee $q (call $witness_claim (local.get $witnesses) (i32.const 1))) (local.get $b) (local.get $rhs))
       (return (i64.const 0))))
     ;; ForceToEncodeShallow
     (if (i64.eq (local.get $rule) (i64.const 16)) (then
@@ -287,79 +274,82 @@
     ;; ForceEq
     (if (i64.eq (local.get $rule) (i64.const 24)) (then
       (call $premise (i64.const 0) (local.get $p) (local.get $a) (local.get $lhs))
-      (call $premise (i64.const 3) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))) (local.get $a) (local.get $rhs))
+      (call $premise (i64.const 3) (local.tee $q (call $witness_claim (local.get $witnesses) (i32.const 1))) (local.get $a) (local.get $rhs))
       (return (i64.const 3))))
     ;; ThinkSelection
     (if (i64.eq (local.get $rule) (i64.const 25)) (then
       (call $same (local.get $lhs) (call $map (i32.const 1) (local.get $a)))
       (call $premise (i64.const 1) (local.get $p) (local.get $a) (local.get $b))
-      (call $premise (i64.const 6) (i32.load (i32.add (i32.const 64) (i32.shl (i32.const 1) (i32.const 2)))) (local.get $b) (local.get $rhs))
+      (call $premise (i64.const 6) (local.tee $q (call $witness_claim (local.get $witnesses) (i32.const 1))) (local.get $b) (local.get $rhs))
       (return (i64.const 4))))
     unreachable)
 
   (func $collect (param $combination i32) (result i32)
-    (local $lhs i32) (local $rhs i32) (local $kind i64)
+    (local $lhs i32) (local $rhs i32) (local $operation i32) (local $witnesses i32) (local $kind i64)
     (call $arity (local.get $combination) (i32.const 6))
-    (local.set $lhs (call $at (global.get $combination_view) (i32.const 3)))
-    (local.set $rhs (call $at (global.get $combination_view) (i32.const 4)))
-    (local.set $kind (call $exchange (call $u64 (call $at (global.get $combination_view) (i32.const 2)))
-      (local.get $lhs) (local.get $rhs) (call $at (global.get $combination_view) (i32.const 5))))
+    (local.set $lhs (call $at (local.get $combination) (i32.const 3)))
+    (local.set $rhs (call $at (local.get $combination) (i32.const 4)))
+    (local.set $operation (call $at (local.get $combination) (i32.const 2)))
+    (local.set $witnesses (call $at (local.get $combination) (i32.const 5)))
+    (local.set $kind (call $exchange (call $u64 (local.get $operation)) (local.get $lhs) (local.get $rhs) (local.get $witnesses)))
     (call $issue (local.get $combination) (local.get $lhs) (local.get $rhs) (local.get $kind)))
 
   (func $validate_witnesses (param $combination i32)
     (local $collector i32) (local $witnesses i32)
     (local $witness i32) (local $author i32)
     (local $count i32) (local $index i32)
-    (local.set $collector (call $at (global.get $combination_view) (i32.const 1)))
-    (local.set $witnesses (call $at (global.get $combination_view) (i32.const 5)))
+    (local.set $collector (call $at (local.get $combination) (i32.const 1)))
+    (local.set $witnesses (call $at (local.get $combination) (i32.const 5)))
     (local.set $count (call $size (local.get $witnesses)))
-    (if (i32.lt_u (memory.size) (i32.shr_u (i32.add (i32.shl (local.get $count) (i32.const 2)) (i32.const 65599)) (i32.const 16))) (then (call $require (i32.ne (memory.grow (i32.sub (i32.shr_u (i32.add (i32.shl (local.get $count) (i32.const 2)) (i32.const 65599)) (i32.const 16)) (memory.size))) (i32.const -1)))))
-    (global.set $witnesses_view (local.get $witnesses))
+    (call $require (i32.le_u (local.get $count) (i32.const 1048576)))
     (block $done (loop $next
       (br_if $done (i32.eq (local.get $index) (local.get $count)))
-      (local.set $witness (call $at (global.get $witnesses_view) (local.get $index)))
-      (i32.store (i32.add (i32.const 64) (i32.shl (local.get $index) (i32.const 2))) (call $claim (local.get $witness)))
-      (local.set $author (call $at (global.get $coupon_view) (i32.const 0)))
+      (local.set $witness (call $at (local.get $witnesses) (local.get $index)))
+      (drop (call $claim (local.get $witness)))
+      (local.set $author (call $at (call $at (local.get $witness) (i32.const 0)) (i32.const 0)))
       (block $accepted
         (if (i32.eqz (call $type (local.get $author))) (then
           (if (i32.eq (call $data_type (local.get $author)) (i32.const 1)) (then
             (br_if $accepted (i32.and (i32.eqz (call $is_tag (local.get $author)))
                                      (i64.eqz (call $len (local.get $author)))))))))
         (call $same (local.get $collector) (local.get $author)))
+
       (local.set $index (i32.add (local.get $index) (i32.const 1)))
-      (br $next))))
+      (br $next)))
+     )
 
   (func $reconstruct (param $combination i32) (result i32)
     (local $lhs i32) (local $fields i32) (local $witnesses i32) (local $tag i32)
     (call $arity (local.get $combination) (i32.const 6))
-    (local.set $lhs (call $at (global.get $combination_view) (i32.const 3)))
+    (local.set $lhs (call $at (local.get $combination) (i32.const 3)))
     (call $require (call $is_tag (local.get $lhs)))
-    (local.set $fields (call $at (global.get $combination_view) (i32.const 4)))
-    (local.set $witnesses (call $at (global.get $combination_view) (i32.const 5)))
+    (local.set $fields (call $at (local.get $combination) (i32.const 4)))
+    (local.set $witnesses (call $at (local.get $combination) (i32.const 5)))
     (local.set $tag (call $tag_unchecked (local.get $fields)))
     (call $tree_rule (i64.const 1) (local.get $lhs) (local.get $tag) (local.get $witnesses))
+
     (local.get $tag))
 
   (func $issue (param $combination i32) (param $lhs i32) (param $rhs i32) (param $kind i64) (result i32)
-    (i32.store (i32.add (i32.const 32) (i32.shl (i32.const 0) (i32.const 2))) (call $integer (local.get $kind)))
-    (i32.store (i32.add (i32.const 32) (i32.shl (i32.const 1) (i32.const 2))) (local.get $lhs))
-    (i32.store (i32.add (i32.const 32) (i32.shl (i32.const 2) (i32.const 2))) (local.get $rhs))
-    (local.set $rhs (call $create_ref (call $create_tree (i32.const 32) (i32.const 3))))
-    (i32.store (i32.add (i32.const 16) (i32.shl (i32.const 0) (i32.const 2))) (call $at (global.get $combination_view) (i32.const 1)))
-    (i32.store (i32.add (i32.const 16) (i32.shl (i32.const 1) (i32.const 2))) (local.get $rhs))
+    (local $reference i32)
+    (i32.store (i32.const 32) (call $integer (local.get $kind)))
+    (i32.store (i32.const 36) (local.get $lhs))
+    (i32.store (i32.const 40) (local.get $rhs))
+    (local.set $reference (call $create_ref (call $create_tree (i32.const 32) (i32.const 3))))
+    (i32.store (i32.const 16) (call $at (local.get $combination) (i32.const 1)))
+    (i32.store (i32.const 20) (local.get $reference))
     (call $create_tag (call $create_tree (i32.const 16) (i32.const 2))))
 
   (func (export "_fix_apply") (param $combination i32) (result i32)
-    (local $lhs i32) (local $rhs i32)
+    (local $lhs i32) (local $rhs i32) (local $operation i32)
     (call $arity (local.get $combination) (i32.const 6))
-    (global.set $combination_view (local.get $combination))
     (call $validate_witnesses (local.get $combination))
-    (local.set $lhs (call $at (global.get $combination_view) (i32.const 3)))
-    (local.set $rhs (call $at (global.get $combination_view) (i32.const 4)))
+    (local.set $lhs (call $at (local.get $combination) (i32.const 3)))
+    (local.set $rhs (call $at (local.get $combination) (i32.const 4)))
+    (local.set $operation (call $at (local.get $combination) (i32.const 2)))
     (if (i32.and
-          (i32.and
-            (i64.eq (call $u64 (call $at (global.get $combination_view) (i32.const 2))) (i64.const 5))
-            (call $is_tag (local.get $lhs)))
+          (i32.and (i64.eq (call $u64 (local.get $operation)) (i64.const 5))
+                   (call $is_tag (local.get $lhs)))
           (i32.eqz (call $is_tag (local.get $rhs))))
       (then
         (local.set $rhs (call $reconstruct (local.get $combination)))
@@ -408,4 +398,6 @@
     (call $rule (call $resolve (local.get $operation) (local.get $lhs))
       (local.get $lhs) (local.get $rhs) (local.get $witnesses)))
 
+  (func $witness_claim (param $witnesses i32) (param $index i32) (result i32)
+    (call $claim (call $at (local.get $witnesses) (local.get $index))))
 )

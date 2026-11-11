@@ -257,15 +257,9 @@ pub extern "C" fn wasm_rt_free_funcref_table(table: *mut wasm_rt_funcref_table_t
     todo!();
 }
 
-/**
- * Stop execution immediately and jump back to the call to `wasm_rt_impl_try`.
- * The result of `wasm_rt_impl_try` will be the provided trap reason.
- *
- * This is typically called by the generated code, and not the embedder.
- */
 #[unsafe(no_mangle)]
-pub extern "C" fn wasm_rt_trap(trap: wasm_rt_trap_t) {
-    panic!("wasm rt trap: {trap}");
+pub extern "C" fn wasm_rt_trap(trap: wasm_rt_trap_t) -> ! {
+    crate::continuation::trap(trap)
 }
 
 pub unsafe fn retain_memory(index: usize, handle: crate::handles::Reference) {

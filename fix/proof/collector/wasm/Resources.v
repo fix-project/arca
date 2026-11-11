@@ -1,327 +1,35 @@
-From FixProof.Collector.wasm Require Import Backend Support.
-From Wasm Require Import properties type_preservation.
+Module WasmResources.
 Import ListNotations.
 Local Open Scope list_scope.
-
-Module WasmResources (C : COLLECTOR_CONTEXT).
-  Import C S R.
-  Module Support := WasmSupport C.
+Local Transparent Archi.big_endian.
+  Import C S.
+  Module Support := WasmSupport.
   Import Support.
   #[local] Existing Instance C.mem.
   #[local] Existing Instance C.collector_host.
 
-  Local Notation ext := G.E.H.W.extern_value.
-  Local Notation treeh := G.E.H.W.H.HTreeObj.
+  Definition memory_capacity store := exists page,
+    s_mems store = [page] /\ meminst_type page = Build_limits 1%N None /\ mem_length page = page_size.
 
-  Lemma collector_table_address index :
-    index < 10 ->
-    lookup_N (inst_tables G.E.collector_instance) (N.of_nat index) = Some (N.of_nat index).
+  Lemma initial_descriptor_capacity :
+    G.E.H.within_capacity (G.E.H.initial (G.E.H.H.HTreeObj combination)).
+  Proof. apply G.E.H.initial_capacity. Qed.
+
+  Lemma execution_descriptor_capacity state store frame instructions next updated following remaining :
+    G.E.H.within_capacity state ->
+    reduce_trans (state, store, frame, instructions) (next, updated, following, remaining) ->
+    G.E.H.within_capacity next.
   Proof.
-    intro Bound; rewrite (proj1 G.E.collector_resource_indices).
-    unfold lookup_N; rewrite Nat2N.id.
-    do 10 (destruct index as [|index]; [reflexivity|]); lia.
+    intros Within Run; exact (G.E.collector_runs_capacity combination true true handle_bytes
+      (state, store, frame, instructions) (next, updated, following, remaining) Run Within).
   Qed.
 
-  Lemma tree_attachment_available store node index capacity :
-    store_typing store -> view_capacity store (N.of_nat index) capacity ->
-    capacity <= List.length (get_tree_raw node) ->
-    (Z.of_nat index < 2 ^ 32)%Z ->
-    (N.of_nat (List.length (get_tree_raw node)) <= native_table_limit)%N ->
-    exists next, G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []).
-  Proof.
-    intros Typed [table [Entry [Element [Maximum [Minimum Size]]]]] Capacity Bound Limit.
-    unfold stab in Entry.
-    destruct (lookup_N (inst_tables G.E.collector_instance) (N.of_nat index))
-      as [address|] eqn:Address; [|discriminate].
-    change (lookup_N (s_tables store) address = Some table) in Entry.
-    eexists; eapply G.E.H.tree_attachment_bounded with (address := address) (before := table).
-    - rewrite (wasm_nat_to_N index Bound); exact Address.
-    - exact Entry.
-    - exact Typed.
-    - exact Element.
-    - exact Maximum.
-    - eapply N.le_trans; [exact Minimum|].
-      lia.
-    - unfold tab_size; lia.
-    - exact Limit.
-  Qed.
-
-  Lemma tree_attachment_capacity store node index capacity next :
-    (Z.of_nat index < 2 ^ 32)%Z ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    view_capacity store (N.of_nat index) capacity ->
-    view_capacity next (N.of_nat index) (List.length (get_tree_raw node)).
-  Proof.
-    intros Bound Attached [table [Entry [Element [Maximum [Minimum Size]]]]].
-    destruct (G.E.H.tree_attachment_result_shape _ _ _ _ _ Attached)
-      as [address [before [Address [Before Next]]]].
-    rewrite (wasm_nat_to_N index Bound) in Address.
-    unfold stab in Entry; rewrite Address in Entry.
-    change (lookup_N (s_tables store) address = Some table) in Entry.
-    rewrite Before in Entry; inversion Entry; subst table next.
-    exists (G.E.H.Tables.tree_attachment before (get_tree_raw node)); split.
-    - unfold stab; rewrite Address.
-      change (lookup_N
-        (G.E.H.replace_resource (s_tables store) address before
-          (G.E.H.Tables.tree_attachment before (get_tree_raw node))) address =
-        Some (G.E.H.Tables.tree_attachment before (get_tree_raw node))).
-      unfold lookup_N, G.E.H.replace_resource; rewrite nth_error_set_eq; reflexivity.
-    - split; [reflexivity|].
-      split; [exact Maximum|].
-      split; [apply N.le_refl|].
-      change (List.length (map G.E.H.Tables.externref (get_tree_raw node)) <=
-        List.length (get_tree_raw node)).
-      rewrite List.length_map; lia.
-  Qed.
-
-  Lemma tree_attachment_view store node index next :
-    (Z.of_nat index < 2 ^ 32)%Z ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    tree_view next (N.of_nat index) node.
-  Proof.
-    intros Bound Attached offset value Entry.
-    pose proof (G.E.H.tree_attachment_result_elements _ _ _ _ _ _ _ Attached Entry) as Found.
-    rewrite (wasm_nat_to_N index Bound) in Found; exact Found.
-  Qed.
-
-  Lemma tree_attachment_memory_capacity store node index next :
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    memory_capacity store -> memory_capacity next.
-  Proof.
-    intros Attached [page [Memory [TypeOf Length]]].
-    destruct (G.E.H.tree_attachment_result_shape _ _ _ _ _ Attached)
-      as [address [before [Address [Before Next]]]].
-    subst next; exists page; repeat split; assumption.
-  Qed.
-
-  Lemma tree_attachment_other_capacity store node index next other capacity :
-    index < 10 -> other < 10 -> index <> other ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    view_capacity store (N.of_nat other) capacity ->
-    view_capacity next (N.of_nat other) capacity.
-  Proof.
-    intros Index Other Different Attached [table [Entry Shape]].
-    exists table; split; [|exact Shape].
-    rewrite <- Entry.
-    eapply G.E.H.tree_attachment_result_other_view
-      with (target := N.of_nat index) (address := N.of_nat other).
-    - exact Attached.
-    - rewrite (wasm_nat_to_N index ltac:(lia)); apply collector_table_address; exact Index.
-    - apply collector_table_address; exact Other.
-    - lia.
-  Qed.
-
-  Lemma tree_attachment_other_element store node index next other offset :
-    index < 10 -> other < 10 -> index <> other ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    stab_elem next G.E.collector_instance (N.of_nat other) offset =
-      stab_elem store G.E.collector_instance (N.of_nat other) offset.
-  Proof.
-    intros Index Other Different Attached.
-    eapply G.E.H.tree_attachment_result_other_table
-      with (target := N.of_nat index) (address := N.of_nat other).
-    - exact Attached.
-    - rewrite (wasm_nat_to_N index ltac:(lia)); apply collector_table_address; exact Index.
-    - apply collector_table_address; exact Other.
-    - lia.
-  Qed.
-
-  Lemma tree_attachment_other_view store node index next other viewed :
-    index < 10 -> other < 10 -> index <> other ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    tree_view store (N.of_nat other) viewed -> tree_view next (N.of_nat other) viewed.
-  Proof.
-    intros Index Other Different Attached View offset value Entry.
-    rewrite (tree_attachment_other_element _ _ _ _ _ _ Index Other Different Attached).
-    apply View; exact Entry.
-  Qed.
-
-  Lemma tree_attachment_retained_claims store node index next witnesses :
-    index < 10 -> index <> 9 ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    retained_claims store witnesses -> retained_claims next witnesses.
-  Proof.
-    intros Index Different Attached Retained offset witness Entry.
-    change (stab_elem next G.E.collector_instance (N.of_nat 9) (N.of_nat offset) =
-      Some (G.E.H.Tables.externref (supplied_claim witness))).
-    rewrite (tree_attachment_other_element store node index next 9 (N.of_nat offset)
-      Index ltac:(lia) Different Attached).
-    apply Retained; exact Entry.
-  Qed.
-
-  Lemma firstn_set_nth_before {A} (values : list A) default value count index :
-    count <= List.length values -> count <= index ->
-    firstn count (seq.set_nth default values index value) = firstn count values.
-  Proof.
-    revert values index; induction count as [|count IH]; intros values index Size Bound;
-      [reflexivity|].
-    destruct values as [|head values]; [cbn in Size; lia|].
-    destruct index as [|index]; [lia|].
-    cbn; f_equal; apply IH; cbn in Size; lia.
-  Qed.
-
-  Lemma tree_attachment_first_two_tables store node index next :
-    2 <= index -> index < 10 ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    firstn 2 (s_tables next) = firstn 2 (s_tables store).
-  Proof.
-    intros Lower Upper Attached.
-    destruct (G.E.H.tree_attachment_result_shape _ _ _ _ _ Attached)
-      as [address [before [Address [Before Next]]]].
-    rewrite (wasm_nat_to_N index ltac:(lia)), (collector_table_address index Upper) in Address.
-    inversion Address; subst address.
-    assert (Size : index < List.length (s_tables store)).
-    { apply (proj1 (List.nth_error_Some _ _)).
-      unfold lookup_N in Before; rewrite Nat2N.id in Before; rewrite Before; discriminate. }
-    subst next; cbn [upd_s_mem upd_s_table].
-    unfold G.E.H.replace_resource; rewrite Nat2N.id.
-    apply firstn_set_nth_before; lia.
-  Qed.
-
-  Definition table_replacement store index replacement :=
-    upd_s_table store (seq.set_nth replacement (s_tables store) index replacement).
-
-  Lemma table_replacement_extension store index before replacement :
-    nth_error (s_tables store) index = Some before ->
-    table_extension before replacement = true ->
-    store_extension store (table_replacement store index replacement) = true.
-  Proof.
-    intros Present Extension.
-    change ((((((component_extension func_extension (s_funcs store) (s_funcs store) &&
-      component_extension table_extension (s_tables store)
-        (seq.set_nth replacement (s_tables store) index replacement)) &&
-      component_extension mem_extension (s_mems store) (s_mems store)) &&
-      component_extension global_extension (s_globals store) (s_globals store)) &&
-      component_extension elem_extension (s_elems store) (s_elems store)) &&
-      component_extension data_extension (s_datas store) (s_datas store))%bool = true).
-    rewrite (component_extension_same_refl (s_funcs store) func_extension_refl),
-      (component_extension_same_refl (s_mems store) mem_extension_refl),
-      (component_extension_same_refl (s_globals store) global_extension_refl),
-      (component_extension_same_refl (s_elems store) elem_extension_refl),
-      (component_extension_same_refl (s_datas store) data_extension_refl).
-    repeat rewrite Bool.andb_true_r; cbn.
-    apply component_extension_update with (x := before).
-    - exact table_extension_refl.
-    - exact Present.
-    - exact Extension.
-  Qed.
-
-  Lemma table_replacement_typing store index before replacement typ :
-    nth_error (s_tables store) index = Some before -> store_typing store ->
-    store_extension store (table_replacement store index replacement) = true ->
-    tableinst_typing (table_replacement store index replacement) replacement = Some typ ->
-    store_typing (table_replacement store index replacement).
-  Proof.
-    intros Present Typed Extension After.
-    destruct store as [functions oldtables memories globals elements data].
-    destruct Typed as [Functions [Tables [Memories [Globals [Elements Data]]]]].
-    cbn [table_replacement store_typing upd_s_table]; repeat split.
-    - eapply store_extension_funcs_typing; eassumption.
-    - eapply Forall_set.
-      + eapply store_extension_tables_typing; eassumption.
-      + exists typ; exact After.
-      + apply (ssrbool.introT ssrnat.ltP).
-        apply (proj1 (List.nth_error_Some _ _)); rewrite Present; discriminate.
-    - eapply store_extension_mems_typing; eassumption.
-    - eapply store_extension_globals_typing; eassumption.
-    - eapply store_extension_elems_typing; eassumption.
-    - eapply store_extension_datas_typing; eassumption.
-  Qed.
-
-  Lemma table_replacement_lookup store index replacement other :
-    index < List.length (s_tables store) -> index <> other ->
-    lookup_N (s_tables (table_replacement store index replacement)) (N.of_nat other) =
-      lookup_N (s_tables store) (N.of_nat other).
-  Proof.
-    intros Bound Different.
-    change (nth_error (seq.set_nth replacement (s_tables store) index replacement)
-      (N.to_nat (N.of_nat other)) = nth_error (s_tables store) (N.to_nat (N.of_nat other))).
-    rewrite Nat2N.id, nth_error_set_neq; [reflexivity|lia|].
-    apply (ssrbool.introT ssrnat.ltP); exact Bound.
-  Qed.
-
-  Lemma table_replacement_capacity store index replacement other capacity :
-    index < List.length (s_tables store) -> other < 10 -> index <> other ->
-    view_capacity store (N.of_nat other) capacity ->
-    view_capacity (table_replacement store index replacement) (N.of_nat other) capacity.
-  Proof.
-    intros Bound Other Different [table [Entry Shape]].
-    exists table; split; [|exact Shape].
-    unfold stab in *; rewrite (collector_table_address other Other) in *.
-    rewrite (table_replacement_lookup _ _ _ _ Bound Different); exact Entry.
-  Qed.
-
-  Lemma table_replacement_element store index replacement other offset :
-    index < List.length (s_tables store) -> other < 10 -> index <> other ->
-    stab_elem (table_replacement store index replacement) G.E.collector_instance
-      (N.of_nat other) offset = stab_elem store G.E.collector_instance (N.of_nat other) offset.
-  Proof.
-    intros Bound Other Different; unfold stab_elem.
-    rewrite (collector_table_address other Other),
-      (table_replacement_lookup _ _ _ _ Bound Different); reflexivity.
-  Qed.
-
-  Lemma table_replacement_view store index replacement other node :
-    index < List.length (s_tables store) -> other < 10 -> index <> other ->
-    tree_view store (N.of_nat other) node ->
-    tree_view (table_replacement store index replacement) (N.of_nat other) node.
-  Proof.
-    intros Bound Other Different View offset value Entry.
-    rewrite (table_replacement_element _ _ _ _ _ Bound Other Different).
-    apply View; exact Entry.
-  Qed.
-
-  Lemma table_replacement_memory_capacity store index replacement :
-    memory_capacity store -> memory_capacity (table_replacement store index replacement).
-  Proof. unfold memory_capacity, table_replacement; cbn [upd_s_table]; auto. Qed.
-
-  Lemma table_replacement_first_two_tables store index replacement :
-    2 <= index -> index < List.length (s_tables store) ->
-    firstn 2 (s_tables (table_replacement store index replacement)) = firstn 2 (s_tables store).
-  Proof.
-    intros Lower Upper; unfold table_replacement; cbn [upd_s_table].
-    apply firstn_set_nth_before; lia.
-  Qed.
-
-  Lemma blob_read_capacity store arguments next result index capacity :
-    G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
-    view_capacity store index capacity -> view_capacity next index capacity.
-  Proof.
-    intros Read Capacity; eapply view_capacity_same_tables; [|exact Capacity].
-    eapply G.E.H.blob_read_result_tables; exact Read.
-  Qed.
-
-  Lemma blob_read_view store arguments next result index node :
-    G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
-    tree_view store index node -> tree_view next index node.
-  Proof.
-    intros Read View; eapply tree_view_same_tables; [|exact View].
-    eapply G.E.H.blob_read_result_tables; exact Read.
-  Qed.
-
-  Lemma blob_read_retained_claims store arguments next result witnesses :
-    G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
-    retained_claims store witnesses -> retained_claims next witnesses.
-  Proof.
-    intros Read Retained; eapply retained_claims_same_tables; [|exact Retained].
-    eapply G.E.H.blob_read_result_tables; exact Read.
-  Qed.
-
-  Lemma blob_read_memory_capacity store arguments next result :
-    G.E.H.blob_read_result G.E.collector_instance store arguments = Some (next, result) ->
+  Lemma blob_read_memory_capacity state store arguments next result :
+    G.E.H.blob_read_result G.E.collector_instance state store arguments = Some (next, result) ->
     memory_capacity store -> memory_capacity next.
   Proof.
     intros Read [page [Memory [TypeOf Length]]].
-    destruct (G.E.H.blob_read_result_memory_shape _ _ _ _ _ Read)
+    destruct (G.E.H.blob_read_result_memory_shape _ _ _ _ _ _ Read)
       as [address [before [after [Address [Before [AfterType [AfterLength Memories]]]]]]].
     rewrite (proj2 G.E.collector_resource_indices) in Address.
     cbn [lookup_N] in Address; inversion Address; subst address.
@@ -330,5 +38,185 @@ Module WasmResources (C : COLLECTOR_CONTEXT).
     exists after; split.
     - rewrite Memories, Memory; reflexivity.
     - rewrite AfterType, AfterLength; auto.
+  Qed.
+
+  Lemma integer_available state store locals index blob number :
+    s_funcs store = s_funcs G.E.allocated_store -> store_typing store -> memory_capacity store ->
+    G.E.H.resolve state index = Some (G.E.H.H.HBlobObj blob) ->
+    decode_u64 (get_blob_data blob) = Some number ->
+    exists next,
+      reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list [descriptor index] ++ [AI_basic (BI_call 27%N)])
+        (state, next, Build_frame locals G.E.collector_instance,
+          v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 number))]) /\
+      s_funcs next = s_funcs store /\ store_typing next /\ memory_capacity next.
+  Proof.
+    intros Functions Typed Capacity Live Decoded.
+    destruct Capacity as [before [Memory [TypeOf Length]]].
+    pose proof (decode_u64_width _ _ Decoded) as Width.
+    destruct (blob_copy_exists before 0%N (get_blob_data blob)) as [after Copied].
+    { rewrite Width, Length; vm_compute; congruence. }
+    set (next := upd_s_mem store [after]).
+    assert (Read : G.E.H.blob_read_result G.E.collector_instance state store
+      [descriptor index; word 0; word 0; word 8] = Some (next, [word 8])).
+    { eapply G.E.H.blob_read_zero_bounded; try eassumption; reflexivity. }
+    exists next; split.
+    - eapply collector_integer_executes with (page := after); try eassumption; try reflexivity.
+      pose proof (blob_copy_read _ _ _ _ Copied) as Loaded; rewrite Width in Loaded.
+      destruct (blob_copy_shape _ _ _ _ Copied) as [_ SameLength].
+      unfold load; rewrite SameLength, Length; cbn; exact Loaded.
+    - split; [reflexivity|]; split.
+      + eapply blob_copy_store_typing; eassumption.
+      + eapply blob_read_memory_capacity; [exact Read|exists before; auto].
+  Qed.
+
+  Lemma serialise_i32_width index : List.length (serialise_i32 index) = 4.
+  Proof.
+    unfold serialise_i32, Memdata.encode_int, Memdata.rev_if_be, Archi.big_endian.
+    apply bytes_of_int_length.
+  Qed.
+
+  Lemma deserialise_i32_roundtrip index : wasm_deserialise (serialise_i32 index) T_i32 = VAL_int32 index.
+  Proof.
+    unfold wasm_deserialise, serialise_i32, Memdata.decode_int, Memdata.encode_int,
+      Memdata.rev_if_be, Archi.big_endian.
+    rewrite int_of_bytes_roundtrip by (exact (Wasm_int.Int32.unsigned_range index)).
+    rewrite Wasm_int.Int32.repr_unsigned; reflexivity.
+  Qed.
+
+  Definition staged memory pointer indices := forall offset index,
+    nth_error indices offset = Some index ->
+    read_bytes memory (pointer + 4 * N.of_nat offset)%N 4 = Some (serialise_i32 index).
+
+  Lemma read_staged_handles memory world pointer indices values :
+    staged memory pointer indices ->
+    Forall2 (fun index value => G.E.H.resolve world index = Some value) indices values ->
+    G.E.H.read_handles memory (G.E.H.slots world) pointer (List.length indices) = Some values.
+  Proof.
+    intros Staged Live; revert pointer Staged.
+    induction Live as [|index value indices values Present Live IH]; intros pointer Staged; [reflexivity|].
+    cbn [List.length G.E.H.read_handles].
+    specialize (Staged 0 index eq_refl) as Read.
+    rewrite N.mul_0_r, N.add_0_r in Read.
+    rewrite Read; cbn [G.E.H.H.obind]; rewrite deserialise_i32_roundtrip.
+    fold (G.E.H.resolve world index); rewrite Present.
+    cbn [G.E.H.H.obind]; rewrite IH; [reflexivity|].
+    intros offset slot Field.
+    specialize (Staged (Datatypes.S offset) slot Field).
+    replace (pointer + 4 + 4 * N.of_nat offset)%N with (pointer + 4 * N.of_nat (Datatypes.S offset))%N by lia.
+    exact Staged.
+  Qed.
+
+  Lemma iota_member_bound start count index :
+    In index (seq.iota start count) -> start <= index < start + count.
+  Proof.
+    revert start; induction count as [|count IH]; intros start Member; [contradiction|].
+    cbn [seq.iota] in Member; destruct Member as [Equal|Member]; [subst; lia|].
+    specialize (IH _ Member); lia.
+  Qed.
+
+  Lemma copy_preserves_read before destination bytes after pointer count :
+    write_bytes_meminst before destination bytes = Some after ->
+    ((pointer + N.of_nat count <= destination)%N \/
+      (destination + N.of_nat (List.length bytes) <= pointer)%N) ->
+    read_bytes after pointer count = read_bytes before pointer count.
+  Proof.
+    intros Copied Apart; unfold read_bytes; f_equal; apply map_ext_in; intros offset Member.
+    apply blob_copy_preserves_other_bytes with (destination := destination) (bytes := bytes); [exact Copied|].
+    pose proof (iota_member_bound 0 count offset Member) as Bound.
+    destruct Apart; [left|right]; lia.
+  Qed.
+
+  Lemma staged_append before after pointer indices index :
+    staged before pointer indices ->
+    write_bytes_meminst before (pointer + 4 * N.of_nat (List.length indices))%N (serialise_i32 index) = Some after ->
+    staged after pointer (indices ++ [index]).
+  Proof.
+    intros Staged Copied offset slot Field.
+    destruct (Nat.lt_ge_cases offset (List.length indices)) as [Earlier|Later].
+    - rewrite nth_error_app1 in Field by exact Earlier.
+      rewrite (copy_preserves_read _ _ _ _ _ _ Copied); [apply Staged; exact Field|].
+      left; lia.
+    - assert (Bound : offset < List.length (indices ++ [index])).
+      { apply (proj1 (List.nth_error_Some _ _)); rewrite Field; discriminate. }
+      rewrite List.length_app in Bound; cbn in Bound.
+      assert (Equal : offset = List.length indices) by lia; subst offset.
+      rewrite nth_error_app2, Nat.sub_diag in Field by lia; cbn in Field; inversion Field; subst slot.
+      pose proof (blob_copy_read _ _ _ _ Copied) as Read; rewrite serialise_i32_width in Read; exact Read.
+  Qed.
+
+  Lemma tree_from_staged state store memory pointer indices values :
+    s_mems store = [memory] -> staged memory (N.of_nat pointer) indices ->
+    Forall2 (fun index value => G.E.H.resolve state index = Some value) indices values ->
+    (Z.of_nat pointer < 2 ^ 32)%Z -> List.length indices < G.E.H.capacity ->
+    G.E.H.tree_from_memory G.E.collector_instance state store (wasm_nat pointer) (wasm_nat (List.length indices)) =
+      G.E.H.allocate state (G.E.H.H.HTreeObj (create_tree values)).
+  Proof.
+    intros Memory Staged Live Pointer Bound.
+    unfold G.E.H.tree_from_memory.
+    rewrite G.E.H.word_roundtrip by exact Bound.
+    assert (Fits : Nat.leb (List.length indices) G.E.H.capacity = true) by (apply Nat.leb_le; lia).
+    rewrite Fits; unfold G.E.H.memory_zero.
+    rewrite (proj2 G.E.collector_resource_indices); cbn [lookup_N G.E.H.H.obind].
+    rewrite Memory; cbn [lookup_N G.E.H.H.obind].
+    rewrite wasm_nat_to_N by exact Pointer.
+    change (G.E.H.H.obind
+      (G.E.H.read_handles memory (G.E.H.slots state) (N.of_nat pointer) (List.length indices))
+      (fun fields => G.E.H.allocate state (G.E.H.H.HTreeObj (create_tree fields))) =
+      G.E.H.allocate state (G.E.H.H.HTreeObj (create_tree values))).
+    rewrite (read_staged_handles _ _ _ _ _ Staged Live); reflexivity.
+  Qed.
+
+  Lemma store_descriptor_run state store locals before after pointer index :
+    s_mems store = [before] -> (Z.of_nat pointer < 2 ^ 32)%Z ->
+    (N.of_nat pointer + 4 <= mem_length before)%N ->
+    write_bytes_meminst before (N.of_nat pointer) (serialise_i32 index) = Some after ->
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [word pointer; descriptor index] ++
+          [AI_basic (BI_store T_i32 None (Build_memarg 0%N 2%N))])
+      (state, upd_s_mem store [after], Build_frame locals G.E.collector_instance, []).
+  Proof.
+    intros Memory Pointer Bound Copied.
+    apply rt_step; apply r_store_success.
+    unfold smem_store; rewrite (proj2 G.E.collector_resource_indices).
+    cbn [lookup_N]; rewrite Memory; cbn [lookup_N].
+    rewrite wasm_nat_to_N by exact Pointer.
+    change (match operations.store before (N.of_nat pointer) 0%N (serialise_i32 index) 4 with
+      | Some page => Some (upd_s_mem store [page]) | None => None end = Some (upd_s_mem store [after])).
+    unfold operations.store.
+    assert (Fits : N.leb (N.of_nat pointer + 0 + N.of_nat 4) (mem_length before) = true)
+      by (apply N.leb_le; cbn; lia).
+    rewrite Fits; unfold bytes.bytes_takefill; rewrite serialise_i32_width.
+    cbn [Nat.ltb]; rewrite firstn_all2 by (rewrite serialise_i32_width; lia).
+    rewrite N.add_0_r.
+    change (match write_bytes_meminst before (N.of_nat pointer) (serialise_i32 index) with
+      | Some page => Some (upd_s_mem store [page]) | None => None end = Some (upd_s_mem store [after])).
+    rewrite Copied; reflexivity.
+  Qed.
+
+  Lemma store_descriptor_available state store locals before pointer index :
+    s_mems store = [before] -> store_typing store ->
+    meminst_type before = Build_limits 1%N None -> mem_length before = page_size ->
+    (Z.of_nat pointer < 2 ^ 32)%Z -> (N.of_nat pointer + 4 <= page_size)%N ->
+    exists after,
+      write_bytes_meminst before (N.of_nat pointer) (serialise_i32 index) = Some after /\
+      reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list [word pointer; descriptor index] ++
+            [AI_basic (BI_store T_i32 None (Build_memarg 0%N 2%N))])
+        (state, upd_s_mem store [after], Build_frame locals G.E.collector_instance, []) /\
+      store_typing (upd_s_mem store [after]) /\
+      meminst_type after = Build_limits 1%N None /\ mem_length after = page_size.
+  Proof.
+    intros Memory Typed TypeOf Length Pointer Bound.
+    destruct (blob_copy_exists before (N.of_nat pointer) (serialise_i32 index)) as [after Copied].
+    { rewrite serialise_i32_width, Length; exact Bound. }
+    exists after; split; [exact Copied|]; split.
+    - eapply store_descriptor_run; eassumption || (rewrite Length; exact Bound).
+    - split.
+      + eapply blob_copy_store_typing; eassumption.
+      + destruct (blob_copy_shape _ _ _ _ Copied) as [SameType SameLength]; rewrite SameType, SameLength; auto.
   Qed.
 End WasmResources.

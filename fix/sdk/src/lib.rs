@@ -6,8 +6,8 @@ extern crate std;
 
 #[cfg(not(feature = "std"))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    failure::report(&info.message())
 }
 
 pub use fixcoupon as coupon;
@@ -15,6 +15,7 @@ pub use fixtypes::{DataType, EncodeType, ThunkType, ValueType};
 pub use macros::apply;
 pub use macros::main;
 mod entry;
+mod failure;
 #[cfg(feature = "alloc")]
 pub use entry::arguments;
 pub use entry::{Argument, apply_remaining, error, normalize_argument, visit_arguments};
@@ -81,6 +82,8 @@ pub fn __apply<C: Combination>(
     index: u32,
     callback: impl FnOnce(&mut C) -> Result<Handle<Any>, Error>,
 ) -> u32 {
+    #[cfg(feature = "std")]
+    failure::install_hook();
     let _invocation = backend::InvocationGuard::new(index);
     let mut combination =
         C::from_combination(unsafe { Handle::from_raw(index) }).expect("invalid combination");
@@ -109,4 +112,9 @@ pub mod advice {
     pub const TITLE: &str = "fix::title";
     pub const PROGRESS: &str = "fix::progress";
     pub const CANONICALIZE: &str = "fix::canonicalize";
+}
+
+/// Completes the invocation with `value` without running destructors.
+pub fn exit(value: impl Into<backend::Value>) -> ! {
+    unsafe { ffi::exit(value.into().into_inner().into_raw()) }
 }

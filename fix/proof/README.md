@@ -1,7 +1,9 @@
 # Fix proofs
 
 The primary results are soundness and completeness of the Fix evaluation rules,
-and correctness of the coupon collector against those rules.
+and correctness of the abstract coupon collector against those rules.
+The native descriptor ABI proof connects the parsed collector binary to the
+abstract checker and issuer; see [STATUS.md](STATUS.md).
 
 | Result | Statement | Proof |
 | --- | --- | --- |
@@ -11,8 +13,8 @@ and correctness of the coupon collector against those rules.
 | Blob-content safety | Equivalent Blob Objects have identical contents | [`coupon_blob_same_data`](collector/Logic.v) |
 | Full exchange soundness | Every accepted exchange preserves the logical judgement and the assumptions of its premises | `CouponExchanges.check_sound`, `issue_conditional` in [`Exchanges.v`](collector/Exchanges.v) |
 | Evaluation certification | Every terminating evaluation has a finite trace through public exchanges; issued claims are sound | [`terminating_evaluation_is_certifiable`, `certification_sound`](collector/Completeness.v) |
-| Native validation and issuance | Execution implements the abstract exchange checker and issuer | [`exported_exchange_refinement`](collector/wasm/Entry.v) |
-| Tag reconstruction | Authorized reconstruction returns an Eval result with the supplied fields | [`exported_tree_exchange_sound`](collector/wasm/Entry.v), [`collector_reconstruction`](collector/wasm/Refinement.v) |
+| Native issuance | Returns a fresh certificate descriptor using at most six slots | [`collector_output_executes`](collector/wasm/Output.v) |
+| Native Tree loops | Check ordered premises with at most ten descriptors per child | [`native_tree_rule_executes`](collector/wasm/TreeLoop.v) |
 
 Evaluation is partial and uses big-step rules. Adequacy characterizes successful
 runs; it does not assert that every non-Value can take a step. Invalid applications
@@ -34,15 +36,17 @@ Witnesses are ordered; the collector does not search for a derivation.
 
 The abstract exchange checker is sound, including conditional authority
 propagation. The public API has 15 operations, selected by name and operand types.
-Native validation covers their 26 primitive inference cases, constructor guards,
-and Tree loops. Ordinary requests satisfy `check` and `issue`, or trap.
-`collector/wasm/Entry.v` verifies the exported dispatch and Tag reconstruction;
-`reconstruct_tag_sound` proves reconstruction against the unchanged Eval relation.
-`issue_conditional` supplies authority soundness for the issued claim. These
-statements use explicit host-interface and resource contracts.
-All 26 primitive success paths also have execution proofs with explicit comparison-readiness
-requirements: different representations of the same abstract handle can cause
-exact comparison to reject a derivation.
+The native descriptor proof covers allocation and closing, witness authentication,
+premise checking, constructors, Tree loops, operation selection, issuance,
+authority traversal, Tag reconstruction, and all 26 primitive exchange success
+paths. Checked dispatch covers all 26 primitive exchanges. The exported entry
+proof includes witness authorization, certificate issuance, and Tag reconstruction.
+The collector preserves its input descriptors and allocates immutable descriptors
+throughout an invocation. It accepts at most 1,048,576 witnesses; the proved bound
+of `64 * (witness_count + 1)` new descriptors fits within the 134,217,728-slot
+capacity when starting with the request descriptor. Native success results require
+explicit comparison readiness: different representations of the same abstract
+handle can cause exact comparison to reject a derivation.
 
 Certification completeness uses the public exchanges, with only executor Apply
 and storage Select facts as primitive computation certificates. Think, Force,
@@ -72,8 +76,7 @@ and Refs, and the native ABI returns an unsigned 64-bit integer. Full program
 substitution and the intended indistinguishability of computationally equivalent
 Thunks remain unfinished.
 
-The storage, program, and externref interfaces are assumptions
-of the proofs. The native encoding laws, privileged handle-byte identity,
+The storage and program interfaces are assumptions of the proofs. The native encoding laws, privileged handle-byte identity,
 canonicalization certificates, Runnable admission, and ELF loading still have
 unverified implementation boundaries. Resource bounds are explicit in the Wasm
 execution theorems. No proof of arbitrary program termination is claimed.
@@ -102,15 +105,14 @@ Implementation requirements are owned by the API they describe:
   comparability, full evaluation, and well-founded Tree containment.
 - [`shell/Interface.v`](shell/Interface.v): deterministic programs modelled as
   sequences of Fix Shell operations.
-- [`shell/Externref.v`](shell/Externref.v): embedding handles in Wasm externrefs.
+- [`shell/Descriptors.v`](shell/Descriptors.v): finite descriptor allocation, closing, and detachment.
 - [`shell/Privileged.v`](shell/Privileged.v): privileged exact-handle inspection.
 - [`shell/Memory.v`](shell/Memory.v): attachment through WasmCert’s memory interface.
 
 `semantics/Handle.v` contains derived relation laws, not implementation assumptions.
 The native modules assemble these interfaces in `collector/wasm/Backend.v`.
-`Refinement.v` connects the parsed collector binary to the abstract checker and
-issuer; authority soundness follows from `issue_conditional`.
-`Authors.v` verifies that in-place author compaction preserves the premise assumptions.
+The native entry proof establishes issuance under the checked witness policy;
+`issue_conditional` supplies conditional authority soundness.
 
 `computational_equiv` is computational equivalence; `handle_eqb` tests exact
 handle identity, while `compare_handles` is the Comparable-handle operation.
@@ -179,7 +181,8 @@ Bazel builds a private opam switch in its external repository cache using
 It pins OCaml, Rocq, WasmCert, and transitive package versions without changing
 or using the active opam switch. Initial provisioning builds these dependencies;
 subsequent runs reuse them. Opam builds the third-party toolchain; Bazel caches
-our proof modules individually.
+our proof modules individually. Collector execution helpers share one context
+in `collector/wasm/Entry.v`, so they are compiled and kernel-checked together.
 
 This compiles the development and independently
 kernel-checks every proof module. Separate Bazel targets let unchanged modules

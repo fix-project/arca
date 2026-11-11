@@ -4,34 +4,6 @@ load("//build:rocq.bzl", "rocq_module")
 package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
-    name = "Authority",
-    namespace = "FixProof.Collector.wasm",
-    deps = [":Backend", ":Support", ":Witnesses", ":Refinement"],
-)
-
-rocq_module(
-    name = "Resolution",
-    namespace = "FixProof.Collector.wasm",
-    deps = [":Backend", ":Support", ":Refinement"],
-)
-
-rocq_module(
-    name = "Entry",
-    namespace = "FixProof.Collector.wasm",
-    deps = [":Backend", ":Support", ":Witnesses", ":Acceptance", ":Refinement", ":Resolution", ":Authority"],
-)
-
-rocq_module(
-    name = "Acceptance",
-    namespace = "FixProof.Collector.wasm",
-    deps = [
-        ":Backend",
-        ":Support",
-        ":Witnesses",
-    ],
-)
-
-rocq_module(
     name = "Binary",
     namespace = "FixProof.Collector.wasm",
     src = ":binary_source",
@@ -42,11 +14,10 @@ rocq_module(
     namespace = "FixProof.Collector.wasm",
     deps = [
         "//fix/proof/shell:ABI",
-        "//fix/proof/shell:Externref",
+        "//fix/proof/shell:Descriptors",
         "//fix/proof/shell:Host",
         "//fix/proof/shell:Memory",
         "//fix/proof/shell:Privileged",
-        "//fix/proof/shell:Tables",
         "//fix/proof/collector:Encoding",
         "//fix/proof/collector:Exchanges",
         "//fix/proof/collector:Matching",
@@ -66,7 +37,6 @@ rocq_module(
     namespace = "FixProof.Collector.wasm",
     deps = [
         "//fix/proof/shell:ABI",
-        "//fix/proof/shell:Externref",
         "//fix/proof/shell:Host",
         "//fix/proof/collector:Matching",
         "//fix/proof/semantics:ApplyTree",
@@ -81,7 +51,6 @@ rocq_module(
     namespace = "FixProof.Collector.wasm",
     deps = [
         "//fix/proof/shell:ABI",
-        "//fix/proof/shell:Externref",
         "//fix/proof/shell:Host",
         "//fix/proof/collector:Matching",
         "//fix/proof/semantics:ApplyTree",
@@ -98,7 +67,6 @@ rocq_module(
     namespace = "FixProof.Collector.wasm",
     deps = [
         "//fix/proof/shell:ABI",
-        "//fix/proof/shell:Externref",
         "//fix/proof/semantics:Handle",
         "//fix/proof/support:WasmNatural",
         ":Binary",
@@ -106,66 +74,68 @@ rocq_module(
 )
 
 rocq_module(
-    name = "Output",
+    name = "Entry",
     namespace = "FixProof.Collector.wasm",
-    deps = [
-        ":Backend",
-        ":Support",
-    ],
-)
-
-rocq_module(
-    name = "Refinement",
-    namespace = "FixProof.Collector.wasm",
-    deps = [
-        ":Backend",
-        ":Support",
-        ":Resources",
-        ":Witnesses",
-        ":Acceptance",
-        ":Output",
-    ],
-)
-
-rocq_module(
-    name = "Support",
-    namespace = "FixProof.Collector.wasm",
-    deps = [
-        ":Backend",
-    ],
-)
-
-rocq_module(
-    name = "Resources",
-    namespace = "FixProof.Collector.wasm",
-    deps = [":Backend", ":Support"],
-)
-
-rocq_module(
-    name = "Witnesses",
-    namespace = "FixProof.Collector.wasm",
-    deps = [
-        ":Backend",
-        ":Support",
+    deps = [":Backend"],
+    includes = [
+        "Support.v",
+        "Checked.v",
+        "Resources.v",
+        "Witnesses.v",
+        "Acceptance.v",
+        "Validation.v",
+        "TreeLoop.v",
+        "Rules.v",
+        "DispatchSupport.v",
+        "GuardValidation.v",
+        "Constructors.v",
+        "Integer.v",
+        "Premise.v",
+        "MappedValidation.v",
+        "Authentication.v",
+        "AuthorityGuard.v",
+        "Authority.v",
+        "AuthorityValidation.v",
+        "TreeValidation.v",
+        "BinaryRules.v",
+        "ForceRules.v",
+        "StrictValidation.v",
+        "Dispatch.v",
+        "Prefixes.v",
+        "BinaryPrefixValidation.v",
+        "ForceValidation.v",
+        "Reconstruction.v",
+        "ThinkValidation.v",
+        "IssuePrefix.v",
+        "DirectValidation.v",
+        "CongruenceValidation.v",
+        "ThunkValidation.v",
+        "SubstitutionValidation.v",
+        "ResultValidation.v",
+        "NativeDispatch.v",
+        "Resolution.v",
+        "Exchange.v",
+        "CollectPrefix.v",
+        "Issuance.v",
+        "Output.v",
+        "Collect.v",
+        "EntryFields.v",
+        "EntryPrefix.v",
+        "EntryExecution.v",
+        "AuthorityPolicy.v",
+        "ReconstructionValidation.v",
+        "TreeEntryExecution.v",
+        "NativeSuccess.v",
+        "BinarySuccess.v",
+        "ForceSuccess.v",
+        "Export.v",
+        "Refinement.v",
     ],
 )
 
 test_suite(
     name = "check",
-    tests = [
-        ":Entry_check", ":Resolution_check", ":Authority_check",
-        ":Acceptance_check",
-        ":Binary_check",
-        ":Backend_check",
-        ":Execution_check",
-        ":Guards_check",
-        ":Layout_check",
-        ":Output_check",
-        ":Refinement_check",
-        ":Support_check",
-        ":Resources_check",
-        ":Witnesses_check",
-    ],
+    tests = [":Entry_check", ":Binary_check", ":Backend_check", ":Execution_check", ":Guards_check", ":Layout_check"],
     tags = ["manual", "proof"],
 )
 

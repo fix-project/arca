@@ -1,5 +1,5 @@
 use super::{evaluation::Evaluation, test_program, test_runtime};
-use fixruntime::{Blob, Handle, Thunk, Tree, stdlib};
+use fixruntime::{Blob, Handle, Runtime, Thunk, Tree, stdlib};
 use kernel::prelude::Vec;
 
 #[kernel::test]
@@ -207,5 +207,110 @@ fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
         }
         let result = evaluator.eval(inputs[1]);
         assert!(storage.equals(result, values[1]).unwrap());
+    }
+}
+
+#[kernel::test]
+fn collector_rejects_witness_lists_above_its_limit() {
+    let runtime = test_runtime();
+    let storage = runtime.storage();
+    let collector = test_program(storage, kernel::testing::fixture("FIX_COLLECTOR"));
+    let value: Handle = storage.add_blob(b"leaf").into();
+    let equivalent = storage.add_blob(&0u64.to_le_bytes());
+    let claim = storage.add_tree(&[equivalent.into(), value, value]);
+    let kernel_author = storage.add_tree(&[]);
+    let tag = storage
+        .add_tree(&[kernel_author.into(), claim.into_ref().into()])
+        .tag_descriptor();
+    let witness = storage.add_tree(&[tag.into(), claim.into()]);
+    let count = fixruntime::coupon::MAX_WITNESSES + 1;
+    let fields = storage.add_tree(&kernel::prelude::vec![value; count]);
+    let witnesses = storage.add_tree(&kernel::prelude::vec![witness.into(); count]);
+    let request = storage.add_tree(&[
+        Blob::literal(b"").unwrap().into(),
+        collector.into(),
+        equivalent.into(),
+        fields.into(),
+        fields.into(),
+        witnesses.into(),
+    ]);
+    let result = runtime.execute_privileged(request).unwrap();
+    let result = Tree::try_from(result).unwrap();
+    assert!(!result.is_tag());
+    let fields = storage.get_tree(result).unwrap();
+    assert_eq!(fields.len(), 2);
+    assert_eq!(
+        storage
+            .get_blob(Blob::try_from(fields[0]).unwrap())
+            .unwrap()
+            .as_ref(),
+        b"Wasm.trap"
+    );
+    assert_eq!(
+        storage
+            .get_blob(Blob::try_from(fields[1]).unwrap())
+            .unwrap()
+            .as_ref(),
+        5u32.to_le_bytes()
+    );
+}
+
+#[kernel::test]
+fn rust_sdk_returns_complete_panic_messages() {
+    let runtime = test_runtime();
+    let storage = runtime.storage();
+    for fixture in ["FIX_SDK_PANIC", "FIX_SDK_STD_PANIC"] {
+        let program = test_program(storage, kernel::testing::fixture(fixture));
+        let long_message = kernel::prelude::vec![b'x'; 70000];
+        for (mode, expected) in [
+            (0u64, b"simple panic".as_slice()),
+            (1, "failed λ with value 42".as_bytes()),
+            (2, long_message.as_slice()),
+            (3, b"Fix procedure failed: WrongType".as_slice()),
+            (4, b"owned panic message".as_slice()),
+        ] {
+            if mode == 4 && fixture != "FIX_SDK_STD_PANIC" {
+                continue;
+            }
+            let request = storage.add_tree(&[
+                Blob::literal(b"").unwrap().into(),
+                program.into(),
+                storage.add_blob(&mode.to_le_bytes()).into(),
+            ]);
+            let result = runtime.execute_privileged(request).unwrap();
+            let repeated = runtime.execute_privileged(request).unwrap();
+            assert!(storage.equals(result, repeated).unwrap());
+            let result = Tree::try_from(result).unwrap();
+            assert!(!result.is_tag());
+            let fields = storage.get_tree(result).unwrap();
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                storage
+                    .get_blob(Blob::try_from(fields[0]).unwrap())
+                    .unwrap()
+                    .as_ref(),
+                b"Rust.panic"
+            );
+            assert_eq!(
+                storage
+                    .get_blob(Blob::try_from(fields[1]).unwrap())
+                    .unwrap()
+                    .as_ref(),
+                expected
+            );
+        }
+        let request = storage.add_tree(&[
+            Blob::literal(b"").unwrap().into(),
+            program.into(),
+            storage.add_blob(&5u64.to_le_bytes()).into(),
+        ]);
+        let result = runtime.execute_privileged(request).unwrap();
+        assert_eq!(
+            storage
+                .get_blob(Blob::try_from(result).unwrap())
+                .unwrap()
+                .as_ref(),
+            b"early return"
+        );
     }
 }

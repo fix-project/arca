@@ -100,6 +100,26 @@ fn value(directory: &Path, arguments: &[&str]) -> String {
     text(run(directory, arguments, b"", 0))
 }
 
+fn assert_error(directory: &Path, result: &str, marker: &str, payload: &[u8]) {
+    run(directory, &["is-tag", result], b"", 1);
+    let fields = value(directory, &["read-tree", result]);
+    let fields: Vec<_> = fields.lines().collect();
+    assert_eq!(fields.len(), 2);
+    assert_eq!(
+        run(directory, &["read-blob", fields[0]], b"", 0),
+        marker.as_bytes()
+    );
+    assert_eq!(run(directory, &["read-blob", fields[1]], b"", 0), payload);
+}
+
+fn assert_trap(directory: &Path, result: &str, code: u32) {
+    assert_error(directory, result, "Wasm.trap", &code.to_le_bytes());
+}
+
+fn assert_panic(directory: &Path, result: &str, message: &str) {
+    assert_error(directory, result, "Rust.panic", message.as_bytes());
+}
+
 fn claim(directory: &Path, coupon: &str) -> Vec<String> {
     let fields = value(directory, &["read-tree", coupon]);
     let reference = fields.lines().nth(1).unwrap();
@@ -112,8 +132,8 @@ fn claim(directory: &Path, coupon: &str) -> Vec<String> {
         .collect()
 }
 
-/// Requests one scheduler mode through `schedule`, returning the claimed result.
-fn evaluate(
+/// Requests one scheduler mode through `schedule`, returning its raw result.
+fn evaluate_raw(
     directory: &Path,
     mode: &str,
     scheduler: &str,
@@ -128,7 +148,18 @@ fn evaluate(
     );
     let mut arguments = globals.to_vec();
     arguments.extend(["schedule", "--trusted-tagger", "coupon-collector", &request]);
-    let output = text(run(directory, &arguments, b"", status));
+    text(run(directory, &arguments, b"", status))
+}
+
+fn evaluate(
+    directory: &Path,
+    mode: &str,
+    scheduler: &str,
+    input: &str,
+    globals: &[&str],
+    status: i32,
+) -> String {
+    let output = evaluate_raw(directory, mode, scheduler, input, globals, status);
     if status != 0 || globals.contains(&"--memoize=never") {
         return output;
     }
@@ -337,7 +368,12 @@ fn compiler_certificates() {
         &["create-tree", &metadata, "compile", &counterfeit],
     );
     let application = value(&directory, &["create-application-thunk", &application]);
-    evaluate(&directory, "think", "evaluator", &application, &[], 1);
+    let result = think(&directory, &application);
+    assert_panic(
+        &directory,
+        &result,
+        "assertion failed: tag.is_tag()? && tag.len()? == 3",
+    );
 }
 
 fn compiler_fixture(directory: &Path) {
@@ -525,7 +561,7 @@ fn scheduler_reuses_current_collector_coupons() {
             "evaluator",
             input,
             &["--memoize=always"],
-            1,
+            2,
         );
         run(
             &imported,
@@ -534,7 +570,7 @@ fn scheduler_reuses_current_collector_coupons() {
             0,
         );
         std::fs::remove_file(imported.join(".fix/objects").join(executable)).unwrap();
-        evaluate(&imported, mode, "evaluator", input, &["--memoize=never"], 1);
+        evaluate(&imported, mode, "evaluator", input, &["--memoize=never"], 2);
         assert_eq!(
             evaluate(
                 &imported,
@@ -596,7 +632,8 @@ fn scheduler_modes_dispatch_and_validate_requests() {
                 &payload,
             ],
         );
-        run(&directory, &["-j", "2", "schedule", &request], b"", 1);
+        let result = value(&directory, &["-j", "2", "schedule", &request]);
+        assert_panic(&directory, &result, "Fix procedure failed: WrongType");
     }
 }
 
@@ -970,13 +1007,18 @@ fn evaluation_modes() {
         let thunk = value(&directory, &["create-selection-thunk", &arguments]);
         let selection = encode("strict", &thunk);
         for jobs in ["1", "2"] {
-            evaluate(
+            let result = evaluate_raw(
                 &directory,
                 "eval",
                 "evaluator",
                 &selection,
                 &["-j", jobs],
-                1,
+                0,
+            );
+            assert_panic(
+                &directory,
+                &result,
+                "assertion `left == right` failed: scheduler effect failed\n  left: 5\n right: 0",
             );
         }
     }
@@ -1009,14 +1051,22 @@ fn tag_authors_are_checked_as_objects_or_references() {
     let authority = value(&directory, &["resolve", "trusted-compiler"]);
     let thunk = value(&directory, &["create-identification-thunk", &zero]);
     let opaque = value(&directory, &["create-tree", &thunk]);
-    for author in [&compiler, &authority, &opaque] {
+    for author in [&compiler, &authority] {
         let fields = value(&directory, &["create-tree", author, &zero]);
         let request = value(
             &directory,
             &["create-tree", &zero, &callable, &fields, &mode],
         );
-        run(&directory, &["-j", "1", "schedule", &request], b"", 1);
+        let result = value(&directory, &["-j", "1", "schedule", &request]);
+        assert_trap(&directory, &result, 5);
     }
+    let fields = value(&directory, &["create-tree", &opaque, &zero]);
+    let request = value(
+        &directory,
+        &["create-tree", &zero, &callable, &fields, &mode],
+    );
+    let result = value(&directory, &["-j", "1", "schedule", &request]);
+    assert_panic(&directory, &result, "Fix procedure failed: NotComparable");
 }
 
 #[test]
@@ -1050,7 +1100,7 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
         fields
     );
     let byte_thunk = value(&directory, &["create-application-thunk", &byte_query]);
-    evaluate(&directory, "think", "evaluator", &byte_thunk, &[], 1);
+    assert_trap(&directory, &think(&directory, &byte_thunk), 5);
     let kind_query = value(
         &directory,
         &[
@@ -1066,13 +1116,17 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
         fields
     );
     let thunk = value(&directory, &["create-application-thunk", &kind_query]);
-    evaluate(&directory, "think", "evaluator", &thunk, &[], 1);
+    assert_trap(&directory, &think(&directory, &thunk), 5);
     let combination = value(
         &directory,
         &["create-tree", &empty, "tagger", &fields, &zero],
     );
-    run(&directory, &["-j", "1", "schedule", &combination], b"", 1);
-    run(
+    assert_trap(
+        &directory,
+        &value(&directory, &["-j", "1", "schedule", &combination]),
+        5,
+    );
+    let denied = value(
         &directory,
         &[
             "-j",
@@ -1082,9 +1136,8 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
             "identity",
             &combination,
         ],
-        b"",
-        1,
     );
+    assert_trap(&directory, &denied, 5);
     let result = value(
         &directory,
         &[
@@ -1109,7 +1162,7 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
         &directory,
         &["create-tree", &empty, &closure, &fields, &zero],
     );
-    run(
+    let denied = value(
         &directory,
         &[
             "-j",
@@ -1119,9 +1172,8 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
             "identity",
             &indirect,
         ],
-        b"",
-        1,
     );
+    assert_trap(&directory, &denied, 5);
 
     let one = value(&directory, &["create-blob", "--u64", "1"]);
     let paused = value(
@@ -1137,7 +1189,7 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
         let mut command = vec!["-j", "1", "schedule"];
         command.extend(grants);
         command.push(&resumed);
-        run(&directory, &command, b"", 1);
+        assert_trap(&directory, &value(&directory, &command), 5);
     }
     assert_eq!(
         value(
@@ -1189,12 +1241,12 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
         args.push(&combination);
         value(&directory, &args)
     };
-    let request = |rule: u64, lhs: &str, rhs: &str, witnesses: &[&str], status| {
+    let request = |rule: u64, lhs: &str, rhs: &str, witnesses: &[&str], rejected| {
         let rule = blob(rule);
         let witnesses = tree(witnesses);
         let combination = tree(&[&zero, "collector", &rule, lhs, rhs, &witnesses]);
         let scheduler = tree(&[&zero, "scheduler", &combination, &blob(3)]);
-        text(run(
+        let result = value(
             &directory,
             &[
                 "-j",
@@ -1204,9 +1256,11 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
                 "collector",
                 &scheduler,
             ],
-            b"",
-            status,
-        ))
+        );
+        if rejected {
+            assert_trap(&directory, &result, 5);
+        }
+        result
     };
     let witness = |coupon: &str, kind: u64, lhs: &str, rhs: &str| {
         let claim = tree(&[&blob(kind), lhs, rhs]);
@@ -1214,43 +1268,48 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
     };
     let fields = tree(&[&empty, &zero]);
     let original = tag(&fields, true);
-    let authors_coupon = request(5, &empty, &empty, &[], 0);
+    let authors_coupon = request(5, &empty, &empty, &[], false);
     let authors = witness(&authors_coupon, 1, &empty, &empty);
-    let leaf_coupon = request(5, &zero, &zero, &[], 0);
+    let leaf_coupon = request(5, &zero, &zero, &[], false);
     let leaf = witness(&leaf_coupon, 1, &zero, &zero);
     assert_eq!(
         claim(
             &directory,
-            &request(5, &original, &fields, &[&authors, &leaf], 0)
+            &request(5, &original, &fields, &[&authors, &leaf], false)
         )[2],
         original
     );
-    let ordinary = request(5, &fields, &fields, &[&authors, &leaf], 0);
+    let ordinary = request(5, &fields, &fields, &[&authors, &leaf], false);
     assert_eq!(claim(&directory, &ordinary)[2], fields);
     let reference = value(&directory, &["create-ref", &zero]);
     let thunk = value(&directory, &["create-identification-thunk", &reference]);
     let encoded = value(&directory, &["create-strict-encode", &thunk]);
     let thought = witness(
-        &request(2, &thunk, &reference, &[], 0),
+        &request(2, &thunk, &reference, &[], false),
         4,
         &thunk,
         &reference,
     );
     let forced = witness(
-        &request(3, &thunk, &reference, &[&thought], 0),
+        &request(3, &thunk, &reference, &[&thought], false),
         3,
         &thunk,
         &reference,
     );
     let eq = witness(
-        &request(7, &encoded, &zero, &[&forced], 0),
+        &request(7, &encoded, &zero, &[&forced], false),
         0,
         &encoded,
         &zero,
     );
-    let reversed = witness(&request(10, &zero, &encoded, &[&eq], 0), 0, &zero, &encoded);
+    let reversed = witness(
+        &request(10, &zero, &encoded, &[&eq], false),
+        0,
+        &zero,
+        &encoded,
+    );
     let payload = witness(
-        &request(8, &encoded, &zero, &[&leaf, &reversed], 0),
+        &request(8, &encoded, &zero, &[&leaf, &reversed], false),
         1,
         &encoded,
         &zero,
@@ -1259,7 +1318,7 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
     assert_eq!(
         claim(
             &directory,
-            &request(5, &unevaluated, &fields, &[&authors, &payload], 0)
+            &request(5, &unevaluated, &fields, &[&authors, &payload], false)
         )[2],
         original
     );
@@ -1283,15 +1342,15 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
             vec![leaf.as_str(), leaf.as_str()],
         ),
     ] {
-        request(5, lhs, rhs, &proofs, 1);
+        request(5, lhs, rhs, &proofs, true);
     }
     let fake_claim = tree(&[&one, &zero, &one]);
     let fake_ref = value(&directory, &["create-ref", &fake_claim]);
     let fake_coupon = tag(&tree(&[&empty, &fake_ref]), false);
     let fake = tree(&[&fake_coupon, &fake_claim]);
-    request(5, &original, &changed, &[&authors, &fake], 1);
+    request(5, &original, &changed, &[&authors, &fake], true);
     let candidate = tag(&changed, true);
-    request(5, &original, &candidate, &[&authors, &fake], 1);
+    request(5, &original, &candidate, &[&authors, &fake], true);
 }
 
 #[test]

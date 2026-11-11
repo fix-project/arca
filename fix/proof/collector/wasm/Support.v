@@ -1,80 +1,71 @@
-(** Supplies execution lemmas and tactics for local variables, arithmetic,
-    host calls, integer decoding, and observed handle comparisons. *)
-
-From FixProof.Collector.wasm Require Import Backend.
+Module WasmSupport.
 Import ListNotations.
 Local Open Scope list_scope.
-
-Module WasmSupport (C : COLLECTOR_CONTEXT).
-  Import C S R.
+  Import C S.
   #[local] Existing Instance C.mem.
   #[local] Existing Instance C.collector_host.
-
-  Local Notation ext := G.E.H.W.extern_value.
-  Local Notation treeh := G.E.H.W.H.HTreeObj.
-  Local Notation blobh := G.E.H.W.H.HBlobObj.
-  Local Notation lower := X.D.EC.E.EP.E.lower.
-  Local Notation lift := X.D.EC.E.EP.E.lift.
+  Local Notation treeh := G.E.H.H.HTreeObj.
+  Local Notation blobh := G.E.H.H.HBlobObj.
   Local Notation local_get_run := (G.E.collector_local_get combination true true handle_bytes).
-
   Definition word n := VAL_num (VAL_int32 (wasm_nat n)).
+  Definition descriptor index := VAL_num (VAL_int32 index).
 
+  Definition retains before after := forall index value,
+    G.E.H.resolve before index = Some value -> G.E.H.resolve after index = Some value.
 
-  Definition supplied_claim witness := match witness with
-    | Data (Object (TreeObj bundle)) =>
-      match nth_error (get_tree_raw bundle) 1 with
-      | Some claim => claim
-      | None => treeh (create_tree []) end
-    | _ => treeh (create_tree []) end.
+  Definition scope before after extra := retains before after /\
+    G.E.H.D.live_count (G.E.H.slots after) <= G.E.H.D.live_count (G.E.H.slots before) + extra.
 
-  Lemma supplied_claim_bundle bundle coupon claim :
-    get_tree_raw bundle = [coupon; claim] -> supplied_claim (treeh bundle) = claim.
-  Proof. intro Fields; unfold supplied_claim, treeh; rewrite Fields; reflexivity. Qed.
+  Lemma retains_refl state : retains state state.
+  Proof. intros index value Present; exact Present. Qed.
 
-  Definition view_capacity store index capacity := exists table,
-    stab store G.E.collector_instance index = Some table /\
-    tt_elem_type (tableinst_type table) = T_externref /\
-    lim_max (tt_limits (tableinst_type table)) = None /\
-    (lim_min (tt_limits (tableinst_type table)) <= N.of_nat capacity)%N /\
-    List.length (tableinst_elem table) <= capacity.
+  Lemma retains_trans before middle after : retains before middle -> retains middle after -> retains before after.
+  Proof. intros First Second index value Present; apply Second, First, Present. Qed.
 
-  Definition memory_capacity store := exists page,
-    s_mems store = [page] /\ meminst_type page = Build_limits 1%N None /\ mem_length page = page_size.
+  Lemma scope_refl state : scope state state 0.
+  Proof. split; [apply retains_refl|lia]. Qed.
 
-  Lemma view_capacity_same_tables before after index capacity :
-    s_tables after = s_tables before -> view_capacity before index capacity -> view_capacity after index capacity.
+  Lemma scope_trans before middle after first second :
+    scope before middle first -> scope middle after second -> scope before after (first + second).
   Proof.
-    intros Tables [table [Entry Shape]]; exists table; split; [|exact Shape].
-    unfold stab; rewrite Tables; exact Entry.
+    intros [First Count1] [Second Count2]; split.
+    - eapply retains_trans; eassumption.
+    - lia.
   Qed.
 
-  Definition tree_view store index node := forall offset value,
-    nth_error (get_tree_raw node) offset = Some value ->
-    stab_elem store G.E.collector_instance index (N.of_nat offset) =
-      Some (G.E.H.Tables.externref value).
+  Lemma scope_weaken before after first second :
+    scope before after first -> first <= second -> scope before after second.
+  Proof. intros [Retained Count] Bound; split; [exact Retained|lia]. Qed.
 
-  Lemma tree_view_same_tables before after index node :
-    s_tables after = s_tables before -> tree_view before index node -> tree_view after index node.
+  Lemma fresh_before before after index : retains before after -> G.E.H.resolve after index = None ->
+    G.E.H.resolve before index = None.
   Proof.
-    intros Tables View offset value Entry.
-    unfold stab_elem; rewrite Tables; apply View; exact Entry.
+    intros Retained Fresh; destruct (G.E.H.resolve before index) as [value|] eqn:Present; [|reflexivity].
+    specialize (Retained index value Present); rewrite Fresh in Retained; discriminate.
   Qed.
 
-  Definition retained_claims store witnesses := forall index witness,
-    nth_error witnesses index = Some witness ->
-    stab_elem store G.E.collector_instance 9%N (N.of_nat index) =
-      Some (G.E.H.Tables.externref (supplied_claim witness)).
-
-  Lemma retained_claims_same_tables before after witnesses :
-    s_tables after = s_tables before ->
-    retained_claims before witnesses -> retained_claims after witnesses.
+  Lemma allocate_scope before value after values : G.E.H.allocate before value = Some (after, values) ->
+    exists index, values = [word index] /\ index < G.E.H.capacity /\
+      G.E.H.resolve before (wasm_nat index) = None /\
+      G.E.H.resolve after (wasm_nat index) = Some value /\ scope before after 1.
   Proof.
-    intros Tables Retained index witness Entry.
-    unfold stab_elem; rewrite Tables; apply Retained; exact Entry.
+    intro Allocated; destruct (G.E.H.allocate_resolves _ _ _ _ Allocated)
+      as [index [Values [Bound [Fresh [Present [Count Observations]]]]]].
+    exists index; repeat split; try exact Values; try exact Bound; try exact Present.
+    - unfold G.E.H.resolve; rewrite G.E.H.word_roundtrip by exact Bound; exact Fresh.
+    - intros other previous Previous; eapply G.E.H.allocate_retains; eassumption.
+    - lia.
   Qed.
 
+  Lemma allocate_available state value : G.E.H.D.live_count (G.E.H.slots state) < G.E.H.capacity ->
+    exists next index, G.E.H.allocate state value = Some (next, [word index]) /\
+      G.E.H.resolve next (wasm_nat index) = Some value /\ scope state next 1.
+  Proof.
+    intro Room; destruct (G.E.H.allocate_available state value Room) as [next [values Allocated]].
+    destruct (allocate_scope _ _ _ _ Allocated) as [index [Values [_ [_ [Present Scoped]]]]].
+    subst values; exists next, index; auto.
+  Qed.
 
-  (** Writing a valid local executes as the corresponding local-list update. *)
   Lemma local_set_run state store locals index value :
     (N.to_nat index < List.length locals)%nat ->
     reduce_trans
@@ -87,129 +78,27 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
       [reflexivity|apply (ssrbool.introT ssrnat.ltP); exact Bound|reflexivity].
   Qed.
 
-  (** The arity helper executes successfully for a Tree of the required bounded length. *)
-  Lemma arity_run state store locals tree length :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    List.length (get_tree_raw tree) = length -> native_size_bound length ->
+  Lemma local_tee_run state store locals index value :
+    (N.to_nat index < List.length locals)%nat ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (treeh tree); word length] ++ [AI_basic (BI_call 25%N)])
-      (state, store, Build_frame locals G.E.collector_instance, []).
+        [v_to_e value; AI_basic (BI_local_tee index)])
+      (state, store, Build_frame (seq.set_nth value locals (N.to_nat index) value) G.E.collector_instance,
+        v_to_e_list [value]).
   Proof.
-    intros Functions Length Bound.
-    assert (TreeBound : native_size_bound (List.length (get_tree_raw tree)))
-      by now rewrite Length.
-    pose proof (G.collector_arity_executes combination handle_bytes state store locals tree
-      (wasm_nat length) Functions TreeBound) as Run.
-    change (reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (treeh tree); word length] ++ [AI_basic (BI_call 25%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        if Wasm_int.int_eq i32m (wasm_nat (List.length (get_tree_raw tree))) (wasm_nat length)
-        then [] else [AI_trap])) in Run.
-    rewrite Length, (wasm_nat_equal length length (native_size_bound_word _ Bound) (native_size_bound_word _ Bound)), Nat.eqb_refl in Run; exact Run.
+    intro Bound; eapply rt_trans with (y := (state, store, Build_frame locals G.E.collector_instance,
+      [v_to_e value; v_to_e value; AI_basic (BI_local_set index)])).
+    - apply rt_step, r_simple, rs_local_tee.
+    - change (reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list [value] ++ [v_to_e value; AI_basic (BI_local_set index)] ++ [])
+        (state, store, Build_frame (seq.set_nth value locals (N.to_nat index) value) G.E.collector_instance,
+          v_to_e_list [value] ++ [] ++ [])).
+      apply G.E.collector_runs_context with (prefix := [value]) (suffix := [])
+        (instructions := [v_to_e value; AI_basic (BI_local_set index)]) (instructions' := []).
+      exact (local_set_run state store locals index value Bound).
   Qed.
 
-  (** The Tree-child import executes an in-bounds lookup without changing the store. *)
-  Lemma child_run state store locals tree index child :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    (Z.of_nat index < 2 ^ 32)%Z -> nth_error (get_tree_raw tree) index = Some child ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (treeh tree); word index] ++ [AI_basic (BI_call 7%N)])
-      (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext child]).
-  Proof.
-    intros Functions Bound Child.
-    pose proof (G.collector_tree_element_executes combination handle_bytes state store locals
-      (treeh tree) (wasm_nat index) Functions) as Run.
-    change (reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (treeh tree); word index] ++ [AI_basic (BI_call 7%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        match nth_error (get_tree_raw tree) (Wasm_int.nat_of_uint i32m (wasm_nat index)) with
-        | Some value => v_to_e_list [ext value] | None => [AI_trap] end)) in Run.
-    rewrite (wasm_nat_to_nat index Bound), Child in Run; exact Run.
-  Qed.
-  (** The Tag query import returns the Tree's Tag marker. *)
-  Lemma tag_run state store locals value tagged :
-    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.W.Api.is_tag value = tagged ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext value] ++ [AI_basic (BI_call 3%N); AI_basic (BI_call 21%N)])
-      (state, store, Build_frame locals G.E.collector_instance, if tagged then [] else [AI_trap]).
-  Proof.
-    intros Functions Tagged.
-    set (result := VAL_num (VAL_int32 (wasm_bool tagged))).
-    eapply rt_trans with (y := (state, store, Build_frame locals G.E.collector_instance,
-      [v_to_e result; AI_basic (BI_call 21%N)])).
-    - eapply G.E.collector_runs_context with (prefix := []) (suffix := [AI_basic (BI_call 21%N)])
-        (instructions := v_to_e_list [ext value] ++ [AI_basic (BI_call 3%N)])
-        (instructions' := v_to_e_list [result]).
-      eapply G.E.collector_import_executes with (operation := shell_is_tag)
-        (index := 3%N) (address := 3%N) (arguments := [ext value])
-        (result := result_values [result]); try reflexivity.
-      + rewrite Functions; reflexivity.
-      + apply G.E.H.host_values_result.
-        unfold G.E.H.host_values, ext; rewrite to_handle_to_externref.
-        rewrite Tagged; destruct tagged; reflexivity.
-    - apply G.E.collector_require_executes with (condition := tagged); rewrite Functions; reflexivity.
-  Qed.
-
-  Lemma attach_tree_run state store locals node index next :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    G.E.H.tree_attachment_result G.E.collector_instance store
-      [ext (treeh node); word index] = Some (next, result_values []) ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (treeh node); word index] ++ [AI_basic (BI_call 8%N)])
-      (state, next, Build_frame locals G.E.collector_instance, []).
-  Proof.
-    intros Functions Attached.
-    eapply G.E.collector_import_executes with (operation := shell_attach_tree)
-      (address := 8%N) (arguments := [ext (treeh node); word index])
-      (result := result_values []); try reflexivity.
-    - rewrite Functions; reflexivity.
-    - apply G.E.H.tree_attachment_host_result; exact Attached.
-  Qed.
-
-  Lemma table_get_run state store locals table index reference :
-    stab_elem store G.E.collector_instance table (Wasm_int.N_of_uint i32m index) = Some reference ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        [v_to_e (VAL_num (VAL_int32 index)); AI_basic (BI_table_get table)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_ref reference]).
-  Proof. intro Entry; apply rt_step, r_table_get_success; exact Entry. Qed.
-
-  Lemma tree_view_run state store locals node table index value :
-    (Z.of_nat index < 2 ^ 32)%Z ->
-    tree_view store table node -> nth_error (get_tree_raw node) index = Some value ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        [v_to_e (word index); AI_basic (BI_table_get table)])
-      (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext value]).
-  Proof.
-    intros Bound View Entry; apply table_get_run.
-    rewrite (wasm_nat_to_N index Bound); apply View; exact Entry.
-  Qed.
-
-  Lemma retained_claim_run state store locals witnesses index witness :
-    (Z.of_nat index < 2 ^ 32)%Z ->
-    retained_claims store witnesses -> nth_error witnesses index = Some witness ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        [v_to_e (word index); AI_basic (BI_table_get 9%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (supplied_claim witness)]).
-  Proof.
-    intros Bound Retained Entry; apply table_get_run.
-    rewrite (wasm_nat_to_N index Bound); apply Retained; exact Entry.
-  Qed.
-
-  Ltac execute_under stack run := collector_execute_under G.E.collector_runs_context stack run.
-  Ltac execute run := execute_under (@nil value) run.
-
-  (** A native integer relational instruction computes the modeled comparison result. *)
   Lemma native_relop state store locals lhs rhs ty op :
     relop_typecheck lhs rhs ty op = true ->
     reduce_trans
@@ -218,6 +107,25 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
       (state, store, Build_frame locals G.E.collector_instance,
         v_to_e_list [VAL_num (VAL_int32 (wasm_bool (app_relop op lhs rhs)))]).
   Proof. intro Typed; apply rt_step, r_simple, rs_relop; exact Typed. Qed.
+
+  Lemma equal64_run state store locals value :
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int64 value); VAL_num (VAL_int64 value)] ++
+          [AI_basic (BI_relop T_i64 (Relop_i ROI_eq))])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool true))]).
+  Proof.
+    pose proof (native_relop state store locals (VAL_int64 value) (VAL_int64 value)
+      T_i64 (Relop_i ROI_eq) eq_refl) as Run.
+    change (reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int64 value); VAL_num (VAL_int64 value)] ++
+          [AI_basic (BI_relop T_i64 (Relop_i ROI_eq))])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool (Wasm_int.Int64.eq value value)))])) in Run.
+    rewrite Wasm_int.Int64.eq_true in Run; exact Run.
+  Qed.
 
   (** A native integer binary instruction computes the modeled arithmetic result. *)
   Lemma native_binop state store locals lhs rhs ty op result :
@@ -238,71 +146,124 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
   Proof. apply rt_step, r_simple, rs_testop_i32. Qed.
 
   (** A successful value-returning Shell import executes without changing the store. *)
-  Lemma native_value_import state store locals index operation arguments values :
+
+  Lemma native_value_import state store next locals index operation arguments values :
     s_funcs store = s_funcs G.E.allocated_store ->
     lookup_N (s_funcs G.E.allocated_store) index =
       Some (FC_func_host (shell_signature operation) operation) ->
     lookup_N (inst_funcs G.E.collector_instance) index = Some index ->
     (match shell_signature operation with Tf parameters _ =>
       List.length arguments = List.length parameters end) ->
+    operation <> shell_read_blob ->
     G.E.H.host_values combination G.E.collector_instance true true handle_bytes state store
-      operation arguments = Some values ->
+      operation arguments = Some (next, values) ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
         v_to_e_list arguments ++ [AI_basic (BI_call index)])
-      (G.E.H.next_state state operation, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list values).
+      (next, store, Build_frame locals G.E.collector_instance, v_to_e_list values).
   Proof.
-    intros Functions Closure Index Arity Values.
+    intros Functions Closure Index Arity Other Values.
     eapply G.E.collector_import_executes with (operation := operation) (address := index)
       (result := result_values values); try eassumption.
     - rewrite Functions; exact Closure.
-    - apply G.E.H.host_values_result; exact Values.
+    - apply G.E.H.host_values_result; assumption.
   Qed.
 
-  (** The native type-query import returns the handle's modeled type code. *)
-  Lemma native_type_query state store locals index input :
+  Lemma new_handle_run state store locals index operation arguments value :
     s_funcs store = s_funcs G.E.allocated_store ->
-    lookup_N locals index = Some (ext input) ->
+    lookup_N (s_funcs G.E.allocated_store) index =
+      Some (FC_func_host (shell_signature operation) operation) ->
+    lookup_N (inst_funcs G.E.collector_instance) index = Some index ->
+    (match shell_signature operation with Tf parameters _ =>
+      List.length arguments = List.length parameters end) ->
+    operation <> shell_read_blob ->
+    G.E.H.host_values combination G.E.collector_instance true true handle_bytes state store operation arguments =
+      G.E.H.allocate state value ->
+    G.E.H.D.live_count (G.E.H.slots state) < G.E.H.capacity ->
+    exists next output,
+      reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list arguments ++ [AI_basic (BI_call index)])
+        (next, store, Build_frame locals G.E.collector_instance, v_to_e_list [word output]) /\
+      G.E.H.resolve next (wasm_nat output) = Some value /\
+      G.E.H.resolve state (wasm_nat output) = None /\ scope state next 1 /\
+      G.E.H.observations next = G.E.H.observations state.
+  Proof.
+    intros Functions Closure Index Arity Other Values Room.
+    destruct (G.E.H.allocate_available state value Room) as [next [values Allocated]].
+    destruct (allocate_scope _ _ _ _ Allocated) as [output [ValuesOut [_ [Fresh [Present Scoped]]]]].
+    assert (Observations : G.E.H.observations next = G.E.H.observations state).
+    { destruct (G.E.H.allocate_resolves _ _ _ _ Allocated)
+        as [i [_ [_ [_ [_ [_ Same]]]]]]; exact Same. }
+    subst values; exists next, output; split.
+    - eapply native_value_import; try eassumption; rewrite Values; exact Allocated.
+    - auto.
+  Qed.
+
+  Lemma child_run state store locals root tree index child :
+    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state root = Some (treeh tree) ->
+    nth_error (get_tree_raw tree) index = Some child -> (Z.of_nat index < 2 ^ 32)%Z ->
+    G.E.H.D.live_count (G.E.H.slots state) < G.E.H.capacity ->
+    exists next output,
+      reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list [descriptor root; word index] ++ [AI_basic (BI_call 7%N)])
+        (next, store, Build_frame locals G.E.collector_instance, v_to_e_list [word output]) /\
+      G.E.H.resolve next (wasm_nat output) = Some child /\
+      G.E.H.resolve state (wasm_nat output) = None /\ scope state next 1 /\
+      G.E.H.observations next = G.E.H.observations state.
+  Proof.
+    intros Functions Live Field Bound Room.
+    eapply new_handle_run with (operation := shell_get_tree_element); try eassumption; try reflexivity;
+      [discriminate|].
+    unfold G.E.H.host_values, G.E.H.transform, descriptor, word.
+    rewrite Live; cbn [G.E.H.H.obind G.E.H.Api.get_tree_data_api G.E.H.H.HTreeObj].
+    rewrite wasm_nat_to_nat by exact Bound; rewrite Field; reflexivity.
+  Qed.
+
+  Lemma native_type_query state store locals local index input :
+    s_funcs store = s_funcs G.E.allocated_store ->
+    lookup_N locals local = Some (descriptor index) ->
+    G.E.H.resolve state index = Some input ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        to_e_list [BI_local_get index; BI_call 0%N])
+        to_e_list [BI_local_get local; BI_call 0%N])
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [word (G.E.H.W.H.value_type input)]).
+        v_to_e_list [word (G.E.H.H.value_type input)]).
   Proof.
-    intros Functions Local.
-    eapply G.collector_query_local with (operation := shell_get_type) (value := input);
+    intros Functions Local Live.
+    eapply G.collector_query_local with (address := index) (operation := shell_get_type);
       try exact Local; try reflexivity.
     - rewrite Functions; reflexivity.
-    - unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; reflexivity.
+    - unfold G.E.H.host_values, G.descriptor_value; rewrite Live; reflexivity.
   Qed.
 
-  (** The native Object-type query returns the modeled type code for Data. *)
-  Lemma native_data_type_query state store locals index input :
+  Lemma native_data_type_query state store locals local index input :
     s_funcs store = s_funcs G.E.allocated_store ->
-    lookup_N locals index = Some (ext (Data input)) ->
+    lookup_N locals local = Some (descriptor index) -> G.E.H.resolve state index = Some (Data input) ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        to_e_list [BI_local_get index; BI_call 1%N])
+        to_e_list [BI_local_get local; BI_call 1%N])
       (state, store, Build_frame locals G.E.collector_instance,
         v_to_e_list [word (match input with Object (TreeObj _) | Ref (TreeRef _) => 1 | _ => 0 end)]).
   Proof.
-    intros Functions Local.
-    eapply G.collector_query_local with (operation := shell_get_data_type) (value := Data input);
+    intros Functions Local Live.
+    eapply G.collector_query_local with (address := index) (operation := shell_get_data_type);
       try exact Local; try reflexivity.
     - rewrite Functions; reflexivity.
-    - unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; destruct input as [[b|t]|[b|t]]; reflexivity.
+    - unfold G.E.H.host_values, G.descriptor_value; rewrite Live; destruct input as [[b|t]|[b|t]]; reflexivity.
   Qed.
 
-  (** The require helper executes its condition check with the modeled success or trap
-      result. *)
   Lemma native_require state store locals (condition : bool) :
     s_funcs store = s_funcs G.E.allocated_store ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int32 (wasm_bool condition))] ++ [AI_basic (BI_call 21%N)])
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool condition))] ++ [AI_basic (BI_call 22%N)])
       (state, store, Build_frame locals G.E.collector_instance, if condition then [] else [AI_trap]).
   Proof. intro Functions; apply G.E.collector_require_executes; rewrite Functions; reflexivity. Qed.
+
+  Ltac execute_under stack run := collector_execute_under G.E.collector_runs_context stack run.
+  Ltac execute run := execute_under (@nil value) run.
 
   Ltac local_value locals index :=
     let found := eval hnf in (lookup_N locals index) in
@@ -310,6 +271,12 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
     | Some ?entry => let entry := eval hnf in entry in constr:(Some entry)
     | None => constr:(@None value)
     end.
+
+  Lemma drop_run state store locals value :
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance, [v_to_e value; AI_basic BI_drop])
+      (state, store, Build_frame locals G.E.collector_instance, []).
+  Proof. apply rt_step, r_simple, rs_drop. Qed.
 
   Ltac native_pure_at state store locals stack instruction :=
     lazymatch instruction with
@@ -325,6 +292,18 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
         lazymatch found with
         | Some ?value => execute_under prefix
             (local_set_run state store locals index value ltac:(lazy; lia))
+        end
+    | BI_drop =>
+        let prefix := eval cbv beta iota zeta delta [firstn List.length List.app Nat.sub] in (firstn (List.length stack - 1) stack) in
+        let found := eval cbv beta iota zeta delta [nth_error List.length List.app Nat.sub] in (nth_error stack (List.length stack - 1)) in
+        lazymatch found with
+        | Some ?value => execute_under prefix (drop_run state store locals value)
+        end
+    | BI_local_tee ?index =>
+        let prefix := eval cbv beta iota zeta delta [firstn List.length List.app Nat.sub] in (firstn (List.length stack - 1) stack) in
+        let found := eval cbv beta iota zeta delta [nth_error List.length List.app Nat.sub] in (nth_error stack (List.length stack - 1)) in
+        lazymatch found with
+        | Some ?value => execute_under prefix (local_tee_run state store locals index value ltac:(lazy; lia))
         end
     | BI_relop ?ty ?op =>
         let prefix := eval cbv beta iota zeta delta [firstn List.length List.app Nat.sub] in (firstn (List.length stack - 2) stack) in
@@ -352,7 +331,7 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
         | Some (VAL_num (VAL_int32 ?operand)) => execute_under prefix
             (native_test32 state store locals operand op)
         end
-    | BI_call 21%N =>
+    | BI_call 22%N =>
         let prefix := eval cbv beta iota zeta delta [firstn List.length List.app Nat.sub] in (firstn (List.length stack - 1) stack) in
         let last := eval cbv beta iota zeta delta [nth_error List.length List.app Nat.sub] in (nth_error stack (List.length stack - 1)) in
         lazymatch last with
@@ -390,7 +369,8 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
   Ltac native_pure_scan state store locals stack instructions :=
     lazymatch instructions with
     | ?head :: ?tail =>
-        let converted := eval cbn [e_to_v_opt e_to_vref_opt option_map v_to_e vref_to_e word G.E.H.W.H.value_type G.E.H.W.extern_value] in (e_to_v_opt head) in
+        let head := eval hnf in head in
+        let converted := eval cbn [e_to_v_opt e_to_vref_opt option_map v_to_e vref_to_e word descriptor G.E.H.H.value_type] in (e_to_v_opt head) in
         lazymatch converted with
         | Some ?value =>
             let stack := eval cbn [List.app] in (stack ++ [value]) in
@@ -408,390 +388,318 @@ Module WasmSupport (C : COLLECTOR_CONTEXT).
     try fold reduce_trans;
     lazymatch goal with
     | |- ?relation (?state, ?store, Build_frame ?locals G.E.collector_instance, ?instructions) _ =>
-        let instructions := eval cbn [to_e_list v_to_e_list List.app seq.map v_to_e vref_to_e G.E.H.W.H.HTreeObj G.E.H.W.H.HBlobObj] in instructions in
+        let instructions := eval cbn [to_e_list v_to_e_list List.app seq.map v_to_e vref_to_e descriptor G.E.H.H.HTreeObj G.E.H.H.HBlobObj] in instructions in
         native_pure_scan state store locals (@nil value) instructions
     | _ => fail "not a reduction goal with an explicit frame"
     end.
 
-  (** The integer helper's guards accept an eight-byte Blob Object. *)
-  Lemma collector_integer_guard_executes state store h :
-    s_funcs store = s_funcs G.E.allocated_store ->
+
+  Lemma native_length_query state store locals local index input :
+    s_funcs store = s_funcs G.E.allocated_store -> lookup_N locals local = Some (descriptor index) ->
+    G.E.H.resolve state index = Some (Data input) ->
+    (Z.of_nat (G.E.H.T.O.data_length input) < 2 ^ 64)%Z ->
     reduce_trans
-      (state, store, Build_frame [ext h] G.E.collector_instance,
-        to_e_list (firstn 8 (modfunc_body evaluation_integer)))
-      (state, store, Build_frame [ext h] G.E.collector_instance,
-        match h with Data (Object (BlobObj _)) => [] | _ => [AI_trap] end).
+      (state, store, Build_frame locals G.E.collector_instance,
+        to_e_list [BI_local_get local; BI_call 6%N])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 (G.E.H.T.O.data_length input))) ]).
   Proof.
-    intro Functions; rewrite evaluation_integer_body; cbn [firstn].
-    pose proof (G.collector_type_guard_executes combination handle_bytes state store [ext h] 0%N h
-      Functions eq_refl) as ObjectGuard.
-    destruct h as [[object|reference]|thunk|encode].
-    - execute ObjectGuard.
-      set (kind := match object with BlobObj _ => 0 | TreeObj _ => 1 end).
-      set (accepted := match object with BlobObj _ => true | TreeObj _ => false end).
-      assert (Kind : reduce_trans
-        (state, store, Build_frame [ext (Data (Object object))] G.E.collector_instance,
-          [AI_basic (BI_local_get 0%N); AI_basic (BI_call 1%N)])
-        (state, store, Build_frame [ext (Data (Object object))] G.E.collector_instance,
-          v_to_e_list [word kind])).
-      { eapply G.collector_query_local with (operation := shell_get_data_type)
-          (value := Data (Object object)); try reflexivity.
-        - rewrite Functions; reflexivity.
-        - unfold G.E.H.host_values, ext; rewrite to_handle_to_externref; destruct object; reflexivity. }
-      execute Kind.
-      assert (Test : reduce_trans
-        (state, store, Build_frame [ext (Data (Object object))] G.E.collector_instance,
-          [v_to_e (word kind); AI_basic (BI_testop T_i32 TO_eqz)])
-        (state, store, Build_frame [ext (Data (Object object))] G.E.collector_instance,
-          v_to_e_list [VAL_num (VAL_int32 (wasm_bool accepted))])).
-      { destruct object; apply rt_step, r_simple, rs_testop_i32. }
-      execute Test.
-      destruct object;
-        first [apply G.E.collector_require_executes with (condition := true)
-              |apply G.E.collector_require_executes with (condition := false)]; rewrite Functions; reflexivity.
-    - eapply G.E.collector_trap_suffix with (instructions := to_e_list
-        [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N]); exact ObjectGuard.
-    - eapply G.E.collector_trap_suffix with (instructions := to_e_list
-        [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N]); exact ObjectGuard.
-    - eapply G.E.collector_trap_suffix with (instructions := to_e_list
-        [BI_local_get 0%N; BI_call 0%N; BI_testop T_i32 TO_eqz; BI_call 21%N]); exact ObjectGuard.
+    intros Functions Local Live Bound.
+    eapply G.collector_query_local with (address := index) (operation := shell_len);
+      try exact Local; try reflexivity.
+    - rewrite Functions; reflexivity.
+    - unfold G.E.H.host_values, G.descriptor_value; rewrite Live.
+      cbn [G.E.H.H.obind]; unfold G.E.H.length_result.
+      assert (Fits : Z.ltb (Z.of_nat (G.E.H.T.O.data_length input)) (2 ^ 64) = true)
+        by (apply Z.ltb_lt; exact Bound).
+      rewrite Fits; reflexivity.
   Qed.
 
-  (** The integer helper body loads a valid eight-byte Blob and returns its unsigned i64
-      value. *)
-  Lemma collector_integer_body_executes state store blob n next page :
+  Lemma read_blob_run state store locals index next count :
     s_funcs store = s_funcs G.E.allocated_store ->
-    G.E.H.blob_read_result G.E.collector_instance store
-      [ext (blobh blob); word 0; word 0; word 8] = Some (next, result_values [word 8]) ->
-    s_funcs next = s_funcs G.E.allocated_store ->
-    s_mems next = [page] ->
-    load page 0%N 0%N 8%N = Some (get_blob_data blob) ->
-    decode_u64 (get_blob_data blob) = Some n ->
+    G.E.H.blob_read_result G.E.collector_instance state store
+      [descriptor index; word 0; word 0; word 8] = Some (next, [word count]) ->
     reduce_trans
-      (state, store, Build_frame [ext (blobh blob)] G.E.collector_instance,
-        to_e_list (modfunc_body evaluation_integer))
-      (state, next, Build_frame [ext (blobh blob)] G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 n))]).
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [descriptor index; word 0; word 0; word 8] ++ [AI_basic (BI_call 8%N)])
+      (state, next, Build_frame locals G.E.collector_instance, v_to_e_list [word count]).
   Proof.
-    intros Functions Read FunctionsNext Memory Loaded Decoded.
-    pose proof (decode_u64_width _ _ Decoded) as Width.
-    set (locals := [ext (blobh blob)]).
-    pose proof (collector_integer_guard_executes state store (blobh blob) Functions) as Guard.
-    rewrite evaluation_integer_body in Guard; cbn [firstn] in Guard.
-    rewrite evaluation_integer_body; execute Guard.
-    assert (Length : reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        [AI_basic (BI_local_get 0%N); AI_basic (BI_call 6%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 8))])).
-    { eapply G.collector_query_local with (operation := shell_len)
-        (value := blobh blob); try reflexivity.
-      - rewrite Functions; reflexivity.
-      - unfold G.E.H.host_values, ext; rewrite to_handle_to_externref.
-        change (G.E.H.length_result (List.length (get_blob_data blob)) =
-          Some [VAL_num (VAL_int64 (wasm_nat64 8))]).
-        replace (List.length (get_blob_data blob)) with 8 by (symmetry; exact Width).
-        reflexivity. }
-    execute Length.
-    assert (Equal : reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        [v_to_e (VAL_num (VAL_int64 (wasm_nat64 8)));
-         v_to_e (VAL_num (VAL_int64 (wasm_nat64 8)));
-         AI_basic (BI_relop T_i64 (Relop_i ROI_eq))])
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int32 (wasm_bool true))])).
-    { apply rt_step, r_simple; eapply rs_relop with
-        (v1 := VAL_int64 (wasm_nat64 8)) (v2 := VAL_int64 (wasm_nat64 8))
-        (t := T_i64) (op := Relop_i ROI_eq); reflexivity. }
-    execute Equal.
-    execute (G.E.collector_require_executes combination true true handle_bytes state store locals true
-      ltac:(rewrite Functions; reflexivity)).
-    execute (local_get_run state store locals 0%N (ext (blobh blob)) eq_refl).
-    assert (ReadBlob : reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (blobh blob); word 0; word 0; word 8] ++ [AI_basic (BI_call 9%N)])
-      (state, next, Build_frame locals G.E.collector_instance, v_to_e_list [word 8])).
-    { eapply G.E.collector_import_executes with (operation := shell_read_blob)
-        (address := 9%N) (arguments := [ext (blobh blob); word 0; word 0; word 8])
-        (result := result_values [word 8]); try reflexivity.
-      - rewrite Functions; reflexivity.
-      - apply G.E.H.blob_read_host_result; exact Read. }
-    execute ReadBlob.
-    assert (ReadLength : reduce_trans
-      (state, next, Build_frame locals G.E.collector_instance,
-        [v_to_e (word 8); v_to_e (word 8); AI_basic (BI_relop T_i32 (Relop_i ROI_eq))])
-      (state, next, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int32 (wasm_bool true))])).
-    { apply rt_step, r_simple; eapply rs_relop with
-        (v1 := VAL_int32 (wasm_nat 8)) (v2 := VAL_int32 (wasm_nat 8))
-        (t := T_i32) (op := Relop_i ROI_eq); reflexivity. }
-    execute ReadLength.
-    execute (G.E.collector_require_executes combination true true handle_bytes state next locals true
-      ltac:(rewrite FunctionsNext; reflexivity)).
+    intros Functions Read; eapply G.E.collector_import_executes with (operation := shell_read_blob)
+      (address := 8%N) (result := result_values [word count]); try reflexivity.
+    - rewrite Functions; reflexivity.
+    - unfold G.E.H.host_result, G.E.H.candidate.
+      destruct (function_type_eq_dec _ _); [|contradiction].
+      destruct (shell_function_eq_dec shell_read_blob shell_read_blob); [|contradiction].
+      rewrite Read; reflexivity.
+  Qed.
+
+  Lemma collector_integer_body_executes state store index blob number next page :
+    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state index = Some (blobh blob) ->
+    G.E.H.blob_read_result G.E.collector_instance state store
+      [descriptor index; word 0; word 0; word 8] = Some (next, [word 8]) ->
+    s_mems next = [page] -> load page 0%N 0%N 8%N = Some (get_blob_data blob) ->
+    decode_u64 (get_blob_data blob) = Some number ->
+    reduce_trans
+      (state, store, Build_frame [descriptor index] G.E.collector_instance,
+        to_e_list (modfunc_body evaluation_integer))
+      (state, next, Build_frame [descriptor index] G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 number))]).
+  Proof.
+    intros Functions Live Read Memory Loaded Decoded.
+    assert (Width : List.length (get_blob_data blob) = 8) by (eapply decode_u64_width; exact Decoded).
+    assert (Length : G.E.H.T.O.data_length (Object (BlobObj blob)) = 8) by exact Width.
+    assert (FunctionsNext : s_funcs next = s_funcs G.E.allocated_store).
+    { rewrite (G.E.H.blob_read_result_functions _ _ _ _ _ _ Read); exact Functions. }
+    set (locals := [descriptor index]).
+    rewrite evaluation_integer_body.
+    execute (native_type_query state store locals 0%N index (Data (Object (BlobObj blob))) Functions eq_refl Live).
+    do 2 native_pure.
+    execute (native_data_type_query state store locals 0%N index (Object (BlobObj blob)) Functions eq_refl Live).
+    do 2 native_pure.
+    execute (native_length_query state store locals 0%N index (Object (BlobObj blob)) Functions eq_refl Live
+      ltac:(change (Z.of_nat (List.length (get_blob_data blob)) < 2 ^ 64)%Z; rewrite Width; lia)).
+    rewrite Length.
+    do 2 native_pure.
+    native_pure.
+    execute (read_blob_run state store locals index next 8 Functions Read).
+    do 2 native_pure.
     pose proof (wasm_deserialise_u64 _ _ Decoded) as Number.
-    change (wasm_deserialise (get_blob_data blob) T_i64 = VAL_int64 (wasm_nat64 n)) in Number.
+    change (wasm_deserialise (get_blob_data blob) T_i64 = VAL_int64 (wasm_nat64 number)) in Number.
     rewrite <- Number.
     apply rt_step; eapply r_load_success with (m := page) (bs := get_blob_data blob).
-    - change (lookup_N (s_mems next) 0%N = Some page).
-      rewrite Memory; reflexivity.
+    - change (lookup_N (s_mems next) 0%N = Some page); rewrite Memory; reflexivity.
     - exact Loaded.
   Qed.
 
-  (** The native integer call decodes a bounded read of an eight-byte Blob. *)
-  Lemma collector_integer_executes state store locals blob n next page :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    G.E.H.blob_read_result G.E.collector_instance store
-      [ext (blobh blob); word 0; word 0; word 8] = Some (next, result_values [word 8]) ->
-    s_funcs next = s_funcs G.E.allocated_store ->
-    s_mems next = [page] ->
-    load page 0%N 0%N 8%N = Some (get_blob_data blob) ->
-    decode_u64 (get_blob_data blob) = Some n ->
+  Lemma collector_integer_executes state store locals index blob number next page :
+    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state index = Some (blobh blob) ->
+    G.E.H.blob_read_result G.E.collector_instance state store
+      [descriptor index; word 0; word 0; word 8] = Some (next, [word 8]) ->
+    s_mems next = [page] -> load page 0%N 0%N 8%N = Some (get_blob_data blob) ->
+    decode_u64 (get_blob_data blob) = Some number ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (blobh blob)] ++ [AI_basic (BI_call 26%N)])
+        v_to_e_list [descriptor index] ++ [AI_basic (BI_call 27%N)])
       (state, next, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 n))]).
+        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 number))]).
   Proof.
-    intros Functions Read FunctionsNext Memory Loaded Decoded.
-    eapply G.E.collector_call with (code := evaluation_integer)
-      (parameters := [T_ref T_externref]) (results := [T_num T_i64])
-      (defaults := []) (index := 26%N) (address := 26%N)
-      (arguments := [ext (blobh blob)]) (accepted := true)
-      (values := [VAL_num (VAL_int64 (wasm_nat64 n))])
-      (final_frame := Build_frame [ext (blobh blob)] G.E.collector_instance);
+    intros Functions Live Read Memory Loaded Decoded.
+    eapply G.E.collector_call with (code := evaluation_integer) (parameters := [T_num T_i32])
+      (results := [T_num T_i64]) (defaults := []) (address := 27%N)
+      (arguments := [descriptor index]) (values := [VAL_num (VAL_int64 (wasm_nat64 number))])
+      (accepted := true) (final_frame := Build_frame [descriptor index] G.E.collector_instance);
       try reflexivity.
     - rewrite Functions; reflexivity.
     - eapply collector_integer_body_executes; eassumption.
   Qed.
 
-  (** The native integer call traps when its input is not a Blob Object. *)
-  Lemma collector_integer_rejects_type state store locals h :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    (forall blob, h <> blobh blob) ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext h] ++ [AI_basic (BI_call 26%N)])
-      (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
-  Proof.
-    intros Functions NotBlob.
-    eapply G.E.collector_call with (code := evaluation_integer)
-      (parameters := [T_ref T_externref]) (results := [T_num T_i64]) (defaults := [])
-      (index := 26%N) (address := 26%N) (arguments := [ext h])
-      (values := [VAL_num (VAL_int64 (wasm_nat64 0))]) (accepted := false)
-      (final_frame := Build_frame [ext h] G.E.collector_instance); try reflexivity.
-    - rewrite Functions; reflexivity.
-    - eapply G.E.collector_trap_suffix with
-        (instructions := to_e_list (firstn 8 (modfunc_body evaluation_integer)))
-        (suffix := to_e_list (skipn 8 (modfunc_body evaluation_integer))).
-      pose proof (collector_integer_guard_executes state store h Functions) as Guard.
-      destruct h as [[[]|reference]|thunk|encode]; try exact Guard.
-      exfalso; eapply NotBlob; reflexivity.
-  Qed.
+  Definition compared state := G.E.H.State (G.E.H.slots state) (G.E.H.observations state + 2).
 
-  (** The native integer call traps when the Blob does not contain exactly eight bytes. *)
-  Lemma collector_integer_rejects_width state store locals blob :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    (Z.of_nat (List.length (get_blob_data blob)) < 2 ^ 64)%Z ->
-    List.length (get_blob_data blob) <> 8 ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (blobh blob)] ++ [AI_basic (BI_call 26%N)])
-      (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
-  Proof.
-    intros Functions Bound Different.
-    set (length := List.length (get_blob_data blob)).
-    set (inside := [ext (blobh blob)]).
-    eapply G.E.collector_call with (code := evaluation_integer)
-      (parameters := [T_ref T_externref]) (results := [T_num T_i64]) (defaults := [])
-      (index := 26%N) (address := 26%N) (arguments := [ext (blobh blob)])
-      (values := [VAL_num (VAL_int64 (wasm_nat64 0))]) (accepted := false)
-      (final_frame := Build_frame inside G.E.collector_instance); try reflexivity.
-    - rewrite Functions; reflexivity.
-    - pose proof (collector_integer_guard_executes state store (blobh blob) Functions) as Guard.
-      rewrite evaluation_integer_body in Guard; cbn [firstn] in Guard.
-      rewrite evaluation_integer_body; execute Guard.
-      assert (Length : reduce_trans
-        (state, store, Build_frame inside G.E.collector_instance,
-          [AI_basic (BI_local_get 0%N); AI_basic (BI_call 6%N)])
-        (state, store, Build_frame inside G.E.collector_instance,
-          v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 length))])).
-      { eapply G.collector_query_local with (operation := shell_len)
-          (value := blobh blob); try reflexivity.
-        - rewrite Functions; reflexivity.
-        - unfold G.E.H.host_values, ext; rewrite to_handle_to_externref.
-          apply G.E.H.length_result_small; exact Bound. }
-      execute Length.
-      assert (Mismatch : app_relop (Relop_i ROI_eq) (VAL_int64 (wasm_nat64 length))
-        (VAL_int64 (wasm_nat64 8)) = false).
-      { change (Wasm_int.Int64.eq (wasm_nat64 length) (wasm_nat64 8) = false).
-        unfold Wasm_int.Int64.eq.
-        rewrite (wasm_nat64_unsigned length Bound), (wasm_nat64_unsigned 8 ltac:(vm_compute; congruence)).
-        change ((if Coqlib.zeq (Z.of_nat length) 8 then true else false) = false).
-        destruct (Coqlib.zeq (Z.of_nat length) 8); [exfalso; apply Different; lia|reflexivity]. }
-      assert (Compared : reduce_trans
-        (state, store, Build_frame inside G.E.collector_instance,
-          [v_to_e (VAL_num (VAL_int64 (wasm_nat64 length)));
-           v_to_e (VAL_num (VAL_int64 (wasm_nat64 8))); AI_basic (BI_relop T_i64 (Relop_i ROI_eq))])
-        (state, store, Build_frame inside G.E.collector_instance,
-          v_to_e_list [VAL_num (VAL_int32 (wasm_bool false))])).
-      { rewrite <- Mismatch; apply rt_step, r_simple; eapply rs_relop with
-          (v1 := VAL_int64 (wasm_nat64 length)) (v2 := VAL_int64 (wasm_nat64 8))
-          (t := T_i64) (op := Relop_i ROI_eq); reflexivity. }
-      execute Compared.
-      eapply G.E.collector_trap_suffix with
-        (instructions := [v_to_e (VAL_num (VAL_int32 (wasm_bool false))); AI_basic (BI_call 21%N)]).
-      apply G.E.collector_require_executes with (condition := false); rewrite Functions; reflexivity.
-  Qed.
+  Lemma compared_scope state : scope state (compared state) 0.
+  Proof. split; [intros index value Present; exact Present|cbn; lia]. Qed.
 
   Definition observed_comparison state lhs rhs equal := exists left right,
-    handle_bytes state lhs = Some left /\
-    handle_bytes (Datatypes.S state) rhs = Some right /\
-    G.E.H.Tables.T.O.compare_handles (blobh left) (blobh right) = Some equal.
-
+    handle_bytes (G.E.H.observations state) lhs = Some left /\
+    handle_bytes (Datatypes.S (G.E.H.observations state)) rhs = Some right /\
+    G.E.H.T.O.compare_handles (blobh left) (blobh right) = Some equal.
   Definition observed_same state lhs rhs := observed_comparison state lhs rhs true.
 
-  (** Available privileged handle bytes make the modeled comparison observation defined. *)
   Lemma observed_comparison_total state lhs rhs :
     (forall index value, exists bytes, handle_bytes index value = Some bytes) ->
     exists equal, observed_comparison state lhs rhs equal.
   Proof.
     intro Bytes.
-    destruct (Bytes state lhs) as [left Left].
-    destruct (Bytes (Datatypes.S state) rhs) as [right Right].
-    destruct (proj2 (G.E.H.Tables.T.O.compare_handles_defined (blobh left) (blobh right))
+    destruct (Bytes (G.E.H.observations state) lhs) as [left Left].
+    destruct (Bytes (Datatypes.S (G.E.H.observations state)) rhs) as [right Right].
+    destruct (proj2 (G.E.H.T.O.compare_handles_defined (blobh left) (blobh right))
       (conj eq_refl eq_refl)) as [equal Compared].
     exists equal, left, right; auto.
   Qed.
 
-  (** A successful identity observation implies exact equality of the abstract handles. *)
   Lemma observed_same_identifies state lhs rhs : observed_same state lhs rhs -> lhs = rhs.
   Proof.
     intros [left [right [Left [Right Compared]]]].
-    apply X.API.handle_eqb_spec.
-    eapply (G.collector_same_comparison_sound handle_bytes C.bytes_identify); eassumption.
+    eapply bytes_identify; [exact Left|exact Right|].
+    apply G.E.H.T.O.compare_handles_equal in Compared as [_ [_ Related]].
+    apply G.E.H.T.O.indistinguishable_blobs in Related; exact Related.
   Qed.
 
-  (** A ready identity observation executes the native comparison helper. *)
-  Lemma same_run state store locals lhs rhs equal :
-    s_funcs store = s_funcs G.E.allocated_store -> observed_comparison state lhs rhs equal ->
+  Lemma same_run state store locals lhs_index rhs_index lhs rhs equal :
+    s_funcs store = s_funcs G.E.allocated_store ->
+    G.E.H.resolve state lhs_index = Some lhs -> G.E.H.resolve state rhs_index = Some rhs ->
+    observed_comparison state lhs rhs equal ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext lhs; ext rhs] ++ [AI_basic (BI_call 22%N)])
-      (Datatypes.S (Datatypes.S state), store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [descriptor lhs_index; descriptor rhs_index] ++ [AI_basic (BI_call 23%N)])
+      (compared state, store, Build_frame locals G.E.collector_instance,
         if equal then [] else [AI_trap]).
   Proof.
-    intros Functions [left [right [Left [Right Compared]]]].
-    eapply G.collector_same_executes with (equal := equal); eassumption.
+    intros Functions LiveLeft LiveRight [left [right [Left [Right Compared]]]].
+    set (inside := [descriptor lhs_index; descriptor rhs_index]).
+    eapply G.E.collector_call_void with (code := evaluation_same)
+      (parameters := [T_num T_i32; T_num T_i32]) (defaults := []) (address := 23%N)
+      (arguments := inside) (accepted := equal) (final_frame := Build_frame inside G.E.collector_instance);
+      try reflexivity.
+    - rewrite Functions; reflexivity.
+    - rewrite evaluation_same_body.
+      native_pure; native_pure.
+      assert (Import : G.E.H.host_values combination G.E.collector_instance true true handle_bytes
+        state store shell_same_handle_bytes inside =
+          Some (compared state, [VAL_num (VAL_int32 (wasm_bool equal))])).
+      { unfold G.E.H.host_values, inside, descriptor.
+        rewrite LiveLeft, LiveRight; cbn [G.E.H.H.obind].
+        rewrite Left, Right; cbn [G.E.H.H.obind]; rewrite Compared; destruct equal; reflexivity. }
+      execute (native_value_import state store (compared state) inside 4%N shell_same_handle_bytes
+        inside [VAL_num (VAL_int32 (wasm_bool equal))] Functions eq_refl eq_refl eq_refl
+        ltac:(discriminate) Import).
+      apply native_require; exact Functions.
   Qed.
 
-  (** The native loop counter test agrees with the bounded natural-number test. *)
-  Lemma counter_test_run state store locals left_local right_local left right :
+  Definition native_object := nth 7 (mod_funcs evaluation_module) (Build_module_func 0%N [] []).
+  Lemma native_object_body : modfunc_body native_object =
+    ltac:(let code := eval cbv [modfunc_body native_object mod_funcs evaluation_module nth] in
+      (modfunc_body native_object) in exact code).
+  Proof. reflexivity. Qed.
+
+  Lemma allocate_observations before value after values : G.E.H.allocate before value = Some (after, values) ->
+    G.E.H.observations after = G.E.H.observations before.
+  Proof.
+    intro Allocated; destruct (G.E.H.allocate_resolves _ _ _ _ Allocated)
+      as [index [_ [_ [_ [_ [_ Observations]]]]]]; exact Observations.
+  Qed.
+
+  Lemma observed_comparison_observations before after lhs rhs equal :
+    G.E.H.observations after = G.E.H.observations before ->
+    observed_comparison before lhs rhs equal -> observed_comparison after lhs rhs equal.
+  Proof. intros Same; unfold observed_comparison; rewrite Same; auto. Qed.
+
+  Lemma object_run state store locals reference_index object_index reference object :
+    s_funcs store = s_funcs G.E.allocated_store ->
+    G.E.H.resolve state reference_index = Some reference ->
+    G.E.H.resolve state object_index = Some (Data (Object object)) ->
+    observed_same state reference (Data (Ref (G.E.H.H.data_reference (Object object)))) ->
+    G.E.H.D.live_count (G.E.H.slots state) < G.E.H.capacity ->
+    exists next,
+      reduce_trans
+        (state, store, Build_frame locals G.E.collector_instance,
+          v_to_e_list [descriptor reference_index; descriptor object_index] ++ [AI_basic (BI_call 29%N)])
+        (next, store, Build_frame locals G.E.collector_instance, []) /\ scope state next 1 /\
+      G.E.H.observations next = G.E.H.observations state + 2.
+  Proof.
+    intros Functions Reference ObjectLive Observed Room.
+    set (value := Data (Ref (G.E.H.H.data_reference (Object object)))).
+    set (inside := [descriptor reference_index; descriptor object_index]).
+    assert (Values : G.E.H.host_values combination G.E.collector_instance true true handle_bytes
+      state store shell_create_ref [descriptor object_index] = G.E.H.allocate state value).
+    { unfold G.E.H.host_values, G.E.H.transform, descriptor, value.
+      rewrite ObjectLive; reflexivity. }
+    destruct (new_handle_run state store inside 11%N shell_create_ref [descriptor object_index] value
+      Functions eq_refl eq_refl eq_refl ltac:(discriminate) Values Room)
+      as [allocated [copy [Created [Present [Fresh [Scoped Observations]]]]]].
+    assert (ReferenceNext : G.E.H.resolve allocated reference_index = Some reference)
+      by (apply (proj1 Scoped); exact Reference).
+    assert (ObservedNext : observed_same allocated reference value).
+    { eapply observed_comparison_observations; eassumption. }
+    exists (compared allocated); split.
+    - eapply G.E.collector_call_void with (code := native_object)
+        (parameters := [T_num T_i32; T_num T_i32]) (defaults := [])
+        (address := 29%N) (arguments := inside) (accepted := true)
+        (final_frame := Build_frame inside G.E.collector_instance); try reflexivity.
+      + rewrite Functions; reflexivity.
+      + rewrite native_object_body.
+        execute (native_type_query state store inside 1%N object_index (Data (Object object)) Functions eq_refl ObjectLive).
+        do 4 native_pure.
+        execute_under [descriptor reference_index] Created.
+        exact (same_run allocated store inside reference_index (wasm_nat copy) reference value true
+          Functions ReferenceNext Present ObservedNext).
+    - split; [exact Scoped|].
+      change (G.E.H.observations allocated + 2 = G.E.H.observations state + 2).
+      rewrite Observations; reflexivity.
+  Qed.
+
+  Lemma fresh_distinct state fresh other value :
+    G.E.H.resolve state fresh = None -> G.E.H.resolve state other = Some value ->
+    G.E.H.nat_of_i32 fresh <> G.E.H.nat_of_i32 other.
+  Proof.
+    unfold G.E.H.resolve; intros Fresh Present Same; rewrite Same, Present in Fresh; discriminate.
+  Qed.
+
+  Lemma arity_run state store locals index tree length :
+    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state index = Some (treeh tree) ->
+    List.length (get_tree_raw tree) = length -> native_size_bound length ->
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [descriptor index; word length] ++ [AI_basic (BI_call 26%N)])
+      (state, store, Build_frame locals G.E.collector_instance, []).
+  Proof.
+    intros Functions Live Length Bound.
+    pose proof (G.collector_arity_executes combination handle_bytes (address := index)
+      state store locals tree (wasm_nat length) Functions ltac:(rewrite Length; exact Bound) Live) as Run.
+    assert (Size : G.E.H.T.O.data_length (Object (TreeObj tree)) = length) by exact Length.
+    rewrite Size in Run.
+    assert (Same : app_relop (Relop_i ROI_eq) (VAL_int32 (wasm_nat length)) (VAL_int32 (wasm_nat length)) = true).
+    { change (Wasm_int.int_eq i32m (wasm_nat length) (wasm_nat length) = true).
+      rewrite wasm_nat_equal by (apply native_size_bound_word; exact Bound); apply Nat.eqb_refl. }
+    change (reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [descriptor index; word length] ++ [AI_basic (BI_call 26%N)])
+      (state, store, Build_frame locals G.E.collector_instance,
+        if app_relop (Relop_i ROI_eq) (VAL_int32 (wasm_nat length)) (VAL_int32 (wasm_nat length))
+        then [] else [AI_trap])) in Run.
+    rewrite Same in Run; exact Run.
+  Qed.
+
+  Lemma tag_run state store locals index value tagged :
+    s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state index = Some value ->
+    G.E.H.Api.is_tag value = tagged ->
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [descriptor index] ++ [AI_basic (BI_call 3%N)])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool tagged))]).
+  Proof.
+    intros Functions Live Tagged.
+    eapply native_value_import with (operation := shell_is_tag); try exact Functions; try reflexivity;
+      [discriminate|].
+    unfold G.E.H.host_values, descriptor; rewrite Live; cbn [G.E.H.H.obind].
+    rewrite Tagged; destruct tagged; reflexivity.
+  Qed.
+
+
+  Lemma counter_equal_run state store locals left right :
     (Z.of_nat left < 2 ^ 32)%Z -> (Z.of_nat right < 2 ^ 32)%Z ->
-    lookup_N locals left_local = Some (word left) -> lookup_N locals right_local = Some (word right) ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        to_e_list [BI_local_get left_local; BI_local_get right_local;
-          BI_relop T_i32 (Relop_i ROI_eq); BI_br_if 1%N])
+        v_to_e_list [word left; word right] ++ [AI_basic (BI_relop T_i32 (Relop_i ROI_eq))])
       (state, store, Build_frame locals G.E.collector_instance,
-        if Nat.eqb left right then [AI_basic (BI_br 1%N)] else []).
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool (Nat.eqb left right)))]).
   Proof.
-    intros LeftBound RightBound Left Right.
-    execute (local_get_run state store locals left_local (word left) Left).
-    execute_under [word left] (local_get_run state store locals right_local (word right) Right).
-    eapply rt_trans with (y := (state, store, Build_frame locals G.E.collector_instance,
-      [v_to_e (VAL_num (VAL_int32 (wasm_bool (Nat.eqb left right)))); AI_basic (BI_br_if 1%N)])).
-    - pose proof (wasm_nat_equal left right LeftBound RightBound) as Compared.
-      change (app_relop (Relop_i ROI_eq) (VAL_int32 (wasm_nat left)) (VAL_int32 (wasm_nat right)) =
-        Nat.eqb left right) in Compared.
-      rewrite <- Compared.
-      apply rt_step; eapply r_label with (lh := LH_base [] [AI_basic (BI_br_if 1%N)]).
-      + apply r_simple; eapply rs_relop with (v1 := VAL_int32 (wasm_nat left))
-          (v2 := VAL_int32 (wasm_nat right)) (t := T_i32) (op := Relop_i ROI_eq); reflexivity.
-      + reflexivity.
-      + reflexivity.
-    - destruct (Nat.eqb left right); apply rt_step, r_simple;
-        [apply rs_br_if_true; vm_compute; discriminate|apply rs_br_if_false; reflexivity].
+    intros Left Right; pose proof (native_relop state store locals (VAL_int32 (wasm_nat left))
+      (VAL_int32 (wasm_nat right)) T_i32 (Relop_i ROI_eq) eq_refl) as Run.
+    change (reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [word left; word right] ++ [AI_basic (BI_relop T_i32 (Relop_i ROI_eq))])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool (Wasm_int.int_eq i32m (wasm_nat left) (wasm_nat right))))])) in Run.
+    rewrite wasm_nat_equal in Run by assumption; exact Run.
   Qed.
 
-  (** The Tree-creation import constructs the Tree represented by the supplied
-      externref-table prefix. *)
-  Lemma collector_create_tree_executes state store locals index table values unused :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    stab store G.E.collector_instance (Wasm_int.N_of_uint i32m index) = Some table ->
-    tt_elem_type (tableinst_type table) = T_externref ->
-    tableinst_elem table = map G.E.H.Tables.externref values ++ unused ->
-    (Z.of_nat (List.length values) < 2 ^ 32)%Z ->
+  Lemma branch_if_run state store frame index (condition : bool) :
+    reduce_trans
+      (state, store, frame, v_to_e_list [VAL_num (VAL_int32 (wasm_bool condition))] ++
+        [AI_basic (BI_br_if index)])
+      (state, store, frame, if condition then [AI_basic (BI_br index)] else []).
+  Proof.
+    destruct condition; apply rt_step, r_simple.
+    - apply rs_br_if_true; vm_compute; discriminate.
+    - apply rs_br_if_false; reflexivity.
+  Qed.
+
+  Lemma counter_increment_run state store locals index :
+    (Z.of_nat index < 2 ^ 32)%Z ->
     reduce_trans
       (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int32 index); word (List.length values)] ++ [AI_basic (BI_call 10%N)])
-      (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [ext (treeh (create_tree values))]).
-  Proof.
-    intros Functions Table Element Contents Bound.
-    pose proof (G.E.H.Tables.create_tree_from_table_correct store G.E.collector_instance
-      (Wasm_int.N_of_uint i32m index) table values unused Table Element Contents) as Construct.
-    eapply G.E.collector_import_executes with (operation := shell_create_tree)
-      (arguments := [VAL_num (VAL_int32 index); word (List.length values)])
-      (result := result_values [ext (treeh (create_tree values))]); try reflexivity.
-    - rewrite Functions; reflexivity.
-    - apply G.E.H.host_values_result.
-      unfold G.E.H.host_values, word, G.E.H.W.nat_of_i32.
-      rewrite (wasm_nat_to_nat _ Bound), Construct; reflexivity.
-  Qed.
-
-  (** The Tag-creation import constructs the Tag described by the modeled fields and
-      selected issuer. *)
-  Lemma collector_create_tag_executes state store locals index table body issuing_author :
-    s_funcs store = s_funcs G.E.allocated_store ->
-    stab store G.E.collector_instance (Wasm_int.N_of_uint i32m index) = Some table ->
-    tt_elem_type (tableinst_type table) = T_externref ->
-    tableinst_elem table = map G.E.H.Tables.externref (issuing_author :: body) ->
-    G.E.H.Tables.T.A.author_at 1 (treeh combination) = Some issuing_author ->
-    let tag := create_tree_tagged true (issuing_author :: body) in
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int32 index)] ++ [AI_basic (BI_call 13%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        if is_comparable issuing_author then v_to_e_list [ext (treeh tag)] else [AI_trap]).
-  Proof.
-    intros Functions Table Element Contents Selected tag.
-    pose proof (G.E.H.Tables.create_tag_from_table_correct combination store G.E.collector_instance
-      (Wasm_int.N_of_uint i32m index) table (issuing_author :: body) Table Element Contents) as Construct.
-    change (G.E.H.Tables.T.A.author_at 1
-      (G.E.H.Tables.T.O.EC.E.EP.E.H.HTreeObj combination) = Some issuing_author) in Selected.
-    destruct (is_comparable issuing_author) eqn:Comparable.
-    - rewrite (G.E.H.Tables.T.create_tag_authorized _ _ _
-        (G.E.H.Tables.T.authorizes_selected combination 1 issuing_author Selected Comparable)) in Construct.
-      eapply G.E.collector_import_executes with (operation := shell_create_tag)
-        (arguments := [VAL_num (VAL_int32 index)]) (result := result_values [ext (treeh tag)]);
-        try reflexivity.
-      + rewrite Functions; reflexivity.
-      + apply G.E.H.host_values_result.
-        unfold G.E.H.host_values; rewrite Construct; reflexivity.
-    - rewrite (G.E.H.Tables.T.create_tag_rejects_noncomparable _ _ _ Comparable) in Construct.
-      eapply G.E.collector_import_executes with (operation := shell_create_tag)
-        (arguments := [VAL_num (VAL_int32 index)]) (result := result_trap); try reflexivity.
-      + rewrite Functions; reflexivity.
-      + apply G.E.H.host_values_trap; [discriminate|discriminate|discriminate|].
-        unfold G.E.H.host_values; rewrite Construct; reflexivity.
-  Qed.
-
-  (** The integer-creation import constructs the Blob encoding the supplied unsigned
-      integer. *)
-  Lemma collector_create_integer_executes state store locals number :
-    s_funcs store = s_funcs G.E.allocated_store -> (Z.of_nat number < 2 ^ 64)%Z ->
-    reduce_trans
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [VAL_num (VAL_int64 (wasm_nat64 number))] ++ [AI_basic (BI_call 11%N)])
-      (state, store, Build_frame locals G.E.collector_instance,
-        v_to_e_list [ext (blobh (create_blob (from_nat number)))]).
-  Proof.
-    intros Functions Bound.
-    eapply G.E.collector_import_executes with (operation := shell_create_blob_i64)
-      (arguments := [VAL_num (VAL_int64 (wasm_nat64 number))])
-      (result := result_values [ext (blobh (create_blob (from_nat number)))]); try reflexivity.
-    - rewrite Functions; reflexivity.
-    - apply G.E.H.host_values_result; unfold G.E.H.host_values.
-      rewrite serialise_i64_encode_u64, (wasm_nat64_unsigned _ Bound), Nat2Z.id; reflexivity.
-  Qed.
-
+        v_to_e_list [word index; word 1] ++ [AI_basic (BI_binop T_i32 (Binop_i BOI_add))])
+      (state, store, Build_frame locals G.E.collector_instance, v_to_e_list [word (Datatypes.S index)]).
+  Proof. intro Bound; apply rt_step, r_simple; exact (wasm_nat_increment_step index Bound). Qed.
 End WasmSupport.

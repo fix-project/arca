@@ -482,7 +482,9 @@ pub(crate) fn require_privilege() {
         .call_with_current_continuation()
         .try_into()
         .expect("is_privileged: return type is not a word");
-    assert_eq!(privileged.read(), 1, "operation requires privilege");
+    if privileged.read() != 1 {
+        crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_UNREACHABLE);
+    }
     unsafe { PRIVILEGED = true };
 }
 

@@ -357,3 +357,8 @@ pub unsafe extern "C" fn w2c_fix_coordinate(
         result
     }
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn w2c_fix_exit(_: *mut w2c_fix, value: u32) -> ! {
+    crate::continuation::finish(descriptors::address(value))
+}

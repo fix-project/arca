@@ -18,7 +18,7 @@ def _rocq_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._rocq,
         arguments = [args],
-        inputs = depset([source], transitive = [dependencies]),
+        inputs = depset([source] + ctx.files.includes, transitive = [dependencies]),
         tools = ctx.files._toolchain,
         outputs = [output],
         env = {"HOME": "."},
@@ -43,6 +43,7 @@ rocq_library = rule(
     implementation = _rocq_library_impl,
     attrs = {
         "src": attr.label(allow_single_file = [".v"], mandatory = True),
+        "includes": attr.label_list(allow_files = [".v"]),
         "deps": attr.label_list(providers = [RocqInfo]),
         "namespace": attr.string(mandatory = True),
         "_rocq": attr.label(default = "@rocq_host//:bin/rocq", executable = True, cfg = "exec", allow_single_file = True),
@@ -120,10 +121,11 @@ rocq_host = repository_rule(
     configure = True,
 )
 
-def rocq_module(name, namespace, deps = [], src = None):
+def rocq_module(name, namespace, deps = [], src = None, includes = []):
     rocq_library(
         name = name,
         src = src or name + ".v",
+        includes = includes,
         deps = deps,
         namespace = namespace,
         tags = ["manual"],

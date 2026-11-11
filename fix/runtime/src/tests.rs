@@ -977,9 +977,11 @@ mod tests {
             .try_into()
             .unwrap();
         let description: kernel::prelude::Tuple = trapped.into_inner().read().try_into().unwrap();
+        let operation: kernel::prelude::Blob = description.get(1).try_into().unwrap();
+        assert_eq!(&*operation, b"trap");
         let arguments: kernel::prelude::Tuple = description.get(2).try_into().unwrap();
-        let reason: kernel::prelude::Blob = arguments.get(0).try_into().unwrap();
-        assert_eq!(&*reason, b"exception");
+        let code: kernel::prelude::Word = arguments.get(0).try_into().unwrap();
+        assert_eq!(code.read(), 5);
     }
 
     #[kernel::test]

@@ -1,5 +1,8 @@
 # Isabelle to Rocq correspondence
 
+The native collector uses owned descriptors with finite capacity.
+[STATUS.md](STATUS.md) lists the execution results and remaining semantic gaps.
+
 This audit follows the `Wasm-Proof` session's `isabelle_coupon` and
 `make_coupon` roots and their imports. The original constructor executions are preserved in the imported history.
 The statement/assumption audit and clean pinned-dependency build passed.
@@ -17,7 +20,7 @@ three implemented thunk constructors.
 The semantic development retains the sequence of handle operations,
 evaluation, congruence, equivalence, equivalence closure, coupon judgements,
 guarded constructors, and Wasm executions. Storage, programs,
-and externref embeddings are module parameters. Their assumptions are kept
+and privileged handle observations are module parameters. Their assumptions are kept
 separate from the proved conclusions.
 
 Tree evaluation preserves its Tag marker. Tree equivalence and the Tree
@@ -42,7 +45,7 @@ evaluation. Coinductive equivalence uses a mutual relation over handles and
 lists to satisfy Rocq's productivity check. Coupon soundness uses mutual
 induction over six judgements, with nested list induction for Trees.
 
-Constructor executions retain table reads, local assignments, host calls,
+Constructor executions retain descriptor reads, local assignments, host calls,
 ordered guards, and the successful return or trap. Their abstract builders
 are proved independently and then connected to the actual parsed Wasm
 bodies. Shared guard and context lemmas replace Isabelle custom methods;
@@ -50,8 +53,8 @@ these lemmas prove reductions, rather than assuming interpreter equations.
 
 The current collector adds the explicit exchanges needed to certify terminating
 Fix evaluations. `collector/wasm/Refinement.v` connects the parsed 26-exchange binary
-to `CouponExchanges.check` and `issue`, including conditional authority
-propagation. The current native proof states host-interface and resource assumptions;
+to `CouponExchanges.check`; `collector/wasm/Entry.v` connects exported execution
+to `issue`, including conditional authority propagation. The current native proof states host-interface and resource assumptions;
 exact-comparison success additionally requires representation readiness.
 
 ## Renamed and combined support results
@@ -77,13 +80,17 @@ from handle comparison and issued certificates.
 
 The original thirteen-exchange execution proof is preserved in the imported
 history. The current collector replaces it with the explicit exchange interface
-and Ref-backed witnesses. `collector/wasm/Refinement.v` proves native validation, success
-under comparison-readiness contracts, and conditional issuance against
-`CouponExchanges`. `WasmExecution` supplies finite Wasm reductions under
-instruction, label, and frame contexts. `WasmGuards` supplies guard and
+and Ref-backed witnesses. `collector/wasm/Refinement.v` proves native validation
+against `CouponExchanges.check`; the primitive execution modules prove success
+under comparison-readiness contracts. `collector/wasm/Entry.v` proves exported
+issuance and Tag-reconstruction soundness. The collector preserves open
+descriptors throughout an invocation. A limit of
+1,048,576 witnesses bounds allocation below the finite capacity; the Shell model
+also proves closing and deterministic reuse. `WasmExecution` supplies finite
+Wasm reductions under instruction, label, and frame contexts. `WasmGuards` supplies guard and
 witness-authentication proofs.
 
-The native proof assumes the storage and program interfaces, externref embedding,
+The native proof assumes the storage and program interfaces,
 Fix host operations, byte-identity contracts, and explicit resource bounds.
 The concrete Arca implementations of these interfaces are not formally verified.
 Independent Rocq kernel checking covers the retained proof modules. Bazel generates

@@ -1,46 +1,178 @@
-(** Interprets Fix Shell imports as WasmCert host operations and proves
-    that their results preserve the required typing and store-extension laws. *)
-
 From Wasm Require Import datatypes operations typing host properties type_preservation.
 From FixProof.Semantics Require Import Handle ApplyTree.
-From FixProof.Shell Require Import Operations Externref ABI Memory Tables.
+From FixProof.Support Require Import WasmNatural.
+From FixProof.Shell Require Import Operations Descriptors ABI Memory TagCreation.
 From Stdlib Require Import List String Arith NArith ZArith Bool Lia.
 Import ListNotations.
-Local Open Scope string_scope.
 Local Open Scope list_scope.
 
-Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
-  Module W := Externrefs S R.
-  Module Tables := ShellTables S P R.
-  Import S W.H R.
+Module ShellHost (S : STORAGE) (P : PROGRAM S).
+  Module D := Descriptors S.
+  Module H := Handles S.
+  Module Api := Operations S.
+  Module T := TagCreation S P.
+  Import S H.
 
-  Definition word_result value := Some [VAL_num (VAL_int32 (W.i32_of_nat value))].
-  Definition length_result value :=
-    if Z.ltb (Z.of_nat value) (2 ^ 64)%Z then
-      Some [VAL_num (VAL_int64 (Wasm_int.int_of_Z i64m (Z.of_nat value)))] else None.
-  (** A length fitting in 64 bits is returned as a Wasm i64. *)
-  Lemma length_result_small value : (Z.of_nat value < 2 ^ 64)%Z ->
-    length_result value = Some [VAL_num (VAL_int64 (Wasm_int.int_of_Z i64m (Z.of_nat value)))].
+  Definition capacity := N.to_nat native_table_limit.
+  Lemma capacity_value : Z.of_nat capacity = 134217728%Z.
+  Proof. unfold capacity; rewrite N_nat_Z; reflexivity. Qed.
+  Local Opaque capacity.
+  Definition i32_of_nat n := Wasm_int.int_of_Z i32m (Z.of_nat n).
+  Definition nat_of_i32 n := Wasm_int.nat_of_uint i32m n.
+  Definition word n := VAL_num (VAL_int32 (i32_of_nat n)).
+  Definition boolean (b : bool) := word (if b then 1 else 0).
+
+  Record state := State { slots : D.table; observations : nat }.
+  Definition initial value := State [Some value] 0.
+  Definition resolve state index := D.lookup (slots state) (nat_of_i32 index).
+  Definition unchanged (world : state) (values : list value) := Some (world, values).
+  Definition allocate state value :=
+    match D.allocate capacity (slots state) value with
+    | Some (index, next) => Some (State next (observations state), [word index])
+    | None => None end.
+  Definition transform state index operation :=
+    obind (resolve state index) (fun value => obind (operation value) (allocate state)).
+
+  Lemma word_roundtrip index : index < capacity -> nat_of_i32 (i32_of_nat index) = index.
   Proof.
-    intro Bound; unfold length_result.
-    assert (Fits : Z.ltb (Z.of_nat value) (2 ^ 64)%Z = true) by (apply Z.ltb_lt; exact Bound).
-    rewrite Fits; reflexivity.
+    intro Bound; apply wasm_nat_to_nat; apply Nat2Z.inj_lt in Bound.
+    rewrite capacity_value in Bound; lia.
   Qed.
+
+  Lemma allocate_resolves before value after values : allocate before value = Some (after, values) ->
+    exists index, values = [word index] /\ index < capacity /\
+      D.lookup (slots before) index = None /\
+      resolve after (i32_of_nat index) = Some value /\
+      D.live_count (slots after) = Datatypes.S (D.live_count (slots before)) /\
+      observations after = observations before.
+  Proof.
+    unfold allocate; destruct (D.allocate capacity (slots before) value) as [[index next]|] eqn:Allocated;
+      [|discriminate].
+    intro Returned; inversion Returned; subst.
+    destruct (D.allocate_spec _ _ _ _ _ Allocated) as [Bound [Fresh [Present _]]].
+    exists index; repeat split; try reflexivity; try assumption.
+    - change (D.lookup next (nat_of_i32 (i32_of_nat index)) = Some value).
+      rewrite word_roundtrip by exact Bound; exact Present.
+    - unfold D.allocate in Allocated; destruct (D.insert (slots before) value) as [offset tail] eqn:Inserted.
+      destruct (Nat.ltb offset capacity); inversion Allocated; subst; eapply D.insert_live; exact Inserted.
+  Qed.
+
+  Lemma allocate_retains before value after values index previous :
+    allocate before value = Some (after, values) ->
+    resolve before index = Some previous -> resolve after index = Some previous.
+  Proof.
+    unfold allocate; destruct (D.allocate capacity (slots before) value) as [[offset next]|] eqn:Allocated;
+      [|discriminate].
+    intros Returned Present; inversion Returned; subst.
+    destruct (D.allocate_spec _ _ _ _ _ Allocated) as [_ [Fresh [_ [_ Other]]]].
+    unfold resolve in Present.
+    change (D.lookup next (nat_of_i32 index) = Some previous).
+    rewrite Other; [exact Present|].
+    intro Same; rewrite Same, Fresh in Present; discriminate.
+  Qed.
+
+  Lemma allocate_available before value : D.live_count (slots before) < capacity ->
+    exists after values, allocate before value = Some (after, values).
+  Proof.
+    intro Room; destruct (D.allocate_available capacity (slots before) value Room) as [index [next Allocated]].
+    unfold allocate; rewrite Allocated; eauto.
+  Qed.
+
+  Definition within_capacity world := List.length (slots world) <= capacity.
+
+  Lemma allocate_capacity before value after values : within_capacity before ->
+    allocate before value = Some (after, values) -> within_capacity after.
+  Proof.
+    unfold within_capacity, allocate.
+    destruct (D.allocate capacity (slots before) value) as [[index next]|] eqn:Allocated;
+      [|discriminate].
+    intros Bound Returned; inversion Returned; subst; cbn.
+    pose proof (D.allocate_spec _ _ _ _ _ Allocated) as [Fits _].
+    unfold D.allocate in Allocated; destruct (D.insert (slots before) value) as [offset tail] eqn:Inserted.
+    destruct (Nat.ltb offset capacity); inversion Allocated; subst.
+    pose proof (D.insert_length _ _ _ _ Inserted); lia.
+  Qed.
+
+  Lemma initial_capacity value : within_capacity (initial value).
+  Proof.
+    change (1 <= capacity); apply Nat2Z.inj_le; rewrite capacity_value; cbn; lia.
+  Qed.
+
+  Lemma resolve_bound world index value : within_capacity world -> resolve world index = Some value ->
+    nat_of_i32 index < capacity.
+  Proof.
+    intros Within Present; unfold resolve, D.lookup in Present.
+    destruct (nth_error (slots world) (nat_of_i32 index)) as [entry|] eqn:Slot; [|discriminate].
+    assert (Bound : nat_of_i32 index < List.length (slots world)).
+    { apply (proj1 (List.nth_error_Some _ _)); rewrite Slot; discriminate. }
+    unfold within_capacity in Within; lia.
+  Qed.
+
+  Definition release world index :=
+    omap (fun next => State next (observations world)) (D.close (slots world) (nat_of_i32 index)).
+
+  Lemma release_available before index value : resolve before index = Some value ->
+    exists after, release before index = Some after.
+  Proof.
+    intro Present; unfold resolve in Present.
+    destruct (D.close_available _ _ _ Present) as [next Closed].
+    unfold release; rewrite Closed; cbn [omap]; eexists; reflexivity.
+  Qed.
+
+  Lemma release_resolves before index after : release before index = Some after ->
+    resolve after index = None /\
+    D.live_count (slots before) = Datatypes.S (D.live_count (slots after)) /\
+    observations after = observations before.
+  Proof.
+    unfold release; destruct (D.close (slots before) (nat_of_i32 index)) as [next|] eqn:Closed;
+      [|discriminate].
+    intro Released; inversion Released; subst; repeat split; try reflexivity.
+    - change (D.lookup next (nat_of_i32 index) = None); eapply D.close_lookup; exact Closed.
+    - eapply D.close_live; exact Closed.
+  Qed.
+
+  Lemma release_retains before index after other : release before index = Some after ->
+    nat_of_i32 other <> nat_of_i32 index -> resolve after other = resolve before other.
+  Proof.
+    unfold release; destruct (D.close (slots before) (nat_of_i32 index)) as [next|] eqn:Closed;
+      [|discriminate].
+    intros Released Different; inversion Released; subst.
+    change (D.lookup next (nat_of_i32 other) = D.lookup (slots before) (nat_of_i32 other)).
+    eapply D.close_other; eassumption.
+  Qed.
+
+  Lemma release_capacity before index after : within_capacity before ->
+    release before index = Some after -> within_capacity after.
+  Proof.
+    unfold release, within_capacity; destruct (D.close (slots before) (nat_of_i32 index)) as [next|] eqn:Closed;
+      [|discriminate].
+    intros Bound Released; inversion Released; subst.
+    change (List.length next <= capacity); rewrite (D.close_length _ _ _ Closed); exact Bound.
+  Qed.
+
+  Lemma release_twice before index after : release before index = Some after -> release after index = None.
+  Proof.
+    unfold release; destruct (D.close (slots before) (nat_of_i32 index)) as [next|] eqn:Closed;
+      [|discriminate].
+    intro Released; inversion Released; subst.
+    change (omap (fun following => State following (observations before))
+      (D.close next (nat_of_i32 index)) = None).
+    rewrite (D.close_twice _ _ _ Closed); reflexivity.
+  Qed.
+
   Definition data_type value := match value with
     | Data (Object (BlobObj _)) | Data (Ref (BlobRef _)) => Some 0
     | Data (Object (TreeObj _)) | Data (Ref (TreeRef _)) => Some 1
     | _ => None end.
   Definition encode_type value := match value with
-    | Encode (Strict _) => Some 0 | Encode (Shallow _) => Some 1
-    | _ => None end.
+    | Encode (Strict _) => Some 0 | Encode (Shallow _) => Some 1 | _ => None end.
   Definition thunk_type value := match value with
     | Thunk (Application _) | Encode (Strict (Application _)) | Encode (Shallow (Application _)) => Some 0
     | Thunk (Selection _) | Encode (Strict (Selection _)) | Encode (Shallow (Selection _)) => Some 1
     | Thunk (Identification _) | Encode (Strict (Identification _)) | Encode (Shallow (Identification _)) => Some 2
     | _ => None end.
   Definition reference value := match value with
-    | Data (Object object) => Some (Data (Ref (data_reference (Object object))))
-    | _ => None end.
+    | Data (Object object) => Some (Data (Ref (data_reference (Object object)))) | _ => None end.
   Definition tree_thunk constructor value := match value with
     | Data (Object (TreeObj node)) | Data (Ref (TreeRef node)) => Some (Thunk (constructor node))
     | _ => None end.
@@ -49,106 +181,91 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Context `{mem : BlockUpdateMemory}.
     Variable combination : TreeName.
     Variable instance : moduleinst.
-    Variable privileged : bool.
-    Variable trusted_tagger : bool.
+    Variable privileged trusted_tagger : bool.
     Variable handle_bytes : nat -> handle -> option BlobName.
+
+    Fixpoint read_handles memory descriptors pointer count : option (list handle) :=
+      match count with
+      | 0 => Some []
+      | Datatypes.S rest =>
+        obind (read_bytes memory pointer 4) (fun bytes =>
+          match wasm_deserialise bytes T_i32 with
+          | VAL_int32 index =>
+            obind (D.lookup descriptors (nat_of_i32 index)) (fun value =>
+              omap (cons value) (read_handles memory descriptors (pointer + 4)%N rest))
+          | _ => None end)
+      end.
+
+    Definition memory_zero (store : store_record) :=
+      obind (lookup_N (inst_mems instance) 0%N) (lookup_N (s_mems store)).
+
+    Definition tree_from_memory state store pointer count :=
+      if Nat.leb (nat_of_i32 count) capacity then
+        obind (memory_zero store) (fun memory =>
+          obind (read_handles memory (slots state) (Wasm_int.N_of_uint i32m pointer) (nat_of_i32 count))
+            (fun fields => allocate state (HTreeObj (create_tree fields))))
+      else None.
+
+    Definition checked_tag value := match value with
+      | Data (Object (TreeObj fields)) => omap HTreeObj (T.create_tag combination (get_tree_raw fields))
+      | _ => None end.
+    Definition unchecked_tag value :=
+      if privileged && trusted_tagger then
+        match value with
+        | Data (Object (TreeObj fields)) => match get_tree_raw fields with
+          | [] => None | author :: body => Some (HTreeObj (create_tree_tagged true (author :: body))) end
+        | _ => None end
+      else None.
+
+    Definition length_result state length :=
+      if Z.ltb (Z.of_nat length) (2 ^ 64)%Z then
+        unchanged state [VAL_num (VAL_int64 (Wasm_int.int_of_Z i64m (Z.of_nat length)))]
+      else None.
 
     Definition host_values state (store : store_record) operation arguments :=
       match operation, arguments with
-      | shell_get_type, [VAL_ref (VAL_ref_extern address)] =>
-        word_result (value_type (to_handle address))
-      | shell_get_data_type, [VAL_ref (VAL_ref_extern address)] =>
-        obind (data_type (to_handle address)) word_result
-      | shell_get_encode_type, [VAL_ref (VAL_ref_extern address)] =>
-        obind (encode_type (to_handle address)) word_result
-      | shell_get_thunk_type, [VAL_ref (VAL_ref_extern address)] =>
-        if privileged then obind (thunk_type (to_handle address)) word_result else None
-      | shell_is_tag, [VAL_ref (VAL_ref_extern address)] => W.bool_result (W.Api.is_tag (to_handle address))
-      | shell_same_handle_bytes, [VAL_ref (VAL_ref_extern lhs); VAL_ref (VAL_ref_extern rhs)] =>
+      | shell_get_type, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => unchanged state [word (value_type value)])
+      | shell_get_data_type, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => obind (data_type value) (fun typ => unchanged state [word typ]))
+      | shell_get_encode_type, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => obind (encode_type value) (fun typ => unchanged state [word typ]))
+      | shell_get_thunk_type, [VAL_num (VAL_int32 index)] =>
+        if privileged then obind (resolve state index)
+          (fun value => obind (thunk_type value) (fun typ => unchanged state [word typ])) else None
+      | shell_is_tag, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => unchanged state [boolean (Api.is_tag value)])
+      | shell_equals, [VAL_num (VAL_int32 lhs); VAL_num (VAL_int32 rhs)] =>
+        obind (resolve state lhs) (fun left => obind (resolve state rhs) (fun right =>
+          obind (T.O.compare_handles left right) (fun equal => unchanged state [boolean equal])))
+      | shell_same_handle_bytes, [VAL_num (VAL_int32 lhs); VAL_num (VAL_int32 rhs)] =>
         if privileged then
-          obind (handle_bytes state (to_handle lhs)) (fun left =>
-            obind (handle_bytes (Datatypes.S state) (to_handle rhs)) (fun right =>
-              obind (Tables.T.O.compare_handles (HBlobObj left) (HBlobObj right)) W.bool_result))
+          obind (resolve state lhs) (fun left => obind (resolve state rhs) (fun right =>
+            obind (handle_bytes (observations state) left) (fun left_bytes =>
+              obind (handle_bytes (Datatypes.S (observations state)) right) (fun right_bytes =>
+                obind (T.O.compare_handles (HBlobObj left_bytes) (HBlobObj right_bytes))
+                  (fun equal => unchanged (State (slots state) (observations state + 2)) [boolean equal])))))
         else None
-      | shell_equals, [VAL_ref (VAL_ref_extern lhs); VAL_ref (VAL_ref_extern rhs)] =>
-        obind (Tables.T.O.compare_handles (to_handle lhs) (to_handle rhs)) W.bool_result
-      | shell_len, [VAL_ref (VAL_ref_extern address)] =>
-        match to_handle address with
-        | Data data => length_result (Tables.T.O.data_length data) | _ => None end
-      | shell_get_tree_element, [VAL_ref (VAL_ref_extern address); VAL_num (VAL_int32 index)] =>
-        W.handle_result (W.Api.get_tree_data_api (to_handle address) (W.nat_of_i32 index))
-      | shell_create_tree, [VAL_num (VAL_int32 index); VAL_num (VAL_int32 length)] =>
-        W.handle_result (omap HTreeObj (Tables.create_tree_from_table store instance
-          (Wasm_int.N_of_uint i32m index) (W.nat_of_i32 length)))
-      | shell_create_blob_i64, [VAL_num (VAL_int64 value)] =>
-        Some [W.extern_value (HBlobObj (create_blob (serialise_i64 value)))]
-      | shell_create_ref, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (reference (to_handle address))
-      | shell_create_tag, [VAL_num (VAL_int32 index)] =>
-        W.handle_result (omap HTreeObj (Tables.create_tag_from_table combination store instance
-          (Wasm_int.N_of_uint i32m index)))
-      | shell_create_tag_unchecked, [VAL_ref (VAL_ref_extern address)] =>
-        if privileged && trusted_tagger then
-          match to_handle address with
-          | Data (Object (TreeObj fields)) =>
-            match get_tree_raw fields with
-            | _ :: _ =>
-              Some [W.extern_value (HTreeObj (create_tree_tagged true (get_tree_raw fields)))]
-            | _ => None end
-          | _ => None end
-        else None
-      | shell_application, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (tree_thunk Application (to_handle address))
-      | shell_selection, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (tree_thunk Selection (to_handle address))
-      | shell_identification, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (W.Api.create_identification_thunk_api (to_handle address))
-      | shell_strict, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (W.Api.create_strict_encode_api (to_handle address))
-      | shell_shallow, [VAL_ref (VAL_ref_extern address)] =>
-        W.handle_result (W.Api.create_shallow_encode_api (to_handle address))
+      | shell_len, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => match value with
+          | Data data => length_result state (T.O.data_length data) | _ => None end)
+      | shell_get_tree_element, [VAL_num (VAL_int32 index); VAL_num (VAL_int32 offset)] =>
+        transform state index (fun value => Api.get_tree_data_api value (nat_of_i32 offset))
+      | shell_create_blob_i64, [VAL_num (VAL_int64 value)] => allocate state (HBlobObj (create_blob (serialise_i64 value)))
+      | shell_create_tree, [VAL_num (VAL_int32 pointer); VAL_num (VAL_int32 count)] => tree_from_memory state store pointer count
+      | shell_create_ref, [VAL_num (VAL_int32 index)] => transform state index reference
+      | shell_create_tag, [VAL_num (VAL_int32 index)] => transform state index checked_tag
+      | shell_create_tag_unchecked, [VAL_num (VAL_int32 index)] => transform state index unchecked_tag
+      | shell_application, [VAL_num (VAL_int32 index)] => transform state index (tree_thunk Application)
+      | shell_selection, [VAL_num (VAL_int32 index)] => transform state index (tree_thunk Selection)
+      | shell_identification, [VAL_num (VAL_int32 index)] => transform state index Api.create_identification_thunk_api
+      | shell_strict, [VAL_num (VAL_int32 index)] => transform state index Api.create_strict_encode_api
+      | shell_shallow, [VAL_num (VAL_int32 index)] => transform state index Api.create_shallow_encode_api
+      | shell_clone, [VAL_num (VAL_int32 index)] => obind (resolve state index) (allocate state)
+      | shell_close, [VAL_num (VAL_int32 index)] =>
+        omap (fun next => (next, [])) (release state index)
       | _, _ => None
       end.
-
-    Lemma unchecked_tag_requires_authority state store arguments :
-      privileged = false \/ trusted_tagger = false ->
-      host_values state store shell_create_tag_unchecked arguments = None.
-    Proof.
-      unfold host_values; intros Denied; destruct privileged, trusted_tagger;
-        try (destruct Denied; discriminate); cbn;
-        repeat match goal with
-        | |- context [match ?value with _ => _ end] => destruct value
-        end; reflexivity.
-    Qed.
-
-    Lemma unchecked_tag_preserves_fields state store fields author body :
-      privileged = true -> trusted_tagger = true ->
-      get_tree_raw fields = author :: body ->
-      host_values state store shell_create_tag_unchecked [W.extern_value (HTreeObj fields)] =
-        Some [W.extern_value (HTreeObj (create_tree_tagged true (author :: body)))].
-    Proof.
-      intros Privileged Trusted Fields; unfold host_values, W.extern_value.
-      rewrite Privileged, Trusted, to_handle_to_externref; cbn; rewrite Fields; reflexivity.
-    Qed.
-
-    Lemma thunk_type_requires_privilege state store address :
-      privileged = false ->
-      host_values state store shell_get_thunk_type [VAL_ref (VAL_ref_extern address)] = None.
-    Proof. intro Denied; unfold host_values; rewrite Denied; reflexivity. Qed.
-
-    (** Successful pure Shell operations return values of their declared Wasm result types. *)
-    Lemma host_values_typing state store operation arguments values :
-      host_values state store operation arguments = Some values ->
-      (match shell_signature operation with Tf _ results => values_typing store values results end) = true.
-    Proof.
-      intro Result; destruct operation;
-        cbv beta iota zeta delta [host_values word_result length_result W.bool_result W.handle_result W.H.omap W.Api.H.omap
-          obind omap option_map] in Result;
-        repeat (cbv beta iota zeta delta [host_values word_result length_result W.bool_result W.handle_result W.H.omap W.Api.H.omap
-            obind omap option_map] in Result;
-          match type of Result with context [match ?value with _ => _ end] => destruct value eqn:? end);
-        try discriminate; inversion Result; subst; reflexivity.
-    Qed.
 
     Definition component_typed {A B} (typing : A -> option B) values :=
       forallb (fun value => match typing value with Some _ => true | None => false end) values.
@@ -237,32 +354,6 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
     Definition replace_resource {A} (values : list A) index before after :=
       seq.set_nth before values (N.to_nat index) after.
 
-    Lemma supported_table_replacement store address before after typ :
-      lookup_N (s_tables store) address = Some before ->
-      let tables := replace_resource (s_tables store) address before after in
-      let next := upd_s_mem (upd_s_table store tables) (s_mems store) in
-      store_typing store -> store_extension store next = true ->
-      tableinst_typing next after = Some typ ->
-      supported_update store tables (s_mems store) = Some next.
-    Proof.
-      intros Present tables next Typed Extension After.
-      apply supported_update_accept; [exact Extension|].
-      destruct store as [functions oldtables memories globals elements data].
-      destruct Typed as [Functions [Tables [Memories [Globals [Elements Data]]]]].
-      cbn [store_typing upd_s_mem upd_s_table]; repeat split.
-      - eapply store_extension_funcs_typing; eassumption.
-      - unfold tables, replace_resource; eapply Forall_set.
-        + eapply store_extension_tables_typing; eassumption.
-        + exists typ; exact After.
-        + apply (ssrbool.introT ssrnat.ltP).
-          apply (proj1 (List.nth_error_Some _ _)); unfold lookup_N in Present;
-            rewrite Present; discriminate.
-      - eapply store_extension_mems_typing; eassumption.
-      - eapply store_extension_globals_typing; eassumption.
-      - eapply store_extension_elems_typing; eassumption.
-      - eapply store_extension_datas_typing; eassumption.
-    Qed.
-
     Lemma supported_memory_replacement store address before after typ :
       lookup_N (s_mems store) address = Some before ->
       let memories := replace_resource (s_mems store) address before after in
@@ -289,174 +380,79 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       - eapply store_extension_datas_typing; eassumption.
     Qed.
 
-    Definition tree_attachment_result (store : store_record) arguments :=
-      match arguments with
-      | [VAL_ref (VAL_ref_extern address); VAL_num (VAL_int32 index)] =>
-        match to_handle address, lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) with
-        | Data (Object (TreeObj node)), Some table_address =>
-          if N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit then
-          obind (lookup_N (s_tables store) table_address) (fun before =>
-            let values := get_tree_raw node in
-            let after := Tables.tree_attachment before values in
-            omap (fun next => (next, result_values []))
-              (supported_update store
-                (replace_resource (s_tables store) table_address before after) (s_mems store)))
-          else None
-        | _, _ => None end
-      | _ => None end.
-
-    Definition blob_read_result (store : store_record) arguments :=
-      match arguments with
-      | [VAL_ref (VAL_ref_extern address); VAL_num (VAL_int32 offset);
-         VAL_num (VAL_int32 destination); VAL_num (VAL_int32 length)] =>
-        match to_handle address, lookup_N (inst_mems instance) 0%N with
-        | Data (Object (BlobObj blob)), Some memory_address =>
-          let bytes := get_blob_data blob in
-          if Nat.leb (W.nat_of_i32 offset) (List.length bytes) then
-            let copied := firstn (W.nat_of_i32 length) (skipn (W.nat_of_i32 offset) bytes) in
-            obind (lookup_N (s_mems store) memory_address) (fun before =>
-              obind (write_bytes_meminst before (Wasm_int.N_of_uint i32m destination) copied) (fun after =>
-                omap (fun next => (next, result_values
-                  [VAL_num (VAL_int32 (W.i32_of_nat (List.length copied)))]))
-                  (supported_update store (s_tables store)
-                    (replace_resource (s_mems store) memory_address before after))))
-          else None
-        | _, _ => None end
-      | _ => None end.
-
-    Lemma tree_attachment_result_success store node index address before next :
-      (N.of_nat (List.length (get_tree_raw node)) <= native_table_limit)%N ->
-      lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) = Some address ->
-      lookup_N (s_tables store) address = Some before ->
-      supported_update store
-        (replace_resource (s_tables store) address before
-          (Tables.tree_attachment before (get_tree_raw node))) (s_mems store) = Some next ->
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result_values []).
+    Lemma host_values_typing world store operation arguments next values :
+      host_values world store operation arguments = Some (next, values) ->
+      (match shell_signature operation with Tf _ results => values_typing store values results end) = true.
     Proof.
-      intros NativeBound Address Before Supported; unfold tree_attachment_result, W.extern_value.
-      rewrite to_handle_to_externref, Address; cbn [HTreeObj].
-      assert (Allowed : N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit = true)
-        by (apply N.leb_le; exact NativeBound).
-      rewrite Allowed; cbn [obind].
-      rewrite Before.
-      change (omap (fun updated => (updated, result_values []))
-        (supported_update store
-          (replace_resource (s_tables store) address before
-            (Tables.tree_attachment before (get_tree_raw node))) (s_mems store)) =
-        Some (next, result_values [])).
+      intro Returned; destruct operation;
+        repeat (cbv beta iota zeta delta [host_values transform unchanged length_result allocate
+          tree_from_memory boolean word obind omap option_map] in Returned;
+          match type of Returned with context [match ?value with _ => _ end] => destruct value eqn:? end);
+        try discriminate; inversion Returned; subst; reflexivity.
+    Qed.
+
+
+    Definition blob_read_result world (store : store_record) arguments :=
+      match arguments with
+      | [VAL_num (VAL_int32 address); VAL_num (VAL_int32 offset);
+         VAL_num (VAL_int32 destination); VAL_num (VAL_int32 length)] =>
+        obind (resolve world address) (fun value =>
+          match value, lookup_N (inst_mems instance) 0%N with
+          | Data (Object (BlobObj blob)), Some memory_address =>
+            let bytes := get_blob_data blob in
+            if Nat.leb (nat_of_i32 offset) (List.length bytes) then
+              let copied := firstn (nat_of_i32 length) (skipn (nat_of_i32 offset) bytes) in
+              obind (lookup_N (s_mems store) memory_address) (fun before =>
+                obind (write_bytes_meminst before (Wasm_int.N_of_uint i32m destination) copied) (fun after =>
+                  omap (fun next => (next, [word (List.length copied)]))
+                    (supported_update store (s_tables store)
+                      (replace_resource (s_mems store) memory_address before after))))
+            else None
+          | _, _ => None end)
+      | _ => None end.
+
+    Lemma blob_read_result_correct world store arguments next values :
+      blob_read_result world store arguments = Some (next, values) ->
+      store_extension store next = true /\ (store_typing store -> store_typing next).
+    Proof.
+      unfold blob_read_result; intro Read.
+      repeat (cbv beta iota zeta delta [obind omap] in Read;
+        match type of Read with context [match ?value with _ => _ end] => destruct value eqn:? end);
+        try discriminate; inversion Read; subst.
+      eapply supported_update_correct; eassumption.
+    Qed.
+
+    Lemma blob_read_result_success world store index blob offset destination length address before after next :
+      resolve world index = Some (HBlobObj blob) ->
+      lookup_N (inst_mems instance) 0%N = Some address -> lookup_N (s_mems store) address = Some before ->
+      nat_of_i32 offset <= List.length (get_blob_data blob) ->
+      write_bytes_meminst before (Wasm_int.N_of_uint i32m destination)
+        (firstn (nat_of_i32 length) (skipn (nat_of_i32 offset) (get_blob_data blob))) = Some after ->
+      supported_update store (s_tables store)
+        (replace_resource (s_mems store) address before after) = Some next ->
+      blob_read_result world store [VAL_num (VAL_int32 index); VAL_num (VAL_int32 offset);
+        VAL_num (VAL_int32 destination); VAL_num (VAL_int32 length)] =
+        Some (next, [word (List.length
+          (firstn (nat_of_i32 length) (skipn (nat_of_i32 offset) (get_blob_data blob))))]).
+    Proof.
+      intros Live Address Before Offset Copied Supported.
+      unfold blob_read_result; rewrite Live; cbn [obind HBlobObj]; rewrite Address.
+      assert (Fits : Nat.leb (nat_of_i32 offset) (List.length (get_blob_data blob)) = true)
+        by (apply Nat.leb_le; exact Offset).
+      rewrite Fits; cbn [obind]; rewrite Before; cbn [obind]; rewrite Copied; cbn [obind].
       rewrite Supported; reflexivity.
     Qed.
 
-    Lemma tree_attachment_result_bound store node index next result :
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result) ->
-      (N.of_nat (List.length (get_tree_raw node)) <= native_table_limit)%N.
-    Proof.
-      unfold tree_attachment_result, W.extern_value.
-      rewrite to_handle_to_externref; cbn [HTreeObj].
-      destruct (lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index)); [|discriminate].
-      destruct (N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit)
-        eqn:Bound; intro Attached; [apply N.leb_le; exact Bound|discriminate].
-    Qed.
-
-    Lemma tree_attachment_result_oversized store node index :
-      (native_table_limit < N.of_nat (List.length (get_tree_raw node)))%N ->
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] = None.
-    Proof.
-      intro Bound; unfold tree_attachment_result, W.extern_value.
-      rewrite to_handle_to_externref; cbn [HTreeObj].
-      destruct (lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index)); [|reflexivity].
-      assert (Denied : N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit = false)
-        by (apply N.leb_gt; exact Bound).
-      rewrite Denied; reflexivity.
-    Qed.
-
-    Lemma tree_attachment_store_extension store address before values :
-      lookup_N (s_tables store) address = Some before ->
-      table_extension before (Tables.tree_attachment before values) = true ->
-      store_extension store (upd_s_mem (upd_s_table store
-        (replace_resource (s_tables store) address before (Tables.tree_attachment before values)))
-        (s_mems store)) = true.
-    Proof.
-      intros Before Extension.
-      change ((((((component_extension func_extension (s_funcs store) (s_funcs store) &&
-        component_extension table_extension (s_tables store)
-          (replace_resource (s_tables store) address before (Tables.tree_attachment before values))) &&
-        component_extension mem_extension (s_mems store) (s_mems store)) &&
-        component_extension global_extension (s_globals store) (s_globals store)) &&
-        component_extension elem_extension (s_elems store) (s_elems store)) &&
-        component_extension data_extension (s_datas store) (s_datas store))%bool = true).
-      rewrite (component_extension_same_refl (s_funcs store) func_extension_refl),
-        (component_extension_same_refl (s_mems store) mem_extension_refl),
-        (component_extension_same_refl (s_globals store) global_extension_refl),
-        (component_extension_same_refl (s_elems store) elem_extension_refl),
-        (component_extension_same_refl (s_datas store) data_extension_refl).
-      repeat rewrite Bool.andb_true_r; cbn.
-      unfold replace_resource; apply component_extension_update with (x := before);
-        [exact table_extension_refl|exact Before|exact Extension].
-    Qed.
-
-    Lemma tree_attachment_bounded store node index address before :
-      lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) = Some address ->
-      lookup_N (s_tables store) address = Some before -> store_typing store ->
-      tt_elem_type (tableinst_type before) = T_externref ->
-      lim_max (tt_limits (tableinst_type before)) = None ->
-      (lim_min (tt_limits (tableinst_type before)) <= N.of_nat (List.length (get_tree_raw node)))%N ->
-      tab_size before <= List.length (get_tree_raw node) ->
-      (N.of_nat (List.length (get_tree_raw node)) <= native_table_limit)%N ->
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (upd_s_mem (upd_s_table store
-          (replace_resource (s_tables store) address before
-            (Tables.tree_attachment before (get_tree_raw node)))) (s_mems store), result_values []).
-    Proof.
-      intros Address Before Typed Element Maximum Minimum Size Bound.
-      assert (CoreBound : (N.of_nat (List.length (get_tree_raw node)) <= table_limit_bound)%N).
-      { eapply N.le_trans; [exact Bound|].
-        unfold native_table_limit, table_limit_bound, u32_bound; vm_compute; congruence. }
-      apply tree_attachment_result_success with (address := address) (before := before);
-        [exact Bound|exact Address|exact Before|].
-      eapply supported_table_replacement; [exact Before|exact Typed| |].
-      - apply tree_attachment_store_extension; [exact Before|].
-        apply Tables.tree_attachment_extension; assumption.
-      - apply Tables.tree_attachment_typing; assumption.
-    Qed.
-
-    Lemma blob_read_result_success store blob offset destination length address before after next :
-      lookup_N (inst_mems instance) 0%N = Some address ->
-      lookup_N (s_mems store) address = Some before ->
-      W.nat_of_i32 offset <= List.length (get_blob_data blob) ->
-      write_bytes_meminst before (Wasm_int.N_of_uint i32m destination)
-        (firstn (W.nat_of_i32 length) (skipn (W.nat_of_i32 offset) (get_blob_data blob))) = Some after ->
-      supported_update store (s_tables store)
-        (replace_resource (s_mems store) address before after) = Some next ->
-      blob_read_result store [W.extern_value (HBlobObj blob); VAL_num (VAL_int32 offset);
-        VAL_num (VAL_int32 destination); VAL_num (VAL_int32 length)] =
-        Some (next, result_values [VAL_num (VAL_int32 (W.i32_of_nat
-          (List.length (firstn (W.nat_of_i32 length)
-            (skipn (W.nat_of_i32 offset) (get_blob_data blob))))))]).
-    Proof.
-      intros Address Before Offset Copied Supported; unfold blob_read_result, W.extern_value.
-      rewrite to_handle_to_externref, Address.
-      assert (Bound : Nat.leb (W.nat_of_i32 offset) (List.length (get_blob_data blob)) = true)
-        by (apply Nat.leb_le; exact Offset).
-      cbn [HBlobObj].
-      rewrite Bound; cbn [obind]; rewrite Before; cbn [obind].
-      rewrite Copied; cbn [obind]; rewrite Supported; reflexivity.
-    Qed.
-
-    Lemma blob_read_zero_bounded store blob before after :
+    Lemma blob_read_zero_bounded world store index blob before after :
+      resolve world index = Some (HBlobObj blob) ->
       inst_mems instance = [0%N] -> s_mems store = [before] -> store_typing store ->
       List.length (get_blob_data blob) = 8 ->
       write_bytes_meminst before 0%N (get_blob_data blob) = Some after ->
-      blob_read_result store [W.extern_value (HBlobObj blob);
-        VAL_num (VAL_int32 (W.i32_of_nat 0)); VAL_num (VAL_int32 (W.i32_of_nat 0));
-        VAL_num (VAL_int32 (W.i32_of_nat 8))] =
-        Some (upd_s_mem store [after], result_values [VAL_num (VAL_int32 (W.i32_of_nat 8))]).
+      blob_read_result world store [VAL_num (VAL_int32 index); word 0; word 0; word 8] =
+        Some (upd_s_mem store [after], [word 8]).
     Proof.
-      intros Instance Memory Typed Width Copied.
-      assert (Prefix : firstn 8 (get_blob_data blob) = get_blob_data blob).
-      { apply firstn_all2; lia. }
+      intros Live Instance Memory Typed Width Copied.
+      assert (Prefix : firstn 8 (get_blob_data blob) = get_blob_data blob) by (apply firstn_all2; lia).
       assert (Supported : supported_update store (s_tables store)
         (replace_resource (s_mems store) 0%N before after) = Some (upd_s_mem store [after])).
       { unfold replace_resource; rewrite Memory.
@@ -466,190 +462,21 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
           eapply blob_copy_store_extension; eassumption.
         - change (store_typing (upd_s_mem store [after])).
           eapply blob_copy_store_typing; eassumption. }
-      pose proof (blob_read_result_success store blob (W.i32_of_nat 0) (W.i32_of_nat 0)
-        (W.i32_of_nat 8) 0%N before after (upd_s_mem store [after])) as Read.
+      pose proof (blob_read_result_success world store index blob (i32_of_nat 0) (i32_of_nat 0)
+        (i32_of_nat 8) 0%N before after (upd_s_mem store [after]) Live) as Read.
       change (lookup_N (inst_mems instance) 0%N = Some 0%N ->
-        lookup_N (s_mems store) 0%N = Some before ->
-        0 <= List.length (get_blob_data blob) ->
+        lookup_N (s_mems store) 0%N = Some before -> 0 <= List.length (get_blob_data blob) ->
         write_bytes_meminst before 0%N (firstn 8 (get_blob_data blob)) = Some after ->
         supported_update store (s_tables store) (replace_resource (s_mems store) 0%N before after) =
           Some (upd_s_mem store [after]) ->
-        blob_read_result store [W.extern_value (HBlobObj blob);
-          VAL_num (VAL_int32 (W.i32_of_nat 0)); VAL_num (VAL_int32 (W.i32_of_nat 0));
-          VAL_num (VAL_int32 (W.i32_of_nat 8))] =
-          Some (upd_s_mem store [after], result_values
-            [VAL_num (VAL_int32 (W.i32_of_nat (List.length (firstn 8 (get_blob_data blob)))))])) in Read.
-      rewrite Prefix in Read.
-      specialize (Read ltac:(rewrite Instance; reflexivity) ltac:(rewrite Memory; reflexivity)
-        ltac:(lia) Copied Supported).
-      rewrite Width in Read; exact Read.
+        blob_read_result world store [VAL_num (VAL_int32 index); word 0; word 0; word 8] =
+          Some (upd_s_mem store [after], [word (List.length (firstn 8 (get_blob_data blob)))])) in Read.
+      rewrite Prefix in Read; rewrite Width in Read.
+      apply Read; try assumption; try (rewrite Instance; reflexivity); try (rewrite Memory; reflexivity); lia.
     Qed.
 
-    Lemma tree_attachment_result_correct store arguments next result :
-      tree_attachment_result store arguments = Some (next, result) ->
-      store_extension store next = true /\
-      (store_typing store -> store_typing next) /\ result = result_values [].
-    Proof.
-      unfold tree_attachment_result; intro Attached.
-      repeat (cbv beta iota zeta delta [obind omap] in Attached;
-        match type of Attached with context [match ?value with _ => _ end] => destruct value eqn:? end);
-        try discriminate; inversion Attached; subst.
-      split; [eapply supported_update_correct; eassumption|].
-      split; [eapply supported_update_correct; eassumption|reflexivity].
-    Qed.
-
-    Lemma blob_read_result_correct store arguments next result :
-      blob_read_result store arguments = Some (next, result) ->
-      store_extension store next = true /\
-      (store_typing store -> store_typing next) /\
-      exists count, result = result_values [VAL_num (VAL_int32 count)].
-    Proof.
-      unfold blob_read_result; intro Read.
-      repeat (cbv beta iota zeta delta [obind omap] in Read;
-        match type of Read with context [match ?value with _ => _ end] => destruct value eqn:? end);
-        try discriminate; inversion Read; subst.
-      split; [eapply supported_update_correct; eassumption|].
-      split; [eapply supported_update_correct; eassumption|eauto].
-    Qed.
-
-    Lemma tree_attachment_result_shape store node index next :
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result_values []) ->
-      exists address before,
-        lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) = Some address /\
-        lookup_N (s_tables store) address = Some before /\
-        next = upd_s_mem (upd_s_table store
-          (replace_resource (s_tables store) address before
-            (Tables.tree_attachment before (get_tree_raw node)))) (s_mems store).
-    Proof.
-      unfold tree_attachment_result, W.extern_value.
-      rewrite to_handle_to_externref; cbn [HTreeObj].
-      destruct (lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index))
-        as [address|] eqn:Address; [|discriminate].
-      destruct (N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit)
-        eqn:NativeBound; [|discriminate].
-      cbn [obind].
-      destruct (lookup_N (s_tables store) address) as [before|] eqn:Before; [|discriminate].
-      change (omap (fun updated => (updated, result_values []))
-        (supported_update store
-          (replace_resource (s_tables store) address before
-            (Tables.tree_attachment before (get_tree_raw node))) (s_mems store)) =
-        Some (next, result_values []) ->
-        exists address' before',
-          Some address = Some address' /\
-          lookup_N (s_tables store) address' = Some before' /\
-          next = upd_s_mem (upd_s_table store
-            (replace_resource (s_tables store) address' before'
-              (Tables.tree_attachment before' (get_tree_raw node)))) (s_mems store)).
-      destruct (supported_update store
-        (replace_resource (s_tables store) address before
-          (Tables.tree_attachment before (get_tree_raw node))) (s_mems store))
-        as [updated|] eqn:Supported; [|discriminate].
-      cbn [omap]; intro Attached; inversion Attached; subst updated.
-      exists address, before; repeat split; try assumption.
-      eapply supported_update_shape; exact Supported.
-    Qed.
-
-    Lemma tree_attachment_result_other_view store node index next other target address :
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result_values []) ->
-      lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) = Some target ->
-      lookup_N (inst_tables instance) other = Some address -> target <> address ->
-      stab next instance other = stab store instance other.
-    Proof.
-      intros Attached Target Address Different.
-      destruct (tree_attachment_result_shape _ _ _ _ Attached)
-        as [target' [before [Target' [Before Next]]]].
-      rewrite Target in Target'; inversion Target'; subst target'.
-      rewrite Next; unfold stab; rewrite Address.
-      change (lookup_N
-        (replace_resource (s_tables store) target before
-          (Tables.tree_attachment before (get_tree_raw node))) address =
-        lookup_N (s_tables store) address).
-      unfold lookup_N, replace_resource; rewrite nth_error_set_neq; [reflexivity|lia|].
-      apply (ssrbool.introT ssrnat.ltP).
-      apply (proj1 (List.nth_error_Some _ _)); unfold lookup_N in Before;
-        rewrite Before; discriminate.
-    Qed.
-
-    Lemma tree_attachment_result_other_table store node index next other target address offset :
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result_values []) ->
-      lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index) = Some target ->
-      lookup_N (inst_tables instance) other = Some address -> target <> address ->
-      stab_elem next instance other offset = stab_elem store instance other offset.
-    Proof.
-      intros Attached Target Address Different.
-      destruct (tree_attachment_result_shape _ _ _ _ Attached)
-        as [target' [before [Target' [Before Next]]]].
-      rewrite Target in Target'; inversion Target'; subst target'.
-      rewrite Next; unfold stab_elem; rewrite Address.
-      change (match lookup_N
-        (replace_resource (s_tables store) target before
-          (Tables.tree_attachment before (get_tree_raw node))) address with
-        | Some table => lookup_N (tableinst_elem table) offset | None => None end =
-        match lookup_N (s_tables store) address with
-        | Some table => lookup_N (tableinst_elem table) offset | None => None end).
-      unfold lookup_N, replace_resource; rewrite nth_error_set_neq; [reflexivity|lia|].
-      apply (ssrbool.introT ssrnat.ltP).
-      apply (proj1 (List.nth_error_Some _ _)); unfold lookup_N in Before;
-        rewrite Before; discriminate.
-    Qed.
-
-    Lemma tree_attachment_result_elements store node index next offset value :
-      tree_attachment_result store [W.extern_value (HTreeObj node); VAL_num (VAL_int32 index)] =
-        Some (next, result_values []) ->
-      nth_error (get_tree_raw node) offset = Some value ->
-      stab_elem next instance (Wasm_int.N_of_uint i32m index) (N.of_nat offset) =
-        Some (Tables.externref value).
-    Proof.
-      unfold tree_attachment_result, W.extern_value.
-      rewrite to_handle_to_externref; cbn [HTreeObj].
-      destruct (lookup_N (inst_tables instance) (Wasm_int.N_of_uint i32m index))
-        as [address|] eqn:Address; [|discriminate].
-      destruct (N.leb (N.of_nat (List.length (get_tree_raw node))) native_table_limit)
-        eqn:NativeBound; [|discriminate].
-      cbn [obind].
-      destruct (lookup_N (s_tables store) address) as [before|] eqn:Before; [|discriminate].
-      change (omap (fun updated => (updated, result_values []))
-        (supported_update store
-          (replace_resource (s_tables store) address before
-            (Tables.tree_attachment before (get_tree_raw node))) (s_mems store)) =
-        Some (next, result_values []) ->
-        nth_error (get_tree_raw node) offset = Some value ->
-        stab_elem next instance (Wasm_int.N_of_uint i32m index) (N.of_nat offset) =
-          Some (Tables.externref value)).
-      destruct (supported_update store
-        (replace_resource (s_tables store) address before
-          (Tables.tree_attachment before (get_tree_raw node))) (s_mems store))
-        as [updated|] eqn:Supported; [|discriminate].
-      cbn [omap]; intros Attached Entry; inversion Attached; subst updated.
-      rewrite (supported_update_shape _ _ _ _ Supported).
-      unfold stab_elem; rewrite Address.
-      change (match lookup_N
-        (replace_resource (s_tables store) address before
-          (Tables.tree_attachment before (get_tree_raw node))) address with
-        | Some table => lookup_N (tableinst_elem table) (N.of_nat offset)
-        | None => None end = Some (Tables.externref value)).
-      unfold lookup_N, replace_resource; rewrite nth_error_set_eq.
-      change (nth_error (map Tables.externref (get_tree_raw node))
-        (N.to_nat (N.of_nat offset)) = Some (Tables.externref value)).
-      rewrite Nat2N.id, List.nth_error_map, Entry; reflexivity.
-    Qed.
-
-    Lemma tree_attachment_result_functions store arguments next result :
-      tree_attachment_result store arguments = Some (next, result) ->
-      s_funcs next = s_funcs store.
-    Proof.
-      unfold tree_attachment_result; intro Attached.
-      repeat (cbv beta iota zeta delta [obind omap] in Attached;
-        match type of Attached with context [match ?value with _ => _ end] => destruct value eqn:? end);
-        try discriminate; inversion Attached; subst.
-      eapply supported_update_functions; eassumption.
-    Qed.
-
-    Lemma blob_read_result_functions store arguments next result :
-      blob_read_result store arguments = Some (next, result) ->
+    Lemma blob_read_result_functions world store arguments next result :
+      blob_read_result world store arguments = Some (next, result) ->
       s_funcs next = s_funcs store.
     Proof.
       unfold blob_read_result; intro Read.
@@ -659,8 +486,8 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       eapply supported_update_functions; eassumption.
     Qed.
 
-    Lemma blob_read_result_tables store arguments next result :
-      blob_read_result store arguments = Some (next, result) ->
+    Lemma blob_read_result_tables world store arguments next result :
+      blob_read_result world store arguments = Some (next, result) ->
       s_tables next = s_tables store.
     Proof.
       unfold blob_read_result; intro Read.
@@ -673,8 +500,8 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       end.
     Qed.
 
-    Lemma blob_read_result_memory_shape store arguments next result :
-      blob_read_result store arguments = Some (next, result) ->
+    Lemma blob_read_result_memory_shape world store arguments next result :
+      blob_read_result world store arguments = Some (next, result) ->
       exists address before after,
         lookup_N (inst_mems instance) 0%N = Some address /\
         lookup_N (s_mems store) address = Some before /\
@@ -695,267 +522,133 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S) (R : EXTERNREFS S).
       end.
     Qed.
 
-    Definition attachment_allowed before (bytes : list bytes.byte) :=
-      match lim_max (meminst_type before) with
-      | None => ((N.leb (lim_min (meminst_type before)) 1 &&
-          N.leb (mem_length before) page_size) &&
-          (Nat.ltb 0 (List.length bytes) && N.leb (N.of_nat (List.length bytes)) page_size))%bool
-      | Some _ => false end.
 
-    (** Permitted Blob attachment satisfies the memory limits and page-size bounds required
-        by the host model. *)
-    Lemma attachment_allowed_bounds before bytes : attachment_allowed before bytes = true ->
-      lim_max (meminst_type before) = None /\
-      (lim_min (meminst_type before) <= 1)%N /\ (mem_length before <= page_size)%N.
+    Definition candidate world store operation arguments :=
+      if shell_function_eq_dec operation shell_read_blob then
+        omap (fun '(next, values) => (world, next, values)) (blob_read_result world store arguments)
+      else omap (fun '(next, values) => (next, store, values)) (host_values world store operation arguments).
+
+    Lemma candidate_correct world store operation arguments next updated values :
+      candidate world store operation arguments = Some (next, updated, values) ->
+      store_extension store updated = true /\ (store_typing store -> store_typing updated).
     Proof.
-      unfold attachment_allowed; destruct (lim_max (meminst_type before)) eqn:Maximum;
-        [discriminate|].
-      intro Allowed; apply Bool.andb_true_iff in Allowed as [Bounds _].
-      apply Bool.andb_true_iff in Bounds as [Minimum Length].
-      split; [reflexivity|]; split; apply N.leb_le; assumption.
+      unfold candidate; destruct (shell_function_eq_dec operation shell_read_blob).
+      - destruct (blob_read_result world store arguments) as [[changed returned]|] eqn:Read;
+          cbn [omap]; intro Step; try discriminate; inversion Step; subst.
+        eapply blob_read_result_correct; exact Read.
+      - destruct (host_values world store operation arguments) as [[changed returned]|];
+          cbn [omap]; intro Step; try discriminate; inversion Step; subst.
+        split; [apply store_extension_same|auto].
     Qed.
 
-    Definition attachment_result (store : store_record) arguments :=
-      match arguments with
-      | [VAL_ref (VAL_ref_extern address); VAL_num (VAL_int32 index)] =>
-        match W.nat_of_i32 index, to_handle address, inst_mems instance, s_mems store with
-        | 0, Data (Object (BlobObj blob)), [0%N], [before] =>
-          if attachment_allowed before (get_blob_data blob)
-          then omap (fun page => (upd_s_mem store [page], result_values []))
-            (attachment_page (get_blob_data blob)) else None
-        | _, _, _, _ => None end
-      | _ => None end.
-
-    (** Successful attachment replaces the single memory by the Blob page and returns no
-        Wasm values. *)
-    Lemma attachment_result_shape store arguments next result :
-      attachment_result store arguments = Some (next, result) ->
-      exists before bytes page,
-        s_mems store = [before] /\ attachment_allowed before bytes = true /\
-        attachment_page bytes = Some page /\ next = upd_s_mem store [page] /\
-        result = result_values [].
-    Proof.
-      unfold attachment_result; intro Attached.
-      repeat (cbv beta iota zeta delta [omap] in Attached;
-        match type of Attached with context [match ?value with _ => _ end] => destruct value eqn:? end);
-        try discriminate; inversion Attached; subst; eauto 10.
-    Qed.
-
-    (** Successful attachment extends the store, preserves typing, and returns no values. *)
-    Lemma attachment_result_correct store arguments next result :
-      attachment_result store arguments = Some (next, result) ->
-      store_extension store next = true /\
-      (store_typing store -> store_typing next) /\ result = result_values [].
-    Proof.
-      intro Attached; destruct (attachment_result_shape _ _ _ _ Attached)
-        as [before [bytes [page [Memory [Allowed [Page [-> ->]]]]]]].
-      destruct (attachment_allowed_bounds _ _ Allowed) as [Maximum [Minimum Length]].
-      assert (store_extension store (upd_s_mem store [page]) = true) as Extension by
-        (eapply attachment_store_extension; eassumption).
-      split; [exact Extension|]; split; [|reflexivity].
-      intro Typed; eapply attachment_store_typing; eassumption.
-    Qed.
-
-    Definition host_result state store signature operation arguments :=
+    Definition host_result world store signature operation arguments :=
       if function_type_eq_dec signature (shell_signature operation) then
-        if shell_function_eq_dec operation shell_attach_blob then
-          match attachment_result store arguments with
-          | Some outcome => outcome | None => (store, result_trap) end
-        else if shell_function_eq_dec operation shell_attach_tree then
-          match tree_attachment_result store arguments with
-          | Some outcome => outcome | None => (store, result_trap) end
-        else if shell_function_eq_dec operation shell_read_blob then
-          match blob_read_result store arguments with
-          | Some outcome => outcome | None => (store, result_trap) end
-        else match host_values state store operation arguments with
-          | Some values => (store, result_values values) | None => (store, result_trap) end
-      else (store, result_trap).
+        match candidate world store operation arguments with
+        | Some (next, updated, values) =>
+          match signature with Tf _ results =>
+            if values_typing updated values results then (next, updated, result_values values)
+            else (world, store, result_trap) end
+        | None => (world, store, result_trap) end
+      else (world, store, result_trap).
 
-    Lemma tree_attachment_host_result state store arguments next result :
-      tree_attachment_result store arguments = Some (next, result) ->
-      host_result state store (shell_signature shell_attach_tree) shell_attach_tree arguments =
-        (next, result).
+    Lemma host_values_result world store operation arguments next values :
+      operation <> shell_read_blob ->
+      host_values world store operation arguments = Some (next, values) ->
+      host_result world store (shell_signature operation) operation arguments =
+        (next, store, result_values values).
     Proof.
-      intro Attached; unfold host_result.
+      intros Other Returned; pose proof (host_values_typing _ _ _ _ _ _ Returned) as Typed.
+      unfold host_result, candidate.
       destruct (function_type_eq_dec _ _); [|contradiction].
-      destruct (shell_function_eq_dec _ _); [discriminate|].
-      destruct (shell_function_eq_dec _ _); [rewrite Attached; reflexivity|contradiction].
-    Qed.
-
-    Lemma blob_read_host_result state store arguments next result :
-      blob_read_result store arguments = Some (next, result) ->
-      host_result state store (shell_signature shell_read_blob) shell_read_blob arguments =
-        (next, result).
-    Proof.
-      intro Read; unfold host_result.
-      destruct (function_type_eq_dec _ _); [|contradiction].
-      destruct (shell_function_eq_dec _ _); [discriminate|].
-      destruct (shell_function_eq_dec _ _); [discriminate|].
-      destruct (shell_function_eq_dec _ _); [rewrite Read; reflexivity|contradiction].
-    Qed.
-
-    (** Every modeled Shell call preserves Wasm store extension. *)
-    Lemma host_result_extension state store signature operation arguments next result :
-      host_result state store signature operation arguments = (next, result) ->
-      store_extension store next = true.
-    Proof.
-      unfold host_result.
-      destruct (function_type_eq_dec signature (shell_signature operation));
-        [|intro Result; inversion Result; subst; apply store_extension_same].
-      destruct (shell_function_eq_dec operation shell_attach_blob).
-      - destruct (attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-          intro Result; inversion Result; subst.
-        + exact (proj1 (attachment_result_correct _ _ _ _ Attached)).
-        + apply store_extension_same.
-      - destruct (shell_function_eq_dec operation shell_attach_tree).
-        + destruct (tree_attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-            intro Result; inversion Result; subst.
-          * exact (proj1 (tree_attachment_result_correct _ _ _ _ Attached)).
-          * apply store_extension_same.
-        + destruct (shell_function_eq_dec operation shell_read_blob).
-          * destruct (blob_read_result store arguments) as [[updated outcome]|] eqn:Read;
-              intro Result; inversion Result; subst.
-            -- exact (proj1 (blob_read_result_correct _ _ _ _ Read)).
-            -- apply store_extension_same.
-          * destruct (host_values state store operation arguments); intro Result; inversion Result; subst;
-              apply store_extension_same.
-    Qed.
-
-    (** Every modeled Shell call preserves a well-typed Wasm store. *)
-    Lemma host_result_typing state store signature operation arguments next result :
-      host_result state store signature operation arguments = (next, result) ->
-      store_typing store -> store_typing next.
-    Proof.
-      unfold host_result.
-      destruct (function_type_eq_dec signature (shell_signature operation));
-        [|intro Result; inversion Result; subst; auto].
-      destruct (shell_function_eq_dec operation shell_attach_blob).
-      - destruct (attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-          intro Result; inversion Result; subst.
-        + exact (proj1 (proj2 (attachment_result_correct _ _ _ _ Attached))).
-        + auto.
-      - destruct (shell_function_eq_dec operation shell_attach_tree).
-        + destruct (tree_attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-            intro Result; inversion Result; subst.
-          * exact (proj1 (proj2 (tree_attachment_result_correct _ _ _ _ Attached))).
-          * auto.
-        + destruct (shell_function_eq_dec operation shell_read_blob).
-          * destruct (blob_read_result store arguments) as [[updated outcome]|] eqn:Read;
-              intro Result; inversion Result; subst.
-            -- exact (proj1 (proj2 (blob_read_result_correct _ _ _ _ Read))).
-            -- auto.
-          * destruct (host_values state store operation arguments); intro Result; inversion Result; subst; auto.
-    Qed.
-
-    (** Every modeled Shell call returns values matching the declared result types or a
-        permitted trap. *)
-    Lemma host_result_types state store parameters results operation arguments next result :
-      host_result state store (Tf parameters results) operation arguments = (next, result) ->
-      result_types_agree next results result = true.
-    Proof.
-      unfold host_result.
-      destruct (function_type_eq_dec (Tf parameters results) (shell_signature operation))
-        as [Signature|Signature]; [|intro Result; inversion Result; subst; reflexivity].
-      destruct (shell_function_eq_dec operation shell_attach_blob) as [->|Other].
-      - destruct (attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-          intro Result; inversion Result; subst; [|reflexivity].
-        rewrite (proj2 (proj2 (attachment_result_correct _ _ _ _ Attached))).
-        cbn [shell_signature] in Signature; inversion Signature; reflexivity.
-      - destruct (shell_function_eq_dec operation shell_attach_tree) as [->|OtherTree].
-        + destruct (tree_attachment_result store arguments) as [[updated outcome]|] eqn:Attached;
-            intro Result; inversion Result; subst; [|reflexivity].
-          rewrite (proj2 (proj2 (tree_attachment_result_correct _ _ _ _ Attached))).
-          cbn [shell_signature] in Signature; inversion Signature; reflexivity.
-        + destruct (shell_function_eq_dec operation shell_read_blob) as [->|OtherRead].
-          * destruct (blob_read_result store arguments) as [[updated outcome]|] eqn:Read;
-              intro Result; inversion Result; subst; [|reflexivity].
-            destruct (proj2 (proj2 (blob_read_result_correct _ _ _ _ Read))) as [count ->].
-            cbn [shell_signature] in Signature; inversion Signature; reflexivity.
-          * destruct (host_values state store operation arguments) as [values|] eqn:Values;
-              intro Result; inversion Result; subst; [|reflexivity].
-            pose proof (host_values_typing _ _ _ _ _ Values) as Typed.
-            rewrite <- Signature in Typed; exact Typed.
-    Qed.
-
-    (** A successful pure Shell call returns its computed values without changing the
-        store. *)
-    Lemma host_values_result state store operation arguments values :
-      host_values state store operation arguments = Some values ->
-      host_result state store (shell_signature operation) operation arguments =
-        (store, result_values values).
-    Proof.
-      intro Values; unfold host_result.
-      destruct (function_type_eq_dec _ _); [|contradiction].
-      destruct (shell_function_eq_dec operation shell_attach_blob) as [->|Other];
-        [discriminate|].
-      destruct (shell_function_eq_dec operation shell_attach_tree) as [->|OtherTree];
-        [discriminate|].
-      destruct (shell_function_eq_dec operation shell_read_blob) as [->|OtherRead];
-        [discriminate|].
-      rewrite Values; reflexivity.
-    Qed.
-
-    Lemma host_values_trap state store operation arguments :
-      operation <> shell_attach_blob -> operation <> shell_attach_tree -> operation <> shell_read_blob ->
-      host_values state store operation arguments = None ->
-      host_result state store (shell_signature operation) operation arguments =
-        (store, result_trap).
-    Proof.
-      intros Other OtherTree OtherRead Values; unfold host_result.
-      destruct (function_type_eq_dec _ _); [|contradiction].
-      destruct (shell_function_eq_dec operation shell_attach_blob); [contradiction|].
-      destruct (shell_function_eq_dec operation shell_attach_tree); [contradiction|].
       destruct (shell_function_eq_dec operation shell_read_blob); [contradiction|].
-      rewrite Values; reflexivity.
+      rewrite Returned; cbn [omap].
+      destruct (shell_signature operation); rewrite Typed; reflexivity.
     Qed.
 
-    (** Privileged byte comparison checks exact handle encodings. *)
-    Lemma same_handle_bytes_result state store lhs rhs left right equal :
-      privileged = true ->
-      handle_bytes state lhs = Some left ->
-      handle_bytes (Datatypes.S state) rhs = Some right ->
-      Tables.T.O.compare_handles (HBlobObj left) (HBlobObj right) = Some equal ->
-      host_result state store (shell_signature shell_same_handle_bytes)
-        shell_same_handle_bytes [W.extern_value lhs; W.extern_value rhs] =
-      (store, result_values [VAL_num (VAL_int32 (wasm_bool equal))]).
+    Lemma host_result_extension world store signature operation arguments next updated result :
+      host_result world store signature operation arguments = (next, updated, result) ->
+      store_extension store updated = true /\ (store_typing store -> store_typing updated).
     Proof.
-      intros Privileged Left Right Compared; apply host_values_result.
-      unfold host_values, W.extern_value.
-      rewrite !to_handle_to_externref, Privileged, Left, Right.
-      cbn [obind].
-      rewrite Compared.
-      destruct equal; reflexivity.
+      unfold host_result; destruct (function_type_eq_dec signature (shell_signature operation));
+        [|intro Step; inversion Step; subst; split; [apply store_extension_same|auto]].
+      destruct (candidate world store operation arguments) as [[[changed returned] values]|] eqn:Candidate;
+        [|intro Step; inversion Step; subst; split; [apply store_extension_same|auto]].
+      destruct signature as [parameters results]; destruct (values_typing returned values results);
+        intro Step; inversion Step; subst.
+      - eapply candidate_correct; exact Candidate.
+      - split; [apply store_extension_same|auto].
     Qed.
 
-    (** The Shell comparison import returns the modeled comparison result for Blob Objects. *)
-    Lemma compare_blobs_result state store lhs rhs equal :
-      Tables.T.O.compare_handles (HBlobObj lhs) (HBlobObj rhs) = Some equal ->
-      host_result state store (shell_signature shell_equals) shell_equals
-        [W.extern_value (HBlobObj lhs); W.extern_value (HBlobObj rhs)] =
-      (store, result_values [VAL_num (VAL_int32 (wasm_bool equal))]).
+    Lemma host_result_types world store parameters results operation arguments next updated result :
+      host_result world store (Tf parameters results) operation arguments = (next, updated, result) ->
+      result_types_agree updated results result = true.
     Proof.
-      intro Compared; apply host_values_result.
-      unfold host_values, W.extern_value; rewrite !to_handle_to_externref, Compared.
-      destruct equal; reflexivity.
+      unfold host_result; destruct (function_type_eq_dec (Tf parameters results) (shell_signature operation));
+        [|intro Step; inversion Step; reflexivity].
+      destruct (candidate world store operation arguments) as [[[changed returned] values]|];
+        [|intro Step; inversion Step; reflexivity].
+      destruct (values_typing returned values results) eqn:Typed;
+        intro Step; inversion Step; subst; [exact Typed|reflexivity].
     Qed.
 
-    Definition next_state (state : nat) operation := match operation with
-      | shell_same_handle_bytes => Datatypes.S (Datatypes.S state) | _ => state end.
-    Definition host_application_impl state store signature operation arguments state' output :=
-      state' = next_state state operation /\
-      output = Some (host_result state store signature operation arguments).
+    Lemma host_values_capacity world store operation arguments next values :
+      within_capacity world -> host_values world store operation arguments = Some (next, values) ->
+      within_capacity next.
+    Proof.
+      intros Within Returned; destruct operation;
+        repeat (cbv beta iota zeta delta [host_values transform unchanged length_result tree_from_memory
+          obind omap option_map] in Returned;
+          match type of Returned with context [match ?value with _ => _ end] => destruct value eqn:? end);
+        try discriminate;
+        try (eapply allocate_capacity; [exact Within|exact Returned]);
+        inversion Returned; subst; try exact Within.
+      all: match goal with
+      | Closed : release _ _ = Some _ |- _ => eapply release_capacity; eassumption
+      end.
+    Qed.
+
+    Lemma host_result_capacity world store signature operation arguments next updated result :
+      within_capacity world -> host_result world store signature operation arguments = (next, updated, result) ->
+      within_capacity next.
+    Proof.
+      intros Within; unfold host_result.
+      destruct (function_type_eq_dec signature (shell_signature operation));
+        [|intro Returned; inversion Returned; subst; exact Within].
+      destruct (candidate world store operation arguments) as [[[changed returned] values]|] eqn:Candidate;
+        [|intro Returned; inversion Returned; subst; exact Within].
+      destruct signature as [parameters results]; destruct (values_typing returned values results);
+        intro Returned; inversion Returned; subst; try exact Within.
+      unfold candidate in Candidate; destruct (shell_function_eq_dec operation shell_read_blob).
+      - destruct (blob_read_result world store arguments) as [[read_store outcome]|];
+          cbn [omap] in Candidate; inversion Candidate; subst; exact Within.
+      - destruct (host_values world store operation arguments) as [[value_world outcome]|] eqn:Values;
+          cbn [omap] in Candidate; inversion Candidate; subst.
+        eapply host_values_capacity; eassumption.
+    Qed.
+
+    Definition host_application_impl world store signature operation arguments next output :=
+      let '(changed, updated, result) := host_result world store signature operation arguments in
+      next = changed /\ output = Some (updated, result).
+
     #[export] Instance shell_host : @host shell_host_functions mem.
     Proof.
-      refine {| host_state := nat; host_application := host_application_impl |}.
-      - intros state store signature operation arguments state' next result [_ Applied].
-        injection Applied as Result; symmetry in Result.
-        eapply host_result_extension; exact Result.
-      - intros state store signature operation arguments state' next result [_ Applied] Typed.
-        injection Applied as Result; symmetry in Result.
-        eapply host_result_typing; eassumption.
-      - intros state parameters results store operation arguments state' next result Typed [_ Applied].
-        injection Applied as Result; symmetry in Result.
-        eapply host_result_types; exact Result.
+      refine {| host_state := state; host_application := host_application_impl |}.
+      - intros world signature store operation arguments next updated result Applied.
+        unfold host_application_impl in Applied.
+        destruct (host_result world store signature operation arguments) as [[changed returned] values] eqn:Step.
+        destruct Applied as [Next Output]; inversion Output; subst.
+        exact (proj1 (host_result_extension _ _ _ _ _ _ _ _ Step)).
+      - intros world signature store operation arguments next updated result Applied Typed.
+        unfold host_application_impl in Applied.
+        destruct (host_result world store signature operation arguments) as [[changed returned] values] eqn:Step.
+        destruct Applied as [Next Output]; inversion Output; subst.
+        eapply (proj2 (host_result_extension _ _ _ _ _ _ _ _ Step)); exact Typed.
+      - intros world parameters results store operation arguments next updated result Typed Applied.
+        unfold host_application_impl in Applied.
+        destruct (host_result world store (Tf parameters results) operation arguments) as [[changed returned] values] eqn:Step.
+        destruct Applied as [Next Output]; inversion Output; subst.
+        eapply host_result_types; exact Step.
     Defined.
+
   End Calls.
 End ShellHost.

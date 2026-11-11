@@ -96,6 +96,8 @@ kernel_test(
         "FIX_CONTINUATION_STATE": "//tests/fix:continuation_state_native",
         "FIX_SDK_ATTACHMENTS": "//fix/sdk:attachments_native",
         "FIX_SDK_EVAL": "//fix/sdk:eval_native",
+        "FIX_SDK_PANIC": "//fix/sdk:panic_native",
+        "FIX_SDK_STD_PANIC": "//fix/sdk:panic_std_native",
         "FIX_TAGGER": "//fix/sdk:tagger_native",
         "FIX_RECURSIVE_LOCAL_ALIASES": "//tests/fix:recursive_local_aliases_native",
         "FIX_LARGE_LOCAL_GRAPH": "//tests/fix:large_local_graph_native",

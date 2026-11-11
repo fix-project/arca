@@ -190,7 +190,9 @@ pub extern "C" fn w2c_fix_create_tag_unchecked(
         .call_with_current_continuation()
         .try_into()
         .expect("expected tagger permission");
-    assert_eq!(allowed.read(), 1, "trusted tagger required");
+    if allowed.read() != 1 {
+        crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_UNREACHABLE);
+    }
     unsafe {
         assert!(shell::fixpoint_is_object(tree) && shell::fixpoint_is_tree(tree));
         assert!(shell::fixpoint_len(tree) > 0);

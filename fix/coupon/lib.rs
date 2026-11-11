@@ -1,5 +1,7 @@
 #![no_std]
 
+pub const MAX_WITNESSES: usize = 1 << 20;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum Statement {
