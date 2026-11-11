@@ -4,6 +4,13 @@ package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
     name = "Adequacy",
+    includes = [
+        "internal/Adequacy/Lowering.v",
+        "machinery/Adequacy/Correspondence.v",
+        "machinery/Adequacy/shallow_evaluation.v",
+        "machinery/Adequacy/shallow_step.v",
+        "machinery/Adequacy/strict_evaluation.v",
+    ],
     namespace = "FixProof.Evaluation",
     deps = [
         "//fix/proof/semantics:ApplyTree",
@@ -14,6 +21,30 @@ rocq_module(
 
 rocq_module(
     name = "Properties",
+    includes = [
+        "internal/Properties/Congruence.v",
+        "internal/Properties/EvaluationEquations.v",
+        "internal/Properties/Relations.v",
+        "internal/Properties/Results.v",
+        "internal/Properties/Thinking.v",
+        "internal/Properties/Transport/evals_X.v",
+        "internal/Properties/Transport/value_shapes.v",
+        "internal/Properties/Trees.v",
+        "internal/Properties/Values.v",
+        "machinery/Properties/Choice.v",
+        "machinery/Properties/ExecuteFuel.v",
+        "machinery/Properties/ForceFuel.v",
+        "machinery/Properties/Fuel.v",
+        "machinery/Properties/FuelCorrespondence.v",
+        "machinery/Properties/TransportInduction.v",
+        "machinery/Properties/TreeTransport.v",
+        "machinery/Properties/eval_to_value_handle.v",
+        "machinery/Properties/eval_unfold.v",
+        "machinery/Properties/execute_unfold.v",
+        "machinery/Properties/force_unfold.v",
+        "machinery/Properties/think_unfold.v",
+        "machinery/Properties/value_handle_eval_to_itself.v",
+    ],
     namespace = "FixProof.Evaluation",
     deps = [
         "//fix/proof/semantics:ApplyTree",

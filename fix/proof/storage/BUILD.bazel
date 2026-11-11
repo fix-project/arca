@@ -4,6 +4,10 @@ package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
     name = "Interface",
+    includes = [
+        "internal/Storage/Contents.v",
+        "internal/Storage/Relations.v",
+    ],
     namespace = "FixProof.Storage",
     deps = ["//fix/proof/semantics:Types"],
 )

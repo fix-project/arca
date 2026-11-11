@@ -4,6 +4,9 @@ package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
     name = "ApplyTree",
+    includes = [
+        "internal/ApplyTree/Congruence.v",
+    ],
     namespace = "FixProof.Semantics",
     deps = [
         ":Handle",
@@ -13,6 +16,10 @@ rocq_module(
 
 rocq_module(
     name = "Evaluation",
+    includes = [
+        "internal/Evaluation/Values.v",
+        "machinery/Evaluation/Fuel.v",
+    ],
     namespace = "FixProof.Semantics",
     deps = [
         ":ApplyTree",
@@ -44,6 +51,11 @@ rocq_module(
 
 rocq_module(
     name = "Select",
+    includes = [
+        "internal/Select/Congruence.v",
+        "internal/Select/Indices.v",
+        "internal/Select/Slices.v",
+    ],
     namespace = "FixProof.Semantics",
     deps = [
         ":Handle",

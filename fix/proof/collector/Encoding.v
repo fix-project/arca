@@ -24,23 +24,7 @@ Module CouponEncoding (S : STORAGE).
     | _ => None
     end.
 
-  (** A supported statement kind survives encoding to its numeric code and decoding back. *)
-  Lemma statement_code_roundtrip kind code :
-    statement_code kind = Some code -> statement_kind code = Some kind.
-  Proof. destruct kind; cbn; intro Code; inversion Code; reflexivity. Qed.
-
-  (** A recognized statement code survives decoding and re-encoding unchanged. *)
-  Lemma statement_kind_roundtrip code kind :
-    statement_kind code = Some kind -> statement_code kind = Some code.
-  Proof.
-    do 7 (destruct code as [|code]; [cbn; intro Kind; inversion Kind; reflexivity|]); discriminate.
-  Qed.
-
-  (** Every supported statement code is less than seven. *)
-  Lemma statement_code_bound kind code :
-    statement_code kind = Some code -> code < 7.
-  Proof. destruct kind; cbn; intro Code; inversion Code; auto with arith. Qed.
-
+Load "fix/proof/collector/internal/Encoding/Codes".
 End CouponEncoding.
 
 Module CouponClaims (S : STORAGE).
@@ -91,22 +75,15 @@ Module CouponClaims (S : STORAGE).
 
   (** Encoding and then decoding a certificate witness recovers its kind, author, and
       endpoints. *)
+Load "fix/proof/collector/machinery/Encoding/encode_decode".
   Theorem encode_decode kind author lhs rhs encoded :
     encode kind author lhs rhs = Some encoded ->
     decode encoded = Some (kind, author, lhs, rhs).
-  Proof.
-    unfold encode; destruct (Code.statement_code kind) as [code|] eqn:Code;
-      cbn [omap]; intro Encoded; [inversion Encoded; subst encoded|discriminate].
-    unfold witness, decode; repeat progress
-      (cbn -[API.handle_eqb to_nat from_nat Code.statement_kind]; autorewrite with coupon_claims).
-    rewrite to_nat_from_nat.
-    - cbn [obind]; rewrite (Code.statement_code_roundtrip _ _ Code); reflexivity.
-    - apply (Z.lt_trans _ 7);
-        [pose proof (Code.statement_code_bound _ _ Code); lia|vm_compute; reflexivity].
-  Qed.
+  Proof. apply encode_decode_proof. Qed.
 
   (** A decoded claim is tied to the assertion Object named by a real Tag. Supplying a
       correctly shaped but different assertion cannot change what the certificate says. *)
+Load "fix/proof/collector/machinery/Encoding/decode_authenticates".
   Theorem decode_authenticates supplied kind author lhs rhs :
     decode supplied = Some (kind, author, lhs, rhs) ->
     exists bundle tag claim code n,
@@ -117,67 +94,6 @@ Module CouponClaims (S : STORAGE).
       get_tree_raw claim = [HBlobObj code; lhs; rhs] /\
       to_nat (get_blob_data code) = Some n /\
       Code.statement_kind n = Some kind.
-  Proof.
-    (* The witness supplies both a Tag and the assertion Object, so the collector need
-        not load a Ref. The decisive check equates the Tag's stored Ref with the Ref of
-        the supplied Object; only then may its code and endpoints be interpreted as the
-        Tag's assertion. *)
-    destruct supplied as [[[b|bundle]|ref]|th|e]; cbn [decode]; try discriminate.
-    destruct (get_tree_raw bundle) as [|[[[b|tag]|ref]|th|e] [|[[[b'|claim]|ref']|th'|e'] rest]] eqn:Bundle;
-      try discriminate; destruct rest; try discriminate.
-    destruct (tree_tag tag) eqn:Tagged; [|discriminate].
-    destruct (get_tree_raw tag) as [|a [|reference rest]] eqn:Fields;
-      try discriminate; destruct rest; try discriminate.
-    destruct (API.handle_eqb reference (HTreeRef claim)) eqn:Same; [|discriminate].
-    apply API.handle_eqb_spec in Same; subst reference.
-    destruct (get_tree_raw claim) as
-      [|[[[code|t]|ref]|th|e] [|l [|r fields]]] eqn:Claim;
-      try discriminate; destruct fields; try discriminate.
-    unfold obind, omap.
-    destruct (to_nat (get_blob_data code)) as [n|] eqn:Number; [|discriminate].
-    destruct (Code.statement_kind n) as [k|] eqn:Kind; [|discriminate].
-    intro Decoded; inversion Decoded; subst k a l r.
-    exists bundle, tag, claim, code, n; repeat split; assumption || reflexivity.
-  Qed.
-  Lemma decode_author supplied kind issuing_author lhs rhs :
-    decode supplied = Some (kind, issuing_author, lhs, rhs) ->
-    author supplied = Some issuing_author.
-  Proof.
-    intro Decoded; pose proof (decode_authenticates _ _ _ _ _ Decoded)
-      as [bundle [tag [claim [code [n [Supplied [Bundle [Tag [Tagged [Claim _]]]]]]]]]].
-    subst supplied; unfold author; cbn [HTreeObj]; rewrite Bundle.
-    cbn [HTreeObj]; rewrite Tagged, Tag, Claim.
-    rewrite API.handle_eqb_refl; reflexivity.
-  Qed.
-
-  (** Successful decoding determines the Tag as its author followed by the assertion
-      Ref. *)
-  Lemma decode_tag_shape tag claim kind author lhs rhs :
-    decode (HTreeObj (create_tree [HTreeObj tag; HTreeObj claim])) =
-      Some (kind, author, lhs, rhs) ->
-    tag = create_tree_tagged true [author; HTreeRef claim].
-  Proof.
-    intro Decoded.
-    hauto cases: - db: coupon_claims
-      use: (decode_authenticates _ _ _ _ _ Decoded), (create_tree_get_tree_raw tag)
-      unfold!: HTreeObj.
-  Qed.
-
-  (** Replacing a decoded Tag's author preserves its authenticated claim and endpoints. *)
-  Lemma decode_replace_author tag claim kind author new_author lhs rhs :
-    decode (HTreeObj (create_tree [HTreeObj tag; HTreeObj claim])) =
-      Some (kind, author, lhs, rhs) ->
-    decode (HTreeObj (create_tree
-      [HTreeObj (create_tree_tagged true [new_author; HTreeRef claim]); HTreeObj claim])) =
-      Some (kind, new_author, lhs, rhs).
-  Proof.
-    (* Claim authentication depends on the Ref of the assertion Object, not on the author
-        representation. Changing that author can alter trust requirements while
-        leaving the asserted operation and endpoints fixed, which is the separation used
-        by authority preservation. *)
-    intro Decoded.
-    pose proof (decode_authenticates _ _ _ _ _ Decoded) as Authenticated.
-    hauto cases: - db: coupon_claims unfold!: decode, HTreeObj, obind, omap.
-  Qed.
-
+  Proof. apply decode_authenticates_proof. Qed.
+Load "fix/proof/collector/internal/Encoding/Authors".
 End CouponClaims.

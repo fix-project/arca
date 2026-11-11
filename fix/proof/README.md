@@ -1,5 +1,8 @@
 # Fix proofs
 
+[AUDIT.md](AUDIT.md) is the reading guide to the external specification,
+internal argument, and proof machinery for the abstract and Wasm proofs.
+
 The primary results are soundness and completeness of the Fix evaluation rules,
 and correctness of the abstract coupon collector against those rules.
 The native descriptor ABI proof connects the parsed collector binary to the
@@ -13,8 +16,8 @@ abstract checker and issuer; see [STATUS.md](STATUS.md).
 | Blob-content safety | Equivalent Blob Objects have identical contents | [`coupon_blob_same_data`](collector/Logic.v) |
 | Full exchange soundness | Every accepted exchange preserves the logical judgement and the assumptions of its premises | `CouponExchanges.check_sound`, `issue_conditional` in [`Exchanges.v`](collector/Exchanges.v) |
 | Evaluation certification | Every terminating evaluation has a finite trace through public exchanges; issued claims are sound | [`terminating_evaluation_is_certifiable`, `certification_sound`](collector/Completeness.v) |
-| Native issuance | Returns a fresh certificate descriptor using at most six slots | [`collector_output_executes`](collector/wasm/Output.v) |
-| Native Tree loops | Check ordered premises with at most ten descriptors per child | [`native_tree_rule_executes`](collector/wasm/TreeLoop.v) |
+| Native issuance | Returns a fresh certificate descriptor using at most six slots | [`collector_output_executes`](collector/wasm/specification/Output/collector_output_executes.v) |
+| Native Tree loops | Check ordered premises with at most ten descriptors per child | [`native_tree_rule_executes`](collector/wasm/internal/TreeLoop.v) |
 
 Evaluation is partial and uses big-step rules. Adequacy characterizes successful
 runs; it does not assert that every non-Value can take a step. Invalid applications
@@ -95,8 +98,17 @@ with the original Isabelle development and records assumptions.
   and their Wasm host interpretation.
 - `collector/`: coupon judgements, encoding, exchanges, certification completeness,
   and authority preservation, alongside `collector.wat`.
-- `collector/wasm/`: binary/layout facts, execution helpers, witness authentication,
-  acceptance proofs, output construction, and final implementation refinement.
+- `collector/wasm/specification/`: execution contracts, public refinement results,
+  authorization, comparison readiness, and resource bounds.
+- `collector/wasm/internal/`: witness, rule, Tree-loop, and issuance arguments.
+- `collector/wasm/machinery/`: instruction execution, binary/layout facts, and tactics.
+
+Abstract entry modules keep the public definitions and theorem statements. Their
+`internal/` subdirectories contain supporting abstractions and lemmas; `machinery/`
+contains fuel and coinduction arguments, mutual inductions, and tactic scripts.
+These source fragments are included in their original module contexts. Public
+results have short checked proofs referring to the detailed proofs in machinery;
+the source split adds no axioms or module instantiations.
 - `support/`: shared integer and Wasm arithmetic lemmas.
 
 Implementation requirements are owned by the API they describe:

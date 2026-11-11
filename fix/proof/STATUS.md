@@ -1,5 +1,9 @@
 # Proof status
 
+[AUDIT.md](AUDIT.md) separates the audit surface from the internal argument
+and checker machinery. The source organization preserves the theorem statements
+and assumptions.
+
 The primary results are:
 
 | Property | Theorem |

@@ -52,7 +52,7 @@ bodies. Shared guard and context lemmas replace Isabelle custom methods;
 these lemmas prove reductions, rather than assuming interpreter equations.
 
 The current collector adds the explicit exchanges needed to certify terminating
-Fix evaluations. `collector/wasm/Refinement.v` connects the parsed 26-exchange binary
+Fix evaluations. `collector/wasm/specification/Refinement.v` connects the parsed 26-exchange binary
 to `CouponExchanges.check`; `collector/wasm/Entry.v` connects exported execution
 to `issue`, including conditional authority propagation. The current native proof states host-interface and resource assumptions;
 exact-comparison success additionally requires representation readiness.
@@ -80,7 +80,7 @@ from handle comparison and issued certificates.
 
 The original thirteen-exchange execution proof is preserved in the imported
 history. The current collector replaces it with the explicit exchange interface
-and Ref-backed witnesses. `collector/wasm/Refinement.v` proves native validation
+and Ref-backed witnesses. `collector/wasm/specification/Refinement.v` proves native validation
 against `CouponExchanges.check`; the primitive execution modules prove success
 under comparison-readiness contracts. `collector/wasm/Entry.v` proves exported
 issuance and Tag-reconstruction soundness. The collector preserves open

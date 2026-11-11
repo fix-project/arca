@@ -4,6 +4,14 @@ package(default_visibility = ["//fix/proof:__subpackages__"])
 
 rocq_module(
     name = "Closure",
+    includes = [
+        "internal/Closure/Computation.v",
+        "internal/Closure/Constructors.v",
+        "internal/Closure/References.v",
+        "machinery/Closure/EvaluationFuel.v",
+        "machinery/Closure/equiv_blob_same_data.v",
+        "machinery/Closure/equiv_eval.v",
+    ],
     namespace = "FixProof.Equivalence",
     deps = [
         "//fix/proof/semantics:ApplyTree",
@@ -14,6 +22,10 @@ rocq_module(
 
 rocq_module(
     name = "Equivalence",
+    includes = [
+        "internal/Equivalence/Preservation.v",
+        "machinery/Equivalence/Coinduction.v",
+    ],
     namespace = "FixProof.Equivalence",
     deps = [
         "//fix/proof/evaluation:Properties",
@@ -24,6 +36,21 @@ rocq_module(
 
 rocq_module(
     name = "Indistinguishability",
+    includes = [
+        "internal/Indistinguishability/Arguments.v",
+        "internal/Indistinguishability/Comparison.v",
+        "internal/Indistinguishability/Index.v",
+        "internal/Indistinguishability/Observations.v",
+        "internal/Indistinguishability/Range.v",
+        "internal/Indistinguishability/Structure.v",
+        "internal/Indistinguishability/Values.v",
+        "machinery/Indistinguishability/comparable_equivalence_indistinguishable.v",
+        "machinery/Indistinguishability/compare_handles_congruence.v",
+        "machinery/Indistinguishability/indistinguishable_select_arguments.v",
+        "machinery/Indistinguishability/indistinguishable_select_index.v",
+        "machinery/Indistinguishability/indistinguishable_select_range.v",
+        "machinery/Indistinguishability/indistinguishable_values.v",
+    ],
     namespace = "FixProof.Equivalence",
     deps = [
         "//fix/proof/semantics:ApplyTree",

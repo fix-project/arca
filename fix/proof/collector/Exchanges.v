@@ -32,346 +32,9 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S).
       if API.statement_kind_eq_dec decoded_kind kind then Some (lhs, rhs) else None
     | None => None end.
 
-  (** Reading the requested kind from a valid witness gives a claim justified by the coupon
-      rules. *)
-  Lemma read_sound kind witness lhs rhs :
-    valid witness -> read kind witness = Some (lhs, rhs) -> relation_of kind lhs rhs.
-  Proof.
-    unfold read; destruct (Wire.decode witness) as [[[[decoded_kind authors] a] b]|] eqn:Decoded;
-      [|discriminate].
-    destruct (API.statement_kind_eq_dec decoded_kind kind); [subst decoded_kind|discriminate].
-    intros Valid Checked; inversion Checked; subst; exact (Valid _ _ _ _ Decoded).
-  Qed.
-
-  Definition unary input (output : statement_kind) derive coupons lhs rhs := match coupons with
-    | [coupon] => match read input coupon with
-      | Some (a, b) => match derive a b with
-        | Some (x, y) => if API.handle_eqb lhs x && API.handle_eqb rhs y then Some output else None
-        | None => None end
-      | None => None end
-    | _ => None end.
-
-  (** A sound unary inference, supplied with valid premises, yields a sound checked
-      exchange. *)
-  Lemma unary_sound input output derive
-      (Rule : forall a b x y, relation_of input a b -> derive a b = Some (x, y) -> relation_of output x y)
-      coupons lhs rhs kind :
-    Forall valid coupons -> unary input output derive coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    (* The witness names both endpoints of the premise. Exact matching prevents a valid
-        premise about some other endpoints from being used here; once these endpoints
-        agree, the supplied inference rule determines the conclusion. *)
-    intros Valid Checked; unfold unary in Checked.
-    destruct coupons as [|premise [|extra rest]]; try discriminate.
-    destruct (read input premise) as [[a b]|] eqn:Read; [|discriminate].
-    destruct (derive a b) as [[x y]|] eqn:Derived; [|discriminate].
-    destruct (API.handle_eqb lhs x && API.handle_eqb rhs y) eqn:Same; [|discriminate].
-    apply andb_true_iff in Same as [Left Right].
-    apply API.handle_eqb_spec in Left; apply API.handle_eqb_spec in Right; subst lhs rhs.
-    inversion Checked; subst kind; eapply Rule; [|exact Derived].
-    exact (read_sound _ _ _ _ (Forall_inv Valid) Read).
-  Qed.
-
-  Definition binary first second (output : statement_kind) derive coupons lhs rhs := match coupons with
-    | [one; two] => match read first one, read second two with
-      | Some (a, b), Some (c, d) => match derive a b c d with
-        | Some (x, y) => if API.handle_eqb lhs x && API.handle_eqb rhs y then Some output else None
-        | None => None end
-      | _, _ => None end
-    | _ => None end.
-
-  (** A sound binary inference, supplied with valid premises, yields a sound checked
-      exchange. *)
-  Lemma binary_sound first second output derive
-      (Rule : forall a b c d x y, relation_of first a b -> relation_of second c d ->
-        derive a b c d = Some (x, y) -> relation_of output x y)
-      coupons lhs rhs kind :
-    Forall valid coupons -> binary first second output derive coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    (* Each witness first yields its own authenticated premise. The endpoint checks
-        identify those premises with the inputs expected by the inference rule, so the
-        rule composes exactly those two facts without searching for a middle term. *)
-    intros Valid Checked; unfold binary in Checked.
-    destruct coupons as [|one [|two [|extra rest]]]; try discriminate.
-    destruct (read first one) as [[a b]|] eqn:One; [|discriminate].
-    destruct (read second two) as [[c d]|] eqn:Two; [|discriminate].
-    destruct (derive a b c d) as [[x y]|] eqn:Derived; [|discriminate].
-    destruct (API.handle_eqb lhs x && API.handle_eqb rhs y) eqn:Same; [|discriminate].
-    apply andb_true_iff in Same as [Left Right].
-    apply API.handle_eqb_spec in Left; apply API.handle_eqb_spec in Right; subst lhs rhs.
-    inversion Checked; subst kind; eapply Rule; [| |exact Derived].
-    - exact (read_sound _ _ _ _ (Forall_inv Valid) One).
-    - exact (read_sound _ _ _ _ (Forall_inv (Forall_inv_tail Valid)) Two).
-  Qed.
-
-  Fixpoint children kind xs ys coupons := match xs, ys, coupons with
-    | [], [], [] => true
-    | x :: xs, y :: ys, coupon :: coupons => match read kind coupon with
-        | Some (a, b) => API.handle_eqb x a && API.handle_eqb y b && children kind xs ys coupons
-        | None => false end
-    | _, _, _ => false end.
-
-  (** Successful checks of ordered child witnesses establish the requested relation
-      pointwise. *)
-  Lemma children_sound kind xs ys coupons :
-    Forall valid coupons -> children kind xs ys coupons = true -> Forall2 (relation_of kind) xs ys.
-  Proof.
-    (* The list position assigns each witness to a specific child pair. Requiring the
-        three lists to end together prevents missing or extra witnesses from silently
-        changing the intended pointwise judgement. *)
-    revert ys coupons; induction xs as [|x xs IH]; intros [|y ys] [|coupon coupons] Valid Checked;
-      cbn [children] in Checked; try discriminate; [constructor|].
-    destruct (read kind coupon) as [[a b]|] eqn:Read; [|discriminate].
-    apply andb_true_iff in Checked as [Same Rest]; apply andb_true_iff in Same as [Left Right].
-    apply API.handle_eqb_spec in Left; apply API.handle_eqb_spec in Right; subst a b; constructor.
-    - exact (read_sound _ _ _ _ (Forall_inv Valid) Read).
-    - eapply IH; [exact (Forall_inv_tail Valid)|exact Rest].
-  Qed.
-
-  Definition tree kind coupons lhs rhs := match lhs, rhs with
-    | Data (Object (TreeObj a)), Data (Object (TreeObj b)) =>
-      if Bool.eqb (tree_tag a) (tree_tag b) && children kind (get_tree_raw a) (get_tree_raw b) coupons
-      then Some kind else None
-    | _, _ => None end.
-
-  (** A sound pointwise Tree inference yields a sound checked Tree exchange. *)
-  Lemma tree_sound input
-      (Rule : forall a b, tree_tag a = tree_tag b ->
-        Forall2 (relation_of input) (get_tree_raw a) (get_tree_raw b) -> relation_of input (HTreeObj a) (HTreeObj b))
-      coupons lhs rhs kind :
-    Forall valid coupons -> tree input coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    destruct lhs as [[[bl|a]|reference]|th|e], rhs as [[[br|b]|reference']|th'|e'];
-      cbn [tree]; intros Valid Checked; try discriminate.
-    destruct (Bool.eqb (tree_tag a) (tree_tag b) && children input (get_tree_raw a) (get_tree_raw b) coupons)
-      eqn:Test; [|discriminate].
-    apply andb_true_iff in Test as [Tags Entries]; apply Bool.eqb_prop in Tags.
-    inversion Checked; subst kind; apply Rule; [exact Tags|eapply children_sound; eassumption].
-  Qed.
-
-  Inductive constructor := Application | Selection | Identification | Strict | Shallow | BlobReference | TreeReference.
-
-  Definition construct kind value := match kind, value with
-    | Application, Data (Object (TreeObj t)) => Some (Thunk (H.Application t))
-    | Selection, Data (Object (TreeObj t)) => Some (Thunk (H.Selection t))
-    | Identification, Data (Ref d) => Some (Thunk (H.Identification d))
-    | Strict, Thunk t => Some (Encode (H.Strict t))
-    | Shallow, Thunk t => Some (Encode (H.Shallow t))
-    | BlobReference, Data (Object (BlobObj b)) => Some (HBlobRef b)
-    | TreeReference, Data (Object (TreeObj t)) => Some (HTreeRef t)
-    | _, _ => None end.
-
-  Definition mapped kind a b :=
-    obind (construct kind a) (fun x => omap (pair x) (construct kind b)).
-
-  (** Applying a supported constructor to both sides of an equivalence gives an equivalence
-      justified by the coupon rules. *)
-  Lemma mapped_good kind a b x y :
-    coupon_equiv a b -> mapped kind a b = Some (x, y) -> coupon_equiv x y.
-  Proof.
-    destruct kind; destruct a as [[[ba|ta]|da]|ua|ea]; destruct b as [[[bb|tb]|db]|ub|eb];
-      cbn [mapped construct obind omap]; intros Related Checked; try discriminate;
-      inversion Checked; subst; eauto using CouponEqApplication, CouponEqSelection, CouponEqIdentification,
-        CouponEqEncodeStrict, CouponEqEncodeShallow, CouponBlobRefEq, CouponTreeRefEq.
-  Qed.
-
-  Definition force_encode (strict : bool) a b := match a, b with
-    | Thunk t, Data d => Some (Encode (if strict then H.Strict t else H.Shallow t),
-        if strict then lift (Data d) else lower (Data d))
-    | _, _ => None end.
-
-  (** A checked Force-to-Encode exchange gives an equivalence justified by the Force
-      premise. *)
-  Lemma force_encode_good strict a b x y :
-    coupon_force a b -> force_encode strict a b = Some (x, y) -> coupon_equiv x y.
-  Proof.
-    destruct a as [a|t|a], b as [d|u|e]; cbn [force_encode]; intros Forced Checked; try discriminate.
-    destruct strict; cbn in Checked; inversion Checked; subst.
-    - exact (CouponForceToEncodeStrict t (Data d) Forced).
-    - exact (CouponForceToEncodeShallow t (Data d) Forced).
-  Qed.
-
-  Definition think_step (mode : nat) (a b : handle) := match b with
-    | Thunk t => if mode =? 0 then Some (a, Thunk t) else None
-    | Encode (H.Strict t) => if mode =? 1 then Some (a, Thunk t) else None
-    | Encode (H.Shallow t) => if mode =? 2 then Some (a, Thunk t) else None
-    | _ => None end.
-
-  (** A checked Think-to-Thunks exchange gives equivalence of the corresponding bare
-      Thunks. *)
-  Lemma think_step_good mode a b x y :
-    coupon_think a b -> think_step mode a b = Some (x, y) -> coupon_equiv x y.
-  Proof.
-    intros Thought Checked.
-    pose proof (coupon_think_sound _ _ Thought) as Sound.
-    destruct a as [data|t|encoded]; try contradiction.
-    destruct b as [d|u|[u|u]]; cbn [think_step] in Checked; try discriminate;
-      repeat match type of Checked with
-      | context [if ?condition then _ else _] => destruct condition eqn:?; try discriminate
-      end; inversion Checked; subst;
-      eauto using CouponThunkEq, CouponThunkEncodeEq, CouponThunkEncodeShallowEq.
-  Qed.
-
-  Ltac check_handle_eq left right :=
-    let Same := fresh "Same" in
-    destruct (API.handle_eqb left right) eqn:Same; [|discriminate];
-    apply API.handle_eqb_spec in Same; subst right.
-
-  Definition substitute_force (a b c d : handle) :=
-    if API.handle_eqb a c then Some (b, d) else None.
-
-  (** A checked substitution of equivalent inputs preserves the Force claim. *)
-  Lemma substitute_force_good a b c d x y :
-    coupon_equiv a b -> coupon_force c d -> substitute_force a b c d = Some (x, y) -> coupon_force x y.
-  Proof.
-    intros Related Forced Checked; unfold substitute_force in Checked.
-    check_handle_eq a c; inversion Checked; subst.
-    eapply CouponForceEq; eassumption.
-  Qed.
-
-  Definition think_selection (a b c d : handle) :=
-    if API.handle_eqb b c then match a with
-      | Data (Object (TreeObj t)) => Some (Thunk (H.Selection t), d)
-      | _ => None end else None.
-
-  (** A checked combination of Eval and Select premises gives the corresponding
-      Think-selection claim. *)
-  Lemma think_selection_good a b c d x y :
-    coupon_eval a b -> coupon_select c d -> think_selection a b c d = Some (x, y) -> coupon_think x y.
-  Proof.
-    intros Evaluated Selected Checked; unfold think_selection in Checked.
-    check_handle_eq b c.
-    destruct a as [[[blob|t]|reference]|th|e]; try discriminate.
-    destruct (coupon_select_sound _ _ Selected) as [ready [-> Select]].
-    inversion Checked; subst; eapply CouponThinkSelection; eassumption.
-  Qed.
-
-  Definition reflexive_eval value := match value with
-    | Data (Ref _) | Thunk _ | Data (Object (BlobObj _)) => true | _ => false end.
-
-  Definition leaf (coupons : list handle) lhs rhs := match coupons with
-    | [] => if reflexive_eval lhs && API.handle_eqb lhs rhs then Some Eval else None
-    | _ => None end.
-
-  (** A successful leaf-evaluation check yields a valid Eval claim. *)
-  Lemma leaf_sound coupons lhs rhs kind :
-    leaf coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    unfold leaf; destruct coupons; [|discriminate].
-    destruct (reflexive_eval lhs && API.handle_eqb lhs rhs) eqn:Checked; [|discriminate].
-    apply andb_true_iff in Checked as [Leaf Same]; apply API.handle_eqb_spec in Same; subst rhs.
-    intros Created; inversion Created; subst; change (coupon_eval lhs lhs).
-    destruct lhs as [[[blob|t]|reference]|th|e]; cbn [reflexive_eval] in Leaf; try discriminate;
-      eauto using CouponEvalBlobObj, CouponEvalRef, CouponEvalThunk.
-  Qed.
-
-  Definition identification (coupons : list handle) lhs rhs := match coupons, rhs with
-    | [], Data (Ref reference) =>
-      if API.handle_eqb lhs (Thunk (H.Identification reference)) then Some Think else None
-    | _, _ => None end.
-
-  (** A successful identification check yields the Ref's valid Think-identification claim. *)
-  Lemma identification_sound coupons lhs rhs kind :
-    identification coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    unfold identification; destruct coupons; [|discriminate].
-    destruct rhs as [[o|reference]|th|e]; try discriminate.
-    destruct (API.handle_eqb lhs (Thunk (H.Identification reference))) eqn:Same; [|discriminate].
-    apply API.handle_eqb_spec in Same; subst lhs.
-    intros Created; inversion Created; subst; apply CouponThinkIdentification.
-  Qed.
-
-  Definition self (coupons : list handle) lhs rhs := match coupons with
-    | [] => if API.handle_eqb lhs rhs then Some Equivalent else None | _ => None end.
-
-  (** A successful reflexivity check yields a valid equivalence claim. *)
-  Lemma self_sound coupons lhs rhs kind : self coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    unfold self; destruct coupons; [|discriminate].
-    destruct (API.handle_eqb lhs rhs) eqn:Same; [|discriminate].
-    apply API.handle_eqb_spec in Same; subst rhs; intros Checked; inversion Checked; subst; apply CouponSelf.
-  Qed.
-
-  Definition think_application (a b c d : handle) :=
-    if API.handle_eqb b c then match a with
-      | Data (Object (TreeObj t)) => Some (Thunk (H.Application t), d)
-      | _ => None end else None.
-
-  (** A checked combination of Eval and Apply premises gives the corresponding
-      Think-application claim. *)
-  Lemma think_application_good a b c d x y :
-    coupon_eval a b -> coupon_apply c d -> think_application a b c d = Some (x, y) -> coupon_think x y.
-  Proof.
-    intros Evaluated Applied Checked; unfold think_application in Checked.
-    check_handle_eq b c.
-    destruct a as [[[blob|t]|reference]|th|e]; try discriminate.
-    destruct (coupon_apply_sound _ _ Applied) as [ready [Source Rest]].
-    rewrite Source in Evaluated, Applied; inversion Checked; subst; eapply CouponThinkApplication; eassumption.
-  Qed.
-
-  Definition think_data (a b : handle) := match b with Data _ => Some (a, b) | _ => None end.
-
-  (** A checked Think step returning Data yields a valid Force claim. *)
-  Lemma think_data_good a b x y :
-    coupon_think a b -> think_data a b = Some (x, y) -> coupon_force x y.
-  Proof.
-    intros Thought Checked.
-    pose proof (coupon_think_sound _ _ Thought) as Sound.
-    destruct a as [data|th|encoded]; try contradiction.
-    destruct b as [d|th''|e]; cbn [think_data] in Checked; try discriminate.
-    inversion Checked; subst; apply CouponThinkToForce; exact Thought.
-  Qed.
-
-  Definition substitute_eval (a b c d : handle) := if API.handle_eqb a c then Some (d, b) else None.
-
-  (** A checked substitution of equivalent inputs preserves the Eval claim. *)
-  Lemma substitute_eval_good a b c d x y :
-    coupon_eval a b -> coupon_equiv c d -> substitute_eval a b c d = Some (x, y) -> coupon_eval x y.
-  Proof.
-    intros Evaluated Related Checked; unfold substitute_eval in Checked.
-    check_handle_eq a c; inversion Checked; subst; eapply CouponEvalEq; eassumption.
-  Qed.
-
-  Definition transitive (a b c d : handle) := if API.handle_eqb b c then Some (a, d) else None.
-
-  (** A checked pair of equivalences with a matching middle endpoint yields their
-      transitive equivalence. *)
-  Lemma transitive_good a b c d x y :
-    coupon_equiv a b -> coupon_equiv c d -> transitive a b c d = Some (x, y) -> coupon_equiv x y.
-  Proof.
-    intros First Second Checked; unfold transitive in Checked.
-    check_handle_eq b c; inversion Checked; subst; eapply CouponTrans; eassumption.
-  Qed.
-
-  Definition force_results coupons lhs rhs := match coupons with
-    | [one; two; related] => match read Force one, read Force two, read Equivalent related with
-      | Some (a, x), Some (b, y), Some (c, d) =>
-        if (API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c x && API.handle_eqb d y)
-        then Some Equivalent else None
-      | _, _, _ => None end
-    | _ => None end.
-
-  (** Valid Force premises with equivalent results justify equivalence of their source
-      Thunks. *)
-  Lemma force_results_sound coupons lhs rhs kind :
-    Forall valid coupons -> force_results coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    intros Valid Checked; unfold force_results in Checked.
-    destruct coupons as [|one [|two [|related [|extra rest]]]]; try discriminate.
-    destruct (read Force one) as [[a x]|] eqn:First; [|discriminate].
-    destruct (read Force two) as [[b y]|] eqn:Second; [|discriminate].
-    destruct (read Equivalent related) as [[c d]|] eqn:Related; [|discriminate].
-    destruct ((API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c x && API.handle_eqb d y))
-      eqn:Same; [|discriminate].
-    apply andb_true_iff in Same as [Ends Results].
-    apply andb_true_iff in Ends as [Left Right]; apply andb_true_iff in Results as [Source Target].
-    apply API.handle_eqb_spec in Left, Right, Source, Target; subst lhs rhs c d.
-    inversion Checked; subst kind; eapply CouponForceResultEq.
-    - exact (read_sound _ _ _ _ (Forall_inv Valid) First).
-    - exact (read_sound _ _ _ _ (Forall_inv (Forall_inv_tail Valid)) Second).
-    - exact (read_sound _ _ _ _ (Forall_inv (Forall_inv_tail (Forall_inv_tail Valid))) Related).
-  Qed.
-
+Load "fix/proof/collector/internal/Exchanges/Checking/read_sound".
+Load "fix/proof/collector/machinery/Exchanges/Equality".
+Load "fix/proof/collector/internal/Exchanges/Checking/substitute_force".
   Inductive exchange :=
   | TreeEq | ForceResultEq | ThinkApplication | ThinkToForce | EqApplication | EvalLeaf | EvalTree
   | ForceToEncodeStrict | EvalEq | EqEncodeStrict | Sym | Trans | Self
@@ -466,27 +129,10 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S).
 
       Each branch checks the premises and side conditions of one inference rule. Matching
       the supplied endpoints gives that rule's conclusion. *)
+Load "fix/proof/collector/machinery/Exchanges/check_sound".
   Theorem check_sound rule coupons lhs rhs kind :
     Forall valid coupons -> check rule coupons lhs rhs = Some kind -> relation_of kind lhs rhs.
-  Proof.
-    (* The explicit request code chooses the inference rule, and each branch checks only
-        that rule's ordered premises and endpoints. The earlier helper lemmas establish
-        the rule-shaped implications, so an accepted branch contributes exactly one
-        legitimate logical constructor. *)
-    intros Valid Checked; destruct rule; cbn [check] in Checked;
-      try solve [eapply (tree_sound Equivalent); [intros; apply CouponTreeEq; assumption|exact Valid|exact Checked]];
-      try solve [eapply (tree_sound Eval); [intros; apply CouponEvalTreeObj; assumption|exact Valid|exact Checked]];
-      try solve [eauto using force_results_sound, leaf_sound, self_sound, identification_sound];
-      try solve [eapply unary_sound; [|exact Valid|exact Checked]; intros; cbn [relation_of] in *;
-        eauto using mapped_good, force_encode_good, think_step_good, think_data_good];
-      try solve [eapply binary_sound; [|exact Valid|exact Checked]; intros; cbn [relation_of] in *;
-        eauto using think_application_good, substitute_eval_good, transitive_good,
-          substitute_force_good, think_selection_good].
-    - eapply unary_sound; [|exact Valid|exact Checked].
-      intros a b x y Related Derived; inversion Derived; subst; apply CouponSym; exact Related.
-    - eapply unary_sound; [|exact Valid|exact Checked].
-      intros a b x y Evaluated Derived; inversion Derived; subst; apply CouponEvalResultEq; exact Evaluated.
-  Qed.
+  Proof. apply check_sound_proof. Qed.
 
   Definition kernel_author := HTreeObj (create_tree []).
 
@@ -516,80 +162,25 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S).
       then Some (create_tree_tagged true (get_tree_raw fields)) else None
     | _ => None end.
 
-  Lemma authenticated_author collector witness kind author lhs rhs :
-    authenticated_by collector witness = true ->
-    Wire.decode witness = Some (kind, author, lhs, rhs) ->
-    author = collector \/ author = kernel_author.
-  Proof.
-    intros Allowed Decoded; unfold authenticated_by in Allowed.
-    rewrite (Wire.decode_author _ _ _ _ _ Decoded) in Allowed.
-    apply orb_true_iff in Allowed as [Same|Kernel];
-      apply API.handle_eqb_spec in Same || apply API.handle_eqb_spec in Kernel; auto.
-  Qed.
-
-  Lemma conditional_evidence_valid trusted collector coupons :
-    stable_requirement trusted collector -> Forall (stable_conditional trusted) coupons ->
-    reconstruction_authority collector coupons = true -> Forall valid coupons.
-  Proof.
-    intros Trusted Conditional Allowed; rewrite Forall_forall in Conditional |- *.
-    unfold reconstruction_authority in Allowed; rewrite forallb_forall in Allowed.
-    intros witness Present kind author lhs rhs Decoded.
-    apply (Conditional _ Present _ _ _ _ Decoded).
-    destruct (authenticated_author _ _ _ _ _ _ (Allowed _ Present) Decoded) as [Same|Kernel].
-    - subst author; exact Trusted.
-    - subst author; intros _; left; reflexivity.
-  Qed.
-
-  Lemma reconstruction_evidence_valid trusted collector coupons :
-    trusted collector -> Forall (stable_conditional trusted) coupons ->
-    reconstruction_authority collector coupons = true -> Forall valid coupons.
-  Proof.
-    intros Trusted Conditional Allowed; eapply conditional_evidence_valid; eauto.
-    intros _; right; exact Trusted.
-  Qed.
-
+Load "fix/proof/collector/internal/Exchanges/Authority".
+Load "fix/proof/collector/machinery/Exchanges/reconstruction_validated_sound".
   Theorem reconstruction_validated_sound trusted collector coupons lhs rhs :
     trusted collector -> Forall (stable_conditional trusted) coupons ->
     reconstruction_authority collector coupons = true ->
     tree Eval coupons lhs rhs = Some Eval -> D.coupon_eval lhs rhs.
-  Proof.
-    intros Trusted Conditional Allowed Checked.
-    change (relation_of Eval lhs rhs).
-    eapply tree_sound with (input := Eval) (kind := Eval);
-      [intros; apply CouponEvalTreeObj; assumption| |exact Checked].
-    eapply reconstruction_evidence_valid; eassumption.
-  Qed.
+  Proof. apply reconstruction_validated_sound_proof. Qed.
 
+Load "fix/proof/collector/machinery/Exchanges/reconstruct_tag_sound".
   Theorem reconstruct_tag_sound trusted collector coupons original fields result :
     trusted collector -> Forall (stable_conditional trusted) coupons ->
     reconstruct_tag collector coupons original fields = Some result ->
     D.coupon_eval (HTreeObj original) (HTreeObj result).
-  Proof.
-    intros Trusted Conditional Reconstructed.
-    unfold reconstruct_tag in Reconstructed.
-    destruct (get_tree_raw fields) as [|first rest] eqn:Fields; try discriminate.
-    match type of Reconstructed with
-    | (if ?condition then _ else _) = _ => destruct condition eqn:Checked
-    end; [|discriminate].
-    inversion Reconstructed; subst result.
-    apply andb_true_iff in Checked as [Prefix Children].
-    apply andb_true_iff in Prefix as [Tagged Allowed].
-    apply CouponEvalTreeObj.
-    - rewrite tree_tag_create_tree_tagged; exact Tagged.
-    - rewrite get_tree_raw_create_tree_tagged.
-      eapply children_sound with (kind := Eval); [|exact Children].
-      eapply reconstruction_evidence_valid; eassumption.
-  Qed.
+  Proof. apply reconstruct_tag_sound_proof. Qed.
 
+Load "fix/proof/collector/machinery/Exchanges/issue_conditional".
   Theorem issue_conditional trusted issuing_author rule coupons lhs rhs kind output :
     Forall (stable_conditional trusted) coupons -> check rule coupons lhs rhs = Some kind ->
     issue issuing_author kind lhs rhs coupons output -> stable_conditional trusted output.
-  Proof.
-    intros Inputs Checked [Allowed Issued] operation author left right Decoded Trusted.
-    apply Wire.encode_decode in Issued; rewrite Issued in Decoded;
-      inversion Decoded; subst operation author left right.
-    eapply check_sound; [|exact Checked].
-    eapply conditional_evidence_valid; eassumption.
-  Qed.
+  Proof. apply issue_conditional_proof. Qed.
 
 End CouponExchanges.

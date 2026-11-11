@@ -26,6 +26,14 @@ fix_procedure(
 
 rocq_module(
     name = "Completeness",
+    includes = [
+        "internal/Completeness/Construction/certify_leaf.v",
+        "internal/Completeness/Issuance/read_encoded.v",
+        "machinery/Completeness/MutualInduction.v",
+        "machinery/Completeness/SoundnessInduction.v",
+        "machinery/Completeness/Tactics.v",
+        "machinery/Completeness/terminating_evaluation_is_certifiable.v",
+    ],
     namespace = "FixProof.Collector",
     deps = [
         "//fix/proof/evaluation:Adequacy",
@@ -39,6 +47,12 @@ rocq_module(
 
 rocq_module(
     name = "Encoding",
+    includes = [
+        "internal/Encoding/Authors.v",
+        "internal/Encoding/Codes.v",
+        "machinery/Encoding/decode_authenticates.v",
+        "machinery/Encoding/encode_decode.v",
+    ],
     namespace = "FixProof.Collector",
     deps = [
         "//fix/proof/semantics:Handle",
@@ -48,6 +62,16 @@ rocq_module(
 
 rocq_module(
     name = "Exchanges",
+    includes = [
+        "internal/Exchanges/Authority.v",
+        "internal/Exchanges/Checking/read_sound.v",
+        "internal/Exchanges/Checking/substitute_force.v",
+        "machinery/Exchanges/Equality.v",
+        "machinery/Exchanges/check_sound.v",
+        "machinery/Exchanges/issue_conditional.v",
+        "machinery/Exchanges/reconstruct_tag_sound.v",
+        "machinery/Exchanges/reconstruction_validated_sound.v",
+    ],
     namespace = "FixProof.Collector",
     deps = [
         "//fix/proof/semantics:ApplyTree",
@@ -60,6 +84,13 @@ rocq_module(
 
 rocq_module(
     name = "Logic",
+    includes = [
+        "internal/Logic/Primitives.v",
+        "internal/Logic/Rules.v",
+        "machinery/Logic/MutualInduction.v",
+        "machinery/Logic/coupon_blob_same_data.v",
+        "machinery/Logic/coupon_sound.v",
+    ],
     namespace = "FixProof.Collector",
     deps = [
         "//fix/proof/equivalence:Closure",
@@ -79,6 +110,9 @@ rocq_module(
 
 rocq_module(
     name = "Preservation",
+    includes = [
+        "machinery/Preservation/evaluation_preserves_authority.v",
+    ],
     namespace = "FixProof.Collector",
     deps = [
         "//fix/proof/semantics:ApplyTree",
