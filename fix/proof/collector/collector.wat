@@ -25,7 +25,7 @@
 
   (import "fix" "get_thunk_type" (func $thunk_type (param i32) (result i32)))
 
-  (import "fix" "close" (func $close (param i32)))
+  (import "fix" "is_value" (func $is_value (param i32) (result i32)))
   (import "fix" "clone" (func $clone (param i32) (result i32)))
 
   (memory $bytes 1)
@@ -113,6 +113,7 @@
       (else
         (call $require (i32.eq (local.get $constructor) (i32.const 6)))
         (call $require (i32.eq (call $data_type (local.get $value)) (i32.const 1)))))
+    (call $require (call $is_value (local.get $value)))
     (call $create_ref (local.get $value)))
 
   (func $mapped (param $constructor i32) (param $lhs i32) (param $rhs i32) (param $witness i32)
@@ -176,7 +177,7 @@
       (local.set $b (call $right (local.get $q)))
       (call $premise (i64.const 3) (local.get $p) (local.get $lhs) (local.get $a))
       (call $premise (i64.const 3) (local.get $q) (local.get $rhs) (local.get $b))
-      (call $premise (i64.const 0) (call $witness_claim (local.get $witnesses) (i32.const 2)) (local.get $a) (local.get $b))
+      (call $premise (i64.const 0) (call $witness_claim (local.get $witnesses) (i32.const 2)) (call $lower (local.get $a)) (call $lower (local.get $b)))
       (return (i64.const 0))))
     (if (i32.or (i32.or (i64.eq (local.get $rule) (i64.const 2)) (i64.eq (local.get $rule) (i64.const 8)))
         (i32.or (i64.eq (local.get $rule) (i64.const 11)) (i32.or (i64.eq (local.get $rule) (i64.const 24))

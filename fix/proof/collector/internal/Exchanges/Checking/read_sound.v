@@ -124,7 +124,7 @@
     | Strict, Thunk t => Some (Encode (H.Strict t))
     | Shallow, Thunk t => Some (Encode (H.Shallow t))
     | BlobReference, Data (Object (BlobObj b)) => Some (HBlobRef b)
-    | TreeReference, Data (Object (TreeObj t)) => Some (HTreeRef t)
+    | TreeReference, Data (Object (TreeObj t)) => if is_value (HTreeObj t) then Some (HTreeRef t) else None
     | _, _ => None end.
 
   Definition mapped kind a b :=
@@ -136,9 +136,13 @@
     coupon_equiv a b -> mapped kind a b = Some (x, y) -> coupon_equiv x y.
   Proof.
     destruct kind; destruct a as [[[ba|ta]|da]|ua|ea]; destruct b as [[[bb|tb]|db]|ub|eb];
-      cbn [mapped construct obind omap]; intros Related Checked; try discriminate;
-      inversion Checked; subst; eauto using CouponEqApplication, CouponEqSelection, CouponEqIdentification,
-        CouponEqEncodeStrict, CouponEqEncodeShallow, CouponBlobRefEq, CouponTreeRefEq.
+      intros Related Checked; unfold mapped, construct in Checked; cbn in Checked;
+      repeat match type of Checked with
+      | context [if ?condition then _ else _] => destruct condition eqn:?; cbn [obind omap] in Checked
+      end; try discriminate; inversion Checked; subst;
+      eauto using CouponEqApplication, CouponEqSelection, CouponEqIdentification,
+        CouponEqEncodeStrict, CouponEqEncodeShallow, CouponBlobRefEq.
+    apply CouponTreeRefEq; [apply EC.value_flag; assumption|apply EC.value_flag; assumption|exact Related].
   Qed.
 
   Definition force_encode (strict : bool) a b := match a, b with

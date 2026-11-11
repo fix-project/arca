@@ -185,7 +185,7 @@ Local Open Scope list_scope.
       Base.optional_descriptor, Base.Support.descriptor, Base.Support.word in following.
     cbn [List.map List.app] in following.
     assert (RhsLower : G.E.H.resolve lowered rhs_index = Some rhs) by (apply (proj1 LowerScope); exact Rhs2).
-    checked_use (checked_same lowered store following rhs_index lower_slot rhs (X.D.EC.E.EP.E.lower right)
+    checked_use (checked_same lowered store following rhs_index lower_slot rhs (X.D.Context.EC.E.EP.E.lower right)
       Functions RhsLower LowerLive Bytes).
     intros final [Final Rhs]; subst final; normalize_checked.
     set (third := compared lowered).

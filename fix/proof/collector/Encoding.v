@@ -14,7 +14,6 @@ Module CouponEncoding (S : STORAGE).
   Definition statement_code kind := match kind with
     | Equivalent => Some 0 | Eval => Some 1 | Apply => Some 2
     | Force => Some 3 | Think => Some 4 | Select => Some 6
-    | Indistinguishable => None
     end.
 
   Definition statement_kind code := match code with

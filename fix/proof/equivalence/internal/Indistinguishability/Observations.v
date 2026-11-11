@@ -9,7 +9,7 @@
       with Children (xs : list handle) : observed_children xs xs := _
       with Results (result : option handle) : observed_result result result := _ for Handles).
     - destruct h as [[[b|t]|[b|t]]|th|[th|th]];
-        constructor; auto using Children, Results.
+        constructor; auto using Handles, Children, Results.
     - destruct xs; constructor; auto.
     - destruct result; constructor; auto.
   Qed.
@@ -24,7 +24,7 @@
         observed_children ys xs := _
       with Results first second (Related : observed_result first second) :
         observed_result second first := _ for Handles).
-    - destruct Related; constructor; auto using Children, Results; congruence.
+    - destruct Related; constructor; auto using Handles, Children, Results; congruence.
     - destruct Related; constructor; auto.
     - destruct Related; constructor; auto.
   Qed.
@@ -57,7 +57,7 @@
       with Results first middle last (Left : observed_result first middle)
         (Right : observed_result middle last) : observed_result first last := _ for Handles).
     - destruct Left; inversion Right; subst; constructor;
-        eauto using Children, Results; congruence.
+        eauto using Handles, Children, Results; congruence.
     - destruct Left; inversion Right; subst; constructor; eauto.
     - destruct Left; inversion Right; subst; constructor; eauto.
   Qed.
@@ -131,33 +131,25 @@
     assumption.
   Qed.
 
-  (** Observationally matching Encodes execute to observationally matching results or both
-      fail. *)
-  Lemma observations_execute e1 e2 : same_observations (Encode e1) (Encode e2) ->
-    observed_result (execute e1) (execute e2).
-  Proof. intro Related; inversion Related; subst; assumption. Qed.
+  Lemma observations_encode_eval e1 e2 : same_observations (Encode e1) (Encode e2) ->
+    observed_result (eval (Encode e1)) (eval (Encode e2)).
+  Proof.
+    intro Related; inversion Related; subst;
+      match goal with H : same_observations (Thunk _) (Thunk _) |- _ =>
+        inversion H; assumption end.
+  Qed.
 
   (** Strict Encode construction preserves matching observations of bare Thunks. *)
   Lemma observations_encode_strict th1 th2 :
     same_observations (Thunk th1) (Thunk th2) ->
     same_observations (Encode (Strict th1)) (Encode (Strict th2)).
-  Proof.
-    intro Related; inversion Related; subst; constructor.
-    rewrite !execute_unfold; cbn [encode_to_thunk].
-    match goal with H : observed_result _ _ |- _ => destruct H end;
-      constructor; apply observations_lift; assumption.
-  Qed.
+  Proof. intro Related; inversion Related; subst; constructor; assumption. Qed.
 
   (** Shallow Encode construction preserves matching observations of bare Thunks. *)
   Lemma observations_encode_shallow th1 th2 :
     same_observations (Thunk th1) (Thunk th2) ->
     same_observations (Encode (Shallow th1)) (Encode (Shallow th2)).
-  Proof.
-    intro Related; inversion Related; subst; constructor.
-    rewrite !execute_unfold; cbn [encode_to_thunk].
-    match goal with H : observed_result _ _ |- _ => destruct H end;
-      constructor; apply observations_lower; assumption.
-  Qed.
+  Proof. intro Related; inversion Related; subst; constructor; assumption. Qed.
 
   (** Indistinguishability is reflexive. *)
   Lemma indistinguishable_refl h : indistinguishable h h.

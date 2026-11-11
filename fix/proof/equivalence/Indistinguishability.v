@@ -1,8 +1,7 @@
-(** Models observable handle properties alongside computational equivalence.
-    Proves that Comparable equivalents are indistinguishable and that the
-    modeled observations are preserved. *)
+(** Defines observations and certified equivalence under evaluation.
+    Proves program substitution and indistinguishability of equivalent Values. *)
 
-From Stdlib Require Import List Bool ClassicalDescription.
+From Stdlib Require Import List Bool ClassicalDescription Arith Lia.
 From Hammer Require Import Tactics.
 From FixProof.Semantics Require Import Handle ApplyTree.
 From FixProof.Equivalence Require Import Closure.
@@ -37,13 +36,14 @@ Module Indistinguishability (S : STORAGE) (P : PROGRAM S).
       same_observations (HTreeObj t1) (HTreeObj t2) ->
       same_observations (HTreeRef t1) (HTreeRef t2)
   | ObserveThunk : forall th1 th2,
-      observed_result (force th1) (force th2) ->
+      observed_result (eval (Encode (Strict th1))) (eval (Encode (Strict th2))) ->
+      observed_result (eval (Encode (Shallow th1))) (eval (Encode (Shallow th2))) ->
       same_observations (Thunk th1) (Thunk th2)
   | ObserveStrict : forall th1 th2,
-      observed_result (execute (Strict th1)) (execute (Strict th2)) ->
+      same_observations (Thunk th1) (Thunk th2) ->
       same_observations (Encode (Strict th1)) (Encode (Strict th2))
   | ObserveShallow : forall th1 th2,
-      observed_result (execute (Shallow th1)) (execute (Shallow th2)) ->
+      same_observations (Thunk th1) (Thunk th2) ->
       same_observations (Encode (Shallow th1)) (Encode (Shallow th2))
   with observed_children : list handle -> list handle -> Prop :=
   | ObserveNil : observed_children nil nil
@@ -88,6 +88,28 @@ Load "fix/proof/equivalence/machinery/Indistinguishability/comparable_equivalenc
     (computational_equiv left right <-> indistinguishable left right).
   Proof. apply comparable_equivalence_indistinguishable_proof. Qed.
 
+Load "fix/proof/equivalence/internal/Indistinguishability/Evaluation".
+  Theorem indistinguishable_thunks first second :
+    indistinguishable (Thunk first) (Thunk second) <->
+    computational_equiv (Thunk first) (Thunk second) /\
+    observed_result (eval (Encode (Strict first))) (eval (Encode (Strict second))) /\
+    observed_result (eval (Encode (Shallow first))) (eval (Encode (Shallow second))).
+  Proof.
+    split.
+    - intros [Equivalent Observed]; inversion Observed; subst; auto.
+    - intros [Equivalent [Strict Shallow]]; split; [exact Equivalent|constructor; assumption].
+  Qed.
+
+  Theorem indistinguishable_eval left right : indistinguishable left right ->
+    rel_opt indistinguishable (eval left) (eval right).
+  Proof.
+    intros [Equivalent Observed].
+    pose proof (equiv_eval _ _ Equivalent) as Results.
+    pose proof (observations_eval _ _ Observed) as Observations.
+    apply observed_result_iff in Observations.
+    destruct (eval left), (eval right); cbn [rel_opt] in *; try contradiction; [split; assumption|exact I].
+  Qed.
+
 Load "fix/proof/equivalence/internal/Indistinguishability/Values".
   (** Indistinguishable handles agree on whether they are Values.
 
@@ -127,4 +149,13 @@ Load "fix/proof/equivalence/machinery/Indistinguishability/indistinguishable_sel
     rel_opt indistinguishable (Sl.select_arguments (Data d1) xs)
       (Sl.select_arguments (Data d2) ys).
   Proof. apply indistinguishable_select_arguments_proof. Qed.
+Load "fix/proof/equivalence/internal/Indistinguishability/Representation".
+Load "fix/proof/equivalence/machinery/Indistinguishability/RepresentationEvaluation".
+Load "fix/proof/equivalence/internal/Indistinguishability/Substitution".
+Module Certified.
+Load "fix/proof/equivalence/internal/Specification/Values".
+Load "fix/proof/equivalence/specification/Equivalence".
+Load "fix/proof/equivalence/internal/Specification/Constructors".
+Load "fix/proof/equivalence/internal/Specification/Execution".
+End Certified.
 End Indistinguishability.

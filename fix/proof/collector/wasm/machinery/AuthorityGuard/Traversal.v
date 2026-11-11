@@ -104,7 +104,7 @@
     reduce_trans (state, store, frame, [AI_label 0 [] []]) (state, store, frame, []).
   Proof. apply rt_step, r_simple, rs_label_const; reflexivity. Qed.
   Ltac authority_step functions bound :=
-    cbn [List.app seq.cat to_e_list v_to_e_list List.map seq.map G.E.H.Api.is_tag G.E.H.H.value_type G.E.H.data_type G.E.H.H.HTreeObj X.D.EC.E.EP.E.H.HTreeObj];
+    cbn [List.app seq.cat to_e_list v_to_e_list List.map seq.map G.E.H.Api.is_tag G.E.H.H.value_type G.E.H.data_type G.E.H.H.HTreeObj X.D.Context.EC.E.EP.E.H.HTreeObj];
     repeat match goal with
     | Tagged : tree_tag ?tree = ?tag |- context [tree_tag ?tree] => rewrite Tagged
     | Fields : get_tree_raw ?tree = ?fields |- context [get_tree_raw ?tree] => rewrite Fields

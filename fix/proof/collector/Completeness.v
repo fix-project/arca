@@ -11,8 +11,8 @@ Import ListNotations.
 
 Module CertificationCompleteness (S : STORAGE) (P : PROGRAM S).
   Module X := CouponExchanges S P.
-  Module EC := EvaluationAdequacy S P X.D.EC.E.EP.
-  Import X X.D X.D.EC.E.EP X.D.EC.E.EP.E X.D.EC.E.EP.E.H.
+  Module EC := EvaluationAdequacy S P X.D.Context.EC.E.EP.
+  Import X X.D X.D.Context.EC.E.EP X.D.Context.EC.E.EP.E X.D.Context.EC.E.EP.E.H.
 
   (** This records the certificates a scheduler could obtain: exact application and
       selection facts come from their trusted issuers, while other facts arise by accepted

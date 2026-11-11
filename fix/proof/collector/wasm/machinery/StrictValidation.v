@@ -8,7 +8,7 @@ Local Open Scope list_scope.
   #[local] Existing Instance C.mem.
   #[local] Existing Instance C.collector_host.
   Local Notation local_get_run := (G.E.collector_local_get combination true true handle_bytes).
-  Local Notation lift := X.D.EC.E.EP.E.lift.
+  Local Notation lift := X.D.Context.EC.E.EP.E.lift.
 
   Lemma checked_void_label state store frame body post :
     checked (state, store, frame, body)

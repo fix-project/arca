@@ -216,6 +216,7 @@ Local Open Scope list_scope.
   Lemma native_map_reference_executes state store locals index object :
     s_funcs store = s_funcs G.E.allocated_store ->
     G.E.H.resolve state index = Some (Data (Object object)) ->
+    G.E.H.H.is_value (Data (Object object)) = true ->
     G.E.H.D.live_count (G.E.H.slots state) < G.E.H.capacity ->
     exists next output,
       reduce_trans
@@ -227,7 +228,7 @@ Local Open Scope list_scope.
       G.E.H.resolve state (wasm_nat output) = None /\ scope state next 1 /\
       G.E.H.observations next = G.E.H.observations state.
   Proof.
-    intros Functions Live Room.
+    intros Functions Live Value Room.
     set (arguments := [word (match object with BlobObj _ => 5 | TreeObj _ => 6 end); descriptor index]).
     assert (Values : G.E.H.host_values combination G.E.collector_instance true true handle_bytes
       state store shell_create_ref [descriptor index] =
@@ -250,11 +251,15 @@ Local Open Scope list_scope.
       + pose proof (native_map_reference_guard state store arguments index (BlobObj blob)
           Functions eq_refl eq_refl Live) as Guard.
         rewrite native_map_body in Guard; cbn [firstn skipn] in Guard.
-        execute Guard; native_pure; execute Run; apply rt_refl.
+        execute Guard.
+        execute (native_value_query state store arguments 1%N index _ Functions eq_refl Live).
+        rewrite Value; native_pure; native_pure; execute Run; apply rt_refl.
       + pose proof (native_map_reference_guard state store arguments index (TreeObj tree)
           Functions eq_refl eq_refl Live) as Guard.
         rewrite native_map_body in Guard; cbn [firstn skipn] in Guard.
-        execute Guard; native_pure; execute Run; apply rt_refl.
+        execute Guard.
+        execute (native_value_query state store arguments 1%N index _ Functions eq_refl Live).
+        rewrite Value; native_pure; native_pure; execute Run; apply rt_refl.
   Qed.
 
   Definition native_constructor_index kind := match kind with
@@ -275,15 +280,17 @@ Local Open Scope list_scope.
   Proof.
     intros Functions Live Checked Room.
     destruct kind; destruct input as [[[blob|tree]|reference]|th|encoded];
-      cbn [X.construct] in Checked; try discriminate; inversion Checked; subst result;
+      unfold X.construct in Checked; cbn in Checked; try discriminate; try (inversion Checked; subst result);
       cbn [native_constructor_index].
     - exact (native_map_tree_executes state store locals index tree true Functions Live Room).
     - exact (native_map_tree_executes state store locals index tree false Functions Live Room).
     - exact (native_map_identification_executes state store locals index reference Functions Live Room).
     - exact (native_map_thunk_executes state store locals index th true Functions Live Room).
     - exact (native_map_thunk_executes state store locals index th false Functions Live Room).
-    - exact (native_map_reference_executes state store locals index (BlobObj blob) Functions Live Room).
-    - exact (native_map_reference_executes state store locals index (TreeObj tree) Functions Live Room).
+    - exact (native_map_reference_executes state store locals index (BlobObj blob) Functions Live eq_refl Room).
+    - destruct (tree_value tree) eqn:Value; [|discriminate].
+      inversion Checked; subst.
+      exact (native_map_reference_executes state store locals index (TreeObj tree) Functions Live Value Room).
   Qed.
 
   Lemma native_lower_executes state store locals index input :

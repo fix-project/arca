@@ -41,6 +41,34 @@ Local Open Scope list_scope.
       do 5 (destruct mode as [|mode]; [solve [finish]|]); lia.
   Qed.
 
+  Lemma map_value_rejects state store locals index node :
+    s_funcs store = s_funcs G.E.allocated_store ->
+    G.E.H.resolve state index = Some (G.E.H.H.HTreeObj node) -> tree_value node = false ->
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [word 6; descriptor index] ++ [AI_basic (BI_call 35%N)])
+      (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
+  Proof.
+    intros Functions Live Value.
+    set (arguments := [word 6; descriptor index]).
+    eapply G.E.collector_call with (code := native_map)
+      (parameters := [T_num T_i32; T_num T_i32]) (results := [T_num T_i32])
+      (defaults := []) (address := 35%N) (arguments := arguments) (values := [word 0])
+      (final_frame := Build_frame arguments G.E.collector_instance) (accepted := false); try reflexivity.
+    - rewrite Functions; reflexivity.
+    - rewrite native_map_body; do 15 native_pure.
+      execute (native_type_query state store arguments 1%N index _ Functions eq_refl Live).
+      do 2 native_pure.
+      pose proof (A.native_map_reference_guard state store arguments index (TreeObj node)
+        Functions eq_refl eq_refl Live) as Guard.
+      rewrite native_map_body in Guard; cbn [firstn skipn] in Guard.
+      execute Guard.
+      execute (native_value_query state store arguments 1%N index _ Functions eq_refl Live).
+      change (tree_value node) with (G.E.H.H.is_value (G.E.H.H.HTreeObj node)) in Value.
+      rewrite Value; native_pure.
+      eapply G.E.collector_trap_suffix with (instructions := [AI_trap]); apply rt_refl.
+  Qed.
+
   Lemma map_rejects state store locals index kind input :
     s_funcs store = s_funcs G.E.allocated_store -> G.E.H.resolve state index = Some input ->
     X.construct kind input = None ->
@@ -49,9 +77,13 @@ Local Open Scope list_scope.
         v_to_e_list [word (native_constructor_index kind); descriptor index] ++ [AI_basic (BI_call 35%N)])
       (state, store, Build_frame locals G.E.collector_instance, [AI_trap]).
   Proof.
-    intros Functions Live Invalid.
+    intros Functions Live Invalid; unfold X.construct in Invalid.
     destruct kind; destruct input as [[[blob|node]|reference]|thunk|encoded];
       cbn [X.construct native_constructor_index] in *; try discriminate.
+    all: try solve [
+      change ((if tree_value node then Some (G.E.H.H.HTreeRef node) else None) = None) in Invalid;
+      destruct (tree_value node) eqn:Value; [discriminate|];
+      eapply map_value_rejects; eassumption].
     all: first
       [ solve [
           first [eapply map_guard_rejects with (mode := 0)|eapply map_guard_rejects with (mode := 1)];
@@ -138,7 +170,7 @@ Local Open Scope list_scope.
       v_to_e_list [descriptor index] ++ [AI_basic (BI_call 28%N)])
       (fun final => exists next output datum,
         final = (next, store, Build_frame locals G.E.collector_instance, v_to_e_list [descriptor output]) /\
-        input = Data datum /\ G.E.H.resolve next output = Some (X.D.EC.E.EP.E.lower input) /\
+        input = Data datum /\ G.E.H.resolve next output = Some (X.D.Context.EC.E.EP.E.lower input) /\
         scope state next 1 /\
         G.E.H.observations next = G.E.H.observations state).
   Proof.

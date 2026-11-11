@@ -39,17 +39,25 @@ rocq_module(
     includes = [
         "internal/Indistinguishability/Arguments.v",
         "internal/Indistinguishability/Comparison.v",
+        "internal/Indistinguishability/Evaluation.v",
         "internal/Indistinguishability/Index.v",
         "internal/Indistinguishability/Observations.v",
         "internal/Indistinguishability/Range.v",
+        "internal/Indistinguishability/Representation.v",
         "internal/Indistinguishability/Structure.v",
+        "internal/Indistinguishability/Substitution.v",
         "internal/Indistinguishability/Values.v",
+        "internal/Specification/Constructors.v",
+        "internal/Specification/Execution.v",
+        "internal/Specification/Values.v",
+        "machinery/Indistinguishability/RepresentationEvaluation.v",
         "machinery/Indistinguishability/comparable_equivalence_indistinguishable.v",
         "machinery/Indistinguishability/compare_handles_congruence.v",
         "machinery/Indistinguishability/indistinguishable_select_arguments.v",
         "machinery/Indistinguishability/indistinguishable_select_index.v",
         "machinery/Indistinguishability/indistinguishable_select_range.v",
         "machinery/Indistinguishability/indistinguishable_values.v",
+        "specification/Equivalence.v",
     ],
     namespace = "FixProof.Equivalence",
     deps = [
@@ -59,9 +67,20 @@ rocq_module(
     ],
 )
 
+rocq_module(
+    name = "Boundary",
+    namespace = "FixProof.Equivalence",
+    deps = [
+        ":Indistinguishability",
+        "//fix/proof/semantics:ApplyTree",
+        "//fix/proof/semantics:Handle",
+    ],
+)
+
 test_suite(
     name = "check",
     tests = [
+        ":Boundary_check",
         ":Closure_check",
         ":Equivalence_check",
         ":Indistinguishability_check",

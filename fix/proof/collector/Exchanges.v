@@ -11,14 +11,13 @@ Module CouponExchanges (S : STORAGE) (P : PROGRAM S).
   Module API := CouponMatching S.
   Module D := Coupon S P.
   Module Wire := CouponClaims S.
-  Import D D.EC.E.EP D.EC.E.EP.E D.EC.E.EP.E.H ListNotations.
+  Import D D.Context.EC.E.EP D.Context.EC.E.EP.E D.Context.EC.E.EP.E.H ListNotations.
 
   Definition relation_of (t : statement_kind) l r := match t with
     | Force => D.coupon_force l r
     | Apply => D.coupon_apply l r | Select => D.coupon_select l r
     | Think => D.coupon_think l r | Eval => D.coupon_eval l r
-    | Equivalent => D.coupon_equiv l r
-    | Indistinguishable => D.coupon_indistinguishable l r end.
+    | Equivalent => D.coupon_equiv l r end.
 
   (** Witness authentication and logical validity are different obligations.
       Authentication determines which claim a stored Tag actually contains; validity says

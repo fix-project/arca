@@ -55,11 +55,13 @@ invariant that a stable author suffices for the claim.
 that checked creation preserves the supplied fields, requires a comparable
 Object or Ref author on the callable path, and respects indistinguishability.
 
-Computational equivalence and indistinguishability remain distinct.
-`Indistinguishability` models observations including comparability, type, contents,
-length, and selection; matching observations also agree on full evaluation. Full program substitution and indistinguishability of
-computationally equivalent Thunks remain unfinished. Length is defined only for
-Objects and Refs. Digestion remains a planned operation outside the model.
+The collector certifies `Indistinguishability.Certified.computational_equiv`:
+equivalent inputs have indistinguishable evaluation results or shared failure.
+For Values this is indistinguishability, including both public evaluation modes
+of Thunks. `indistinguishable_program` proves ordinary program substitution.
+Ref congruence requires Value Objects, and force-result congruence compares
+lowered Data results. `Boundary.v` checks the unevaluated-tree counterexample.
+Length is defined only for Objects and Refs. Digestion remains outside the model.
 
 Storage, program decoding, and deterministic internal operations are interface
 assumptions. Host byte identity, native Tag creation,

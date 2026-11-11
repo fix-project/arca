@@ -49,10 +49,10 @@ Local Open Scope list_scope.
     try unfold X.mapped;
     try unfold X.transitive; try unfold X.substitute_eval; try unfold X.substitute_force;
     try unfold X.think_application; try unfold X.think_selection; try unfold X.force_encode;
-    cbn [X.think_step X.think_data X.mapped X.D.EC.E.EP.E.H.obind X.D.EC.E.EP.E.H.omap];
+    cbn [X.think_step X.think_data X.mapped X.D.Context.EC.E.EP.E.H.obind X.D.Context.EC.E.EP.E.H.omap];
     repeat match goal with
     | Construct : X.construct ?kind ?input = Some ?output |- context [X.construct ?kind ?input] =>
-      rewrite Construct; cbn [X.D.EC.E.EP.E.H.obind X.D.EC.E.EP.E.H.omap]
+      rewrite Construct; cbn [X.D.Context.EC.E.EP.E.H.obind X.D.Context.EC.E.EP.E.H.omap]
     end;
     cbn [Nat.eqb]; try assumption; rewrite ?X.API.handle_eqb_refl; reflexivity.
 

@@ -61,7 +61,7 @@ exact-comparison success additionally requires representation readiness.
 
 The statement audit checked definitions, premises, and conclusions under the
 translations below. The Fix operation names are retained. Computational
-equivalence is named `computational_equiv`, exact identity testing `handle_eqb`,
+equivalence certified by coupons is `Indistinguishability.Certified.computational_equiv`: its evaluation results must be indistinguishable. The original closure remains internal proof support. Exact identity testing is `handle_eqb`,
 and relational evaluation `eval_derivation`; these distinguish semantic relations
 from handle comparison and issued certificates.
 

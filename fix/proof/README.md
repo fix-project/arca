@@ -11,7 +11,7 @@ abstract checker and issuer; see [STATUS.md](STATUS.md).
 | Result | Statement | Proof |
 | --- | --- | --- |
 | Value preservation | Successful evaluation produces a Value; evaluating a Value leaves it unchanged | `eval_to_value_handle`, `value_handle_eval_to_itself` in [`Properties.v`](evaluation/Properties.v) |
-| Equivalence preservation | Equivalent inputs agree on whether a result exists, and their results are equivalent | [`equiv_eval`](equivalence/Closure.v) |
+| Equivalence preservation | Equivalent inputs agree on whether a result exists, and their results are indistinguishable | [`Certified.equiv_eval`](equivalence/specification/Equivalence.v) |
 | Evaluation soundness and completeness | `eval_derivation e r` iff `eval e = Some r` | [`eval_adequacy`](evaluation/Adequacy.v) |
 | Blob-content safety | Equivalent Blob Objects have identical contents | [`coupon_blob_same_data`](collector/Logic.v) |
 | Full exchange soundness | Every accepted exchange preserves the logical judgement and the assumptions of its premises | `CouponExchanges.check_sound`, `issue_conditional` in [`Exchanges.v`](collector/Exchanges.v) |
@@ -71,13 +71,17 @@ result, and conditional validity with the same supplied assertion Object.
 `collector/Preservation.v` and `shell/TagCreation.v` supply the supporting results.
 Native Tag creation and trusted certificate issuers remain host contracts.
 
-The equivalence and indistinguishability proofs check the underlying definitions.
-Computational equivalence concerns evaluation; indistinguishability also
-preserves observations such as type, contents, comparability, and length.
-For Comparable handles the two coincide. Length is available only for Objects
-and Refs, and the native ABI returns an unsigned 64-bit integer. Full program
-substitution and the intended indistinguishability of computationally equivalent
-Thunks remain unfinished.
+`Indistinguishability.Certified.computational_equiv` is the relation certified by
+`Equivalent` coupons: evaluation either fails on both inputs or produces
+indistinguishable Values. For Values, including Thunks and Refs, equivalence
+coincides with indistinguishability. Thunk observations use both public strict
+and shallow evaluation, including shared failure. Ordinary program execution
+preserves indistinguishability (`indistinguishable_program`). The older closure
+in `Closure.v` is internal support, not the coupon specification.
+
+Indistinguishability preserves type, contents, comparability, and length. Length
+is available only for Objects and Refs; the native ABI returns an unsigned
+64-bit integer. Digestion remains outside the model.
 
 The storage and program interfaces are assumptions of the proofs. The native encoding laws, privileged handle-byte identity,
 canonicalization certificates, Runnable admission, and ELF loading still have
@@ -153,7 +157,7 @@ its Object. A lifting exchange requires that Object as an explicit endpoint.
 | Code | Operation | Conclusion | Ordered premises |
 | --- | --- | --- | --- |
 | 0 | Congruence | `C(a) ≃ C(b)` | `a ≃ b`; Trees use one equivalence per child |
-| 1 | ForceResultEq | `a ≃ b` | `Force(a, x)`, `Force(b, y)`, `x ≃ y` |
+| 1 | ForceResultEq | `a ≃ b` | `Force(a, x)`, `Force(b, y)`, `lower(x) ≃ lower(y)`, with Data results |
 | 2 | Think | `Think(t, r)` | Application: Eval then Apply; selection: Eval then Select; identification: none |
 | 3 | ThinkToForce | `Force(t, d)` | `Think(t, d)`, with Data result `d` |
 | 5 | Eval | `Eval(x, r)` | Trees: one Eval per child; leaves: none and `r = x` |
@@ -169,7 +173,8 @@ its Object. A lifting exchange requires that Object as an explicit endpoint.
 | 24 | ForceEq | `Force(b, r)` | `a ≃ b`, `Force(a, r)` |
 
 Congruence supports Trees, Blob/Tree Refs, application/selection/identification
-Thunks, and strict/shallow Encodes. The left operand's constructor selects the
+Thunks, and strict/shallow Encodes. Ref congruence requires Value Objects;
+noncomparable Values are allowed. The left operand's constructor selects the
 primitive inference before any witness is inspected. `get_thunk_type` is a
 privileged Shell operation; ordinary procedures trap. No exchange searches its
 witnesses to choose an inference. Tree rules require matching lengths and Tag

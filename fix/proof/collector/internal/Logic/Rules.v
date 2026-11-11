@@ -1,31 +1,19 @@
   (** An Eval result is computationally equivalent to its source. *)
   Lemma eval_result_equiv h r : eval_result h r -> computational_equiv h r.
   Proof.
-    hauto cases: - use: eval_to_equiv, equiv_sym, equiv_trans unfold!: eval_result.
+    intros [actual [Evaluated [Related Value]]].
+    eapply EC.equiv_trans; [apply EC.eval_to_equiv; exact Evaluated|apply EC.equiv_sym; exact Related].
   Qed.
   (** An actual successful force satisfies the abstract Force-result claim. *)
   Lemma force_result_direct th r : force th = Some r -> force_result (Thunk th) r.
   Proof.
-    intro Forced; destruct (force_data _ _ Forced) as [data ->].
-    exists data; auto using equiv_refl.
+    apply EC.force_result_direct.
   Qed.
   (** A Force-result claim remains true when its input is replaced by a computationally
       equivalent handle. *)
   Lemma force_result_equiv h1 h2 r : computational_equiv h1 h2 -> force_result h1 r -> force_result h2 r.
   Proof.
-    (* The old claim relates its chosen Data to the actual lifted forcing result. Force
-        preservation supplies an actual result for the equivalent source; transitivity
-        connects the same chosen Data to this new result, so the claim can retain its
-        endpoint. *)
-    intros Related.
-    destruct h1 as [data|th1|encoded], r as [d|th|e]; try contradiction.
-    intros [actual1 [First Output]].
-    destruct (force_equiv _ _ Related th1 eq_refl) as (th2 & -> & Forces).
-    rewrite First in Forces.
-    destruct (force th2) as [result|] eqn:Second; [|contradiction].
-    destruct (force_data _ _ Second) as [actual2 ->].
-    exists actual2; split; [exact Second|].
-    eapply equiv_trans; eassumption.
+    apply EC.force_result_equiv.
   Qed.
   (** A Think-result claim returning Data also satisfies the Force-result claim. *)
   Lemma think_result_data h d : think_result h (Data d) -> force_result h (Data d).
@@ -45,18 +33,13 @@
   Lemma eval_result_substitute h equivalent result :
     eval_result h result -> computational_equiv h equivalent -> eval_result equivalent result.
   Proof.
-    (* The old claim need not name the literal output of its run. Evaluation preservation
-        supplies an output for the new source, equivalent to the old actual output. Join
-        that equivalence with the one already relating the claimed result to the old
-        actual output. *)
     intros [actual [Evaluated [Related Value]]] Equivalent.
-    (* A success on the original input rules out absence of a result on the equivalent
-        input. This existence fact is necessary before the result equivalences can be
-        composed. *)
-    assert (EvaluationsRelated : rel_opt computational_equiv (Some actual) (eval equivalent))
-      by (rewrite <- Evaluated; apply equiv_eval; exact Equivalent).
-    destruct (eval equivalent) eqn:EquivalentEvaluated; cbn [rel_opt] in EvaluationsRelated; [|contradiction].
-    hauto cases: - use: equiv_trans unfold!: eval_result.
+    pose proof (EC.equiv_eval _ _ Equivalent) as EvaluationsRelated.
+    rewrite Evaluated in EvaluationsRelated.
+    destruct (eval equivalent) as [other|] eqn:EquivalentEvaluated;
+      cbn [rel_opt] in EvaluationsRelated; [|contradiction].
+    exists other; split; [exact EquivalentEvaluated|split; [|exact Value]].
+    eapply equiv_trans; [exact Related|apply EC.indistinguishable_equiv; exact EvaluationsRelated].
   Qed.
 
   (** Evaluating a selection's operand Tree and selecting from the result establishes its
@@ -68,7 +51,7 @@
     destruct Eval as [v [Ev [Out Value]]].
     exists (Selection t'); split.
     - rewrite think_selection, (value_tree_fixed_eval _ Value); exact Select.
-    - apply (tree_thunk_equiv Selection (selection_thunk_cong R R_properties)); exact Related.
+    - apply EC.equiv_selection; exact Related.
   Qed.
   (** Successful identification establishes the corresponding Think-result claim. *)
   Lemma think_result_identification d h : I.identify d = Some h -> think_result (Thunk (Identification d)) h.
@@ -80,34 +63,27 @@
   Lemma think_result_single th1 th2 : think_result (Thunk th1) (Thunk th2) -> computational_equiv (Thunk th1) (Thunk th2).
   Proof.
     intros [actual [Thought Related]].
-    eapply equiv_trans; [exact Related|apply R_to_equiv, RThinkSingleStepThunk; exact Thought].
+    eapply equiv_trans; [exact Related|apply EC.equivalent_think_thunk; exact Thought].
   Qed.
   (** A Think-result claim returning a strict Encode establishes equivalence to its
       underlying Thunk. *)
   Lemma think_result_single_strict th1 th2 : think_result (Thunk th1) (Encode (Strict th2)) -> computational_equiv (Thunk th1) (Thunk th2).
   Proof.
     intros [actual [Thought Related]].
-    eapply equiv_trans; [exact Related|apply R_to_equiv, RThunkSingleStepEncodeStrict; exact Thought].
+    eapply equiv_trans; [exact Related|apply EC.equivalent_think_strict; exact Thought].
   Qed.
   (** A Think-result claim returning a shallow Encode establishes equivalence to its
       underlying Thunk. *)
   Lemma think_result_single_shallow th1 th2 : think_result (Thunk th1) (Encode (Shallow th2)) -> computational_equiv (Thunk th1) (Thunk th2).
   Proof.
     intros [actual [Thought Related]].
-    eapply equiv_trans; [exact Related|apply R_to_equiv, RThunkSingleStepEncodeShallow; exact Thought].
+    eapply equiv_trans; [exact Related|apply EC.equivalent_think_shallow; exact Thought].
   Qed.
   (** A Force-result claim makes the strict Encode equivalent to the result's lifted
       Object. *)
   Lemma force_result_strict th h : force_result (Thunk th) h -> computational_equiv (Encode (Strict th)) (lift h).
   Proof.
-    (* Strict execution exposes the actual forced Object. The Force claim already relates
-        the chosen result's Object to that actual Object. Reversing this latter relation
-        gives the path from the strict request to the claimed lifted result. *)
-    destruct h as [d|thunk|encoded]; try contradiction.
-    intros [actual [Forced Related]].
-    assert (Executed : execute (Strict th) = Some (lift (Data actual)))
-      by (rewrite execute_unfold; cbn; rewrite Forced; reflexivity).
-    hauto cases: - use: R_to_equiv, REvalStep, equiv_sym, equiv_trans.
+    apply EC.force_result_strict.
   Qed.
   (** Lifting Data before lowering it leaves the final Ref unchanged. *)
   Lemma lower_lift_data d : lower (lift (Data d)) = lower (Data d).
@@ -115,14 +91,7 @@
   (** A Force-result claim makes the shallow Encode equivalent to the lowered result. *)
   Lemma force_result_shallow th h : force_result (Thunk th) h -> computational_equiv (Encode (Shallow th)) (lower h).
   Proof.
-    (* A shallow consumer obtains a Ref to the same underlying Object used by the strict
-        argument. Applying lowering to the strict equivalence therefore reuses the
-        computation justification while changing only how its result is exposed. *)
-    destruct h as [d|thunk|encoded]; try contradiction.
-    intro Forced.
-    pose proof (equiv_to_lower _ _ (force_result_strict _ _ Forced)) as Lowered.
-    change (computational_equiv (Encode (Shallow th)) (lower (lift (Data d)))) in Lowered.
-    now rewrite lower_lift_data in Lowered.
+    apply EC.force_result_shallow.
   Qed.
   (** A Blob Object satisfies its own unchanged Eval-result claim. *)
   Lemma eval_result_blob b : eval_result (HBlobObj b) (HBlobObj b).
@@ -136,15 +105,12 @@
   (** Equivalent Refs give equivalent identification Thunks. *)
   Lemma equiv_identification_data d1 d2 : computational_equiv (Data (Ref d1)) (Data (Ref d2)) -> computational_equiv (Thunk (Identification d1)) (Thunk (Identification d2)).
   Proof.
-    intro Related; apply (think_to_equiv (Data (Ref d1)) (Data (Ref d2)) Related (Identification d1) (Identification d2) (Ref d1) (Ref d2)).
-    - rewrite think_identification; reflexivity.
-    - rewrite think_identification; reflexivity.
-    - split; left; apply RSelf.
+    apply EC.equiv_identification.
   Qed.
   (** Matching markers and pointwise equivalent children give equivalent Tree Objects. *)
   Lemma equiv_tree_entries t1 t2 : tree_tag t1 = tree_tag t2 -> Forall2 computational_equiv (get_tree_raw t1) (get_tree_raw t2) -> computational_equiv (HTreeObj t1) (HTreeObj t2).
   Proof.
-    hauto cases: - use: equiv_tree_iff.
+    apply EC.equiv_tree_entries.
   Qed.
   (** Pointwise Eval-result claims admit actual evaluated children equivalent to the
       claimed Value results. *)

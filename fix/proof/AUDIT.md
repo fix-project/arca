@@ -32,8 +32,9 @@ read the semantic interpretation of a coupon, not just its inference rules.
 | Program assumptions and primitive operations | [PROGRAM](shell/Interface.v), [ApplyTree.v](semantics/ApplyTree.v), [Select.v](semantics/Select.v), [Identify.v](semantics/Identify.v) |
 | Think, Force, Execute, Eval, and Value preservation | [Properties.v](evaluation/Properties.v) |
 | Finite evaluation rules and adequacy | [Adequacy.v](evaluation/Adequacy.v) |
-| Generating computational relation and its equivalence closure | [Equivalence.v](equivalence/Equivalence.v), [Closure.v](equivalence/Closure.v) |
-| Observable equality and comparability | [Indistinguishability.v](equivalence/Indistinguishability.v) |
+| Internal generating relation and supporting equivalence closure | [Equivalence.v](equivalence/Equivalence.v), [Closure.v](equivalence/Closure.v) |
+| Certified equivalence, evaluation, and Value indistinguishability | [Equivalence.v](equivalence/specification/Equivalence.v), assembled inside `Indistinguishability.Certified` |
+| Raw observations, equality, comparability, and program substitution | [Indistinguishability.v](equivalence/Indistinguishability.v) |
 | Coupon rules and their semantic interpretations | [Logic.v](collector/Logic.v) |
 | Encoded claims, exchanges, authorization, and conditional validity | [Encoding.v](collector/Encoding.v), [Exchanges.v](collector/Exchanges.v) |
 | Available certificates and certification | [Completeness.v](collector/Completeness.v) |
@@ -44,8 +45,11 @@ The main claims are:
 - `eval_adequacy`: the finite rules describe exactly successful evaluation.
 - `eval_to_value_handle` and `value_handle_eval_to_itself`: evaluation produces
   Values, and Values evaluate to themselves.
-- `equiv_eval`: equivalent inputs agree on result existence and have equivalent
-  results.
+- `Certified.equiv_eval`: equivalent inputs agree on result existence and have
+  indistinguishable results. `Certified.equiv_values` identifies equivalence with
+  indistinguishability for Values, including Thunks and Refs.
+- `indistinguishable_program`: ordinary program execution preserves
+  indistinguishability. Thunks expose both strict and shallow evaluation.
 - `coupon_sound` and `coupon_blob_same_data`: coupon derivations have their stated
   semantic meanings and cannot equate Blob Objects with different bytes.
 - `check_sound` and `issue_conditional`: accepted exchanges preserve claims and
@@ -59,7 +63,10 @@ The main claims are:
 Certification's primitive assumptions are actual Apply results for Value
 combinations and actual Select results. Think, Force, and Eval certificates must
 be derived. `force_result` and `eval_result` allow the equivalent representatives
-specified in `Logic.v`; primitive Apply and Select retain exact results.
+specified in `Logic.v`; Force compares lowered results using indistinguishability,
+and primitive Apply and Select retain exact results. Ref congruence accepts only
+Value Objects. `Closure.v` supplies a weaker relation used internally; it is not
+the meaning of an `Equivalent` coupon.
 
 For the internal argument, start with [collector construction](collector/internal/Completeness/Construction/certify_leaf.v)
 and [issuance](collector/internal/Completeness/Issuance/read_encoded.v),
@@ -114,9 +121,9 @@ handle-observation contract. Audit [Descriptors.v](shell/Descriptors.v),
 
 Native encoding, canonicalization certificates, trusted issuance, Tag creation,
 Runnable admission, and ELF loading still have unverified implementation
-boundaries. Full program substitution and the intended indistinguishability of
-computationally equivalent Thunks remain unfinished. No arbitrary-program
-termination theorem is claimed. [STATUS.md](STATUS.md) records detailed coverage;
+boundaries. Program substitution and indistinguishability of equivalent Values
+are checked within the abstract program model. No arbitrary-program termination
+theorem is claimed. [STATUS.md](STATUS.md) records detailed coverage;
 [CORRESPONDENCE.md](CORRESPONDENCE.md) records the historical correspondence.
 
 Run `bazel test //fix/proof:check` to compile and independently kernel-check the

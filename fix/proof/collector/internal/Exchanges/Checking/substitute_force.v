@@ -126,8 +126,8 @@
 
   Definition force_results coupons lhs rhs := match coupons with
     | [one; two; related] => match read Force one, read Force two, read Equivalent related with
-      | Some (a, x), Some (b, y), Some (c, d) =>
-        if (API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c x && API.handle_eqb d y)
+      | Some (a, Data x), Some (b, Data y), Some (c, d) =>
+        if (API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c (lower (Data x)) && API.handle_eqb d (lower (Data y)))
         then Some Equivalent else None
       | _, _, _ => None end
     | _ => None end.
@@ -140,9 +140,11 @@
     intros Valid Checked; unfold force_results in Checked.
     destruct coupons as [|one [|two [|related [|extra rest]]]]; try discriminate.
     destruct (read Force one) as [[a x]|] eqn:First; [|discriminate].
+    destruct x as [x|tx|ex]; try discriminate.
     destruct (read Force two) as [[b y]|] eqn:Second; [|discriminate].
+    destruct y as [y|ty|ey]; try discriminate.
     destruct (read Equivalent related) as [[c d]|] eqn:Related; [|discriminate].
-    destruct ((API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c x && API.handle_eqb d y))
+    destruct ((API.handle_eqb lhs a && API.handle_eqb rhs b) && (API.handle_eqb c (lower (Data x)) && API.handle_eqb d (lower (Data y))))
       eqn:Same; [|discriminate].
     apply andb_true_iff in Same as [Ends Results].
     apply andb_true_iff in Ends as [Left Right]; apply andb_true_iff in Results as [Source Target].

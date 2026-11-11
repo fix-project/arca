@@ -3,7 +3,7 @@
 From Stdlib Require Import List ClassicalDescription.
 From FixProof.Semantics Require Import Handle.
 
-Inductive statement_kind := Force | Apply | Select | Think | Eval | Equivalent | Indistinguishable.
+Inductive statement_kind := Force | Apply | Select | Think | Eval | Equivalent.
 
 Module CouponMatching (S : STORAGE).
   Module H := Handles S.

@@ -9,7 +9,7 @@ Import ListNotations.
 
 Module CollectorPreservation (S : STORAGE) (P : PROGRAM S).
   Module X := CouponExchanges S P.
-  Import X X.D X.D.EC.E.EP X.D.EC.E.EP.E X.D.EC.E.EP.E.H Wire.
+  Import X X.D X.D.Context.EC.E.EP X.D.Context.EC.E.EP.E X.D.Context.EC.E.EP.E.H Wire.
 
 Load "fix/proof/collector/machinery/Preservation/evaluation_preserves_authority".
   Theorem evaluation_preserves_authority trusted tag claim evaluated kind author value result :

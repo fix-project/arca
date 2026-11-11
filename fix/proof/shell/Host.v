@@ -233,6 +233,8 @@ Module ShellHost (S : STORAGE) (P : PROGRAM S).
       | shell_get_thunk_type, [VAL_num (VAL_int32 index)] =>
         if privileged then obind (resolve state index)
           (fun value => obind (thunk_type value) (fun typ => unchanged state [word typ])) else None
+      | shell_is_value, [VAL_num (VAL_int32 index)] =>
+        obind (resolve state index) (fun value => unchanged state [boolean (is_value value)])
       | shell_is_tag, [VAL_num (VAL_int32 index)] =>
         obind (resolve state index) (fun value => unchanged state [boolean (Api.is_tag value)])
       | shell_equals, [VAL_num (VAL_int32 lhs); VAL_num (VAL_int32 rhs)] =>

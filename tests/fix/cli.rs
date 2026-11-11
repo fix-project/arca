@@ -124,7 +124,7 @@ fn claim(directory: &Path, coupon: &str) -> Vec<String> {
     let fields = value(directory, &["read-tree", coupon]);
     let reference = fields.lines().nth(1).unwrap();
     let flags = u8::from_str_radix(&reference[62..], 16).unwrap();
-    assert_eq!(flags & 0x1f, 0x10);
+    assert_eq!(flags & 0x1f, 0x10, "{coupon}: {fields}");
     let object = format!("{}{:02x}", &reference[..62], flags & 0xe0);
     value(directory, &["read-tree", &object])
         .lines()
@@ -1208,7 +1208,7 @@ fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
 }
 
 #[test]
-fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
+fn collector_exchanges_preserve_value_observations() {
     let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("collector_tags");
     std::fs::create_dir(&directory).unwrap();
     run(&directory, &["init"], b"", 0);
@@ -1301,6 +1301,43 @@ fn collector_tag_reconstruction_rejects_scheduler_assumptions() {
         0,
         &encoded,
         &zero,
+    );
+    let pending = tree(&[&encoded]);
+    let ready = tree(&[&zero]);
+    let tree_coupon = request(0, &pending, &ready, &[&eq], false);
+    assert_eq!(claim(&directory, &tree_coupon)[2], ready);
+    let trees = witness(&tree_coupon, 0, &pending, &ready);
+    let pending_ref = value(&directory, &["create-ref", &pending]);
+    let ready_ref = value(&directory, &["create-ref", &ready]);
+    request(0, &pending_ref, &ready_ref, &[&trees], true);
+
+    let values = tree(&[&thunk]);
+    let values_ref = value(&directory, &["create-ref", &values]);
+    let values_eq = witness(
+        &request(12, &values, &values, &[], false),
+        0,
+        &values,
+        &values,
+    );
+    assert_eq!(
+        claim(
+            &directory,
+            &request(0, &values_ref, &values_ref, &[&values_eq], false)
+        )[2],
+        values_ref
+    );
+    let refs_eq = witness(
+        &request(12, &reference, &reference, &[], false),
+        0,
+        &reference,
+        &reference,
+    );
+    assert_eq!(
+        claim(
+            &directory,
+            &request(1, &thunk, &thunk, &[&forced, &forced, &refs_eq], false)
+        )[2],
+        thunk
     );
     let reversed = witness(
         &request(10, &zero, &encoded, &[&eq], false),

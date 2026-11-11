@@ -170,6 +170,22 @@
     - unfold G.E.H.host_values, G.descriptor_value; rewrite Live; reflexivity.
   Qed.
 
+  Lemma native_value_query state store locals local index input :
+    s_funcs store = s_funcs G.E.allocated_store ->
+    lookup_N locals local = Some (descriptor index) -> G.E.H.resolve state index = Some input ->
+    reduce_trans
+      (state, store, Build_frame locals G.E.collector_instance,
+        to_e_list [BI_local_get local; BI_call 20%N])
+      (state, store, Build_frame locals G.E.collector_instance,
+        v_to_e_list [VAL_num (VAL_int32 (wasm_bool (G.E.H.H.is_value input))) ]).
+  Proof.
+    intros Functions Local Live.
+    eapply G.collector_query_local with (address := index) (operation := shell_is_value);
+      try exact Local; try reflexivity.
+    - rewrite Functions; reflexivity.
+    - unfold G.E.H.host_values, G.descriptor_value; rewrite Live; cbn [G.E.H.H.obind]; destruct (G.E.H.H.is_value input); reflexivity.
+  Qed.
+
   Lemma native_data_type_query state store locals local index input :
     s_funcs store = s_funcs G.E.allocated_store ->
     lookup_N locals local = Some (descriptor index) -> G.E.H.resolve state index = Some (Data input) ->

@@ -7,7 +7,7 @@ Local Open Scope list_scope.
   Import Base Base.Support Binary.
   #[local] Existing Instance C.mem.
   #[local] Existing Instance C.collector_host.
-  Local Notation lift := X.D.EC.E.EP.E.lift.
+  Local Notation lift := X.D.Context.EC.E.EP.E.lift.
   Definition object_data datum := match datum with Object _ => true | Ref _ => false end.
   Definition strict_rhs_code :=
     [BI_local_get 7%N; BI_call 34%N; BI_local_get 7%N; BI_call 0%N; BI_testop T_i32 TO_eqz;

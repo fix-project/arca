@@ -30,7 +30,7 @@
         { rewrite think_application, (value_tree_fixed_eval _ Value); exact AppliedStep. }
         exists (Application ready); split.
         * exact ApplicationComputed.
-        * apply (tree_thunk_equiv Application (application_thunk_cong R R_properties));
+        * apply EC.equiv_application;
             exact CombinationsRelated.
       + pose proof (coupon_eval_sound _ _ Evaluated) as CombinationEvaluated.
         destruct (coupon_select_sound _ _ Selected) as [tree [Same SelectedStep]];
@@ -53,7 +53,7 @@
         first first_result second second_result First Second Related|
         th result Forced|th result Forced|input output Related|input output Related|
         first second Related|first second Related|first second Related|
-        input result Evaluated|input output Related|input output Related|
+        input result Evaluated|input output InputValue OutputValue Related|input output Related|
         input output Tags Children|first second Contents|value|first second Related|
         first middle last First Second].
       + apply think_result_single; exact (coupon_think_sound _ _ Thought).
@@ -62,26 +62,18 @@
       + pose proof (coupon_force_sound _ _ First) as FirstForced.
         pose proof (coupon_force_sound _ _ Second) as SecondForced.
         pose proof (coupon_equiv_sound _ _ Related) as ResultsRelated.
-        destruct first as [data|th1|encoded], first_result as [d1|th|e]; try contradiction.
-        destruct second as [data|th2|encoded], second_result as [d2|th|e]; try contradiction.
-        destruct FirstForced as (actual1 & F1 & Rel1), SecondForced as (actual2 & F2 & Rel2).
-        (* The premises may name equivalent representatives of their forced Data.
-            Transport the stated result equivalence through those representative-to-actual
-            equivalences before comparing the source Thunks. *)
-        assert (ActualResultsRelated : computational_equiv (lift (Data actual1)) (lift (Data actual2)))
-          by (hauto cases: - use: equiv_sym, equiv_trans, equiv_to_lift).
-        exact (force_some_to_equiv _ _ _ _ F1 F2 ActualResultsRelated).
+        exact (EC.force_results_equiv _ _ _ _ FirstForced SecondForced ResultsRelated).
       + apply force_result_strict; exact (coupon_force_sound _ _ Forced).
       + apply force_result_shallow; exact (coupon_force_sound _ _ Forced).
-      + apply (tree_thunk_equiv Application (application_thunk_cong R R_properties)).
+      + apply EC.equiv_application.
         exact (coupon_equiv_sound _ _ Related).
-      + apply (tree_thunk_equiv Selection (selection_thunk_cong R R_properties)).
+      + apply EC.equiv_selection.
         exact (coupon_equiv_sound _ _ Related).
       + apply equiv_identification_data; exact (coupon_equiv_sound _ _ Related).
       + apply equiv_thunk_to_strict_encode; exact (coupon_equiv_sound _ _ Related).
       + apply equiv_thunk_to_shallow_encode; exact (coupon_equiv_sound _ _ Related).
       + apply eval_result_equiv; exact (coupon_eval_sound _ _ Evaluated).
-      + apply equiv_tree_to_ref; exact (coupon_equiv_sound _ _ Related).
+      + apply equiv_tree_to_ref; [exact InputValue|exact OutputValue|]; exact (coupon_equiv_sound _ _ Related).
       + apply equiv_blob_to_ref; exact (coupon_equiv_sound _ _ Related).
       (* Every child coupon supplies one semantic equivalence. Tree congruence then lifts
           this whole family to the parent; it requires no execution or inspection of the
@@ -91,7 +83,7 @@
             Forall2 computational_equiv xs ys := _) _ _ Children).
           destruct D; constructor; [apply coupon_equiv_sound; assumption|apply list_sound; assumption]. }
         apply equiv_tree_entries; assumption.
-      + apply R_to_equiv, RBlob; exact Contents.
+      + apply EC.equiv_blobs; exact Contents.
       + apply equiv_refl.
       + apply equiv_sym; exact (coupon_equiv_sound _ _ Related).
       + pose proof (coupon_equiv_sound _ _ First) as FirstRelated.

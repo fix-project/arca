@@ -10,6 +10,9 @@
     (* The mutually recursive argument justifies each rule from its premises, including
         substitution of equivalent representatives. The combined theorem exposes those
         separate judgements without introducing a new logical rule. *)
-    repeat split; auto using coupon_force_sound, coupon_apply_sound, coupon_select_sound,
-      coupon_think_sound, coupon_eval_sound, coupon_equiv_sound.
+    split; [exact coupon_force_sound|].
+    split; [exact coupon_apply_sound|].
+    split; [exact coupon_select_sound|].
+    split; [exact coupon_think_sound|].
+    split; [exact coupon_eval_sound|exact coupon_equiv_sound].
   Qed.

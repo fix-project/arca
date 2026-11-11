@@ -157,18 +157,45 @@ Local Open Scope list_scope.
     assert (A7 : G.E.H.resolve seventh (wasm_nat a) = Some right0) by (apply (proj1 Scope7), (proj1 Scope6), (proj1 Scope5); exact A4).
     assert (B7 : G.E.H.resolve seventh (wasm_nat b) = Some right1) by (apply (proj1 Scope7), (proj1 Scope6); exact B5).
     destruct (claim_bounds w2 claim2 Auth2 Bound2) as [Length2 ClaimBound2].
-    do 2 dispatch_pure.
-    pose proof (Premises.checked_premise seventh store2 locals7 (wasm_nat t) (wasm_nat a) (wasm_nat b) claim2 0 right0 right1
-      FunctionsStore2 Typed2 Capacity2 TLive A7 B7 Length2 ClaimBound2 ltac:(vm_compute; congruence) Bytes ltac:(lia)) as Premise2.
+    dispatch_pure.
+    pose proof (Constructors.checked_lower seventh store2 locals7 (wasm_nat a) right0
+      FunctionsStore2 A7 ltac:(lia)) as Lower0.
+    lazymatch type of Lower0 with checked ?source ?post =>
+      pose proof (checked_capacity source post Within7 Lower0) as SafeLower0 end.
+    checked_use_under [VAL_num (VAL_int64 (wasm_nat64 0)); word t] SafeLower0.
+    intros final [[lowered0 [ar [datum0 [Final [Data0 [ARLive [ScopeL0 ObsL0]]]]]]] WithinL0];
+      subst final right0; normalize_checked.
+    pose proof (proj2 ScopeL0) as CountL0.
+    assert (BLower0 : G.E.H.resolve lowered0 (wasm_nat b) = Some right1) by (apply (proj1 ScopeL0); exact B7).
+    dispatch_pure.
+    pose proof (Constructors.checked_lower lowered0 store2 locals7 (wasm_nat b) right1
+      FunctionsStore2 BLower0 ltac:(lia)) as Lower1.
+    lazymatch type of Lower1 with checked ?source ?post =>
+      pose proof (checked_capacity source post WithinL0 Lower1) as SafeLower1 end.
+    checked_use_under [VAL_num (VAL_int64 (wasm_nat64 0)); word t; descriptor ar] SafeLower1.
+    intros final [[lowered1 [br [datum1 [Final [Data1 [BRLive [ScopeL1 ObsL1]]]]]]] WithinL1];
+      subst final right1; normalize_checked.
+    pose proof (proj2 ScopeL1) as CountL1.
+    assert (TLower1 : G.E.H.resolve lowered1 (wasm_nat t) = Some (treeh claim2))
+      by (apply (proj1 ScopeL1), (proj1 ScopeL0); exact TLive).
+    assert (ARLower1 : G.E.H.resolve lowered1 ar = Some (X.D.Context.EC.E.EP.E.lower (Data datum0)))
+      by (apply (proj1 ScopeL1); exact ARLive).
+    pose proof (Premises.checked_premise lowered1 store2 locals7 (wasm_nat t) ar br claim2 0
+      (X.D.Context.EC.E.EP.E.lower (Data datum0)) (X.D.Context.EC.E.EP.E.lower (Data datum1))
+      FunctionsStore2 Typed2 Capacity2 TLower1 ARLower1 BRLive Length2 ClaimBound2
+      ltac:(vm_compute; congruence) Bytes ltac:(lia)) as Premise2.
     lazymatch type of Premise2 with Premises.Integers.V.V.checked ?source ?post => change (checked source post) in Premise2 end.
     unfold Premises.Integers.V.V.Support.word, Premises.Integers.V.V.Support.descriptor in Premise2.
-    lazymatch type of Premise2 with checked ?source ?post => pose proof (checked_capacity source post Within7 Premise2) as SafePremise2 end.
+    lazymatch type of Premise2 with checked ?source ?post => pose proof (checked_capacity source post WithinL1 Premise2) as SafePremise2 end.
     checked_use SafePremise2.
     intros final [[eighth [updated [blob2 [Final [ClaimFields2 [Decoded2 [Scope8 [Obs8 [Functions8 [Typed8 Capacity8]]]]]]]]]] Within8];
       subst final; normalize_checked.
-    pose proof (Premises.authenticated_read w2 claim2 blob2 0 Equivalent right0 right1 Auth2 ClaimFields2 Decoded2 eq_refl) as Read2.
+    pose proof (Premises.authenticated_read w2 claim2 blob2 0 Equivalent (X.D.Context.EC.E.EP.E.lower (Data datum0)) (X.D.Context.EC.E.EP.E.lower (Data datum1)) Auth2 ClaimFields2 Decoded2 eq_refl) as Read2.
 
     assert (FunctionsNext : s_funcs updated = s_funcs G.E.allocated_store) by (rewrite Functions8; exact FunctionsStore2).
+    assert (ScopeFinal : scope state eighth 32).
+    { eapply scope_weaken; [exact (scope_trans _ _ _ _ _
+        (scope_trans _ _ _ _ _ (scope_trans _ _ _ _ _ Scope07 ScopeL0) ScopeL1) Scope8)|lia]. }
     finish_branch.
   Qed.
 End WasmResultValidation.

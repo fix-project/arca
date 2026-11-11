@@ -15,7 +15,7 @@ Inductive shell_function :=
 | shell_create_blob_i64 | shell_create_ref | shell_create_tag
 | shell_application | shell_selection | shell_identification
 | shell_strict | shell_shallow | shell_create_tag_unchecked | shell_get_thunk_type
-| shell_clone | shell_close.
+| shell_clone | shell_close | shell_is_value.
 
 Definition shell_function_eq_dec (left right : shell_function) : {left=right}+{left<>right}.
 Proof. decide equality. Defined.
@@ -46,4 +46,4 @@ Definition shell_function_imports :=
    ("create_selection_thunk", shell_selection); ("create_identification_thunk", shell_identification);
    ("create_strict_encode", shell_strict); ("create_shallow_encode", shell_shallow);
    ("create_tag_unchecked", shell_create_tag_unchecked); ("get_thunk_type", shell_get_thunk_type);
-   ("close", shell_close); ("clone", shell_clone)].
+   ("is_value", shell_is_value); ("clone", shell_clone)].

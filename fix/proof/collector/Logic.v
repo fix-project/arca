@@ -7,11 +7,9 @@ From FixProof.Semantics Require Import Handle ApplyTree.
 From FixProof.Equivalence Require Import Closure Indistinguishability.
 
 Module Coupon (S : STORAGE) (P : PROGRAM S).
-  Module O := Indistinguishability S P.
-  Module EC := EquivalenceClosure S P.
-  Import EC EC.E EC.E.EP EC.E.EP.E EC.E.EP.E.H.
-
-  Definition coupon_indistinguishable := O.indistinguishable.
+  Module Context := Indistinguishability S P.
+  Module EC := Context.Certified.
+  Import EC Context.EC.E Context.EC.E.EP Context.EC.E.EP.E Context.EC.E.EP.E.H.
 
   Reserved Notation "h =[ 'Force' ]=> r" (at level 70, no associativity).
   Reserved Notation "h =[ 'Apply' ]=> r" (at level 70, no associativity).
@@ -79,7 +77,7 @@ Module Coupon (S : STORAGE) (P : PROGRAM S).
   | CouponForceResultEq : forall h1 h1' h2 h2',
       h1 =[ Force ]=> h1' ->
       h2 =[ Force ]=> h2' ->
-      h1' =[ Equivalent ]=> h2' ->
+      lower h1' =[ Equivalent ]=> lower h2' ->
       h1 =[ Equivalent ]=> h2
   | CouponForceToEncodeStrict : forall th h,
       Thunk th =[ Force ]=> h ->
@@ -106,6 +104,7 @@ Module Coupon (S : STORAGE) (P : PROGRAM S).
       h1 =[ Eval ]=> h2 ->
       h1 =[ Equivalent ]=> h2
   | CouponTreeRefEq : forall t1 t2,
+      value_handle (HTreeObj t1) -> value_handle (HTreeObj t2) ->
       HTreeObj t1 =[ Equivalent ]=> HTreeObj t2 ->
       HTreeRef t1 =[ Equivalent ]=> HTreeRef t2
   | CouponBlobRefEq : forall b1 b2,
@@ -135,16 +134,7 @@ Module Coupon (S : STORAGE) (P : PROGRAM S).
   and "h =[ 'Equivalent' ]=> r" := (coupon_equiv h r).
 
 Load "fix/proof/collector/internal/Logic/Primitives".
-  (** A derived computation claim may use an equivalent representative of a result or
-      source. The semantic interpretation must accommodate that substitution, or soundness
-      would fail at the equivalence exchanges. Force compares the lifted Objects behind
-      its Data results; Eval additionally requires the claimed representative to be a
-      Value. Primitive Apply and Select claims retain their exact results. *)
-  Definition force_result h r := match h, r with
-    | Thunk th, Data d => exists actual,
-      force th = Some (Data actual) /\
-      computational_equiv (lift (Data d)) (lift (Data actual))
-    | _, _ => False end.
+  Definition force_result := EC.force_result.
   Definition think_result h r := match h with
     | Thunk th => exists actual,
       think actual = Some r /\ computational_equiv (Thunk th) (Thunk actual)
