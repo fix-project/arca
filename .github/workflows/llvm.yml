@@ -1,0 +1,56 @@
+name: LLVM
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      cache-key:
+        description: Completed LLVM toolchain action cache
+        value: ${{ jobs.llvm.outputs.cache-key }}
+
+permissions:
+  contents: read
+
+jobs:
+  llvm:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 360
+    outputs:
+      cache-key: ${{ steps.cache.outputs.cache-primary-key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+      - name: Configure LLVM action cache
+        run: echo "build --disk_cache=$HOME/.cache/bazel-disk" >> "$HOME/.bazelrc"
+      - name: Restore LLVM build outputs
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: llvm-ubuntu-26.04-${{ hashFiles('MODULE.bazel', '.bazel*', 'bootstrap/**', 'build/**', 'fix/shell/**', 'flatware/**', 'tools/module-combiner/**', '.github/workflows/llvm.yml') }}
+          restore-keys: llvm-ubuntu-26.04-
+      - name: Native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+      - name: Build LLVM toolchain
+        timeout-minutes: 330
+        run: bazel build //bootstrap:stage1
+      - name: Save completed LLVM build outputs
+        if: success() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Save unfinished LLVM build outputs
+        if: (failure() || cancelled()) && steps.cache.outputs.cache-primary-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: ${{ steps.cache.outputs.cache-primary-key }}-partial-${{ github.run_id }}-${{ github.run_attempt }}

@@ -10,9 +10,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  llvm:
+    uses: ./.github/workflows/llvm.yml
+
   build:
+    needs: llvm
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,16 +27,29 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
           repository-cache: true
+      - name: Restore LLVM build outputs
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: ${{ needs.llvm.outputs.cache-key }}
+          fail-on-cache-miss: true
       - name: Native build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+      - name: Enable KVM access
+        run: |
+          sudo modprobe kvm
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - name: Build
         run: bazel build //:artifacts
 
   test:
+    needs: llvm
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +60,12 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
           repository-cache: true
+      - name: Restore LLVM build outputs
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: ${{ needs.llvm.outputs.cache-key }}
+          fail-on-cache-miss: true
       - name: Native build tools
         run: |
           sudo apt-get update
