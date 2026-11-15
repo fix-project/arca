@@ -44,6 +44,7 @@ test_suite(
         "//fix/shell/tests:memory",
         "//fix/storage:tests",
         "//fix/repository:tests",
+        "//fix/remote:tests",
         "//tests/flatware:filesystem_test",
         "//lib/common:tests",
         "//tools/vmm:tests",

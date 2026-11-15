@@ -23,8 +23,10 @@ setjmp/longjmp.
 
 ```sh
 bazel build //bootstrap
-fix init bazel-bin/bootstrap/seed.tar --precompile
-export FIX_TRUST="$(fix repository)/trust"
+fix trust add-key ~/.ssh/id_ed25519.pub
+fix trust add-identity ~/.ssh/id_ed25519.pub
+fix init bazel-bin/bootstrap/seed.tar --sign
+fix trust add-compiler trusted-compiler
 ```
 
 ## Seed
@@ -39,6 +41,11 @@ entry, is a Ref to the compiler wrapper ELF. The tool issues directly:
   `(wasm2c clang toolchain)`. `toolchain` is the `/toolchain` Flatware tree
   (`usr/` from Stage0 plus `share/fix/` shell resources), imported natively
   with symlinks followed.
+
+Seeds are unsigned staging artifacts. Import stores their Tags without authorizing
+them. `--sign` signs the imported Tags with the selected user identities;
+`fix sign --all` can sign them later. Compiler trust is a separate per-user setting. Build and precompilation actions use explicit
+unsigned staging mode.
 
 The seed has no coupons. It labels `trusted-compiler`, `compile` (the closure
 `("" fixpoint compile-resources)`), `scheduler`, `collector`, `clang`, `lld`,

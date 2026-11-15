@@ -6,10 +6,11 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "client",
     crate_name = "fixcli",
-    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs"],
+    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs", "configuration.rs"],
     crate_root = "lib.rs",
     edition = "2024",
     deps = [
+        "//fix/remote", "//fix/certificates", "@crates//:serde_json",
         "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
         "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
     ],
@@ -24,7 +25,7 @@ rust_binary(
     name = "fix",
     srcs = ["main.rs", "repl.rs"],
     edition = "2024",
-    deps = [":client", "//fix/api:api_alloc", "@crates//:clap", "@crates//:env_logger"],
+    deps = [":client", "//fix/api:api_alloc", "//fix/repository", "//fix/certificates", "@crates//:clap", "@crates//:env_logger"],
 )
 
 rust_test(

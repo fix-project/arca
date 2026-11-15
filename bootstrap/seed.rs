@@ -95,7 +95,8 @@ fn create(arguments: &[String]) -> Result<()> {
     let repository = Repository::init(
         path.to_str()
             .ok_or(Failure("directory is not UTF-8".into()))?,
-    )?;
+    )?
+    .unsigned();
     let compiler = repository.create_blob(&fs::read(compiler)?)?;
     let author: Handle = Object::try_from(Handle::from(compiler))?.into_ref().into();
     let fixpoint = certificate(&repository, author, compiler.into(), "Runnable")?;
@@ -128,7 +129,8 @@ fn add(arguments: &[String]) -> Result<()> {
     let repository = Repository::open(
         path.to_str()
             .ok_or(Failure("directory is not UTF-8".into()))?,
-    )?;
+    )?
+    .unsigned();
     let author = repository.read_label("trusted-compiler")?;
     populate(&repository, author, rest)
 }

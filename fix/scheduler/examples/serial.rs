@@ -35,7 +35,7 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
         kernel::worker::finish(&result)?;
         return Ok(result);
     }
-    let statement = if mode.equals(fixwasm::Blob::create(b"eval"))? {
+    let operation = if mode.equals(fixwasm::Blob::create(b"eval"))? {
         Statement::Eval
     } else if mode.equals(fixwasm::Blob::create(b"think"))? {
         Statement::Think
@@ -43,15 +43,15 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
         return Err(Error::WrongType);
     };
     let scheduler = Scheduler::new(root(combination.get(2))?, Map::create()?, Map::create()?);
-    finish(evaluate(&scheduler, statement, &input)?)
+    finish(evaluate(&scheduler, operation, &input)?)
 }
 
-fn evaluate(scheduler: &Scheduler, statement: Statement, input: &Root) -> Result<Evidence, Error> {
-    if let Some(value) = scheduler.cached(statement, input)? {
+fn evaluate(scheduler: &Scheduler, operation: Statement, input: &Root) -> Result<Evidence, Error> {
+    if let Some(value) = scheduler.cached(operation, input)? {
         return Ok(value);
     }
-    let result = match statement {
-        Statement::Apply | Statement::Select => scheduler.primitive(statement, input)?,
+    let result = match operation {
+        Statement::Apply | Statement::Select => scheduler.primitive(operation, input)?,
         Statement::Eval => {
             if input.value_type()? == ValueType::Encode {
                 let thunk = thunk(input)?;
@@ -71,7 +71,7 @@ fn evaluate(scheduler: &Scheduler, statement: Statement, input: &Root) -> Result
                     &[evaluated.clone(), sym],
                 )?
             } else if input.is_value()? {
-                scheduler.primitive(statement, input)?
+                scheduler.primitive(operation, input)?
             } else {
                 let premises = fields(input)?
                     .iter()
@@ -91,12 +91,12 @@ fn evaluate(scheduler: &Scheduler, statement: Statement, input: &Root) -> Result
                 }
                 kind => {
                     let evaluated = evaluate(scheduler, Statement::Eval, &data)?;
-                    let statement = match kind {
+                    let operation = match kind {
                         ThunkType::Application => Statement::Apply,
                         ThunkType::Selection => Statement::Select,
                         ThunkType::Identification => unreachable!(),
                     };
-                    let applied = evaluate(scheduler, statement, &evaluated.result)?;
+                    let applied = evaluate(scheduler, operation, &evaluated.result)?;
                     scheduler.exchange(
                         Exchange::Think,
                         input,
@@ -138,7 +138,7 @@ fn evaluate(scheduler: &Scheduler, statement: Statement, input: &Root) -> Result
         }
         _ => return Err(Error::WrongType),
     };
-    scheduler.remember(statement, input, &result)?;
+    scheduler.remember(operation, input, &result)?;
     Ok(result)
 }
 
@@ -179,12 +179,12 @@ impl Scheduler {
         self.known.borrow().get(key).cloned()
     }
 
-    fn cached(&self, statement: Statement, input: &Root) -> Result<Option<Evidence>, Error> {
-        let key = (statement as u64, input.raw_handle_bytes()?);
+    fn cached(&self, operation: Statement, input: &Root) -> Result<Option<Evidence>, Error> {
+        let key = (operation as u64, input.raw_handle_bytes()?);
         if let Some(evidence) = self.known(&key) {
             return Ok(Some(evidence));
         }
-        for coupon in fields(&storage::claims(statement, input)?)? {
+        for coupon in fields(&storage::claims(operation, input)?)? {
             if !coupon.is_tag()? || as_tree(&coupon)?.len()? != 2 {
                 continue;
             }
@@ -217,7 +217,7 @@ impl Scheduler {
 
     fn remember(
         &self,
-        statement: Statement,
+        operation: Statement,
         input: &Root,
         evidence: &Evidence,
     ) -> Result<(), Error> {
@@ -226,7 +226,7 @@ impl Scheduler {
                 .compare_exchange(&evidence.witness.coupon, 0, tree![])?;
         }
         self.known.borrow_mut().insert(
-            (statement as u64, input.raw_handle_bytes()?),
+            (operation as u64, input.raw_handle_bytes()?),
             evidence.clone(),
         );
         Ok(())
@@ -279,8 +279,8 @@ impl Scheduler {
         })
     }
 
-    fn primitive(&self, statement: Statement, input: &Root) -> Result<Evidence, Error> {
-        let (coupon, recommended) = match statement {
+    fn primitive(&self, operation: Statement, input: &Root) -> Result<Evidence, Error> {
+        let (coupon, recommended) = match operation {
             Statement::Apply => self.resume(kernel::apply(input)?, input)?,
             Statement::Select => (storage::select(input)?, false),
             Statement::Eval => (storage::eval(input)?, false),

@@ -264,7 +264,7 @@ mod tests {
             assert!(coupon.is_tag());
             let claim = storage.certificate_claim(coupon).unwrap();
             let assertion = storage.get_tree(claim).unwrap();
-            assert!(assertion[0].same_encoding(&number(exchange.statement() as u64)));
+            assert!(assertion[0].same_encoding(&number(exchange.operation() as u64)));
             assert!(assertion[1].same_encoding(&input));
             assert!(assertion[2].same_encoding(&result));
             let fields = storage.get_tree(coupon).unwrap();

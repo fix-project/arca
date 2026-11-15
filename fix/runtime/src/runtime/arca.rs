@@ -243,15 +243,15 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         prefix: &[Handle],
         saved: Option<&SavedClaims>,
     ) -> Result<Vec<Tree>, &'static str> {
-        let [statement, input] = prefix else {
-            return Err("expected statement and input");
+        let [operation, input] = prefix else {
+            return Err("expected operation and input");
         };
-        let mut coupons = self.storage.memory().claims([*statement, *input]);
+        let mut coupons = self.storage.memory().claims([*operation, *input]);
         if let Some(cache) = &self.memoization {
-            if !statement.is_canonical() || !input.is_canonical() {
+            if !operation.is_canonical() || !input.is_canonical() {
                 return Ok(coupons);
             }
-            let prefix = [*statement, *input];
+            let prefix = [*operation, *input];
             let stored = match saved {
                 Some(saved) => saved.get(cache.repository(), &prefix)?,
                 None => cache
@@ -528,12 +528,11 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 }
                 return Ok(Callable::Continuation(function, address, author));
             }
-            let fields = self.get_tree(tree).unwrap();
+            let fields = self.get_tree(tree).map_err(|_| InvalidApplication)?;
             procedure = *fields.get(1).ok_or(InvalidApplication)?;
             if Blob::try_from(procedure).is_ok() {
                 return match self.trust.runnable(self, tree) {
                     Ok(executable) => Ok(Callable::Runnable(executable, arguments)),
-                    Err(trust::TrustError::Storage(error)) => panic!("{error:?}"),
                     Err(_) => Err(InvalidApplication),
                 };
             }

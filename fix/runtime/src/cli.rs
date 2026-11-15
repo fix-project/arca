@@ -36,6 +36,7 @@ impl core::fmt::Display for CliError {
             Self::Repository(RepositoryError::NonCanonical) => {
                 f.write_str("expected a canonical handle")
             }
+            Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
             Self::Repository(RepositoryError::Io(ErrorKind::NotFound)) => {
                 f.write_str("value or label is not present in this repository")
             }
@@ -114,6 +115,15 @@ fn execute(
     } else {
         crate::arca::trust::Trust::default()
     };
+    let remotes = if let [flag, contents, rest @ ..] = arguments
+        && flag == "--remotes"
+    {
+        arguments = rest;
+        fixremote::Config::parse(contents.as_bytes())
+            .map_err(|_| CliError::Usage("invalid remote configuration"))?
+    } else {
+        fixremote::Config::default()
+    };
     let profile = if arguments.first().is_some_and(|arg| arg == "--profile") {
         arguments = &arguments[1..];
         true
@@ -124,7 +134,7 @@ fn execute(
         return Err(CliError::Usage("expected a command"));
     };
     let mut arguments = arguments[1..].to_vec();
-    let repository = Repository::discover(".")?;
+    let repository = Repository::discover(".")?.with_policy(remotes.policy.clone());
     let mut memoize = fix::Memoization::Auto;
     if let Some(index) = arguments.iter().position(|arg| arg == "--memoize") {
         memoize = arguments
@@ -142,6 +152,12 @@ fn execute(
         })
         .clone();
     let repository = storage.repository();
+    for name in &remotes.policy.trusted_taggers {
+        let tagger = Tree::try_from(crate::api::resolve(repository, name)?)?;
+        trust
+            .add_tagger(&*storage, tagger)
+            .map_err(CliError::Trust)?;
+    }
     if command == "call" {
         let [combination] = arguments.as_slice() else {
             return Err(CliError::Usage("expected a callable combination"));

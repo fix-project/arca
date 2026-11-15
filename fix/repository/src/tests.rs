@@ -29,6 +29,115 @@ impl Drop for Directory {
     }
 }
 
+fn certificate_key() -> ssh_key::PrivateKey {
+    ssh_key::PrivateKey::from(ssh_key::private::Ed25519Keypair::from_seed(&[11; 32]))
+}
+fn certificate_policy() -> Policy {
+    Policy {
+        authorized_keys: alloc::vec![certificate_key().public_key().to_openssh().unwrap()],
+        ..Policy::default()
+    }
+}
+fn certificate(tag: Tree) -> Vec<u8> {
+    Certificate {
+        name: *tag.as_handle().as_bytes(),
+        signature: certificate_key()
+            .sign(
+                fixcertificates::TAG_NAMESPACE,
+                ssh_key::HashAlg::Sha512,
+                tag.as_handle().as_bytes(),
+            )
+            .unwrap()
+            .to_pem(ssh_key::LineEnding::LF)
+            .unwrap(),
+    }
+    .encode()
+    .unwrap()
+}
+
+#[test]
+fn reloading_tags_checks_the_current_certificate_trust_and_backing() {
+    let directory = Directory::new();
+    let repository = directory.repository().with_policy(certificate_policy());
+    let fields = [
+        Tree::empty().into(),
+        Blob::literal(b"claim").unwrap().into(),
+    ];
+    let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
+    let bytes = fields
+        .iter()
+        .flat_map(|field| *field.as_bytes())
+        .collect::<Vec<_>>();
+    repository
+        .publish_certified(tag.into(), &bytes, Some(&certificate(tag)))
+        .unwrap();
+    let certificate_blob = repository
+        .certificate_blobs(tag.as_handle().as_bytes())
+        .unwrap()[0];
+    assert_eq!(
+        repository.read_blob(certificate_blob).unwrap().as_ref(),
+        certificate(tag)
+    );
+    let entries = std::fs::read_dir(
+        directory
+            .0
+            .join(".fix/certificates")
+            .join(format!("{}", tag.as_handle())),
+    )
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        std::fs::read(entries[0].path()).unwrap(),
+        certificate_blob.as_handle().as_bytes()
+    );
+    let parent = repository.create_tree(&[tag.into_ref().into()]).unwrap();
+    let trusted = Repository::open(repository.path())
+        .unwrap()
+        .with_policy(certificate_policy());
+    assert!(trusted.read_tree(parent).is_ok());
+    let revoked = Repository::open(repository.path())
+        .unwrap()
+        .with_policy(Policy::default());
+    assert!(matches!(
+        revoked.lookup(tag.as_handle().as_bytes()),
+        Err(RepositoryError::Certificate(_))
+    ));
+    assert!(revoked.read_tree(parent).is_err());
+    let data = directory
+        .0
+        .join(".fix/data")
+        .join(Repository::data_key(tag.as_handle().as_bytes()));
+    std::fs::write(&data, [0; 64]).unwrap();
+    assert!(trusted.read_tree(tag).is_err());
+}
+
+#[test]
+fn an_unsigned_nested_tag_is_rejected_by_normal_reads() {
+    let directory = Directory::new();
+    let staging = directory.repository().unsigned();
+    let fields = [
+        Tree::empty().into(),
+        Blob::literal(b"claim").unwrap().into(),
+    ];
+    let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
+    staging
+        .publish(
+            tag.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    let parent = staging.create_tree(&[tag.into_ref().into()]).unwrap();
+    let repository = Repository::open(staging.path())
+        .unwrap()
+        .with_policy(certificate_policy());
+    assert!(repository.read_tree(parent).is_err());
+}
+
 #[test]
 fn empty_trees_round_trip_through_a_reopened_repository() {
     let directory = Directory::new();
@@ -126,21 +235,28 @@ fn thin_references_retain_their_todo_metadata() {
 #[test]
 fn coupon_indexes_preserve_author_and_claim_fields() {
     let directory = Directory::new();
-    let repository = directory.repository();
+    let repository = directory.repository().with_policy(certificate_policy());
     let author = repository.create_blob(b"collector").unwrap();
-    let statement = repository.create_blob(&1u64.to_le_bytes()).unwrap();
+    let operation = repository.create_blob(&1u64.to_le_bytes()).unwrap();
     let input = repository.create_blob(b"input").unwrap();
     let output = repository.create_blob(b"output").unwrap();
     let claim = repository
-        .create_tree(&[statement.into(), input.into(), output.into()])
+        .create_tree(&[operation.into(), input.into(), output.into()])
         .unwrap();
     let fields = [author.into(), claim.into_ref().into()];
     let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
     let bytes: Vec<_> = fields.iter().flat_map(|field| *field.as_bytes()).collect();
-    repository.publish(coupon.into(), &bytes).unwrap();
-    repository.publish(coupon.into(), &bytes).unwrap();
+    let certificate = certificate(coupon);
+    repository
+        .publish_certified(coupon.into(), &bytes, Some(&certificate))
+        .unwrap();
+    repository.index_tag(coupon).unwrap();
+    repository
+        .publish_certified(coupon.into(), &bytes, Some(&certificate))
+        .unwrap();
+    repository.index_tag(coupon).unwrap();
     let claims = repository
-        .claims(&[statement.into(), input.into()])
+        .claims(&[operation.into(), input.into()])
         .unwrap();
     assert!(
         claims

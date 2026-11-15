@@ -12,6 +12,8 @@ DEPS = [
     "//lib/common",
     "//fix/handle",
     "//fix/repository",
+    "//fix/remote",
+    "//fix/certificates",
     "//fix/storage",
     "//fix/api",
     "@crates//:postcard",

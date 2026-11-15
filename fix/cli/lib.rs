@@ -11,6 +11,7 @@ use std::{
 
 mod archive;
 pub mod commands;
+pub mod configuration;
 pub mod expressions;
 pub mod shell;
 pub use shell::Shell;
@@ -67,6 +68,9 @@ pub struct Options {
     pub scheduler: String,
     pub collector: String,
     pub trust: Option<PathBuf>,
+    pub remotes: Vec<fixremote::Remote>,
+    pub identities: Vec<String>,
+    pub unsigned: bool,
     pub jobs: usize,
     pub memory_mib: usize,
     pub memoize: Memoization,
@@ -77,10 +81,19 @@ impl Default for Options {
             scheduler: "scheduler".into(),
             collector: "collector".into(),
             trust: None,
+            remotes: Vec::new(),
+            identities: Vec::new(),
+            unsigned: false,
             jobs: 1,
             memory_mib: 16384,
             memoize: Memoization::Auto,
         }
+    }
+}
+
+impl Options {
+    pub(crate) fn configure(&self, repository: Repository) -> Repository {
+        repository.with_overrides(self.identities.clone(), self.unsigned)
     }
 }
 
@@ -103,6 +116,7 @@ impl Client {
                 .ok_or_else(|| message("non-UTF-8 path"))?,
         )
         .map_err(error)?;
+        let repository = options.configure(repository);
         Ok(Self {
             storage: Arc::new(RepositoryStorage::new(repository)),
             options,
@@ -138,6 +152,108 @@ impl Client {
 
     pub fn options(&self) -> &Options {
         &self.options
+    }
+
+    pub fn remote_config(&self) -> Result<fixremote::Config, Error> {
+        let mut policy = self.storage.repository().policy().map_err(error)?;
+        let compilers = if let Some(path) = &self.options.trust {
+            Some(std::fs::read_to_string(path).map_err(error)?)
+        } else {
+            trust::load().map_err(error)?
+        };
+        if let Some(text) = compilers {
+            policy.trusted_compilers = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(String::from)
+                .collect();
+        }
+        let mut remotes = self.storage.repository().remotes().map_err(error)?;
+        for remote in &self.options.remotes {
+            if let Some(existing) = remotes
+                .iter_mut()
+                .find(|existing| existing.name == remote.name)
+            {
+                *existing = remote.clone();
+            } else {
+                remotes.push(remote.clone());
+            }
+        }
+        Ok(fixremote::Config { policy, remotes })
+    }
+
+    pub fn export(
+        &mut self,
+        values: &[Value],
+        without_backing: &[Value],
+    ) -> Result<Vec<u8>, Error> {
+        let roots = values
+            .iter()
+            .map(|value| {
+                self.handle(value)
+                    .and_then(|handle| self.storage.save(handle).map_err(error))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let omitted = without_backing
+            .iter()
+            .map(|value| {
+                let handle = self.storage.save(self.handle(value)?).map_err(error)?;
+                reference(handle)
+                    .map(|reference| reference.object_descriptor())
+                    .map_err(error)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fixremote::export(self.storage.repository(), &roots, &omitted).map_err(error)
+    }
+
+    pub fn certify(
+        &self,
+        name: [u8; 32],
+        keys: &[String],
+    ) -> Result<
+        (
+            fixremote::protocol::CertificateRef,
+            fixremote::protocol::Record,
+        ),
+        Error,
+    > {
+        let config = self.remote_config()?;
+        fixremote::certify(
+            self.storage.repository(),
+            name,
+            keys,
+            &config.policy.identities,
+            |identity, namespace, message| {
+                fixremote::linux::sign(identity, namespace, message)
+                    .map_err(|error| fixcertificates::Error::Signing(error.to_string()))
+            },
+        )
+        .map_err(error)
+    }
+
+    pub fn information(
+        &self,
+        collector: &Value,
+    ) -> Result<fixremote::protocol::Information, Error> {
+        let collector = self.storage.save(self.handle(collector)?).map_err(error)?;
+        fixremote::information(
+            self.storage.repository(),
+            collector,
+            self.options.jobs.try_into().map_err(error)?,
+            Some((self.options.memory_mib as u64).saturating_mul(1 << 20)),
+        )
+        .map_err(error)
+    }
+
+    pub fn missing(&self, offers: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, Error> {
+        fixremote::missing(self.storage.repository(), offers).map_err(error)
+    }
+
+    pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
+        let values = fixremote::import(self.storage.repository(), bytes, &self.remote_config()?)
+            .map_err(error)?;
+        Ok(values.into_iter().map(|handle| self.keep(handle)).collect())
     }
     pub fn set_profile(&mut self, enabled: bool) {
         self.profile = enabled;
@@ -276,11 +392,11 @@ impl Client {
     }
 
     /// Returns the result claimed by `coupon` after checking its author and request.
-    fn claimed(
+    pub fn claimed(
         &mut self,
         coupon: &Value,
         collector: &Value,
-        statement: u64,
+        operation: u64,
         input: &Value,
     ) -> Result<Value, Error> {
         let invalid = || message("scheduler returned an invalid coupon");
@@ -309,7 +425,7 @@ impl Client {
             .read_tree(Tree::try_from(Handle::from(claim)).map_err(|_| invalid())?)
             .map_err(error)?;
         let input = saved(self, input)?;
-        let expected = fixhandle::Blob::canonical(&statement.to_le_bytes()).map_err(error)?;
+        let expected = fixhandle::Blob::canonical(&operation.to_le_bytes()).map_err(error)?;
         if claim.len() != 3
             || !claim[0].same_encoding(expected.as_handle())
             || !claim[1].same_encoding(&input)
@@ -379,12 +495,13 @@ impl Client {
     }
 
     pub(crate) fn execute(&mut self, arguments: &[String]) -> Result<Value, Error> {
-        let trust = if let Some(path) = &self.options.trust {
-            std::fs::read_to_string(path).map_err(error)?
-        } else {
-            trust::load().map_err(error)?
-        };
+        let remotes = self.remote_config()?;
+        let trust = remotes.policy.trusted_compilers.join("\n");
         let mut argv = vec!["fix".into(), "--trust".into(), trust];
+        argv.extend([
+            "--remotes".into(),
+            serde_json::to_string(&remotes).map_err(error)?,
+        ]);
         if self.profile {
             argv.push("--profile".into());
         }

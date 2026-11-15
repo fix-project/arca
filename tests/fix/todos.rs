@@ -13,6 +13,7 @@ fn runfiles() -> PathBuf {
 fn execute(directory: &Path, arguments: &[&str]) -> std::process::Output {
     Command::new(runfiles().join(env!("FIX_CLI")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .env("FIX_TRUST", directory.join(".fix/trust"))
         .env_remove("FIX_SCHEDULER")

@@ -56,6 +56,28 @@ impl Shell {
     pub fn options(&self) -> Options {
         Self::with(|client| client.options().clone())
     }
+    pub fn remote_config(&self) -> Result<fixremote::Config, Error> {
+        Self::with(|client| client.remote_config())
+    }
+    pub fn export(
+        &mut self,
+        values: &[Value],
+        without_backing: &[Value],
+    ) -> Result<Vec<u8>, Error> {
+        let values = values
+            .iter()
+            .map(|value| value.inner().clone())
+            .collect::<Vec<_>>();
+        let omitted = without_backing
+            .iter()
+            .map(|value| value.inner().clone())
+            .collect::<Vec<_>>();
+        Self::with(|client| client.export(&values, &omitted))
+    }
+    pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
+        Self::with(|client| client.import(bytes))
+            .map(|values| values.into_iter().map(Value::from_inner).collect())
+    }
     pub fn repository(&self) -> String {
         Self::with(|client| client.repository().to_owned())
     }
