@@ -122,6 +122,14 @@ impl Control {
         use common::protocol::control::*;
         match request {
             Request::GetArgs => Response::Args(self.argv.clone()),
+            Request::SshSign {
+                identity,
+                namespace,
+                message,
+            } => match sshagent::sign(&identity, &namespace, unsafe { message.as_slice() }) {
+                Ok(signature) => Response::Signature(signature),
+                Err(error) => Response::Err(error.kind().into()),
+            },
             Request::Exit(code) => {
                 self.session.stop(code as u8);
                 Response::Ack

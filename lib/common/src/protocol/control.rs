@@ -43,6 +43,11 @@ pub enum Request<B = Region> {
     ReadFile(String),
     WriteFile(String, B, FileMode),
     ReadDirectoryUri(String),
+    SshSign {
+        identity: String,
+        namespace: String,
+        message: B,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,6 +63,7 @@ pub enum Response {
     /// A Buddy allocation whose ownership passes to the receiver.
     Bytes(Region),
     DirectoryEntries(Vec<DirectoryEntry>),
+    Signature(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

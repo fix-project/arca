@@ -943,9 +943,9 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             runtime.index_claim(saved).map_err(|_| Error::Invalid)?;
             Ok(saved)
         }
-        (b"storage_claims", [statement, input]) => {
+        (b"storage_claims", [operation, input]) => {
             let coupons = runtime
-                .cached_claims_in(&[*statement, *input], &shared.saved_claims)
+                .cached_claims_in(&[*operation, *input], &shared.saved_claims)
                 .map_err(|_| Error::Invalid)?;
             let coupons: Vec<_> = coupons.into_iter().map(Into::into).collect();
             Ok(storage.add_tree(&coupons).into())

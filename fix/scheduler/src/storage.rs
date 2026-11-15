@@ -40,8 +40,8 @@ pub fn canonicalize(value: &Root) -> Result<Root, Error> {
     effect(b"storage_canonicalize", core::slice::from_ref(value))
 }
 
-pub fn claims(statement: Statement, input: &Root) -> Result<Root, Error> {
-    coordinated(b"storage_claims", &[root(statement as u64)?, input.clone()])
+pub fn claims(operation: Statement, input: &Root) -> Result<Root, Error> {
+    coordinated(b"storage_claims", &[root(operation as u64)?, input.clone()])
 }
 
 pub fn select(input: &Root) -> Result<Root, Error> {

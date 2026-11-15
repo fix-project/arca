@@ -10,6 +10,7 @@ use std::{
 fn call(fix: &Path, args: &[&str]) -> String {
     let output = Command::new(fix)
         .args(args)
+        .env("FIX_UNSIGNED", "true")
         .env("FIX_JOBS", env::var("FIX_TEST_JOBS").unwrap())
         .env("FIX_TRUST", ".fix/trust")
         .output()

@@ -275,8 +275,7 @@ impl Handle {
     }
     #[inline]
     pub fn is_comparable(&self) -> bool {
-        self.0[31] & 0x0f == 0
-            && (self.0[31] & 0xe0 <= 0x80 || self.comparability_bit() == Some(true))
+        self.bytes_view().is_comparable()
     }
     #[inline]
     pub fn comparability_bit(&self) -> Option<bool> {
@@ -317,6 +316,10 @@ impl Handle {
 }
 
 impl<'a> HandleBytes<'a> {
+    pub fn is_comparable(self) -> bool {
+        self.0[31] & 0x0f == 0
+            && (self.0[31] & 0xe0 <= 0x80 || self.comparability_bit() == Some(true))
+    }
     #[inline]
     pub fn as_bytes(self) -> &'a [u8; HANDLE_SIZE] {
         self.0
@@ -553,6 +556,32 @@ impl Tree {
         }
         match (self.0.name(), expected.0.name()) {
             (Name::Canonical(a), Name::Canonical(b)) if a == b => Ok(()),
+            _ => Err(Error::HashMismatch),
+        }
+    }
+
+    pub fn verify_bytes(&self, contents: &[u8]) -> Result<(), Error> {
+        if !contents.len().is_multiple_of(HANDLE_SIZE) || contents.len() as u64 != self.byte_len() {
+            return Err(Error::TreeLength);
+        }
+        let mut comparable = true;
+        let mut value = true;
+        for bytes in contents.as_chunks::<HANDLE_SIZE>().0 {
+            let child = Handle::parse_ref(bytes)?;
+            if !child.is_canonical() {
+                return Err(Error::NonCanonicalChild);
+            }
+            comparable &= child.is_comparable();
+            value &= child.is_value();
+        }
+        if self.0.comparability_bit() != Some(comparable) {
+            return Err(Error::InvalidComparisonBit);
+        }
+        if self.0.value_bit() != Some(value) {
+            return Err(Error::InvalidValueBit);
+        }
+        match self.0.name() {
+            Name::Canonical(hash) if hash[..] == blake3::hash(contents).as_bytes()[..24] => Ok(()),
             _ => Err(Error::HashMismatch),
         }
     }

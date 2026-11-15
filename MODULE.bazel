@@ -70,6 +70,20 @@ crate.annotation(
     rustc_flags = ["-Copt-level=3", "-Cdebug-assertions=off", "-Coverflow-checks=off"],
     build_script_env = {"OPT_LEVEL": "3", "DEBUG": "false"},
 )
+crate.annotation_select(
+    crate = "sha2",
+    repositories = ["crates"],
+    triples = ["x86_64-unknown-none"],
+    version = "0.10.9",
+    crate_features = ["force-soft"],
+)
+crate.annotation_select(
+    crate = "curve25519-dalek",
+    repositories = ["crates"],
+    triples = ["x86_64-unknown-none"],
+    version = "4.1.3",
+    build_script_env = {"CARGO_CFG_CURVE25519_DALEK_BACKEND": "serial"},
+)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//third_party/rust:Cargo.lock",

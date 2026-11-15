@@ -50,6 +50,7 @@ impl core::fmt::Display for CliError {
             Self::Repository(RepositoryError::Storage(error)) => {
                 write!(f, "store error: {error:?}")
             }
+            Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
         }
     }
 }
@@ -181,7 +182,18 @@ pub enum Plumbing {
     /// Print the repository path.
     Repository,
     /// Import an archive into the repository.
-    Import { archive: PathBuf },
+    Import {
+        archive: PathBuf,
+        #[arg(long)]
+        sign: bool,
+    },
+    /// Add the selected signing identities to a stored Tag.
+    Sign {
+        #[arg(long, conflicts_with = "value")]
+        all: bool,
+        #[arg(required_unless_present = "all")]
+        value: Option<String>,
+    },
     /// Import a directory as a Flatware tree.
     FlatwareImport { path: PathBuf, name: Option<String> },
     /// List, read, or write labels.
@@ -305,8 +317,9 @@ pub fn visit(
     without_backing: &[String],
     paths: bool,
     archive: Option<&Path>,
+    options: &crate::Options,
 ) -> Result<(), CliError> {
-    let repository = Repository::discover(".")?;
+    let repository = options.configure(Repository::discover(".")?);
     let mut output = Output;
     let without_backing = without_backing
         .iter()
@@ -374,11 +387,16 @@ pub fn run(
     if label.is_some() && !command.creates() {
         return Err(CliError::Usage("-l labels an expression result"));
     }
-    let repository = Repository::discover(".")?;
+    let repository = options.configure(Repository::discover(".")?);
     let mut output = Output;
     match command {
         Plumbing::Repository => print(&mut output, repository.path())?,
-        Plumbing::Import { archive } => crate::archive::import(&repository, &archive)?,
+        Plumbing::Import { archive, sign } => crate::archive::import(&repository, &archive, sign)?,
+        Plumbing::Sign { all, value } => match (all, value) {
+            (true, None) => repository.sign_all_tags()?,
+            (false, Some(value)) => repository.sign_tag(&value)?,
+            _ => return Err(CliError::Usage("expected a Tag or --all")),
+        },
         Plumbing::FlatwareImport { path, name } => {
             let name = match name {
                 Some(name) => name.into_bytes(),
@@ -536,7 +554,7 @@ pub fn run(
             without_backing,
             values,
         } => {
-            visit(&values, &without_backing, paths, None)?;
+            visit(&values, &without_backing, paths, None, &options)?;
         }
         Plumbing::Call { combination } => {
             return execute(options, profile, vec!["call".into(), combination]);

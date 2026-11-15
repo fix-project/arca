@@ -3,6 +3,7 @@ set -euo pipefail
 root="$TEST_SRCDIR/$TEST_WORKSPACE"
 fix="$root/$1"
 cd "$TEST_TMPDIR"
+export FIX_UNSIGNED=true
 "$fix" init
 "$fix" import "$root/$4"
 export FIX_TRUST="$TEST_TMPDIR/.fix/trust"

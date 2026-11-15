@@ -12,6 +12,7 @@ fn runfiles() -> PathBuf {
 fn seed_tool(directory: &Path, arguments: &[String]) {
     let output = Command::new(runfiles().join(env!("FIX_SEED")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .output()
         .unwrap();
@@ -30,6 +31,7 @@ fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u
     use std::io::Write;
     let mut child = Command::new(runfiles().join(env!("FIX_CLI")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -67,6 +69,7 @@ fn bootstrap(directory: &Path, programs: &[(&str, &str)]) {
 fn frontend(directory: &Path, arguments: &[&str], success: bool) -> std::process::Output {
     let output = Command::new(runfiles().join(env!("FIX_CLI")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .env("FIX_JOBS", "1")
         .env("FIX_TRUST", directory.join(".fix/trust"))
@@ -588,6 +591,7 @@ fn evaluation_rejects_scheduler_authored_coupons() {
         fixcli::Options {
             scheduler: "untrusted".into(),
             trust: Some(directory.join(".fix/trust")),
+            unsigned: true,
             ..fixcli::Options::default()
         },
     )

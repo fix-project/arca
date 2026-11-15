@@ -4,7 +4,12 @@ extern crate alloc;
 #[cfg(target_os = "linux")]
 extern crate std;
 
+pub use fixcertificates::{Certificate, Policy};
 pub use fixhandle as handle;
+
+mod config;
+mod signing;
+pub use config::Remote;
 
 #[cfg(target_os = "linux")]
 mod fs;
@@ -38,7 +43,14 @@ pub enum RepositoryError {
     NonCanonical,
     InvalidRepository,
     InvalidLabel,
+    Certificate(fixcertificates::Error),
     MissingLabel { name: String, repository: String },
+}
+
+impl From<fixcertificates::Error> for RepositoryError {
+    fn from(error: fixcertificates::Error) -> Self {
+        Self::Certificate(error)
+    }
 }
 
 impl From<ErrorKind> for RepositoryError {
@@ -55,6 +67,9 @@ impl From<Error> for RepositoryError {
 #[derive(Debug)]
 pub struct Repository {
     path: String,
+    policy: Option<Policy>,
+    identities: Vec<String>,
+    unsigned_override: bool,
 }
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +85,43 @@ impl Drop for Temporary {
 }
 
 impl Repository {
+    pub fn with_overrides(mut self, identities: Vec<String>, unsigned: bool) -> Self {
+        self.identities = identities;
+        self.unsigned_override = unsigned;
+        self
+    }
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    pub fn unsigned(self) -> Self {
+        self.with_policy(Policy {
+            unsigned: true,
+            ..Policy::default()
+        })
+    }
+
+    pub fn policy(&self) -> Result<Policy, RepositoryError> {
+        let mut policy = match &self.policy {
+            Some(policy) => policy.clone(),
+            None => {
+                #[cfg(target_os = "linux")]
+                {
+                    fixcertificates::linux::load()?
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Policy::default()
+                }
+            }
+        };
+        if !self.identities.is_empty() {
+            policy.identities = self.identities.clone();
+        }
+        policy.unsigned |= self.unsigned_override;
+        Ok(policy)
+    }
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -89,6 +141,21 @@ impl Repository {
             self.lookup(reference.as_handle().as_bytes())?
         };
         let mut paths = alloc::vec![format!(".fix/objects/{record}")];
+        if object.as_handle().as_bytes()[31] & 0x40 != 0 {
+            let directory = self.certificate_directory(object.as_handle().as_bytes());
+            match fs::read_dir(&directory) {
+                Ok(entries) => {
+                    for entry in entries {
+                        paths.push(format!(".fix/certificates/{}/{entry}", object.as_handle()));
+                    }
+                }
+                Err(ErrorKind::NotFound) => (),
+                Err(error) => return Err(error.into()),
+            }
+            for certificate in self.certificate_blobs(record.as_bytes())? {
+                paths.extend(self.object_paths(certificate.object(), true)?);
+            }
+        }
         let todo = format!("todos/{}", object.as_handle());
         if fs::exists(&format!("{}/{todo}", self.path))? {
             paths.push(format!(".fix/{todo}"));
@@ -206,7 +273,30 @@ impl Repository {
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(Self { path: path.into() })
+        Ok(Self {
+            path: path.into(),
+            policy: None,
+            identities: Vec::new(),
+            unsigned_override: false,
+        })
+    }
+
+    pub fn inventory(&self) -> Result<Vec<Handle>, RepositoryError> {
+        let mut objects = Vec::new();
+        for entry in fs::read_dir(&format!("{}/objects", self.path))? {
+            let mut name = [0; 32];
+            if hex::decode_to_slice(&entry, &mut name).is_err() || name[31] & 0x1f != 0 {
+                continue;
+            }
+            if let Ok(handle) = self.lookup(&name)
+                && let Ok(object) = Object::try_from(handle)
+                && self.has_backing(object).unwrap_or(false)
+            {
+                objects.push(handle);
+            }
+        }
+        objects.sort_by_key(|handle| *handle.as_bytes());
+        Ok(objects)
     }
 
     pub fn has_backing(&self, object: Object) -> Result<bool, RepositoryError> {
@@ -222,9 +312,9 @@ impl Repository {
             return Ok(true);
         }
         Ok(fs::exists(&format!(
-            "{}/objects/{}",
+            "{}/data/{}",
             self.path,
-            object.as_handle()
+            Self::data_key(object.as_handle().as_bytes())
         ))?)
     }
 
@@ -285,6 +375,32 @@ impl Repository {
             if view.byte_len() == 0 && &object == Tree::empty().as_handle().as_bytes() {
                 return Ok(unsafe { view.to_owned() });
             }
+            if object[31] & 0x40 != 0 {
+                let policy = self.policy()?;
+                let verify = |name: [u8; 32]| -> Result<(), RepositoryError> {
+                    let certificate = self
+                        .stored_certificates(name)?
+                        .ok_or(RepositoryError::Io(ErrorKind::NotFound))?;
+                    if policy.unsigned
+                        || certificate
+                            .iter()
+                            .any(|certificate| certificate.verify(&object, &policy).is_ok())
+                    {
+                        Ok(())
+                    } else {
+                        Err(fixcertificates::Error::Untrusted.into())
+                    }
+                };
+                let primary = verify(object);
+                if primary.is_err() && bytes[31] & 0x10 != 0 {
+                    let mut reference = object;
+                    reference[31] |= 0x10;
+                    verify(reference).or(primary)?;
+                } else {
+                    primary?;
+                }
+                return Ok(unsafe { view.to_owned() });
+            }
             let expected = format!("../data/{}", Self::data_key(&object));
             let record = format!("{}/objects/{}", self.path, hex::encode(object));
             let admitted = match fs::read_link(&record) {
@@ -308,7 +424,9 @@ impl Repository {
         if let Some(bytes) = blob.literal_bytes() {
             return Ok(bytes.into());
         }
-        self.read_data(blob.into())
+        let bytes = self.read_data(blob.into())?;
+        blob.verify(&bytes)?;
+        Ok(bytes)
     }
 
     pub fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError> {
@@ -317,14 +435,10 @@ impl Repository {
         }
         self.lookup(tree.as_handle().as_bytes())?;
         let bytes = self.read_data(tree.into())?;
+        tree.verify_bytes(&bytes)?;
         let mut children = Vec::with_capacity(tree.len());
         for child in bytes.as_chunks::<32>().0 {
-            // Trusted Tree payloads contain authorized canonical child handles.
-            let view = Handle::parse_ref(child)?;
-            if !view.is_canonical() {
-                return Err(RepositoryError::InvalidRepository);
-            }
-            children.push(unsafe { view.to_owned() });
+            children.push(self.lookup(child)?);
         }
         Ok(children.into_boxed_slice())
     }
@@ -498,7 +612,7 @@ impl Repository {
     }
 
     fn read_data(&self, object: Handle) -> Result<Box<[u8]>, RepositoryError> {
-        let path = format!("{}/objects/{object}", self.path);
+        let path = format!("{}/data/{}", self.path, Self::data_key(object.as_bytes()));
         let bytes = fs::read(&path)?;
         if bytes.len() as u64 != object.byte_len() {
             return Err(RepositoryError::InvalidRepository);
@@ -507,6 +621,21 @@ impl Repository {
     }
 
     pub fn publish(&self, object: Handle, bytes: &[u8]) -> Result<(), RepositoryError> {
+        self.publish_certified(object, bytes, None)?;
+        if let Ok(tree) = Tree::try_from(object)
+            && tree.is_tag()
+        {
+            self.index_tag(tree)?;
+        }
+        Ok(())
+    }
+
+    pub fn publish_certified(
+        &self,
+        object: Handle,
+        bytes: &[u8],
+        certificate: Option<&[u8]>,
+    ) -> Result<(), RepositoryError> {
         if object.is_empty() && object.same_encoding(&Tree::empty().into()) {
             if !bytes.is_empty() {
                 return Err(RepositoryError::InvalidRepository);
@@ -521,17 +650,250 @@ impl Repository {
         if !fs::exists(&path)? {
             self.write_atomic(&path, bytes)?;
         }
+        self.publish_record(object, certificate)?;
+        Ok(())
+    }
+
+    pub fn publish_reference(&self, reference: Ref) -> Result<(), RepositoryError> {
+        let handle = reference.as_handle();
+        if !handle.is_canonical() {
+            return Err(RepositoryError::NonCanonical);
+        }
+        if matches!(handle.name(), Name::Literal(_)) {
+            return Ok(());
+        }
+        self.publish_record(*handle, None)
+    }
+
+    pub fn publish_certified_reference(
+        &self,
+        reference: Ref,
+        certificate: &[u8],
+    ) -> Result<(), RepositoryError> {
+        self.publish_record(reference.into(), Some(certificate))
+    }
+
+    fn publish_record(
+        &self,
+        object: Handle,
+        certificate: Option<&[u8]>,
+    ) -> Result<(), RepositoryError> {
+        if object.as_bytes()[31] & 0x40 == 0 {
+            return self.publish_link(object);
+        }
+        let policy = self.policy()?;
+        if policy.unsigned {
+            return self.publish_link(object);
+        }
+        let mut name = *object.as_bytes();
+        name[31] &= 0xe0;
+        let certificate = match certificate {
+            Some(bytes) => alloc::vec![Certificate::decode(bytes)?],
+            None => Self::issue_certificates(name, &policy)?,
+        };
+        if !certificate
+            .iter()
+            .any(|certificate| certificate.verify(&name, &policy).is_ok())
+        {
+            return Err(fixcertificates::Error::Untrusted.into());
+        }
+        self.write_certificates(object.as_bytes(), &certificate)
+    }
+
+    fn issue_certificates(
+        name: [u8; 32],
+        policy: &Policy,
+    ) -> Result<Vec<Certificate>, RepositoryError> {
+        if policy.identities.is_empty() {
+            return Err(
+                fixcertificates::Error::Signing("no signing identity configured".into()).into(),
+            );
+        }
+        policy
+            .identities
+            .iter()
+            .map(|identity| {
+                let signature = fixcertificates::sign(
+                    fixcertificates::TAG_NAMESPACE,
+                    &name,
+                    identity,
+                    |identity, namespace, message| {
+                        #[cfg(target_os = "linux")]
+                        {
+                            sshagent::sign(identity, namespace, message).map_err(|error| {
+                                fixcertificates::Error::Signing(alloc::format!("{error}"))
+                            })
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            kernel::host::os::ssh_sign(identity, namespace, message).map_err(
+                                |error| {
+                                    fixcertificates::Error::Signing(alloc::format!("{error:?}"))
+                                },
+                            )
+                        }
+                    },
+                )?;
+                Ok(Certificate { name, signature })
+            })
+            .collect()
+    }
+
+    pub fn tag_certificates(&self, object: Handle) -> Result<Vec<Certificate>, RepositoryError> {
+        let mut name = *object.as_bytes();
+        name[31] = (name[31] & 0xe0) | 0x10;
+        self.lookup(&name)?;
+        if name[31] & 0x40 == 0 {
+            return Err(Error::WrongType.into());
+        }
+        self.available_certificates(&name)
+    }
+
+    pub fn available_certificates(
+        &self,
+        name: &[u8; 32],
+    ) -> Result<Vec<Certificate>, RepositoryError> {
+        let mut object = *name;
+        object[31] &= 0xe0;
+        let mut reference = object;
+        reference[31] |= 0x10;
+        let mut combined = alloc::collections::BTreeMap::new();
+        let mut found = false;
+        for name in [object, reference] {
+            if let Some(certificates) = self.stored_certificates(name)? {
+                found = true;
+                for certificate in certificates {
+                    combined.insert(certificate.signer()?, certificate);
+                }
+            }
+        }
+        if !found {
+            return Err(RepositoryError::Io(ErrorKind::NotFound));
+        }
+        Ok(combined.into_values().collect())
+    }
+
+    pub fn retain_certificates(
+        &self,
+        name: &[u8; 32],
+        certificates: &[Certificate],
+    ) -> Result<(), RepositoryError> {
+        self.available_certificates(name)?;
+        for certificate in certificates {
+            let key = certificate.signer()?;
+            certificate.verify(
+                name,
+                &Policy {
+                    authorized_keys: alloc::vec![key],
+                    ..Policy::default()
+                },
+            )?;
+        }
+        self.write_certificates(name, certificates)
+    }
+
+    pub fn export_certificates(&self, object: Handle) -> Result<Vec<Certificate>, RepositoryError> {
+        let mut certificates = self.tag_certificates(object)?;
+        let policy = self.policy()?;
+        if !policy.identities.is_empty() {
+            for certificate in Self::issue_certificates(
+                certificates.first().map_or_else(
+                    || {
+                        let mut name = *object.as_bytes();
+                        name[31] &= 0xe0;
+                        name
+                    },
+                    |certificate| certificate.name,
+                ),
+                &policy,
+            )? {
+                let signer = certificate.signer()?;
+                certificates.retain(|previous| previous.signer().ok().as_ref() != Some(&signer));
+                certificates.push(certificate);
+            }
+        }
+        Ok(certificates)
+    }
+
+    pub fn store_certificates(
+        &self,
+        name: &[u8; 32],
+        certificates: &[Certificate],
+    ) -> Result<(), RepositoryError> {
+        let policy = self.policy()?;
+        let mut object = *name;
+        object[31] &= 0xe0;
+        if !certificates
+            .iter()
+            .any(|certificate| certificate.verify(&object, &policy).is_ok())
+        {
+            return Err(fixcertificates::Error::Untrusted.into());
+        }
+        self.write_certificates(name, certificates)
+    }
+
+    fn certificate_directory(&self, name: &[u8; 32]) -> String {
+        let mut object = *name;
+        object[31] &= 0xe0;
+        format!("{}/certificates/{}", self.path, hex::encode(object))
+    }
+
+    fn write_certificates(
+        &self,
+        name: &[u8; 32],
+        certificates: &[Certificate],
+    ) -> Result<(), RepositoryError> {
+        let mut object = *name;
+        object[31] &= 0xe0;
+        let directory = self.certificate_directory(name);
+        fs::mkdir(&directory)?;
+        for certificate in certificates {
+            if certificate.name != object {
+                return Err(RepositoryError::InvalidRepository);
+            }
+            let signer = Blob::canonical(certificate.signer()?.as_bytes())?;
+            let blob = self.create_blob(&certificate.encode()?)?;
+            self.write_atomic(
+                &format!("{directory}/{}", signer.as_handle()),
+                blob.as_handle().as_bytes(),
+            )?;
+        }
+        self.publish_link(unsafe { Handle::parse(*name)? })
+    }
+
+    pub fn certificate_blobs(&self, name: &[u8; 32]) -> Result<Vec<Blob>, RepositoryError> {
+        let directory = self.certificate_directory(name);
+        let mut entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(ErrorKind::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        entries.sort();
+        entries
+            .iter()
+            .map(|entry| {
+                let bytes = fs::read(&format!("{directory}/{entry}"))?;
+                let name = bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RepositoryError::InvalidRepository)?;
+                let view = Handle::parse_ref(name)?;
+                if !view.is_canonical() || view.is_tree_data() || name[31] & 0x1f != 0 {
+                    return Err(RepositoryError::InvalidRepository);
+                }
+                Ok(Blob::try_from(self.lookup(name)?)?)
+            })
+            .collect()
+    }
+
+    fn publish_link(&self, object: Handle) -> Result<(), RepositoryError> {
+        let key = Self::data_key(object.as_bytes());
         let target = format!("../data/{key}");
         let record = format!("{}/objects/{object}", self.path);
         match fs::symlink(&target, &record) {
             Ok(()) => (),
             Err(ErrorKind::AlreadyExists) if fs::read_link(&record)? == target => (),
             Err(error) => return Err(error.into()),
-        }
-        if let Ok(tree) = Tree::try_from(object)
-            && tree.is_tag()
-        {
-            self.index_tag(tree)?;
         }
         Ok(())
     }

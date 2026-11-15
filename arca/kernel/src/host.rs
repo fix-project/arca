@@ -97,6 +97,26 @@ pub mod os {
     use crate::prelude::*;
     use common::protocol::*;
 
+    pub fn ssh_sign(
+        identity: &str,
+        namespace: &str,
+        message: &[u8],
+    ) -> Result<String, control::ErrorKind> {
+        let buffer = crate::allocator::buffer(Vec::from(message));
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request_serialized(&control::Request::SshSign {
+                identity: identity.into(),
+                namespace: namespace.into(),
+                message: buffer.slice(..),
+            }) {
+            control::Response::Signature(signature) => Ok(signature),
+            control::Response::Err(error) => Err(error.into()),
+            _ => Err(control::ErrorKind::Other),
+        }
+    }
+
     pub fn argv() -> Vec<String> {
         let host = crate::pipe::HOST.get().unwrap();
         let control::Response::Args(args) = host.request(&control::Request::GetArgs) else {

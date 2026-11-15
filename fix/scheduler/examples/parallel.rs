@@ -37,7 +37,7 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
         }
         return wait();
     }
-    let statement = if mode.equals(fixwasm::Blob::create(b"eval"))? {
+    let operation = if mode.equals(fixwasm::Blob::create(b"eval"))? {
         Statement::Eval
     } else if mode.equals(fixwasm::Blob::create(b"think"))? {
         Statement::Think
@@ -45,7 +45,7 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
         return Err(Error::WrongType);
     };
     let input = if worker::id()? == 0 {
-        Some(Request::new(statement, &input)?)
+        Some(Request::new(operation, &input)?)
     } else {
         None
     };

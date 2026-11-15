@@ -44,6 +44,7 @@ fn client(directory: &Path) -> Client {
         directory,
         Options {
             trust: Some(directory.join(".fix/trust")),
+            unsigned: true,
             memory_mib: 128,
             ..Options::default()
         },
@@ -171,6 +172,7 @@ fn coupon_persistence_modes() {
     fn claims(directory: &Path) -> std::collections::BTreeSet<String> {
         fixrepository::Repository::open(directory.join(".fix").to_str().unwrap())
             .unwrap()
+            .unsigned()
             .claims(&[])
             .unwrap()
             .iter()
@@ -188,6 +190,7 @@ fn coupon_persistence_modes() {
             &directory,
             Options {
                 trust: Some(directory.join(".fix/trust")),
+                unsigned: true,
                 memory_mib: 128,
                 memoize: mode,
                 ..Options::default()
@@ -254,6 +257,7 @@ fn perf_capture_preserves_results_and_exports_callchains() {
         .arg(&profile)
         .args(["--memory", "128", "-j", "2", "call", &combination])
         .current_dir(&directory)
+        .env("FIX_UNSIGNED", "true")
         .env("FIX_TRUST", directory.join(".fix/trust"))
         .output()
         .unwrap();

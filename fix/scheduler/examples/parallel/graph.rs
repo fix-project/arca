@@ -92,8 +92,8 @@ impl Graph {
         }
     }
 
-    fn nodes(&self, statement: Statement) -> Map {
-        self.nodes[match statement {
+    fn nodes(&self, operation: Statement) -> Map {
+        self.nodes[match operation {
             Statement::Eval => 0,
             Statement::Apply => 1,
             Statement::Force => 2,
@@ -107,12 +107,12 @@ impl Graph {
         if let Some(evidence) = services.known(&request.key()) {
             return Ok(Claim::Done(evidence));
         }
-        let nodes = self.nodes(request.statement);
+        let nodes = self.nodes(request.operation);
         let owned = nodes.compare_exchange(&request.input, 0, tree![])?;
         if !owned {
             return Ok(Claim::Busy);
         }
-        if let Some(evidence) = services.cached(request.statement, &request.input)? {
+        if let Some(evidence) = services.cached(request.operation, &request.input)? {
             self.finish(request)?;
             return Ok(Claim::Done(evidence));
         }
@@ -131,7 +131,7 @@ impl Graph {
     /// Records `dependent` to resume when `dependency` finishes, or `None` to
     /// wake this worker then. Returns false if `dependency` already finished.
     fn depend(&self, dependent: Option<&Request>, dependency: &Request) -> Result<bool, Error> {
-        let nodes = self.nodes(dependency.statement);
+        let nodes = self.nodes(dependency.operation);
         let dependent = match dependent {
             Some(request) => request.value()?,
             None => root(tree![])?,
@@ -154,7 +154,7 @@ impl Graph {
 
     fn finish(&self, request: &Request) -> Result<(), Error> {
         let dependents = self
-            .nodes(request.statement)
+            .nodes(request.operation)
             .remove(&request.input)?
             .ok_or(Error::OutOfBounds)?;
         let mut waiting = false;
@@ -187,12 +187,12 @@ impl Graph {
             EvaluationStep::Complete(value) => (Some(value), Vec::new()),
             EvaluationStep::Dependencies(missing) => (None, missing),
             EvaluationStep::Primitive(request) => (
-                Some(services.primitive(request.statement, &request.input)?),
+                Some(services.primitive(request.operation, &request.input)?),
                 Vec::new(),
             ),
         };
         if let Some(evidence) = &result {
-            services.remember(frame.request.statement, &frame.request.input, evidence)?;
+            services.remember(frame.request.operation, &frame.request.input, evidence)?;
         }
         if result.is_none() {
             frame.dependencies = if missing.len() <= 1 {
@@ -261,7 +261,7 @@ impl Graph {
             let Some(frame) = stack.last_mut() else {
                 let notification = worker::listen()?;
                 if let Some(request) = &initial
-                    && let Some(result) = services.cached(request.statement, &request.input)?
+                    && let Some(result) = services.cached(request.operation, &request.input)?
                 {
                     return Ok(result);
                 }

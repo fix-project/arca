@@ -44,14 +44,14 @@ impl Scheduler {
 
     pub(super) fn cached(
         &self,
-        statement: Statement,
+        operation: Statement,
         input: &Root,
     ) -> Result<Option<Evidence>, Error> {
-        let key = (statement as u64, input.raw_handle_bytes()?);
+        let key = (operation as u64, input.raw_handle_bytes()?);
         if let Some(evidence) = self.known(&key) {
             return Ok(Some(evidence));
         }
-        for coupon in fields(&storage::claims(statement, input)?)? {
+        for coupon in fields(&storage::claims(operation, input)?)? {
             if !coupon.is_tag()? || as_tree(&coupon)?.len()? != 2 {
                 continue;
             }
@@ -84,7 +84,7 @@ impl Scheduler {
 
     pub(super) fn remember(
         &self,
-        statement: Statement,
+        operation: Statement,
         input: &Root,
         evidence: &Evidence,
     ) -> Result<(), Error> {
@@ -93,7 +93,7 @@ impl Scheduler {
                 .compare_exchange(&evidence.witness.coupon, 0, tree![])?;
         }
         self.known.borrow_mut().insert(
-            (statement as u64, input.raw_handle_bytes()?),
+            (operation as u64, input.raw_handle_bytes()?),
             evidence.clone(),
         );
         Ok(())
@@ -146,8 +146,8 @@ impl Scheduler {
         })
     }
 
-    pub(super) fn primitive(&self, statement: Statement, input: &Root) -> Result<Evidence, Error> {
-        let (coupon, recommended) = match statement {
+    pub(super) fn primitive(&self, operation: Statement, input: &Root) -> Result<Evidence, Error> {
+        let (coupon, recommended) = match operation {
             Statement::Apply => self.resume(kernel::apply(input)?, input)?,
             Statement::Select => (storage::select(input)?, false),
             Statement::Eval => (storage::eval(input)?, false),

@@ -4,6 +4,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use fix::Thunk;
 use fixcli::{
     Memoization, Options, Shell as Client, commands,
+    configuration::{self, RemoteCommand, TrustCommand},
     expressions::{Expressions, Value},
 };
 use std::{
@@ -74,6 +75,15 @@ struct Global {
         global = true
     )]
     collector: String,
+    /// Add or override a remote for this command (repeatable).
+    #[arg(long = "remote", value_name = "NAME=URL", value_parser = configuration::remote_argument, global = true)]
+    remotes: Vec<fixrepository::Remote>,
+    /// Override signing identities with public keys or public-key files (repeatable).
+    #[arg(long = "identity", value_name = "KEY", global = true)]
+    identities: Vec<String>,
+    /// Use an unsigned staging repository for bootstrap builds.
+    #[arg(long, env = "FIX_UNSIGNED", global = true)]
+    unsigned: bool,
     /// Report evaluation timings on stderr.
     #[arg(long, global = true)]
     profile: bool,
@@ -91,9 +101,16 @@ enum Command {
         /// reuse these compilations; without this flag, each compiles on first use.
         #[arg(long, requires = "seed")]
         precompile: bool,
+        /// Sign imported seed Tags with the selected identities.
+        #[arg(long)]
+        sign: bool,
     },
     /// Read and evaluate low-level Fix expressions interactively.
     Repl,
+    #[command(subcommand)]
+    Remote(RemoteCommand),
+    #[command(subcommand)]
+    Trust(TrustCommand),
     /// Evaluate an expression.
     Eval {
         expression: String,
@@ -168,6 +185,13 @@ impl Global {
         Ok(Options {
             scheduler: self.scheduler.clone(),
             collector: self.collector.clone(),
+            remotes: self.remotes.clone(),
+            identities: self
+                .identities
+                .iter()
+                .map(|identity| fixcertificates::linux::key(identity))
+                .collect::<std::result::Result<_, _>>()?,
+            unsigned: self.unsigned,
             jobs: match self.jobs {
                 Some(jobs) => jobs,
                 None => std::thread::available_parallelism()?,
@@ -219,6 +243,11 @@ fn run() -> Result<u8> {
     for directory in &global.directories {
         env::set_current_dir(directory)?;
     }
+    if global.unsigned {
+        unsafe {
+            env::set_var("FIX_UNSIGNED", "true");
+        }
+    }
     let perf = global
         .perf
         .as_ref()
@@ -248,13 +277,20 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
         let value = expressions.realize(parsed)?;
         return global.finish(&mut client, &value);
     };
-    if !bindings.is_empty() && matches!(command, Command::Init { .. } | Command::Plumbing(_)) {
+    if !bindings.is_empty()
+        && matches!(
+            command,
+            Command::Init { .. } | Command::Plumbing(_) | Command::Remote(_) | Command::Trust(_)
+        )
+    {
         return Err("this command takes no -b bindings".into());
     }
     if global.label.is_some()
         && matches!(
             command,
             Command::Init { .. }
+                | Command::Remote(_)
+                | Command::Trust(_)
                 | Command::Todo(_)
                 | Command::Export { .. }
                 | Command::FlatwareExport { .. }
@@ -348,11 +384,11 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             archive,
             expressions: more,
         } => {
-            let mut client = global.open(options)?;
+            let mut client = global.open(options.clone())?;
             let mut expressions = Expressions::new(&mut client, bindings);
             let excluded = handles(&mut expressions, &without_backing)?;
             let roots = handles(&mut expressions, &[[expression].as_slice(), &more].concat())?;
-            commands::visit(&roots, &excluded, true, Some(&archive))?;
+            commands::visit(&roots, &excluded, true, Some(&archive), &options)?;
             Ok(0)
         }
         Command::FlatwareExport { expression, path } => {
@@ -362,18 +398,33 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             commands::flatware_export(&tree, &path)?;
             Ok(0)
         }
-        Command::Init { seed, precompile } => {
+        Command::Remote(command) => {
+            configuration::remote(command)?;
+            Ok(0)
+        }
+        Command::Trust(command) => {
+            configuration::trust(command)?;
+            Ok(0)
+        }
+        Command::Init {
+            seed,
+            precompile,
+            sign,
+        } => {
             commands::init()?;
             let Some(seed) = seed else {
                 return Ok(0);
             };
             commands::run(
-                commands::Plumbing::Import { archive: seed },
+                commands::Plumbing::Import {
+                    archive: seed,
+                    sign,
+                },
                 None,
                 options.clone(),
                 global.profile,
             )?;
-            let options = if precompile {
+            let options = if precompile && options.unsigned {
                 Options {
                     trust: Some(env::current_dir()?.join(".fix/trust")),
                     ..options

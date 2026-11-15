@@ -54,6 +54,7 @@ fn run() -> Result<()> {
     checked(
         Command::new(&fix)
             .current_dir(&repository.0)
+            .arg("--unsigned")
             .arg("import")
             .arg(archive),
     )?;
@@ -75,6 +76,7 @@ fn run() -> Result<()> {
         &repository.0,
         Options {
             trust: Some(repository.0.join(".fix/trust")),
+            unsigned: true,
             jobs: jobs.get(),
             ..Options::default()
         },

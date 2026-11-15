@@ -10,6 +10,7 @@ fn runfiles() -> PathBuf {
 fn seed_tool(directory: &Path, arguments: &[String]) {
     let output = Command::new(runfiles().join(env!("FIX_SEED")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .output()
         .unwrap();
@@ -62,6 +63,7 @@ fn command(directory: &Path, arguments: &[&str]) -> Command {
     let mut command = Command::new(runfiles().join(env!("FIX_CLI")));
     command
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .env("FIX_JOBS", "1")
         .env("FIX_TRUST", trust_file())
@@ -194,6 +196,7 @@ fn stored_claims(directory: &Path, prefix: &[&str]) -> Vec<String> {
         .collect();
     fixrepository::Repository::open(directory.join(".fix").to_str().unwrap())
         .unwrap()
+        .unsigned()
         .claims(&fields)
         .unwrap()
         .iter()
@@ -440,7 +443,7 @@ fn runnable_trust_configuration() {
         );
         command
             .env_remove("FIX_TRUST")
-            .env("XDG_CONFIG_HOME", &config);
+            .env("FIX_CONFIG_DIR", &config);
         if let Some(trust) = trust {
             command.env("FIX_TRUST", trust);
         }
@@ -450,7 +453,7 @@ fn runnable_trust_configuration() {
     let denied = schedule(&directory, "--memoize=never", &think, None);
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("untrusted author"));
-    std::fs::copy(trust_file(), config.join("fix/trust")).unwrap();
+    std::fs::copy(trust_file(), config.join("trusted_compilers")).unwrap();
     let accepted = schedule(&directory, "--memoize=never", &think, None);
     assert!(
         accepted.status.success(),

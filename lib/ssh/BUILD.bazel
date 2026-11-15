@@ -1,0 +1,11 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "ssh",
+    crate_name = "sshagent",
+    srcs = ["lib.rs"],
+    edition = "2024",
+    deps = ["@crates//:ssh-key"],
+)

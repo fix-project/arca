@@ -21,6 +21,7 @@ def _run(ctx, commands, inputs, outputs, mnemonic, jobs, memory):
             "set -euo pipefail",
             "execroot=$PWD",
             'fix="$execroot"/%s' % shell.quote(ctx.file.fix.path),
+            'export FIX_UNSIGNED=true',
             "work=$(mktemp -d)",
             "trap 'rm -rf \"$work\"' EXIT",
             'cd "$work"',

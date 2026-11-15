@@ -79,7 +79,7 @@ impl EvaluationState {
         let input = &request.input;
         loop {
             match stage {
-                Stage::Start => match request.statement {
+                Stage::Start => match request.operation {
                     Statement::Eval => {
                         if input.value_type()? == ValueType::Encode {
                             *stage = Stage::EncodeForce(Request::new(
@@ -99,7 +99,7 @@ impl EvaluationState {
                     }
                     Statement::Think => {
                         let data = (context.object)(input)?;
-                        let statement = match input.unsound_thunk_type()? {
+                        let operation = match input.unsound_thunk_type()? {
                             ThunkType::Identification => {
                                 return context
                                     .proofs
@@ -114,7 +114,7 @@ impl EvaluationState {
                             ThunkType::Application => Statement::Apply,
                             ThunkType::Selection => Statement::Select,
                         };
-                        *stage = Stage::ThinkEval(Request::new(Statement::Eval, &data)?, statement);
+                        *stage = Stage::ThinkEval(Request::new(Statement::Eval, &data)?, operation);
                     }
                     Statement::Force => {
                         *stage = Stage::ForceThink(Request::new(Statement::Think, input)?)
@@ -190,13 +190,13 @@ impl EvaluationState {
                         .exchange(Exchange::EvalEq, input, &result, &[evaluated, sym])
                         .map(EvaluationStep::Complete);
                 }
-                Stage::ThinkEval(data, statement) => {
+                Stage::ThinkEval(data, operation) => {
                     let Some(evaluated) = context.require(data)? else {
                         return Ok(EvaluationStep::Dependencies(core::mem::take(
                             &mut context.missing,
                         )));
                     };
-                    let primitive = Request::new(*statement, &evaluated.result)?;
+                    let primitive = Request::new(*operation, &evaluated.result)?;
                     *stage = Stage::ThinkPrimitive(evaluated, primitive);
                 }
                 Stage::ThinkPrimitive(evaluated, primitive) => {

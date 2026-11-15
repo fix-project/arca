@@ -9,11 +9,14 @@ rust_library(
     edition = "2024",
     deps = [
         "//fix/handle",
+        "//fix/certificates",
         "//lib/common",
         "@crates//:hashbrown",
         "@crates//:hex",
+        "@crates//:serde",
+        "@crates//:serde_json",
     ] + select({
-        "//build/platforms:linux": [],
+        "//build/platforms:linux": ["//lib/ssh"],
         "//conditions:default": ["//arca/kernel"],
     }),
 )
@@ -23,4 +26,5 @@ rust_test(
     crate = ":repository",
     edition = "2024",
     timeout = "short",
+    deps = ["@crates//:ssh-key"],
 )
