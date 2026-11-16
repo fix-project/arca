@@ -1,0 +1,30 @@
+genrule(
+    name = "tex",
+    srcs = [
+        "@texlive_src//:sources",
+        "@texlive_src//:configure",
+    ],
+    outs = ["tex.wasm"],
+    cmd = """
+        export CC="$$PWD/$(execpath @local_tools//:gcc)"
+        export CXX="$$PWD/$(execpath @local_tools//:g++)"
+        export AR="$$PWD/$(execpath @local_tools//:ar)"
+        export RANLIB="$$PWD/$(execpath @local_tools//:ranlib)"
+        export MAKE="$$PWD/$(execpath @local_tools//:make)"
+        bash $(location :build.sh) \
+            "$$PWD/$(location @texlive_src//:configure)" \
+            "$$PWD/$(execpath @wasi_sdk//:bin/clang)" \
+            "$$PWD/$@"
+    """,
+    tools = [
+        "build.sh",
+        "@local_tools//:ar",
+        "@local_tools//:g++",
+        "@local_tools//:gcc",
+        "@local_tools//:make",
+        "@local_tools//:ranlib",
+        "@wasi_sdk//:files",
+        "@wasi_sdk//:bin/clang",
+    ],
+    visibility = ["//programs/flatware:__pkg__"],
+)

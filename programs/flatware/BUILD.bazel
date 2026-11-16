@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//build:defs.bzl", "fix_script_test")
 load("//flatware:defs.bzl", "flatware_procedure")
 
 package(default_visibility = ["//visibility:public"])
@@ -30,3 +31,19 @@ filegroup(
     )
     for name in PROGRAMS
 ]
+
+flatware_procedure(
+    name = "tex",
+    wasm = "//third_party/tex:tex",
+    runnable = True,
+)
+
+fix_script_test(
+    name = "tex_test",
+    size = "large",
+    timeout = "short",
+    script = "hello.fix",
+    data = ["hello.fix", "hello.tex", "cmr10.tfm", ":tex_elf"],
+    expected = "f702018392c01c3b0000000003e81b20546558206f757470757420313937302e30312e30313a303030308b00000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffff9f06f1c7f3004bf16079000a0000000a00000005636d723130ab48656c6c6f2c910355557790b8e36f726c64218cf80000002a018392c01c3b0000000003e80008e38e0037955c00000001f3004bf16079000a0000000a00000005636d723130f90000008502dfdfdfdfdfdfdf",
+    tags = ["kvm", "local"],
+)
