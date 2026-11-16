@@ -265,48 +265,18 @@ pub fn information(
     memory_bytes: Option<u64>,
 ) -> Result<protocol::Information, Error> {
     let inventory = repository.inventory()?;
-    let mut results = Vec::new();
-    for handle in &inventory {
-        if let Ok(tag) = fixhandle::Tree::try_from(*handle)
-            && tag.is_tag()
-            && tag.len() == 2
-        {
-            let fields = repository.read_tree(tag)?;
-            if !fields[0].same_encoding(&collector)
-                && !fields[0].same_encoding(&fixhandle::Tree::empty().into())
-            {
-                continue;
-            }
-            let Ok(reference) = fixhandle::Ref::try_from(fields[1]) else {
-                continue;
-            };
-            let Ok(tree) = fixhandle::Tree::try_from(Handle::from(reference.object_descriptor()))
-            else {
-                continue;
-            };
-            let Ok(claim) = repository.read_tree(tree) else {
-                continue;
-            };
-            if claim.len() != 3 {
-                continue;
-            }
-            let Ok(kind) = fixhandle::Blob::try_from(claim[0]) else {
-                continue;
-            };
-            let bytes = repository.read_blob(kind)?;
-            let Ok(bytes) = bytes.as_ref().try_into() else {
-                continue;
-            };
-            let operation = u64::from_le_bytes(bytes);
-            if matches!(operation, 1 | 2 | 3 | 4 | 6) {
-                results.push(protocol::Task {
-                    operation,
-                    collector: *collector.as_bytes(),
-                    input: *claim[1].as_bytes(),
-                });
-            }
-        }
-    }
+    let mut claims = repository.claim_results(collector)?;
+    claims.extend(repository.claim_results(fixhandle::Tree::empty().into())?);
+    claims.sort_by_key(|(operation, input)| (*operation, *input.as_bytes()));
+    claims.dedup_by(|left, right| left.0 == right.0 && left.1.same_encoding(&right.1));
+    let results = claims
+        .into_iter()
+        .map(|(operation, input)| protocol::Task {
+            operation,
+            collector: *collector.as_bytes(),
+            input: *input.as_bytes(),
+        })
+        .collect();
     Ok(protocol::Information {
         parallelism,
         memory_bytes,

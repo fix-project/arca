@@ -146,7 +146,10 @@ impl Repository {
             match fs::read_dir(&directory) {
                 Ok(entries) => {
                     for entry in entries {
-                        paths.push(format!(".fix/certificates/{}/{entry}", object.as_handle()));
+                        paths.push(format!(
+                            ".fix/tags/signatures/{}/{entry}",
+                            object.as_handle()
+                        ));
                     }
                 }
                 Err(ErrorKind::NotFound) => (),
@@ -167,25 +170,6 @@ impl Repository {
             ".fix/data/{}",
             Self::data_key(object.as_handle().as_bytes())
         ));
-        if let ObjectView::Tree(tree) = object.view()
-            && tree.is_tag()
-        {
-            let fields = self.read_tree(*tree)?;
-            let index = Self::tag_index(&fields);
-            for index in [
-                Some(index),
-                self.claim_fields(&fields)?
-                    .map(|claim| Self::index("claims", &claim)),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let entry = format!("{index}/entries/{}", object.as_handle());
-                if fs::exists(&format!("{}/{entry}", self.path))? {
-                    paths.push(format!(".fix/{entry}"));
-                }
-            }
-        }
         Ok(paths)
     }
 
@@ -259,7 +243,14 @@ impl Repository {
     }
 
     pub fn init(path: &str) -> Result<Self, RepositoryError> {
-        for directory in ["data", "objects", "labels"] {
+        for directory in [
+            "data",
+            "objects",
+            "labels",
+            "tags/signatures",
+            "tags/by-subject",
+            "tags/by-author",
+        ] {
             fs::mkdir(&format!("{path}/{directory}"))?;
         }
         Self::open(path)
@@ -283,7 +274,14 @@ impl Repository {
     }
 
     pub fn open(path: &str) -> Result<Self, RepositoryError> {
-        for directory in ["data", "objects", "labels"] {
+        for directory in [
+            "data",
+            "objects",
+            "labels",
+            "tags/signatures",
+            "tags/by-subject",
+            "tags/by-author",
+        ] {
             match fs::is_directory(&format!("{path}/{directory}")) {
                 Ok(true) => (),
                 Ok(false) | Err(ErrorKind::NotFound) => {
@@ -301,15 +299,19 @@ impl Repository {
     }
 
     pub fn inventory(&self) -> Result<Vec<Handle>, RepositoryError> {
+        let backing: hashbrown::HashSet<_> = fs::read_dir(&format!("{}/data", self.path))?
+            .into_iter()
+            .collect();
         let mut objects = Vec::new();
         for entry in fs::read_dir(&format!("{}/objects", self.path))? {
             let mut name = [0; 32];
             if hex::decode_to_slice(&entry, &mut name).is_err() || name[31] & 0x1f != 0 {
                 continue;
             }
-            if let Ok(handle) = self.lookup(&name)
-                && let Ok(object) = Object::try_from(handle)
-                && self.has_backing(object).unwrap_or(false)
+            if let Ok(handle) = unsafe { Handle::parse(name) }
+                && handle.is_canonical()
+                && Object::try_from(handle).is_ok()
+                && backing.contains(&Self::data_key(&name))
             {
                 objects.push(handle);
             }
@@ -484,22 +486,12 @@ impl Repository {
         Ok(names)
     }
 
-    /// Finds stored Tags whose fields after the author start with `prefix`.
-    /// Index entries are hints; the stored Tag establishes provenance and contents.
-    pub fn tags(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
-        self.find_tags("tags", prefix)
-    }
-
     /// Finds Ref-backed assertion Tags by the supplied assertion's field prefix.
     pub fn claims(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
-        self.find_tags("claims", prefix)
-    }
-
-    fn find_tags(&self, index: &str, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
         if prefix.iter().any(|field| !field.is_canonical()) {
             return Err(RepositoryError::NonCanonical);
         }
-        let mut path = format!("{}/{index}", self.path);
+        let mut path = format!("{}/tags/by-subject", self.path);
         for field in prefix.iter().take(INDEX_FIELDS) {
             path.push('/');
             path.push_str(&format!("{field}"));
@@ -528,11 +520,7 @@ impl Repository {
                         };
                         if tag.is_tag() {
                             let fields = self.read_tree(tag)?;
-                            let fields = if index == "claims" {
-                                self.claim_fields(&fields)?
-                            } else {
-                                Some(fields.get(1..).unwrap_or(&[]).into())
-                            };
+                            let fields = self.claim_fields(&fields)?;
                             if fields.is_some_and(|fields| {
                                 fields.len() >= prefix.len()
                                     && fields.iter().zip(prefix).all(|(a, b)| a.same_encoding(b))
@@ -552,6 +540,50 @@ impl Repository {
         Ok(tags)
     }
 
+    pub fn claim_results(&self, author: Handle) -> Result<Vec<(u64, Handle)>, RepositoryError> {
+        let root = format!("{}/tags/by-author/{author}", self.path);
+        let operations = match fs::read_dir(&root) {
+            Ok(operations) => operations,
+            Err(ErrorKind::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut results = Vec::new();
+        for operation in operations {
+            let mut name = [0; 32];
+            if hex::decode_to_slice(&operation, &mut name).is_err() {
+                continue;
+            }
+            let Ok(handle) = (unsafe { Handle::parse(name) }) else {
+                continue;
+            };
+            let Ok(kind) = Blob::try_from(handle) else {
+                continue;
+            };
+            let Some(bytes) = kind.literal_bytes() else {
+                continue;
+            };
+            let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_ref()) else {
+                continue;
+            };
+            let code = u64::from_le_bytes(bytes);
+            if !matches!(code, 1 | 2 | 3 | 4 | 6) {
+                continue;
+            }
+            for input in fs::read_dir(&format!("{root}/{operation}"))? {
+                let mut name = [0; 32];
+                if hex::decode_to_slice(&input, &mut name).is_err() {
+                    continue;
+                }
+                if let Ok(handle) = unsafe { Handle::parse(name) }
+                    && handle.is_canonical()
+                {
+                    results.push((code, handle));
+                }
+            }
+        }
+        Ok(results)
+    }
+
     fn claim_fields(&self, fields: &[Handle]) -> Result<Option<Box<[Handle]>>, RepositoryError> {
         let [_, reference] = fields else {
             return Ok(None);
@@ -568,9 +600,9 @@ impl Repository {
 
     pub fn index_tag(&self, tag: Tree) -> Result<(), RepositoryError> {
         let fields = self.read_tree(tag)?;
-        self.index_entry(tag, "tags", fields.get(1..).unwrap_or(&[]))?;
         if let Some(claim) = self.claim_fields(&fields)? {
-            self.index_entry(tag, "claims", &claim)?;
+            self.index_entry(tag, "tags/by-subject", &claim, 2)?;
+            self.index_entry(tag, &format!("tags/by-author/{}", fields[0]), &claim, 3)?;
         }
         Ok(())
     }
@@ -578,13 +610,18 @@ impl Repository {
     fn index_entry(
         &self,
         tag: Tree,
-        index: &str,
+        base: &str,
         fields: &[Handle],
+        base_depth: usize,
     ) -> Result<(), RepositoryError> {
         let count = fields.len().min(INDEX_FIELDS);
-        let path = format!("{}/{}/entries", self.path, Self::index(index, fields));
+        let path = format!("{}/{}/entries", self.path, Self::index(base, fields));
         fs::mkdir(&path)?;
-        let target = format!("{}objects/{}", "../".repeat(count + 2), tag.as_handle());
+        let target = format!(
+            "{}objects/{}",
+            "../".repeat(count + base_depth + 1),
+            tag.as_handle()
+        );
         let record = format!("{path}/{}", tag.as_handle());
         match fs::symlink(&target, &record) {
             Ok(()) => Ok(()),
@@ -593,12 +630,8 @@ impl Repository {
         }
     }
 
-    fn tag_index(fields: &[Handle]) -> String {
-        Self::index("tags", fields.get(1..).unwrap_or(&[]))
-    }
-
-    fn index(index: &str, fields: &[Handle]) -> String {
-        let mut path = String::from(index);
+    fn index(base: &str, fields: &[Handle]) -> String {
+        let mut path = String::from(base);
         for field in fields.iter().take(INDEX_FIELDS) {
             path.push('/');
             path.push_str(&format!("{field}"));
@@ -854,7 +887,7 @@ impl Repository {
     fn certificate_directory(&self, name: &[u8; 32]) -> String {
         let mut object = *name;
         object[31] &= 0xe0;
-        format!("{}/certificates/{}", self.path, hex::encode(object))
+        format!("{}/tags/signatures/{}", self.path, hex::encode(object))
     }
 
     fn write_certificates(

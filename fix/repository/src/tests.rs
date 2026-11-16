@@ -81,7 +81,7 @@ fn reloading_tags_checks_the_current_certificate_trust_and_backing() {
     let entries = std::fs::read_dir(
         directory
             .0
-            .join(".fix/certificates")
+            .join(".fix/tags/signatures")
             .join(format!("{}", tag.as_handle())),
     )
     .unwrap()

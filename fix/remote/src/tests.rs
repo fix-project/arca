@@ -123,6 +123,12 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
     assert!(imported[0].same_encoding(&data.into_ref().into()));
     assert!(!destination.has_backing(data.object()).unwrap());
     assert!(
+        !information(&destination, Tree::empty().into(), 1, None)
+            .unwrap()
+            .data
+            .contains(data.as_handle().as_bytes())
+    );
+    assert!(
         destination
             .get_todo(data.into_ref())
             .unwrap()
@@ -132,6 +138,12 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
     let bytes = transfer(&source, &[data.into()], &[]).unwrap();
     import(&destination, &bytes, &config()).unwrap();
     assert_eq!(destination.read_blob(data).unwrap().as_ref(), &[23; 4096]);
+    assert!(
+        information(&destination, Tree::empty().into(), 1, None)
+            .unwrap()
+            .data
+            .contains(data.as_handle().as_bytes())
+    );
 }
 
 #[test]

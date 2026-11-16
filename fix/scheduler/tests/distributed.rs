@@ -431,7 +431,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
             .arg("-xOf")
             .arg(&archive)
             .arg(format!(
-                ".fix/certificates/{}/{}",
+                ".fix/tags/signatures/{}/{}",
                 coupon.as_handle(),
                 signer.as_handle()
             ))

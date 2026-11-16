@@ -408,8 +408,7 @@ impl<'a> Expressions<'a> {
         let limits = Blob::new(b"");
         let parser = self.parser()?;
         let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
-        let application = combination.application();
-        self.client.think(application.as_value())
+        self.client.call(&combination.into_value())
     }
 
     /// Parses `path` as a script invocation.
