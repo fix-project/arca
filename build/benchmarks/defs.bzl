@@ -1,9 +1,36 @@
-"""Criterion benchmark suites backed by guest workers."""
+"""Criterion benchmarks with optimized hosts, guest workers, and fixtures."""
 
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//build:defs.bzl", "guest_binary")
 
 _ARGS = ["--discard-baseline", "--noplot", "--bench"]
+
+def _release_impl(settings, attr):
+    return {"//command_line_option:compilation_mode": "opt"}
+
+_release = transition(
+    implementation = _release_impl,
+    inputs = [],
+    outputs = ["//command_line_option:compilation_mode"],
+)
+
+def _benchmark_impl(ctx):
+    actual = ctx.attr.actual[0][DefaultInfo]
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(output = executable, target_file = actual.files_to_run.executable, is_executable = True)
+    return [DefaultInfo(
+        executable = executable,
+        runfiles = actual.default_runfiles.merge(ctx.runfiles(files = [actual.files_to_run.executable])),
+    )]
+
+_benchmark = rule(
+    implementation = _benchmark_impl,
+    executable = True,
+    attrs = {
+        "actual": attr.label(cfg = _release, executable = True, mandatory = True),
+        "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+    },
+)
 
 def guest_benchmark(name, src, cases, fixtures, deps = []):
     rust_library(
@@ -27,7 +54,8 @@ def guest_benchmark(name, src, cases, fixtures, deps = []):
         ] + deps,
     )
     rust_binary(
-        name = name,
+        name = name + "_host",
+        visibility = ["//visibility:private"],
         srcs = ["//build/benchmarks:host.rs"],
         crate_name = "benchmark_host",
         args = _ARGS,
@@ -44,6 +72,7 @@ def guest_benchmark(name, src, cases, fixtures, deps = []):
             "@rules_rust//tools/runfiles",
         ],
     )
+    _benchmark(name = name, actual = ":" + name + "_host", args = _ARGS)
 
 def benchmark_suite(name, suites):
     rust_binary(
@@ -58,4 +87,4 @@ def benchmark_suite(name, suites):
         },
         deps = ["@rules_rust//tools/runfiles"],
     )
-    native.alias(name = name, actual = ":" + name + "_runner")
+    _benchmark(name = name, actual = ":" + name + "_runner", args = _ARGS)

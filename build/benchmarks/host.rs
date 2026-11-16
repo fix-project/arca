@@ -9,18 +9,19 @@ use benchmark_cases::Operation;
 use benchmark_protocol::{READY, REQUEST_LEN};
 
 struct Worker {
+    cores: usize,
     child: Child,
     input: Option<ChildStdin>,
     output: ChildStdout,
 }
 
 impl Worker {
-    fn start() -> Self {
+    fn start(cores: usize) -> Self {
         let files = Runfiles::create().unwrap();
         let vmm = files.rlocation(env!("BENCH_VMM")).unwrap();
         let image = files.rlocation(env!("BENCH_WORKER")).unwrap();
         let mut command = Command::new(vmm);
-        command.arg(image).args(["--smp", "1", "--"]);
+        command.arg(image).args(["--smp", &cores.to_string(), "--"]);
         for entry in env!("BENCH_FIXTURES").lines() {
             let (name, path) = entry.split_once('=').unwrap();
             command
@@ -40,10 +41,21 @@ impl Worker {
         output.read_exact(&mut ready).unwrap();
         assert_eq!(ready, READY);
         Self {
+            cores,
             child,
             input,
             output,
         }
+    }
+
+    fn for_operation(worker: &mut Option<Self>, operation: Operation) -> &mut Self {
+        if worker
+            .as_ref()
+            .is_some_and(|worker| worker.cores != operation.cores())
+        {
+            *worker = None;
+        }
+        worker.get_or_insert_with(|| Self::start(operation.cores()))
     }
 
     fn run(&mut self, operation: Operation, size: usize, iterations: u64) -> Duration {
@@ -84,7 +96,7 @@ fn benchmarks(criterion: &mut Criterion) {
             for size in [0, 65536, 1048576] {
                 let mut prepared = false;
                 group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
-                    let worker = worker.get_or_insert_with(Worker::start);
+                    let worker = Worker::for_operation(&mut worker, operation);
                     if !prepared {
                         assert_eq!(worker.run(operation, *size, 0), Duration::ZERO);
                         prepared = true;
@@ -95,7 +107,7 @@ fn benchmarks(criterion: &mut Criterion) {
         } else {
             let mut prepared = false;
             group.bench_function(name, |b| {
-                let worker = worker.get_or_insert_with(Worker::start);
+                let worker = Worker::for_operation(&mut worker, operation);
                 if !prepared {
                     assert_eq!(worker.run(operation, 0, 0), Duration::ZERO);
                     prepared = true;
