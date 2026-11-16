@@ -5,11 +5,13 @@ load("//programs/kernel:defs.bzl", "KERNEL_PROGRAMS")
 load("//programs/fix:defs.bzl", "FIX_RUST_PROGRAMS")
 
 HOST = [
-    "//:benchmarks",
-    "//arca/benchmarks:core",
-    "//arca/benchmarks:continuations",
-    "//fix/benchmarks:invocation",
-    "//fix/benchmarks:continuations",
+    "//:benchmarks_runner",
+    "//arca/benchmarks:benchmarks_runner",
+    "//fix/benchmarks:benchmarks_runner",
+    "//arca/benchmarks:core_host",
+    "//arca/benchmarks:continuations_host",
+    "//fix/benchmarks:invocation_host",
+    "//fix/benchmarks:continuations_host",
     "//fix/api",
     "//fix/storage",
     "//fix/repository",
