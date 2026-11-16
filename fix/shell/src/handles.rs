@@ -63,9 +63,20 @@ pub unsafe fn query_cell(cell: usize, operation: Query) -> usize {
     unsafe { observe(cell, operation) }
 }
 
+/// # Safety
+/// Source and destination must be valid typed handle storage; flags must preserve validity.
+pub unsafe fn copy_handle(source: usize, destination: usize, flags: u8) {
+    unsafe {
+        copy_handle_bits(source, destination, flags);
+        if query_cell(destination, Query::Local) != 0 {
+            crate::descriptors::local(destination);
+        }
+    }
+}
+
 // Raw handle bits may only reside in typed storage or registers cleared before return.
 #[unsafe(naked)]
-pub unsafe extern "C" fn copy_handle(_source: usize, _destination: usize, _flags: u8) {
+unsafe extern "C" fn copy_handle_bits(_source: usize, _destination: usize, _flags: u8) {
     naked_asm!(
         "mov r10, [rdi]",
         "mov [rsi], r10",

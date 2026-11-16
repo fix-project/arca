@@ -23,6 +23,7 @@ pub struct Backend {
     storage: Arc<RepositoryStorage>,
     runtime: Arc<FixOnArca<Arc<RepositoryStorage>>>,
     profile: bool,
+    remotes: Arc<fixremote::Config>,
 }
 
 impl Backend {
@@ -31,6 +32,7 @@ impl Backend {
             runtime: Arc::new(FixOnArca::memoized(storage.clone(), memoize).with_trust(trust)),
             storage,
             profile: false,
+            remotes: Arc::new(fixremote::Config::default()),
         }
     }
 
@@ -39,6 +41,11 @@ impl Backend {
         if enabled {
             self.runtime.enable_profile();
         }
+        self
+    }
+
+    pub fn with_remotes(mut self, config: fixremote::Config) -> Self {
+        self.remotes = Arc::new(config);
         self
     }
 
@@ -133,6 +140,7 @@ impl Backend {
             crate::user_scheduler_driver::RepositoryServices {
                 storage: self.storage.clone(),
                 todos,
+                remotes: self.remotes.clone(),
             },
             self.profile,
         )
@@ -143,8 +151,13 @@ impl Backend {
     pub fn eval(&self, value: Handle, scheduler: Tree, collector: Tree) -> Result<Outcome> {
         let storage = &*self.storage;
         let mode = storage.add_blob(b"eval");
-        let combination =
-            storage.add_tree(&[mode.into(), scheduler.into(), collector.into(), value]);
+        let combination = storage.add_tree(&[
+            Blob::literal(b"").unwrap().into(),
+            scheduler.into(),
+            mode.into(),
+            collector.into(),
+            value,
+        ]);
         let result = match self.schedule(combination, Vec::new())? {
             Ok(result) => result,
             failure => return Ok(failure),

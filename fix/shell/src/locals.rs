@@ -34,6 +34,7 @@ pub unsafe fn create(
                 .is_none()
         );
         handles::create_local(handles::address(result), address, bytes, metadata);
+        crate::descriptors::local(handles::address(result));
     }
 }
 
@@ -58,11 +59,10 @@ pub fn lift_all() {
             .map(|(address, backing)| Tuple(alloc::vec![Word(address as u64), Value(backing)]))
             .collect(),
     );
-    let (address, length) = crate::descriptors::range();
+    let slots = crate::descriptors::take_local();
     crate::continuation::operation("lift")
         .argument(records)
-        .word(address as u64)
-        .word(length as u64)
+        .blob(&slots)
         .call_with_current_continuation();
     unsafe {
         for index in 0..REGIONS {

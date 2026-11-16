@@ -1,76 +1,106 @@
-use crate::abi::{coordinate, coordinated, request};
-use crate::shell::{Root, as_tree, child, root};
-use fixwasm::{Blob, Error, Value, tree};
+use crate::abi::{coordinate, coordinated};
+use crate::shell::{Value, as_tree, capture, child};
+use fixwasm::{Blob, Error, Value as AsValue, tree};
 pub use fixwasm::{map, stream};
 
 pub struct Advice {
-    pub target: Root,
-    pub key: Root,
-    pub payload: Root,
+    pub target: Value,
+    pub key: Value,
+    pub payload: Value,
 }
 
 impl Advice {
     pub fn key_is(&self, key: &str) -> Result<bool, Error> {
-        self.key.equals(Blob::create(key.as_bytes()))
+        AsValue::equals(&self.key, Blob::create(key.as_bytes()))
     }
 }
 
-pub struct Continuation(Root);
-
-pub enum Execution {
-    Complete(Root),
-    Advice {
-        advice: Advice,
-        continuation: Continuation,
-    },
+/// Run an application and return its Apply coupon, delivering advice without a guest reply.
+pub async fn apply(
+    combination: &Value,
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+) -> Result<Value, Error> {
+    observed(
+        crate::io::Io
+            .application(tree![Blob::create(b"callable_apply"), combination])
+            .await?,
+        on_advice,
+    )
+    .await
 }
 
-impl Execution {
-    fn read(reply: (u64, Root)) -> Result<Self, Error> {
+/// Run an ordinary application and return its value without creating a coupon.
+pub async fn run(
+    combination: &Value,
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+) -> Result<Value, Error> {
+    observed(
+        crate::io::Io
+            .application(tree![Blob::create(b"callable_run"), combination])
+            .await?,
+        on_advice,
+    )
+    .await
+}
+
+/// Invoke a privileged callable with the same advisory notification handler.
+pub async fn invoke(
+    combination: &Value,
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+) -> Result<Value, Error> {
+    observed(
+        crate::io::Io
+            .application(tree![Blob::create(b"callable_invoke"), combination])
+            .await?,
+        on_advice,
+    )
+    .await
+}
+
+async fn observed(
+    mut reply: (u64, Value),
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+) -> Result<Value, Error> {
+    loop {
         match reply {
-            (0, value) => Ok(Self::Complete(value)),
+            (0, value) => return Ok(value),
             (2, event) => {
                 if as_tree(&event)?.len()? != 4 {
                     return Err(Error::WrongType);
                 }
-                Ok(Self::Advice {
-                    advice: Advice {
-                        target: child(&event, 1)?,
-                        key: child(&event, 2)?,
-                        payload: child(&event, 3)?,
-                    },
-                    continuation: Continuation(child(&event, 0)?),
-                })
+                let mut invocation = AdviceReturn(Some(child(&event, 0)?));
+                on_advice(&Advice {
+                    target: child(&event, 1)?,
+                    key: child(&event, 2)?,
+                    payload: child(&event, 3)?,
+                })?;
+                reply = crate::io::Io
+                    .application(tree![
+                        Blob::create(b"callable_resume"),
+                        invocation.0.take().unwrap()
+                    ])
+                    .await?;
             }
-            _ => Err(Error::WrongType),
+            _ => return Err(Error::WrongType),
         }
     }
 }
 
-pub fn apply(combination: &Root) -> Result<Execution, Error> {
-    Execution::read(request(tree![
-        Blob::create(b"callable_apply"),
-        combination
-    ])?)
-}
+// This token names a native invocation, not a captured Fix continuation.
+struct AdviceReturn(Option<Value>);
 
-pub fn invoke(combination: &Root) -> Result<Execution, Error> {
-    Execution::read(coordinate(
-        b"callable_invoke",
-        core::slice::from_ref(combination),
-    )?)
-}
-
-impl Continuation {
-    pub fn resume(self) -> Result<Execution, Error> {
-        Execution::read(coordinate(b"callable_resume", &[self.0])?)
+impl Drop for AdviceReturn {
+    fn drop(&mut self) {
+        if let Some(token) = self.0.take() {
+            let _ = coordinate(b"callable_discard", &[token]);
+        }
     }
 }
 
 pub mod worker {
     use super::*;
 
-    pub struct Notification(u64);
+    pub struct Notification(pub(crate) u64);
 
     pub fn listen() -> Result<Notification, Error> {
         Ok(Notification(
@@ -80,7 +110,7 @@ pub mod worker {
 
     impl Notification {
         pub fn wait(self) -> Result<(), Error> {
-            coordinated(b"worker_wait", &[root(self.0)?])?;
+            coordinated(b"worker_wait", &[capture(self.0)?])?;
             Ok(())
         }
     }
@@ -96,7 +126,7 @@ pub mod worker {
     }
 
     fn config(field: u64) -> Result<u64, Error> {
-        coordinated(b"worker_config", &[root(field)?])?.read_u64()
+        coordinated(b"worker_config", &[capture(field)?])?.read_u64()
     }
 
     pub fn id() -> Result<u64, Error> {
@@ -120,7 +150,7 @@ pub mod worker {
         Ok(())
     }
 
-    pub fn finish(value: &Root) -> Result<(), Error> {
+    pub fn finish(value: &Value) -> Result<(), Error> {
         coordinated(b"worker_finish", core::slice::from_ref(value))?;
         Ok(())
     }
@@ -136,26 +166,42 @@ pub mod queue {
     pub struct Queue(u64);
 
     impl Queue {
+        pub fn id(&self) -> u64 {
+            self.0
+        }
+
         pub fn open(index: u64) -> Self {
             Self(index)
         }
 
-        pub fn create(capacity: u64) -> Result<Self, Error> {
+        /// Open or create a queue shared by name within this scheduler run.
+        /// Reopening a queue requires the same capacity.
+        pub fn named(name: &[u8], capacity: u64) -> Result<Self, Error> {
             Ok(Self(
-                coordinated(b"queue_create", &[root(capacity)?])?.read_u64()?,
+                coordinated(
+                    b"queue_named",
+                    &[capture(fixwasm::Blob::create(name))?, capture(capacity)?],
+                )?
+                .read_u64()?,
             ))
         }
 
-        pub fn pop(&self) -> Result<Option<Root>, Error> {
+        pub fn create(capacity: u64) -> Result<Self, Error> {
+            Ok(Self(
+                coordinated(b"queue_create", &[capture(capacity)?])?.read_u64()?,
+            ))
+        }
+
+        pub fn pop(&self) -> Result<Option<Value>, Error> {
             let (status, value) = tree![self.0].coordinate(b"queue_pop")?;
             match status {
-                0 => Ok(Some(alloc::rc::Rc::new(value))),
+                0 => Ok(Some(Value::from_inner(value))),
                 1 => Ok(None),
                 _ => panic!("queue pop failed"),
             }
         }
 
-        pub fn push(&self, value: &Root) -> Result<bool, Error> {
+        pub fn push(&self, value: &Value) -> Result<bool, Error> {
             let (status, _) = tree![self.0, value].coordinate(b"queue_push")?;
             match status {
                 0 => Ok(true),

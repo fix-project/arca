@@ -29,6 +29,13 @@ impl Map {
         Ok(Self(value.read_u64()?))
     }
 
+    /// Open or create a map shared by name within the current scheduler run.
+    pub fn named(name: &[u8]) -> Result<Self, Error> {
+        let (status, value) = request(b"map_named", tree![crate::Blob::create(name)])?;
+        assert_eq!(status, 0, "named map failed");
+        Ok(Self(value.read_u64()?))
+    }
+
     pub fn count() -> Result<u64, Error> {
         let (status, value) = request(b"map_count", tree![])?;
         assert_eq!(status, 0, "map count failed");
@@ -48,6 +55,18 @@ impl Map {
             1 => Ok(None),
             _ => panic!("map get failed"),
         }
+    }
+
+    /// Check a batch of keys in one shared-map operation, preserving input order.
+    #[cfg(feature = "alloc")]
+    pub fn contains_keys<V: Value>(
+        &self,
+        keys: impl IntoIterator<Item = V>,
+    ) -> Result<alloc::vec::Vec<bool>, Error> {
+        let (status, present) =
+            request(b"map_contains_keys", tree![self.0, Tree::from_iter(keys)])?;
+        assert_eq!(status, 0, "map contains keys failed");
+        Ok(present.read()?.into_iter().map(|byte| byte != 0).collect())
     }
 
     pub fn insert(&self, key: impl Value, value: impl Value) -> Result<Option<Handle<Any>>, Error> {

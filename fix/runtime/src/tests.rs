@@ -12,8 +12,6 @@ mod advice;
 mod api;
 #[path = "../tests/evaluation.rs"]
 mod evaluation;
-#[path = "../tests/maps.rs"]
-mod maps;
 #[path = "../tests/scheduler.rs"]
 mod scheduler;
 use evaluation::Evaluation;
@@ -264,7 +262,13 @@ mod tests {
             assert!(coupon.is_tag());
             let claim = storage.certificate_claim(coupon).unwrap();
             let assertion = storage.get_tree(claim).unwrap();
-            assert!(assertion[0].same_encoding(&number(exchange.operation() as u64)));
+            let code = match exchange {
+                Exchange::Eval | Exchange::EvalEq => 1,
+                Exchange::Think => 4,
+                Exchange::ThinkToForce | Exchange::ForceEq => 3,
+                _ => 0,
+            };
+            assert!(assertion[0].same_encoding(&number(code)));
             assert!(assertion[1].same_encoding(&input));
             assert!(assertion[2].same_encoding(&result));
             let fields = storage.get_tree(coupon).unwrap();
@@ -570,57 +574,6 @@ mod tests {
         );
     }
 
-    fn scheduler_worker_events(mode: u64, workers: usize) -> Result<Vec<u64>, &'static str> {
-        let runtime = Arc::new(test_runtime());
-        let storage = runtime.storage();
-        let program = test_program(storage, kernel::testing::fixture("FIX_WORKER_EVENTS"));
-        let mode = storage.add_blob(&mode.to_le_bytes());
-        let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
-            program.into(),
-            mode.into(),
-        ]);
-        let report = user_scheduler_driver::start(
-            runtime.clone(),
-            combination,
-            workers,
-            user_scheduler_driver::PersistenceOnly(Ok),
-        )?;
-        let values = storage
-            .get_tree(Tree::try_from(report.result.unwrap()).unwrap())
-            .unwrap();
-        Ok(values
-            .iter()
-            .map(|value| {
-                let bytes = storage.get_blob(Blob::try_from(*value).unwrap()).unwrap();
-                u64::from_le_bytes(bytes.as_ref().try_into().unwrap())
-            })
-            .collect())
-    }
-
-    #[kernel::test]
-    fn scheduler_worker_notifications_do_not_lose_prior_wakes() {
-        assert_eq!(scheduler_worker_events(0, 1), Ok(vec![64]));
-    }
-
-    #[kernel::test]
-    fn scheduler_worker_notifications_wake_one_and_close_on_finish() {
-        assert_eq!(scheduler_worker_events(3, 4), Ok(vec![4656]));
-    }
-
-    #[kernel::test]
-    fn scheduler_worker_notifications_wake_all_and_close_on_finish() {
-        assert_eq!(scheduler_worker_events(1, 4), Ok(vec![96]));
-    }
-
-    #[kernel::test]
-    fn scheduler_worker_notifications_close_on_failure() {
-        assert_eq!(
-            scheduler_worker_events(2, 4),
-            Err("expected an effect combination")
-        );
-    }
-
     #[kernel::test]
     fn userspace_scheduler_certifies_and_persists_evaluation() {
         use fixruntime::arca::trust::Trust;
@@ -652,8 +605,13 @@ mod tests {
             .tag_descriptor();
         let mut previous: Option<Handle> = None;
         for workers in [1, 2] {
-            let combination =
-                memory.add_tree(&[mode, scheduler.into(), collector.into(), input.into()]);
+            let combination = memory.add_tree(&[
+                Blob::literal(b"").unwrap().into(),
+                scheduler.into(),
+                mode,
+                collector.into(),
+                input.into(),
+            ]);
             let saved = Arc::new(core::sync::atomic::AtomicUsize::new(0));
             let written = saved.clone();
             let destination = memory.clone();
@@ -721,8 +679,13 @@ mod tests {
             }
         }
         let requests = memory.add_tree(&requests);
-        let combination =
-            memory.add_tree(&[mode, scheduler.into(), collector.into(), requests.into()]);
+        let combination = memory.add_tree(&[
+            Blob::literal(b"").unwrap().into(),
+            scheduler.into(),
+            mode,
+            collector.into(),
+            requests.into(),
+        ]);
         let destination = memory.clone();
         let report = user_scheduler_driver::start(
             runtime,

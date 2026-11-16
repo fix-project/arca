@@ -8,6 +8,51 @@ fn request(value: impl Value) -> Result<(u64, Handle<Any>), Error> {
 /// A worker-local byte stream. Close it explicitly when finished.
 pub struct Stream(u64);
 
+/// A worker-local TCP listener. Close it explicitly when finished.
+pub struct TcpListener(u64);
+
+impl TcpListener {
+    pub fn bind(ip: [u8; 4], port: u16) -> Result<Option<Self>, Error> {
+        let (status, value) = request(tree![
+            Blob::create(b"tcp_listen"),
+            Blob::create(ip),
+            port as u64
+        ])?;
+        Ok(if status == 0 {
+            Some(Self(value.read_u64()?))
+        } else {
+            None
+        })
+    }
+
+    pub fn local_addr(&self) -> Result<Option<([u8; 4], u16)>, Error> {
+        let (status, value) = request(tree![Blob::create(b"tcp_local_addr"), self.0])?;
+        if status != 0 {
+            return Ok(None);
+        }
+        let address = Handle::<Object<Tree>>::try_from(value)?;
+        let mut ip = [0; 4];
+        address.get(0).read_into(0, &mut ip)?;
+        let port = u16::try_from(address.get(1).read_u64()?)?;
+        Ok(Some((ip, port)))
+    }
+
+    pub fn accept(&self) -> Result<Option<Stream>, Error> {
+        let (status, value) = request(tree![Blob::create(b"tcp_accept"), self.0])?;
+        Ok(if status == 0 {
+            Some(Stream(value.read_u64()?))
+        } else {
+            None
+        })
+    }
+
+    pub fn close(self) -> Result<(), Error> {
+        let (status, _) = request(tree![Blob::create(b"tcp_listener_close"), self.0])?;
+        assert_eq!(status, 0, "listener close failed");
+        Ok(())
+    }
+}
+
 impl Stream {
     pub fn connect(host: &str, port: u16) -> Result<Option<Self>, Error> {
         let (status, value) = request(tree![

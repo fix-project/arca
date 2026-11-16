@@ -98,3 +98,19 @@ for available targets without fetching data solely to satisfy a hint. `always`
 persists all intermediate coupons. `never` disables automatic persistence and
 disk-cache lookup. In `never` mode the scheduler returns the result directly;
 generated coupons are not published and `eval` and `think` skip coupon verification.
+
+## Serving remote evaluations
+
+Start a TCP server for the current repository with:
+
+```sh
+fix -C /path/to/repository serve --listen 127.0.0.1:9000 -j 4
+```
+
+The server uses the usual scheduler, collector, memory, remote, and signing
+options, together with the repository's remotes and the user's trust settings.
+It prints its bound address on stderr; port zero selects an available port.
+All connections share one VM. The scheduler handles connections and evaluations;
+I/O waits run on kernel threads without occupying evaluation workers. `--jobs`
+and `--memory` configure the whole server. Transfers use the negotiated Fix protocol and
+signed coupon certificates described in [remote runtimes](../remote/README.md).

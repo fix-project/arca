@@ -8,6 +8,7 @@ void w2c_fix_advise(struct w2c_fix *, uint32_t, uint32_t, uint32_t, uint32_t,
                     uint32_t);
 uint32_t w2c_fix_coordinate(struct w2c_fix *, uint32_t, uint32_t, uint32_t,
                             uint32_t);
+uint32_t w2c_fix_coordinate_handles(struct w2c_fix *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 uint32_t w2c_fix_get_type(struct w2c_fix *, uint32_t);
 void w2c_fix_close(struct w2c_fix *, uint32_t);
 uint32_t w2c_fix_create_blob(struct w2c_fix *, uint32_t, uint32_t);

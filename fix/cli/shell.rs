@@ -41,6 +41,10 @@ impl Shell {
             .expect("Fix shell is not initialized")
             .close()
     }
+    /// Serve remote evaluation requests using this repository and shell configuration.
+    pub fn serve(&mut self, listen: &str) -> Result<(), Box<dyn std::error::Error>> {
+        Self::with(|client| crate::serve::run(client, listen))
+    }
     pub fn reuse_vm(&mut self) {
         Self::with(Client::reuse_vm)
     }

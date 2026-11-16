@@ -4,17 +4,6 @@ pub const MAX_WITNESSES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
-pub enum Statement {
-    Equivalent = 0,
-    Eval = 1,
-    Apply = 2,
-    Force = 3,
-    Think = 4,
-    Select = 6,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u64)]
 pub enum Exchange {
     Congruence = 0,
     ForceResultEq = 1,
@@ -31,15 +20,4 @@ pub enum Exchange {
     ThunkShallowEq = 15,
     EvalResultEq = 20,
     ForceEq = 24,
-}
-
-impl Exchange {
-    pub const fn statement(self) -> Statement {
-        match self {
-            Self::Eval | Self::EvalEq => Statement::Eval,
-            Self::Think => Statement::Think,
-            Self::ThinkToForce | Self::ForceEq => Statement::Force,
-            _ => Statement::Equivalent,
-        }
-    }
 }

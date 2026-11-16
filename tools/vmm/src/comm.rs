@@ -253,7 +253,10 @@ impl Control {
                 }
             }
             Request::Listen { ip, port } => {
-                let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
+                let listener = match TcpListener::bind(SocketAddr::from((ip, port))) {
+                    Ok(listener) => listener,
+                    Err(error) => return Response::Err(error.kind().into()),
+                };
                 let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
                 let vm_cl = self.vm.clone();
                 let next_pipe_cl = self.next_pipe_idx.clone();
@@ -479,7 +482,15 @@ pub fn listener_thread(
                 if session.wait(listener.as_raw_fd(), libc::POLLIN).is_err() {
                     return;
                 }
-                let (stream, _) = listener.accept().unwrap();
+                let (stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        if pipe.send(&Response::Err(error.kind().into())).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                };
                 let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
                 let stream = Cancellable {
                     inner: stream,
@@ -494,6 +505,13 @@ pub fn listener_thread(
                 let _ = pipe.send(&Response::Ack);
                 return;
             }
+            Request::LocalAddress => match listener.local_addr() {
+                Ok(SocketAddr::V4(address)) => {
+                    Response::Address(address.ip().octets(), address.port())
+                }
+                Ok(SocketAddr::V6(_)) => Response::Err(std::io::ErrorKind::Unsupported.into()),
+                Err(error) => Response::Err(error.kind().into()),
+            },
         };
         if pipe.send(&response).is_err() {
             return;

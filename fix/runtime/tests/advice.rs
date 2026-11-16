@@ -21,8 +21,12 @@ fn advice_events_preserve_order_targets_and_application_identity() {
         (b"sample::local", b"probe"),
         (b"sample::local", b"probe"),
     ];
-    for privileged in [false, true] {
-        let mut execution = runtime.execute_observed(combination, privileged).unwrap();
+    for privileged in [Some(false), Some(true), None] {
+        let mut execution = match privileged {
+            Some(privileged) => runtime.execute_observed(combination, privileged),
+            None => runtime.run_observed(combination),
+        }
+        .unwrap();
         let mut events = Vec::new();
         let mut local_targets = Vec::new();
         let contents = b"freshly constructed advice target contents";
@@ -65,7 +69,7 @@ fn advice_events_preserve_order_targets_and_application_identity() {
             .map(|(key, payload)| (key.as_slice(), payload.as_slice()))
             .collect();
         assert_eq!(actual.as_slice(), expected);
-        let expected: Handle = if privileged {
+        let expected: Handle = if privileged != Some(false) {
             combination.into()
         } else {
             unobserved.into()
@@ -123,4 +127,26 @@ fn advice_preserves_canonical_checkpoint_identity() {
             storage.canonicalize(unobserved).unwrap()
         );
     }
+}
+
+#[kernel::test]
+fn uncertified_applications_keep_ordinary_privileges() {
+    let runtime = test_runtime();
+    let storage = runtime.storage();
+    let program = test_program(storage, kernel::testing::fixture("FIX_PRIVILEGED"));
+    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+    let Execution::Complete(result) = runtime.run_observed(combination).unwrap() else {
+        panic!("expected the application to finish")
+    };
+    let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert!(
+        storage
+            .equals(fields[0], Blob::literal(b"Wasm.trap").unwrap().into())
+            .unwrap()
+    );
+    let certificate = runtime.execute(combination).unwrap();
+    let claim = storage
+        .get_tree(storage.certificate_claim(certificate).unwrap())
+        .unwrap();
+    assert!(storage.equals(result, claim[2]).unwrap());
 }

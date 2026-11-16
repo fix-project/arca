@@ -172,28 +172,40 @@ pub mod net {
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            Self::try_bind(ip, port).expect("host TCP listen failed")
+        }
+
+        pub fn try_bind(ip: &[u8; 4], port: u16) -> Result<TcpListener, ErrorKind> {
             let host = crate::pipe::HOST.get().unwrap();
             let ip = *ip;
-            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
-            else {
-                todo!();
-            };
-            unsafe {
-                TcpListener {
-                    pipe: KMutex::new(ListenerPipe::new(get_pipe(id))),
-                }
+            match host.request(&control::Request::Listen { ip, port }) {
+                control::Response::Pipe(id) => Ok(TcpListener {
+                    pipe: KMutex::new(unsafe { ListenerPipe::new(get_pipe(id)) }),
+                }),
+                control::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
+            }
+        }
+
+        pub fn local_addr(&self) -> Result<([u8; 4], u16), ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::LocalAddress) {
+                listener::Response::Address(ip, port) => Ok((ip, port)),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let mut pipe = self.pipe.lock();
-            let listener::Response::Pipe(id) = pipe.request(&listener::Request::Accept) else {
-                todo!();
-            };
-            unsafe {
-                TcpStream {
-                    pipe: StreamPipe::new(get_pipe(id)),
-                }
+            self.try_accept().expect("host TCP accept failed")
+        }
+
+        pub fn try_accept(&self) -> Result<TcpStream, ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::Accept) {
+                listener::Response::Pipe(id) => Ok(TcpStream {
+                    pipe: unsafe { StreamPipe::new(get_pipe(id)) },
+                }),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
     }

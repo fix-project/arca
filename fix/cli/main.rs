@@ -105,6 +105,12 @@ enum Command {
         #[arg(long)]
         sign: bool,
     },
+    /// Serve remote evaluation requests from this repository over TCP.
+    Serve {
+        /// TCP address to bind (for example, 127.0.0.1:9000).
+        #[arg(long, value_name = "HOST:PORT")]
+        listen: String,
+    },
     /// Read and evaluate low-level Fix expressions interactively.
     Repl,
     #[command(subcommand)]
@@ -280,7 +286,11 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     if !bindings.is_empty()
         && matches!(
             command,
-            Command::Init { .. } | Command::Plumbing(_) | Command::Remote(_) | Command::Trust(_)
+            Command::Init { .. }
+                | Command::Plumbing(_)
+                | Command::Remote(_)
+                | Command::Trust(_)
+                | Command::Serve { .. }
         )
     {
         return Err("this command takes no -b bindings".into());
@@ -295,11 +305,16 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 | Command::Export { .. }
                 | Command::FlatwareExport { .. }
                 | Command::Repl
+                | Command::Serve { .. }
         )
     {
         return Err("-l labels an expression result".into());
     }
     match command {
+        Command::Serve { listen } => {
+            global.open(options)?.serve(&listen)?;
+            Ok(0)
+        }
         Command::Repl => repl::run(global.open(options)?, bindings),
         Command::Eval { ref expression, .. }
         | Command::Think { ref expression }

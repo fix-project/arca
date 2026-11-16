@@ -1,5 +1,5 @@
 load("//build:defs.bzl", "WASM", "fix_procedure")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -8,29 +8,34 @@ rust_library(
     crate_name = "fixscheduler",
     edition = "2024",
     srcs = glob(["src/**/*.rs"]),
-    deps = ["//fix/sdk:sdk_import"],
+    deps = ["//fix/sdk:sdk_import", "//fix/remote:transport", "//fix/remote:protocol", "@crates//:embedded-io", "@crates//:postcard"],
     target_compatible_with = ["@platforms//cpu:wasm32"],
 )
 
-exports_files(["examples/parallel.rs"])
-
-filegroup(
-    name = "parallel_sources",
-    srcs = glob(["examples/parallel/*.rs"]),
-    visibility = ["//programs/fix:__pkg__"],
-)
-
-alias(name = "parallel", actual = "//programs/fix:scheduler_elf")
-
-rust_shared_library(
-    name = "serial_wasm",
-    srcs = ["examples/serial.rs"],
-    crate_root = "examples/serial.rs",
+rust_test(
+    name = "distributed_test",
+    srcs = ["tests/distributed.rs"],
     edition = "2024",
-    platform = WASM,
-    deps = [":sdk", "//fix/sdk:sdk_import", "@crates//:dlmalloc"],
+    deps = ["//fix/handle", "//fix/repository", "//fix/remote", "//fix/remote:testing", "//fix/certificates", "@crates//:serde_json", "@crates//:hex"],
+    data = ["//programs/fix/schedulers:parallel_elf", "//programs/fix/schedulers:distributed_elf", "//programs/fix/schedulers:serial_elf", "//programs/fix/schedulers:onepass_elf", "//programs/fix/schedulers:hint_elf", "//programs/fix/schedulers:advisor_elf", "//bootstrap:seed_tool", "//fix/cli:fix", "//fix/proof/collector:collector_elf", "//programs/fix:compile_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf"],
+    rustc_env = {
+        "DISTRIBUTED": "$(rootpath //programs/fix/schedulers:distributed_elf)",
+        "ONEPASS": "$(rootpath //programs/fix/schedulers:onepass_elf)",
+        "HINT": "$(rootpath //programs/fix/schedulers:hint_elf)",
+        "ADVISOR": "$(rootpath //programs/fix/schedulers:advisor_elf)",
+        "SERIAL": "$(rootpath //programs/fix/schedulers:serial_elf)",
+        "PARALLEL": "$(rootpath //programs/fix/schedulers:parallel_elf)",
+        "SEED": "$(rootpath //bootstrap:seed_tool)",
+        "FIX": "$(rootpath //fix/cli:fix)",
+        "COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
+        "COMPILER": "$(rootpath //programs/fix:compile_elf)",
+        "ADD": "$(rootpath //programs/fix:addblob_elf)",
+        "PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
+    },
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local"],
 )
-fix_procedure(name = "serial", wasm = ":serial_wasm", memories = 4)
 
 rust_shared_library(
     name = "advisor_wasm",
@@ -51,3 +56,11 @@ rust_shared_library(
     deps = ["//fix/sdk"],
 )
 fix_procedure(name = "unavailable_advisor", wasm = ":unavailable_advisor_wasm", memories = 3)
+
+rust_test(
+    name = "tasks_test",
+    srcs = ["tests/tasks.rs", "src/executor/task.rs"],
+    crate_root = "tests/tasks.rs",
+    edition = "2024",
+    size = "small",
+)

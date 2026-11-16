@@ -238,6 +238,21 @@ pub fn coordinate(destination: Reference, name: &[u8], arguments: Reference) -> 
     reply.read()
 }
 
+pub fn coordinate_handles(destination: Reference, name: &[u8], arguments: &[Reference]) -> u64 {
+    crate::locals::lift(arguments);
+    let bytes = arguments
+        .iter()
+        .flat_map(|arg| handles::bytes(*arg))
+        .collect::<alloc::vec::Vec<_>>();
+    let reply = operation("coordinate_handles")
+        .blob(name)
+        .blob(&bytes)
+        .word(handles::address(destination) as u64)
+        .call_with_current_continuation();
+    let reply: Word<Runtime> = reply.try_into().expect("coordination returned no status");
+    reply.read()
+}
+
 pub fn trap(code: u32) -> ! {
     operation("trap")
         .word(u64::from(code))

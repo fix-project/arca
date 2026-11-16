@@ -163,7 +163,9 @@ fn execute(
             return Err(CliError::Usage("expected a callable combination"));
         };
         let combination = Tree::try_from(crate::api::resolve(repository, combination)?)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_profile(profile)
+            .with_remotes(remotes);
         return report(&backend, backend.call(combination));
     }
     if command == "schedule" {
@@ -201,7 +203,9 @@ fn execute(
                 .add_tagger(&*storage, tagger)
                 .map_err(CliError::Trust)?;
         }
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_profile(profile)
+            .with_remotes(remotes);
         let result = backend
             .schedule(combination, todos)
             .map_err(CliError::Backend)?;
@@ -217,7 +221,9 @@ fn execute(
         trust
             .add_tagger(&*storage, collector)
             .map_err(CliError::Trust)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_profile(profile)
+            .with_remotes(remotes);
         let result = backend
             .eval(value, scheduler, collector)
             .map_err(CliError::Backend)?;

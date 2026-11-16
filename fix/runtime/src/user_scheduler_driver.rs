@@ -22,6 +22,42 @@ pub trait Services: Send + Sync {
     fn put(&self, value: Handle) -> Result<Handle, &'static str>;
     fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, &'static str>;
     fn set_todo(&self, reference: Ref, value: Handle) -> Result<(), &'static str>;
+    fn remotes(&self) -> &[fixremote::Remote] {
+        &[]
+    }
+    fn export(&self, _: &[Handle], _: &[Object]) -> Result<Vec<u8>, &'static str> {
+        Err("object export is unsupported")
+    }
+    fn information(
+        &self,
+        _: Handle,
+        _: u32,
+        _: u64,
+    ) -> Result<fixremote::protocol::Information, &'static str> {
+        Err("object inventory is unsupported")
+    }
+    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, &'static str> {
+        Err("trust configuration is unsupported")
+    }
+    fn certify(
+        &self,
+        _: [u8; 32],
+        _: &[alloc::string::String],
+    ) -> Result<
+        (
+            fixremote::protocol::CertificateRef,
+            fixremote::protocol::Record,
+        ),
+        &'static str,
+    > {
+        Err("tag signing is unsupported")
+    }
+    fn missing(&self, _: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, &'static str> {
+        Err("object inventory is unsupported")
+    }
+    fn import(&self, _: &[u8]) -> Result<Vec<Handle>, &'static str> {
+        Err("object import is unsupported")
+    }
 }
 
 pub struct PersistenceOnly<F>(pub F);
@@ -40,8 +76,89 @@ impl<F: Fn(Handle) -> Result<Handle, &'static str> + Send + Sync> Services for P
 pub struct RepositoryServices {
     pub storage: Arc<crate::storage::repository::RepositoryStorage>,
     pub todos: Vec<(Ref, Blob)>,
+    pub remotes: Arc<fixremote::Config>,
 }
 impl Services for RepositoryServices {
+    fn remotes(&self) -> &[fixremote::Remote] {
+        &self.remotes.remotes
+    }
+    fn export(
+        &self,
+        roots: &[Handle],
+        without_backing: &[Object],
+    ) -> Result<Vec<u8>, &'static str> {
+        let roots = roots
+            .iter()
+            .map(|value| self.put(*value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let without_backing = without_backing
+            .iter()
+            .map(|object| {
+                self.storage
+                    .canonicalize((*object).into())
+                    .map_err(|_| "cannot canonicalize omitted object")
+            })
+            .map(|value| {
+                value.and_then(|value| {
+                    Object::try_from(Handle::from(value)).map_err(|_| "expected object")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fixremote::export(self.storage.repository(), &roots, &without_backing)
+            .map_err(|_| "could not export objects")
+    }
+    fn information(
+        &self,
+        collector: Handle,
+        parallelism: u32,
+        memory: u64,
+    ) -> Result<fixremote::protocol::Information, &'static str> {
+        let collector = self.put(collector)?;
+        fixremote::information(
+            self.storage.repository(),
+            collector,
+            parallelism,
+            Some(memory),
+        )
+        .map_err(|_| "could not read object inventory")
+    }
+    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, &'static str> {
+        fixremote::trusted_keys(&self.remotes).map_err(|_| "invalid trusted keys")
+    }
+    fn certify(
+        &self,
+        name: [u8; 32],
+        keys: &[alloc::string::String],
+    ) -> Result<
+        (
+            fixremote::protocol::CertificateRef,
+            fixremote::protocol::Record,
+        ),
+        &'static str,
+    > {
+        fixremote::certify(
+            self.storage.repository(),
+            name,
+            keys,
+            &self.remotes.policy.identities,
+            |identity, namespace, message| {
+                kernel::host::os::ssh_sign(identity, namespace, message)
+                    .map_err(|error| fixcertificates::Error::Signing(alloc::format!("{error:?}")))
+            },
+        )
+        .map_err(|_| "cannot certify tag")
+    }
+    fn missing(
+        &self,
+        offers: &[fixremote::protocol::Offer],
+    ) -> Result<Vec<[u8; 32]>, &'static str> {
+        fixremote::missing(self.storage.repository(), offers)
+            .map_err(|_| "invalid transfer proposal")
+    }
+    fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, &'static str> {
+        fixremote::import(self.storage.repository(), bytes, &self.remotes)
+            .map_err(|_| "could not authenticate imported objects")
+    }
     fn put(&self, value: Handle) -> Result<Handle, &'static str> {
         self.storage
             .save(value)
@@ -178,16 +295,79 @@ impl Saver {
     }
 }
 
+#[derive(Default)]
+struct Applications {
+    state: KMutex<(
+        alloc::collections::VecDeque<(usize, &'static [u8], Handle)>,
+        bool,
+    )>,
+    changed: KCondvar,
+}
+impl Applications {
+    fn push(&self, id: usize, operation: &'static [u8], argument: Handle) {
+        self.state.lock().0.push_back((id, operation, argument));
+        self.changed.notify_one();
+    }
+    fn pop(&self) -> Option<(usize, &'static [u8], Handle)> {
+        let mut state = self.state.lock();
+        loop {
+            if state.1 {
+                return None;
+            }
+            if let Some(job) = state.0.pop_front() {
+                return Some(job);
+            }
+            state = self.changed.wait(state);
+        }
+    }
+    fn close(&self) {
+        let mut state = self.state.lock();
+        state.1 = true;
+        state.0.clear();
+        self.changed.notify_all();
+    }
+}
+
+fn discard_advice(storage: &dyn Storage, shared: &Shared, result: EffectResult) {
+    let _ = (|| {
+        let reply = storage.get_tree(Tree::try_from(result.ok()?).ok()?).ok()?;
+        if integer(storage, *reply.first()?).ok()? == 2 {
+            let event = storage
+                .get_tree(Tree::try_from(*reply.get(1)?).ok()?)
+                .ok()?;
+            shared
+                .suspended
+                .lock()
+                .remove(&integer(storage, *event.first()?).ok()?);
+        }
+        Some(())
+    })();
+}
+
+type SharedStream = Arc<KMutex<kernel::host::net::Stream>>;
+type SharedListener = Arc<kernel::host::net::TcpListener>;
+type EffectResult = Result<Handle, &'static str>;
+
+struct PendingEffect {
+    invocation: bool,
+    result: Option<EffectResult>,
+}
+
 struct Shared {
     saved_claims: SavedClaims,
     suspended: KMutex<BTreeMap<usize, (bool, Suspended)>>,
     next_suspended: AtomicUsize,
+    applications: Applications,
     saver: Saver,
     saving: AtomicBool,
     queues: KMutex<WorkQueues<Handle>>,
     maps: KMutex<Maps<Handle, Handle>>,
     event: WorkerEvent,
-    streams: Vec<KMutex<Vec<Option<kernel::host::net::Stream>>>>,
+    streams: KMutex<Vec<Option<SharedStream>>>,
+    listeners: KMutex<Vec<Option<SharedListener>>>,
+    pending_effects: KMutex<BTreeMap<usize, PendingEffect>>,
+    next_effect: AtomicUsize,
+    completed_effects: KMutex<Vec<usize>>,
     services: Box<dyn Services>,
     outcome: KMutex<Option<Result<Outcome, &'static str>>>,
     stopped: AtomicBool,
@@ -215,6 +395,7 @@ impl Shared {
         self.outcome.lock().get_or_insert(result);
         self.stopped.store(true, Ordering::Release);
         self.event.close();
+        self.applications.close();
     }
 
     /// Ends the run because a combination it needed is not an application.
@@ -272,17 +453,22 @@ pub fn start_profiled<
     let shared = Arc::new(Shared {
         saved_claims: SavedClaims::with_profile(profile),
         suspended: KMutex::new(BTreeMap::new()),
+        pending_effects: KMutex::new(BTreeMap::new()),
+        next_effect: AtomicUsize::new(0),
+        completed_effects: KMutex::new(Vec::new()),
         next_suspended: AtomicUsize::new(0),
+        applications: Applications::default(),
         saver: Saver::default(),
         saving: AtomicBool::new(true),
         queues: KMutex::new(WorkQueues::new(workers, MAX_QUEUE_CAPACITY, workers + 1)),
         maps: KMutex::new(Maps::new()),
         event: WorkerEvent::default(),
         services: Box::new(services),
-        streams: (0..workers).map(|_| KMutex::new(Vec::new())).collect(),
+        streams: KMutex::new(Vec::new()),
+        listeners: KMutex::new(Vec::new()),
         outcome: KMutex::new(None),
         stopped: AtomicBool::new(false),
-        remaining: AtomicUsize::new(workers),
+        remaining: AtomicUsize::new(workers + 1),
         coordination_calls: AtomicUsize::new(0),
         executed: (0..workers).map(|_| AtomicUsize::new(0)).collect(),
         profile: profile.then(|| KMutex::new(BTreeMap::new())),
@@ -312,15 +498,45 @@ pub fn start_profiled<
         let coordinator = coordinator.clone();
         let runtime = runtime.clone();
         let shared = shared.clone();
-
         spawn(move || {
-            let result = run(&runtime, &shared, worker, combination);
-
-            if let Err(error) = result {
+            while let Some((id, operation, argument)) = shared.applications.pop() {
+                if !shared.pending_effects.lock().contains_key(&id) {
+                    if operation == b"callable_resume" {
+                        if let Ok(token) = integer(runtime.storage(), argument) {
+                            shared.suspended.lock().remove(&token);
+                        }
+                    }
+                    continue;
+                }
+                let result = handle_task(&runtime, &shared, worker, operation, &[argument], false)
+                    .map(|(status, value)| {
+                        let storage = runtime.storage();
+                        storage
+                            .add_tree(&[storage.add_blob(&status.to_le_bytes()).into(), value])
+                            .into()
+                    });
+                let mut pending = shared.pending_effects.lock();
+                if let Some(slot) = pending.get_mut(&id) {
+                    slot.result = Some(result);
+                    shared.completed_effects.lock().push(id);
+                } else {
+                    discard_advice(runtime.storage(), &shared, result);
+                }
+                drop(pending);
+                let _ = shared.event.wake(true);
+            }
+            shared.remaining.fetch_sub(1, Ordering::Release);
+            coordinator.unpark();
+        });
+    }
+    {
+        let coordinator = coordinator.clone();
+        let runtime = runtime.clone();
+        let shared = shared.clone();
+        spawn(move || {
+            if let Err(error) = run(&runtime, &shared, 0, combination) {
                 shared.finish(Err(error));
             }
-
-            let _ = shared.queues.lock().close(worker);
             shared.remaining.fetch_sub(1, Ordering::Release);
             coordinator.unpark();
         });
@@ -329,6 +545,7 @@ pub fn start_profiled<
     while shared.remaining.load(Ordering::Acquire) != 0 {
         kthread::park();
     }
+    shared.suspended.lock().clear();
     shared.saver.close();
     while shared.saving.load(Ordering::Acquire) {
         kthread::park();
@@ -435,9 +652,9 @@ pub fn start_profiled<
     Ok(report)
 }
 
-fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
-    runtime: &FixOnArca<S>,
-    shared: &Shared,
+fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static>(
+    runtime: &Arc<FixOnArca<S>>,
+    shared: &Arc<Shared>,
     worker: usize,
     combination: Tree,
 ) -> Result<(), &'static str> {
@@ -467,7 +684,15 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             if shared.profile.is_some() {
                 shared.coordination_calls.fetch_add(1, Ordering::Relaxed);
             }
-            match handle_task(runtime, shared, worker, name, args, true) {
+            let reply = if matches!(
+                name,
+                b"application_start" | b"effect_ready" | b"effect_discard" | b"worker_events"
+            ) {
+                handle_async_task(runtime, shared, worker, name, args)
+            } else {
+                handle_task(runtime, shared, worker, name, args, true)
+            };
+            match reply {
                 Ok((status, value)) if !shared.stopped() => {
                     crate::arca::CoordinationAction::Resume(status, value)
                 }
@@ -486,9 +711,11 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     Ok(())
 }
 
-fn handle_effect<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
-    runtime: &FixOnArca<S>,
-    shared: &Shared,
+fn handle_effect<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: &Arc<FixOnArca<S>>,
+    shared: &Arc<Shared>,
     worker: usize,
     effect: Handle,
 ) -> Result<Handle, &'static str> {
@@ -502,9 +729,115 @@ fn handle_effect<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     };
     let name = Blob::try_from(*name).map_err(|_| "expected an effect name Blob")?;
     let name = storage.get_blob(name).map_err(|_| "missing effect name")?;
-    let (status, value) = handle_task(runtime, shared, worker, &name, args, false)?;
+    let (status, value) = handle_async_task(runtime, shared, worker, &name, args)?;
     let status = storage.add_blob(&status.to_le_bytes());
     Ok(storage.add_tree(&[status.into(), value]).into())
+}
+
+fn handle_async_task<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: &Arc<FixOnArca<S>>,
+    shared: &Arc<Shared>,
+    worker: usize,
+    name: &[u8],
+    args: &[Handle],
+) -> Result<(u64, Handle), &'static str> {
+    let storage = runtime.storage();
+    Ok(match (name, args) {
+        (b"application_start", [effect]) => {
+            let call = storage
+                .get_tree(Tree::try_from(*effect).map_err(|_| "invalid invocation")?)
+                .map_err(|_| "missing invocation")?;
+            let [operation, argument] = call.as_ref() else {
+                return Err("invalid invocation");
+            };
+            let operation = storage
+                .get_blob(Blob::try_from(*operation).map_err(|_| "invalid invocation operation")?)
+                .map_err(|_| "missing invocation operation")?;
+            let operation: &'static [u8] = match operation.as_ref() {
+                b"callable_run" => b"callable_run",
+                b"callable_apply" => b"callable_apply",
+                b"callable_invoke" => b"callable_invoke",
+                b"callable_resume" => b"callable_resume",
+                _ => return Err("invalid invocation operation"),
+            };
+            let id = shared.next_effect.fetch_add(1, Ordering::Relaxed);
+            shared.pending_effects.lock().insert(
+                id,
+                PendingEffect {
+                    invocation: true,
+                    result: None,
+                },
+            );
+            shared.applications.push(id, operation, *argument);
+            (0, storage.add_blob(&(id as u64).to_le_bytes()).into())
+        }
+        (b"effect_start", [effect]) => {
+            let id = shared.next_effect.fetch_add(1, Ordering::Relaxed);
+            shared.pending_effects.lock().insert(
+                id,
+                PendingEffect {
+                    invocation: false,
+                    result: None,
+                },
+            );
+            let effect = *effect;
+            let runtime = runtime.clone();
+            let shared = shared.clone();
+            spawn(move || {
+                let result = handle_effect(&runtime, &shared, worker, effect);
+                if let Some(slot) = shared.pending_effects.lock().get_mut(&id) {
+                    slot.result = Some(result);
+                    shared.completed_effects.lock().push(id);
+                }
+                let _ = shared.event.wake(true);
+            });
+            (0, storage.add_blob(&(id as u64).to_le_bytes()).into())
+        }
+        (name @ (b"effect_ready" | b"worker_events"), []) => {
+            let epoch = shared.event.listen();
+            let completed = core::mem::take(&mut *shared.completed_effects.lock());
+            let mut results = Vec::new();
+            for id in completed {
+                let effect = shared.pending_effects.lock().remove(&id);
+                if let Some(effect) = effect {
+                    let result = effect.result.expect("notified effect must be complete")?;
+                    results.push(
+                        storage
+                            .add_tree(&[
+                                storage.add_blob(&(id as u64).to_le_bytes()).into(),
+                                result,
+                            ])
+                            .into(),
+                    );
+                }
+            }
+            let results = storage.add_tree(&results).into();
+            if name == b"worker_events" {
+                (
+                    0,
+                    storage
+                        .add_tree(&[storage.add_blob(&epoch.to_le_bytes()).into(), results])
+                        .into(),
+                )
+            } else {
+                (0, results)
+            }
+        }
+        (b"effect_discard", [id]) => {
+            let id = integer(storage, *id).map_err(|_| "invalid effect token")?;
+            if let Some(PendingEffect {
+                invocation: true,
+                result: Some(result),
+            }) = shared.pending_effects.lock().remove(&id)
+            {
+                discard_advice(storage, shared, result);
+            }
+            (0, storage.add_blob(b"").into())
+        }
+        _ => handle_task(runtime, shared, worker, &name, args, false)?,
+    })
 }
 
 fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
@@ -522,15 +855,19 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             name,
             b"callable_invoke"
                 | b"callable_resume"
+                | b"callable_discard"
                 | b"map_create"
+                | b"map_named"
                 | b"map_count"
                 | b"map_get"
+                | b"map_contains_keys"
                 | b"map_compare_exchange"
                 | b"map_remove"
                 | b"storage_cache"
                 | b"storage_claims"
                 | b"storage_identify"
                 | b"queue_create"
+                | b"queue_named"
                 | b"queue_count"
                 | b"queue_pop"
                 | b"queue_push"
@@ -546,6 +883,10 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         return Err("unsupported scheduler coordination operation");
     }
     let task = (|| match (name, args) {
+        (b"callable_run", [value]) => {
+            let execution = runtime.run_observed(value_combination(*value)?);
+            observed_reply(runtime, shared, worker, true, execution)
+        }
         (b"callable_apply", [value]) => {
             let execution = runtime.execute_observed(value_combination(*value)?, false);
             observed_reply(runtime, shared, worker, true, execution)
@@ -553,6 +894,15 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         (b"callable_invoke", [value]) => {
             let execution = runtime.execute_observed(combination(*value)?, true);
             observed_reply(runtime, shared, worker, false, execution)
+        }
+        (b"callable_discard", [token]) => {
+            let token = integer(storage, *token)?;
+            shared
+                .suspended
+                .lock()
+                .remove(&token)
+                .ok_or(Error::Invalid)?;
+            Ok((0, storage.add_blob(b"").into()))
         }
         (b"callable_resume", [token]) => {
             let token = integer(storage, *token)?;
@@ -610,7 +960,6 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     match execution {
         Ok(Execution::Complete(value)) => {
             if application {
-                runtime.index_claim(value).map_err(|_| Error::Invalid)?;
                 shared.executed[worker].fetch_add(1, Ordering::Relaxed);
             }
             Ok((0, value))
@@ -698,14 +1047,17 @@ fn text(storage: &dyn Storage, value: Handle) -> Result<alloc::string::String, E
     alloc::string::String::from_utf8(bytes.into_vec()).map_err(|_| Error::Invalid)
 }
 
-fn add_stream(shared: &Shared, worker: usize, stream: kernel::host::net::Stream) -> usize {
-    let mut streams = shared.streams[worker].lock();
-    if let Some(index) = streams.iter().position(Option::is_none) {
-        streams[index] = Some(stream);
+fn add_stream(shared: &Shared, stream: kernel::host::net::Stream) -> usize {
+    insert_resource(&mut shared.streams.lock(), Arc::new(KMutex::new(stream)))
+}
+
+fn insert_resource<T>(resources: &mut Vec<Option<T>>, resource: T) -> usize {
+    if let Some(index) = resources.iter().position(Option::is_none) {
+        resources[index] = Some(resource);
         index
     } else {
-        let index = streams.len();
-        streams.push(Some(stream));
+        let index = resources.len();
+        resources.push(Some(resource));
         index
     }
 }
@@ -735,17 +1087,159 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     let storage = runtime.storage();
     let number = |value: usize| storage.add_blob(&(value as u64).to_le_bytes()).into();
     match (name, args) {
+        (b"log", [message]) => {
+            kernel::println!("{}", text(storage, *message)?);
+            Ok(number(0))
+        }
+        (b"remote_config", []) => {
+            let remotes = shared
+                .services
+                .remotes()
+                .iter()
+                .map(|remote| {
+                    storage
+                        .add_tree(&[
+                            storage.add_blob(remote.name.as_bytes()).into(),
+                            storage.add_blob(remote.address.as_bytes()).into(),
+                        ])
+                        .into()
+                })
+                .collect::<Vec<_>>();
+            Ok(storage.add_tree(&remotes).into())
+        }
+        (b"storage_export", [roots, without_backing]) => {
+            let roots = storage
+                .get_tree(Tree::try_from(*roots).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let omitted = storage
+                .get_tree(Tree::try_from(*without_backing).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let omitted = omitted
+                .iter()
+                .map(|value| {
+                    todo_reference(storage, *value).map(|reference| reference.object_descriptor())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let bytes = shared
+                .services
+                .export(&roots, &omitted)
+                .map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_information", [collector, memory]) => {
+            let information = shared
+                .services
+                .information(
+                    *collector,
+                    shared
+                        .executed
+                        .len()
+                        .try_into()
+                        .map_err(|_| Error::Invalid)?,
+                    unsigned(storage, *memory)?,
+                )
+                .map_err(|_| Error::Invalid)?;
+            let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_trusted_keys", []) => {
+            let keys = shared.services.trusted_keys().map_err(|_| Error::Invalid)?;
+            let bytes = postcard::to_allocvec(&keys).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"storage_certify", [bytes]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*bytes).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let (name, keys): ([u8; 32], Vec<alloc::string::String>) =
+                postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            let certificate = shared
+                .services
+                .certify(name, &keys)
+                .map_err(|_| Error::Invalid)?;
+            let bytes = postcard::to_allocvec(&certificate).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"storage_missing", [bytes]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*bytes).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let offers: Vec<fixremote::protocol::Offer> =
+                postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            let names = shared
+                .services
+                .missing(&offers)
+                .map_err(|_| Error::Invalid)?;
+            let bytes = postcard::to_allocvec(&names).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"storage_import", [bytes]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*bytes).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let roots = shared.services.import(&bytes).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_tree(&roots).into())
+        }
+        (b"tcp_listen", [ip, port]) => {
+            let ip = Blob::try_from(*ip).map_err(|_| Error::Invalid)?;
+            let ip = storage.get_blob(ip).map_err(|_| Error::Invalid)?;
+            let ip: &[u8; 4] = ip.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            let port = u16::try_from(integer(storage, *port)?).map_err(|_| Error::Invalid)?;
+            let listener =
+                kernel::host::net::TcpListener::try_bind(ip, port).map_err(|_| Error::Invalid)?;
+            Ok(number(insert_resource(
+                &mut shared.listeners.lock(),
+                Arc::new(listener),
+            )))
+        }
+        (b"tcp_accept", [listener]) => {
+            let id = integer(storage, *listener)?;
+            let listener = shared
+                .listeners
+                .lock()
+                .get(id)
+                .and_then(Option::as_ref)
+                .cloned()
+                .ok_or(Error::Closed)?;
+            let stream = listener.try_accept().map_err(|_| Error::Invalid)?;
+            Ok(number(add_stream(shared, stream)))
+        }
+        (b"tcp_local_addr", [listener]) => {
+            let id = integer(storage, *listener)?;
+            let listener = shared
+                .listeners
+                .lock()
+                .get(id)
+                .and_then(Option::as_ref)
+                .cloned()
+                .ok_or(Error::Closed)?;
+            let (ip, port) = listener.local_addr().map_err(|_| Error::Invalid)?;
+            Ok(storage
+                .add_tree(&[storage.add_blob(&ip).into(), number(port as usize)])
+                .into())
+        }
+        (b"tcp_listener_close", [listener]) => {
+            let id = integer(storage, *listener)?;
+            let listener = shared
+                .listeners
+                .lock()
+                .get_mut(id)
+                .and_then(Option::take)
+                .ok_or(Error::Closed)?;
+            drop(listener);
+            Ok(number(0))
+        }
         (b"tcp_connect", [host, port]) => {
             let host = text(storage, *host)?;
             let port = u16::try_from(integer(storage, *port)?).map_err(|_| Error::Invalid)?;
             let stream =
                 kernel::host::net::Stream::try_connect(&host, port).map_err(|_| Error::Invalid)?;
-            Ok(number(add_stream(shared, worker, stream)))
+            Ok(number(add_stream(shared, stream)))
         }
         (b"uri_open", [uri]) => {
             let stream = kernel::host::net::Stream::open_uri(&text(storage, *uri)?)
                 .map_err(|_| Error::Invalid)?;
-            Ok(number(add_stream(shared, worker, stream)))
+            Ok(number(add_stream(shared, stream)))
         }
         (b"uri_read_directory", [uri]) => {
             use common::protocol::control::DirectoryEntryKind;
@@ -775,28 +1269,35 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let id = integer(storage, *stream)?;
             let bytes = Blob::try_from(*bytes).map_err(|_| Error::Invalid)?;
             let bytes = storage.get_blob(bytes).map_err(|_| Error::Invalid)?;
-            let mut streams = shared.streams[worker].lock();
-            let stream = streams
-                .get_mut(id)
-                .and_then(Option::as_mut)
+            let stream = shared
+                .streams
+                .lock()
+                .get(id)
+                .and_then(Option::as_ref)
+                .cloned()
                 .ok_or(Error::Closed)?;
+            let mut stream = stream.lock();
             Ok(number(stream.try_send(&bytes).map_err(|_| Error::Invalid)?))
         }
         (b"stream_receive", [stream, length]) => {
             let id = integer(storage, *stream)?;
             let length = integer(storage, *length)?.min(STREAM_READ_CHUNK);
             let mut bytes = alloc::vec![0; length];
-            let mut streams = shared.streams[worker].lock();
-            let stream = streams
-                .get_mut(id)
-                .and_then(Option::as_mut)
+            let stream = shared
+                .streams
+                .lock()
+                .get(id)
+                .and_then(Option::as_ref)
+                .cloned()
                 .ok_or(Error::Closed)?;
+            let mut stream = stream.lock();
             let length = stream.try_recv(&mut bytes).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes[..length]).into())
         }
         (b"stream_close", [stream]) => {
             let id = integer(storage, *stream)?;
-            let stream = shared.streams[worker]
+            let stream = shared
+                .streams
                 .lock()
                 .get_mut(id)
                 .and_then(Option::take)
@@ -825,6 +1326,15 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             };
             Ok(number(value))
         }
+        (b"queue_named", [name, capacity]) => {
+            let name = Blob::try_from(*name).map_err(|_| Error::Invalid)?;
+            let name = storage.get_blob(name).map_err(|_| Error::Invalid)?;
+            let queue = shared
+                .queues
+                .lock()
+                .named(worker, &name, integer(storage, *capacity)?)?;
+            Ok(number(queue as usize))
+        }
         (b"queue_create", [capacity]) => {
             let queue = shared
                 .queues
@@ -833,6 +1343,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(number(queue as usize))
         }
         (b"map_create", []) => Ok(number(shared.maps.lock().create())),
+        (b"map_named", [name]) => {
+            let name = Blob::try_from(*name).map_err(|_| Error::Invalid)?;
+            let name = storage.get_blob(name).map_err(|_| Error::Invalid)?;
+            Ok(number(shared.maps.lock().named(&name)))
+        }
         (b"map_count", []) => Ok(number(shared.maps.lock().count())),
         (b"map_get", [map, key]) => {
             let map = integer(storage, *map)?;
@@ -844,6 +1359,25 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(storage
                 .add_tree(&[storage.add_blob(&version.to_le_bytes()).into(), value])
                 .into())
+        }
+        (b"map_contains_keys", [map, keys]) => {
+            let map = integer(storage, *map)?;
+            let keys = storage
+                .get_tree(Tree::try_from(*keys).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let present = {
+                let maps = shared.maps.lock();
+                keys.iter()
+                    .map(|key| {
+                        match maps.get(map, |other| Ok(key.as_bytes().cmp(other.as_bytes()))) {
+                            Ok(_) => Ok(1u8),
+                            Err(Error::Empty) => Ok(0u8),
+                            Err(error) => Err(error),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?
+            };
+            Ok(storage.add_blob(&present).into())
         }
         (b"map_compare_exchange", [map, key, version, value]) => {
             let map = integer(storage, *map)?;
@@ -874,6 +1408,13 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             shared.queues.lock().push(worker, queue, *value)?;
             Ok(number(0))
         }
+        (b"storage_selection", [value]) => {
+            let tree = Tree::try_from(*value).map_err(|_| Error::Invalid)?;
+            if !value.is_value() {
+                return Err(Error::Invalid);
+            }
+            storage.select(tree).map_err(|_| Error::Invalid)
+        }
         (b"storage_select", [value]) => {
             let tree = Tree::try_from(*value).map_err(|_| Error::Invalid)?;
             if !value.is_value() {
@@ -882,17 +1423,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let coupon = storage
                 .selection_certificate(tree)
                 .map_err(|_| Error::Invalid)?;
-            runtime
-                .index_claim(coupon.into())
-                .map_err(|_| Error::Invalid)?;
             Ok(coupon.into())
         }
         (b"storage_eval", [value]) => {
             let coupon = storage
                 .evaluation_certificate(*value)
-                .map_err(|_| Error::Invalid)?;
-            runtime
-                .index_claim(coupon.into())
                 .map_err(|_| Error::Invalid)?;
             Ok(coupon.into())
         }

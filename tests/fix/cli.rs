@@ -146,7 +146,14 @@ fn evaluate_raw(
     let mode = value(directory, &["create-blob", "--string", mode]);
     let request = value(
         directory,
-        &["create-tree", &mode, scheduler, "coupon-collector", input],
+        &[
+            "create-tree",
+            &value(directory, &["create-blob", "--string", ""]),
+            scheduler,
+            &mode,
+            "coupon-collector",
+            input,
+        ],
     );
     let mut arguments = globals.to_vec();
     arguments.extend(["schedule", "--trusted-tagger", "coupon-collector", &request]);
@@ -427,7 +434,14 @@ fn runnable_trust_configuration() {
         let mode = value(&directory, &["create-blob", "--string", mode]);
         value(
             &directory,
-            &["create-tree", &mode, "evaluator", "coupon-collector", input],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--string", ""]),
+                "evaluator",
+                &mode,
+                "coupon-collector",
+                input,
+            ],
         )
     };
     let schedule = |directory: &Path, memoize: &str, request: &str, trust: Option<&Path>| {
@@ -604,7 +618,14 @@ fn scheduler_modes_dispatch_and_validate_requests() {
         let mode = value(&directory, &["create-blob", "--string", mode]);
         let request = value(
             &directory,
-            &["create-tree", &mode, "evaluator", "coupon-collector", input],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--string", ""]),
+                "evaluator",
+                &mode,
+                "coupon-collector",
+                input,
+            ],
         );
         let coupon = value(
             &directory,
@@ -629,8 +650,9 @@ fn scheduler_modes_dispatch_and_validate_requests() {
             &directory,
             &[
                 "create-tree",
-                mode,
+                &value(&directory, &["create-blob", "--string", ""]),
                 "evaluator",
+                mode,
                 "coupon-collector",
                 &payload,
             ],
@@ -1686,4 +1708,28 @@ fn eval_encode_executes_recursive_applications_and_identification_thunks() {
     let expression = format!("@handle(\"{identification}\")");
     assert_eq!(value(&directory, &["eval", "--encode", &expression]), blob);
     run(&directory, &["eval", "--encode", "42u64"], b"", 2);
+}
+
+#[test]
+fn source_management_returns_values_in_both_memoization_modes() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("source-results");
+    std::fs::create_dir(&directory).unwrap();
+    seed(&directory, &[]);
+    let source = value(
+        &directory,
+        &[
+            "create-blob",
+            "--string",
+            "a source object with nonliteral backing bytes",
+        ],
+    );
+    let list = value(&directory, &["create-blob", "--string", "list"]);
+    let input = value(&directory, &["create-tree", &list, &source]);
+    let empty = value(&directory, &["create-tree"]);
+    for mode in ["--memoize=auto", "--memoize=never"] {
+        assert_eq!(
+            evaluate_raw(&directory, "todo", "evaluator", &input, &[mode], 0),
+            empty
+        );
+    }
 }

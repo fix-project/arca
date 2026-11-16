@@ -359,6 +359,33 @@ pub unsafe extern "C" fn w2c_fix_coordinate(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2c_fix_coordinate_handles(
+    _: *mut w2c_fix,
+    name: u32,
+    name_length: u32,
+    arguments: u32,
+    count: u32,
+    status: u32,
+) -> u32 {
+    let name_address = memory_range(name, name_length as usize, false);
+    let arguments_address = memory_range(arguments, count as usize * 4, false);
+    let status_address = memory_range(status, 8, true);
+    let name =
+        unsafe { core::slice::from_raw_parts(name_address as *const u8, name_length as usize) }
+            .to_vec();
+    let arguments =
+        unsafe { core::slice::from_raw_parts(arguments_address as *const u8, count as usize * 4) }
+            .chunks_exact(4)
+            .map(|bytes| descriptors::address(u32::from_le_bytes(bytes.try_into().unwrap())))
+            .collect::<alloc::vec::Vec<_>>();
+    let result = descriptors::allocate();
+    let reply =
+        crate::continuation::coordinate_handles(descriptors::address(result), &name, &arguments);
+    unsafe { rt::copy_guest_bytes(reply.to_le_bytes().as_ptr() as usize, status_address, 8) };
+    result
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn w2c_fix_exit(_: *mut w2c_fix, value: u32) -> ! {
     crate::continuation::finish(descriptors::address(value))
 }

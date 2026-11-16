@@ -15,6 +15,7 @@ pub mod configuration;
 pub mod expressions;
 pub mod shell;
 pub use shell::Shell;
+mod serve;
 mod session;
 mod trust;
 
@@ -377,7 +378,8 @@ impl Client {
     ) -> Result<Value, Error> {
         let mode = self.blob(mode.as_bytes())?;
         let scheduler = self.lookup(&self.options.scheduler.clone())?;
-        self.tree(&[mode, scheduler, collector.clone(), input.clone()])
+        let limits = self.blob(b"")?;
+        self.tree(&[limits, scheduler, mode, collector.clone(), input.clone()])
     }
 
     /// Performs one Think step on `value` and returns its result.

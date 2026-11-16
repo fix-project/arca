@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     Accept,
     Close,
+    LocalAddress,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
     Pipe(PipeData),
     Ack,
+    Address([u8; 4], u16),
+    Err(super::control::IoErrorKind),
 }
