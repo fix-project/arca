@@ -55,7 +55,7 @@ def guest_benchmark(name, src, cases, fixtures, deps = []):
     )
     rust_binary(
         name = name + "_host",
-        visibility = ["//visibility:private"],
+        visibility = ["//tests:__pkg__"],
         srcs = ["//build/benchmarks:host.rs"],
         crate_name = "benchmark_host",
         args = _ARGS,
@@ -77,7 +77,7 @@ def guest_benchmark(name, src, cases, fixtures, deps = []):
 def benchmark_suite(name, suites):
     rust_binary(
         name = name + "_runner",
-        visibility = ["//visibility:private"],
+        visibility = ["//tests:__pkg__"],
         srcs = ["//build/benchmarks:suite.rs"],
         crate_name = "benchmark_suite",
         args = _ARGS,

@@ -202,11 +202,11 @@ impl Graph {
     /// Take a ready operation, acquiring its evaluation ownership.
     pub fn take(&self) -> Result<Option<Node>, Error> {
         while let Some(request) = self.ready.borrow_mut().pop_front() {
-            if let Some(state) = self.nodes.borrow_mut().get_mut(&request) {
-                if *state == READY {
-                    *state = RUNNING;
-                    return Ok(Some(request));
-                }
+            if let Some(state) = self.nodes.borrow_mut().get_mut(&request)
+                && *state == READY
+            {
+                *state = RUNNING;
+                return Ok(Some(request));
             }
         }
         Ok(None)
@@ -214,11 +214,11 @@ impl Graph {
 
     /// Offer an owned operation for execution.
     pub fn offer(&self, request: Node) -> Result<(), Error> {
-        if let Some(state) = self.nodes.borrow_mut().get_mut(&request) {
-            if *state != READY {
-                *state = READY;
-                self.ready.borrow_mut().push_back(request);
-            }
+        if let Some(state) = self.nodes.borrow_mut().get_mut(&request)
+            && *state != READY
+        {
+            *state = READY;
+            self.ready.borrow_mut().push_back(request);
         }
         Ok(())
     }

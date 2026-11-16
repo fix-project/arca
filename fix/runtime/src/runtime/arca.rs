@@ -602,13 +602,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let arguments = if &*effect == b"coordinate_handles" {
                         assert_eq!(bytes.len() % 8, 0);
                         bytes
-                            .chunks_exact(8)
-                            .map(|bytes| {
-                                handles::resolve(
-                                    &mut k,
-                                    handles::reference(bytes.try_into().unwrap()),
-                                )
-                            })
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .map(|bytes| handles::resolve(&mut k, handles::reference(bytes)))
                             .collect::<Vec<_>>()
                     } else {
                         let tree =

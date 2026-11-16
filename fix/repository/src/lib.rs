@@ -580,7 +580,7 @@ impl Repository {
             let Some(bytes) = kind.literal_bytes() else {
                 continue;
             };
-            let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_ref()) else {
+            let Ok(bytes) = <[u8; 8]>::try_from(bytes) else {
                 continue;
             };
             let code = u64::from_le_bytes(bytes);

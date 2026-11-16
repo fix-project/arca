@@ -297,24 +297,26 @@ impl Saver {
 
 #[derive(Default)]
 struct Applications {
-    state: KMutex<(
-        alloc::collections::VecDeque<(usize, &'static [u8], Handle)>,
-        bool,
-    )>,
+    state: KMutex<ApplicationsState>,
     changed: KCondvar,
+}
+#[derive(Default)]
+struct ApplicationsState {
+    queue: alloc::collections::VecDeque<(usize, &'static [u8], Handle)>,
+    closed: bool,
 }
 impl Applications {
     fn push(&self, id: usize, operation: &'static [u8], argument: Handle) {
-        self.state.lock().0.push_back((id, operation, argument));
+        self.state.lock().queue.push_back((id, operation, argument));
         self.changed.notify_one();
     }
     fn pop(&self) -> Option<(usize, &'static [u8], Handle)> {
         let mut state = self.state.lock();
         loop {
-            if state.1 {
+            if state.closed {
                 return None;
             }
-            if let Some(job) = state.0.pop_front() {
+            if let Some(job) = state.queue.pop_front() {
                 return Some(job);
             }
             state = self.changed.wait(state);
@@ -322,8 +324,8 @@ impl Applications {
     }
     fn close(&self) {
         let mut state = self.state.lock();
-        state.1 = true;
-        state.0.clear();
+        state.closed = true;
+        state.queue.clear();
         self.changed.notify_all();
     }
 }
@@ -501,10 +503,10 @@ pub fn start_profiled<
         spawn(move || {
             while let Some((id, operation, argument)) = shared.applications.pop() {
                 if !shared.pending_effects.lock().contains_key(&id) {
-                    if operation == b"callable_resume" {
-                        if let Ok(token) = integer(runtime.storage(), argument) {
-                            shared.suspended.lock().remove(&token);
-                        }
+                    if operation == b"callable_resume"
+                        && let Ok(token) = integer(runtime.storage(), argument)
+                    {
+                        shared.suspended.lock().remove(&token);
                     }
                     continue;
                 }
@@ -836,7 +838,7 @@ fn handle_async_task<
             }
             (0, storage.add_blob(b"").into())
         }
-        _ => handle_task(runtime, shared, worker, &name, args, false)?,
+        _ => handle_task(runtime, shared, worker, name, args, false)?,
     })
 }
 
