@@ -11,7 +11,10 @@ use fixruntime::user_scheduler_driver::{self, PersistenceOnly};
 use fixruntime::{Blob, Handle, Tree};
 use kernel::prelude::*;
 
-struct Benchmark;
+struct Benchmark {
+    count: u64,
+    workers: usize,
+}
 
 impl benchmark_guest::Benchmark for Benchmark {
     fn run(&mut self, iterations: u64) -> Duration {
@@ -33,7 +36,7 @@ impl benchmark_guest::Benchmark for Benchmark {
             );
             let mut values = Vec::new();
             let mut expected = Vec::new();
-            for value in 0..8 {
+            for value in 1..=self.count {
                 let output = number(value);
                 let combination = memory.add_tree(&[number(0), identity.into(), output]);
                 values.push(combination.into_ref().application().strict().into());
@@ -42,8 +45,9 @@ impl benchmark_guest::Benchmark for Benchmark {
             let input = memory.add_tree(&values);
             let expected = memory.add_tree(&expected);
             let combination = memory.add_tree(&[
-                Blob::literal(b"eval").unwrap().into(),
+                number(0),
                 scheduler.into(),
+                Blob::literal(b"eval").unwrap().into(),
                 collector.into(),
                 input.into(),
             ]);
@@ -52,7 +56,7 @@ impl benchmark_guest::Benchmark for Benchmark {
                 user_scheduler_driver::start(
                     runtime,
                     combination,
-                    1,
+                    self.workers,
                     PersistenceOnly(|value| Ok(value)),
                 )
                 .unwrap()
@@ -68,7 +72,18 @@ impl benchmark_guest::Benchmark for Benchmark {
 
 #[kmain]
 fn main() {
-    benchmark_guest::run(|index, _| match Operation::ALL[index] {
-        Operation::EvalEight => Benchmark,
+    benchmark_guest::run(|index, _| {
+        let operation = Operation::ALL[index];
+        let count = match operation {
+            Operation::EvalEight => 8,
+            Operation::EvalWideOne
+            | Operation::EvalWideTwo
+            | Operation::EvalWideFour
+            | Operation::EvalWideEight
+            | Operation::EvalWideSixteen => 64,
+        };
+        let workers = operation.cores();
+        assert_eq!(kernel::ncores(), workers);
+        Benchmark { count, workers }
     });
 }
