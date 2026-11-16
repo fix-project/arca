@@ -45,6 +45,8 @@ pub enum RepositoryError {
     InvalidLabel,
     Certificate(fixcertificates::Error),
     MissingLabel { name: String, repository: String },
+    MissingObject { name: String, repository: String },
+    MissingBacking { name: String, repository: String },
 }
 
 impl From<fixcertificates::Error> for RepositoryError {
@@ -326,7 +328,7 @@ impl Repository {
         }
         match self.lookup(object.as_handle().as_bytes()) {
             Ok(_) => {}
-            Err(RepositoryError::Io(ErrorKind::NotFound)) => return Ok(false),
+            Err(RepositoryError::MissingObject { .. }) => return Ok(false),
             Err(error) => return Err(error),
         }
         if matches!(object.as_handle().name(), Name::Literal(_)) {
@@ -399,9 +401,12 @@ impl Repository {
             if object[31] & 0x40 != 0 {
                 let policy = self.policy()?;
                 let verify = |name: [u8; 32]| -> Result<(), RepositoryError> {
-                    let certificate = self
-                        .stored_certificates(name)?
-                        .ok_or(RepositoryError::Io(ErrorKind::NotFound))?;
+                    let certificate = self.stored_certificates(name)?.ok_or_else(|| {
+                        RepositoryError::MissingObject {
+                            name: hex::encode(name),
+                            repository: self.path.clone(),
+                        }
+                    })?;
                     if policy.unsigned
                         || certificate
                             .iter()
@@ -428,7 +433,20 @@ impl Repository {
                 Ok(target) => target,
                 Err(ErrorKind::NotFound) if bytes[31] & 0x10 != 0 => {
                     object[31] |= 0x10;
-                    fs::read_link(&format!("{}/objects/{}", self.path, hex::encode(object)))?
+                    fs::read_link(&format!("{}/objects/{}", self.path, hex::encode(object)))
+                        .map_err(|error| match error {
+                            ErrorKind::NotFound => RepositoryError::MissingObject {
+                                name: hex::encode(object),
+                                repository: self.path.clone(),
+                            },
+                            error => error.into(),
+                        })?
+                }
+                Err(ErrorKind::NotFound) => {
+                    return Err(RepositoryError::MissingObject {
+                        name: hex::encode(object),
+                        repository: self.path.clone(),
+                    });
                 }
                 Err(error) => return Err(error.into()),
             };
@@ -665,7 +683,13 @@ impl Repository {
 
     fn read_data(&self, object: Handle) -> Result<Box<[u8]>, RepositoryError> {
         let path = format!("{}/data/{}", self.path, Self::data_key(object.as_bytes()));
-        let bytes = fs::read(&path)?;
+        let bytes = fs::read(&path).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingBacking {
+                name: hex::encode(object.as_bytes()),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })?;
         if bytes.len() as u64 != object.byte_len() {
             return Err(RepositoryError::InvalidRepository);
         }

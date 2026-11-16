@@ -48,7 +48,7 @@ impl Repository {
         let tree = Tree::try_from(unsafe { Handle::parse(object)? })?;
         match self.read_data(tree.into()) {
             Ok(bytes) => tree.verify_bytes(&bytes)?,
-            Err(RepositoryError::Io(ErrorKind::NotFound)) => (),
+            Err(RepositoryError::MissingBacking { .. }) => (),
             Err(error) => return Err(error),
         }
         Ok(Some(certificate))

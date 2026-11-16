@@ -33,13 +33,19 @@ impl core::fmt::Display for CliError {
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
             }
+            Self::Repository(RepositoryError::MissingObject { name, repository }) => {
+                write!(f, "value {name} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingBacking { name, repository }) => {
+                write!(
+                    f,
+                    "backing data for {name} not found in repository {repository:?}"
+                )
+            }
             Self::Repository(RepositoryError::NonCanonical) => {
                 f.write_str("expected a canonical handle")
             }
             Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
-            Self::Repository(RepositoryError::Io(ErrorKind::NotFound)) => {
-                f.write_str("value or label is not present in this repository")
-            }
             Self::Handle(Error::WrongType)
             | Self::Repository(RepositoryError::Handle(Error::WrongType)) => {
                 f.write_str("value has the wrong Fix type")
