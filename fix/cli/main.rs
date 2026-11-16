@@ -20,8 +20,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Evaluates Fix expressions and manages Fix repositories.
 ///
 /// With no command, parses EXPRESSION, evaluates its imports, and prints the
-/// resulting handle. Expression imports are @handle, @label, @file, @script,
-/// and @todo.
+/// resulting handle. Expression imports are @handle, @label, @file, @compile,
+/// @script, and @todo.
 #[derive(Parser)]
 #[command(name = "fix", subcommand_value_name = "COMMAND")]
 struct Cli {

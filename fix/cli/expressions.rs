@@ -32,6 +32,7 @@ enum Kind {
     Handle(String),
     Label(String),
     File(PathBuf),
+    Compile(PathBuf),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -147,6 +148,7 @@ impl Imports {
                     preprocessor::Import::Handle(name) => Kind::Handle(name.clone()),
                     preprocessor::Import::Label(name) => Kind::Label(name.clone()),
                     preprocessor::Import::File(path) => Kind::File(base.join(path)),
+                    preprocessor::Import::Compile(path) => Kind::Compile(base.join(path)),
                     preprocessor::Import::Todo { reference, uris } => {
                         if uris
                             .iter()
@@ -359,6 +361,10 @@ impl<'a> Expressions<'a> {
             Kind::Handle(name) => self.client.lookup(name),
             Kind::Label(name) => self.client.label_value(name),
             Kind::File(path) => self.client.file(path),
+            Kind::Compile(path) => {
+                let module = self.client.file(path)?;
+                self.client.compilation(&module, None)
+            }
             Kind::Todo {
                 reference,
                 uris,

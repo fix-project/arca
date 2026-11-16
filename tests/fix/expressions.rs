@@ -337,6 +337,13 @@ fn compilation_uses_the_compile_runnable() {
             "2",
         ],
     );
+    std::fs::copy(&wasm, directory.join("add.wasm")).unwrap();
+    let shorthand = expression(&directory, &["@compile(\"add.wasm\")"]);
+    let default = expression(
+        &directory,
+        &["compile", &format!("@file({:?})", wasm.to_str().unwrap())],
+    );
+    assert_eq!(shorthand, default);
     run(&directory, &["is-tag", &add], b"", 0);
     let fields = value(&directory, &["read-tree", &add]);
     let fields: Vec<_> = fields.lines().collect();
