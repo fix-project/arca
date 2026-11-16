@@ -13,7 +13,7 @@ wat_module(
     tags = ["manual"],
 )
 
-alias(name = "module", actual = ":wasm", visibility = ["//bootstrap:__pkg__"])
+alias(name = "module", actual = ":wasm", visibility = ["//bootstrap:__pkg__", "//fix/cli:__pkg__"])
 
 fix_procedure(
     name = "collector",

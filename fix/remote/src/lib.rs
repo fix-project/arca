@@ -10,7 +10,7 @@ use alloc::{
     vec::Vec,
 };
 use fixcertificates::{Certificate, Policy};
-use fixhandle::{Handle, HandleView, Name, Object, ObjectView};
+use fixhandle::{Blob, Handle, HandleView, Name, Object, ObjectView};
 pub use fixrepository::Remote;
 use fixrepository::{Repository, RepositoryError};
 use serde::{Deserialize, Serialize};
@@ -160,6 +160,47 @@ pub fn export(
     }
     .encode()
     .map_err(|_| Error::Invalid)
+}
+
+pub fn export_with_coupons(
+    repository: &Repository,
+    roots: &[Handle],
+    without_backing: &[Object],
+) -> Result<Vec<u8>, Error> {
+    let mut inputs: BTreeMap<[u8; 32], Handle> =
+        roots.iter().map(|root| (*root.as_bytes(), *root)).collect();
+    repository.visit(roots, without_backing, |object, include| {
+        if include
+            && let ObjectView::Tree(tree) = object.view()
+            && repository.has_backing(object)?
+        {
+            let children = repository.read_tree(*tree)?;
+            for (index, child) in children.iter().enumerate() {
+                if !tree.is_tag() || index != 0 {
+                    inputs.insert(*child.as_bytes(), *child);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    let mut selected: BTreeMap<[u8; 32], Handle> =
+        roots.iter().map(|root| (*root.as_bytes(), *root)).collect();
+    for input in inputs.values() {
+        for operation in [1u64, 2, 3, 4, 6] {
+            let operation = Blob::literal(&operation.to_le_bytes()).map_err(|_| Error::Invalid)?;
+            for coupon in repository.claims(&[operation.into(), *input])? {
+                selected.insert(*coupon.as_handle().as_bytes(), coupon.into());
+            }
+        }
+    }
+    let mut transfer = Transfer::decode(&export(
+        repository,
+        &selected.into_values().collect::<Vec<_>>(),
+        without_backing,
+    )?)
+    .map_err(|_| Error::Invalid)?;
+    transfer.roots = roots.iter().map(|root| *root.as_bytes()).collect();
+    transfer.encode().map_err(|_| Error::Invalid)
 }
 
 pub fn certify(

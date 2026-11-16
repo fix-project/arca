@@ -135,6 +135,93 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
 }
 
 #[test]
+fn runnable_transfer_keeps_its_author_reference_thin() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let author = source.create_blob(&[11; 4096]).unwrap();
+    let executable = source.create_blob(&[17; 128]).unwrap();
+    let fields = [
+        author.into_ref().into(),
+        executable.into(),
+        Blob::literal(b"Runnable").unwrap().into(),
+    ];
+    let runnable = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            runnable.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*runnable.as_handle().as_bytes())),
+        )
+        .unwrap();
+    let bytes = transfer(&source, &[runnable.into()], &[]).unwrap();
+    let transfer = Transfer::decode(&bytes).unwrap();
+    assert!(
+        transfer.records.iter().any(|record| {
+            record.name == *author.as_handle().as_bytes() && record.data.is_none()
+        })
+    );
+    assert!(transfer.records.iter().any(|record| {
+        record.name == *executable.as_handle().as_bytes() && record.data.is_some()
+    }));
+    import(&destination, &bytes, &config()).unwrap();
+    destination
+        .write_label("runnable", runnable.into())
+        .unwrap();
+    assert!(!destination.has_backing(author.object()).unwrap());
+    assert!(destination.has_backing(executable.object()).unwrap());
+}
+
+#[test]
+fn pulling_a_tree_includes_coupons_for_its_children() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let input = source.create_blob(&[21; 128]).unwrap();
+    let result = source.create_blob(&[34; 256]).unwrap();
+    let claim = source
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input.into(),
+            result.into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*coupon.as_handle().as_bytes())),
+        )
+        .unwrap();
+    source.index_tag(coupon).unwrap();
+    let inner = source.create_tree(&[input.into()]).unwrap();
+    let root = source.create_tree(&[inner.into()]).unwrap();
+    let bytes = export_with_coupons(&source, &[root.into()], &[]).unwrap();
+    let imported = import(&destination, &bytes, &config()).unwrap();
+    assert_eq!(imported.len(), 1);
+    assert!(imported[0].same_encoding(&root.into()));
+    assert_eq!(destination.read_blob(result).unwrap().as_ref(), &[34; 256]);
+    let claims = destination
+        .claims(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input.into(),
+        ])
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert!(claims[0].as_handle().same_encoding(coupon.as_handle()));
+}
+
+#[test]
 fn thin_tag_certificates_retain_authority_without_backing() {
     let source = Directory::new();
     let source = source.repository();

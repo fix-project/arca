@@ -6,7 +6,10 @@ package(default_visibility = ["//visibility:public"])
 fix_rust_program(name = "recompute", importers = True, rustc_flags = ["-Clink-arg=-zstack-size=8388608"], memories = 4, src = "tests/recompute.rs", srcs = ["parallel.rs"], deps = ["//fix/scheduler:sdk"], artifact_visibility = ["//visibility:public"])
 fix_scheduler(name = "serial")
 fix_scheduler(name = "parallel")
-alias(name = "parallel_module", actual = ":parallel_postprocess")
+[
+    alias(name = name + "_module", actual = ":" + name + "_postprocess")
+    for name in ["serial", "parallel", "distributed", "onepass", "hint"]
+]
 fix_scheduler(name = "distributed", modules = ["parallel.rs"])
 fix_scheduler(name = "onepass", modules = ["parallel.rs"])
 fix_scheduler(name = "hint", modules = ["parallel.rs", "onepass.rs"])

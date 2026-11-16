@@ -6,7 +6,7 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "client",
     crate_name = "fixcli",
-    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs", "configuration.rs", "serve.rs"],
+    srcs = ["lib.rs", "shell.rs", "archive.rs", "bootstrap.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs", "configuration.rs", "serve.rs"],
     crate_root = "lib.rs",
     edition = "2024",
     deps = [
@@ -14,10 +14,25 @@ rust_library(
         "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
         "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
     ],
-    compile_data = ["//fix/runtime:image_elf", "//programs/fix/parser:parser_module"],
+    compile_data = [
+        "//fix/runtime:image_elf",
+        "//programs/fix/parser:parser_module",
+        "//fix/proof/collector:module",
+        "//programs/fix/schedulers:serial_module",
+        "//programs/fix/schedulers:parallel_module",
+        "//programs/fix/schedulers:distributed_module",
+        "//programs/fix/schedulers:onepass_module",
+        "//programs/fix/schedulers:hint_module",
+    ],
     rustc_env = {
         "FIX_KERNEL": "$(execpath //fix/runtime:image_elf)",
         "FIX_PARSER_MODULE": "$(execpath //programs/fix/parser:parser_module)",
+        "FIX_COLLECTOR_MODULE": "$(execpath //fix/proof/collector:module)",
+        "FIX_SERIAL_MODULE": "$(execpath //programs/fix/schedulers:serial_module)",
+        "FIX_PARALLEL_MODULE": "$(execpath //programs/fix/schedulers:parallel_module)",
+        "FIX_DISTRIBUTED_MODULE": "$(execpath //programs/fix/schedulers:distributed_module)",
+        "FIX_ONEPASS_MODULE": "$(execpath //programs/fix/schedulers:onepass_module)",
+        "FIX_HINT_MODULE": "$(execpath //programs/fix/schedulers:hint_module)",
     },
 )
 

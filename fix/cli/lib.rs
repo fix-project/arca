@@ -10,6 +10,7 @@ use std::{
 };
 
 mod archive;
+pub mod bootstrap;
 pub mod commands;
 pub mod configuration;
 pub mod expressions;
@@ -346,10 +347,9 @@ impl Client {
     }
 
     /// Evaluates compilation requests together, persisting their coupons.
-    pub fn precompile(&mut self, requests: &[Value]) -> Result<(), Error> {
+    pub fn precompile(&mut self, requests: &[Value]) -> Result<Value, Error> {
         let requests = self.tree(requests)?;
-        self.eval(&requests)?;
-        Ok(())
+        self.eval(&requests)
     }
 
     /// The strict application of `compile` to a Wasm module, with `compile`'s default

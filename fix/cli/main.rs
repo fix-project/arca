@@ -91,14 +91,11 @@ struct Global {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a repository. With SEED, import it and add the expression parser
-    /// (label `fix-parser`) into the repository.
+    /// Create a repository. With SEED, install the embedded Fix programs.
     Init {
         /// Bootstrap seed archive to import.
         seed: Option<PathBuf>,
-        /// Also compile, with SEED's compiler, the modules `init` adds: the expression
-        /// parser. Later commands
-        /// reuse these compilations; without this flag, each compiles on first use.
+        /// Compile the embedded programs with SEED's compiler and label their results.
         #[arg(long, requires = "seed")]
         precompile: bool,
         /// Sign imported seed Tags with the selected identities.
@@ -439,25 +436,21 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 options.clone(),
                 global.profile,
             )?;
-            let options = if precompile && options.unsigned {
-                Options {
-                    trust: Some(env::current_dir()?.join(".fix/trust")),
-                    ..options
-                }
-            } else {
-                options
+            let options = Options {
+                trust: if precompile && options.unsigned {
+                    Some(env::current_dir()?.join(".fix/trust"))
+                } else {
+                    options.trust
+                },
+                memoize: if precompile {
+                    Memoization::Always
+                } else {
+                    options.memoize
+                },
+                ..options
             };
             let mut client = global.open(options)?;
-            let parser = fixcli::expressions::install(&mut client)?;
-            let compilations = vec![("the expression parser".to_owned(), parser)];
-            if precompile {
-                eprintln!("fix: precompiling {} modules", compilations.len());
-                let requests: Vec<_> = compilations
-                    .into_iter()
-                    .map(|(_, request)| request)
-                    .collect();
-                client.precompile(&requests)?;
-            }
+            fixcli::bootstrap::install(&mut client, precompile)?;
             Ok(0)
         }
         Command::Plumbing(plumbing) => Ok(commands::run(

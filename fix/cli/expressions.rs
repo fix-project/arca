@@ -13,18 +13,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PARSER: &[u8] = include_bytes!(env!("FIX_PARSER_MODULE"));
-
 /// The label naming the compilation of the expression parser.
 pub const PARSER_LABEL: &str = "fix-parser";
-
-/// Adds the expression parser module and labels its compilation; returns the compilation.
-pub fn install(client: &mut Client) -> Result<Value, Error> {
-    let module = Blob::new(PARSER).into_value();
-    let compilation = client.compilation_request(&module, None)?;
-    client.label(PARSER_LABEL, &compilation)?;
-    Ok(compilation)
-}
 
 type Bindings = Vec<(String, String)>;
 

@@ -109,9 +109,9 @@ impl Shell {
     pub fn compilation(&mut self, module: &Value, units: Option<u64>) -> Result<Value, Error> {
         Self::with(|client| client.compilation(module.inner(), units)).map(Value::from_inner)
     }
-    pub fn precompile(&mut self, requests: &[Value]) -> Result<(), Error> {
+    pub fn precompile(&mut self, requests: &[Value]) -> Result<Value, Error> {
         let requests: Vec<_> = requests.iter().map(|value| value.inner().clone()).collect();
-        Self::with(|client| client.precompile(&requests))
+        Self::with(|client| client.precompile(&requests)).map(Value::from_inner)
     }
     pub fn compilation_request(
         &mut self,

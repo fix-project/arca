@@ -18,14 +18,14 @@ fix -l doubled '@script("double.fix" 21u64)'
 fix compile '@file("program.wasm")'
 ```
 
-`fix init SEED` creates a repository from a seed archive and adds the expression
-parser as a Wasm module.
-Each module compiles with the seed's `compile`, which by default splits a
-module into one C translation unit per 128 KiB of Wasm so that large modules
-compile in parallel. Label `fix-parser` names the parser's compilation. Commands use this
-label, and memoization reuses each compilation after its first evaluation.
-`--precompile` evaluates them all during `init`. `//fix/cli:precompiled`
-archives such a repository.
+`fix init SEED` imports the seed and installs compilation requests for the
+parser and example schedulers embedded in the `fix` binary. The seed's native
+scheduler and collector remain available for bootstrapping. `--precompile`
+compiles the embedded parser, collector, and schedulers, labels their Runnable
+results, and persists their coupons. The compiled parallel scheduler becomes
+the default `scheduler` label. `//fix/cli:precompiled` archives such a repository.
+The seed's `compile` splits each Wasm module into one C translation unit per
+128 KiB by default.
 
 `fix repl` reads low-level Fix expressions and prints their canonical handles.
 Each input uses the same syntax and imports as a command-line expression.
