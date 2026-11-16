@@ -101,6 +101,9 @@ enum Command {
         /// Sign imported seed Tags with the selected identities.
         #[arg(long)]
         sign: bool,
+        /// Trust the seed compiler, sign and precompile programs, and trust the collector.
+        #[arg(long, requires = "seed")]
+        bootstrap: bool,
     },
     /// Serve remote evaluation requests from this repository over TCP.
     Serve {
@@ -422,6 +425,7 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             seed,
             precompile,
             sign,
+            bootstrap,
         } => {
             commands::init()?;
             let Some(seed) = seed else {
@@ -430,19 +434,23 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             commands::run(
                 commands::Plumbing::Import {
                     archive: seed,
-                    sign,
+                    sign: sign || bootstrap,
                 },
                 None,
                 options.clone(),
                 global.profile,
             )?;
+            if bootstrap {
+                let compiler = std::fs::read_to_string(".fix/trust")?;
+                fixcertificates::linux::update("compiler", compiler.trim(), true)?;
+            }
             let options = Options {
-                trust: if precompile && options.unsigned {
+                trust: if (precompile || bootstrap) && options.unsigned {
                     Some(env::current_dir()?.join(".fix/trust"))
                 } else {
                     options.trust
                 },
-                memoize: if precompile {
+                memoize: if precompile || bootstrap {
                     Memoization::Always
                 } else {
                     options.memoize
@@ -450,7 +458,12 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 ..options
             };
             let mut client = global.open(options)?;
-            fixcli::bootstrap::install(&mut client, precompile)?;
+            fixcli::bootstrap::install(&mut client, precompile || bootstrap)?;
+            if bootstrap {
+                configuration::trust(configuration::TrustCommand::AddTagger {
+                    tagger: "collector".into(),
+                })?;
+            }
             Ok(0)
         }
         Command::Plumbing(plumbing) => Ok(commands::run(

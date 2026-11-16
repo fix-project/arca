@@ -70,20 +70,49 @@ pub fn remote(command: RemoteCommand) -> Result<(), Box<dyn std::error::Error>> 
 
 #[derive(Subcommand)]
 pub enum TrustCommand {
-    AddKey { key: String },
-    RemoveKey { key: String },
-    AddCompiler { compiler: String },
-    AddTagger { tagger: String },
-    RemoveTagger { tagger: String },
-    RemoveCompiler { compiler: String },
-    AddIdentity { key: String },
-    RemoveIdentity { key: String },
+    /// Add the agent's Ed25519 keys as signing identities and trusted keys.
+    AddAgent,
+    AddKey {
+        key: String,
+    },
+    RemoveKey {
+        key: String,
+    },
+    AddCompiler {
+        compiler: String,
+    },
+    AddTagger {
+        tagger: String,
+    },
+    RemoveTagger {
+        tagger: String,
+    },
+    RemoveCompiler {
+        compiler: String,
+    },
+    AddIdentity {
+        key: String,
+    },
+    RemoveIdentity {
+        key: String,
+    },
     List,
 }
 
 pub fn trust(command: TrustCommand) -> Result<(), Box<dyn std::error::Error>> {
     use fixcertificates::linux;
     let (kind, value, add) = match command {
+        TrustCommand::AddAgent => {
+            let keys = sshagent::identities()?;
+            if keys.is_empty() {
+                return Err("ssh-agent has no Ed25519 keys".into());
+            }
+            for key in keys {
+                linux::update("key", &key, true)?;
+                linux::update("identity", &key, true)?;
+            }
+            return Ok(());
+        }
         TrustCommand::AddKey { key } => ("key", key, true),
         TrustCommand::RemoveKey { key } => ("key", key, false),
         TrustCommand::AddIdentity { key } => ("identity", key, true),

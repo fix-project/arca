@@ -562,6 +562,84 @@ fn remote_commands_are_repository_local_and_trust_commands_are_per_user() {
     command(&second, &["trust", "remove-identity", key], true);
     command(&second, &["trust", "remove-compiler", &compiler], true);
     assert!(command(&home, &["trust", "list"], true).is_empty());
+
+    let agent = Agent::with_keys(&directory.join("active-agent"), &[43, 44]);
+    for _ in 0..2 {
+        let output = Command::new(fixture(env!("FIX")))
+            .args(["trust", "add-agent"])
+            .env("HOME", &home)
+            .env("SSH_AUTH_SOCK", &agent.socket)
+            .env_remove("FIX_CONFIG_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let listed = command(&home, &["trust", "list"], true);
+    for key in &agent.public_keys {
+        assert_eq!(listed.matches(&format!("key {key}")).count(), 1);
+        assert_eq!(listed.matches(&format!("identity {key}")).count(), 1);
+    }
+}
+
+#[test]
+fn init_preserves_compiled_programs_from_an_archive() {
+    let directory = std::env::temp_dir().join(format!("fix-init-archive-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let _cleanup = Directory(directory.clone());
+    let source = directory.join("source");
+    seed(&source, env!("SERIAL"));
+    let parser = std::fs::read_to_string(source.join(".fix/labels/fix-parser")).unwrap();
+    let archive = directory.join("seed.tar");
+    assert!(
+        Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg(".fix")
+            .current_dir(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let target = directory.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let agent = Agent::new(&directory.join("agent"), 46);
+    let compiler = std::fs::read_to_string(source.join(".fix/trust")).unwrap();
+    configuration(&target.join("user"), &agent, &compiler, &[]);
+    let absent_tagger = Tree::canonical(&[Blob::literal(b"other repository").unwrap().into()])
+        .unwrap()
+        .tag_descriptor();
+    std::fs::write(
+        target.join("user/trusted_taggers"),
+        absent_tagger.as_handle().to_string(),
+    )
+    .unwrap();
+    let run = |arguments: &[&str]| {
+        let output = Command::new(fixture(env!("FIX")))
+            .args(arguments)
+            .current_dir(&target)
+            .env("FIX_CONFIG_DIR", target.join("user"))
+            .env("SSH_AUTH_SOCK", &agent.socket)
+            .env_remove("FIX_UNSIGNED")
+            .env_remove("FIX_TRUST")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["init", archive.to_str().unwrap(), "--sign"]);
+    assert_eq!(
+        std::fs::read_to_string(target.join(".fix/labels/fix-parser")).unwrap(),
+        parser
+    );
+    run(&["--memory", "512", "-j", "1", "eval", "1u64"]);
 }
 
 #[test]

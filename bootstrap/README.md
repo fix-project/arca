@@ -22,12 +22,20 @@ setjmp/longjmp.
 `--//bootstrap:debug` builds the seed's dependencies in debug mode.
 
 ```sh
-bazel build //bootstrap
-fix trust add-key ~/.ssh/id_ed25519.pub
-fix trust add-identity ~/.ssh/id_ed25519.pub
-fix init bazel-bin/bootstrap/seed.tar --sign
-fix trust add-compiler trusted-compiler
+bazel build //fix/cli:fix //bootstrap:seed
+fix="$PWD/bazel-bin/fix/cli/fix"
+seed="$PWD/$(bazel cquery //bootstrap:seed --output=files)"
+"$fix" trust add-agent
+mkdir -p fix-repo
+cd fix-repo
+"$fix" init "$seed" --bootstrap
 ```
+
+`--bootstrap` trusts the seed compiler, signs the imported Tags, precompiles
+the embedded programs, and trusts the collector. The seed supplies a native
+scheduler and collector. `--unsigned` is for staging builds; using it with
+`--precompile` or `--bootstrap` leaves newly generated Tags and coupons
+unsigned, even if the imported seed was signed.
 
 ## Seed
 

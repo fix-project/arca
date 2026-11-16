@@ -107,6 +107,17 @@ impl Trust {
         Ok(())
     }
 
+    pub fn trust_tagger_name(&mut self, name: &str) -> Result<(), TrustError> {
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(name, &mut bytes).map_err(|_| TrustError::InvalidAuthority)?;
+        let handle = Handle::parse_ref(&bytes).map_err(|_| TrustError::InvalidAuthority)?;
+        if !handle.is_canonical() || !handle.is_tree_data() || bytes[31] & 0x40 == 0 {
+            return Err(TrustError::InvalidAuthority);
+        }
+        self.taggers.insert(bytes);
+        Ok(())
+    }
+
     pub(super) fn is_tagger(
         &self,
         storage: &dyn Storage,

@@ -159,10 +159,7 @@ fn execute(
         .clone();
     let repository = storage.repository();
     for name in &remotes.policy.trusted_taggers {
-        let tagger = Tree::try_from(crate::api::resolve(repository, name)?)?;
-        trust
-            .add_tagger(&*storage, tagger)
-            .map_err(CliError::Trust)?;
+        trust.trust_tagger_name(name).map_err(CliError::Trust)?;
     }
     if command == "call" {
         let [combination] = arguments.as_slice() else {

@@ -18,10 +18,38 @@ bazel test //tests:format //tests:lint
 bazel run //:format
 bazel run //programs/kernel:hello -- Ada
 bazel run //programs/arca:add -- tuple:word:2,word:3
-bazel run //fix -- init /path/to/seed.tar --precompile
 bazel run //programs/fix:addblob -- 2u64 3u64
-bazel run //fix -- run path/to/program.fix
 ```
+
+## Run Fix
+
+Build the Fix binary and bootstrap seed. Precompilation uses `/dev/kvm`.
+
+```sh
+bazel build //fix/cli:fix //bootstrap:seed
+fix="$PWD/bazel-bin/fix/cli/fix"
+seed="$PWD/$(bazel cquery //bootstrap:seed --output=files)"
+"$fix" trust add-agent
+mkdir -p fix-repo
+cd fix-repo
+"$fix" init "$seed" --bootstrap
+"$fix" eval 42u64
+"$fix" run path/to/program.fix
+```
+
+`trust add-agent` requires an active `ssh-agent` with an Ed25519 key. The
+`--bootstrap` trusts the seed compiler, signs the imported Tags, compiles the
+embedded programs, and trusts the collector. It uses your configured signing
+identities; `trust add-agent` adds the keys currently loaded in `ssh-agent`.
+For TCP remotes, see [remote runtimes](fix/remote/README.md).
+
+Use `--unsigned` only for staging builds. If a repository was initialized with
+`--unsigned --precompile`, its compiled Tags and coupons need signatures before
+normal use. With the signing key loaded in `ssh-agent`, run `fix trust add-agent`
+and `fix sign --all` in that repository, then run
+`fix trust add-compiler "$(cat .fix/trust)"` and `fix trust add-tagger collector`.
+`sign --all` currently signs every Tag again, including Tags
+that already have a certificate, so this recovery can take time.
 
 Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 `null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
@@ -41,7 +69,7 @@ calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
 sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
-The optional [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
+The [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
 toolchains from pinned sources and checks byte-identical generations. Shared
 caches use ordinary Bazel configuration.
 
@@ -86,7 +114,7 @@ suite verifies the complete dependency closure. CI runs it separately from the
 default tests.
 Theory directories declare their Bazel module dependencies and Rocq namespaces.
 
-The [Fix CLI](fix/runtime/README.md) also provides persistent object construction,
+The [Fix CLI](fix/cli/README.md) also provides persistent object construction,
 reading, inspection, and labels.
 
 Licensed under [LGPL-2.1-or-later](LICENSE).

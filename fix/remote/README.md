@@ -25,6 +25,7 @@ Trust lives under `~/.fix/config`, independently of repositories:
 `FIX_CONFIG_DIR` selects another user configuration directory, including for isolated tests and build tools. Repository archives never install user configuration.
 
 ```sh
+fix trust add-agent
 fix trust add-key ~/.ssh/id_ed25519.pub
 fix trust add-identity ~/.ssh/id_ed25519.pub
 fix trust add-key /path/to/worker.pub
@@ -33,7 +34,7 @@ fix trust add-tagger COLLECTOR_HANDLE
 fix trust list
 ```
 
-`remove-key`, `remove-identity`, `remove-compiler`, and `remove-tagger` remove entries. Compiler and tagger operands can also name repository labels, such as `trusted-compiler`. Selecting a signing identity does not automatically authorize its signatures; add its public key to `authorized_keys` too. Repeat `--identity KEY` to replace the configured signing identities for one command. KEY can be a public-key file or a complete OpenSSH public-key line.
+`add-agent` adds every Ed25519 key loaded in ssh-agent to both signing identities and trusted keys. `remove-key`, `remove-identity`, `remove-compiler`, and `remove-tagger` remove entries. Compiler and tagger operands can also name repository labels, such as `trusted-compiler`. Selecting a signing identity does not automatically authorize its signatures; add its public key to `authorized_keys` too. Repeat `--identity KEY` to replace the configured signing identities for one command. KEY can be a public-key file or a complete OpenSSH public-key line.
 
 Signing uses the Linux host's `SSH_AUTH_SOCK`. Load the chosen keys with `ssh-add`; private keys stay in ssh-agent and are never passed to the guest. Newly persisted Tags and explicit `fix sign` operations use every selected identity. Network transfers select a certificate after the receiver advertises its trusted keys. `fix export` adds the selected identities to archived Tag certificates without changing the source Tags. Existing signatures are preserved. Exports containing no Tags, or reusing an existing certificate, need no signing agent. Using a stored Tag requires a valid signature by at least one authorized key. Reading signed data requires no agent.
 
@@ -41,7 +42,7 @@ Each authorized key is trusted as a complete remote runtime. It can attest to Ta
 
 ## Stored certificates and transfer
 
-Tag and Tag Ref object records point to their backing data like other objects. `.fix/certificates/TAG/SIGNER` indexes certificate Blob names separately for each signing key. Each certificate contains one signature; updating one key's certificate does not overwrite another's. Certificates are ordinary content-addressed Blobs, stored and transferred like other Blobs. Their signatures bind the canonical Tag name in the `fix-tag-v1` SSHSIG namespace. Tag backing data remains separate under `.fix/data`. Reloading checks certificate trust, backing hashes, and certificates of nested Tags. Revoking a key causes subsequent reloads of certificates signed only by that key to fail.
+Tag and Tag Ref object records point to their backing data like other objects. `.fix/tags/signatures/TAG/SIGNER` indexes certificate Blob names separately for each signing key. Each certificate contains one signature; updating one key's certificate does not overwrite another's. Certificates are ordinary content-addressed Blobs, stored and transferred like other Blobs. Their signatures bind the canonical Tag name in the `fix-tag-v1` SSHSIG namespace. Tag backing data remains separate under `.fix/data`. Reloading checks certificate trust, backing hashes, and certificates of nested Tags. Revoking a key causes subsequent reloads of certificates signed only by that key to fail.
 
 `fixremote` exports sets of canonical root names, object records, optional backing data, and optional TODO metadata. A prepared Tag transfer retains its available certificates separately from the backing data. Import verifies object hashes, certificate signatures, and required dependencies before publishing objects. A scheduler can send a thin Ref with arbitrary TODO metadata and transfer backing later; Fix neither interprets that metadata nor fetches data automatically.
 

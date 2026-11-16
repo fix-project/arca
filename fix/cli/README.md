@@ -24,8 +24,16 @@ scheduler and collector remain available for bootstrapping. `--precompile`
 compiles the embedded parser, collector, and schedulers, labels their Runnable
 results, and persists their coupons. The compiled parallel scheduler becomes
 the default `scheduler` label. `//fix/cli:precompiled` archives such a repository.
+`fix init SEED --bootstrap` also trusts the seed compiler, signs its Tags with
+the configured identities, and trusts the compiled collector.
 The seed's `compile` splits each Wasm module into one C translation unit per
 128 KiB by default.
+Without `--precompile`, the parser label names a compilation request and cannot
+parse expressions yet. Use the seed setup in the root README for an interactive
+repository.
+For a normal repository, use `--bootstrap` and do not use
+`--unsigned`; the latter permits newly compiled Tags and coupons to be stored
+without signatures. `fix sign --all` signs those Tags later if needed.
 
 `fix repl` reads low-level Fix expressions and prints their canonical handles.
 Each input uses the same syntax and imports as a command-line expression.
