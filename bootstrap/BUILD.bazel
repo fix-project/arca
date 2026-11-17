@@ -3,19 +3,17 @@ load("@bazel_lib//lib:directory_path.bzl", "directory_path")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":cmake.bzl", "MAPS", "source_build")
-load(":defs.bzl", "seed_repository")
-load(":files.bzl", "wasm_tools", "toolchain_files", "mapped_directory")
-load(":llvm.bzl", "llvm_bundle", "llvm_resources")
-load("@llvm-project//wasi:toolchain.bzl", "wasi_cc_toolchain_from_targets")
+load(":defs.bzl", "promote_seed", "seed_repository")
+load(":files.bzl", "archive_directory", "wasm_tools", "toolchain_files", "mapped_directory")
 load(":native.bzl", "UNITS", native_generation = "generation", native_program = "program")
 load(":configuration.bzl", "stage")
-load(":tools.bzl", "COMMANDS", "LLVM_FILES", "SEED_MODULES", "compilation_script")
+load(":tools.bzl", "COMMANDS")
 load("//build:fix.bzl", "fix_run")
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["toolchain-tags.patch", "llvm-permissions.patch"])
+exports_files(["llvm_release.BUILD.bazel", "llvm_rootfs.BUILD.bazel"])
 
 rust_binary(
     name = "seed_tool",
@@ -28,17 +26,22 @@ rust_binary(
 bool_flag(name = "debug", build_setting_default = False)
 config_setting(name = "debug_enabled", flag_values = {":debug": "true"})
 
-exports_files(["defs.bzl", "files.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "llvm.BUILD.bazel", "llvm.bzl", "tools.bzl", "README.md"])
+exports_files(["defs.bzl", "files.bzl", "cmake.bzl", "native.bzl", "configuration.bzl", "tools.bzl", "README.md"])
 
-HOST = "$${EXT_BUILD_ROOT}/$(execpath :host_llvm)"
 SYSROOT = "$${EXT_BUILD_ROOT}/$(execpath :wasi_sysroot)"
 WASM_FLAGS = MAPS + " -resource-dir=$${EXT_BUILD_ROOT}/$(execpath :wasi_resources)"
-BUILTINS = "lib/clang/23/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a"
 WASI_TARGET = {
     "CMAKE_SYSTEM_NAME": "Generic",
     "CMAKE_C_COMPILER_TARGET": "wasm32-unknown-wasip1",
     "CMAKE_CXX_COMPILER_TARGET": "wasm32-unknown-wasip1",
     "CMAKE_ASM_COMPILER_TARGET": "wasm32-unknown-wasip1",
+}
+WASI_TOOLS = {
+    "CMAKE_C_COMPILER": "@llvm_sdk//:bin/clang",
+    "CMAKE_CXX_COMPILER": "@llvm_sdk//:bin/clang++",
+    "CMAKE_ASM_COMPILER": "@llvm_sdk//:bin/clang",
+    "CMAKE_AR": "@llvm_sdk//:bin/llvm-ar",
+    "CMAKE_RANLIB": "@llvm_sdk//:bin/llvm-ranlib",
 }
 
 copy_to_directory(
@@ -48,19 +51,9 @@ copy_to_directory(
     tags = ["manual"],
 )
 
-llvm_bundle(
-    name = "host_llvm",
-    native_files = {
-        "@llvm-project//clang:clang": "bin/clang",
-        "@llvm-project//clang:clang++": "bin/clang++",
-        "@llvm-project//lld:ld.lld": "bin/ld.lld",
-        "@llvm-project//lld:wasm-ld": "bin/wasm-ld",
-        "@llvm-project//llvm:llvm-ar": "bin/llvm-ar",
-        "@llvm-project//llvm:llvm-ranlib": "bin/llvm-ranlib",
-        "@llvm-project//clang:builtin_headers_gen": "lib/clang/23/include/",
-    },
-    tags = ["manual"],
-)
+archive_directory(name = "wasi_resources", src = "@llvm_sdk//:resources", strip_prefix = "lib/clang/23/", tags = ["manual"])
+archive_directory(name = "wasi_sysroot", src = "@llvm_sdk//:sysroot", strip_prefix = "share/wasi-sysroot/", tags = ["manual"])
+archive_directory(name = "release_rootfs", src = "@llvm_rootfs//:files", tags = ["manual"])
 
 source_build(
     name = "host_wasm2c",
@@ -79,96 +72,10 @@ source_build(
 )
 
 source_build(
-    name = "wasi_builtins",
-    lib_source = "@llvm-raw//:sources",
-    working_directory = "compiler-rt/lib/builtins",
-    out_data_files = [BUILTINS],
-    options = WASI_TARGET | {
-        "LLVM_RUNTIMES_BUILD": "ON",
-        "LLVM_ENABLE_PER_TARGET_RUNTIME_DIR": "ON",
-        "COMPILER_RT_DEFAULT_TARGET_ONLY": "ON",
-        "COMPILER_RT_INSTALL_PATH": "$${INSTALLDIR}/lib/clang/23",
-    },
-    targets = ["install"],
-    tags = ["manual"],
-)
-
-llvm_resources(
-    name = "wasi_resources",
-    host = ":host_llvm",
-    builtins = ":wasi_builtins",
-    tags = ["manual"],
-)
-
-source_build(
-    name = "wasi_sysroot",
-    data = [":wasi_builtins", ":wasi_resources"],
-    out_data_dirs = ["include"],
-    out_data_files = [
-        "lib/wasm32-wasip1/crt1.o",
-        "lib/wasm32-wasip1/libc.a",
-        "lib/wasm32-wasip1/libc++.a",
-        "lib/wasm32-wasip1/libc++abi.a",
-        "lib/wasm32-wasip1/libunwind.a",
-    ],
-    copies = {"$${EXT_BUILD_ROOT}/$(execpath :wasi_builtins)/" + BUILTINS: BUILTINS},
-    lib_source = "@llvm-raw//:sources",
-    working_directory = "runtimes",
-    options = WASI_TARGET | {
-        "CMAKE_C_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
-        "CMAKE_CXX_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
-        "CMAKE_ASM_FLAGS": WASM_FLAGS + " -fwasm-exceptions",
-        "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
-        "LLVM_DEFAULT_TARGET_TRIPLE": "wasm32-wasip1",
-        "LIBC_TARGET_TRIPLE": "wasm32-wasip1",
-        "LLVM_INCLUDE_TESTS": "OFF",
-        "LLVM_INCLUDE_DOCS": "OFF",
-        "LLVM_ENABLE_RUNTIMES": "libc;libunwind;libcxxabi;libcxx",
-        "LLVM_ENABLE_PER_TARGET_RUNTIME_DIR": "ON",
-        "RUNTIMES_USE_LIBC": "llvm-libc",
-        "LLVM_LIBC_FULL_BUILD": "ON",
-        "LIBC_WASM_ENABLE_SJLJ": "ON",
-        "LIBCXX_HAS_PTHREAD_API": "ON",
-        "LIBCXXABI_HAS_PTHREAD_API": "ON",
-        "LIBUNWIND_USE_COMPILER_RT": "ON",
-        "LIBCXXABI_USE_COMPILER_RT": "ON",
-        "LIBCXX_USE_COMPILER_RT": "ON",
-        "LIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY": "ON",
-    },
-    targets = ["install"],
-    tags = ["manual"],
-)
-
-wasi_cc_toolchain_from_targets(
-    name = "wasi_cc",
-    clang = "@llvm-project//clang:clang",
-    clangxx = "@llvm-project//clang:clang++",
-    ld = "@llvm-project//lld:wasm-ld",
-    ar = "@llvm-project//llvm:llvm-ar",
-    nm = "@llvm-project//llvm:llvm-nm",
-    objcopy = "@llvm-project//llvm:llvm-objcopy",
-    objdump = "@llvm-project//llvm:llvm-objdump",
-    strip = "@llvm-project//llvm:llvm-strip",
-    resource_dir = ":wasi_resources",
-    sysroot = ":wasi_sysroot",
-    tags = ["manual"],
-)
-
-llvm_bundle(
-    name = "wasm_llvm",
-    wasi = True,
-    files = {
-        "@llvm-project//clang:clang": "usr/bin/clang",
-        "@llvm-project//lld:ld.lld": "usr/bin/ld.lld",
-        "@llvm-project//lld:wasm-ld": "usr/bin/wasm-ld",
-        "@llvm-project//clang:builtin_headers_gen": "usr/lib/clang/23/include/",
-    } | LLVM_FILES,
-    tags = ["manual"],
-)
-
-source_build(
     name = "wasm2c",
-    data = [":wasi_resources"],
+    data = ["@llvm_sdk//:bin/wasm-ld"],
+    resources = ":wasi_resources",
+    tools = WASI_TOOLS,
     lib_source = ":wabt_sources",
     working_directory = "wabt_sources",
     sysroot = ":wasi_sysroot",
@@ -183,7 +90,7 @@ source_build(
         "BUILD_TESTS": "OFF",
         "BUILD_LIBWASM": "OFF",
         "BUILD_TOOLS": "ON",
-        "CMAKE_EXE_LINKER_FLAGS": "--no-wasm-opt -fuse-ld=" + HOST + "/bin/wasm-ld -Wl,-z,stack-size=16777216",
+        "CMAKE_EXE_LINKER_FLAGS": "--no-wasm-opt -fuse-ld=$${EXT_BUILD_ROOT}/$(execpath @llvm_sdk//:bin/wasm-ld) -Wl,-z,stack-size=16777216",
         "WITH_WASI": "OFF",
         "WITH_EXCEPTIONS": "OFF",
     },
@@ -225,12 +132,8 @@ toolchain_files(
     tags = ["manual"],
 )
 
-mapped_directory(
-    name = "wasip1_sysroot",
-    srcs = {":wasi_sysroot": ".", ":wasi_resources": "lib/clang/23"},
-    allow_overwrites = True,
-    tags = ["manual"],
-)
+directory_path(name = "release_rootfs_usr", directory = ":release_rootfs", path = "usr", tags = ["manual"])
+mapped_directory(name = "wasip1_sysroot", srcs = {":release_rootfs_usr": "."}, tags = ["manual"])
 
 seed_repository(
     name = "seed",
@@ -254,39 +157,60 @@ seed_repository(
 
 alias(name = "bootstrap", actual = ":seed", tags = ["manual"])
 
-# The seed's modules, in the seed's configuration.
-[
-    stage(name = name + "_module", srcs = [module], tags = ["manual"])
-    for name, module in SEED_MODULES.items()
-]
+stage(name = "compile_module", srcs = ["//programs/fix:compile_module"], tags = ["manual"])
 
-compilation_script(
-    name = "compilation_script",
-    modules = SEED_MODULES.keys(),
-    units = UNITS,
-    tags = ["manual"],
-)
+COMPILER_REBUILD = '(("compile" ("" *#("" $compile @file("compile.wasm") %du64) *[$compile 2u64])))' % UNITS
 
-# Rebuilds every seed ELF inside Fix; the archive carries the compile coupons.
+# Rebuilds the compiler inside Fix; the archive carries its compile coupon.
 fix_run(
     name = "compilations",
-    expression = '@script("compile.fix")',
+    jobs = 1,
+    memory = 65536,
+    expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
-    data = {":compilation_script": "compile.fix"} | {":" + name + "_module": name + ".wasm" for name in SEED_MODULES},
+    data = {":compile_module": "compile.wasm"},
     archives = ["//fix/cli:precompiled"],
     fix = ":release_fix",
     tags = ["manual"],
 )
 
-# Stage2 measures the bootstrap, so its CLI is a release build.
 stage(name = "release_fix", srcs = ["//fix/cli:fix"], tags = ["manual"])
 
-filegroup(name = "compilations_handle", srcs = [":compilations"], output_group = "handle", tags = ["manual"])
+promote_seed(name = "promoted_seed", seed = ":seed", compilation = ":compilations", fix = ":release_fix", tags = ["manual"])
+
+fix_run(
+    name = "stabilized_compilations",
+    jobs = 1,
+    memory = 65536,
+    expression = COMPILER_REBUILD,
+    bindings = {"compile": '@label("compile")'},
+    data = {":compile_module": "compile.wasm"},
+    archives = ["//fix/cli:precompiled", ":promoted_seed"],
+    fix = ":release_fix",
+    tags = ["manual"],
+)
+
+promote_seed(name = "stabilized_seed", seed = ":promoted_seed", compilation = ":stabilized_compilations", fix = ":release_fix", tags = ["manual"])
+
+fix_run(
+    name = "checked_compilations",
+    jobs = 1,
+    memory = 65536,
+    expression = COMPILER_REBUILD,
+    bindings = {"compile": '@label("compile")'},
+    data = {":compile_module": "compile.wasm"},
+    archives = ["//fix/cli:precompiled", ":stabilized_seed"],
+    fix = ":release_fix",
+    tags = ["manual"],
+)
+
+filegroup(name = "stabilized_handle", srcs = [":stabilized_compilations"], output_group = "handle", tags = ["manual"])
+filegroup(name = "checked_handle", srcs = [":checked_compilations"], output_group = "handle", tags = ["manual"])
 
 sh_test(
-    name = "stage2",
-    srcs = ["stage2_test.sh"],
-    args = ["$(rootpath :release_fix)", "$(rootpath :seed)", "$(rootpath :compilations)", "$(rootpath :compilations_handle)"],
-    data = [":release_fix", ":seed", ":compilations", ":compilations_handle"],
+    name = "stability",
+    srcs = ["stability_test.sh"],
+    args = ["$(rootpath :stabilized_handle)", "$(rootpath :checked_handle)"],
+    data = [":stabilized_handle", ":checked_handle"],
     tags = ["manual", "kvm", "local"],
 )

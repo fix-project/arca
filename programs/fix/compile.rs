@@ -107,6 +107,7 @@ fn flags() -> Vec<Expression> {
         "-fno-optimize-sibling-calls",
         "-frounding-math",
         "-ffreestanding",
+        "-fno-stack-protector",
         "-nostdlib",
         "-nostdinc",
         "-isystem",

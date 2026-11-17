@@ -1,0 +1,12 @@
+load("@fix//bootstrap:tools.bzl", "LLVM_TOOL_NAMES")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "files",
+    srcs = ["usr/bin/" + name for name in ["clang", "clang++", "clang-23", "lld", "ld.lld", "wasm-ld"] + LLVM_TOOL_NAMES] + glob([
+        "usr/include/**",
+        "usr/lib/clang/23/**",
+        "usr/lib/wasm32-wasip1/**",
+    ]),
+)

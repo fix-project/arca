@@ -1,23 +1,23 @@
 # Bootstrap
 
-The bootstrap builds LLVM, wasm2c, and the Wasm merger from pinned source, then
-converts the Fix compiler wrapper, tools, scheduler, and coupon collector into
-Fix ELFs on Linux. A seeding tool writes them into a seed
-repository. Nothing in this process runs inside Fix.
+The bootstrap downloads the Fix LLVM SDK and WASIp1 rootfs with pinned SHA-256
+hashes. It builds wasm2c and the Wasm merger, then converts the Fix compiler
+wrapper, tools, scheduler, and coupon collector into native Fix ELFs. The first
+native build uses the host Clang and the released LLD. A seeding tool writes
+these programs into a repository.
 
 | Target | What it does |
 |---|---|
-| `//bootstrap:host_llvm` | Builds native Clang and LLD |
-| `//bootstrap:stage0` | Builds the WASIp1 tools and sysroot |
+| `//bootstrap:stage0` | Stages the released WASIp1 tools and sysroot with wasm2c and the Wasm merger |
 | `//bootstrap:stage1` | Merges the tools with Flatware, translates them to C, and compiles that output as C into native Fix ELFs |
 | `//bootstrap` (`:seed`) | Writes the seed repository archive |
-| `//bootstrap:compilations` | Rebuilds every seed ELF inside Fix; its archive carries the compile coupons |
-| `//bootstrap:stage2` | Opt-in test: the rebuilt certificates equal the seed's |
+| `//bootstrap:compilations` | Rebuilds the compiler inside Fix; its archive carries the compile coupon |
+| `//bootstrap:stability` | Opt-in test: two successive self-hosted compiler generations produce identical certificates |
 
-Every native ELF uses `UNITS` translated C units (`native.bzl`, currently 512);
-the generated `compilation_script.fix` uses the same count, so Stage2 reproduces the seed byte for byte.
+Every native ELF uses `UNITS` translated C units (`native.bzl`, currently 512).
+Each self-hosted compiler generation uses the same count.
 The native runtime uses C and Rust. Wasm exceptions use numeric tags and
-setjmp/longjmp.
+setjmp/longjmp. Fix Shell uses a 32 MiB native stack for translated programs.
 
 `--//bootstrap:debug` builds the seed's dependencies in debug mode.
 
@@ -70,17 +70,16 @@ a preprocessor, and `llvm-mt` requires XML support absent from this toolchain.
 Applying `compile` to a Wasm module, as in `#("" compile module)`, yields a
 Runnable for that module, compiled as one translated C unit per 128 KiB of Wasm.
 An explicit unit count, as in `#("" compile module 512u64)`, overrides that;
-the generated script passes the count the native seed build used.
+the stability check passes the count the native seed build used.
 `seed add DIRECTORY NAME=ELF...` issues further Runnables authored by an
 existing seed's `trusted-compiler`; tests use it to add their programs.
 
-## Stage2
+## Stability
 
-The generated `compilation_script.fix` applies `compile` to every canonical
-seed module and returns `(label, value)` pairs. Each tool is
-compiled once. The compiler entry contains the `compile` closure. Fix can
-reproduce Runnable certificates because `compile`
-issues them with the trusted author; it cannot issue the Bootstrap tag, so the
-closure reuses the seed's. `//bootstrap:stage2` checks that the closure and every
-rebuilt Runnable equal the seed's. Import `//bootstrap:compilations` to reuse
-those compilations elsewhere.
+Each generation applies `compile` to the compiler module. The first result uses
+the host-compiled seed compiler. `seed promote` then makes the rebuilt compiler
+the trusted author and issues its Runnable and Bootstrap resource certificates.
+The same process is repeated for the next generation. `//bootstrap:stability`
+checks that the following generation produces exactly the same result Tree,
+including its certificates. Import `//bootstrap:compilations` to reuse the
+first compiler compilation coupon elsewhere.

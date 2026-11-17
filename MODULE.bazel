@@ -151,11 +151,12 @@ http_file(
     downloaded_file_path = "malloc.c",
 )
 
-http_file(
+http_archive(
     name = "mt19937_src",
-    urls = ["https://www.math.sci.hiroshima-u.ac.jp/m-mat/MT/VERSIONS/C-LANG/mt19937-64.c"],
-    sha256 = "7a42a33ed3327c5dc2785afa5d3508ebb67343ba2c360767a8f5799e6c3d0cfe",
-    downloaded_file_path = "mt19937-64.c",
+    urls = ["https://github.com/valkey-io/valkey/archive/2b5c7a0dbd61fd4281ef6166b7d119ba7fe7368c.tar.gz"],
+    sha256 = "8547f4163c3088aef827d16e72bf4e705dd482b6194d16e82f51d3a911557299",
+    strip_prefix = "valkey-2b5c7a0dbd61fd4281ef6166b7d119ba7fe7368c/src",
+    build_file_content = 'filegroup(name = "sources", srcs = ["mt19937-64.c", "mt19937-64.h"], visibility = ["//visibility:public"])',
 )
 
 bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
@@ -167,26 +168,27 @@ git_override(
     patch_strip = 1,
 )
 
+LLVM_RELEASE = "23.1.2-8588e7e53637"
+LLVM_RELEASE_URL = "https://github.com/fix-project/llvm-project/releases/download/fixorg-" + LLVM_RELEASE + "/"
+
 http_archive(
-    name = "llvm-raw",
-    urls = ["https://github.com/fix-project/llvm-project/archive/4572d948ac4ac5ce7a6b8e73af1aa63fabdd8f3b.tar.gz"],
-    sha256 = "b33ab3e187d583c844fe813550bac6be124e34a3c0f3801202690c9871033879",
-    strip_prefix = "llvm-project-4572d948ac4ac5ce7a6b8e73af1aa63fabdd8f3b",
-    build_file = "//bootstrap:llvm.BUILD.bazel",
-    patches = ["//bootstrap:toolchain-tags.patch", "//bootstrap:llvm-permissions.patch"],
-    patch_args = ["-p1"],
+    name = "llvm_sdk",
+    urls = [LLVM_RELEASE_URL + "wasm32-wasip1-llvm-sdk-" + LLVM_RELEASE + ".tar.zst"],
+    sha256 = "005bc3aea53c2f29d70ae21eba31d75a10855f3a55add71ef5cb0ba6acd22d32",
+    strip_prefix = "wasm32-wasip1-llvm-sdk",
+    build_file = "//bootstrap:llvm_release.BUILD.bazel",
 )
 
-bazel_dep(name = "llvm", version = "0.8.5")
+http_archive(
+    name = "llvm_rootfs",
+    urls = [LLVM_RELEASE_URL + "llvm-wasip1-rootfs-" + LLVM_RELEASE + ".tar.zst"],
+    sha256 = "48fc0c78f95c86b33ab8127b36f83b590fb024e5d665dd293b3c8cc9c01312ea",
+    build_file = "//bootstrap:llvm_rootfs.BUILD.bazel",
+)
+
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "bazel_lib", version = "3.7.2")
 bazel_dep(name = "rules_python", version = "1.9.0")
-bazel_dep(name = "zlib-ng", version = "2.3.3", repo_name = "llvm_zlib")
-bazel_dep(name = "zstd", version = "1.5.7.bcr.1", repo_name = "llvm_zstd")
-bazel_dep(name = "libpfm", version = "4.13.0", repo_name = "pfm")
-
-llvm_configure = use_repo_rule("//build:llvm_configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = ["X86", "WebAssembly"])
 
 rocq_toolchain = use_repo_rule("//build:rocq_toolchain.bzl", "rocq_toolchain")
 

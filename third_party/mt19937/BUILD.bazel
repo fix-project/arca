@@ -4,9 +4,9 @@ package(default_visibility = ["//visibility:public"])
 
 genrule(
     name = "reference",
-    srcs = ["@mt19937_src//file"],
-    outs = ["mt19937-64.c"],
-    cmd = "cp $< $@",
+    srcs = ["@mt19937_src//:sources"],
+    outs = ["mt19937-64.c", "mt19937-64.h"],
+    cmd = "cp $(SRCS) $(@D)",
 )
 
 cc_library(

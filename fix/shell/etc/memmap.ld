@@ -1,5 +1,5 @@
 ENTRY(_start)
-PROVIDE(__stack_size = 8M);
+PROVIDE(__stack_size = 32M);
 
 MEMORY {
   memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 0x100000000

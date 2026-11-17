@@ -36,6 +36,7 @@ args=()
 for arg in "$@"; do
     arg=${arg//\\{work\\}/$work}
     arg=${arg//\\{usr\\}/$usr}
+    arg=${arg//\\{execroot\\}/$execroot}
     args+=("${arg//\\{tool_dir\\}/$tool_dir}")
 done
 (cd "$work"; env -i PATH=/usr/bin:/bin LC_ALL=C SOURCE_DATE_EPOCH=0 BINARYEN_CORES=1 "$tool" "${args[@]}")
@@ -106,6 +107,7 @@ CFLAGS = [
     "-fno-optimize-sibling-calls",
     "-frounding-math",
     "-ffreestanding",
+    "-fno-stack-protector",
     "-nostdlib",
     "-nostdinc",
     "-isystem",
@@ -163,8 +165,8 @@ compile = rule(
 def _link_impl(ctx):
     output = ctx.actions.declare_file(ctx.attr.output)
     staged = [(file.path, file.basename) for file in ctx.files.objects] + [(ctx.file.shell.path, "libfixshell.a"), (ctx.file.memmap.path, "memmap.ld")]
-    arguments = _NATIVE_FLAGS + ["-fuse-ld={tool_dir}/ld.lld", "-Wl,--build-id=none", "-Wl,--threads=1", "-Wl,-T,{work}/memmap.ld", "-o", "{work}/" + output.basename] + ["{work}/" + file.basename for file in ctx.files.objects] + ["{work}/libfixshell.a"]
-    _invoke(ctx, ctx.files.objects + [ctx.file.shell, ctx.file.memmap], staged, [output], arguments, "BootstrapLink")
+    arguments = _NATIVE_FLAGS + ["-fuse-ld={execroot}/" + ctx.file.linker.path, "-Wl,--build-id=none", "-Wl,--threads=1", "-Wl,-T,{work}/memmap.ld", "-o", "{work}/" + output.basename] + ["{work}/" + file.basename for file in ctx.files.objects] + ["{work}/libfixshell.a"]
+    _invoke(ctx, ctx.files.objects + [ctx.file.shell, ctx.file.memmap, ctx.file.linker, ctx.file.linker_binary], staged, [output], arguments, "BootstrapLink")
     return [DefaultInfo(files = depset([output]))]
 
 link = rule(
@@ -175,12 +177,14 @@ link = rule(
         output = attr.string(),
         shell = attr.label(default = "//fix/shell:shell", allow_single_file = True),
         memmap = attr.label(default = "//fix/shell:memmap", allow_single_file = True),
+        linker = attr.label(default = "@llvm_sdk//:bin/ld.lld", allow_single_file = True),
+        linker_binary = attr.label(default = "@llvm_sdk//:bin/lld", allow_single_file = True),
     ),
 )
 
 def program(name, src, directory, partitions = UNITS, output = None):
     tools = {
-        "clang": {"tool": ":host_llvm", "tool_path": "/bin/clang"},
+        "clang": {"tool": "@local_tools//:clang"},
         "wasm2c": {"tool": ":host_wasm2c", "tool_path": "/bin/wasm2c"},
     }
     translate(name = name + "_translate", src = src, directory = directory, partitions = partitions, tags = ["manual"], **tools["wasm2c"])

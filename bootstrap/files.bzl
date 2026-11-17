@@ -4,7 +4,6 @@ load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory_bin_action")
 load("@bazel_lib//lib:directory_path.bzl", "DirectoryPathInfo", "directory_path")
 load("@bazel_lib//lib:paths.bzl", "to_repository_relative_path")
 load(":configuration.bzl", "ALLOW_TRANSITION", "mode")
-load(":tools.bzl", "LLVM_TOOL_NAMES")
 
 COPY_TOOLCHAIN = "@bazel_lib//lib:copy_to_directory_toolchain_type"
 
@@ -51,22 +50,41 @@ mapped_directory = rule(
     toolchains = [COPY_TOOLCHAIN],
 )
 
-def wasm_tools(name, llvm = ":wasm_llvm", sysroot = ":wasi_sysroot", wasm2c = ":wasm2c", merge = "//tools:wasm_merge_wasm", **kwargs):
-    sources = {sysroot: "usr", merge: "commands/wasm-merge.wasm"}
+def _archive_directory_impl(ctx):
+    files = ctx.attr.src[DefaultInfo].files.to_list()
+    root = ctx.attr.src.label.workspace_root + "/" + ctx.attr.strip_prefix
+    paths = []
+    for file in files:
+        if not file.path.startswith(root):
+            fail("archive file is outside its repository: " + file.path)
+        paths.append(file.path[len(root):])
+    manifest = ctx.actions.declare_file(ctx.label.name + ".manifest")
+    ctx.actions.write(manifest, "\n".join(sorted(paths)) + "\n")
+    output = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        inputs = files + [manifest],
+        outputs = [output],
+        command = 'set -euo pipefail; mkdir -p "$1"; tar -C "$2" -cf - -T "$3" | tar -C "$1" -xf -',
+        arguments = [output.path, root, manifest.path],
+        mnemonic = "StageRelease",
+    )
+    return [DefaultInfo(files = depset([output]))]
+
+archive_directory = rule(
+    implementation = _archive_directory_impl,
+    attrs = {"src": attr.label(mandatory = True), "strip_prefix": attr.string()},
+)
+
+
+def wasm_tools(name, rootfs = ":release_rootfs", wasm2c = ":wasm2c", merge = "//tools:wasm_merge_wasm", **kwargs):
+    sources = {rootfs: ".", merge: "commands/wasm-merge.wasm"}
     for role, directory, path, destination in [
-        ("clang_resources", llvm, "usr/lib/clang", "usr/lib/clang"),
-        ("clang", llvm, "usr/bin/clang", "commands/clang.wasm"),
-        ("ld", llvm, "usr/bin/ld.lld", "usr/bin/ld.lld"),
-        ("wasm_ld", llvm, "usr/bin/wasm-ld", "usr/bin/wasm-ld"),
+        ("clang", rootfs, "usr/bin/clang", "commands/clang.wasm"),
         ("wasm2c", wasm2c, "wasm2c.wasm", "commands/wasm2c.wasm"),
     ]:
         target = name + "_" + role
         directory_path(name = target, directory = directory, path = path, tags = ["manual"])
         sources[":" + target] = destination
-    for tool in LLVM_TOOL_NAMES:
-        target = name + "_" + tool
-        directory_path(name = target, directory = llvm, path = "usr/bin/" + tool, tags = ["manual"])
-        sources[":" + target] = "usr/bin/" + tool
     mapped_directory(name = name, srcs = sources, allow_overwrites = True, **kwargs)
 
 def toolchain_files(name, stage0, resources, **kwargs):
