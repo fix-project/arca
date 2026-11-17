@@ -78,8 +78,8 @@ test_suite(name = "lint", tags = ["manual"], tests = [":rust_lint", "//fix/sdk:l
 sh_test(
     name = "compile_test",
     srcs = ["compile_test.sh"],
-    args = ["$(rootpath //fix/cli:fix)", "$(rootpath //programs/fix:fib_module)", "$(rootpath //programs/fix:addblob_module)", "$(rootpath //fix/cli:precompiled)"],
-    data = ["//fix/cli:fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//fix/cli:precompiled"],
+    args = ["$(rootpath //fix/cli:fix)", "$(rootpath //programs/fix:fib_module)", "$(rootpath //programs/fix:addblob_module)", "$(rootpath //bootstrap:seed)"],
+    data = ["//fix/cli:fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:seed"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local", "manual"],

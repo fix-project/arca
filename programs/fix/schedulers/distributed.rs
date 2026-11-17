@@ -61,14 +61,31 @@ impl<'a> Distributed<'a> {
         let cluster = if let Some(cluster) = existing {
             cluster
         } else {
-            let connected = alloc::rc::Rc::new(Cluster::connect(self.io).await?);
+            let connected = alloc::rc::Rc::new(Cluster::connect(self.io, false).await?);
             self.cluster.borrow_mut().get_or_insert(connected).clone()
         };
+        if fixscheduler::remote::configured()?
+            .iter()
+            .all(|remote| remote.address.starts_with("file://"))
+        {
+            return match request.code() {
+                1 => self.parallel.eval(request.input()).await,
+                4 => self.parallel.think(request.input()).await,
+                _ => Err(Error::WrongType),
+            };
+        }
         let location = cluster
             .information()
             .iter()
             .position(|worker| worker.parallelism > 0)
-            .expect("no reachable remote worker")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}",
+                    cluster
+                        .first_failure()
+                        .unwrap_or("no reachable remote worker")
+                )
+            })
             + 1;
         let coupon = cluster
             .execute(location, request.code(), request.input())

@@ -43,11 +43,19 @@ pub enum RepositoryError {
     NonCanonical,
     InvalidRepository,
     InvalidLabel,
+    LabelConflict,
     Certificate(fixcertificates::Error),
     MissingLabel { name: String, repository: String },
     MissingObject { name: String, repository: String },
     MissingBacking { name: String, repository: String },
 }
+
+impl core::fmt::Display for RepositoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+impl core::error::Error for RepositoryError {}
 
 impl From<fixcertificates::Error> for RepositoryError {
     fn from(error: fixcertificates::Error) -> Self {
@@ -660,7 +668,88 @@ impl Repository {
     pub fn write_label(&self, name: &str, value: Handle) -> Result<(), RepositoryError> {
         let path = self.label_path(name)?;
         let value = self.lookup(value.as_bytes())?;
+        self.check_label_backing(value)?;
         self.write_atomic(&path, format!("{value}\n").as_bytes())
+    }
+
+    pub fn remove_label(&self, name: &str) -> Result<(), RepositoryError> {
+        fs::remove_file(&self.label_path(name)?).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingLabel {
+                name: name.into(),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })
+    }
+
+    fn check_label_backing(&self, root: Handle) -> Result<(), RepositoryError> {
+        let mut pending = alloc::vec![root];
+        let mut seen = hashbrown::HashSet::new();
+        while let Some(value) = pending.pop() {
+            if !seen.insert(*value.as_bytes()) {
+                continue;
+            }
+            let reference = match value.view() {
+                HandleView::Object(object) => object.into_ref(),
+                HandleView::Ref(reference) => *reference,
+                HandleView::Thunk(thunk) => match thunk.view() {
+                    ThunkView::Identification(reference) => reference,
+                    ThunkView::Application(reference) | ThunkView::Selection(reference) => {
+                        reference.into()
+                    }
+                },
+                HandleView::Encode(encode) => {
+                    let thunk = match encode.view() {
+                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
+                    };
+                    pending.push(thunk.into());
+                    continue;
+                }
+            };
+            let object = reference.object_descriptor();
+            self.lookup(reference.as_handle().as_bytes())?;
+            if matches!(value.view(), HandleView::Object(_)) {
+                if !self.has_backing(object)? {
+                    return Err(RepositoryError::Io(ErrorKind::NotFound));
+                }
+                if let ObjectView::Tree(tree) = object.view() {
+                    pending.extend(self.read_tree(*tree)?.iter().copied());
+                }
+            }
+            if let Some(metadata) = self.get_todo(object.into_ref())? {
+                pending.push(metadata);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn compare_and_write_label(
+        &self,
+        name: &str,
+        expected: Option<[u8; 32]>,
+        value: Handle,
+    ) -> Result<(), RepositoryError> {
+        self.label_path(name)?;
+        let lock = format!("{}/data/.label-lock-{}", self.path, hex::encode(name));
+        fs::write_with(
+            &lock,
+            b"",
+            FileMode {
+                write: true,
+                create_new: true,
+                ..Default::default()
+            },
+        )?;
+        let _lock = Temporary(Some(lock));
+        let current = match self.read_label(name) {
+            Ok(handle) => Some(*handle.as_bytes()),
+            Err(RepositoryError::MissingLabel { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if current != expected {
+            return Err(RepositoryError::LabelConflict);
+        }
+        self.write_label(name, value)
     }
 
     fn label_path(&self, name: &str) -> Result<String, RepositoryError> {
@@ -802,11 +891,8 @@ impl Repository {
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            kernel::host::os::ssh_sign(identity, namespace, message).map_err(
-                                |error| {
-                                    fixcertificates::Error::Signing(alloc::format!("{error:?}"))
-                                },
-                            )
+                            kernel::host::os::ssh_sign(identity, namespace, message)
+                                .map_err(fixcertificates::Error::Signing)
                         }
                     },
                 )?;

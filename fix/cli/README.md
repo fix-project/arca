@@ -18,22 +18,39 @@ fix -l doubled '@script("double.fix" 21u64)'
 fix compile '@file("program.wasm")'
 ```
 
-`fix init SEED` imports the seed and installs compilation requests for the
-parser and example schedulers embedded in the `fix` binary. The seed's native
-scheduler and collector remain available for bootstrapping. `--precompile`
-compiles the embedded parser, collector, and schedulers, labels their Runnable
-results, and persists their coupons. The compiled parallel scheduler becomes
-the default `scheduler` label. `//fix/cli:precompiled` archives such a repository.
-`fix init SEED --bootstrap` also trusts the seed compiler, signs its Tags with
-the configured identities, and trusts the compiled collector.
-The seed's `compile` splits each Wasm module into one C translation unit per
-128 KiB by default.
-Without `--precompile`, the parser label names a compilation request and cannot
-parse expressions yet. Use the seed setup in the root README for an interactive
-repository.
-For a normal repository, use `--bootstrap` and do not use
-`--unsigned`; the latter permits newly compiled Tags and coupons to be stored
-without signatures. `fix sign --all` signs those Tags later if needed.
+`fix label delete NAME` (also `fix label remove NAME`) deletes a local label
+without removing its value or backing data. A missing label is an error.
+
+`fix bootstrap SEED` creates a store at `$XDG_DATA_HOME/fix/bootstrap/.fix`
+(default `~/.local/share/fix/bootstrap/.fix`), imports and signs
+the seed's compiler, scheduler, collector, and parser, and trusts the compiler
+and collector. `fix init` creates an empty `.fix` repository with a `bootstrap`
+file remote pointing to that store. Run `fix sync bootstrap` to fetch its label
+refs, then `fix remote labels bootstrap` to list them or
+`fix pull bootstrap:compile compile` to create a local label. It needs no seed
+archive; backing data for a selected program is copied from the bootstrap store
+or an available file remote when the program is persisted locally. The seed's `compile` splits each
+Wasm module into one C translation unit per 128 KiB by default.
+A home repository is optional and works like any other repository.
+
+`fix config KEY`, `fix config KEY NAME`, `fix config --unset KEY`, and
+`fix config --list` manage scheduler, collector, parser, and compiler selections.
+Reads combine user and repository settings; writes default to the current
+repository. Use `--global` for user settings or `--local` to read only this
+repository's settings. `fix bootstrap SEED` records the
+canonical handles of the selected bootstrap programs. Bare names resolve in the active
+repository. Command-line
+options override settings for one invocation. `fix trust` manages trust and
+signing identities in `$XDG_CONFIG_HOME/fix` (default `~/.config/fix`).
+`FIX_CONFIG_DIR` overrides that directory; `XDG_DATA_HOME` selects the
+bootstrap store's parent data directory. A home repository can be added as an
+ordinary file remote. Run `fix sync` to snapshot all configured remotes, or `fix sync REMOTE` to
+select one, then
+`fix remote labels REMOTE` to list them. File remotes supply backing data for
+canonical handles when those values are saved in a project.
+`//bootstrap:seed` is the seed archive for build actions.
+Use `--unsigned` only for staging; normal bootstrap requires configured signing
+identities.
 
 `fix repl` reads low-level Fix expressions and prints their canonical handles.
 Each input uses the same syntax and imports as a command-line expression.
@@ -88,7 +105,7 @@ Recursive imports and missing or excess positional arguments are errors.
 Named CLI arguments use `-b name=EXPRESSION`, for example:
 
 ```sh
-fix -b compiler='@label("clang")' '@script("build.fix" @file("main.c"))'
+fix -b answer='42u64' '$answer'
 ```
 
 Bindings and the other global options (`-C`, `-l`, `-j`, `--memory`,
@@ -114,6 +131,11 @@ Start a TCP server for the current repository with:
 ```sh
 fix -C /path/to/repository serve --listen 127.0.0.1:9000 -j 4
 ```
+
+For SSH remotes, `fix serve --stdio` starts automatically on the remote machine.
+The remote URL supplies the repository path. See the
+[two-machine setup](../remote/README.md#ssh-clone-and-distributed-evaluation)
+for cloning, trust, and the distributed scheduler.
 
 The server uses the usual scheduler, collector, memory, remote, and signing
 options, together with the repository's remotes and the user's trust settings.

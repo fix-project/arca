@@ -7,6 +7,7 @@ use memory::ShardedMap;
 #[derive(Debug)]
 pub struct RepositoryStorage {
     repository: Repository,
+    sources: Vec<Repository>,
     memory: memory::MemoryStorage,
     /// One gate per Object being read, so concurrent loads read it once.
     loading: ShardedMap<[u8; HANDLE_SIZE], Arc<Mutex<()>>>,
@@ -29,10 +30,20 @@ impl RepositoryStorage {
     pub fn new(repository: Repository) -> Self {
         Self {
             repository,
+            sources: Vec::new(),
             memory: memory::MemoryStorage::default(),
             loading: ShardedMap::default(),
             resident: ShardedMap::default(),
         }
+    }
+
+    pub fn with_source(mut self, source: Repository) -> Self {
+        self.sources.push(source);
+        self
+    }
+
+    pub fn add_source(&mut self, source: Repository) {
+        self.sources.push(source);
     }
 
     pub fn repository(&self) -> &Repository {
@@ -112,9 +123,9 @@ impl RepositoryStorage {
         if self.memory.contains(handle) {
             return true;
         }
-        let bytes = match object.view() {
-            ObjectView::Blob(blob) => self.repository.read_blob(*blob),
-            ObjectView::Tree(tree) => self.repository.read_tree(*tree).map(|children| {
+        let read = |repository: &Repository| match object.view() {
+            ObjectView::Blob(blob) => repository.read_blob(*blob),
+            ObjectView::Tree(tree) => repository.read_tree(*tree).map(|children| {
                 children
                     .iter()
                     .flat_map(|child| *child.as_bytes())
@@ -122,6 +133,19 @@ impl RepositoryStorage {
                     .into_boxed_slice()
             }),
         };
+        let bytes = read(&self.repository).or_else(|error| {
+            if matches!(
+                error,
+                RepositoryError::MissingObject { .. } | RepositoryError::MissingBacking { .. }
+            ) {
+                for source in &self.sources {
+                    if let Ok(bytes) = read(source) {
+                        return Ok(bytes);
+                    }
+                }
+            }
+            Err(error)
+        });
         if let Ok(bytes) = &bytes {
             unsafe {
                 self.memory
@@ -145,6 +169,12 @@ impl Storage for RepositoryStorage {
         self.memory.identify(bytes).or_else(|_| {
             self.repository
                 .lookup(bytes)
+                .or_else(|error| {
+                    self.sources
+                        .iter()
+                        .find_map(|source| source.lookup(bytes).ok())
+                        .ok_or(error)
+                })
                 .map_err(|_| StorageError::NotFound)
         })
     }
@@ -200,10 +230,20 @@ impl Storage for RepositoryStorage {
     }
 
     fn has_blob(&self, name: Blob) -> bool {
-        self.memory.has_blob(name) || self.repository.has_backing(name.object()).unwrap_or(false)
+        self.memory.has_blob(name)
+            || self.repository.has_backing(name.object()).unwrap_or(false)
+            || self
+                .sources
+                .iter()
+                .any(|source| source.has_backing(name.object()).unwrap_or(false))
     }
     fn has_tree(&self, name: Tree) -> bool {
-        self.memory.has_tree(name) || self.repository.has_backing(name.into()).unwrap_or(false)
+        self.memory.has_tree(name)
+            || self.repository.has_backing(name.into()).unwrap_or(false)
+            || self
+                .sources
+                .iter()
+                .any(|source| source.has_backing(name.into()).unwrap_or(false))
     }
 
     fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError> {

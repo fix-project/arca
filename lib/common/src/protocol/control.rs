@@ -37,6 +37,13 @@ pub enum Request<B = Region> {
         port: u16,
     },
     OpenUri(String),
+    StdioStream,
+    SshConnect {
+        host: String,
+        repository: String,
+        scheduler: Option<String>,
+        collector: Option<String>,
+    },
     ReadDirectory(String),
     Exists(String),
     /// Returns the file's contents as [`Response::Bytes`].
@@ -64,6 +71,7 @@ pub enum Response {
     Bytes(Region),
     DirectoryEntries(Vec<DirectoryEntry>),
     Signature(String),
+    SignatureError(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

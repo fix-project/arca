@@ -143,8 +143,7 @@ impl Backend {
                 remotes: self.remotes.clone(),
             },
             self.profile,
-        )
-        .map_err(String::from)?;
+        )?;
         Ok(report.result)
     }
 

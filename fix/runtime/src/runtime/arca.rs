@@ -285,6 +285,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         self
     }
 
+    pub fn trusts_tagger(&self, callable: Tree) -> Result<bool, trust::TrustError> {
+        self.storage.trust.is_tagger(&self.storage, callable)
+    }
+
     /// Runs an application or privileged callable, yielding each advice event to the caller.
     /// Applications complete with an Apply coupon; privileged calls return their raw result.
     /// Resuming never supplies scheduler data to the application.

@@ -4,7 +4,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use fix::Thunk;
 use fixcli::{
     Memoization, Options, Shell as Client, commands,
-    configuration::{self, RemoteCommand, TrustCommand},
+    configuration::{self, ConfigCommand, RemoteCommand, TrustCommand},
     expressions::{Expressions, Value},
 };
 use std::{
@@ -21,7 +21,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 ///
 /// With no command, parses EXPRESSION, evaluates its imports, and prints the
 /// resulting handle. Expression imports are @handle, @label, @file, @compile,
-/// @script, and @todo.
+/// @remote, @script, and @todo.
 #[derive(Parser)]
 #[command(name = "fix", subcommand_value_name = "COMMAND")]
 struct Cli {
@@ -58,26 +58,26 @@ struct Global {
     #[arg(long, value_name = "MODE", default_value_t = Memoization::Auto, global = true)]
     memoize: Memoization,
     /// Scheduler Runnable.
-    #[arg(
-        long,
-        value_name = "NAME",
-        env = "FIX_SCHEDULER",
-        default_value = "scheduler",
-        global = true
-    )]
-    scheduler: String,
+    #[arg(long, value_name = "NAME", env = "FIX_SCHEDULER", global = true)]
+    scheduler: Option<String>,
     /// Coupon collector.
-    #[arg(
-        long,
-        value_name = "NAME",
-        env = "FIX_COLLECTOR",
-        default_value = "collector",
-        global = true
-    )]
-    collector: String,
+    #[arg(long, value_name = "NAME", env = "FIX_COLLECTOR", global = true)]
+    collector: Option<String>,
+    /// Parser Runnable.
+    #[arg(long, value_name = "NAME", global = true)]
+    parser: Option<String>,
+    /// Compiler Runnable.
+    #[arg(long, value_name = "NAME", global = true)]
+    compiler: Option<String>,
     /// Add or override a remote for this command (repeatable).
     #[arg(long = "remote", value_name = "NAME=URL", value_parser = configuration::remote_argument, global = true)]
     remotes: Vec<fixrepository::Remote>,
+    /// Select a Fix scheduler name for one remote during this command.
+    #[arg(long = "remote-scheduler", value_name = "REMOTE=FIX_NAME", value_parser = configuration::remote_name_argument, global = true)]
+    remote_schedulers: Vec<(String, String)>,
+    /// Select a Fix collector name for one remote during this command.
+    #[arg(long = "remote-collector", value_name = "REMOTE=FIX_NAME", value_parser = configuration::remote_name_argument, global = true)]
+    remote_collectors: Vec<(String, String)>,
     /// Override signing identities with public keys or public-key files (repeatable).
     #[arg(long = "identity", value_name = "KEY", global = true)]
     identities: Vec<String>,
@@ -91,30 +91,58 @@ struct Global {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a repository. With SEED, install the embedded Fix programs.
-    Init {
-        /// Bootstrap seed archive to import.
-        seed: Option<PathBuf>,
-        /// Compile the embedded programs with SEED's compiler and label their results.
-        #[arg(long, requires = "seed")]
-        precompile: bool,
-        /// Sign imported seed Tags with the selected identities.
-        #[arg(long)]
-        sign: bool,
-        /// Trust the seed compiler, sign and precompile programs, and trust the collector.
-        #[arg(long, requires = "seed")]
-        bootstrap: bool,
-    },
+    /// Create an empty repository in the current directory.
+    Init,
+    /// Install a bootstrap seed and default programs in the user Fix store.
+    Bootstrap { seed: PathBuf },
     /// Serve remote evaluation requests from this repository over TCP.
     Serve {
         /// TCP address to bind (for example, 127.0.0.1:9000).
-        #[arg(long, value_name = "HOST:PORT")]
-        listen: String,
+        #[arg(long, value_name = "HOST:PORT", required_unless_present = "stdio")]
+        listen: Option<String>,
+        /// Speak the Fix protocol over standard input and output (for SSH).
+        #[arg(long, conflicts_with = "listen")]
+        stdio: bool,
     },
     /// Read and evaluate low-level Fix expressions interactively.
     Repl,
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Read or edit program selection settings.
+    Config {
+        /// Use user configuration rather than this repository's configuration.
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+        /// Use this repository's configuration.
+        #[arg(long)]
+        local: bool,
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["unset", "list"])]
+        get: Option<String>,
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["get", "list"])]
+        unset: Option<String>,
+        #[arg(long, conflicts_with_all = ["get", "unset"])]
+        list: bool,
+        /// KEY [VALUE]: read or set a setting.
+        #[arg(num_args = 0..=2)]
+        arguments: Vec<String>,
+    },
+    /// Create an empty repository with `origin` and fetch its refs.
+    Clone { address: String, directory: PathBuf },
+    /// Refresh remote refs (all configured remotes by default).
+    Sync { remote: Option<String> },
+    /// Fetch a remote ref and assign a local label.
+    Pull {
+        reference: String,
+        local: Option<String>,
+        /// Save the value without fetching its backing data.
+        #[arg(long)]
+        shallow: bool,
+        /// Replace an existing local label.
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Transfer a local label's value and update an SSH remote label.
+    Push { local: String, reference: String },
     #[command(subcommand)]
     Trust(TrustCommand),
     /// Evaluate an expression.
@@ -188,10 +216,31 @@ fn is_command(argument: &str) -> bool {
 
 impl Global {
     fn options(&self) -> Result<Options> {
+        let settings = configuration::settings()?;
         Ok(Options {
-            scheduler: self.scheduler.clone(),
-            collector: self.collector.clone(),
+            scheduler: self
+                .scheduler
+                .clone()
+                .or_else(|| settings.get("scheduler").cloned())
+                .unwrap_or_else(|| "scheduler".into()),
+            collector: self
+                .collector
+                .clone()
+                .or_else(|| settings.get("collector").cloned())
+                .unwrap_or_else(|| "collector".into()),
+            parser: self
+                .parser
+                .clone()
+                .or_else(|| settings.get("parser").cloned())
+                .unwrap_or_else(|| "fix-parser".into()),
+            compiler: self
+                .compiler
+                .clone()
+                .or_else(|| settings.get("compiler").cloned())
+                .unwrap_or_else(|| "compile".into()),
             remotes: self.remotes.clone(),
+            remote_schedulers: self.remote_schedulers.clone(),
+            remote_collectors: self.remote_collectors.clone(),
             identities: self
                 .identities
                 .iter()
@@ -267,7 +316,11 @@ fn run() -> Result<u8> {
 }
 
 fn run_command(global: Global, command: Option<Command>, expression: Option<String>) -> Result<u8> {
-    let options = global.options()?;
+    let options = if matches!(&command, Some(Command::Config { .. })) {
+        Options::default()
+    } else {
+        global.options()?
+    };
     let bindings = global.bindings.clone();
     let Some(command) = command else {
         let Some(expression) = expression else {
@@ -286,9 +339,15 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     if !bindings.is_empty()
         && matches!(
             command,
-            Command::Init { .. }
+            Command::Init
+                | Command::Bootstrap { .. }
                 | Command::Plumbing(_)
                 | Command::Remote(_)
+                | Command::Config { .. }
+                | Command::Clone { .. }
+                | Command::Sync { .. }
+                | Command::Pull { .. }
+                | Command::Push { .. }
                 | Command::Trust(_)
                 | Command::Serve { .. }
         )
@@ -298,8 +357,14 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     if global.label.is_some()
         && matches!(
             command,
-            Command::Init { .. }
+            Command::Init
+                | Command::Bootstrap { .. }
                 | Command::Remote(_)
+                | Command::Config { .. }
+                | Command::Clone { .. }
+                | Command::Sync { .. }
+                | Command::Pull { .. }
+                | Command::Push { .. }
                 | Command::Trust(_)
                 | Command::Todo(_)
                 | Command::Export { .. }
@@ -311,8 +376,8 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
         return Err("-l labels an expression result".into());
     }
     match command {
-        Command::Serve { listen } => {
-            global.open(options)?.serve(&listen)?;
+        Command::Serve { listen, stdio } => {
+            global.open(options)?.serve(listen.as_deref(), stdio)?;
             Ok(0)
         }
         Command::Repl => repl::run(global.open(options)?, bindings),
@@ -417,53 +482,119 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             configuration::remote(command)?;
             Ok(0)
         }
+        Command::Config {
+            global,
+            local,
+            get,
+            unset,
+            list,
+            arguments,
+        } => {
+            let command = match (get, unset, list, arguments.as_slice()) {
+                (Some(key), None, false, []) => ConfigCommand::Get { key },
+                (None, Some(key), false, []) => ConfigCommand::Unset { key },
+                (None, None, true, []) | (None, None, false, []) => ConfigCommand::List,
+                (None, None, false, [key]) => ConfigCommand::Get { key: key.clone() },
+                (None, None, false, [key, value]) => ConfigCommand::Set {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                _ => return Err("invalid fix config arguments; see 'fix config --help'".into()),
+            };
+            configuration::config(global, local, command)?;
+            Ok(0)
+        }
+        Command::Clone { address, directory } => {
+            let scheduler = options
+                .remote_schedulers
+                .iter()
+                .find(|(remote, _)| remote == "origin")
+                .map(|(_, name)| name.as_str());
+            let collector = options
+                .remote_collectors
+                .iter()
+                .find(|(remote, _)| remote == "origin")
+                .map(|(_, name)| name.as_str());
+            fixcli::remotes::clone(&address, &directory, scheduler, collector)?;
+            Ok(0)
+        }
+        Command::Sync { remote } => {
+            fixcli::remotes::sync(&global.open(options)?, remote.as_deref())?;
+            Ok(0)
+        }
+        Command::Pull {
+            reference,
+            local,
+            shallow,
+            force,
+        } => {
+            fixcli::remotes::pull(
+                &mut global.open(options)?,
+                &reference,
+                local.as_deref(),
+                shallow,
+                force,
+            )?;
+            Ok(0)
+        }
+        Command::Push { local, reference } => {
+            fixcli::remotes::push(&mut global.open(options)?, &local, &reference)?;
+            Ok(0)
+        }
         Command::Trust(command) => {
             configuration::trust(command)?;
             Ok(0)
         }
-        Command::Init {
-            seed,
-            precompile,
-            sign,
-            bootstrap,
-        } => {
+        Command::Init => {
             commands::init()?;
-            let Some(seed) = seed else {
-                return Ok(0);
+            Ok(0)
+        }
+        Command::Bootstrap { seed } => {
+            if !options.unsigned
+                && options.identities.is_empty()
+                && fixcertificates::linux::load()?.identities.is_empty()
+            {
+                return Err(
+                    "configure an SSH signing identity first with 'fix trust add-agent'".into(),
+                );
+            }
+            let seed = seed.canonicalize()?;
+            let config = fixcertificates::linux::directory()?;
+            let config = if config.is_absolute() {
+                config
+            } else {
+                env::current_dir()?.join(config)
             };
+            let bootstrap_repository = fixcli::bootstrap_store::repository()?;
+            let directory = bootstrap_repository
+                .parent()
+                .ok_or("invalid bootstrap repository")?
+                .to_owned();
+            unsafe { env::set_var("FIX_CONFIG_DIR", config) };
+            std::fs::create_dir_all(&directory)?;
+            env::set_current_dir(&directory)?;
+            match fixrepository::Repository::open(".fix") {
+                Ok(_) => (),
+                Err(fixrepository::RepositoryError::NotInitialized) => {
+                    fixrepository::Repository::init(".fix")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
             commands::run(
                 commands::Plumbing::Import {
                     archive: seed,
-                    sign: sign || bootstrap,
+                    sign: !options.unsigned,
                 },
                 None,
                 options.clone(),
                 global.profile,
             )?;
-            if bootstrap {
-                let compiler = std::fs::read_to_string(".fix/trust")?;
-                fixcertificates::linux::update("compiler", compiler.trim(), true)?;
-            }
-            let options = Options {
-                trust: if (precompile || bootstrap) && options.unsigned {
-                    Some(env::current_dir()?.join(".fix/trust"))
-                } else {
-                    options.trust
-                },
-                memoize: if precompile || bootstrap {
-                    Memoization::Always
-                } else {
-                    options.memoize
-                },
-                ..options
-            };
-            let mut client = global.open(options)?;
-            fixcli::bootstrap::install(&mut client, precompile || bootstrap)?;
-            if bootstrap {
-                configuration::trust(configuration::TrustCommand::AddTagger {
-                    tagger: "collector".into(),
-                })?;
-            }
+            let compiler = std::fs::read_to_string(".fix/trust")?;
+            fixcertificates::linux::update("compiler", compiler.trim(), true)?;
+            configuration::trust(configuration::TrustCommand::AddTagger {
+                tagger: "collector".into(),
+            })?;
+            configuration::autoconfigure(&fixrepository::Repository::open(".fix")?)?;
             Ok(0)
         }
         Command::Plumbing(plumbing) => Ok(commands::run(

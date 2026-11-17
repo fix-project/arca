@@ -576,6 +576,19 @@ impl Runtime {
         .0
     }
 
+    pub fn run_stream_captured(
+        &mut self,
+        argv: Vec<String>,
+        directory: &Path,
+        stream: std::os::unix::net::UnixStream,
+    ) -> (u8, Vec<u8>) {
+        self.run_session(
+            argv,
+            directory.to_owned(),
+            Session::with_stdio(true, Some(stream)),
+        )
+    }
+
     fn run_session(
         &mut self,
         argv: Vec<String>,

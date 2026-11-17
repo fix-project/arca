@@ -9,8 +9,21 @@ use embedded_io::{Read, Write};
 pub enum Error<E> {
     Io(E),
     Truncated,
-    TooLarge,
+    TooLarge { length: u64, limit: usize },
     WriteZero,
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "I/O error: {error}"),
+            Self::Truncated => f.write_str("connection closed during a message"),
+            Self::TooLarge { length, limit } => {
+                write!(f, "message has {length} bytes; limit is {limit} bytes")
+            }
+            Self::WriteZero => f.write_str("connection closed while sending a message"),
+        }
+    }
 }
 
 pub trait AsyncRead: embedded_io::ErrorType {
@@ -73,9 +86,16 @@ pub mod asynchronous {
             return Ok(None);
         }
         read_exact(stream, &mut header[1..]).await?;
-        let length = usize::try_from(u64::from_be_bytes(header)).map_err(|_| Error::TooLarge)?;
+        let announced = u64::from_be_bytes(header);
+        let length = usize::try_from(announced).map_err(|_| Error::TooLarge {
+            length: announced,
+            limit,
+        })?;
         if length > limit {
-            return Err(Error::TooLarge);
+            return Err(Error::TooLarge {
+                length: announced,
+                limit,
+            });
         }
         let mut bytes = alloc::vec![0; length];
         read_exact(stream, &mut bytes).await?;

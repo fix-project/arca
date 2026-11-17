@@ -9,6 +9,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -128,7 +129,7 @@ impl Control {
                 message,
             } => match sshagent::sign(&identity, &namespace, unsafe { message.as_slice() }) {
                 Ok(signature) => Response::Signature(signature),
-                Err(error) => Response::Err(error.kind().into()),
+                Err(error) => Response::SignatureError(error.to_string()),
             },
             Request::Exit(code) => {
                 self.session.stop(code as u8);
@@ -271,6 +272,61 @@ impl Control {
                     );
                 });
                 Response::Pipe(decompose_pipe(p))
+            }
+            Request::StdioStream => match self.session.stdio() {
+                Some(Ok(fd)) => {
+                    let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
+                    self.session.spawn(move || {
+                        stream_thread(std::os::unix::net::UnixStream::from(fd), StreamPipe::new(q))
+                    });
+                    Response::Pipe(decompose_pipe(p))
+                }
+                Some(Err(error)) => Response::Err(error.kind().into()),
+                None => Response::Err(IoErrorKind::Unsupported),
+            },
+            Request::SshConnect {
+                host,
+                repository,
+                scheduler,
+                collector,
+            } => {
+                if host.is_empty() || host.starts_with('-') || repository.is_empty() {
+                    return Response::Err(IoErrorKind::InvalidInput);
+                }
+                let path = quote_remote_path(&repository);
+                let mut command = Command::new("ssh");
+                command
+                    .arg("-T")
+                    .arg("--")
+                    .arg(&host)
+                    .args(["fix", "-C", &path]);
+                if let Some(scheduler) = scheduler {
+                    command
+                        .arg("--scheduler")
+                        .arg(quote_remote_path(&scheduler));
+                }
+                if let Some(collector) = collector {
+                    command
+                        .arg("--collector")
+                        .arg(quote_remote_path(&collector));
+                }
+                match command
+                    .args(["serve", "--stdio"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
+                        let session = self.session.clone();
+                        self.session.spawn(move || {
+                            stream_thread(SshStream::new(child, session), StreamPipe::new(q))
+                        });
+                        Response::Pipe(decompose_pipe(p))
+                    }
+                    Err(error) => Response::Err(error.kind().into()),
+                }
             }
             Request::OpenUri(uri) => match open_uri(&uri) {
                 Ok(body) => {
@@ -613,6 +669,67 @@ impl<R> Write for ReadOnly<R> {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+fn quote_remote_path(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+#[test]
+fn ssh_repository_path_is_one_shell_argument() {
+    let path = "/srv/Fix repo'; echo unexpected";
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf %s {}", quote_remote_path(path)))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, path.as_bytes());
+}
+
+struct SshStream {
+    child: Child,
+    input: ChildStdin,
+    output: ChildStdout,
+    session: Arc<Session>,
+}
+impl SshStream {
+    fn new(mut child: Child, session: Arc<Session>) -> Self {
+        Self {
+            input: child.stdin.take().unwrap(),
+            output: child.stdout.take().unwrap(),
+            child,
+            session,
+        }
+    }
+}
+impl Read for SshStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        self.session.wait(self.output.as_raw_fd(), libc::POLLIN)?;
+        self.output.read(bytes)
+    }
+}
+impl Write for SshStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        self.session.wait(self.input.as_raw_fd(), libc::POLLOUT)?;
+        self.input.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.input.flush()
+    }
+}
+impl Drop for SshStream {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

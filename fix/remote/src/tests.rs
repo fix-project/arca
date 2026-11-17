@@ -147,6 +147,21 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
 }
 
 #[test]
+fn thin_object_transfer_can_be_imported_as_a_reference() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let blob = source.create_blob(&[17; 128]).unwrap();
+    let bytes = transfer(&source, &[blob.into()], &[blob.object()]).unwrap();
+    let mut transfer = Transfer::decode(&bytes).unwrap();
+    transfer.roots[0][31] |= 0x10;
+    let roots = import(&destination, &transfer.encode().unwrap(), &config()).unwrap();
+    assert!(roots[0].same_encoding(&blob.into_ref().into()));
+    assert!(!destination.has_backing(blob.object()).unwrap());
+}
+
+#[test]
 fn runnable_transfer_keeps_its_author_reference_thin() {
     let source = Directory::new();
     let source = source.repository();
@@ -377,7 +392,7 @@ fn tree_dependencies_and_certificate_namespaces_are_validated() {
     });
     assert!(matches!(
         import(&destination, &bundle.encode().unwrap(), &config()),
-        Err(Error::Invalid)
+        Err(Error::Transfer(_))
     ));
 }
 
@@ -389,7 +404,11 @@ fn omitted_backing_requires_references_or_previously_admitted_objects() {
     let destination = destination.repository();
     let object = source.create_blob(&[53; 64]).unwrap();
     let thin = transfer(&source, &[object.into()], &[object.object()]).unwrap();
-    assert!(import(&destination, &thin, &config()).is_err());
+    let error = import(&destination, &thin, &config()).unwrap_err();
+    let message = format!("{error}");
+    assert!(message.contains("backing for Object"));
+    assert!(message.contains(&format!("{}", object.as_handle())));
+    assert!(message.contains(destination.path()));
     assert!(
         destination
             .lookup(object.into_ref().as_handle().as_bytes())
@@ -429,7 +448,8 @@ fn framed_transfers_round_trip_over_tcp_and_reject_excessive_lengths() {
     );
     assert!(matches!(
         transport::receive(&mut connection, 1 << 20),
-        Err(transport::Error::TooLarge)
+        Err(transport::Error::TooLarge { length, limit })
+            if length == (1 << 20) + 1 && limit == 1 << 20
     ));
     server.join().unwrap();
 }
@@ -587,7 +607,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
         counts
     });
     let mut connection = Connection::connect(address).unwrap();
-    protocol::send(&mut connection, Message::RequestInfo).unwrap();
+    protocol::send(&mut connection, Message::RequestInfo { inventory: true }).unwrap();
     assert!(matches!(
         protocol::receive(&mut connection, 1 << 20).unwrap(),
         Some(Message::Info(protocol::Information { parallelism: 3, .. }))
@@ -696,6 +716,60 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
 }
 
 #[test]
+fn scheduler_staging_negotiates_missing_program_data() {
+    use crate::{
+        linux::Connection,
+        protocol::{self, Message, Task, Transfer},
+    };
+    let source = Directory::new();
+    let source = source.repository();
+    let collector = source.create_blob(&[9; 64]).unwrap();
+    let scheduler = source.create_blob(&[42; 4096]).unwrap();
+    let task = Task::stage_programs(
+        *collector.as_handle().as_bytes(),
+        *scheduler.as_handle().as_bytes(),
+    );
+    let transfer =
+        Transfer::decode(&export(&source, &[collector.into(), scheduler.into()], &[]).unwrap())
+            .unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let expected = task.clone();
+    let server = std::thread::spawn(move || {
+        let mut connection = Connection(listener.accept().unwrap().0);
+        let incoming = protocol::receive_transfer(&mut connection, 1 << 20, 1, &[], |offers| {
+            assert!(offers.iter().any(|offer| offer.name == expected.collector));
+            assert!(offers.iter().any(|offer| offer.name == expected.input));
+            Some(vec![expected.input])
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(incoming.task, expected);
+        assert_eq!(
+            incoming.transfer.roots,
+            vec![expected.collector, expected.input]
+        );
+        assert!(incoming.transfer.records.iter().any(|record| {
+            record.name == expected.input && record.data.as_deref() == Some(&[42; 4096][..])
+        }));
+        assert!(
+            incoming
+                .transfer
+                .records
+                .iter()
+                .any(|record| { record.name == expected.collector && record.data.is_none() })
+        );
+        protocol::send(&mut connection, Message::ObjectReceived(expected.input)).unwrap();
+    });
+    let mut connection = Connection::connect(address).unwrap();
+    protocol::send_transfer(&mut connection, 1 << 20, &task, None, transfer, |_, _| None).unwrap();
+    assert!(
+        matches!(protocol::receive(&mut connection, 1 << 20).unwrap(), Some(Message::ObjectReceived(name)) if name == task.input)
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
     use crate::{
         linux::Connection,
@@ -706,22 +780,29 @@ fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let mut connection = Connection(listener.accept().unwrap().0);
-        let unsupported =
-            postcard::to_allocvec(&(protocol::VERSION + 1, Message::RequestInfo)).unwrap();
+        let unsupported = postcard::to_allocvec(&(
+            protocol::VERSION + 1,
+            Message::RequestInfo { inventory: false },
+        ))
+        .unwrap();
         transport::send(&mut connection, &unsupported).unwrap();
         let mut trailing =
-            postcard::to_allocvec(&(protocol::VERSION, Message::RequestInfo)).unwrap();
+            postcard::to_allocvec(&(protocol::VERSION, Message::RequestInfo { inventory: false }))
+                .unwrap();
         trailing.push(0);
         transport::send(&mut connection, &trailing).unwrap();
         connection.0.write_all(&[0; 3]).unwrap();
     });
     let mut connection = Connection::connect(address).unwrap();
-    for _ in 0..2 {
-        assert!(matches!(
-            protocol::receive(&mut connection, 1024),
-            Err(protocol::Error::Invalid)
-        ));
-    }
+    assert!(matches!(
+        protocol::receive(&mut connection, 1024),
+        Err(protocol::Error::Version { expected, received })
+            if expected == protocol::VERSION && received == protocol::VERSION + 1
+    ));
+    assert!(matches!(
+        protocol::receive(&mut connection, 1024),
+        Err(protocol::Error::Invalid)
+    ));
     assert!(matches!(
         protocol::receive(&mut connection, 1024),
         Err(protocol::Error::Transport(transport::Error::Truncated))

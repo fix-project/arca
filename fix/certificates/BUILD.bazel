@@ -7,5 +7,8 @@ rust_library(
     crate_name = "fixcertificates",
     edition = "2024",
     srcs = glob(["src/**/*.rs"]),
-    deps = ["//fix/handle", "@crates//:hex", "@crates//:postcard", "@crates//:serde", "@crates//:serde_json", "@crates//:ssh-key"],
+    deps = ["//fix/handle", "@crates//:hex", "@crates//:postcard", "@crates//:serde", "@crates//:ssh-key"] + select({
+        "//build/platforms:linux": ["@crates//:toml"],
+        "//conditions:default": [],
+    }),
 )

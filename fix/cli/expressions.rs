@@ -13,9 +13,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The label naming the compilation of the expression parser.
-pub const PARSER_LABEL: &str = "fix-parser";
-
 type Bindings = Vec<(String, String)>;
 
 enum Kind {
@@ -23,6 +20,7 @@ enum Kind {
     Label(String),
     File(PathBuf),
     Compile(PathBuf),
+    Remote(String),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -139,6 +137,7 @@ impl Imports {
                     preprocessor::Import::Label(name) => Kind::Label(name.clone()),
                     preprocessor::Import::File(path) => Kind::File(base.join(path)),
                     preprocessor::Import::Compile(path) => Kind::Compile(base.join(path)),
+                    preprocessor::Import::Remote(reference) => Kind::Remote(reference.clone()),
                     preprocessor::Import::Todo { reference, uris } => {
                         if uris
                             .iter()
@@ -341,7 +340,7 @@ impl<'a> Expressions<'a> {
         if let Some(parser) = &self.parser {
             return Ok(parser.clone());
         }
-        let parser = self.client.label_value(PARSER_LABEL)?;
+        let parser = self.client.lookup(&self.client.options().parser.clone())?;
         self.parser = Some(parser.clone());
         Ok(parser)
     }
@@ -355,6 +354,7 @@ impl<'a> Expressions<'a> {
                 let module = self.client.file(path)?;
                 self.client.compilation(&module, None)
             }
+            Kind::Remote(reference) => crate::remotes::expression(reference).map_err(error),
             Kind::Todo {
                 reference,
                 uris,

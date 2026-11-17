@@ -2,15 +2,19 @@ use super::{
     Connection, configured,
     protocol::{self, Information, Message, Task, Transfer},
 };
-use crate::{io::Io, kernel::worker, shell::Value, storage};
+use crate::{
+    io::{Io, log},
+    kernel::worker,
+    shell::{Value, capture, child},
+    storage,
+};
 use alloc::{
     rc::{Rc, Weak},
+    string::String,
     vec::Vec,
 };
 use core::cell::RefCell;
 use fixwasm::{Error, Value as AsValue};
-
-const MAX_TRANSFER: usize = 512 << 20;
 
 struct Peer<'a> {
     connection: Connection<'a>,
@@ -20,12 +24,12 @@ struct Peer<'a> {
 #[derive(Debug)]
 pub enum Failure {
     Shell(Error),
-    Export,
+    Export(String),
     Send(protocol::Error<super::IoError>),
     Receive(protocol::Error<super::IoError>),
     Closed,
     Task,
-    Import,
+    Import(String),
     Coupon,
 }
 impl From<Error> for Failure {
@@ -36,6 +40,8 @@ impl From<Error> for Failure {
 
 pub struct Cluster<'a> {
     peers: Vec<Rc<RefCell<Option<Peer<'a>>>>>,
+    failures: Vec<Option<String>>,
+    inventories: Vec<Information>,
 }
 
 /// One outstanding evaluation owns its connection until completion.
@@ -57,24 +63,71 @@ impl Drop for PendingEvaluation<'_> {
 }
 
 impl<'a> Cluster<'a> {
-    pub async fn connect(io: &'a Io) -> Result<Self, Error> {
+    pub async fn connect(io: &'a Io, inventory: bool) -> Result<Self, Error> {
         let mut peers = Vec::new();
+        let mut failures = Vec::new();
+        let mut inventories = Vec::new();
         for remote in configured()? {
+            if remote.address.starts_with("file://") {
+                let information = if inventory {
+                    super::file_information(&remote.address)
+                } else {
+                    Ok(Information::default())
+                };
+                let (information, failure) = match information {
+                    Ok(information) => (information, None),
+                    Err(error) => {
+                        log(&alloc::format!("remote {}: {error}", remote.name))?;
+                        (Information::default(), Some(error))
+                    }
+                };
+                inventories.push(information);
+                peers.push(Rc::new(RefCell::new(None)));
+                failures.push(failure);
+                continue;
+            }
+            inventories.push(Information::default());
+            let mut failure = None;
             let peer = (async {
-                let mut connection = Connection::connect_tcp(io, &remote).await.ok().flatten()?;
-                if protocol::asynchronous::send(&mut connection, Message::RequestInfo)
-                    .await
-                    .is_err()
+                let mut connection = if remote.is_ssh()
+                    && (remote.scheduler.is_none() || remote.collector.is_none())
                 {
+                    match stage_programs(io, &remote).await {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            let _ = log(&alloc::format!("remote {}: {error}", remote.name));
+                            failure = Some(error);
+                            return None;
+                        }
+                    }
+                } else {
+                    Connection::connect(io, &remote).await.ok().flatten()?
+                };
+                if let Err(error) = protocol::asynchronous::send(
+                    &mut connection,
+                    Message::RequestInfo { inventory },
+                )
+                .await
+                {
+                    failure = Some(alloc::format!("capacity request failed: {error}"));
                     drop(connection);
                     return None;
                 }
-                match protocol::asynchronous::receive(&mut connection, MAX_TRANSFER).await {
+                match protocol::asynchronous::receive(&mut connection, protocol::MAX_MESSAGE_SIZE)
+                    .await
+                {
                     Ok(Some(Message::Info(information))) => Some(Peer {
                         connection,
                         information,
                     }),
-                    _ => {
+                    response => {
+                        failure = Some(match response {
+                            Ok(Some(Message::Failure(message))) => message,
+                            Ok(message) => {
+                                alloc::format!("unexpected capacity response: {message:?}")
+                            }
+                            Err(error) => alloc::format!("capacity response failed: {error}"),
+                        });
                         drop(connection);
                         None
                     }
@@ -82,17 +135,27 @@ impl<'a> Cluster<'a> {
             })
             .await;
             peers.push(Rc::new(RefCell::new(peer)));
+            failures.push(failure);
         }
-        Ok(Self { peers })
+        Ok(Self {
+            peers,
+            failures,
+            inventories,
+        })
+    }
+
+    pub fn first_failure(&self) -> Option<&str> {
+        self.failures.iter().find_map(|failure| failure.as_deref())
     }
 
     pub fn information(&self) -> Vec<Information> {
         self.peers
             .iter()
-            .map(|peer| {
+            .zip(&self.inventories)
+            .map(|(peer, inventory)| {
                 peer.borrow()
                     .as_ref()
-                    .map_or_else(Information::default, |peer| peer.information.clone())
+                    .map_or_else(|| inventory.clone(), |peer| peer.information.clone())
             })
             .collect()
     }
@@ -116,7 +179,7 @@ impl<'a> Cluster<'a> {
         let collector = storage::put(&crate::collector::callable()?)?;
         let input = storage::put(input)?;
         let bytes =
-            super::export(&[collector.clone(), input.clone()], &[])?.ok_or(Failure::Export)?;
+            super::export(&[collector.clone(), input.clone()], &[]).map_err(Failure::Export)?;
         let transfer = Transfer::decode(&bytes).map_err(|_| Error::WrongType)?;
         self.submit_transfer(location, operation, &input, transfer)
             .await
@@ -162,11 +225,11 @@ impl<'a> Cluster<'a> {
         };
         protocol::asynchronous::send_transfer(
             &mut pending.peer.as_mut().unwrap().connection,
-            MAX_TRANSFER,
+            protocol::MAX_MESSAGE_SIZE,
             &pending.task,
             None,
             transfer,
-            |name, keys| super::certify(name, keys).ok().flatten(),
+            |name, keys| super::certify(name, keys).ok(),
         )
         .await
         .map_err(Failure::Send)?;
@@ -186,6 +249,62 @@ impl<'a> Cluster<'a> {
     }
 }
 
+async fn stage_programs<'a>(io: &'a Io, remote: &super::Remote) -> Result<Connection<'a>, String> {
+    let programs =
+        super::effect(b"remote_programs", &[]).map_err(|error| alloc::format!("{error:?}"))?;
+    let empty = capture(fixwasm::Blob::create(b"")).map_err(|error| alloc::format!("{error:?}"))?;
+    let scheduler = if remote.scheduler.is_some() {
+        empty.clone()
+    } else {
+        child(&programs, 0).map_err(|error| alloc::format!("{error:?}"))?
+    };
+    let collector = if remote.collector.is_some() {
+        empty
+    } else {
+        child(&programs, 1).map_err(|error| alloc::format!("{error:?}"))?
+    };
+    let scheduler = storage::put(&scheduler).map_err(|error| alloc::format!("{error:?}"))?;
+    let collector = storage::put(&collector).map_err(|error| alloc::format!("{error:?}"))?;
+    let transfer = super::export(&[collector.clone(), scheduler.clone()], &[])?;
+    let transfer = Transfer::decode(&transfer)
+        .map_err(|error| alloc::format!("invalid program transfer: {error}"))?;
+    let task = Task::stage_programs(
+        collector
+            .raw_handle_bytes()
+            .map_err(|error| alloc::format!("{error:?}"))?,
+        scheduler
+            .raw_handle_bytes()
+            .map_err(|error| alloc::format!("{error:?}"))?,
+    );
+    let mut initial = Connection::connect(io, remote)
+        .await
+        .map_err(|error| alloc::format!("{error:?}"))?
+        .ok_or_else(|| String::from("could not start bootstrap server"))?;
+    protocol::asynchronous::send_transfer(
+        &mut initial,
+        protocol::MAX_MESSAGE_SIZE,
+        &task,
+        None,
+        transfer,
+        |name, keys| super::certify(name, keys).ok(),
+    )
+    .await
+    .map_err(|error| alloc::format!("program transfer failed: {error}"))?;
+    match protocol::asynchronous::receive(&mut initial, protocol::MAX_MESSAGE_SIZE)
+        .await
+        .map_err(|error| alloc::format!("program transfer failed: {error}"))?
+    {
+        Some(Message::ObjectReceived(name)) if name == task.input => (),
+        Some(Message::Failure(error)) => return Err(error),
+        response => {
+            return Err(alloc::format!(
+                "unexpected program transfer response: {response:?}"
+            ));
+        }
+    }
+    Ok(initial)
+}
+
 impl PendingEvaluation<'_> {
     /// Wait for a submitted evaluation and return its validated coupon.
     pub async fn receive(mut self) -> Result<Value, Failure> {
@@ -193,7 +312,7 @@ impl PendingEvaluation<'_> {
         let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
         let incoming = protocol::asynchronous::receive_transfer(
             &mut peer.connection,
-            MAX_TRANSFER,
+            protocol::MAX_MESSAGE_SIZE,
             worker::count()?.try_into().map_err(|_| Failure::Task)?,
             &trusted_keys,
             |offers| super::missing(offers).ok().flatten(),
@@ -205,7 +324,7 @@ impl PendingEvaluation<'_> {
             return Err(Failure::Task);
         }
         let bytes = incoming.transfer.encode().map_err(|_| Failure::Task)?;
-        let roots = super::import(&bytes)?.ok_or(Failure::Import)?;
+        let roots = super::import(&bytes).map_err(Failure::Import)?;
         let [coupon] = roots.as_slice() else {
             return Err(Failure::Coupon);
         };

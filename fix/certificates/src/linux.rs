@@ -5,13 +5,14 @@ use std::{
     env, fs,
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub fn directory() -> Result<PathBuf, Error> {
     env::var_os("FIX_CONFIG_DIR")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".fix/config")))
+        .or_else(|| env::var_os("XDG_CONFIG_HOME").map(|home| PathBuf::from(home).join("fix")))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/fix")))
         .ok_or(Error::Invalid)
 }
 
@@ -25,11 +26,53 @@ fn read(name: &str) -> Result<String, Error> {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
+pub struct Config {
     #[serde(default)]
-    identities: Vec<String>,
+    pub identities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
+}
+
+pub fn read_config(path: &Path) -> Result<Config, Error> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(error) => return Err(Error::Configuration(format!("cannot read config: {error}"))),
+    };
+    toml::from_str(&text).map_err(|error| Error::Configuration(format!("invalid config: {error}")))
+}
+
+pub fn write_config(path: &Path, config: &Config) -> Result<(), Error> {
+    let directory = path.parent().ok_or(Error::Invalid)?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)
+        .map_err(|error| Error::Configuration(format!("{error}")))?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|error| Error::Configuration(format!("{error}")))?;
+    let contents = toml::to_string_pretty(config)
+        .map_err(|error| Error::Configuration(format!("invalid config: {error}")))?;
+    let result = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|error| Error::Configuration(format!("{error}")))
 }
 
 pub fn load() -> Result<Policy, Error> {
@@ -40,12 +83,7 @@ pub fn load() -> Result<Policy, Error> {
             ..Policy::default()
         });
     }
-    let config = read("config")?;
-    let config: Config = if config.trim().is_empty() {
-        Config::default()
-    } else {
-        serde_json::from_str(&config).map_err(|_| Error::Invalid)?
-    };
+    let config = read_config(&directory()?.join("config"))?;
     let authorized_keys = read("authorized_keys")?
         .lines()
         .map(str::trim)
@@ -138,6 +176,12 @@ pub fn update(kind: &str, value: &str, add: bool) -> Result<(), Error> {
             .ok_or(Error::Invalid)?;
         entries.remove(index);
     }
+    if kind == "identity" {
+        let path = directory()?.join("config");
+        let mut config = read_config(&path)?;
+        config.identities = policy.identities;
+        return write_config(&path, &config);
+    }
     let (name, contents) = match kind {
         "key" => ("authorized_keys", policy.authorized_keys.join("\n") + "\n"),
         "compiler" => (
@@ -145,13 +189,7 @@ pub fn update(kind: &str, value: &str, add: bool) -> Result<(), Error> {
             policy.trusted_compilers.join("\n") + "\n",
         ),
         "tagger" => ("trusted_taggers", policy.trusted_taggers.join("\n") + "\n"),
-        _ => (
-            "config",
-            serde_json::to_string_pretty(&Config {
-                identities: policy.identities,
-            })
-            .map_err(|_| Error::Invalid)?,
-        ),
+        _ => unreachable!(),
     };
     let directory = directory()?;
     fs::DirBuilder::new()

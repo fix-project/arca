@@ -16,7 +16,7 @@ pub type Thunk = fix::Thunk<Shell>;
 pub type Encode = fix::Encode<Shell>;
 
 impl Shell {
-    fn with<R>(function: impl FnOnce(&mut Client) -> R) -> R {
+    pub(crate) fn with<R>(function: impl FnOnce(&mut Client) -> R) -> R {
         CURRENT.with(|current| {
             function(
                 current
@@ -42,8 +42,12 @@ impl Shell {
             .close()
     }
     /// Serve remote evaluation requests using this repository and shell configuration.
-    pub fn serve(&mut self, listen: &str) -> Result<(), Box<dyn std::error::Error>> {
-        Self::with(|client| crate::serve::run(client, listen))
+    pub fn serve(
+        &mut self,
+        listen: Option<&str>,
+        stdio: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Self::with(|client| crate::serve::run(client, listen, stdio))
     }
     pub fn reuse_vm(&mut self) {
         Self::with(Client::reuse_vm)
@@ -81,6 +85,19 @@ impl Shell {
     pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
         Self::with(|client| client.import(bytes))
             .map(|values| values.into_iter().map(Value::from_inner).collect())
+    }
+    pub fn certify(
+        &self,
+        name: [u8; 32],
+        keys: &[String],
+    ) -> Result<
+        (
+            fixremote::protocol::CertificateRef,
+            fixremote::protocol::Record,
+        ),
+        Error,
+    > {
+        Self::with(|client| client.certify(name, keys))
     }
     pub fn repository(&self) -> String {
         Self::with(|client| client.repository().to_owned())

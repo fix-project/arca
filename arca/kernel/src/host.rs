@@ -97,11 +97,7 @@ pub mod os {
     use crate::prelude::*;
     use common::protocol::*;
 
-    pub fn ssh_sign(
-        identity: &str,
-        namespace: &str,
-        message: &[u8],
-    ) -> Result<String, control::ErrorKind> {
+    pub fn ssh_sign(identity: &str, namespace: &str, message: &[u8]) -> Result<String, String> {
         let buffer = crate::allocator::buffer(Vec::from(message));
         match crate::pipe::HOST
             .get()
@@ -112,8 +108,9 @@ pub mod os {
                 message: buffer.slice(..),
             }) {
             control::Response::Signature(signature) => Ok(signature),
-            control::Response::Err(error) => Err(error.into()),
-            _ => Err(control::ErrorKind::Other),
+            control::Response::SignatureError(error) => Err(error),
+            control::Response::Err(error) => Err(alloc::format!("{error:?}")),
+            _ => Err("invalid SSH signing response".into()),
         }
     }
 
@@ -230,6 +227,31 @@ pub mod net {
                 host: hostname.into(),
                 port,
             }))
+        }
+
+        pub fn ssh_connect(
+            host: &str,
+            repository: &str,
+            scheduler: Option<&str>,
+            collector: Option<&str>,
+        ) -> Result<Stream, ErrorKind> {
+            Self::from_response(crate::pipe::HOST.get().unwrap().request(
+                &control::Request::SshConnect {
+                    host: host.into(),
+                    repository: repository.into(),
+                    scheduler: scheduler.map(str::to_owned),
+                    collector: collector.map(str::to_owned),
+                },
+            ))
+        }
+
+        pub fn stdio_stream() -> Result<Stream, ErrorKind> {
+            Self::from_response(
+                crate::pipe::HOST
+                    .get()
+                    .unwrap()
+                    .request(&control::Request::StdioStream),
+            )
         }
 
         pub fn open_uri(uri: &str) -> Result<Stream, ErrorKind> {

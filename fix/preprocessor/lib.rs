@@ -9,6 +9,7 @@ pub enum Import {
     Label(String),
     File(String),
     Compile(String),
+    Remote(String),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -101,6 +102,7 @@ impl<'a> Preprocessor<'a> {
                         "label" => Import::Label(first),
                         "file" => Import::File(first),
                         "compile" => Import::Compile(first),
+                        "remote" => Import::Remote(first),
                         "todo" => {
                             let mut strings = alloc::vec![first];
                             loop {

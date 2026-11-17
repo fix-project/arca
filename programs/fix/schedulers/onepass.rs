@@ -281,7 +281,7 @@ impl<'a> OnePass<'a> {
         if let Some(cluster) = self.cluster.borrow().clone() {
             return Ok(cluster);
         }
-        let connected = alloc::rc::Rc::new(Cluster::connect(self.io).await?);
+        let connected = alloc::rc::Rc::new(Cluster::connect(self.io, true).await?);
         Ok(self.cluster.borrow_mut().get_or_insert(connected).clone())
     }
 

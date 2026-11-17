@@ -8,6 +8,7 @@ use crate::{
     Storage, ThunkView, Tree,
 };
 use alloc::collections::BTreeMap;
+use alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use kernel::{
@@ -19,25 +20,48 @@ const MAX_QUEUE_CAPACITY: usize = 65536;
 const STREAM_READ_CHUNK: usize = 65536;
 
 pub trait Services: Send + Sync {
-    fn put(&self, value: Handle) -> Result<Handle, &'static str>;
+    fn put(&self, value: Handle) -> Result<Handle, alloc::string::String>;
     fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, &'static str>;
     fn set_todo(&self, reference: Ref, value: Handle) -> Result<(), &'static str>;
     fn remotes(&self) -> &[fixremote::Remote] {
         &[]
     }
-    fn export(&self, _: &[Handle], _: &[Object]) -> Result<Vec<u8>, &'static str> {
-        Err("object export is unsupported")
+    fn labels(
+        &self,
+    ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
+        Err(fixrepository::RepositoryError::InvalidRepository)
+    }
+    fn export_label(&self, _: &str, _: [u8; 32], _: bool) -> Result<Vec<u8>, fixremote::Error> {
+        Err(fixremote::Error::Invalid)
+    }
+    fn update_label(
+        &self,
+        _: &str,
+        _: Option<[u8; 32]>,
+        _: [u8; 32],
+    ) -> Result<(), fixrepository::RepositoryError> {
+        Err(fixrepository::RepositoryError::InvalidRepository)
+    }
+    fn export(&self, _: &[Handle], _: &[Object]) -> Result<Vec<u8>, alloc::string::String> {
+        Err("object export is unsupported".into())
     }
     fn information(
         &self,
         _: Handle,
         _: u32,
         _: u64,
-    ) -> Result<fixremote::protocol::Information, &'static str> {
-        Err("object inventory is unsupported")
+    ) -> Result<fixremote::protocol::Information, alloc::string::String> {
+        Err("object inventory is unsupported".into())
     }
-    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, &'static str> {
-        Err("trust configuration is unsupported")
+    fn file_information(
+        &self,
+        _: &str,
+        _: Handle,
+    ) -> Result<fixremote::protocol::Information, alloc::string::String> {
+        Err("file remote inventory is unsupported".into())
+    }
+    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, fixremote::Error> {
+        Err(fixremote::Error::Invalid)
     }
     fn certify(
         &self,
@@ -48,22 +72,22 @@ pub trait Services: Send + Sync {
             fixremote::protocol::CertificateRef,
             fixremote::protocol::Record,
         ),
-        &'static str,
+        fixremote::Error,
     > {
-        Err("tag signing is unsupported")
+        Err(fixremote::Error::Invalid)
     }
-    fn missing(&self, _: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, &'static str> {
-        Err("object inventory is unsupported")
+    fn missing(&self, _: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, fixremote::Error> {
+        Err(fixremote::Error::Invalid)
     }
-    fn import(&self, _: &[u8]) -> Result<Vec<Handle>, &'static str> {
-        Err("object import is unsupported")
+    fn import(&self, _: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
+        Err(fixremote::Error::Invalid)
     }
 }
 
 pub struct PersistenceOnly<F>(pub F);
 impl<F: Fn(Handle) -> Result<Handle, &'static str> + Send + Sync> Services for PersistenceOnly<F> {
-    fn put(&self, value: Handle) -> Result<Handle, &'static str> {
-        (self.0)(value)
+    fn put(&self, value: Handle) -> Result<Handle, alloc::string::String> {
+        (self.0)(value).map_err(Into::into)
     }
     fn get_todo(&self, _: Ref) -> Result<Option<Handle>, &'static str> {
         Err("todo metadata is unsupported")
@@ -79,6 +103,64 @@ pub struct RepositoryServices {
     pub remotes: Arc<fixremote::Config>,
 }
 impl Services for RepositoryServices {
+    fn file_information(
+        &self,
+        address: &str,
+        collector: Handle,
+    ) -> Result<fixremote::protocol::Information, alloc::string::String> {
+        let path = address
+            .strip_prefix("file://")
+            .ok_or("expected a file remote")?;
+        let repository =
+            fixrepository::Repository::open(path).map_err(|error| error.to_string())?;
+        fixremote::information(&repository, self.put(collector)?, 0, None)
+            .map_err(|error| error.to_string())
+    }
+    fn export_label(
+        &self,
+        label: &str,
+        name: [u8; 32],
+        backing: bool,
+    ) -> Result<Vec<u8>, fixremote::Error> {
+        let repository = self.storage.repository();
+        if repository.read_label(label)?.as_bytes() != &name {
+            return Err(fixrepository::RepositoryError::LabelConflict.into());
+        }
+        let root = repository.lookup(&name)?;
+        let omitted = if backing {
+            Vec::new()
+        } else {
+            alloc::vec![object_descriptor(root)]
+        };
+        if backing {
+            fixremote::export_with_coupons(repository, &[root], &omitted)
+        } else {
+            fixremote::export(repository, &[root], &omitted)
+        }
+    }
+    fn update_label(
+        &self,
+        label: &str,
+        expected: Option<[u8; 32]>,
+        value: [u8; 32],
+    ) -> Result<(), fixrepository::RepositoryError> {
+        let repository = self.storage.repository();
+        let value = repository.lookup(&value)?;
+        repository.compare_and_write_label(label, expected, value)
+    }
+    fn labels(
+        &self,
+    ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
+        let repository = self.storage.repository();
+        repository
+            .labels()?
+            .into_iter()
+            .map(|label| {
+                let value = repository.read_label(&label)?;
+                Ok((label, *value.as_bytes()))
+            })
+            .collect()
+    }
     fn remotes(&self) -> &[fixremote::Remote] {
         &self.remotes.remotes
     }
@@ -86,7 +168,7 @@ impl Services for RepositoryServices {
         &self,
         roots: &[Handle],
         without_backing: &[Object],
-    ) -> Result<Vec<u8>, &'static str> {
+    ) -> Result<Vec<u8>, alloc::string::String> {
         let roots = roots
             .iter()
             .map(|value| self.put(*value))
@@ -96,23 +178,26 @@ impl Services for RepositoryServices {
             .map(|object| {
                 self.storage
                     .canonicalize((*object).into())
-                    .map_err(|_| "cannot canonicalize omitted object")
+                    .map_err(|error| {
+                        alloc::format!("cannot canonicalize omitted object: {error:?}")
+                    })
             })
             .map(|value| {
                 value.and_then(|value| {
-                    Object::try_from(Handle::from(value)).map_err(|_| "expected object")
+                    Object::try_from(Handle::from(value))
+                        .map_err(|error| alloc::format!("expected object: {error:?}"))
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
         fixremote::export(self.storage.repository(), &roots, &without_backing)
-            .map_err(|_| "could not export objects")
+            .map_err(|error| error.to_string())
     }
     fn information(
         &self,
         collector: Handle,
         parallelism: u32,
         memory: u64,
-    ) -> Result<fixremote::protocol::Information, &'static str> {
+    ) -> Result<fixremote::protocol::Information, alloc::string::String> {
         let collector = self.put(collector)?;
         fixremote::information(
             self.storage.repository(),
@@ -120,10 +205,10 @@ impl Services for RepositoryServices {
             parallelism,
             Some(memory),
         )
-        .map_err(|_| "could not read object inventory")
+        .map_err(|error| error.to_string())
     }
-    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, &'static str> {
-        fixremote::trusted_keys(&self.remotes).map_err(|_| "invalid trusted keys")
+    fn trusted_keys(&self) -> Result<Vec<alloc::string::String>, fixremote::Error> {
+        fixremote::trusted_keys(&self.remotes)
     }
     fn certify(
         &self,
@@ -134,7 +219,7 @@ impl Services for RepositoryServices {
             fixremote::protocol::CertificateRef,
             fixremote::protocol::Record,
         ),
-        &'static str,
+        fixremote::Error,
     > {
         fixremote::certify(
             self.storage.repository(),
@@ -143,26 +228,26 @@ impl Services for RepositoryServices {
             &self.remotes.policy.identities,
             |identity, namespace, message| {
                 kernel::host::os::ssh_sign(identity, namespace, message)
-                    .map_err(|error| fixcertificates::Error::Signing(alloc::format!("{error:?}")))
+                    .map_err(fixcertificates::Error::Signing)
             },
         )
-        .map_err(|_| "cannot certify tag")
     }
     fn missing(
         &self,
         offers: &[fixremote::protocol::Offer],
-    ) -> Result<Vec<[u8; 32]>, &'static str> {
+    ) -> Result<Vec<[u8; 32]>, fixremote::Error> {
         fixremote::missing(self.storage.repository(), offers)
-            .map_err(|_| "invalid transfer proposal")
     }
-    fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, &'static str> {
+    fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
         fixremote::import(self.storage.repository(), bytes, &self.remotes)
-            .map_err(|_| "could not authenticate imported objects")
     }
-    fn put(&self, value: Handle) -> Result<Handle, &'static str> {
-        self.storage
-            .save(value)
-            .map_err(|_| "could not persist scheduler value")
+    fn put(&self, value: Handle) -> Result<Handle, alloc::string::String> {
+        self.storage.save(value).map_err(|error| match error {
+            fixrepository::RepositoryError::Certificate(error) => {
+                alloc::format!("could not persist scheduler value: {error}")
+            }
+            error => alloc::format!("could not persist scheduler value: {error}"),
+        })
     }
     fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, &'static str> {
         let stored = self
@@ -199,7 +284,9 @@ impl Services for RepositoryServices {
             .map_err(|_| "could not construct todo metadata")
     }
     fn set_todo(&self, reference: Ref, value: Handle) -> Result<(), &'static str> {
-        let value = self.put(value)?;
+        let value = self
+            .put(value)
+            .map_err(|_| "could not persist todo metadata")?;
         self.storage
             .repository()
             .set_todo(reference, value)
@@ -267,7 +354,7 @@ struct Saver {
 struct SaverState {
     queue: alloc::collections::VecDeque<Handle>,
     closed: bool,
-    error: Option<&'static str>,
+    error: Option<alloc::string::String>,
 }
 
 impl Saver {
@@ -356,6 +443,8 @@ struct PendingEffect {
 }
 
 struct Shared {
+    scheduler: Handle,
+    collector: Handle,
     saved_claims: SavedClaims,
     suspended: KMutex<BTreeMap<usize, (bool, Suspended)>>,
     next_suspended: AtomicUsize,
@@ -419,7 +508,7 @@ pub fn start<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + 
     combination: Tree,
     workers: usize,
     services: impl Services + 'static,
-) -> Result<Report, &'static str> {
+) -> Result<Report, alloc::string::String> {
     start_profiled(runtime, combination, workers, services, false)
 }
 
@@ -431,13 +520,23 @@ pub fn start_profiled<
     workers: usize,
     services: impl Services + 'static,
     profile: bool,
-) -> Result<Report, &'static str> {
+) -> Result<Report, alloc::string::String> {
     if !(1..=256).contains(&workers) {
-        return Err("worker count must be 1..=256");
+        return Err("worker count must be 1..=256".into());
     }
     if combination.len() < 2 {
-        return Err("scheduler combination needs metadata and a callable");
+        return Err("scheduler combination needs metadata and a callable".into());
     }
+    let fields = runtime
+        .storage()
+        .get_tree(combination)
+        .map_err(|error| alloc::format!("invalid scheduler combination: {error:?}"))?;
+    let scheduler = *fields
+        .get(1)
+        .ok_or("scheduler combination needs a callable")?;
+    let collector = *fields
+        .get(3)
+        .ok_or("scheduler combination needs a collector")?;
     if profile {
         runtime.enable_profile();
     }
@@ -453,6 +552,8 @@ pub fn start_profiled<
     };
 
     let shared = Arc::new(Shared {
+        scheduler,
+        collector,
         saved_claims: SavedClaims::with_profile(profile),
         suspended: KMutex::new(BTreeMap::new()),
         pending_effects: KMutex::new(BTreeMap::new()),
@@ -486,7 +587,7 @@ pub fn start_profiled<
                 let saved = shared.services.put(value).and_then(|saved| {
                     runtime
                         .index_claim(saved)
-                        .map_err(|_| "could not index a saved coupon")
+                        .map_err(|_| "could not index a saved coupon".into())
                 });
                 if let Err(error) = saved {
                     shared.saver.state.lock().error.get_or_insert(error);
@@ -552,7 +653,7 @@ pub fn start_profiled<
     while shared.saving.load(Ordering::Acquire) {
         kthread::park();
     }
-    if let Some(error) = shared.saver.state.lock().error {
+    if let Some(error) = shared.saver.state.lock().error.clone() {
         return Err(error);
     }
 
@@ -884,18 +985,18 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     {
         return Err("unsupported scheduler coordination operation");
     }
-    let task = (|| match (name, args) {
+    let task: Result<(u64, Handle), TaskError> = (|| match (name, args) {
         (b"callable_run", [value]) => {
             let execution = runtime.run_observed(value_combination(*value)?);
-            observed_reply(runtime, shared, worker, true, execution)
+            observed_reply(runtime, shared, worker, true, execution).map_err(Into::into)
         }
         (b"callable_apply", [value]) => {
             let execution = runtime.execute_observed(value_combination(*value)?, false);
-            observed_reply(runtime, shared, worker, true, execution)
+            observed_reply(runtime, shared, worker, true, execution).map_err(Into::into)
         }
         (b"callable_invoke", [value]) => {
             let execution = runtime.execute_observed(combination(*value)?, true);
-            observed_reply(runtime, shared, worker, false, execution)
+            observed_reply(runtime, shared, worker, false, execution).map_err(Into::into)
         }
         (b"callable_discard", [token]) => {
             let token = integer(storage, *token)?;
@@ -914,7 +1015,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .remove(&token)
                 .ok_or(Error::Invalid)?;
             let execution = runtime.resume_observed(suspended);
-            observed_reply(runtime, shared, worker, application, execution)
+            observed_reply(runtime, shared, worker, application, execution).map_err(Into::into)
         }
         _ => execute_task(runtime, shared, worker, name, args).map(|value| (0, value)),
     })();
@@ -928,7 +1029,8 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     };
     let (status, value): (u64, Handle) = match task {
         Ok(reply) => reply,
-        Err(error) => (
+        Err(TaskError::Message(message)) => (5, storage.add_blob(message.as_bytes()).into()),
+        Err(TaskError::Status(error)) => (
             match error {
                 Error::Empty => 1,
                 Error::Full => 2,
@@ -949,6 +1051,17 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         entry.nonempty_claims += u64::from(returned_claims != 0);
     }
     Ok((status, value))
+}
+
+enum TaskError {
+    Status(Error),
+    Message(alloc::string::String),
+}
+
+impl From<Error> for TaskError {
+    fn from(error: Error) -> Self {
+        Self::Status(error)
+    }
 }
 
 fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
@@ -1085,7 +1198,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     worker: usize,
     name: &[u8],
     args: &[Handle],
-) -> Result<Handle, Error> {
+) -> Result<Handle, TaskError> {
     let storage = runtime.storage();
     let number = |value: usize| storage.add_blob(&(value as u64).to_le_bytes()).into();
     match (name, args) {
@@ -1103,11 +1216,67 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         .add_tree(&[
                             storage.add_blob(remote.name.as_bytes()).into(),
                             storage.add_blob(remote.address.as_bytes()).into(),
+                            storage
+                                .add_blob(remote.scheduler.as_deref().unwrap_or("").as_bytes())
+                                .into(),
+                            storage
+                                .add_blob(remote.collector.as_deref().unwrap_or("").as_bytes())
+                                .into(),
                         ])
                         .into()
                 })
                 .collect::<Vec<_>>();
             Ok(storage.add_tree(&remotes).into())
+        }
+        (b"remote_programs", []) => Ok(storage
+            .add_tree(&[shared.scheduler, shared.collector])
+            .into()),
+        (b"remote_trust_collector", [collector]) => {
+            let collector = Tree::try_from(*collector).map_err(|_| {
+                TaskError::Message("requested coupon collector is not a Tree".into())
+            })?;
+            if !runtime.trusts_tagger(collector).map_err(|error| {
+                TaskError::Message(alloc::format!(
+                    "cannot validate requested coupon collector: {error}"
+                ))
+            })? {
+                return Err(TaskError::Message(
+                    "requested coupon collector is not a trusted tagger on this machine".into(),
+                ));
+            }
+            Ok(number(0))
+        }
+        (b"remote_labels", []) => {
+            let labels = shared
+                .services
+                .labels()
+                .map_err(|error| TaskError::Message(error.to_string()))?;
+            let bytes = postcard::to_allocvec(&labels).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_export", [label, name, backing]) => {
+            let label = text(storage, *label)?;
+            let bytes = storage
+                .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            let bytes = shared
+                .services
+                .export_label(&label, name, unsigned(storage, *backing)? != 0)
+                .map_err(|error| TaskError::Message(error.to_string()))?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_label_update", [bytes]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*bytes).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let (label, expected, value): (alloc::string::String, Option<[u8; 32]>, [u8; 32]) =
+                postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            shared
+                .services
+                .update_label(&label, expected, value)
+                .map_err(|error| TaskError::Message(error.to_string()))?;
+            Ok(number(0))
         }
         (b"storage_export", [roots, without_backing]) => {
             let roots = storage
@@ -1125,7 +1294,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = shared
                 .services
                 .export(&roots, &omitted)
-                .map_err(|_| Error::Invalid)?;
+                .map_err(TaskError::Message)?;
             Ok(storage.add_blob(&bytes).into())
         }
         (b"remote_information", [collector, memory]) => {
@@ -1140,12 +1309,23 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         .map_err(|_| Error::Invalid)?,
                     unsigned(storage, *memory)?,
                 )
-                .map_err(|_| Error::Invalid)?;
+                .map_err(TaskError::Message)?;
+            let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_file_information", [address, collector]) => {
+            let information = shared
+                .services
+                .file_information(&text(storage, *address)?, *collector)
+                .map_err(TaskError::Message)?;
             let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
         (b"remote_trusted_keys", []) => {
-            let keys = shared.services.trusted_keys().map_err(|_| Error::Invalid)?;
+            let keys = shared
+                .services
+                .trusted_keys()
+                .map_err(|error| TaskError::Message(error.to_string()))?;
             let bytes = postcard::to_allocvec(&keys).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -1158,7 +1338,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let certificate = shared
                 .services
                 .certify(name, &keys)
-                .map_err(|_| Error::Invalid)?;
+                .map_err(|error| TaskError::Message(error.to_string()))?;
             let bytes = postcard::to_allocvec(&certificate).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -1171,7 +1351,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let names = shared
                 .services
                 .missing(&offers)
-                .map_err(|_| Error::Invalid)?;
+                .map_err(|error| TaskError::Message(error.to_string()))?;
             let bytes = postcard::to_allocvec(&names).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -1179,7 +1359,10 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = storage
                 .get_blob(Blob::try_from(*bytes).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
-            let roots = shared.services.import(&bytes).map_err(|_| Error::Invalid)?;
+            let roots = shared
+                .services
+                .import(&bytes)
+                .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(storage.add_tree(&roots).into())
         }
         (b"tcp_listen", [ip, port]) => {
@@ -1236,6 +1419,22 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let port = u16::try_from(integer(storage, *port)?).map_err(|_| Error::Invalid)?;
             let stream =
                 kernel::host::net::Stream::try_connect(&host, port).map_err(|_| Error::Invalid)?;
+            Ok(number(add_stream(shared, stream)))
+        }
+        (b"ssh_connect", [host, repository, scheduler, collector]) => {
+            let scheduler = text(storage, *scheduler)?;
+            let collector = text(storage, *collector)?;
+            let stream = kernel::host::net::Stream::ssh_connect(
+                &text(storage, *host)?,
+                &text(storage, *repository)?,
+                (!scheduler.is_empty()).then_some(scheduler.as_str()),
+                (!collector.is_empty()).then_some(collector.as_str()),
+            )
+            .map_err(|_| Error::Invalid)?;
+            Ok(number(add_stream(shared, stream)))
+        }
+        (b"stdio_stream", []) => {
+            let stream = kernel::host::net::Stream::stdio_stream().map_err(|_| Error::Invalid)?;
             Ok(number(add_stream(shared, stream)))
         }
         (b"uri_open", [uri]) => {
@@ -1324,7 +1523,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 1 => shared.executed.len(),
                 2 => usize::from(shared.stopped()),
                 3 => usize::from(runtime.memoize != fix::Memoization::Never),
-                _ => return Err(Error::Invalid),
+                _ => return Err(Error::Invalid.into()),
             };
             Ok(number(value))
         }
@@ -1413,14 +1612,14 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         (b"storage_selection", [value]) => {
             let tree = Tree::try_from(*value).map_err(|_| Error::Invalid)?;
             if !value.is_value() {
-                return Err(Error::Invalid);
+                return Err(Error::Invalid.into());
             }
-            storage.select(tree).map_err(|_| Error::Invalid)
+            Ok(storage.select(tree).map_err(|_| Error::Invalid)?)
         }
         (b"storage_select", [value]) => {
             let tree = Tree::try_from(*value).map_err(|_| Error::Invalid)?;
             if !value.is_value() {
-                return Err(Error::Invalid);
+                return Err(Error::Invalid.into());
             }
             let coupon = storage
                 .selection_certificate(tree)
@@ -1436,7 +1635,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         (b"storage_canonicalize", [value]) => storage
             .canonicalization_certificate(*value)
             .map(Into::into)
-            .map_err(|_| Error::Invalid),
+            .map_err(|_| Error::Invalid.into()),
         (b"storage_identify", [value]) => {
             let value = identified(storage, *value)?;
             let available = match value.view() {
@@ -1447,7 +1646,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 _ => true,
             };
             if !available {
-                return Err(Error::Empty);
+                return Err(Error::Empty.into());
             }
             Ok(value)
         }
@@ -1455,7 +1654,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             .services
             .get_todo(todo_reference(storage, *key)?)
             .map_err(|_| Error::Invalid)?
-            .ok_or(Error::Empty),
+            .ok_or(Error::Empty.into()),
         (b"storage_set_todo", [key, value]) => {
             shared
                 .services
@@ -1467,7 +1666,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             runtime.index_claim(*value).map_err(|_| Error::Invalid)?;
             let recommendation = unsigned(storage, *completed)?;
             if recommendation > 2 {
-                return Err(Error::Invalid);
+                return Err(Error::Invalid.into());
             }
             if runtime.persists_coupon(recommendation) {
                 shared.saver.push(*value);
@@ -1495,7 +1694,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             kthread::yield_now();
             Ok(number(0))
         }
-        _ => Err(Error::Invalid),
+        _ => Err(Error::Invalid.into()),
     }
 }
 

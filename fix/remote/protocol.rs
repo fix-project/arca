@@ -10,13 +10,27 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 6;
+pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub operation: u64,
     pub collector: Name,
     pub input: Name,
+}
+impl Task {
+    pub fn stage_programs(collector: Name, scheduler: Name) -> Self {
+        Self {
+            operation: 0,
+            collector,
+            input: scheduler,
+        }
+    }
+
+    pub fn is_stage_programs(&self) -> bool {
+        self.operation == 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +83,32 @@ impl Transfer {
     }
 }
 
+pub fn prepare_transfer(
+    mut transfer: Transfer,
+    trusted_keys: &[String],
+    mut certify: impl FnMut(Name, &[String]) -> Result<(CertificateRef, Record), String>,
+) -> Result<Transfer, String> {
+    for record in &mut transfer.records {
+        if record.name[31] & 0x40 == 0
+            || record
+                .certificates
+                .iter()
+                .any(|certificate| trusted_keys.contains(&certificate.key))
+        {
+            continue;
+        }
+        let (certificate, blob) = certify(record.name, trusted_keys)?;
+        if !trusted_keys.contains(&certificate.key) || certificate.blob != blob.name {
+            return Err(String::from(
+                "certificate does not match a trusted key or its blob",
+            ));
+        }
+        record.certificates.push(certificate);
+        transfer.certificates.push(blob);
+    }
+    Ok(transfer)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Information {
     pub parallelism: u32,
@@ -80,12 +120,35 @@ pub struct Information {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    RequestLabels,
+    Labels(Vec<(String, Name)>),
+    RequestObject {
+        label: String,
+        name: Name,
+        trusted_keys: Vec<String>,
+        backing: bool,
+    },
+    ObjectTransfer(Transfer),
+    RequestTrustedKeys,
+    TrustedKeys(Vec<String>),
+    SubmitObject(Transfer),
+    ObjectReceived(Name),
+    UpdateLabel {
+        label: String,
+        expected: Option<Name>,
+        value: Name,
+    },
+    LabelUpdated,
+    Rejected,
+    Failure(String),
     Run(Task),
     Result {
         task: Task,
         coupon: Name,
     },
-    RequestInfo,
+    RequestInfo {
+        inventory: bool,
+    },
     Info(Information),
     RequestTree(Name),
     RequestShallowTree(Name),
@@ -114,11 +177,33 @@ struct Envelope {
     message: Message,
 }
 
+pub fn encode(message: Message) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(&Envelope {
+        version: VERSION,
+        message,
+    })
+}
+
 #[derive(Debug)]
 pub enum Error<E> {
     Transport(fixtransport::Error<E>),
     Invalid,
+    Version { expected: u32, received: u32 },
     Rejected,
+    Remote(String),
+}
+impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Transport(error) => error.fmt(f),
+            Self::Invalid => f.write_str("invalid remote message"),
+            Self::Version { expected, received } => {
+                write!(f, "protocol version {received}; expected {expected}")
+            }
+            Self::Rejected => f.write_str("remote rejected the request"),
+            Self::Remote(message) => f.write_str(message),
+        }
+    }
 }
 impl<E> From<fixtransport::Error<E>> for Error<E> {
     fn from(error: fixtransport::Error<E>) -> Self {
@@ -226,7 +311,13 @@ pub mod asynchronous {
         };
         let (envelope, trailing): (Envelope, _) =
             postcard::take_from_bytes(&bytes).map_err(|_| Error::Invalid)?;
-        if envelope.version != VERSION || !trailing.is_empty() {
+        if envelope.version != VERSION {
+            return Err(Error::Version {
+                expected: VERSION,
+                received: envelope.version,
+            });
+        }
+        if !trailing.is_empty() {
             return Err(Error::Invalid);
         }
         Ok(Some(envelope.message))
@@ -365,12 +456,29 @@ pub mod asynchronous {
         limit: usize,
         information: &Information,
         trusted_keys: &[String],
+        missing: impl FnMut(&[Offer]) -> Option<Vec<Name>>,
+    ) -> Result<Option<Incoming>, Error<S::Error>> {
+        receive_transfer_with_info_from(stream, limit, information, trusted_keys, missing, None)
+            .await
+    }
+
+    pub async fn receive_transfer_with_info_from<S: AsyncRead + AsyncWrite>(
+        stream: &mut S,
+        limit: usize,
+        information: &Information,
+        trusted_keys: &[String],
         mut missing: impl FnMut(&[Offer]) -> Option<Vec<Name>>,
+        first: Option<Message>,
     ) -> Result<Option<Incoming>, Error<S::Error>> {
         let mut pending: Option<Pending> = None;
         let mut total = 0usize;
+        let mut first = first;
         loop {
-            let Some(message) = receive(stream, limit).await? else {
+            let Some(message) = (if first.is_some() {
+                first.take()
+            } else {
+                receive(stream, limit).await?
+            }) else {
                 return if pending.is_none() {
                     Ok(None)
                 } else {
@@ -378,7 +486,10 @@ pub mod asynchronous {
                 };
             };
             match message {
-                Message::RequestInfo => send(stream, Message::Info(information.clone())).await?,
+                Message::Failure(message) => return Err(Error::Remote(message)),
+                Message::RequestInfo { .. } => {
+                    send(stream, Message::Info(information.clone())).await?
+                }
                 Message::ProposeTransfer {
                     task,
                     result,

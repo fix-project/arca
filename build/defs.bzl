@@ -195,13 +195,13 @@ def fix_program_run(name, program, argument_modules = [], **kwargs):
         srcs = ["//build:fix_run.rs"],
         crate_name = "fix_run",
         edition = "2024",
-        data = ["//fix/cli:fix", "//fix/cli:precompiled", program] + argument_modules,
+        data = ["//fix/cli:fix", "//bootstrap:seed", program] + argument_modules,
         deps = ["//fix/cli:client", "@rules_rust//tools/runfiles"],
         rustc_env = {
             "FIX_CLI": "$(rlocationpath //fix/cli:fix)",
             "FIX_PROGRAM": "$(rlocationpath " + program + ")",
             "FIX_ARGUMENT_MODULES": "\n".join(["$(rlocationpath " + module + ")" for module in argument_modules]),
-            "FIX_ARCHIVE": "$(rlocationpath //fix/cli:precompiled)",
+            "FIX_ARCHIVE": "$(rlocationpath //bootstrap:seed)",
         },
         **kwargs
     )
@@ -234,7 +234,7 @@ fix_script_test = rule(
         "driver": attr.label(default = "//build:fix_test", executable = True, cfg = "exec"),
         "fix": attr.label(default = "//fix/cli:fix", executable = True, cfg = "target"),
         "seed": attr.label(default = "//bootstrap:seed_tool", executable = True, cfg = "target"),
-        "archives": attr.label_list(default = ["//fix/cli:precompiled"]),
+        "archives": attr.label_list(default = ["//bootstrap:seed"]),
         "script": attr.string(mandatory = True),
         "data": attr.label_list(allow_files = True),
         "jobs": attr.int(default = 1),

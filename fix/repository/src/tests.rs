@@ -302,3 +302,38 @@ fn labels_are_atomic_and_repository_discovery_is_relative() {
         Err(RepositoryError::InvalidLabel)
     ));
 }
+
+#[test]
+fn labels_require_backing_only_for_objects() {
+    let directory = Directory::new();
+    let repository = directory.repository();
+    let blob = Blob::canonical(&[42; 128]).unwrap();
+    repository.publish_reference(blob.into_ref()).unwrap();
+    repository
+        .write_label("thin", blob.into_ref().into())
+        .unwrap();
+    assert!(
+        repository
+            .read_label("thin")
+            .unwrap()
+            .same_encoding(&blob.into_ref().into())
+    );
+    assert!(repository.write_label("missing", blob.into()).is_err());
+
+    let tree = repository.create_tree(&[blob.into_ref().into()]).unwrap();
+    repository.write_label("tree", tree.into()).unwrap();
+    repository.remove_label("tree").unwrap();
+    assert!(matches!(
+        repository.read_label("tree"),
+        Err(RepositoryError::MissingLabel { .. })
+    ));
+    assert!(repository.read_tree(tree).unwrap()[0].same_encoding(&blob.into_ref().into()));
+    assert!(matches!(
+        repository.remove_label("tree"),
+        Err(RepositoryError::MissingLabel { .. })
+    ));
+    assert!(matches!(
+        repository.remove_label("../outside"),
+        Err(RepositoryError::InvalidLabel)
+    ));
+}

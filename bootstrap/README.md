@@ -26,16 +26,20 @@ bazel build //fix/cli:fix //bootstrap:seed
 fix="$PWD/bazel-bin/fix/cli/fix"
 seed="$PWD/$(bazel cquery //bootstrap:seed --output=files)"
 "$fix" trust add-agent
+"$fix" bootstrap "$seed"
 mkdir -p fix-repo
 cd fix-repo
-"$fix" init "$seed" --bootstrap
+"$fix" init
+"$fix" eval 42u64
 ```
 
-`--bootstrap` trusts the seed compiler, signs the imported Tags, precompiles
-the embedded programs, and trusts the collector. The seed supplies a native
-scheduler and collector. `--unsigned` is for staging builds; using it with
-`--precompile` or `--bootstrap` leaves newly generated Tags and coupons
-unsigned, even if the imported seed was signed.
+`fix bootstrap` creates a store at `$XDG_DATA_HOME/fix/bootstrap/.fix` (default
+`~/.local/share/fix/bootstrap/.fix`), imports and signs the
+seed's compiler, parser, scheduler, and collector, and trusts the compiler and
+collector. `--unsigned` is for isolated staging builds; it leaves newly
+generated Tags and coupons unsigned. Bootstrap records these seed
+program handles in XDG user configuration. Later label changes do not change
+the selections. The seed's scheduler is Hint.
 
 ## Seed
 
@@ -47,33 +51,18 @@ entry, is a Ref to the compiler wrapper ELF. The tool issues directly:
 - Runnables for clang, wasm2c, and each `NAME=ELF`;
 - the `compile-resources` Bootstrap tag, authored by the trusted author, over
   `(wasm2c clang toolchain)`. `toolchain` is the `/toolchain` Flatware tree
-  (`usr/` from Stage0 plus `share/fix/` shell resources), imported natively
-  with symlinks followed.
+  (the linker and required headers from Stage0, plus `share/fix/` shell
+  resources), imported natively with symlinks followed.
 
 Seeds are unsigned staging artifacts. Import stores their Tags without authorizing
 them. `--sign` signs the imported Tags with the selected user identities;
-`fix sign --all` can sign them later. Compiler trust is a separate per-user setting. Build and precompilation actions use explicit
-unsigned staging mode.
+`fix sign --all` can sign them later. Compiler trust is a separate per-user
+setting. Build actions use explicit unsigned staging mode.
 
 The seed has no coupons. It labels `trusted-compiler`, `compile` (the closure
-`("" fixpoint compile-resources)`), `scheduler`, `collector`, `clang`, `lld`,
-`wasm2c`, and `wasm-merge`. `flatware` labels the adapter and control bridge
-merged into one Wasm Blob; `flatware-control` also labels the standalone bridge.
-`wasip1-sysroot` labels directory contents, ready to mount at `/usr`.
-
-The Binutils equivalents are listed in `tools.bzl`: `llvm-ar`, `llvm-as`,
-`llvm-cvtres`, `llvm-cxxfilt`, `llvm-dis`, `llvm-dwarfdump`, `llvm-dwarfutil`,
-`llvm-dwp`, `llvm-link`, `llvm-mc`, `llvm-ml`, `llvm-nm`, `llvm-objcopy`,
-`llvm-objdump`, `llvm-readobj`, `llvm-size`, `llvm-strings`, `llvm-symbolizer`,
-and `llvm-undname`. To use aliases such as `llvm-ranlib`, `llvm-strip`,
-`llvm-readelf`, and `llvm-addr2line`, import the canonical program and pass the
-alias as its first argument. For example, run the `llvm-ar` program with
-`["llvm-ranlib", "/work/lib.a"]`. Clang and LLD drivers work the same way.
+`("" fixpoint compile-resources)`), `scheduler`, `collector`, and `fix-parser`.
+Additional tools can be compiled or imported later.
 The enabled code-generation targets remain X86 and WebAssembly.
-
-This includes offline object, archive, binary inspection, assembly, and symbol
-tools. It excludes JITs and process-launching tools: `llvm-rc` normally launches
-a preprocessor, and `llvm-mt` requires XML support absent from this toolchain.
 
 Applying `compile` to a Wasm module, as in `#("" compile module)`, yields a
 Runnable for that module, compiled as one translated C unit per 128 KiB of Wasm.

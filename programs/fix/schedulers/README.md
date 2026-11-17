@@ -5,10 +5,10 @@ All scheduler programs use the `fixscheduler` SDK. Each policy implements `execu
 | Program | Behavior |
 |---|---|
 | `serial` | Resolves dependencies locally with one active worker. |
-| `parallel` | Resolves dependencies locally using all configured workers. This is the default scheduler. |
-| `distributed` | Delegates whole Eval/Think requests to the first reachable remote. A failed delegation is an error. |
+| `parallel` | Resolves dependencies locally using all configured workers. |
+| `distributed` | Delegates whole Eval/Think requests to the first reachable remote. With no execution remotes it runs locally; a failed configured delegation is an error. |
 | `onepass` | Prefers cached results, then maximizes resident input and dependency-output bytes. Ties favor greater parallelism, then the local worker. |
-| `hint` | Starts with OnePass placement, pulls computations back when transferring their outputs would cost more, and spreads wide independent work with weak locality across available remote capacity. |
+| `hint` | The default scheduler. Starts with OnePass placement, pulls computations back when transferring their outputs would cost more, and spreads wide independent work with weak locality across available remote capacity. |
 
 ## Reading the examples
 
@@ -59,7 +59,14 @@ Without advice, OnePass uses actual input locality, cached results, and worker p
 
 ## Remote workers
 
-Build `//programs/fix/schedulers` for all examples, or the desired scheduler's `_elf` target and `//fix/cli:fix`. Initialize coordinator and worker repositories with the same collector and configured signing identities and trusted keys, as described in [remote runtimes](../../../fix/remote/README.md). A worker's configured local scheduler can be Serial or Parallel.
+Bootstrap the coordinator and workers from the same seed and trust each other's
+signing keys. The bootstrap store supplies the collector and local scheduler;
+these do not need labels in each repository. The [SSH setup](../../../fix/remote/README.md#ssh-clone-and-distributed-evaluation)
+shows how to build and label `distributed` in the coordinator and clone a worker
+repository. An on-demand SSH worker first uses its bootstrapped scheduler to
+receive the coordinator's selected scheduler, then runs with that selection.
+
+For a prestarted TCP worker, run:
 
 ```sh
 fix -C /path/to/worker serve --listen 127.0.0.1:9000 -j 4 --memory 16384

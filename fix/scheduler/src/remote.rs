@@ -5,7 +5,7 @@ use crate::{
     abi::{effect, request},
     shell::{Value, child, fields},
 };
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 pub use cluster::{Cluster, Failure, PendingEvaluation};
 use fixwasm::{Blob, Error, Tree, Value as AsValue, tree};
 
@@ -15,6 +15,15 @@ pub use fixtransport as framing;
 pub struct Remote {
     pub name: String,
     pub address: String,
+    pub scheduler: Option<String>,
+    pub collector: Option<String>,
+}
+
+impl Remote {
+    pub fn is_ssh(&self) -> bool {
+        self.address.starts_with("ssh://")
+            || (!self.address.contains("://") && self.address.contains(':'))
+    }
 }
 
 pub fn configured() -> Result<Vec<Remote>, Error> {
@@ -25,30 +34,99 @@ pub fn configured() -> Result<Vec<Remote>, Error> {
                 String::from_utf8(bytes(&child(remote, 0)?)?).map_err(|_| Error::WrongType)?;
             let address =
                 String::from_utf8(bytes(&child(remote, 1)?)?).map_err(|_| Error::WrongType)?;
-            Ok(Remote { name, address })
+            let scheduler =
+                String::from_utf8(bytes(&child(remote, 2)?)?).map_err(|_| Error::WrongType)?;
+            let collector =
+                String::from_utf8(bytes(&child(remote, 3)?)?).map_err(|_| Error::WrongType)?;
+            Ok(Remote {
+                name,
+                address,
+                scheduler: (!scheduler.is_empty()).then_some(scheduler),
+                collector: (!collector.is_empty()).then_some(collector),
+            })
         })
         .collect()
 }
 
-pub fn export(values: &[Value], without_backing: &[Value]) -> Result<Option<Vec<u8>>, Error> {
+pub fn labels() -> Result<Vec<(String, protocol::Name)>, Error> {
+    let value = effect(b"remote_labels", &[])?;
+    postcard::from_bytes(&bytes(&value)?).map_err(|_| Error::WrongType)
+}
+
+fn request_failure(status: u64, value: &Value) -> String {
+    if status == 5
+        && let Ok(message) =
+            bytes(value).and_then(|bytes| String::from_utf8(bytes).map_err(|_| Error::WrongType))
+        && !message.is_empty()
+        && !message.contains('\0')
+    {
+        return message;
+    }
+    format!("scheduler operation failed with status {status}")
+}
+
+pub fn export_label(
+    label: &str,
+    name: protocol::Name,
+    backing: bool,
+) -> Result<protocol::Transfer, String> {
+    let (status, value) = request(tree![
+        Blob::create(b"remote_export"),
+        Blob::create(label),
+        Blob::create(name),
+        backing as u64
+    ])
+    .map_err(|error| format!("{error:?}"))?;
+    if status != 0 {
+        return Err(request_failure(status, &value));
+    }
+    protocol::Transfer::decode(&bytes(&value).map_err(|error| format!("{error:?}"))?)
+        .map_err(|error| format!("invalid exported transfer: {error}"))
+}
+
+pub fn update_label(
+    label: &str,
+    expected: Option<protocol::Name>,
+    value: protocol::Name,
+) -> Result<(), String> {
+    let encoded = postcard::to_allocvec(&(label, expected, value))
+        .map_err(|error| format!("could not encode label update: {error}"))?;
+    let (status, response) = request(tree![
+        Blob::create(b"remote_label_update"),
+        Blob::create(&encoded)
+    ])
+    .map_err(|error| format!("{error:?}"))?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(request_failure(status, &response))
+    }
+}
+
+pub fn export(values: &[Value], without_backing: &[Value]) -> Result<Vec<u8>, String> {
     let (status, value) = request(tree![
         Blob::create(b"storage_export"),
         Tree::from_iter(values),
         Tree::from_iter(without_backing)
-    ])?;
+    ])
+    .map_err(|error| format!("{error:?}"))?;
     if status == 0 {
-        Ok(Some(bytes(&value)?))
+        bytes(&value).map_err(|error| format!("{error:?}"))
     } else {
-        Ok(None)
+        Err(request_failure(status, &value))
     }
 }
 
-pub fn import(bytes: &[u8]) -> Result<Option<Vec<Value>>, Error> {
-    let (status, value) = request(tree![Blob::create(b"storage_import"), Blob::create(bytes)])?;
+pub fn import(transfer_bytes: &[u8]) -> Result<Vec<Value>, String> {
+    let (status, value) = request(tree![
+        Blob::create(b"storage_import"),
+        Blob::create(transfer_bytes)
+    ])
+    .map_err(|error| format!("{error:?}"))?;
     if status == 0 {
-        Ok(Some(fields(&value)?))
+        fields(&value).map_err(|error| format!("{error:?}"))
     } else {
-        Ok(None)
+        Err(request_failure(status, &value))
     }
 }
 
@@ -64,26 +142,51 @@ pub fn information(memory_bytes: u64) -> Result<protocol::Information, Error> {
     postcard::from_bytes(&bytes(&value)?).map_err(|_| Error::WrongType)
 }
 
+pub fn file_information(address: &str) -> Result<protocol::Information, String> {
+    let (status, value) = request(tree![
+        Blob::create(b"remote_file_information"),
+        Blob::create(address),
+        crate::collector::callable().map_err(|error| format!("{error:?}"))?,
+    ])
+    .map_err(|error| format!("{error:?}"))?;
+    if status != 0 {
+        return Err(request_failure(status, &value));
+    }
+    postcard::from_bytes(&bytes(&value).map_err(|error| format!("{error:?}"))?)
+        .map_err(|error| format!("invalid file remote inventory: {error}"))
+}
+
 pub fn trusted_keys() -> Result<Vec<String>, Error> {
     let value = effect(b"remote_trusted_keys", &[])?;
     postcard::from_bytes(&bytes(&value)?).map_err(|_| Error::WrongType)
 }
 
+pub fn trust_collector(collector: &Value) -> Result<(), String> {
+    let (status, value) = request(tree![Blob::create(b"remote_trust_collector"), collector])
+        .map_err(|error| format!("{error:?}"))?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(request_failure(status, &value))
+    }
+}
+
 pub fn certify(
     name: protocol::Name,
     keys: &[String],
-) -> Result<Option<(protocol::CertificateRef, protocol::Record)>, Error> {
-    let encoded = postcard::to_allocvec(&(name, keys)).map_err(|_| Error::WrongType)?;
+) -> Result<(protocol::CertificateRef, protocol::Record), String> {
+    let encoded = postcard::to_allocvec(&(name, keys))
+        .map_err(|error| format!("could not encode certificate request: {error}"))?;
     let (status, value) = request(tree![
         Blob::create(b"storage_certify"),
         Blob::create(encoded)
-    ])?;
+    ])
+    .map_err(|error| format!("{error:?}"))?;
     if status == 0 {
-        Ok(Some(
-            postcard::from_bytes(&bytes(&value)?).map_err(|_| Error::WrongType)?,
-        ))
+        postcard::from_bytes(&bytes(&value).map_err(|error| format!("{error:?}"))?)
+            .map_err(|error| format!("invalid certificate response: {error}"))
     } else {
-        Ok(None)
+        Err(request_failure(status, &value))
     }
 }
 
@@ -168,6 +271,38 @@ impl Drop for Connection<'_> {
 }
 
 impl<'a> Connection<'a> {
+    pub async fn connect(io: &'a Io, remote: &Remote) -> Result<Option<Self>, Error> {
+        let ssh = if let Some(address) = remote.address.strip_prefix("ssh://") {
+            address
+                .split_once('/')
+                .map(|(host, _)| (host, &address[host.len()..]))
+        } else if remote.address.contains("://") {
+            None
+        } else {
+            remote.address.split_once(':')
+        };
+        if let Some((host, repository)) = ssh {
+            if host.is_empty() || repository.is_empty() {
+                return Ok(None);
+            }
+            let (status, stream) = io
+                .request(tree![
+                    Blob::create(b"ssh_connect"),
+                    Blob::create(host),
+                    Blob::create(repository),
+                    Blob::create(remote.scheduler.as_deref().unwrap_or("")),
+                    Blob::create(remote.collector.as_deref().unwrap_or(""))
+                ])
+                .await?;
+            return if status == 0 {
+                Ok(Some(Self(stream.read_u64()?, io)))
+            } else {
+                Ok(None)
+            };
+        }
+        Self::connect_tcp(io, remote).await
+    }
+
     pub async fn connect_tcp(io: &'a Io, remote: &Remote) -> Result<Option<Self>, Error> {
         let Some(address) = remote.address.strip_prefix("tcp://") else {
             return Ok(None);

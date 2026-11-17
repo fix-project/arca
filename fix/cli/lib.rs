@@ -1,7 +1,7 @@
 pub use fix::Memoization;
 use fix::{DataType, EncodeType, ValueType};
 use fixhandle::{Encode, EncodeView, Handle, HandleView, Object, Ref, Thunk, Tree, TreeRef};
-use fixrepository::Repository;
+use fixrepository::{Repository, RepositoryError};
 use fixstorage::{Storage, repository::RepositoryStorage};
 use std::{
     fmt,
@@ -10,10 +10,11 @@ use std::{
 };
 
 mod archive;
-pub mod bootstrap;
+pub mod bootstrap_store;
 pub mod commands;
 pub mod configuration;
 pub mod expressions;
+pub mod remotes;
 pub mod shell;
 pub use shell::Shell;
 mod serve;
@@ -69,8 +70,12 @@ impl fmt::Debug for Value {
 pub struct Options {
     pub scheduler: String,
     pub collector: String,
+    pub parser: String,
+    pub compiler: String,
     pub trust: Option<PathBuf>,
     pub remotes: Vec<fixremote::Remote>,
+    pub remote_schedulers: Vec<(String, String)>,
+    pub remote_collectors: Vec<(String, String)>,
     pub identities: Vec<String>,
     pub unsigned: bool,
     pub jobs: usize,
@@ -82,8 +87,12 @@ impl Default for Options {
         Self {
             scheduler: "scheduler".into(),
             collector: "collector".into(),
+            parser: "fix-parser".into(),
+            compiler: "compile".into(),
             trust: None,
             remotes: Vec::new(),
+            remote_schedulers: Vec::new(),
+            remote_collectors: Vec::new(),
             identities: Vec::new(),
             unsigned: false,
             jobs: 1,
@@ -109,6 +118,11 @@ pub struct Client {
     retain_storage: bool,
     reuse_storage: bool,
 }
+fn kernel() -> &'static Arc<[u8]> {
+    static KERNEL: OnceLock<Arc<[u8]>> = OnceLock::new();
+    KERNEL.get_or_init(|| Arc::from(&include_bytes!(env!("FIX_KERNEL"))[..]))
+}
+
 impl Client {
     pub fn open(directory: &Path, options: Options) -> Result<Self, Error> {
         let directory = directory.canonicalize().map_err(error)?;
@@ -119,7 +133,7 @@ impl Client {
         )
         .map_err(error)?;
         let repository = options.configure(repository);
-        Ok(Self {
+        let mut client = Self {
             storage: Arc::new(RepositoryStorage::new(repository)),
             options,
             directory,
@@ -128,7 +142,37 @@ impl Client {
             session: None,
             retain_storage: false,
             reuse_storage: false,
-        })
+        };
+        let config = client.remote_config()?;
+        let mut policy = config.policy;
+        policy.identities.clear();
+        let bootstrap = bootstrap_store::repository()?;
+        let path = bootstrap
+            .to_str()
+            .ok_or_else(|| message("bootstrap repository path is not UTF-8"))?;
+        match Repository::open(path) {
+            Ok(source) if source.path() != client.storage.repository().path() => {
+                Arc::get_mut(&mut client.storage)
+                    .unwrap()
+                    .add_source(source.with_policy(policy.clone()));
+            }
+            Ok(_) | Err(RepositoryError::NotInitialized) => (),
+            Err(error) => return Err(self::error(error)),
+        }
+        for remote in config.remotes {
+            if let Some(path) = remote.address.strip_prefix("file://") {
+                match Repository::open(path) {
+                    Ok(source) if source.path() != client.storage.repository().path() => {
+                        Arc::get_mut(&mut client.storage)
+                            .unwrap()
+                            .add_source(source.with_policy(policy.clone()));
+                    }
+                    Ok(_) | Err(RepositoryError::NotInitialized) => (),
+                    Err(error) => return Err(self::error(error)),
+                }
+            }
+        }
+        Ok(client)
     }
     pub fn reuse_vm(&mut self) {
         self.persistent = true;
@@ -177,10 +221,24 @@ impl Client {
                 .iter_mut()
                 .find(|existing| existing.name == remote.name)
             {
-                *existing = remote.clone();
+                existing.address = remote.address.clone();
             } else {
                 remotes.push(remote.clone());
             }
+        }
+        for (name, scheduler) in &self.options.remote_schedulers {
+            remotes
+                .iter_mut()
+                .find(|remote| &remote.name == name)
+                .ok_or_else(|| message("unknown remote for scheduler override"))?
+                .scheduler = Some(scheduler.clone());
+        }
+        for (name, collector) in &self.options.remote_collectors {
+            remotes
+                .iter_mut()
+                .find(|remote| &remote.name == name)
+                .ok_or_else(|| message("unknown remote for collector override"))?
+                .collector = Some(collector.clone());
         }
         Ok(fixremote::Config { policy, remotes })
     }
@@ -254,7 +312,7 @@ impl Client {
 
     pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
         let values = fixremote::import(self.storage.repository(), bytes, &self.remote_config()?)
-            .map_err(error)?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
         Ok(values.into_iter().map(|handle| self.keep(handle)).collect())
     }
     pub fn set_profile(&mut self, enabled: bool) {
@@ -273,13 +331,29 @@ impl Client {
         }
         Ok(value.handle)
     }
-    /// Reads the value of the label `name`.
+    /// Reads a label in the active repository.
     pub fn label_value(&mut self, name: &str) -> Result<Value, Error> {
         let handle = self.storage.repository().read_label(name).map_err(error)?;
         Ok(self.keep(handle))
     }
     pub fn lookup(&mut self, name: &str) -> Result<Value, Error> {
-        Ok(self.keep(resolve(self.storage.repository(), name).map_err(error)?))
+        if name.contains(':') {
+            return crate::remotes::fetch(self, name, true)
+                .map_err(|error| Error::Backend(error.to_string()));
+        }
+        if name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            let mut bytes = [0; 32];
+            hex::decode_to_slice(name, &mut bytes).map_err(error)?;
+            let handle = self.storage.identify(&bytes).map_err(|_| {
+                self::error(RepositoryError::MissingObject {
+                    name: name.into(),
+                    repository: self.storage.repository().path().into(),
+                })
+            })?;
+            Ok(self.keep(handle))
+        } else {
+            self.label_value(name)
+        }
     }
     pub fn save(&mut self, value: &Value) -> Result<String, Error> {
         Ok(self
@@ -295,6 +369,13 @@ impl Client {
             .write_label(name, value)
             .map_err(error)
     }
+    pub(crate) fn label_imported(&mut self, name: &str, value: &Value) -> Result<(), Error> {
+        let value = self.handle(value)?;
+        self.storage
+            .repository()
+            .write_label(name, value)
+            .map_err(error)
+    }
     pub fn call(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
@@ -303,6 +384,67 @@ impl Client {
         }
         self.execute(&["call".into(), name])
     }
+    pub fn schedule_stream(&mut self, value: &Value) -> Result<Value, Error> {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+        let name = self.save(value)?;
+        let remotes = self.remote_config()?;
+        let mut argv = vec![
+            "fix".into(),
+            "--trust".into(),
+            remotes.policy.trusted_compilers.join("\n"),
+            "--remotes".into(),
+            serde_json::to_string(&remotes).map_err(error)?,
+        ];
+        if self.profile {
+            argv.push("--profile".into());
+        }
+        argv.extend([
+            "schedule".into(),
+            "--memoize".into(),
+            self.options.memoize.to_string(),
+            name,
+        ]);
+        let memory = self
+            .options
+            .memory_mib
+            .checked_mul(1 << 20)
+            .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
+            .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
+        if self.options.jobs == 0 {
+            return Err(message("jobs must be positive"));
+        }
+        let (vm, peer) = UnixStream::pair().map_err(error)?;
+        let mut incoming = peer.try_clone().map_err(error)?;
+        let mut outgoing = peer;
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin(), &mut incoming);
+            let _ = incoming.shutdown(Shutdown::Write);
+        });
+        let output = std::thread::spawn(move || {
+            let mut stdout = std::io::stdout().lock();
+            let mut bytes = [0; 65536];
+            loop {
+                let length = outgoing.read(&mut bytes)?;
+                if length == 0 {
+                    return Ok::<(), std::io::Error>(());
+                }
+                stdout.write_all(&bytes[..length])?;
+                stdout.flush()?;
+            }
+        });
+        let (status, result) =
+            vmm::runtime::Runtime::new(self.options.jobs, memory, kernel().clone())
+                .run_stream_captured(argv, &self.directory, vm);
+        output.join().map_err(error)?.map_err(error)?;
+        if status == 0 {
+            self.lookup(std::str::from_utf8(&result).map_err(error)?.trim())
+        } else {
+            Err(Error::Execution(status))
+        }
+    }
+
     pub fn schedule(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
@@ -313,8 +455,6 @@ impl Client {
             "schedule".into(),
             "--memoize".into(),
             self.options.memoize.to_string(),
-            "--trusted-tagger".into(),
-            self.options.collector.clone(),
             name,
         ])
     }
@@ -360,7 +500,7 @@ impl Client {
         units: Option<u64>,
     ) -> Result<Value, Error> {
         let limits = self.blob(b"")?;
-        let compile = self.lookup("compile")?;
+        let compile = self.lookup(&self.options.compiler.clone())?;
         let mut fields = vec![limits, compile, module.clone()];
         if let Some(units) = units {
             fields.push(self.blob(&units.to_le_bytes())?);
@@ -508,8 +648,7 @@ impl Client {
             argv.push("--profile".into());
         }
         argv.extend_from_slice(arguments);
-        static KERNEL: OnceLock<Arc<[u8]>> = OnceLock::new();
-        let kernel = KERNEL.get_or_init(|| Arc::from(&include_bytes!(env!("FIX_KERNEL"))[..]));
+        let kernel = kernel();
         let memory = self
             .options
             .memory_mib
@@ -718,6 +857,10 @@ impl Client {
     pub fn eval(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
+        let scheduler = self.lookup(&self.options.scheduler.clone())?;
+        let scheduler = self.save(&scheduler)?;
+        let collector = self.lookup(&self.options.collector.clone())?;
+        let collector = self.save(&collector)?;
         if self.profile {
             eprintln!("profile evaluate input: {:?}", start.elapsed());
         }
@@ -725,8 +868,8 @@ impl Client {
             "evaluate".into(),
             "--memoize".into(),
             self.options.memoize.to_string(),
-            self.options.scheduler.clone(),
-            self.options.collector.clone(),
+            scheduler,
+            collector,
             name,
         ])
     }

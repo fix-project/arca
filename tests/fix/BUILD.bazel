@@ -246,12 +246,12 @@ fix_cc_wasm(
 
 fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")
 
-BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//fix/cli:precompiled"]
+BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//bootstrap:seed"]
 
 BOOTSTRAP_ENV = {
     "FIX_CLI": "$(rootpath //fix/cli:fix)",
     "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",
-    "FIX_BOOTSTRAP": "$(rootpath //fix/cli:precompiled)",
+    "FIX_BOOTSTRAP": "$(rootpath //bootstrap:seed)",
 }
 
 rust_test(

@@ -23,33 +23,48 @@ bazel run //programs/fix:addblob -- 2u64 3u64
 
 ## Run Fix
 
-Build the Fix binary and bootstrap seed. Precompilation uses `/dev/kvm`.
+Build the Fix binary and bootstrap seed.
 
 ```sh
 bazel build //fix/cli:fix //bootstrap:seed
 fix="$PWD/bazel-bin/fix/cli/fix"
 seed="$PWD/$(bazel cquery //bootstrap:seed --output=files)"
 "$fix" trust add-agent
+"$fix" bootstrap "$seed"
 mkdir -p fix-repo
 cd fix-repo
-"$fix" init "$seed" --bootstrap
+"$fix" init
 "$fix" eval 42u64
 "$fix" run path/to/program.fix
 ```
 
-`trust add-agent` requires an active `ssh-agent` with an Ed25519 key. The
-`--bootstrap` trusts the seed compiler, signs the imported Tags, compiles the
-embedded programs, and trusts the collector. It uses your configured signing
-identities; `trust add-agent` adds the keys currently loaded in `ssh-agent`.
-For TCP remotes, see [remote runtimes](fix/remote/README.md).
+`trust add-agent` requires an active `ssh-agent` with an Ed25519 key; load one
+with `ssh-add ~/.ssh/id_ed25519` if needed. The
+`bootstrap` imports the seed's compiler, scheduler, collector, and parser into
+`$XDG_DATA_HOME/fix/bootstrap/.fix` (default `~/.local/share/fix/bootstrap/.fix`)
+and signs its Tags using the identities configured by `trust add-agent`.
+Trust and global program settings live in `$XDG_CONFIG_HOME/fix` (default
+`~/.config/fix`). New repositories start empty and have a `bootstrap` file remote.
+Use `fix sync bootstrap` to fetch its label refs, then `fix remote labels bootstrap`
+to list them or `fix pull bootstrap:compile compile` to create a local label.
+`fix bootstrap` records the seed's program handles in user
+configuration, so moving a label does not change the defaults. Hint is the
+seed's default scheduler. Use
+`fix config scheduler serial` to select a local label in the current repository.
+Command-line options such as `--scheduler` take precedence. Bootstrap backing
+data is available to every repository when a configured program is persisted.
+A home repository is optional; create one with `fix init` in your home directory
+and add it as an ordinary `file://` remote where needed.
+Use `--unsigned` only for isolated staging builds. Their Tags and coupons need
+signatures before normal use.
 
-Use `--unsigned` only for staging builds. If a repository was initialized with
-`--unsigned --precompile`, its compiled Tags and coupons need signatures before
-normal use. With the signing key loaded in `ssh-agent`, run `fix trust add-agent`
-and `fix sign --all` in that repository, then run
-`fix trust add-compiler "$(cat .fix/trust)"` and `fix trust add-tagger collector`.
-`sign --all` currently signs every Tag again, including Tags
-that already have a certificate, so this recovery can take time.
+## Clone and evaluate remotely
+
+Bootstrap Fix on both machines, then initialize a repository on the server.
+The client can clone its label names without downloading their data and use the
+distributed scheduler to delegate evaluations over SSH. See the
+[two-machine setup](fix/remote/README.md#ssh-clone-and-distributed-evaluation)
+for the trust setup, scheduler build, and commands.
 
 Arca arguments: `word:`, `blob:`, `tuple:` (comma-separated), `elf:<path>`,
 `null`. Fix arguments are Fix expressions. `_elf` targets expose raw artifacts.
@@ -69,9 +84,9 @@ calling conventions. Bazel builds `core`, `alloc`, and `compiler_builtins` from
 sources matching the pinned Rust compiler. The kernel uses `x86_64-unknown-none`
 with its soft-float ABI.
 
-The [bootstrap process](bootstrap/README.md) builds self-hosted Wasm-to-ELF
-toolchains from pinned sources and checks byte-identical generations. Shared
-caches use ordinary Bazel configuration.
+The [bootstrap process](bootstrap/README.md) starts from pinned LLVM release
+artifacts, rebuilds the compiler inside Fix, and checks byte-identical
+generations. Shared caches use ordinary Bazel configuration.
 
 ## Benchmarks
 

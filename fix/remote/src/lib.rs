@@ -25,6 +25,7 @@ use protocol::{CertificateRef, Offer, Record, Transfer};
 #[derive(Debug)]
 pub enum Error {
     Invalid,
+    Transfer(String),
     Untrusted,
     Signing(String),
     Repository(RepositoryError),
@@ -34,9 +35,10 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Invalid => f.write_str("invalid object transfer"),
+            Self::Transfer(message) => f.write_str(message),
             Self::Untrusted => f.write_str("untrusted remote runtime"),
             Self::Signing(error) => write!(f, "could not sign object transfer: {error}"),
-            Self::Repository(error) => write!(f, "repository error: {error:?}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
         }
     }
 }
@@ -322,7 +324,8 @@ pub fn import(
     bytes: &[u8],
     config: &Config,
 ) -> Result<Vec<Handle>, Error> {
-    let mut bundle = Transfer::decode(bytes).map_err(|_| Error::Invalid)?;
+    let mut bundle = Transfer::decode(bytes)
+        .map_err(|error| Error::Transfer(alloc::format!("cannot decode transfer: {error}")))?;
     bundle.records.append(&mut bundle.certificates);
     let records: BTreeMap<_, _> = bundle
         .records
@@ -330,38 +333,68 @@ pub fn import(
         .map(|record| (record.name, record))
         .collect();
     if records.len() != bundle.records.len() {
-        return Err(Error::Invalid);
+        return Err(Error::Transfer(String::from(
+            "transfer contains duplicate object records",
+        )));
     }
     let certificate_bytes = |name: &[u8; 32]| -> Result<Vec<u8>, Error> {
-        let blob = fixhandle::Blob::try_from(canonical(name)?).map_err(|_| Error::Invalid)?;
+        let certificate_name = display_name(name);
+        let blob = fixhandle::Blob::try_from(canonical(name)?).map_err(|error| {
+            Error::Transfer(alloc::format!(
+                "certificate {} is not a Blob: {error:?}",
+                display_name(name)
+            ))
+        })?;
         let data = if let Some(data) = records.get(name).and_then(|record| record.data.as_ref()) {
             data.clone()
         } else {
             repository.read_blob(blob)?.into_vec()
         };
-        blob.verify(&data).map_err(|_| Error::Invalid)?;
+        blob.verify(&data).map_err(|error| {
+            Error::Transfer(alloc::format!(
+                "certificate Blob {certificate_name} failed validation: {error:?}"
+            ))
+        })?;
         Ok(data)
     };
     let mut certificates = BTreeMap::new();
     let mut names = BTreeSet::new();
     let mut backed = BTreeSet::new();
     for record in &bundle.records {
-        let object = Object::try_from(canonical(&record.name)?).map_err(|_| Error::Invalid)?;
+        let record_name = display_name(&record.name);
+        let object = Object::try_from(canonical(&record.name)?).map_err(|error| {
+            Error::Transfer(alloc::format!(
+                "record {} is not an Object: {error:?}",
+                display_name(&record.name)
+            ))
+        })?;
         if matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag()) {
-            let available = if record.certificates.is_empty() {
+            let available = if record.certificates.is_empty() && config.policy.unsigned {
+                Vec::new()
+            } else if record.certificates.is_empty() {
                 repository.available_certificates(object.as_handle().as_bytes())?
             } else {
                 record
                     .certificates
                     .iter()
                     .map(|reference| {
+                        let certificate_name = display_name(&reference.blob);
                         let bytes = certificate_bytes(&reference.blob)?;
-                        let certificate =
-                            Certificate::decode(&bytes).map_err(|_| Error::Invalid)?;
-                        if certificate.name != record.name
-                            || certificate.signer().map_err(|_| Error::Invalid)? != reference.key
-                        {
-                            return Err(Error::Invalid);
+                        let certificate = Certificate::decode(&bytes).map_err(|error| {
+                            Error::Transfer(alloc::format!(
+                                "cannot decode certificate {certificate_name} for Tag {record_name}: {error}"
+                            ))
+                        })?;
+                        let signer = certificate.signer().map_err(|error| {
+                            Error::Transfer(alloc::format!(
+                                "cannot read signer of certificate {certificate_name}: {error}"
+                            ))
+                        })?;
+                        if certificate.name != record.name || signer != reference.key {
+                            return Err(Error::Transfer(alloc::format!(
+                                "certificate {certificate_name} does not match Tag {record_name} or advertised signing key {}",
+                                reference.key
+                            )));
                         }
                         certificate
                             .verify(
@@ -371,30 +404,48 @@ pub fn import(
                                     ..Policy::default()
                                 },
                             )
-                            .map_err(|_| Error::Invalid)?;
+                            .map_err(|error| {
+                                Error::Transfer(alloc::format!(
+                                    "invalid signature on Tag {record_name} by {}: {error}",
+                                    reference.key
+                                ))
+                            })?;
                         Ok(certificate)
                     })
                     .collect::<Result<Vec<_>, Error>>()?
             };
-            if !available
-                .iter()
-                .any(|certificate| certificate.verify(&record.name, &config.policy).is_ok())
+            if !config.policy.unsigned
+                && !available
+                    .iter()
+                    .any(|certificate| certificate.verify(&record.name, &config.policy).is_ok())
             {
                 return Err(Error::Untrusted);
             }
             certificates.insert(record.name, available);
         } else if !record.certificates.is_empty() {
-            return Err(Error::Invalid);
+            return Err(Error::Transfer(alloc::format!(
+                "non-Tag record {record_name} carries certificates"
+            )));
         }
         if matches!(object.as_handle().name(), Name::Literal(_)) || !names.insert(record.name) {
-            return Err(Error::Invalid);
+            return Err(Error::Transfer(alloc::format!(
+                "record {record_name} is literal or duplicates another record"
+            )));
         }
         if let Some(bytes) = &record.data {
             backed.insert(record.name);
             match object.view() {
-                ObjectView::Blob(blob) => blob.verify(bytes).map_err(|_| Error::Invalid)?,
+                ObjectView::Blob(blob) => blob.verify(bytes).map_err(|error| {
+                    Error::Transfer(alloc::format!(
+                        "Blob {record_name} backing failed validation: {error:?}"
+                    ))
+                })?,
                 ObjectView::Tree(tree) => {
-                    tree.verify_bytes(bytes).map_err(|_| Error::Invalid)?;
+                    tree.verify_bytes(bytes).map_err(|error| {
+                        Error::Transfer(alloc::format!(
+                            "Tree {record_name} backing failed validation: {error:?}"
+                        ))
+                    })?;
                 }
             }
         }
@@ -409,15 +460,25 @@ pub fn import(
             names.contains(&object)
         };
         let existing = if matches!(handle.view(), HandleView::Object(_)) {
-            let value = Object::try_from(handle).map_err(|_| Error::Invalid)?;
-            repository.has_backing(value).unwrap_or(false)
+            let value = Object::try_from(handle).map_err(|error| {
+                Error::Transfer(alloc::format!("expected Object {handle}: {error:?}"))
+            })?;
+            repository.has_backing(value)?
         } else {
             repository.lookup(handle.as_bytes()).is_ok()
         };
         if supplied || existing {
             Ok(())
         } else {
-            Err(Error::Invalid)
+            Err(Error::Transfer(alloc::format!(
+                "{} {handle} is neither supplied by the transfer nor available in repository {:?}",
+                if matches!(handle.view(), HandleView::Object(_)) {
+                    "backing for Object"
+                } else {
+                    "descriptor for value"
+                },
+                repository.path()
+            )))
         }
     };
     for root in &bundle.roots {
@@ -441,8 +502,16 @@ pub fn import(
     }
 
     for record in &bundle.records {
-        let object = Object::try_from(canonical(&record.name)?).map_err(|_| Error::Invalid)?;
-        if let Some(certificate) = certificates.get(&record.name) {
+        let object = Object::try_from(canonical(&record.name)?).map_err(|error| {
+            Error::Transfer(alloc::format!(
+                "record {} is not an Object: {error:?}",
+                display_name(&record.name)
+            ))
+        })?;
+        if let Some(certificate) = certificates
+            .get(&record.name)
+            .filter(|certificates| !certificates.is_empty())
+        {
             repository.store_certificates(object.into_ref().as_handle().as_bytes(), certificate)?;
         } else {
             repository.publish_reference(object.into_ref())?;
@@ -462,15 +531,26 @@ pub fn import(
                     })
                     .map(Certificate::encode)
                     .transpose()
-                    .map_err(|_| Error::Invalid)?
+                    .map_err(|error| {
+                        Error::Transfer(alloc::format!(
+                            "cannot encode certificate for {}: {error}",
+                            display_name(&record.name)
+                        ))
+                    })?
                     .as_deref(),
             )?;
         }
     }
     for record in &bundle.records {
-        let object = Object::try_from(canonical(&record.name)?).map_err(|_| Error::Invalid)?;
+        let object = Object::try_from(canonical(&record.name)?).map_err(|error| {
+            Error::Transfer(alloc::format!(
+                "record {} is not an Object: {error:?}",
+                display_name(&record.name)
+            ))
+        })?;
         if record.data.is_some()
             && let Some(certificates) = certificates.get(&record.name)
+            && !certificates.is_empty()
         {
             repository.store_certificates(&record.name, certificates)?;
         }
@@ -492,9 +572,17 @@ pub fn import(
 }
 
 fn canonical(bytes: &[u8; 32]) -> Result<Handle, Error> {
-    let view = Handle::parse_ref(bytes).map_err(|_| Error::Invalid)?;
+    let view = Handle::parse_ref(bytes).map_err(|error| {
+        Error::Transfer(alloc::format!(
+            "invalid Fix name {}: {error:?}",
+            display_name(bytes)
+        ))
+    })?;
     if !view.is_canonical() {
-        return Err(Error::Invalid);
+        return Err(Error::Transfer(alloc::format!(
+            "Fix name {} is not canonical",
+            display_name(bytes)
+        )));
     }
     // Only canonical machine names enter admission; backing and Tag certificates are checked before publication.
     Ok(unsafe { view.to_owned() })
@@ -502,3 +590,12 @@ fn canonical(bytes: &[u8; 32]) -> Result<Handle, Error> {
 
 #[cfg(test)]
 mod tests;
+
+fn display_name(bytes: &[u8; 32]) -> String {
+    use core::fmt::Write;
+    let mut name = String::with_capacity(64);
+    for byte in bytes {
+        write!(&mut name, "{byte:02x}").unwrap();
+    }
+    name
+}

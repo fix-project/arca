@@ -195,7 +195,7 @@ mod tests {
         ));
         assert!(matches!(
             Trust::default().runnable(storage, compiled.tag_descriptor()),
-            Err(TrustError::UntrustedAuthority)
+            Err(TrustError::UntrustedAuthority(author)) if author.same_encoding(&canonical_compiler)
         ));
         assert!(trust.runnable(storage, compiled.tag_descriptor()).is_ok());
         let reference = compiler.object().into_ref();
@@ -208,12 +208,12 @@ mod tests {
         );
         assert!(matches!(
             reference_trust.runnable(storage, compiled.tag_descriptor()),
-            Err(TrustError::UntrustedAuthority)
+            Err(TrustError::UntrustedAuthority(author)) if author.same_encoding(&canonical_compiler)
         ));
         let operated = certificate(operator.into()).tag_descriptor();
         assert!(matches!(
             trust.runnable(storage, operated),
-            Err(TrustError::UntrustedAuthority)
+            Err(TrustError::UntrustedAuthority(author)) if author.same_encoding(&canonical_operator)
         ));
         let trust = Trust::parse(&format!("{canonical_compiler}\n{canonical_operator}\n")).unwrap();
         assert!(trust.runnable(storage, operated).is_ok());

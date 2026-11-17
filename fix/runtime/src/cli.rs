@@ -6,6 +6,7 @@ use crate::{
 };
 use alloc::{format, string::String, vec::Vec};
 use common::protocol::control::{ErrorKind, StandardStream};
+use fixstorage::Storage;
 use kernel::host::fs::File;
 
 #[derive(Debug)]
@@ -30,6 +31,7 @@ impl core::fmt::Display for CliError {
                 f.write_str("invalid Fix repository")
             }
             Self::Repository(RepositoryError::InvalidLabel) => f.write_str("invalid label name"),
+            Self::Repository(RepositoryError::LabelConflict) => f.write_str("label changed"),
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
             }
@@ -104,8 +106,17 @@ fn report(
 }
 
 pub fn run(arguments: &[String]) -> Result<u8, CliError> {
+    let (no_result, arguments) = if let [flag, rest @ ..] = arguments
+        && flag == "--no-result"
+    {
+        (true, rest)
+    } else {
+        (false, arguments)
+    };
     let (status, output) = execute(arguments, &mut None)?;
-    File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    if !no_result {
+        File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    }
     Ok(status)
 }
 
@@ -206,6 +217,22 @@ fn execute(
                 .add_tagger(&*storage, tagger)
                 .map_err(CliError::Trust)?;
         }
+        let fields = storage.get_tree(combination).map_err(|error| {
+            CliError::Backend(alloc::format!(
+                "could not read scheduler combination: {error:?}"
+            ))
+        })?;
+        if let Some(collector) = fields.get(3)
+            && let Ok(collector) = Tree::try_from(*collector)
+            && !collector.is_empty()
+            && !trust
+                .is_tagger(&*storage, collector)
+                .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
         let backend = crate::api::Backend::new(storage, trust, memoize)
             .with_profile(profile)
             .with_remotes(remotes);
@@ -221,9 +248,14 @@ fn execute(
         let scheduler = Tree::try_from(crate::api::resolve(repository, scheduler)?)?;
         let collector = Tree::try_from(crate::api::resolve(repository, collector)?)?;
         let value = crate::api::resolve(repository, value)?;
-        trust
-            .add_tagger(&*storage, collector)
-            .map_err(CliError::Trust)?;
+        if !trust
+            .is_tagger(&*storage, collector)
+            .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
         let backend = crate::api::Backend::new(storage, trust, memoize)
             .with_profile(profile)
             .with_remotes(remotes);

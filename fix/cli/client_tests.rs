@@ -3,7 +3,10 @@ use fixcli::{Client, Options};
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    sync::Once,
 };
+
+static CONFIGURE_TRUST: Once = Once::new();
 
 fn input(name: &str) -> PathBuf {
     PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
@@ -29,6 +32,7 @@ fn repository(name: &str) -> PathBuf {
         .arg(format!("scheduler={}", input(env!("SCHEDULER")).display()))
         .arg(format!("collector={}", input(env!("COLLECTOR")).display()))
         .arg(format!("add={}", input(env!("ADD")).display()))
+        .arg(format!("fix-parser={}", input(env!("PARSER")).display()))
         .current_dir(&directory)
         .output()
         .unwrap();
@@ -37,19 +41,239 @@ fn repository(name: &str) -> PathBuf {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    CONFIGURE_TRUST.call_once(|| {
+        let config = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("api-config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("trusted_taggers"),
+            format!(
+                "{}\n",
+                std::fs::read_to_string(directory.join(".fix/labels/collector"))
+                    .unwrap()
+                    .trim()
+            ),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("FIX_CONFIG_DIR", config) };
+    });
     directory
 }
 fn client(directory: &Path) -> Client {
     Client::open(
         directory,
         Options {
-            trust: Some(directory.join(".fix/trust")),
+            trust: directory
+                .join(".fix/trust")
+                .exists()
+                .then(|| directory.join(".fix/trust")),
             unsigned: true,
             memory_mib: 128,
             ..Options::default()
         },
     )
     .unwrap()
+}
+
+#[test]
+fn an_empty_repository_uses_user_default_programs() {
+    let root = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("user-defaults");
+    let user = repository("user-defaults");
+    let data = root.join("data");
+    std::fs::create_dir_all(data.join("fix/bootstrap")).unwrap();
+    std::fs::rename(user.join(".fix"), data.join("fix/bootstrap/.fix")).unwrap();
+    let bootstrap_repository =
+        fixrepository::Repository::open(data.join("fix/bootstrap/.fix").to_str().unwrap())
+            .unwrap()
+            .unsigned();
+    let scheduler = bootstrap_repository.read_label("scheduler").unwrap();
+    bootstrap_repository
+        .write_label("serial", scheduler)
+        .unwrap();
+    let user_repository = fixrepository::Repository::init(user.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    let mut home_client = client(&user);
+    let home_blob = home_client.blob(b"home").unwrap();
+    home_client.label("payload", &home_blob).unwrap();
+    let home_value = user_repository.read_label("payload").unwrap();
+    std::fs::remove_file(data.join("fix/bootstrap/.fix/labels/scheduler")).unwrap();
+    let project = root.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let initialized = Command::new(input(env!("BACKEND")))
+        .arg("init")
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let repository =
+        fixrepository::Repository::open(project.join(".fix").to_str().unwrap()).unwrap();
+    let remotes = repository.remotes().unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "bootstrap");
+    assert_eq!(
+        remotes[0].address,
+        format!("file://{}", data.join("fix/bootstrap/.fix").display())
+    );
+    for (setting, name) in [
+        (
+            "scheduler",
+            bootstrap_repository
+                .read_label("serial")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "collector",
+            bootstrap_repository
+                .read_label("collector")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "parser",
+            bootstrap_repository
+                .read_label("fix-parser")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "compiler",
+            bootstrap_repository
+                .read_label("compile")
+                .unwrap()
+                .to_string(),
+        ),
+    ] {
+        let configured = Command::new(input(env!("BACKEND")))
+            .args(["config", "--global", setting, &name])
+            .current_dir(&project)
+            .env("FIX_CONFIG_DIR", user.join("config"))
+            .env("XDG_DATA_HOME", &data)
+            .output()
+            .unwrap();
+        assert!(configured.status.success());
+    }
+    std::fs::write(
+        user.join("config/trusted_taggers"),
+        format!(
+            "{}\n",
+            bootstrap_repository.read_label("collector").unwrap()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(input(env!("BACKEND")))
+        .args(["-j", "1", "--memory", "512", "eval", "1u64"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .env("FIX_UNSIGNED", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let repository = fixrepository::Repository::open(project.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    assert!(repository.labels().unwrap().is_empty());
+    assert!(
+        std::fs::read_dir(project.join(".fix/objects"))
+            .unwrap()
+            .next()
+            .is_some()
+    );
+    let mut project_client = client(&project);
+    let project_blob = project_client.blob(b"project").unwrap();
+    project_client.label("payload", &project_blob).unwrap();
+    let project_value = repository.read_label("payload").unwrap();
+    let file_url = format!("file://{}", user.join(".fix").display());
+    let added = Command::new(input(env!("BACKEND")))
+        .args(["remote", "add", "home", &file_url])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .output()
+        .unwrap();
+    assert!(added.status.success());
+    let synced = Command::new(input(env!("BACKEND")))
+        .args(["sync", "home"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .output()
+        .unwrap();
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    let replacement = home_client.blob(b"new home").unwrap();
+    home_client.label("payload", &replacement).unwrap();
+    let pulled = Command::new(input(env!("BACKEND")))
+        .args(["pull", "home:payload", "from-home"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .output()
+        .unwrap();
+    assert!(
+        pulled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    assert_eq!(
+        repository.read_label("payload").unwrap().as_bytes(),
+        project_value.as_bytes()
+    );
+    assert_eq!(
+        repository.read_label("from-home").unwrap().as_bytes(),
+        home_value.as_bytes()
+    );
+    let labels = Command::new(input(env!("BACKEND")))
+        .args(["remote", "labels", "home"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .output()
+        .unwrap();
+    assert!(labels.status.success());
+    assert!(
+        String::from_utf8(labels.stdout)
+            .unwrap()
+            .contains(&format!("home:payload\t{home_value}"))
+    );
+    let pushed = Command::new(input(env!("BACKEND")))
+        .args(["push", "payload", "home:project-copy"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .output()
+        .unwrap();
+    assert!(
+        pushed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pushed.stderr)
+    );
+    assert_eq!(
+        user_repository
+            .read_label("project-copy")
+            .unwrap()
+            .as_bytes(),
+        project_value.as_bytes()
+    );
 }
 
 #[test]

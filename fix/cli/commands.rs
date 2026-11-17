@@ -28,6 +28,7 @@ impl core::fmt::Display for CliError {
                 f.write_str("invalid Fix repository")
             }
             Self::Repository(RepositoryError::InvalidLabel) => f.write_str("invalid label name"),
+            Self::Repository(RepositoryError::LabelConflict) => f.write_str("label changed"),
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
             }
@@ -180,6 +181,9 @@ pub enum LabelCommand {
     Get { name: String },
     /// Point a label at a value.
     Set { name: String, value: String },
+    /// Delete a label, keeping its value in storage.
+    #[command(alias = "remove")]
+    Delete { name: String },
 }
 
 /// Commands whose value operands are handles or label names.
@@ -298,7 +302,19 @@ impl Plumbing {
 }
 
 pub fn init() -> Result<(), CliError> {
-    Repository::init(".fix")?;
+    let bootstrap = crate::bootstrap_store::repository()
+        .map_err(|error| CliError::Backend(error.to_string()))?;
+    let repository = Repository::init(".fix")?;
+    let mut remotes = repository.remotes()?;
+    if !remotes.iter().any(|remote| remote.name == "bootstrap") {
+        remotes.push(fixrepository::Remote {
+            name: "bootstrap".into(),
+            address: format!("file://{}", bootstrap.display()),
+            scheduler: None,
+            collector: None,
+        });
+        repository.set_remotes(remotes)?;
+    }
     Ok(())
 }
 
@@ -431,6 +447,9 @@ pub fn run(
         Plumbing::Label(LabelCommand::Set { name, value }) => {
             let value = resolve(&repository, &single(&value)?)?;
             repository.write_label(&name, value)?;
+        }
+        Plumbing::Label(LabelCommand::Delete { name }) => {
+            repository.remove_label(&name)?;
         }
         Plumbing::ReadBlob { format, value } => {
             let blob = Blob::try_from(resolve(&repository, &single(&value)?)?)?;

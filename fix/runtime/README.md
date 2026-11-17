@@ -114,7 +114,7 @@ trusted compiler or the empty kernel author. All persisted Tags also need a
 valid SSH signature, including kernel-authored coupons.
 
 User SSH keys, signing identities, compiler trust, and callable-tagger trust live
-under `~/.fix/config`.
+in `$XDG_CONFIG_HOME/fix` (default `~/.config/fix`).
 Use `fix trust` to update them. Repository remotes live in `.fix/remotes` and
 cannot grant trust. See [remote runtimes](../remote/README.md) for configuration,
 signed storage, and explicit adoption of unsigned bootstrap artifacts.

@@ -115,8 +115,6 @@ fn create(arguments: &[String]) -> Result<()> {
     let compile = repository.create_tree(&[limits, fixpoint, resources])?;
     repository.write_label("trusted-compiler", author)?;
     repository.write_label("compile", compile.into())?;
-    repository.write_label("wasm2c", wasm2c)?;
-    repository.write_label("clang", clang)?;
     populate(&repository, author, rest)?;
     fs::write(path.join("trust"), format!("{author}\n"))?;
     Ok(())

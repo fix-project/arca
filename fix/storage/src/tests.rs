@@ -52,6 +52,28 @@ fn saved_values_are_readable_after_reopening() {
 }
 
 #[test]
+fn a_repository_can_read_from_an_implicit_storage_source() {
+    let path = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("storage-source-{}", std::process::id()));
+    std::fs::create_dir_all(path.join("user")).unwrap();
+    std::fs::create_dir(path.join("project")).unwrap();
+    let source = fixrepository::Repository::init(path.join("user/.fix").to_str().unwrap()).unwrap();
+    let blob = source.create_blob(&[7; 128]).unwrap();
+    let project =
+        fixrepository::Repository::init(path.join("project/.fix").to_str().unwrap()).unwrap();
+    let storage = repository::RepositoryStorage::new(project).with_source(source);
+    assert!(storage.identify(blob.as_handle().as_bytes()).is_ok());
+    assert!(storage.has_blob(blob));
+    assert_eq!(storage.get_blob(blob).unwrap().as_ref(), &[7; 128]);
+    assert!(!storage.repository().has_backing(blob.object()).unwrap());
+    storage.save(blob.into()).unwrap();
+    assert!(storage.repository().has_backing(blob.object()).unwrap());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn canonicalization_preserves_deep_graphs() {
     let storage = MemoryStorage::default();
     let mut machine: Handle = Blob::literal(b"leaf").unwrap().into();
