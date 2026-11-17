@@ -31,6 +31,9 @@ pub mod sendable;
 pub mod util;
 
 #[cfg(feature = "std")]
+pub mod progress;
+
+#[cfg(feature = "std")]
 pub mod mmap;
 
 #[repr(C)]

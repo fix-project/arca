@@ -232,6 +232,17 @@ pub fn send<S: Write>(stream: &mut S, message: Message) -> Result<(), Error<S::E
         message,
     ))
 }
+pub fn receive_observed<S: Read>(
+    stream: &mut S,
+    limit: usize,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Option<Message>, Error<S::Error>> {
+    fixtransport::complete(asynchronous::receive_observed(
+        &mut fixtransport::Blocking(stream),
+        limit,
+        &mut progress,
+    ))
+}
 pub fn receive<S: Read>(stream: &mut S, limit: usize) -> Result<Option<Message>, Error<S::Error>> {
     fixtransport::complete(asynchronous::receive(
         &mut fixtransport::Blocking(stream),
@@ -306,7 +317,17 @@ pub mod asynchronous {
         stream: &mut S,
         limit: usize,
     ) -> Result<Option<Message>, Error<S::Error>> {
-        let Some(bytes) = fixtransport::asynchronous::receive(stream, limit).await? else {
+        receive_observed(stream, limit, &mut |_, _| {}).await
+    }
+
+    pub async fn receive_observed<S: AsyncRead>(
+        stream: &mut S,
+        limit: usize,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<Option<Message>, Error<S::Error>> {
+        let Some(bytes) =
+            fixtransport::asynchronous::receive_observed(stream, limit, progress).await?
+        else {
             return Ok(None);
         };
         let (envelope, trailing): (Envelope, _) =

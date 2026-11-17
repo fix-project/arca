@@ -17,6 +17,18 @@ pub struct Tagged<T> {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
     GetArgs,
+    TaskAdvice {
+        task: [u8; 32],
+        key: Vec<u8>,
+        payload: Vec<u8>,
+    },
+    TreeProgress {
+        task: [u8; 32],
+        children: Vec<[u8; 32]>,
+        completed: u64,
+        total: u64,
+    },
+    TaskFinished([u8; 32]),
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),

@@ -25,7 +25,7 @@ rust_binary(
     name = "fix",
     srcs = ["main.rs", "repl.rs"],
     edition = "2024",
-    deps = [":client", "//fix/api:api_alloc", "//fix/repository", "//fix/certificates", "@crates//:clap", "@crates//:env_logger"],
+    deps = [":client", "//fix/api:api_alloc", "//fix/repository", "//fix/certificates", "//lib/common", "@crates//:clap", "@crates//:env_logger"],
 )
 
 rust_test(

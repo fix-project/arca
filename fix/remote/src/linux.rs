@@ -71,8 +71,9 @@ impl RemoteConnection {
             .args(["serve", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()?;
+        common::progress::forward_stderr(child.stderr.take().unwrap());
         Ok(Self::Ssh {
             input: child.stdin.take().unwrap(),
             output: child.stdout.take().unwrap(),

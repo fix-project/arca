@@ -144,3 +144,26 @@ All connections share one VM. The scheduler handles connections and evaluations;
 I/O waits run on kernel threads without occupying evaluation workers. `--jobs`
 and `--memory` configure the whole server. Transfers use the negotiated Fix protocol and
 signed coupon certificates described in [remote runtimes](../remote/README.md).
+
+## Progress
+
+Progress is written to stderr; stdout remains available for Fix values and
+protocol data. Terminals display indicatif task rows. Redirected stderr gets
+activity messages and elapsed-time updates while operations are running.
+
+Transfers count the payload bytes actually read or written. Signing counts
+Tags after all configured identities have signed each one. Archive operations
+name their current activity, such as extraction or indexing, without inventing
+an overall percentage. Evaluation displays task titles and completed/total
+units from advice, plus the scheduler's actual completed Tree-child counts.
+When totals or titles are unavailable, Fix shows an elapsed timer and a label
+or canonical name. It reports how long it has been since the last update;
+that interval does not imply that the application has stopped doing work.
+
+A count with no updates for ten seconds is displayed as an activity row with
+its last reported count, rather than leaving a filled bar frozen on screen.
+A new count restores the bar. Completing reported application units does not
+claim that the invocation has returned: the row says it is still running until
+that invocation ends. Network transfers count framed payload bytes, while file
+remotes show the backing bytes actually read and written. All status messages,
+logs, and forwarded SSH stderr share the progress renderer.

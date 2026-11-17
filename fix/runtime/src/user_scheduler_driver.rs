@@ -7,7 +7,7 @@ use crate::{
     Blob, EncodeView, Handle, HandleView, InvalidApplication, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -442,7 +442,15 @@ struct PendingEffect {
     result: Option<EffectResult>,
 }
 
+#[derive(Clone, Copy)]
+struct TreeProgress {
+    task: [u8; 32],
+    updated: Duration,
+}
+
 struct Shared {
+    advised: KMutex<BTreeSet<[u8; 32]>>,
+    progress_trees: KMutex<BTreeMap<[u8; 32], TreeProgress>>,
     scheduler: Handle,
     collector: Handle,
     saved_claims: SavedClaims,
@@ -490,8 +498,8 @@ impl Shared {
     }
 
     /// Ends the run because a combination it needed is not an application.
-    fn fail(&self, storage: &dyn Storage) {
-        self.finish(Ok(Err(InvalidApplication::request(storage))));
+    fn fail(&self, storage: &dyn Storage, combination: Handle) {
+        self.finish(Ok(Err(InvalidApplication::request(storage, combination))));
     }
 }
 
@@ -552,6 +560,8 @@ pub fn start_profiled<
     };
 
     let shared = Arc::new(Shared {
+        advised: KMutex::new(BTreeSet::new()),
+        progress_trees: KMutex::new(BTreeMap::new()),
         scheduler,
         collector,
         saved_claims: SavedClaims::with_profile(profile),
@@ -809,7 +819,7 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync +
     );
     match result {
         Ok(result) => shared.finish(Ok(Ok(result))),
-        Err(InvalidApplication) => shared.fail(storage),
+        Err(InvalidApplication) => shared.fail(storage, combination.into()),
     }
     Ok(())
 }
@@ -981,6 +991,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"worker_config"
                 | b"worker_finish"
                 | b"worker_yield"
+                | b"tree_progress"
         )
     {
         return Err("unsupported scheduler coordination operation");
@@ -988,15 +999,15 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     let task: Result<(u64, Handle), TaskError> = (|| match (name, args) {
         (b"callable_run", [value]) => {
             let execution = runtime.run_observed(value_combination(*value)?);
-            observed_reply(runtime, shared, worker, true, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, true, *value, execution).map_err(Into::into)
         }
         (b"callable_apply", [value]) => {
             let execution = runtime.execute_observed(value_combination(*value)?, false);
-            observed_reply(runtime, shared, worker, true, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, true, *value, execution).map_err(Into::into)
         }
         (b"callable_invoke", [value]) => {
             let execution = runtime.execute_observed(combination(*value)?, true);
-            observed_reply(runtime, shared, worker, false, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, false, *value, execution).map_err(Into::into)
         }
         (b"callable_discard", [token]) => {
             let token = integer(storage, *token)?;
@@ -1014,8 +1025,10 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .lock()
                 .remove(&token)
                 .ok_or(Error::Invalid)?;
+            let task = suspended.combination().into();
             let execution = runtime.resume_observed(suspended);
-            observed_reply(runtime, shared, worker, application, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, application, task, execution)
+                .map_err(Into::into)
         }
         _ => execute_task(runtime, shared, worker, name, args).map(|value| (0, value)),
     })();
@@ -1069,17 +1082,31 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     shared: &Shared,
     worker: usize,
     application: bool,
+    task: Handle,
     execution: Result<Execution, InvalidApplication>,
 ) -> Result<(u64, Handle), Error> {
     let storage = runtime.storage();
     match execution {
         Ok(Execution::Complete(value)) => {
+            let advised = !shared.advised.lock().is_empty();
+            if advised
+                && let Ok(task) = storage.canonicalize(task).map(Handle::from)
+                && shared.advised.lock().remove(task.as_bytes())
+            {
+                kernel::host::os::task_finished(*task.as_bytes());
+            }
             if application {
                 shared.executed[worker].fetch_add(1, Ordering::Relaxed);
             }
             Ok((0, value))
         }
         Ok(Execution::Advice { event, suspended }) => {
+            if matches!(event.key.as_slice(), b"fix::title" | b"fix::progress")
+                && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
+            {
+                shared.advised.lock().insert(*target.as_bytes());
+                kernel::host::os::task_advice(*target.as_bytes(), &event.key, &event.payload);
+            }
             let token = shared
                 .next_suspended
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -1095,7 +1122,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok((2, event.into()))
         }
         Err(InvalidApplication) => {
-            shared.fail(storage);
+            shared.fail(storage, task);
             Err(Error::Invalid)
         }
     }
@@ -1243,6 +1270,60 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 return Err(TaskError::Message(
                     "requested coupon collector is not a trusted tagger on this machine".into(),
                 ));
+            }
+            Ok(number(0))
+        }
+        (b"tree_progress", [task, children, completed, total]) => {
+            let completed = unsigned(storage, *completed)?;
+            let total = unsigned(storage, *total)?;
+            if completed > total {
+                return Err(Error::Invalid.into());
+            }
+            let key = *task.as_bytes();
+            let now = kernel::tsc::read();
+            let previous = shared.progress_trees.lock().get(&key).copied();
+            if let Some(previous) = previous
+                && completed != total
+                && now.saturating_sub(previous.updated) < Duration::from_millis(100)
+            {
+                return Ok(number(0));
+            }
+            let task = match previous {
+                Some(previous) => previous.task,
+                None => *storage
+                    .canonicalize(*task)
+                    .map_err(|error| {
+                        TaskError::Message(alloc::format!(
+                            "cannot identify progress task: {error:?}"
+                        ))
+                    })
+                    .map(Handle::from)?
+                    .as_bytes(),
+            };
+            let children = storage
+                .get_tree(Tree::try_from(*children).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let children = children
+                .iter()
+                .map(|child| {
+                    storage
+                        .canonicalize(object_descriptor(*child).into())
+                        .map(|child| *Handle::from(child).as_bytes())
+                        .map_err(|error| {
+                            TaskError::Message(alloc::format!(
+                                "cannot identify Tree child: {error:?}"
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            kernel::host::os::tree_progress(task, children, completed, total);
+            if completed == total {
+                shared.progress_trees.lock().remove(&key);
+            } else {
+                shared
+                    .progress_trees
+                    .lock()
+                    .insert(key, TreeProgress { task, updated: now });
             }
             Ok(number(0))
         }

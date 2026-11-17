@@ -472,7 +472,14 @@ impl Repository {
             return Ok(bytes.into());
         }
         let bytes = self.read_data(blob.into())?;
+        #[cfg(target_os = "linux")]
+        let progress = (bytes.len() >= 1024 * 1024)
+            .then(|| common::progress::Progress::activity("Verifying repository Blob data"));
         blob.verify(&bytes)?;
+        #[cfg(target_os = "linux")]
+        if let Some(progress) = progress {
+            progress.finish();
+        }
         Ok(bytes)
     }
 
@@ -482,10 +489,26 @@ impl Repository {
         }
         self.lookup(tree.as_handle().as_bytes())?;
         let bytes = self.read_data(tree.into())?;
+        #[cfg(target_os = "linux")]
+        let progress = (bytes.len() >= 1024 * 1024).then(|| {
+            common::progress::Progress::activity("Verifying and decoding repository Tree data")
+        });
         tree.verify_bytes(&bytes)?;
         let mut children = Vec::with_capacity(tree.len());
-        for child in bytes.as_chunks::<32>().0 {
+        for (index, child) in bytes.as_chunks::<32>().0.iter().enumerate() {
+            if tree.is_tag() && index == 0 {
+                let author = Handle::parse_ref(child)?;
+                if let Ok(object) = Object::try_from(unsafe { author.to_owned() }) {
+                    self.lookup(object.into_ref().as_handle().as_bytes())?;
+                    children.push(object.into());
+                    continue;
+                }
+            }
             children.push(self.lookup(child)?);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(progress) = progress {
+            progress.finish();
         }
         Ok(children.into_boxed_slice())
     }
@@ -683,10 +706,10 @@ impl Repository {
     }
 
     fn check_label_backing(&self, root: Handle) -> Result<(), RepositoryError> {
-        let mut pending = alloc::vec![root];
+        let mut pending = alloc::vec![(root, false)];
         let mut seen = hashbrown::HashSet::new();
-        while let Some(value) = pending.pop() {
-            if !seen.insert(*value.as_bytes()) {
+        while let Some((value, author)) = pending.pop() {
+            if !seen.insert((*value.as_bytes(), author)) {
                 continue;
             }
             let reference = match value.view() {
@@ -702,22 +725,27 @@ impl Repository {
                     let thunk = match encode.view() {
                         EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
                     };
-                    pending.push(thunk.into());
+                    pending.push((thunk.into(), author));
                     continue;
                 }
             };
             let object = reference.object_descriptor();
             self.lookup(reference.as_handle().as_bytes())?;
-            if matches!(value.view(), HandleView::Object(_)) {
+            if !author && matches!(value.view(), HandleView::Object(_)) {
                 if !self.has_backing(object)? {
                     return Err(RepositoryError::Io(ErrorKind::NotFound));
                 }
                 if let ObjectView::Tree(tree) = object.view() {
-                    pending.extend(self.read_tree(*tree)?.iter().copied());
+                    pending.extend(
+                        self.read_tree(*tree)?
+                            .iter()
+                            .enumerate()
+                            .map(|(index, child)| (*child, tree.is_tag() && index == 0)),
+                    );
                 }
             }
             if let Some(metadata) = self.get_todo(object.into_ref())? {
-                pending.push(metadata);
+                pending.push((metadata, false));
             }
         }
         Ok(())

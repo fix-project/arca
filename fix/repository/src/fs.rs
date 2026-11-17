@@ -1,6 +1,10 @@
 use alloc::{string::String, vec::Vec};
 use common::protocol::control::{ErrorKind, FileMode, IoErrorKind};
-use std::{fs, io::Write, path::PathBuf};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+};
 
 fn error(error: std::io::Error) -> ErrorKind {
     IoErrorKind::from(error.kind()).into()
@@ -27,7 +31,26 @@ pub fn exists(path: &str) -> Result<bool, ErrorKind> {
 }
 
 pub fn read(path: &str) -> Result<Vec<u8>, ErrorKind> {
-    fs::read(path).map_err(error)
+    let mut file = fs::File::open(path).map_err(error)?;
+    let length = file.metadata().map_err(error)?.len();
+    let progress = (length >= 1024 * 1024)
+        .then(|| common::progress::Progress::bytes("Reading repository data", length));
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let count = file.read(&mut buffer).map_err(error)?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(progress) = &progress {
+            progress.inc(count as u64);
+        }
+    }
+    if let Some(progress) = progress {
+        progress.finish();
+    }
+    Ok(bytes)
 }
 
 pub fn read_dir(path: &str) -> Result<Vec<String>, ErrorKind> {
@@ -53,11 +76,25 @@ pub fn write_with(path: &str, bytes: &[u8], mode: FileMode) -> Result<(), ErrorK
         .truncate(mode.truncate)
         .open(path)
         .map_err(error)?;
-    let result = file.write_all(bytes);
+    let progress = (bytes.len() >= 1024 * 1024)
+        .then(|| common::progress::Progress::bytes("Writing repository data", bytes.len() as u64));
+    let result = (|| {
+        for chunk in bytes.chunks(65536) {
+            file.write_all(chunk)?;
+            if let Some(progress) = &progress {
+                progress.inc(chunk.len() as u64);
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    })();
     if mode.create_new && result.is_err() {
         let _ = fs::remove_file(path);
     }
-    result.map_err(error)
+    result.map_err(error)?;
+    if let Some(progress) = progress {
+        progress.finish();
+    }
+    Ok(())
 }
 
 pub fn rename(from: &str, to: &str) -> Result<(), ErrorKind> {

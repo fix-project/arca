@@ -322,7 +322,7 @@ pub fn remote(command: RemoteCommand) -> Result<(), Box<dyn std::error::Error>> 
     repository
         .set_remotes(remotes)
         .map_err(|error| format!("{error:?}"))?;
-    eprintln!("fix: {action}");
+    common::progress::println(&action);
     Ok(())
 }
 

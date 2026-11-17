@@ -133,11 +133,21 @@ impl<'a> Parallel<'a> {
         }
         let data = policy.load(input).await?;
         let children = fields(&data)?;
-        let coupons = fixscheduler::executor::task::try_join_all(
-            children
-                .iter()
-                .map(|child| alloc::boxed::Box::pin(policy.eval(child))),
-        )
+        let completed = core::cell::Cell::new(0u64);
+        fixscheduler::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
+        let coupons = fixscheduler::executor::task::try_join_all(children.iter().map(|child| {
+            alloc::boxed::Box::pin(async {
+                let coupon = policy.eval(child).await?;
+                completed.set(completed.get() + 1);
+                fixscheduler::kernel::tree_progress(
+                    input,
+                    &[],
+                    completed.get(),
+                    children.len() as u64,
+                )?;
+                Ok::<Value, Error>(coupon)
+            })
+        }))
         .await?;
         collector::eval_tree(policy, input, &coupons, retain).await
     }

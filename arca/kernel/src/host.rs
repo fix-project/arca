@@ -94,6 +94,33 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn tree_progress(task: [u8; 32], children: Vec<[u8; 32]>, completed: u64, total: u64) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::TreeProgress {
+                task,
+                children,
+                completed,
+                total,
+            },
+        );
+    }
+
+    pub fn task_finished(task: [u8; 32]) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::TaskFinished(task));
+    }
+
+    pub fn task_advice(task: [u8; 32], key: &[u8], payload: &[u8]) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::TaskAdvice {
+                task,
+                key: key.to_vec(),
+                payload: payload.to_vec(),
+            },
+        );
+    }
     use crate::prelude::*;
     use common::protocol::*;
 

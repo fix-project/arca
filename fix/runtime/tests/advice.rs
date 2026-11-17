@@ -13,10 +13,12 @@ fn advice_events_preserve_order_targets_and_application_identity() {
         storage.add_blob(b"argument").into(),
     ]);
     let unobserved = runtime.execute(combination).unwrap();
+    let initial = [0u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
+    let completed = [2u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
     let expected: &[(&[u8], &[u8])] = &[
         (b"fix::title", b"probe"),
-        (b"fix::progress", b"first"),
-        (b"fix::progress", b"last"),
+        (b"fix::progress", &initial),
+        (b"fix::progress", &completed),
         (b"sample::binary", &[0, 255]),
         (b"sample::local", b"probe"),
         (b"sample::local", b"probe"),

@@ -607,11 +607,14 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    common::progress::enable();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(common::progress::Stderr)))
+        .init();
     match run() {
         Ok(status) => ExitCode::from(status),
         Err(error) => {
-            eprintln!("fix: {error}");
+            common::progress::println(error.to_string());
             ExitCode::from(2)
         }
     }

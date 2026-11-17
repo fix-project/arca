@@ -167,8 +167,11 @@ pub async fn eval(
     } else {
         let data = policy.load(input).await?;
         let mut coupons = Vec::new();
-        for value in fields(&data)? {
-            coupons.push(Box::pin(policy.eval(&value)).await?);
+        let children = fields(&data)?;
+        kernel::tree_progress(input, &children, 0, children.len() as u64)?;
+        for value in &children {
+            coupons.push(Box::pin(policy.eval(value)).await?);
+            kernel::tree_progress(input, &[], coupons.len() as u64, children.len() as u64)?;
         }
         eval_tree(policy, input, &coupons, retain).await
     }

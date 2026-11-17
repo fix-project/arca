@@ -380,7 +380,7 @@ impl Client {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {
-            eprintln!("profile call input: {:?}", start.elapsed());
+            common::progress::println(format!("profile call input: {:?}", start.elapsed()));
         }
         self.execute(&["call".into(), name])
     }
@@ -449,7 +449,7 @@ impl Client {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {
-            eprintln!("profile schedule input: {:?}", start.elapsed());
+            common::progress::println(format!("profile schedule input: {:?}", start.elapsed()));
         }
         self.execute(&[
             "schedule".into(),
@@ -637,6 +637,18 @@ impl Client {
     }
 
     pub(crate) fn execute(&mut self, arguments: &[String]) -> Result<Value, Error> {
+        let operation = arguments.first().map(String::as_str).unwrap_or("execute");
+        let input = arguments.last().map(String::as_str).unwrap_or("");
+        let label = self.storage.repository().labels().ok().and_then(|labels| {
+            labels.into_iter().find(|label| {
+                std::fs::read_to_string(Path::new(self.repository()).join("labels").join(label))
+                    .is_ok_and(|value| value.trim() == input)
+            })
+        });
+        let progress = common::progress::Progress::advised(format!(
+            "{operation} {}",
+            label.as_deref().unwrap_or(input)
+        ));
         let remotes = self.remote_config()?;
         let trust = remotes.policy.trusted_compilers.join("\n");
         let mut argv = vec!["fix".into(), "--trust".into(), trust];
@@ -682,11 +694,11 @@ impl Client {
         };
         self.reuse_storage = self.retain_storage;
         if self.profile {
-            eprintln!(
+            common::progress::println(format!(
                 "profile {} VM: {:?} (status {status})",
                 arguments[0],
                 start.elapsed()
-            );
+            ));
         }
         if status != 0 && status != fix::FIX_ERROR_STATUS {
             if self.persistent && status == 2 {
@@ -699,6 +711,7 @@ impl Client {
         let name = std::str::from_utf8(&output).map_err(error)?.trim();
         let value = self.lookup(name)?;
         if status == 0 {
+            progress.finish();
             return Ok(value);
         }
         let message = self.get(&value, 1)?;
@@ -862,7 +875,7 @@ impl Client {
         let collector = self.lookup(&self.options.collector.clone())?;
         let collector = self.save(&collector)?;
         if self.profile {
-            eprintln!("profile evaluate input: {:?}", start.elapsed());
+            common::progress::println(format!("profile evaluate input: {:?}", start.elapsed()));
         }
         self.execute(&[
             "evaluate".into(),

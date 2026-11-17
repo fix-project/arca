@@ -33,6 +33,7 @@ rust_library(
         "@crates//:snafu",
     ] + select({
         "//build/platforms:linux": [
+            "@crates//:indicatif",
             "@crates//:libc",
             "@crates//:nix",
         ],

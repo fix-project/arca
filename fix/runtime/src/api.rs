@@ -129,7 +129,9 @@ impl Backend {
     pub fn call(&self, combination: Tree) -> Outcome {
         self.runtime
             .execute_with_effects(combination, false, &mut |_| EffectAction::Unhandled)
-            .map_err(|InvalidApplication| InvalidApplication::request(&*self.storage))
+            .map_err(|InvalidApplication| {
+                InvalidApplication::request(&*self.storage, combination.into())
+            })
     }
 
     pub fn schedule(&self, combination: Tree, todos: Vec<(Ref, Blob)>) -> Result<Outcome> {

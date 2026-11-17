@@ -9,6 +9,24 @@ pub struct Advice {
     pub payload: Value,
 }
 
+pub fn tree_progress(
+    task: &Value,
+    children: &[Value],
+    completed: u64,
+    total: u64,
+) -> Result<(), Error> {
+    coordinated(
+        b"tree_progress",
+        &[
+            task.clone(),
+            capture(fixwasm::Tree::from_iter(children))?,
+            capture(completed)?,
+            capture(total)?,
+        ],
+    )?;
+    Ok(())
+}
+
 impl Advice {
     pub fn key_is(&self, key: &str) -> Result<bool, Error> {
         AsValue::equals(&self.key, Blob::create(key.as_bytes()))

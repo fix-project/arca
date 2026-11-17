@@ -17,7 +17,7 @@ rust_library(
         "@crates//:serde",
         "@crates//:serde_json",
     ] + select({
-        "//build/platforms:linux": ["//lib/ssh"],
+        "//build/platforms:linux": ["//lib/ssh", "//lib/common"],
         "//conditions:default": [],
     }),
 )

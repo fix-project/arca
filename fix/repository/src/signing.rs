@@ -55,10 +55,16 @@ impl Repository {
     }
 
     pub fn inspect_tags(&self, names: &[[u8; 32]]) -> Result<(), RepositoryError> {
+        #[cfg(target_os = "linux")]
+        let progress = common::progress::Progress::items("Checking imported Tags", names.len());
         for name in names {
             self.stored_certificates(*name)?
                 .ok_or(RepositoryError::Io(ErrorKind::NotFound))?;
+            #[cfg(target_os = "linux")]
+            progress.inc(1);
         }
+        #[cfg(target_os = "linux")]
+        progress.finish();
         Ok(())
     }
 
@@ -76,7 +82,12 @@ impl Repository {
     }
 
     pub fn sign_all_tags(&self) -> Result<(), RepositoryError> {
-        self.sign_tags(&self.tag_records()?)
+        #[cfg(target_os = "linux")]
+        let progress = common::progress::Progress::activity("Finding Tags to sign");
+        let tags = self.tag_records()?;
+        #[cfg(target_os = "linux")]
+        progress.finish();
+        self.sign_tags(&tags)
     }
 
     pub fn sign_tags(&self, names: &[[u8; 32]]) -> Result<(), RepositoryError> {
@@ -96,6 +107,8 @@ impl Repository {
         }
         let mut certificates = BTreeMap::new();
         let mut records = Vec::new();
+        #[cfg(target_os = "linux")]
+        let progress = common::progress::Progress::items("Reading Tag certificates", objects.len());
         for object in objects {
             let mut combined = BTreeMap::new();
             let mut found = false;
@@ -114,35 +127,57 @@ impl Repository {
                 return Err(RepositoryError::Io(ErrorKind::NotFound));
             }
             certificates.insert(object, combined);
+            #[cfg(target_os = "linux")]
+            progress.inc(1);
         }
+        #[cfg(target_os = "linux")]
+        progress.finish();
         let policy = self.policy()?;
+        #[cfg(target_os = "linux")]
+        let progress =
+            common::progress::Progress::items("Signing Tags through ssh-agent", certificates.len());
         for (name, existing) in &mut certificates {
             for certificate in Self::issue_certificates(*name, &policy)? {
                 existing.insert(certificate.signer()?, certificate);
             }
+            #[cfg(target_os = "linux")]
+            progress.inc(1);
         }
+        #[cfg(target_os = "linux")]
+        progress.finish();
+        #[cfg(target_os = "linux")]
+        let progress = common::progress::Progress::items("Saving Tag certificates", records.len());
         for name in records {
             let mut object = name;
             object[31] &= 0xe0;
             let certificates: Vec<_> = certificates[&object].values().cloned().collect();
             self.write_certificates(&name, &certificates)?;
+            #[cfg(target_os = "linux")]
+            progress.inc(1);
         }
+        #[cfg(target_os = "linux")]
+        progress.finish();
         self.index_trusted_tags()
     }
 
     pub fn index_trusted_tags(&self) -> Result<(), RepositoryError> {
-        for name in self.tag_records()? {
-            if name[31] & 0x10 != 0 {
-                continue;
+        let names = self.tag_records()?;
+        #[cfg(target_os = "linux")]
+        let progress = common::progress::Progress::items("Indexing trusted Tags", names.len());
+        for name in names {
+            if name[31] & 0x10 == 0
+                && let Ok(handle) = self.lookup(&name)
+            {
+                let tag = Tree::try_from(handle)?;
+                if self.read_tree(tag).is_ok() {
+                    self.index_tag(tag)?;
+                }
             }
-            let Ok(handle) = self.lookup(&name) else {
-                continue;
-            };
-            let tag = Tree::try_from(handle)?;
-            if self.read_tree(tag).is_ok() {
-                self.index_tag(tag)?;
-            }
+            #[cfg(target_os = "linux")]
+            progress.inc(1);
         }
+        #[cfg(target_os = "linux")]
+        progress.finish();
         Ok(())
     }
 }

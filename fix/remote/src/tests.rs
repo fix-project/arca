@@ -77,7 +77,8 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
             data.into(),
         ])
         .unwrap();
-    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let author = source.create_blob(&[41; 128]).unwrap();
+    let fields = [author.into(), claim.into_ref().into()];
     let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
     source
         .publish_certified(
@@ -95,7 +96,9 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
     assert!(imported[0].same_encoding(&parent.into()));
     let fields = destination.read_tree(parent).unwrap();
     assert!(fields[0].same_encoding(&tag.into()));
-    assert!(destination.read_tree(tag).unwrap()[0].same_encoding(&Tree::empty().into()));
+    assert!(destination.read_tree(tag).unwrap()[0].same_encoding(&author.into()));
+    assert!(!destination.has_backing(author.object()).unwrap());
+    destination.write_label("coupon", tag.into()).unwrap();
     assert_eq!(destination.read_blob(data).unwrap().as_ref(), &[17; 4096]);
     assert_eq!(
         destination
@@ -440,11 +443,24 @@ fn framed_transfers_round_trip_over_tcp_and_reject_excessive_lengths() {
     let mut connection = Connection::connect(address).unwrap();
     let bytes = vec![71; 1 << 18];
     transport::send(&mut connection, &bytes).unwrap();
+    let mut progress = Vec::new();
+    let received = transport::complete(transport::asynchronous::receive_observed(
+        &mut transport::Blocking(&mut connection),
+        1 << 20,
+        &mut |completed, total| progress.push((completed, total)),
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(received, bytes);
+    assert_eq!(progress.first(), Some(&(0, bytes.len() as u64)));
     assert_eq!(
-        transport::receive(&mut connection, 1 << 20)
-            .unwrap()
-            .unwrap(),
-        bytes
+        progress.last(),
+        Some(&(bytes.len() as u64, bytes.len() as u64))
+    );
+    assert!(
+        progress
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0 && pair[1].0 - pair[0].0 <= 65536)
     );
     assert!(matches!(
         transport::receive(&mut connection, 1 << 20),

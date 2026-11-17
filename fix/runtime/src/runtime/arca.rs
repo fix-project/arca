@@ -50,6 +50,12 @@ pub struct Suspended {
     application: Option<Tree>,
 }
 
+impl Suspended {
+    pub(crate) fn combination(&self) -> Tree {
+        self.invocation.combination
+    }
+}
+
 struct Invocation {
     runtime_id: usize,
     function: Function,

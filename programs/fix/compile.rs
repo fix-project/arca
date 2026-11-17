@@ -174,12 +174,12 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
     };
     fixwasm::advise(
         combination,
-        fixwasm::advice::PROGRESS,
+        fixwasm::advice::TITLE,
         match phase {
-            0 => b"translate Wasm" as &[u8],
-            1 => b"compile C",
-            2 => b"link",
-            3 => b"complete",
+            0 => b"compile Wasm: translating Wasm" as &[u8],
+            1 => b"compile Wasm: compiling C",
+            2 => b"compile Wasm: linking",
+            3 => b"compile Wasm: issuing Runnable",
             _ => unreachable!(),
         },
     )?;

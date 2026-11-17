@@ -51,8 +51,16 @@ pub trait Scheduler {
         } else {
             let data = self.load(input).await?;
             let mut results = Vec::new();
-            for value in fields(&data)? {
-                results.push(Box::pin(self.eval(&value)).await?);
+            let children = fields(&data)?;
+            crate::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
+            for value in &children {
+                results.push(Box::pin(self.eval(value)).await?);
+                crate::kernel::tree_progress(
+                    input,
+                    &[],
+                    results.len() as u64,
+                    children.len() as u64,
+                )?;
             }
             Ok(Tree::new(&results).into_value())
         }

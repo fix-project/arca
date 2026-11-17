@@ -327,10 +327,12 @@ fn cancelled_applications(
 
 async fn advisory_notifications(combination: &fixscheduler::shell::Value) -> Result<(), Error> {
     use fixscheduler::{kernel, shell::child};
+    let initial = [0u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
+    let completed = [2u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
     let expected: &[(&str, &[u8])] = &[
         ("fix::title", b"probe"),
-        ("fix::progress", b"first"),
-        ("fix::progress", b"last"),
+        ("fix::progress", &initial),
+        ("fix::progress", &completed),
         ("sample::binary", &[0, 255]),
         ("sample::local", b"probe"),
         ("sample::local", b"probe"),

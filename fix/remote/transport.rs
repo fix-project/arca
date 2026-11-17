@@ -81,6 +81,14 @@ pub mod asynchronous {
         stream: &mut S,
         limit: usize,
     ) -> Result<Option<Vec<u8>>, Error<S::Error>> {
+        receive_observed(stream, limit, &mut |_, _| {}).await
+    }
+
+    pub async fn receive_observed<S: AsyncRead>(
+        stream: &mut S,
+        limit: usize,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<Option<Vec<u8>>, Error<S::Error>> {
         let mut header = [0; 8];
         if stream.read(&mut header[..1]).await.map_err(Error::Io)? == 0 {
             return Ok(None);
@@ -98,13 +106,47 @@ pub mod asynchronous {
             });
         }
         let mut bytes = alloc::vec![0; length];
-        read_exact(stream, &mut bytes).await?;
+        let mut received = 0;
+        progress(0, announced);
+        while received < length {
+            let end = (received + 65536).min(length);
+            let read = stream
+                .read(&mut bytes[received..end])
+                .await
+                .map_err(Error::Io)?;
+            if read == 0 {
+                return Err(Error::Truncated);
+            }
+            received += read;
+            progress(received as u64, announced);
+        }
         Ok(Some(bytes))
     }
 
     pub async fn send<S: AsyncWrite>(stream: &mut S, bytes: &[u8]) -> Result<(), Error<S::Error>> {
+        send_observed(stream, bytes, &mut |_, _| {}).await
+    }
+
+    pub async fn send_observed<S: AsyncWrite>(
+        stream: &mut S,
+        bytes: &[u8],
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<(), Error<S::Error>> {
         write_all(stream, &(bytes.len() as u64).to_be_bytes()).await?;
-        write_all(stream, bytes).await?;
+        let mut written = 0;
+        progress(0, bytes.len() as u64);
+        while written < bytes.len() {
+            let end = (written + 65536).min(bytes.len());
+            let count = stream
+                .write(&bytes[written..end])
+                .await
+                .map_err(Error::Io)?;
+            if count == 0 {
+                return Err(Error::WriteZero);
+            }
+            written += count;
+            progress(written as u64, bytes.len() as u64);
+        }
         stream.flush().await.map_err(Error::Io)
     }
 

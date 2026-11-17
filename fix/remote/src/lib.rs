@@ -450,16 +450,16 @@ pub fn import(
             }
         }
     }
-    let admitted = |bytes: &[u8; 32]| -> Result<(), Error> {
+    let admitted = |bytes: &[u8; 32], require_backing: bool| -> Result<(), Error> {
         let handle = canonical(bytes)?;
         let mut object = *bytes;
         object[31] &= 0xe0;
-        let supplied = if matches!(handle.view(), HandleView::Object(_)) {
+        let supplied = if require_backing && matches!(handle.view(), HandleView::Object(_)) {
             backed.contains(&object)
         } else {
             names.contains(&object)
         };
-        let existing = if matches!(handle.view(), HandleView::Object(_)) {
+        let existing = if require_backing && matches!(handle.view(), HandleView::Object(_)) {
             let value = Object::try_from(handle).map_err(|error| {
                 Error::Transfer(alloc::format!("expected Object {handle}: {error:?}"))
             })?;
@@ -472,7 +472,7 @@ pub fn import(
         } else {
             Err(Error::Transfer(alloc::format!(
                 "{} {handle} is neither supplied by the transfer nor available in repository {:?}",
-                if matches!(handle.view(), HandleView::Object(_)) {
+                if require_backing && matches!(handle.view(), HandleView::Object(_)) {
                     "backing for Object"
                 } else {
                     "descriptor for value"
@@ -482,21 +482,22 @@ pub fn import(
         }
     };
     for root in &bundle.roots {
-        admitted(root)?;
+        admitted(root, true)?;
     }
     for record in &bundle.records {
         if let Some(todo) = &record.todo {
-            admitted(todo)?;
+            admitted(todo, true)?;
         }
         for certificate in &record.certificates {
-            admitted(&certificate.blob)?;
+            admitted(&certificate.blob, true)?;
         }
         if matches!(canonical(&record.name)?.view(), HandleView::Object(object)
             if matches!(object.view(), ObjectView::Tree(_)))
             && let Some(bytes) = &record.data
         {
-            for child in bytes.as_chunks::<32>().0 {
-                admitted(child)?;
+            let is_tag = record.name[31] & 0x40 != 0;
+            for (index, child) in bytes.as_chunks::<32>().0.iter().enumerate() {
+                admitted(child, !is_tag || index != 0)?;
             }
         }
     }

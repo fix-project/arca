@@ -123,6 +123,23 @@ impl Control {
         use common::protocol::control::*;
         match request {
             Request::GetArgs => Response::Args(self.argv.clone()),
+            Request::TaskAdvice { task, key, payload } => {
+                common::progress::advice(task, &key, &payload);
+                Response::Ack
+            }
+            Request::TreeProgress {
+                task,
+                children,
+                completed,
+                total,
+            } => {
+                common::progress::tree_progress(task, &children, completed, total);
+                Response::Ack
+            }
+            Request::TaskFinished(task) => {
+                common::progress::task_finished(task);
+                Response::Ack
+            }
             Request::SshSign {
                 identity,
                 namespace,
@@ -165,6 +182,12 @@ impl Control {
                 let output = CapturedOutput(self.session.clone());
                 self.session
                     .spawn(move || unsafe { file_thread(output, FilePipe::new(q)) });
+                Response::Pipe(decompose_pipe(p))
+            }
+            Request::Stdio(StandardStream::Stderr) => {
+                let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
+                self.session
+                    .spawn(move || unsafe { file_thread(Diagnostics, FilePipe::new(q)) });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Stdio(stream) => {
@@ -314,7 +337,7 @@ impl Control {
                     .args(["serve", "--stdio"])
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
+                    .stderr(Stdio::piped())
                     .spawn()
                 {
                     Ok(child) => {
@@ -697,6 +720,11 @@ struct SshStream {
 }
 impl SshStream {
     fn new(mut child: Child, session: Arc<Session>) -> Self {
+        let stderr = Cancellable {
+            inner: child.stderr.take().unwrap(),
+            session: session.clone(),
+        };
+        common::progress::forward_stderr(stderr);
         Self {
             input: child.stdin.take().unwrap(),
             output: child.stdout.take().unwrap(),
@@ -958,6 +986,27 @@ impl Read for CapturedOutput {
     }
 }
 impl Seek for CapturedOutput {
+    fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+struct Diagnostics;
+impl Write for Diagnostics {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        common::progress::write_stderr(bytes)?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl Read for Diagnostics {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+impl Seek for Diagnostics {
     fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
