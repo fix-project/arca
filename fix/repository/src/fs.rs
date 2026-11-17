@@ -53,6 +53,14 @@ pub fn read(path: &str) -> Result<Vec<u8>, ErrorKind> {
     Ok(bytes)
 }
 
+pub fn read_range(path: &str, offset: u64, length: usize) -> Result<Vec<u8>, ErrorKind> {
+    use std::os::unix::fs::FileExt;
+    let file = fs::File::open(path).map_err(error)?;
+    let mut bytes = alloc::vec![0; length];
+    file.read_exact_at(&mut bytes, offset).map_err(error)?;
+    Ok(bytes)
+}
+
 pub fn read_dir(path: &str) -> Result<Vec<String>, ErrorKind> {
     fs::read_dir(path)
         .map_err(error)?

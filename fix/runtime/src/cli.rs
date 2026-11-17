@@ -113,8 +113,9 @@ pub fn run(arguments: &[String]) -> Result<u8, CliError> {
     } else {
         (false, arguments)
     };
-    let (status, output) = execute(arguments, &mut None)?;
-    if !no_result {
+    let (status, output) =
+        execute(arguments, &mut None).unwrap_or_else(|error| (2, format!("{error}\n")));
+    if !no_result || status == 2 {
         File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
     }
     Ok(status)

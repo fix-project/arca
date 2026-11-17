@@ -109,6 +109,13 @@ A home repository is optional. To use one from another repository, add its
 
 `fix pull REMOTE:LABEL [LOCAL]` refuses to replace an existing local label; use `-f` or `--force` to overwrite it. It transfers the value, reachable backing data, and coupons whose inputs are the value or its backed Tree descendants. Coupon claims and results come with the transfer. `--shallow` saves a name without backing or coupons. `fix push LOCAL REMOTE:LABEL` transfers the local label's value and updates the remote label only if it still matches the last synced ref. Push supports SSH and file remotes; TCP servers reject label updates.
 
+Pull resolves the saved remote ref locally and requests its Fix name, so remote
+label changes do not affect retrieval of data that is still present. The remote
+first proposes the reachable objects and certificates. After acceptance, backing
+is read and sent in bounded chunks; the download counter uses the exact byte
+total encoded in the proposed Fix names. Validation follows the download.
+
+
 Local evaluation uses the compiler and collector selected from the XDG
 bootstrap store. Imported remote Tags require a trusted signing key. A remote
 scheduler or collector override must be available and trusted on that remote.

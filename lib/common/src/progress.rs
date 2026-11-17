@@ -4,7 +4,7 @@ use std::{
     io::IsTerminal,
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -21,13 +21,11 @@ struct Display {
 struct State {
     bar: ProgressBar,
     label: String,
-    detail: Mutex<(String, Instant)>,
+    detail: Mutex<String>,
     started: Instant,
     last_report: AtomicU64,
     advice: Mutex<BTreeMap<[u8; 32], Task>>,
     parents: Mutex<BTreeMap<[u8; 32], [u8; 32]>>,
-    bytes: bool,
-    stalled: AtomicBool,
 }
 
 struct Task {
@@ -53,18 +51,7 @@ pub fn enable() {
                     if state.bar.is_finished() {
                         continue;
                     }
-                    let detail = state.detail.lock().unwrap();
-                    let idle = detail.1.elapsed().as_secs();
-                    if state.stalled.swap(idle >= 10, Ordering::Relaxed) != (idle >= 10) {
-                        state
-                            .bar
-                            .set_style(style(state.bar.length(), state.bytes, idle >= 10));
-                    }
-                    let message = if idle >= 10 {
-                        format!("{}; no update for {idle}s", detail.0)
-                    } else {
-                        detail.0.clone()
-                    };
+                    let message = state.detail.lock().unwrap().clone();
                     state.bar.set_message(message.clone());
                     state.bar.tick();
                     let elapsed = state.started.elapsed().as_secs();
@@ -146,17 +133,17 @@ impl std::io::Write for Stderr {
 
 pub struct Progress(Option<Arc<State>>);
 
-fn style(total: Option<u64>, bytes: bool, stalled: bool) -> ProgressStyle {
-    let template = match (total, bytes, stalled) {
-        (Some(total), true, false) if total > 1 => {
+fn style(total: Option<u64>, bytes: bool) -> ProgressStyle {
+    let template = match (total, bytes) {
+        (Some(total), true) if total > 1 => {
             "{spinner} {prefix} [{elapsed_precise}] [{wide_bar}] {bytes}/{total_bytes} {msg}"
         }
-        (Some(total), false, false) if total > 1 => {
+        (Some(total), false) if total > 1 => {
             "{spinner} {prefix} [{elapsed_precise}] [{wide_bar}] {pos}/{len} {msg}"
         }
-        (Some(_), true, _) => "{spinner} {prefix} [{elapsed_precise}] {bytes}/{total_bytes} {msg}",
-        (Some(_), false, _) => "{spinner} {prefix} [{elapsed_precise}] {pos}/{len} {msg}",
-        _ => "{spinner} {prefix} [{elapsed_precise}] {msg}",
+        (Some(_), true) => "{spinner} {prefix} [{elapsed_precise}] {bytes}/{total_bytes} {msg}",
+        (Some(_), false) => "{spinner} {prefix} [{elapsed_precise}] {pos}/{len} {msg}",
+        _ => "{prefix} [{elapsed_precise}] {msg}",
     };
     ProgressStyle::with_template(template).unwrap()
 }
@@ -194,7 +181,7 @@ impl Progress {
             .filter(|character| !character.is_control())
             .collect();
         let bar = display.bars.add(ProgressBar::new_spinner());
-        bar.set_style(style(total, bytes, false));
+        bar.set_style(style(total, bytes));
         if let Some(total) = total {
             bar.set_length(total);
         }
@@ -202,13 +189,11 @@ impl Progress {
         let state = Arc::new(State {
             bar,
             label,
-            detail: Mutex::new((String::new(), Instant::now())),
+            detail: Mutex::new(String::new()),
             started: Instant::now(),
             last_report: AtomicU64::new(0),
             advice: Mutex::new(BTreeMap::new()),
             parents: Mutex::new(BTreeMap::new()),
-            bytes,
-            stalled: AtomicBool::new(false),
         });
         display.active.lock().unwrap().push(Arc::downgrade(&state));
 
@@ -217,14 +202,13 @@ impl Progress {
 
     pub fn message(&self, message: impl Into<String>) {
         if let Some(state) = &self.0 {
-            *state.detail.lock().unwrap() = (message.into(), Instant::now());
+            *state.detail.lock().unwrap() = message.into();
         }
     }
 
     pub fn inc(&self, amount: u64) {
         if let Some(state) = &self.0 {
             state.bar.inc(amount);
-            state.detail.lock().unwrap().1 = Instant::now();
         }
     }
 
@@ -236,18 +220,16 @@ impl Progress {
             if completed == total {
                 state.bar.unset_length();
                 state.bar.set_style(
-                    ProgressStyle::with_template("{spinner} {prefix} [{elapsed_precise}] {msg}")
-                        .unwrap(),
+                    ProgressStyle::with_template("{prefix} [{elapsed_precise}] {msg}").unwrap(),
                 );
                 self.message(format!(
                     "{completed}/{total} reported units complete; task still running"
                 ));
                 return;
             }
-            state.bar.set_style(style(Some(total), false, false));
+            state.bar.set_style(style(Some(total), false));
             state.bar.set_length(total);
             state.bar.set_position(completed);
-            state.detail.lock().unwrap().1 = Instant::now();
         }
     }
 
@@ -326,10 +308,7 @@ pub fn advice(id: [u8; 32], key: &[u8], payload: &[u8]) {
                 .chars()
                 .filter(|character| !character.is_control())
                 .collect();
-            *state.detail.lock().unwrap() = (
-                format!("last reported task: {}", task.title),
-                Instant::now(),
-            );
+            *state.detail.lock().unwrap() = format!("running {}", task.title);
             if let Some(state) = &task.progress.0 {
                 state
                     .bar
@@ -366,7 +345,13 @@ pub fn tree_progress(id: [u8; 32], children: &[[u8; 32]], completed: u64, total:
 
 pub fn task_finished(id: [u8; 32]) {
     if let Some(state) = advised() {
-        state.advice.lock().unwrap().remove(&id);
+        let mut tasks = state.advice.lock().unwrap();
+        tasks.remove(&id);
+        *state.detail.lock().unwrap() = tasks
+            .values()
+            .next()
+            .map(|task| format!("running {}", task.title))
+            .unwrap_or_default();
     }
 }
 

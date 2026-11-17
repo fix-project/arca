@@ -84,24 +84,73 @@ async fn connection(
                 continue;
             }
             protocol::Message::RequestObject {
-                label,
                 name,
                 trusted_keys,
                 backing,
             } => {
-                let reply = match super::export_label(&label, name, backing) {
-                    Ok(transfer) if transfer.roots == [name] => {
-                        match protocol::prepare_transfer(transfer, &trusted_keys, certify) {
-                            Ok(transfer) => protocol::Message::ObjectTransfer(transfer),
-                            Err(error) => protocol::Message::Failure(error),
-                        }
+                let proposal =
+                    super::propose_object(name, backing).and_then(|(transfer, objects)| {
+                        let transfer =
+                            protocol::prepare_transfer(transfer, &trusted_keys, certify)?;
+                        Ok((transfer, objects))
+                    });
+                let (transfer, objects) = match proposal {
+                    Ok(proposal) => proposal,
+                    Err(error) => {
+                        protocol::asynchronous::send(
+                            &mut stream,
+                            protocol::Message::Failure(error),
+                        )
+                        .await?;
+                        continue;
                     }
-                    Ok(_) => protocol::Message::Failure(String::from(
-                        "exported value differs from the requested ref",
-                    )),
-                    Err(error) => protocol::Message::Failure(error),
                 };
-                protocol::asynchronous::send(&mut stream, reply).await?;
+                protocol::asynchronous::send(
+                    &mut stream,
+                    protocol::Message::ProposeObject {
+                        transfer,
+                        backing: objects.clone(),
+                    },
+                )
+                .await?;
+                let Some(protocol::Message::AcceptObject(selected)) =
+                    protocol::asynchronous::receive(&mut stream, protocol::MAX_MESSAGE_SIZE)
+                        .await?
+                else {
+                    return Err(protocol::Error::Invalid.into());
+                };
+                let offered: alloc::collections::BTreeSet<_> = objects.into_iter().collect();
+                let requested: alloc::collections::BTreeSet<_> = selected.iter().copied().collect();
+                if requested.len() != selected.len() || !requested.is_subset(&offered) {
+                    return Err(protocol::Error::Invalid.into());
+                }
+                for name in selected {
+                    let handle = fixhandle::Handle::parse_ref(&name)
+                        .map_err(|_| protocol::Error::Invalid)?
+                        .byte_len();
+                    let mut offset = 0;
+                    while offset < handle {
+                        let length =
+                            (handle - offset).min(protocol::OBJECT_CHUNK_SIZE as u64) as usize;
+                        let data = match super::read_backing(name, offset, length) {
+                            Ok(data) => data,
+                            Err(error) => {
+                                protocol::asynchronous::send(
+                                    &mut stream,
+                                    protocol::Message::Failure(error),
+                                )
+                                .await?;
+                                return Ok(None);
+                            }
+                        };
+                        protocol::asynchronous::send(
+                            &mut stream,
+                            protocol::Message::ObjectChunk { name, offset, data },
+                        )
+                        .await?;
+                        offset += length as u64;
+                    }
+                }
                 continue;
             }
             protocol::Message::SubmitObject(transfer) if allow_updates => {

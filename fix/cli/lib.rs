@@ -24,7 +24,11 @@ mod trust;
 #[derive(Debug)]
 pub enum Error {
     Backend(String),
-    Execution(u8),
+    Execution {
+        status: u8,
+        operation: String,
+        diagnostic: String,
+    },
     /// The evaluation failed with the `Fix.error` request carrying this message.
     Fix(String),
 }
@@ -32,7 +36,20 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Backend(message) => f.write_str(message),
-            Self::Execution(status) => write!(f, "Fix execution exited with status {status}"),
+            Self::Execution {
+                status,
+                operation,
+                diagnostic,
+            } => {
+                if diagnostic.is_empty() {
+                    write!(
+                        f,
+                        "{operation} failed with exit status {status}; runtime returned no diagnostic"
+                    )
+                } else {
+                    write!(f, "{operation} failed: {diagnostic} (exit status {status})")
+                }
+            }
             Self::Fix(message) => f.write_str(message),
         }
     }
@@ -404,7 +421,7 @@ impl Client {
             "schedule".into(),
             "--memoize".into(),
             self.options.memoize.to_string(),
-            name,
+            name.clone(),
         ]);
         let memory = self
             .options
@@ -441,7 +458,11 @@ impl Client {
         if status == 0 {
             self.lookup(std::str::from_utf8(&result).map_err(error)?.trim())
         } else {
-            Err(Error::Execution(status))
+            Err(Error::Execution {
+                status,
+                operation: format!("schedule {name}"),
+                diagnostic: String::from_utf8_lossy(&result).trim().into(),
+            })
         }
     }
 
@@ -701,12 +722,11 @@ impl Client {
             ));
         }
         if status != 0 && status != fix::FIX_ERROR_STATUS {
-            if self.persistent && status == 2 {
-                return Err(Error::Backend(
-                    String::from_utf8_lossy(&output).into_owned(),
-                ));
-            }
-            return Err(Error::Execution(status));
+            return Err(Error::Execution {
+                status,
+                operation: format!("{operation} {}", label.as_deref().unwrap_or(input)),
+                diagnostic: String::from_utf8_lossy(&output).trim().into(),
+            });
         }
         let name = std::str::from_utf8(&output).map_err(error)?.trim();
         let value = self.lookup(name)?;

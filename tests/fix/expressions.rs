@@ -615,7 +615,7 @@ fn evaluation_rejects_scheduler_authored_coupons() {
         assert!(client.is_tag(&coupon).unwrap());
         assert!(matches!(
             client.eval(&input),
-            Err(fixcli::Error::Execution(_))
+            Err(fixcli::Error::Execution { .. })
         ));
     }
 }

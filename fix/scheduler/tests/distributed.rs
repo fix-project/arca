@@ -898,7 +898,8 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
     let _cleanup = Directory(directory.clone());
     let server = directory.join("server");
     let repository = seed(&server, env!("SERIAL"));
-    let original = repository.create_blob(&[11; 128]).unwrap();
+    let payload = vec![11; (2 << 20) + 37];
+    let original = repository.create_blob(&payload).unwrap();
     repository.write_label("payload", original.into()).unwrap();
     let agent = Agent::new(&directory.join("agent"), 45);
     let compiler = std::fs::read_to_string(server.join(".fix/trust")).unwrap();
@@ -1024,8 +1025,12 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
             .same_encoding(&placeholder.into())
     );
     assert!(!local.has_backing(original.into()).unwrap());
+    repository
+        .write_label("payload", placeholder.into())
+        .unwrap();
     run(&client_dir, &["pull", "-f", "origin:payload"], true);
-    assert_eq!(local.read_blob(original).unwrap().as_ref(), &[11; 128]);
+    assert_eq!(local.read_blob(original).unwrap().as_ref(), payload);
+    repository.write_label("payload", original.into()).unwrap();
     let changed = local.create_blob(&[22; 128]).unwrap();
     local.write_label("payload", changed.into()).unwrap();
     run(&client_dir, &["push", "payload", "origin:payload"], true);

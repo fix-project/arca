@@ -31,7 +31,10 @@ pub trait Services: Send + Sync {
     ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
         Err(fixrepository::RepositoryError::InvalidRepository)
     }
-    fn export_label(&self, _: &str, _: [u8; 32], _: bool) -> Result<Vec<u8>, fixremote::Error> {
+    fn export_object(&self, _: [u8; 32], _: bool) -> Result<Vec<u8>, fixremote::Error> {
+        Err(fixremote::Error::Invalid)
+    }
+    fn read_backing(&self, _: [u8; 32], _: u64, _: usize) -> Result<Vec<u8>, fixremote::Error> {
         Err(fixremote::Error::Invalid)
     }
     fn update_label(
@@ -116,27 +119,24 @@ impl Services for RepositoryServices {
         fixremote::information(&repository, self.put(collector)?, 0, None)
             .map_err(|error| error.to_string())
     }
-    fn export_label(
+    fn export_object(&self, name: [u8; 32], backing: bool) -> Result<Vec<u8>, fixremote::Error> {
+        let repository = self.storage.repository();
+        let root = repository.lookup(&name)?;
+        let (transfer, backing) = fixremote::propose_export(repository, root, backing)?;
+        postcard::to_allocvec(&(transfer, backing)).map_err(|_| fixremote::Error::Invalid)
+    }
+    fn read_backing(
         &self,
-        label: &str,
         name: [u8; 32],
-        backing: bool,
+        offset: u64,
+        length: usize,
     ) -> Result<Vec<u8>, fixremote::Error> {
         let repository = self.storage.repository();
-        if repository.read_label(label)?.as_bytes() != &name {
-            return Err(fixrepository::RepositoryError::LabelConflict.into());
-        }
-        let root = repository.lookup(&name)?;
-        let omitted = if backing {
-            Vec::new()
-        } else {
-            alloc::vec![object_descriptor(root)]
-        };
-        if backing {
-            fixremote::export_with_coupons(repository, &[root], &omitted)
-        } else {
-            fixremote::export(repository, &[root], &omitted)
-        }
+        let object =
+            Object::try_from(repository.lookup(&name)?).map_err(|_| fixremote::Error::Invalid)?;
+        repository
+            .read_backing_range(object, offset, length)
+            .map_err(Into::into)
     }
     fn update_label(
         &self,
@@ -1335,15 +1335,29 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&labels).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_export", [label, name, backing]) => {
-            let label = text(storage, *label)?;
+        (b"remote_export", [name, backing]) => {
             let bytes = storage
                 .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
             let name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
             let bytes = shared
                 .services
-                .export_label(&label, name, unsigned(storage, *backing)? != 0)
+                .export_object(name, unsigned(storage, *backing)? != 0)
+                .map_err(|error| TaskError::Message(error.to_string()))?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_read_backing", [name, offset, length]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let name = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            let bytes = shared
+                .services
+                .read_backing(
+                    name,
+                    unsigned(storage, *offset)?,
+                    usize::try_from(unsigned(storage, *length)?).map_err(|_| Error::Invalid)?,
+                )
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(storage.add_blob(&bytes).into())
         }

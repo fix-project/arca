@@ -198,7 +198,7 @@ pub(crate) fn resolve(repository: &Repository, reference: &str) -> Result<[u8; 3
 pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Result<Value> {
     let progress = common::progress::Progress::activity(format!("Fetching {reference}"));
     progress.message("locating the remote ref");
-    let (remote, label) = split(reference)?;
+    let (remote, _) = split(reference)?;
     let config = client.remote_config()?;
     let configuration = configured(&config.remotes, remote)?;
     let repository = Repository::open(client.repository())?.with_policy(config.policy.clone());
@@ -208,37 +208,24 @@ pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Resu
         "fetching {reference} from {}",
         configuration.address
     ));
-    progress.message("retrieving data from the remote");
-    let mut transfer = if let Some(source) = &file {
+    progress.message("enumerating the remote value and its coupons");
+    let (mut transfer, backing_names, mut stream) = if let Some(source) = &file {
         let root = source.lookup(&name)?;
-        let omitted = if backing {
-            Vec::new()
-        } else {
-            match root.view() {
-                fixhandle::HandleView::Object(object) => vec![*object],
-                _ => Vec::new(),
-            }
-        };
-        let bytes = (if backing {
-            fixremote::export_with_coupons(source, &[root], &omitted)
-        } else {
-            fixremote::export(source, &[root], &omitted)
-        })
-        .map_err(|error| format!("exporting {reference}: {error}"))?;
-        Transfer::decode(&bytes)?
+        let (transfer, objects) = fixremote::propose_export(source, root, backing)
+            .map_err(|error| format!("exporting {reference}: {error}"))?;
+        (transfer, objects, None)
     } else {
         let mut stream = RemoteConnection::connect(configuration)?;
         send(
             &mut stream,
             Message::RequestObject {
-                label: label.into(),
                 name,
                 trusted_keys: config.policy.authorized_keys,
                 backing,
             },
         )?;
         match receive(&mut stream)? {
-            Message::ObjectTransfer(transfer) => transfer,
+            Message::ProposeObject { transfer, backing } => (transfer, backing, Some(stream)),
             Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
             reply => {
                 return Err(format!(
@@ -251,6 +238,108 @@ pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Resu
     if transfer.roots != [name] {
         return Err("remote returned a different value".into());
     }
+    let mut records = std::collections::BTreeMap::new();
+    for (index, record) in transfer.records.iter().enumerate() {
+        if record.data.is_some() || records.insert(record.name, index).is_some() {
+            return Err("remote supplied an invalid object manifest".into());
+        }
+    }
+    let mut requested = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0u64;
+    for name in backing_names {
+        if !records.contains_key(&name) || !seen.insert(name) {
+            return Err("remote offered backing outside its object manifest".into());
+        }
+        let handle = fixhandle::Handle::parse_ref(&name)
+            .map_err(|error| format!("invalid object in remote manifest: {error:?}"))?;
+        if !handle.is_canonical() || !matches!(handle.view(), fixhandle::HandleBytesView::Object(_))
+        {
+            return Err("remote offered backing for a noncanonical Object".into());
+        }
+        total = total
+            .checked_add(handle.byte_len())
+            .ok_or("remote transfer size overflow")?;
+        requested.push(name);
+    }
+    if let Some(stream) = &mut stream {
+        send(stream, Message::AcceptObject(requested.clone()))?;
+    }
+    progress.message(format!(
+        "retrieving {} objects ({total} backing bytes)",
+        requested.len()
+    ));
+    let download = common::progress::Progress::bytes(format!("Receiving {reference}"), total);
+    for name in requested {
+        let length = fixhandle::Handle::parse_ref(&name).unwrap().byte_len();
+        let mut data = Vec::new();
+        let mut offset = 0;
+        while offset < length {
+            let chunk_length = (length - offset).min(protocol::OBJECT_CHUNK_SIZE as u64) as usize;
+            let chunk =
+                if let Some(source) = &file {
+                    let object = fixhandle::Object::try_from(source.lookup(&name)?)
+                        .map_err(|error| format!("invalid backing Object: {error:?}"))?;
+                    let chunk = source
+                        .read_backing_range(object, offset, chunk_length)
+                        .map_err(|error| format!("reading {reference}: {error}"))?;
+                    download.inc(chunk.len() as u64);
+                    chunk
+                } else {
+                    let mut previous = 0;
+                    let message = protocol::receive_observed(
+                        stream.as_mut().unwrap(),
+                        protocol::OBJECT_CHUNK_SIZE + 1024,
+                        |received, total| {
+                            let overhead = total.saturating_sub(chunk_length as u64);
+                            let backing_received = received.saturating_sub(overhead);
+                            download.inc(backing_received - previous);
+                            previous = backing_received;
+                        },
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "receiving backing for {} at byte {offset}: {error}",
+                            hex::encode(name)
+                        )
+                    })?;
+                    match message {
+                        Some(Message::ObjectChunk {
+                            name: received,
+                            offset: position,
+                            data,
+                        }) if received == name && position == offset => data,
+                        Some(Message::Failure(error)) => {
+                            return Err(format!("remote {remote}: {error}").into());
+                        }
+                        None => {
+                            return Err(format!(
+                                "remote closed before sending backing for {} at byte {offset}",
+                                hex::encode(name)
+                            )
+                            .into());
+                        }
+                        _ => return Err(format!(
+                            "remote sent an unexpected response for backing {} at byte {offset}",
+                            hex::encode(name)
+                        )
+                        .into()),
+                    }
+                };
+            if chunk.len() != chunk_length {
+                return Err(format!(
+                    "remote backing for {} at byte {offset} has {} bytes; expected {chunk_length}",
+                    hex::encode(name),
+                    chunk.len()
+                )
+                .into());
+            }
+            offset += chunk.len() as u64;
+            data.extend_from_slice(&chunk);
+        }
+        transfer.records[records[&name]].data = Some(data);
+    }
+    download.finish();
     if !backing
         && matches!(
             fixhandle::Handle::parse_ref(&name)

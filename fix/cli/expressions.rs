@@ -408,7 +408,45 @@ impl<'a> Expressions<'a> {
         let limits = Blob::new(b"");
         let parser = self.parser()?;
         let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
-        self.client.call(&combination.into_value())
+        let result = self.client.call(&combination.into_value())?;
+        let parser = self.client.options().parser;
+        let envelope = Tree::try_from(result.clone()).map_err(|cause| {
+            error(format!(
+                "parser {parser} returned a non-Tree response for {source:?}: {cause:?}"
+            ))
+        })?;
+        if envelope.len() == 1 {
+            return envelope
+                .get(0)?
+                .ok_or_else(|| error("parser success response has no value"));
+        }
+        if envelope.len() == 2 {
+            let fields = envelope.into_iter().collect::<Result<Vec<_>, _>>()?;
+            if let (Ok(kind), Ok(detail)) = (Blob::try_from(&fields[0]), Blob::try_from(&fields[1]))
+            {
+                let kind = kind.to_vec()?;
+                let detail = detail.to_vec()?;
+                match kind.as_slice() {
+                    b"Rust.panic" | b"Fix.error" => {
+                        return Err(error(format!(
+                            "parser {parser} failed for {source:?}: {}",
+                            String::from_utf8_lossy(&detail)
+                        )));
+                    }
+                    b"Wasm.trap" if detail.len() == 4 => {
+                        return Err(error(format!(
+                            "parser {parser} trapped for {source:?}: Wasm trap code {}",
+                            u32::from_le_bytes(detail.try_into().unwrap())
+                        )));
+                    }
+                    _ => (),
+                }
+            }
+        }
+        let result = self.client.save(&result)?;
+        Err(error(format!(
+            "parser {parser} returned malformed response {result} for {source:?}; expected a one-element success Tree"
+        )))
     }
 
     /// Parses `path` as a script invocation.
@@ -437,7 +475,11 @@ impl<'a> Expressions<'a> {
         let tree = Tree::try_from(tree)?;
         let count = tree.len();
         if count != sources.len() {
-            return Err(error("expression argument count mismatch"));
+            return Err(error(format!(
+                "parser {} returned {count} values for {} expression arguments {sources:?}; expected one result per argument",
+                self.client.options().parser,
+                sources.len()
+            )));
         }
         tree.into_iter().map(|value| self.realize(value?)).collect()
     }

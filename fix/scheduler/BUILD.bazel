@@ -8,7 +8,7 @@ rust_library(
     crate_name = "fixscheduler",
     edition = "2024",
     srcs = glob(["src/**/*.rs"]),
-    deps = ["//fix/sdk:sdk_import", "//fix/remote:transport", "//fix/remote:protocol", "@crates//:embedded-io", "@crates//:postcard"],
+    deps = ["//fix/handle", "//fix/sdk:sdk_import", "//fix/remote:transport", "//fix/remote:protocol", "@crates//:embedded-io", "@crates//:postcard"],
     target_compatible_with = ["@platforms//cpu:wasm32"],
 )
 

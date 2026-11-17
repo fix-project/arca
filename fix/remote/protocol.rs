@@ -10,7 +10,8 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
+pub const OBJECT_CHUNK_SIZE: usize = 1 << 20;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,9 +37,41 @@ impl Task {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     pub name: Name,
+    #[serde(with = "optional_bytes")]
     pub data: Option<Vec<u8>>,
     pub todo: Option<Name>,
     pub certificates: Vec<CertificateRef>,
+}
+
+mod optional_bytes {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    struct Bytes<T>(T);
+    impl<T: AsRef<[u8]>> Serialize for Bytes<T> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0.as_ref())
+        }
+    }
+    pub fn serialize_bytes<S: Serializer>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(value)
+    }
+    pub fn deserialize_bytes<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        <&[u8]>::deserialize(deserializer).map(<[u8]>::to_vec)
+    }
+    pub fn serialize<S: Serializer>(
+        value: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.as_deref().map(Bytes).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        Option::<&[u8]>::deserialize(deserializer).map(|value| value.map(<[u8]>::to_vec))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,12 +156,24 @@ pub enum Message {
     RequestLabels,
     Labels(Vec<(String, Name)>),
     RequestObject {
-        label: String,
         name: Name,
         trusted_keys: Vec<String>,
         backing: bool,
     },
-    ObjectTransfer(Transfer),
+    ProposeObject {
+        transfer: Transfer,
+        backing: Vec<Name>,
+    },
+    AcceptObject(Vec<Name>),
+    ObjectChunk {
+        name: Name,
+        offset: u64,
+        #[serde(
+            serialize_with = "optional_bytes::serialize_bytes",
+            deserialize_with = "optional_bytes::deserialize_bytes"
+        )]
+        data: Vec<u8>,
+    },
     RequestTrustedKeys,
     TrustedKeys(Vec<String>),
     SubmitObject(Transfer),

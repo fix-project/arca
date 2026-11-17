@@ -75,6 +75,54 @@ fn client(directory: &Path) -> Client {
 }
 
 #[test]
+fn parser_failures_are_distinct_from_literal_error_values() {
+    let directory = repository("parser-responses");
+    let invoke = |source: &str, config: &Path| {
+        Command::new(input(env!("BACKEND")))
+            .args(["-j", "1", "--memory", "512", "eval", source])
+            .current_dir(&directory)
+            .env("FIX_TRUST", directory.join(".fix/trust"))
+            .env("FIX_UNSIGNED", "true")
+            .env("FIX_CONFIG_DIR", config)
+            .output()
+            .unwrap()
+    };
+    let config = PathBuf::from(std::env::var_os("FIX_CONFIG_DIR").unwrap());
+    let failed = invoke("(", &config);
+    assert!(!failed.status.success());
+    let diagnostic = String::from_utf8(failed.stderr).unwrap();
+    assert!(
+        diagnostic.contains("parser fix-parser failed for"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("unexpected"), "{diagnostic}");
+    let output = invoke(r#"("Rust.panic" "valid data")"#, &config);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let name = String::from_utf8(output.stdout).unwrap();
+    let mut client = client(&directory);
+    let value = client.lookup(name.trim()).unwrap();
+    let message = client.get(&value, 1).unwrap();
+    let mut bytes = [0; 10];
+    client.read(&message, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"valid data");
+
+    let untrusted = directory.join("untrusted-config");
+    std::fs::create_dir(&untrusted).unwrap();
+    let output = invoke(r#""input""#, &untrusted);
+    assert_eq!(output.status.code(), Some(2));
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.contains("not a trusted tagger"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("evaluate ") && diagnostic.contains("failed:"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
 fn an_empty_repository_uses_user_default_programs() {
     let root = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("user-defaults");
     let user = repository("user-defaults");

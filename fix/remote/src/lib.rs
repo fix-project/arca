@@ -84,6 +84,18 @@ pub fn export(
     roots: &[Handle],
     without_backing: &[Object],
 ) -> Result<Vec<u8>, Error> {
+    export_plan(repository, roots, without_backing, true)?
+        .0
+        .encode()
+        .map_err(|_| Error::Invalid)
+}
+
+fn export_plan(
+    repository: &Repository,
+    roots: &[Handle],
+    without_backing: &[Object],
+    load: bool,
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
     let source = Repository::open(repository.path())?.unsigned();
     let repository = &source;
     for root in roots {
@@ -95,9 +107,14 @@ pub fn export(
         Ok(())
     })?;
     let mut records = BTreeMap::new();
+    let mut backing = Vec::new();
     let mut certificate_blobs = BTreeMap::new();
     for (object, include) in objects {
-        let data = if include && repository.has_backing(object)? {
+        let available = include && repository.has_backing(object)?;
+        if available {
+            backing.push(*object.as_handle().as_bytes());
+        }
+        let data = if available && load {
             Some(match object.view() {
                 ObjectView::Blob(blob) => repository.read_blob(*blob)?.into_vec(),
                 ObjectView::Tree(tree) => repository
@@ -151,7 +168,7 @@ pub fn export(
             .get_todo(object.into_ref())?
             .map(|value| *value.as_bytes());
     }
-    Transfer {
+    let transfer = Transfer {
         roots: roots.iter().map(|value| *value.as_bytes()).collect(),
         certificates: certificate_blobs
             .into_iter()
@@ -159,9 +176,33 @@ pub fn export(
             .map(|(_, record)| record)
             .collect(),
         records: records.into_values().collect(),
-    }
-    .encode()
-    .map_err(|_| Error::Invalid)
+    };
+    backing.sort_unstable();
+    backing.dedup();
+    Ok((transfer, backing))
+}
+
+pub fn propose_export(
+    repository: &Repository,
+    root: Handle,
+    backing: bool,
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
+    let omitted = if backing {
+        Vec::new()
+    } else {
+        match root.view() {
+            HandleView::Object(object) => alloc::vec![*object],
+            _ => Vec::new(),
+        }
+    };
+    let roots = if backing {
+        coupon_roots(repository, &[root], &omitted)?
+    } else {
+        alloc::vec![root]
+    };
+    let (mut transfer, objects) = export_plan(repository, &roots, &omitted, false)?;
+    transfer.roots = alloc::vec![*root.as_bytes()];
+    Ok((transfer, objects))
 }
 
 pub fn export_with_coupons(
@@ -169,6 +210,17 @@ pub fn export_with_coupons(
     roots: &[Handle],
     without_backing: &[Object],
 ) -> Result<Vec<u8>, Error> {
+    let selected = coupon_roots(repository, roots, without_backing)?;
+    let (mut transfer, _) = export_plan(repository, &selected, without_backing, true)?;
+    transfer.roots = roots.iter().map(|root| *root.as_bytes()).collect();
+    transfer.encode().map_err(|_| Error::Invalid)
+}
+
+fn coupon_roots(
+    repository: &Repository,
+    roots: &[Handle],
+    without_backing: &[Object],
+) -> Result<Vec<Handle>, Error> {
     let mut inputs: BTreeMap<[u8; 32], Handle> =
         roots.iter().map(|root| (*root.as_bytes(), *root)).collect();
     repository.visit(roots, without_backing, |object, include| {
@@ -195,14 +247,7 @@ pub fn export_with_coupons(
             }
         }
     }
-    let mut transfer = Transfer::decode(&export(
-        repository,
-        &selected.into_values().collect::<Vec<_>>(),
-        without_backing,
-    )?)
-    .map_err(|_| Error::Invalid)?;
-    transfer.roots = roots.iter().map(|root| *root.as_bytes()).collect();
-    transfer.encode().map_err(|_| Error::Invalid)
+    Ok(selected.into_values().collect())
 }
 
 pub fn certify(

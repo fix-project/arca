@@ -466,6 +466,34 @@ impl Repository {
         Ok(unsafe { view.to_owned() })
     }
 
+    /// Reads unverified backing bytes. The receiver must verify the complete object.
+    pub fn read_backing_range(
+        &self,
+        object: Object,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, RepositoryError> {
+        self.lookup(object.as_handle().as_bytes())?;
+        if offset
+            .checked_add(length as u64)
+            .is_none_or(|end| end > object.byte_len())
+        {
+            return Err(RepositoryError::InvalidRepository);
+        }
+        let path = format!(
+            "{}/data/{}",
+            self.path,
+            Self::data_key(object.as_handle().as_bytes())
+        );
+        fs::read_range(&path, offset, length).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingBacking {
+                name: hex::encode(object.as_handle().as_bytes()),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })
+    }
+
     pub fn read_blob(&self, blob: Blob) -> Result<Box<[u8]>, RepositoryError> {
         self.lookup(blob.as_handle().as_bytes())?;
         if let Some(bytes) = blob.literal_bytes() {

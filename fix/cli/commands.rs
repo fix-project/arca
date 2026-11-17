@@ -393,7 +393,10 @@ fn execute(options: crate::Options, profile: bool, arguments: Vec<String>) -> Re
     client.set_profile(profile);
     let value = match client.execute(&arguments) {
         Ok(value) => value,
-        Err(crate::Error::Execution(status)) => return Ok(status),
+        Err(error @ crate::Error::Execution { status, .. }) => {
+            common::progress::println(error.to_string());
+            return Ok(status);
+        }
         Err(error) => return Err(backend(error)),
     };
     print(&mut Output, client.save(&value).map_err(backend)?)?;

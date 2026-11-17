@@ -422,6 +422,21 @@ pub mod fs {
         Ok(unsafe { Box::from_raw(bytes) }.into_vec())
     }
 
+    pub fn read_range(path: &str, offset: u64, length: usize) -> Result<Vec<u8>, ErrorKind> {
+        let mut file = File::open(path, true, false, false, false, false)?;
+        file.seek(Whence::Start(offset));
+        let mut buffer = crate::allocator::buffer(vec![0; length]);
+        let mut read = 0;
+        while read < length {
+            let count = file.try_read(&mut buffer.slice_mut(read..))?;
+            if count == 0 {
+                return Err(ErrorKind::InvalidData);
+            }
+            read += count;
+        }
+        Ok(buffer.to_vec())
+    }
+
     pub fn write(path: &str, bytes: &[u8]) -> Result<(), ErrorKind> {
         write_with(
             path,

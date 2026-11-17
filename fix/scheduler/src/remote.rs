@@ -65,14 +65,12 @@ fn request_failure(status: u64, value: &Value) -> String {
     format!("scheduler operation failed with status {status}")
 }
 
-pub fn export_label(
-    label: &str,
+pub fn propose_object(
     name: protocol::Name,
     backing: bool,
-) -> Result<protocol::Transfer, String> {
+) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
     let (status, value) = request(tree![
         Blob::create(b"remote_export"),
-        Blob::create(label),
         Blob::create(name),
         backing as u64
     ])
@@ -80,8 +78,22 @@ pub fn export_label(
     if status != 0 {
         return Err(request_failure(status, &value));
     }
-    protocol::Transfer::decode(&bytes(&value).map_err(|error| format!("{error:?}"))?)
-        .map_err(|error| format!("invalid exported transfer: {error}"))
+    let encoded = bytes(&value).map_err(|error| format!("{error:?}"))?;
+    postcard::from_bytes(&encoded).map_err(|error| format!("invalid export proposal: {error}"))
+}
+
+pub fn read_backing(name: protocol::Name, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+    let (status, value) = request(tree![
+        Blob::create(b"remote_read_backing"),
+        Blob::create(name),
+        offset,
+        length as u64
+    ])
+    .map_err(|error| format!("{error:?}"))?;
+    if status != 0 {
+        return Err(request_failure(status, &value));
+    }
+    bytes(&value).map_err(|error| format!("{error:?}"))
 }
 
 pub fn update_label(

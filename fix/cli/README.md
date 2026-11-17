@@ -157,13 +157,20 @@ name their current activity, such as extraction or indexing, without inventing
 an overall percentage. Evaluation displays task titles and completed/total
 units from advice, plus the scheduler's actual completed Tree-child counts.
 When totals or titles are unavailable, Fix shows an elapsed timer and a label
-or canonical name. It reports how long it has been since the last update;
-that interval does not imply that the application has stopped doing work.
+or canonical name. Work without a measured total has an activity line, not a
+completion bar. Completing reported application units does not claim that the
+invocation has returned.
 
-A count with no updates for ten seconds is displayed as an activity row with
-its last reported count, rather than leaving a filled bar frozen on screen.
-A new count restores the bar. Completing reported application units does not
-claim that the invocation has returned: the row says it is still running until
-that invocation ends. Network transfers count framed payload bytes, while file
-remotes show the backing bytes actually read and written. All status messages,
+Pull first enumerates reachable objects and coupons. Its manifest gives the
+exact backing-byte total from the Fix names before bulk data is read. SSH,
+TCP, and file remotes transfer backing in bounded chunks under one cumulative
+byte counter; validation and persistence follow as separate activities. Pull
+requests Fix names, so moving or deleting a remote label after sync does not
+prevent retrieving data that remains in that repository. All status messages,
 logs, and forwarded SSH stderr share the progress renderer.
+
+The expression parser returns a one-element Tree containing its parsed value.
+Panic and trap responses are reported as parser errors, with the source and
+parser name. The envelope lets expressions contain literal error-shaped values
+without treating those values as parser failures. Runtime failures include the
+operation, input name, and runtime diagnostic alongside their exit status.
