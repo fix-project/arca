@@ -167,27 +167,27 @@ git_override(
     patch_strip = 1,
 )
 
-git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+LLVM_RELEASE = "23.1.2-current"
+LLVM_RELEASE_URL = "https://github.com/fix-project/llvm-project/releases/download/fixorg-" + LLVM_RELEASE + "/"
 
-git_repository(
-    name = "llvm-raw",
-    remote = "https://github.com/fix-project/llvm-project.git",
-    commit = "3c24197a97c8f1200596d2dc3dd4335960a3bbc6",
-    build_file = "//bootstrap:llvm.BUILD.bazel",
-    patches = ["//bootstrap:toolchain-tags.patch", "//bootstrap:llvm-permissions.patch"],
-    patch_args = ["-p1"],
+http_archive(
+    name = "llvm_sdk",
+    urls = [LLVM_RELEASE_URL + "wasm32-wasip1-llvm-sdk-" + LLVM_RELEASE + ".tar.zst"],
+    sha256 = "005bc3aea53c2f29d70ae21eba31d75a10855f3a55add71ef5cb0ba6acd22d32",
+    strip_prefix = "wasm32-wasip1-llvm-sdk",
+    build_file = "//bootstrap:llvm_release.BUILD.bazel",
 )
 
-bazel_dep(name = "llvm", version = "0.8.5")
+http_archive(
+    name = "llvm_rootfs",
+    urls = [LLVM_RELEASE_URL + "llvm-wasip1-rootfs-" + LLVM_RELEASE + ".tar.zst"],
+    sha256 = "d9cab8775b7e2a3a88eee9ba8e83b35a76456274f049c242acaadc5e8ef06394",
+    build_file = "//bootstrap:llvm_rootfs.BUILD.bazel",
+)
+
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "bazel_lib", version = "3.7.2")
 bazel_dep(name = "rules_python", version = "1.9.0")
-bazel_dep(name = "zlib-ng", version = "2.3.3", repo_name = "llvm_zlib")
-bazel_dep(name = "zstd", version = "1.5.7.bcr.1", repo_name = "llvm_zstd")
-bazel_dep(name = "libpfm", version = "4.13.0", repo_name = "pfm")
-
-llvm_configure = use_repo_rule("//build:llvm_configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = ["X86", "WebAssembly"])
 
 rocq_toolchain = use_repo_rule("//build:rocq_toolchain.bzl", "rocq_toolchain")
 

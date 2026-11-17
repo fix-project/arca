@@ -4,6 +4,13 @@ load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
 load(":configuration.bzl", "mode")
 
 MAPS = "-ffile-prefix-map=$${EXT_BUILD_ROOT}=/llvm-project -ffile-prefix-map=$${BUILD_TMPDIR}=/build"
+HOST_TOOLS = {
+    "CMAKE_C_COMPILER": "@local_tools//:clang",
+    "CMAKE_CXX_COMPILER": "@local_tools//:clang++",
+    "CMAKE_ASM_COMPILER": "@local_tools//:clang",
+    "CMAKE_AR": "@local_tools//:ar",
+    "CMAKE_RANLIB": "@local_tools//:ranlib",
+}
 
 def _bundle_impl(ctx):
     return [DefaultInfo(files = ctx.attr.build[0][OutputGroupInfo].gen_dir)]
@@ -13,12 +20,11 @@ _bundle = rule(implementation = _bundle_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def source_build(name, lib_source, targets, options, working_directory = ".", copies = {}, sysroot = None, out_data_dirs = [], out_data_files = [], data = [], tags = []):
-    host = "//bootstrap:host_llvm"
-    data = data + [host] + ([sysroot] if sysroot else [])
+def source_build(name, lib_source, targets, options, working_directory = ".", copies = {}, sysroot = None, resources = None, tools = HOST_TOOLS, out_data_dirs = [], out_data_files = [], data = [], tags = []):
+    data = depset(data + tools.values() + ([sysroot] if sysroot else []) + ([resources] if resources else [])).to_list()
     entries = dict({"CMAKE_C_FLAGS": MAPS, "CMAKE_CXX_FLAGS": MAPS}, **options)
-    for key, tool in {"CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++", "CMAKE_ASM_COMPILER": "clang", "CMAKE_AR": "llvm-ar", "CMAKE_RANLIB": "llvm-ranlib"}.items():
-        entries[key] = "$${EXT_BUILD_ROOT}/$(execpath %s)/bin/%s" % (host, tool)
+    for key, target in tools.items():
+        entries[key] = "$${EXT_BUILD_ROOT}/$(execpath %s)" % target
     entries.setdefault("CMAKE_ASM_FLAGS", MAPS)
     for key in ["CMAKE_EXE_LINKER_FLAGS", "CMAKE_SHARED_LINKER_FLAGS", "CMAKE_MODULE_LINKER_FLAGS"]:
         entries.setdefault(key, "")

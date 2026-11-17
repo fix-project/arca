@@ -1,6 +1,7 @@
 """The Linux-issued seed repository."""
 
 load(":configuration.bzl", "ALLOW_TRANSITION", "mode")
+load("//build:fix.bzl", "FixRunInfo")
 
 def _seed_impl(ctx):
     archive = ctx.actions.declare_file(ctx.label.name + ".tar")
@@ -37,4 +38,45 @@ seed_repository = rule(
         "directories": attr.label_keyed_string_dict(allow_files = True),
         "_tool": attr.label(default = "//bootstrap:seed_tool", executable = True, cfg = "exec"),
     }),
+)
+
+def _promote_seed_impl(ctx):
+    archive = ctx.actions.declare_file(ctx.label.name + ".tar")
+    compilation = ctx.attr.compilation[FixRunInfo]
+    ctx.actions.run_shell(
+        command = """set -euo pipefail
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+execroot=$PWD
+cd "$work"
+export FIX_UNSIGNED=true
+"$execroot/$1" init
+"$execroot/$1" import "$execroot/$2"
+"$execroot/$1" import "$execroot/$3"
+"$execroot/$4" promote "$work" "$execroot/$5"
+tar --create --file "$execroot/$6" --mtime=@0 --owner=0 --group=0 --numeric-owner --sort=name .fix
+""",
+        arguments = [
+            ctx.file.fix.path,
+            ctx.file.seed.path,
+            compilation.archive.path,
+            ctx.executable._tool.path,
+            compilation.handle.path,
+            archive.path,
+        ],
+        inputs = [ctx.file.seed, compilation.archive, compilation.handle],
+        tools = [ctx.file.fix, ctx.executable._tool],
+        outputs = [archive],
+        mnemonic = "PromoteBootstrap",
+    )
+    return [DefaultInfo(files = depset([archive]))]
+
+promote_seed = rule(
+    implementation = _promote_seed_impl,
+    attrs = {
+        "seed": attr.label(mandatory = True, allow_single_file = [".tar"]),
+        "compilation": attr.label(mandatory = True, providers = [FixRunInfo]),
+        "fix": attr.label(default = "//fix/cli:fix", allow_single_file = True),
+        "_tool": attr.label(default = "//bootstrap:seed_tool", executable = True, cfg = "exec"),
+    },
 )
