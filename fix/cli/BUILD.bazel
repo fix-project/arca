@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("//build:defs.bzl", "WASM", "fix_procedure")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test", "rust_shared_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -33,7 +34,7 @@ rust_test(
     srcs = ["client_tests.rs"],
     edition = "2024",
     deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
-    data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf"],
+    data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf", ":scheduler_failure_elf"],
     rustc_env = {
         "BACKEND": "$(rootpath :fix)",
         "SEED": "$(rootpath //bootstrap:seed_tool)",
@@ -42,6 +43,7 @@ rust_test(
         "COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
         "ADD": "$(rootpath //programs/fix:addblob_elf)",
         "PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
+        "SCHEDULER_FAILURE": "$(rootpath :scheduler_failure_elf)",
     },
     size = "medium",
     timeout = "short",
@@ -63,4 +65,20 @@ rust_test(
     deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
     size = "small",
     timeout = "short",
+)
+
+rust_shared_library(
+    name = "scheduler_failure_wasm",
+    srcs = ["tests/scheduler_failure.rs"],
+    crate_root = "tests/scheduler_failure.rs",
+    edition = "2024",
+    platform = WASM,
+    deps = ["//fix/sdk"],
+)
+
+fix_procedure(
+    name = "scheduler_failure",
+    wasm = ":scheduler_failure_wasm",
+    memories = 3,
+    runnable = True,
 )

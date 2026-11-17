@@ -162,13 +162,22 @@ fn execute(
             .map_err(CliError::Usage)?;
         arguments.drain(index..index + 2);
     }
-    let storage = retained
-        .get_or_insert_with(|| {
-            alloc::sync::Arc::new(crate::storage::repository::RepositoryStorage::new(
-                repository,
-            ))
-        })
-        .clone();
+    if retained.is_none() {
+        let mut storage = crate::storage::repository::RepositoryStorage::new(repository);
+        for remote in &remotes.remotes {
+            if let Some(path) = remote.address.strip_prefix("file://") {
+                match Repository::open(path) {
+                    Ok(source) if source.path() != storage.repository().path() => {
+                        storage.add_source(source.with_policy(remotes.policy.clone()));
+                    }
+                    Ok(_) | Err(RepositoryError::NotInitialized) => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        *retained = Some(alloc::sync::Arc::new(storage));
+    }
+    let storage = retained.as_ref().unwrap().clone();
     let repository = storage.repository();
     for name in &remotes.policy.trusted_taggers {
         trust.trust_tagger_name(name).map_err(CliError::Trust)?;

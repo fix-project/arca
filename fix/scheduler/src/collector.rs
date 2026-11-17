@@ -133,6 +133,7 @@ pub async fn eval(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::evaluation(1, input);
     if input.value_type() == ValueType::Encode {
         let thunk = crate::executor::scheduler::thunk(policy, input).await?;
         let forced = Box::pin(policy.force(&thunk)).await?;
@@ -182,6 +183,7 @@ pub async fn think(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::evaluation(4, input);
     let data = policy.load(input).await?;
     let kind = input.unsound_thunk_type()?;
     if kind == ThunkType::Identification {
@@ -218,6 +220,7 @@ pub async fn force(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::evaluation(3, input);
     let thought = Box::pin(policy.think(input)).await?;
     let result = result(&thought)?;
     let kind = result.value_type();
@@ -259,6 +262,7 @@ pub async fn apply(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::evaluation(2, input);
     produced(
         crate::kernel::apply(input, &mut |advice| policy.on_advice(advice)).await?,
         retain,
@@ -269,6 +273,7 @@ pub async fn select(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::evaluation(6, input);
     produced(crate::storage::select(input)?, retain)
 }
 

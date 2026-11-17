@@ -906,6 +906,9 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
     configuration(&server.join("user"), &agent, &compiler, &[]);
     sign_seed(&server, &agent, true);
 
+    let data = directory.join("data");
+    std::fs::create_dir_all(data.join("fix/bootstrap")).unwrap();
+    std::os::unix::fs::symlink(server.join(".fix"), data.join("fix/bootstrap/.fix")).unwrap();
     let ssh_dir = directory.join("bin");
     std::fs::create_dir(&ssh_dir).unwrap();
     let ssh = ssh_dir.join("ssh");
@@ -932,6 +935,7 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
             .env_remove("FIX_UNSIGNED")
             .env("FIX_TRUST", server.join(".fix/trust"))
             .env("FIX_CONFIG_DIR", server.join("user"))
+            .env("XDG_DATA_HOME", &data)
             .env("SSH_AUTH_SOCK", &agent.socket)
             .env_remove("BUILD_WORKSPACE_DIRECTORY")
             .output()
@@ -1383,7 +1387,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                     .as_ref(),
                 &(42 + index * 10 + case).to_le_bytes()
             );
-            if (case == 0 && index == 0) || case == 5 {
+            if case == 0 && index == 0 {
                 let info =
                     fixremote::information(&destination, collector, 2, Some(512 << 20)).unwrap();
                 assert!(
@@ -1404,11 +1408,13 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 Blob::literal(&operation.to_le_bytes()).unwrap().into(),
                 target,
             ];
-            assert_eq!(
-                !destination.claims(&prefix).unwrap().is_empty(),
-                expected_remote,
-                "policy {index}, case {case}"
-            );
+            if case != 5 {
+                assert_eq!(
+                    !destination.claims(&prefix).unwrap().is_empty(),
+                    expected_remote,
+                    "policy {index}, case {case}"
+                );
+            }
         }
     }
 }

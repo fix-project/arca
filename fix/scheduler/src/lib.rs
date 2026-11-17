@@ -7,6 +7,7 @@ pub mod collector;
 mod inventory;
 pub mod io;
 pub mod kernel;
+mod progress;
 pub mod remote;
 pub mod shell;
 pub mod storage;

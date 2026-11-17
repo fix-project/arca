@@ -10,7 +10,7 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const OBJECT_CHUNK_SIZE: usize = 1 << 20;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
@@ -153,6 +153,13 @@ pub struct Information {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    EvaluationProgress(
+        #[serde(
+            serialize_with = "optional_bytes::serialize_bytes",
+            deserialize_with = "optional_bytes::deserialize_bytes"
+        )]
+        Vec<u8>,
+    ),
     RequestLabels,
     Labels(Vec<(String, Name)>),
     RequestObject {
@@ -533,8 +540,29 @@ pub mod asynchronous {
         limit: usize,
         information: &Information,
         trusted_keys: &[String],
+        missing: impl FnMut(&[Offer]) -> Option<Vec<Name>>,
+        first: Option<Message>,
+    ) -> Result<Option<Incoming>, Error<S::Error>> {
+        receive_transfer_observed(
+            stream,
+            limit,
+            information,
+            trusted_keys,
+            missing,
+            first,
+            |_| {},
+        )
+        .await
+    }
+
+    pub async fn receive_transfer_observed<S: AsyncRead + AsyncWrite>(
+        stream: &mut S,
+        limit: usize,
+        information: &Information,
+        trusted_keys: &[String],
         mut missing: impl FnMut(&[Offer]) -> Option<Vec<Name>>,
         first: Option<Message>,
+        mut progress: impl FnMut(&Message),
     ) -> Result<Option<Incoming>, Error<S::Error>> {
         let mut pending: Option<Pending> = None;
         let mut total = 0usize;
@@ -551,7 +579,9 @@ pub mod asynchronous {
                     Err(Error::Invalid)
                 };
             };
+            progress(&message);
             match message {
+                Message::EvaluationProgress(_) => (),
                 Message::Failure(message) => return Err(Error::Remote(message)),
                 Message::RequestInfo { .. } => {
                     send(stream, Message::Info(information.clone())).await?

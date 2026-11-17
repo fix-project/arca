@@ -17,6 +17,7 @@ use core::cell::RefCell;
 use fixwasm::{Error, Value as AsValue};
 
 struct Peer<'a> {
+    name: String,
     connection: Connection<'a>,
     information: Information,
 }
@@ -117,6 +118,7 @@ impl<'a> Cluster<'a> {
                     .await
                 {
                     Ok(Some(Message::Info(information))) => Some(Peer {
+                        name: remote.name.clone(),
                         connection,
                         information,
                     }),
@@ -223,6 +225,8 @@ impl<'a> Cluster<'a> {
             names,
             operation,
         };
+        let remote = pending.peer.as_ref().unwrap().name.clone();
+        let _load = crate::progress::load(&pending.input, "", &remote);
         protocol::asynchronous::send_transfer(
             &mut pending.peer.as_mut().unwrap().connection,
             protocol::MAX_MESSAGE_SIZE,
@@ -280,6 +284,7 @@ async fn stage_programs<'a>(io: &'a Io, remote: &super::Remote) -> Result<Connec
         .await
         .map_err(|error| alloc::format!("{error:?}"))?
         .ok_or_else(|| String::from("could not start bootstrap server"))?;
+    let _load = crate::progress::load(&scheduler, "", &remote.name);
     protocol::asynchronous::send_transfer(
         &mut initial,
         protocol::MAX_MESSAGE_SIZE,
@@ -310,16 +315,32 @@ impl PendingEvaluation<'_> {
     pub async fn receive(mut self) -> Result<Value, Failure> {
         let trusted_keys = super::trusted_keys()?;
         let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
-        let incoming = protocol::asynchronous::receive_transfer(
+        let remote = peer.name.clone();
+        let mut download = None;
+        let incoming = protocol::asynchronous::receive_transfer_observed(
             &mut peer.connection,
             protocol::MAX_MESSAGE_SIZE,
-            worker::count()?.try_into().map_err(|_| Failure::Task)?,
+            &Information {
+                parallelism: worker::count()?.try_into().map_err(|_| Failure::Task)?,
+                ..Information::default()
+            },
             &trusted_keys,
             |offers| super::missing(offers).ok().flatten(),
+            None,
+            |message| match message {
+                Message::EvaluationProgress(snapshot) => {
+                    let _ = super::report_progress(&remote, snapshot);
+                }
+                Message::ProposeTransfer { .. } => {
+                    download.get_or_insert_with(|| crate::progress::load(&self.input, &remote, ""));
+                }
+                _ => (),
+            },
         )
         .await
         .map_err(Failure::Receive)?
         .ok_or(Failure::Closed)?;
+        drop(download);
         if incoming.task != self.task || incoming.result.is_none() {
             return Err(Failure::Task);
         }

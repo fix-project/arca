@@ -160,6 +160,7 @@ The scheduler SDK exposes `remote::export`, `remote::import`, `remote::missing`,
 The `fixprotocol` crate follows the original Fix protocol's message structure. Serde/Postcard messages carry a protocol version, with an eight-byte big-endian frame length supplied by `fixtransport`. The codecs work over `embedded_io`, independently of TCP or a particular scheduler.
 
 - `Run` identifies a task by coupon operation, collector, and input. `Result` identifies that task and its returned coupon.
+- `EvaluationProgress` reports task operations, locations, measured counts, and runtime worker and memory counters while a request runs. Nested remotes retain their routes; the receiving CLI chooses the presentation.
 - `RequestInfo` and `Info` exchange parallelism, link speed, and inventory hints.
 - Blob, Tree, and shallow Tree requests and data messages support separate object transfer. Load messages express prefetch hints.
 - `ProposeTransfer` lists object names, backing availability, and TODO metadata, without certificate names. `AcceptTransfer` selects the missing records and, when Tags are missing, advertises the receiver's trusted SSH keys. Data messages supply those records before `Run` or `Result` completes the exchange.
@@ -183,3 +184,29 @@ fix init
 `fix import --sign ARCHIVE` imports and signs only the Tags in that archive. `fix bootstrap SEED` also trusts the seed compiler and compiled collector in user configuration.
 
 Build tools use `--unsigned` or `FIX_UNSIGNED=true` for staging repositories. Their unsigned output still requires explicit trust and signing when imported into a normal repository. Staging mode does not authorize unsigned Tags received from the network.
+
+## Sharing a lazy compilation
+
+The source can label a compilation Thunk without running it:
+
+```sh
+fix init
+fix sync bootstrap
+fix -l addblob "#(\"\" *'@remote(\"bootstrap:compile\") @file(\"addblob.wasm\"))"
+```
+
+After cloning and pulling on the destination:
+
+```sh
+fix clone user@server:/path/to/source project
+cd project
+fix pull origin:addblob
+fix '*#("" *@label("addblob") 20u64 22u64)'
+```
+
+The function position forces the compilation Thunk before applying its result.
+The scheduler may compile locally, delegate compilation, or delegate the whole
+request. Evaluation rows identify their execution location; remote task titles,
+counts, and runtime statistics appear in the same display. Pull instead
+emphasizes the backing bytes transferred. Clone and init both configure the
+local bootstrap store as a storage remote.

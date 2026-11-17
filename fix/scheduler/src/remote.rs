@@ -48,6 +48,21 @@ pub fn configured() -> Result<Vec<Remote>, Error> {
         .collect()
 }
 
+pub(crate) fn progress_snapshot() -> Result<Vec<u8>, Error> {
+    bytes(&effect(b"progress_snapshot", &[])?)
+}
+
+pub(crate) fn report_progress(remote: &str, snapshot: &[u8]) -> Result<(), Error> {
+    effect(
+        b"remote_progress",
+        &[
+            crate::shell::capture(Blob::create(remote))?,
+            crate::shell::capture(Blob::create(snapshot))?,
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn labels() -> Result<Vec<(String, protocol::Name)>, Error> {
     let value = effect(b"remote_labels", &[])?;
     postcard::from_bytes(&bytes(&value)?).map_err(|_| Error::WrongType)

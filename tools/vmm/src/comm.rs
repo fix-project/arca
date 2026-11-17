@@ -94,6 +94,22 @@ pub fn control_thread(
                 if control.session.stopped() {
                     return;
                 }
+                if let Request::Sleep(milliseconds) = request.message {
+                    let (control, writer) = (control.clone(), writer.clone());
+                    control.session.clone().spawn(move || {
+                        control
+                            .session
+                            .wait_for_stop(std::time::Duration::from_millis(
+                                milliseconds.min(1000),
+                            ));
+                        let response = Tagged {
+                            id: request.id,
+                            message: Response::Ack,
+                        };
+                        let _ = writer.lock().unwrap().send(&response);
+                    });
+                    continue;
+                }
                 let message = control.respond(request.message);
                 let response = Tagged {
                     id: request.id,
@@ -123,8 +139,19 @@ impl Control {
         use common::protocol::control::*;
         match request {
             Request::GetArgs => Response::Args(self.argv.clone()),
-            Request::TaskAdvice { task, key, payload } => {
-                common::progress::advice(task, &key, &payload);
+            Request::ObserveEvaluation => Response::Bool(common::progress::observing_evaluation()),
+            Request::EvaluationProgress(snapshot) => {
+                common::progress::evaluation_progress(snapshot);
+                Response::Ack
+            }
+            Request::Sleep(_) => unreachable!("sleep is dispatched separately"),
+            Request::TaskAdvice {
+                task,
+                operation,
+                key,
+                payload,
+            } => {
+                common::progress::advice(task, operation, &key, &payload);
                 Response::Ack
             }
             Request::TreeProgress {
@@ -136,8 +163,8 @@ impl Control {
                 common::progress::tree_progress(task, &children, completed, total);
                 Response::Ack
             }
-            Request::TaskFinished(task) => {
-                common::progress::task_finished(task);
+            Request::TaskFinished { task, operation } => {
+                common::progress::task_finished(task, operation);
                 Response::Ack
             }
             Request::SshSign {

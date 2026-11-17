@@ -7,13 +7,17 @@ use crate::{
     Blob, EncodeView, Handle, HandleView, InvalidApplication, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
 use kernel::{
     kthread::{self, KCondvar},
     prelude::{Arc, Box, KMutex, Vec},
+};
+
+use common::protocol::control::{
+    EvaluationOperation, EvaluationSnapshot, EvaluationTask, MachineProgress,
 };
 
 const MAX_QUEUE_CAPACITY: usize = 65536;
@@ -384,6 +388,7 @@ impl Saver {
 
 #[derive(Default)]
 struct Applications {
+    peak_queued: AtomicUsize,
     state: KMutex<ApplicationsState>,
     changed: KCondvar,
 }
@@ -394,7 +399,11 @@ struct ApplicationsState {
 }
 impl Applications {
     fn push(&self, id: usize, operation: &'static [u8], argument: Handle) {
-        self.state.lock().queue.push_back((id, operation, argument));
+        let mut state = self.state.lock();
+        state.queue.push_back((id, operation, argument));
+        self.peak_queued
+            .fetch_max(state.queue.len(), Ordering::Relaxed);
+        drop(state);
         self.changed.notify_one();
     }
     fn pop(&self) -> Option<(usize, &'static [u8], Handle)> {
@@ -436,6 +445,7 @@ fn discard_advice(storage: &dyn Storage, shared: &Shared, result: EffectResult) 
 type SharedStream = Arc<KMutex<kernel::host::net::Stream>>;
 type SharedListener = Arc<kernel::host::net::TcpListener>;
 type EffectResult = Result<Handle, &'static str>;
+type TaskKey = ([u8; 32], Option<EvaluationOperation>);
 
 struct PendingEffect {
     invocation: bool,
@@ -449,7 +459,14 @@ struct TreeProgress {
 }
 
 struct Shared {
-    advised: KMutex<BTreeSet<[u8; 32]>>,
+    advised: KMutex<BTreeMap<TaskKey, EvaluationTask>>,
+    remote_progress: KMutex<BTreeMap<alloc::string::String, EvaluationSnapshot>>,
+    labels: Vec<([u8; 32], alloc::string::String)>,
+    started: Duration,
+    busy: AtomicUsize,
+    peak_busy: AtomicUsize,
+    privileged_completed: AtomicUsize,
+    worker_ns: AtomicU64,
     progress_trees: KMutex<BTreeMap<[u8; 32], TreeProgress>>,
     scheduler: Handle,
     collector: Handle,
@@ -485,6 +502,33 @@ struct EffectStats {
 }
 
 impl Shared {
+    fn snapshot(&self) -> EvaluationSnapshot {
+        let local = MachineProgress {
+            location: Vec::new(),
+            elapsed_ns: kernel::tsc::read().saturating_sub(self.started).as_nanos() as u64,
+            workers: self.executed.len() as u64,
+            busy_workers: self.busy.load(Ordering::Relaxed) as u64,
+            queued: self.applications.state.lock().queue.len() as u64,
+            peak_busy_workers: self.peak_busy.load(Ordering::Relaxed) as u64,
+            peak_queued: self.applications.peak_queued.load(Ordering::Relaxed) as u64,
+            completed: self
+                .executed
+                .iter()
+                .map(|count| count.load(Ordering::Relaxed) as u64)
+                .sum(),
+            privileged_completed: self.privileged_completed.load(Ordering::Relaxed) as u64,
+            worker_ns: self.worker_ns.load(Ordering::Relaxed),
+            memory_used: common::BuddyAllocator.used_size() as u64,
+            memory_total: common::BuddyAllocator.total_size() as u64,
+            tasks: self.advised.lock().values().cloned().collect(),
+            labels: self.labels.clone(),
+        };
+        let mut machines = alloc::vec![local];
+        for snapshot in self.remote_progress.lock().values() {
+            machines.extend(snapshot.machines.iter().cloned());
+        }
+        EvaluationSnapshot { machines }
+    }
     // needed to signal this whole run is completed
     fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
@@ -559,8 +603,21 @@ pub fn start_profiled<
         BTreeMap::new()
     };
 
+    let labels = services
+        .labels()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(label, name)| (name, label))
+        .collect();
     let shared = Arc::new(Shared {
-        advised: KMutex::new(BTreeSet::new()),
+        advised: KMutex::new(BTreeMap::new()),
+        remote_progress: KMutex::new(BTreeMap::new()),
+        labels,
+        started: kernel::tsc::read(),
+        busy: AtomicUsize::new(0),
+        peak_busy: AtomicUsize::new(0),
+        privileged_completed: AtomicUsize::new(0),
+        worker_ns: AtomicU64::new(0),
         progress_trees: KMutex::new(BTreeMap::new()),
         scheduler,
         collector,
@@ -588,6 +645,19 @@ pub fn start_profiled<
     });
 
     let coordinator = kthread::current();
+    let observing = kernel::host::os::observe_evaluation();
+    if observing {
+        kernel::host::os::evaluation_progress(shared.snapshot());
+        let shared = shared.clone();
+        spawn(move || {
+            while !shared.stopped() {
+                kernel::host::os::sleep(250);
+                if !shared.stopped() {
+                    kernel::host::os::evaluation_progress(shared.snapshot());
+                }
+            }
+        });
+    }
     {
         let coordinator = coordinator.clone();
         let runtime = runtime.clone();
@@ -621,6 +691,9 @@ pub fn start_profiled<
                     }
                     continue;
                 }
+                let started = kernel::tsc::read();
+                let busy = shared.busy.fetch_add(1, Ordering::Relaxed) + 1;
+                shared.peak_busy.fetch_max(busy, Ordering::Relaxed);
                 let result = handle_task(&runtime, &shared, worker, operation, &[argument], false)
                     .map(|(status, value)| {
                         let storage = runtime.storage();
@@ -628,6 +701,11 @@ pub fn start_profiled<
                             .add_tree(&[storage.add_blob(&status.to_le_bytes()).into(), value])
                             .into()
                     });
+                shared.busy.fetch_sub(1, Ordering::Relaxed);
+                shared.worker_ns.fetch_add(
+                    kernel::tsc::read().saturating_sub(started).as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
                 let mut pending = shared.pending_effects.lock();
                 if let Some(slot) = pending.get_mut(&id) {
                     slot.result = Some(result);
@@ -662,6 +740,9 @@ pub fn start_profiled<
     shared.saver.close();
     while shared.saving.load(Ordering::Acquire) {
         kthread::park();
+    }
+    if observing {
+        kernel::host::os::evaluation_progress(shared.snapshot());
     }
     if let Some(error) = shared.saver.state.lock().error.clone() {
         return Err(error);
@@ -992,6 +1073,9 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"worker_finish"
                 | b"worker_yield"
                 | b"tree_progress"
+                | b"evaluation_start"
+                | b"evaluation_finish"
+                | b"load_finish"
         )
     {
         return Err("unsupported scheduler coordination operation");
@@ -1091,12 +1175,18 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let advised = !shared.advised.lock().is_empty();
             if advised
                 && let Ok(task) = storage.canonicalize(task).map(Handle::from)
-                && shared.advised.lock().remove(task.as_bytes())
+                && shared
+                    .advised
+                    .lock()
+                    .remove(&(*task.as_bytes(), Some(EvaluationOperation::Apply)))
+                    .is_some()
             {
-                kernel::host::os::task_finished(*task.as_bytes());
+                kernel::host::os::task_finished(*task.as_bytes(), Some(EvaluationOperation::Apply));
             }
             if application {
                 shared.executed[worker].fetch_add(1, Ordering::Relaxed);
+            } else {
+                shared.privileged_completed.fetch_add(1, Ordering::Relaxed);
             }
             Ok((0, value))
         }
@@ -1104,8 +1194,37 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             if matches!(event.key.as_slice(), b"fix::title" | b"fix::progress")
                 && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
             {
-                shared.advised.lock().insert(*target.as_bytes());
-                kernel::host::os::task_advice(*target.as_bytes(), &event.key, &event.payload);
+                let operation = storage
+                    .canonicalize(task)
+                    .ok()
+                    .map(Handle::from)
+                    .filter(|task| task.same_encoding(&target))
+                    .map(|_| EvaluationOperation::Apply);
+                let mut tasks = shared.advised.lock();
+                let task = tasks
+                    .entry((*target.as_bytes(), operation))
+                    .or_insert_with(|| EvaluationTask {
+                        id: *target.as_bytes(),
+                        operation,
+                        ..EvaluationTask::default()
+                    });
+                if event.key == b"fix::title" {
+                    task.title =
+                        alloc::string::String::from_utf8_lossy(&event.payload).into_owned();
+                } else if event.payload.len() == 16 {
+                    let completed = u64::from_le_bytes(event.payload[..8].try_into().unwrap());
+                    let total = u64::from_le_bytes(event.payload[8..].try_into().unwrap());
+                    if completed <= total {
+                        task.progress = Some((completed, total));
+                    }
+                }
+                drop(tasks);
+                kernel::host::os::task_advice(
+                    *target.as_bytes(),
+                    operation,
+                    &event.key,
+                    &event.payload,
+                );
             }
             let token = shared
                 .next_suspended
@@ -1229,6 +1348,134 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     let storage = runtime.storage();
     let number = |value: usize| storage.add_blob(&(value as u64).to_le_bytes()).into();
     match (name, args) {
+        (b"evaluation_labels", []) => {
+            let labels = shared
+                .labels
+                .iter()
+                .map(|(name, _)| storage.add_blob(name).into())
+                .collect::<Vec<_>>();
+            Ok(storage.add_tree(&labels).into())
+        }
+        (b"evaluation_start", [input, operation]) => {
+            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            let operation = match unsigned(storage, *operation)? {
+                1 => EvaluationOperation::Evaluate,
+                2 => EvaluationOperation::Apply,
+                3 => EvaluationOperation::Force,
+                4 => EvaluationOperation::Think,
+                6 => EvaluationOperation::Select,
+                _ => return Err(Error::Invalid.into()),
+            };
+            let child = match (operation, input.view()) {
+                (EvaluationOperation::Force, _) => Some((input, EvaluationOperation::Think)),
+                (EvaluationOperation::Think, HandleView::Thunk(thunk))
+                    if !matches!(thunk.view(), ThunkView::Identification(_)) =>
+                {
+                    Some((
+                        object_descriptor(input).into(),
+                        EvaluationOperation::Evaluate,
+                    ))
+                }
+                (EvaluationOperation::Evaluate, HandleView::Encode(encode)) => {
+                    let thunk = match encode.view() {
+                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
+                    };
+                    Some((thunk.into(), EvaluationOperation::Force))
+                }
+                _ => None,
+            };
+            let children = child
+                .into_iter()
+                .filter_map(|(child, operation)| {
+                    storage
+                        .canonicalize(child)
+                        .ok()
+                        .map(Handle::from)
+                        .map(|child| (*child.as_bytes(), Some(operation)))
+                })
+                .collect();
+            shared.advised.lock().insert(
+                (*input.as_bytes(), Some(operation)),
+                EvaluationTask {
+                    id: *input.as_bytes(),
+                    operation: Some(operation),
+                    children,
+                    ..EvaluationTask::default()
+                },
+            );
+            kernel::host::os::task_advice(*input.as_bytes(), Some(operation), b"fix::title", b"");
+            Ok(number(0))
+        }
+        (b"evaluation_finish", [input, operation]) => {
+            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            let operation = match unsigned(storage, *operation)? {
+                1 => EvaluationOperation::Evaluate,
+                2 => EvaluationOperation::Apply,
+                3 => EvaluationOperation::Force,
+                4 => EvaluationOperation::Think,
+                6 => EvaluationOperation::Select,
+                _ => return Err(Error::Invalid.into()),
+            };
+            shared
+                .advised
+                .lock()
+                .remove(&(*input.as_bytes(), Some(operation)));
+            kernel::host::os::task_finished(*input.as_bytes(), Some(operation));
+            Ok(number(0))
+        }
+        (b"load_start", [input, source, destination]) => {
+            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            let endpoint = |value| -> Result<Vec<alloc::string::String>, Error> {
+                let name = text(storage, value)?;
+                Ok(if name.is_empty() {
+                    Vec::new()
+                } else {
+                    alloc::vec![name]
+                })
+            };
+            shared.advised.lock().insert(
+                (*input.as_bytes(), Some(EvaluationOperation::Load)),
+                EvaluationTask {
+                    id: *input.as_bytes(),
+                    operation: Some(EvaluationOperation::Load),
+                    transfer: Some((endpoint(*source)?, endpoint(*destination)?)),
+                    ..EvaluationTask::default()
+                },
+            );
+            kernel::host::os::evaluation_progress(shared.snapshot());
+            Ok(number(0))
+        }
+        (b"load_finish", [input]) => {
+            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            shared
+                .advised
+                .lock()
+                .remove(&(*input.as_bytes(), Some(EvaluationOperation::Load)));
+            kernel::host::os::evaluation_progress(shared.snapshot());
+            Ok(number(0))
+        }
+        (b"progress_snapshot", []) => {
+            let bytes = postcard::to_allocvec(&shared.snapshot()).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_progress", [location, snapshot]) => {
+            let location = text(storage, *location)?;
+            let bytes = storage
+                .get_blob(Blob::try_from(*snapshot).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let mut snapshot: EvaluationSnapshot =
+                postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            for machine in &mut snapshot.machines {
+                machine.location.insert(0, location.clone());
+            }
+            kernel::host::os::evaluation_progress(snapshot.clone());
+            shared.remote_progress.lock().insert(location, snapshot);
+            Ok(number(0))
+        }
+        (b"sleep", [milliseconds]) => {
+            kernel::host::os::sleep(unsigned(storage, *milliseconds)?);
+            Ok(number(0))
+        }
         (b"log", [message]) => {
             kernel::println!("{}", text(storage, *message)?);
             Ok(number(0))
@@ -1307,7 +1554,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .iter()
                 .map(|child| {
                     storage
-                        .canonicalize(object_descriptor(*child).into())
+                        .canonicalize(*child)
                         .map(|child| *Handle::from(child).as_bytes())
                         .map_err(|error| {
                             TaskError::Message(alloc::format!(
@@ -1316,6 +1563,26 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            if completed == total {
+                shared
+                    .advised
+                    .lock()
+                    .remove(&(task, Some(EvaluationOperation::Evaluate)));
+            } else {
+                let mut tasks = shared.advised.lock();
+                let entry = tasks
+                    .entry((task, Some(EvaluationOperation::Evaluate)))
+                    .or_insert_with(|| EvaluationTask {
+                        id: task,
+                        operation: Some(EvaluationOperation::Evaluate),
+                        ..EvaluationTask::default()
+                    });
+                entry.progress = Some((completed, total));
+                entry.children = children
+                    .iter()
+                    .map(|child| (*child, Some(EvaluationOperation::Evaluate)))
+                    .collect();
+            }
             kernel::host::os::tree_progress(task, children, completed, total);
             if completed == total {
                 shared.progress_trees.lock().remove(&key);

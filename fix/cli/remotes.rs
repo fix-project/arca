@@ -137,12 +137,14 @@ pub fn clone(
     let path = directory.join(".fix");
     std::fs::create_dir(&path)?;
     let path = path.to_str().ok_or("repository path is not UTF-8")?;
-    let repository = Repository::init(path)?;
-    repository.set_remotes(vec![Remote {
+    let repository = crate::commands::init_repository(path)?;
+    let mut remotes = repository.remotes()?;
+    remotes.push(Remote {
         scheduler: None,
         collector: None,
         ..remote
-    }])?;
+    });
+    repository.set_remotes(remotes)?;
     let count = refs.len();
     repository.set_remote_refs("origin", refs)?;
     common::progress::println(format!(
@@ -196,7 +198,7 @@ pub(crate) fn resolve(repository: &Repository, reference: &str) -> Result<[u8; 3
 }
 
 pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Result<Value> {
-    let progress = common::progress::Progress::activity(format!("Fetching {reference}"));
+    let progress = common::progress::Progress::activity(format!("Load {reference} -> local"));
     progress.message("locating the remote ref");
     let (remote, _) = split(reference)?;
     let config = client.remote_config()?;
@@ -269,7 +271,7 @@ pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Resu
         "retrieving {} objects ({total} backing bytes)",
         requested.len()
     ));
-    let download = common::progress::Progress::bytes(format!("Receiving {reference}"), total);
+    let download = common::progress::Progress::bytes(format!("Load {reference} -> local"), total);
     for name in requested {
         let length = fixhandle::Handle::parse_ref(&name).unwrap().byte_len();
         let mut data = Vec::new();

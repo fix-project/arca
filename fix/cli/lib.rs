@@ -670,6 +670,26 @@ impl Client {
             "{operation} {}",
             label.as_deref().unwrap_or(input)
         ));
+        let names = self
+            .storage
+            .repository()
+            .labels()
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|label| {
+                self.storage
+                    .repository()
+                    .read_label(&label)
+                    .ok()
+                    .map(|handle| (*handle.as_bytes(), label))
+            })
+            .collect::<Vec<_>>();
+        let mut input_name = [0; 32];
+        let input_name = hex::decode_to_slice(input, &mut input_name)
+            .ok()
+            .map(|_| input_name);
+        progress.evaluation_names(input_name, names);
         let remotes = self.remote_config()?;
         let trust = remotes.policy.trusted_compilers.join("\n");
         let mut argv = vec!["fix".into(), "--trust".into(), trust];

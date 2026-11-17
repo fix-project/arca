@@ -55,6 +55,7 @@ impl Node {
         &self,
         policy: &(impl super::Scheduler + ?Sized),
     ) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(self.key.0, &self.input);
         match self.key.0 {
             1 => policy.eval(&self.input).await,
             2 => policy.apply(&self.input).await,

@@ -33,6 +33,10 @@ fn repository(name: &str) -> PathBuf {
         .arg(format!("collector={}", input(env!("COLLECTOR")).display()))
         .arg(format!("add={}", input(env!("ADD")).display()))
         .arg(format!("fix-parser={}", input(env!("PARSER")).display()))
+        .arg(format!(
+            "scheduler-failure={}",
+            input(env!("SCHEDULER_FAILURE")).display()
+        ))
         .current_dir(&directory)
         .output()
         .unwrap();
@@ -72,6 +76,29 @@ fn client(directory: &Path) -> Client {
         },
     )
     .unwrap()
+}
+
+#[test]
+fn scheduler_failures_report_the_scheduler_and_guest_error() {
+    let directory = repository("scheduler-errors");
+    for (input, expected) in [
+        (0u64, "Rust panic: named input cannot be loaded"),
+        (1u64, "unexpected scheduler result"),
+    ] {
+        let scheduler = "scheduler-failure";
+        let mut options = client(&directory).options().clone();
+        options.scheduler = scheduler.into();
+        let mut client = Client::open(&directory, options).unwrap();
+        let program = client.lookup(scheduler).unwrap();
+        let program = client.save(&program).unwrap();
+        let input = client.blob(&input.to_le_bytes()).unwrap();
+        let error = match client.eval(&input) {
+            Ok(_) => panic!("expected the malformed scheduler invocation to fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(&program), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]

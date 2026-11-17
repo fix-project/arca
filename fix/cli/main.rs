@@ -308,7 +308,26 @@ fn run() -> Result<u8> {
         .as_ref()
         .map(fixcli::PerfCapture::start)
         .transpose()?;
+    let evaluation = match &command {
+        Some(Command::Eval { .. }) => Some("evaluate"),
+        Some(Command::Think { .. }) => Some("think"),
+        Some(Command::Compile { .. }) => Some("compile"),
+        Some(Command::Run { .. }) => Some("run"),
+        None if expression.is_some() => Some("evaluate"),
+        _ => None,
+    };
+    let progress = evaluation.map(|operation| {
+        common::progress::Progress::advised(format!(
+            "{operation} {}",
+            global.label.as_deref().unwrap_or("expression")
+        ))
+    });
     let result = run_command(global, command, expression);
+    if let Some(progress) = progress
+        && matches!(result, Ok(0))
+    {
+        progress.finish();
+    }
     if let Some(perf) = perf {
         perf.finish()?;
     }

@@ -7,6 +7,62 @@ use serde::{Deserialize, Serialize};
 
 pub use embedded_io::ErrorKind;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EvaluationOperation {
+    Evaluate,
+    Think,
+    Force,
+    Apply,
+    Select,
+    Load,
+}
+
+impl core::fmt::Display for EvaluationOperation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Evaluate => "Evaluate",
+            Self::Think => "Think",
+            Self::Force => "Force",
+            Self::Apply => "Apply",
+            Self::Select => "Select",
+            Self::Load => "Load",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationSnapshot {
+    pub machines: Vec<MachineProgress>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MachineProgress {
+    pub location: Vec<String>,
+    pub elapsed_ns: u64,
+    pub workers: u64,
+    pub busy_workers: u64,
+    pub queued: u64,
+    pub peak_busy_workers: u64,
+    pub peak_queued: u64,
+    pub completed: u64,
+    pub privileged_completed: u64,
+    pub worker_ns: u64,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub tasks: Vec<EvaluationTask>,
+    pub labels: Vec<([u8; 32], String)>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationTask {
+    pub id: [u8; 32],
+    pub title: String,
+    pub operation: Option<EvaluationOperation>,
+    pub transfer: Option<(Vec<String>, Vec<String>)>,
+    pub progress: Option<(u64, u64)>,
+    pub children: Vec<([u8; 32], Option<EvaluationOperation>)>,
+}
+
 /// A control message and the id that pairs a response with its request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Tagged<T> {
@@ -17,8 +73,12 @@ pub struct Tagged<T> {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
     GetArgs,
+    ObserveEvaluation,
+    EvaluationProgress(EvaluationSnapshot),
+    Sleep(u64),
     TaskAdvice {
         task: [u8; 32],
+        operation: Option<EvaluationOperation>,
         key: Vec<u8>,
         payload: Vec<u8>,
     },
@@ -28,7 +88,10 @@ pub enum Request<B = Region> {
         completed: u64,
         total: u64,
     },
-    TaskFinished([u8; 32]),
+    TaskFinished {
+        task: [u8; 32],
+        operation: Option<EvaluationOperation>,
+    },
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),

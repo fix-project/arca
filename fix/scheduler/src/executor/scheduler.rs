@@ -37,6 +37,7 @@ pub trait Scheduler {
 
     /// Evaluate without creating coupons, recursing through the scheduler's steps.
     async fn default_eval(&self, input: &Value) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(1, input);
         if input.value_type() == ValueType::Encode {
             let thunk = thunk(self, input).await?;
             let forced = Box::pin(self.force(&thunk)).await?;
@@ -68,6 +69,7 @@ pub trait Scheduler {
 
     /// Perform one thunk step without creating coupons.
     async fn default_think(&self, input: &Value) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(4, input);
         let data = self.load(input).await?;
         let kind = input.unsound_thunk_type()?;
         if kind == ThunkType::Identification {
@@ -83,6 +85,7 @@ pub trait Scheduler {
 
     /// Follow thunk results without creating coupons.
     async fn default_force(&self, input: &Value) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(3, input);
         let result = Box::pin(self.think(input)).await?;
         if matches!(result.value_type(), ValueType::Object | ValueType::Ref) {
             return Ok(result);
@@ -93,11 +96,13 @@ pub trait Scheduler {
 
     /// Run an ordinary application without requesting an Apply coupon.
     async fn default_apply(&self, input: &Value) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(2, input);
         crate::kernel::run(input, &mut |advice| self.on_advice(advice)).await
     }
 
     /// Select a value without requesting a Select coupon.
     async fn default_select(&self, input: &Value) -> Result<Value, Error> {
+        let _evaluation = crate::progress::evaluation(6, input);
         crate::storage::selection(input)
     }
 

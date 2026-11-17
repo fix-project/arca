@@ -64,3 +64,19 @@ rust_test(
     edition = "2024",
     size = "small",
 )
+
+rust_test(
+    name = "remote_compile_test",
+    srcs = ["tests/remote_compile.rs"],
+    edition = "2024",
+    deps = ["//fix/remote:testing"],
+    data = ["//fix/cli:fix", "//bootstrap:seed", "//programs/fix:addblob_module"],
+    rustc_env = {
+        "FIX": "$(rootpath //fix/cli:fix)",
+        "SEED": "$(rootpath //bootstrap:seed)",
+        "MODULE": "$(rootpath //programs/fix:addblob_module)",
+    },
+    size = "large",
+    timeout = "moderate",
+    tags = ["kvm", "local", "manual"],
+)

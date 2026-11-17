@@ -53,6 +53,21 @@ impl Session {
             .as_ref()
             .map(|stream| stream.as_fd().try_clone_to_owned())
     }
+    pub fn wait_for_stop(&self, timeout: std::time::Duration) {
+        let mut descriptor = libc::pollfd {
+            fd: self.cancel.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
+            );
+        }
+    }
+
     pub fn stopped(&self) -> bool {
         self.status.load(Ordering::Acquire) != 256
     }

@@ -387,24 +387,46 @@ impl<'a> OnePass<'a> {
                     .transpose()?
                     .unwrap_or(1);
             } else {
-                let inventory = storage::inventory(request.input())?;
-                for (index, worker) in workers.iter().enumerate() {
-                    let bytes = inventory
-                        .required
-                        .iter()
-                        .filter(|(name, _)| {
-                            if index == 0 {
-                                inventory.local.contains(name)
-                            } else {
-                                worker.data.contains(name)
-                            }
+                let target = storage::identify(request.input())?;
+                let mut root = input;
+                root[31] &= 0xe0;
+                let present = workers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, worker)| {
+                        (if index == 0 {
+                            target.is_some()
+                        } else {
+                            worker.data.contains(&root)
                         })
-                        .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
-                    if bytes > 0 {
-                        job.present.insert(index, bytes);
+                        .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if !present.is_empty() {
+                    let size = storage::byte_size(target.as_ref().unwrap_or(request.input()))?;
+                    for worker in present {
+                        job.present.insert(worker, size);
+                    }
+                } else {
+                    let inventory = storage::inventory(request.input())?;
+                    for (index, worker) in workers.iter().enumerate() {
+                        let bytes = inventory
+                            .required
+                            .iter()
+                            .filter(|(name, _)| {
+                                if index == 0 {
+                                    inventory.local.contains(name)
+                                } else {
+                                    worker.data.contains(name)
+                                }
+                            })
+                            .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
+                        if bytes > 0 {
+                            job.present.insert(index, bytes);
+                        }
                     }
                 }
-                if let Some(target) = storage::identify(request.input())? {
+                if let Some(target) = target {
                     let read = |name: &[u8]| -> Result<Option<u64>, Error> {
                         let key = storage::canonical_value(&fixscheduler::shell::capture(tree![
                             &target,

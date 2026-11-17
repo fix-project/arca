@@ -38,6 +38,7 @@ pub async fn apply(
     combination: &Value,
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::operation(2, combination);
     observed(
         crate::io::Io
             .application(tree![Blob::create(b"callable_apply"), combination])
@@ -52,6 +53,7 @@ pub async fn run(
     combination: &Value,
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    let _evaluation = crate::progress::operation(2, combination);
     observed(
         crate::io::Io
             .application(tree![Blob::create(b"callable_run"), combination])

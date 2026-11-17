@@ -11,13 +11,20 @@ pub struct Inventory {
 }
 
 pub fn inventory(input: &Value) -> Result<Inventory, Error> {
-    let mut pending = alloc::vec![input.clone()];
+    let mut pending = alloc::vec![(input.clone(), true)];
     let mut seen = BTreeSet::new();
     let mut result = Inventory {
         required: Vec::new(),
         local: BTreeSet::new(),
     };
-    while let Some(value) = pending.pop() {
+    while let Some((value, root)) = pending.pop() {
+        if !root && value.value_type() != ValueType::Object {
+            continue;
+        }
+        let raw = value.raw_handle_bytes()?;
+        if raw[31] & 0xe0 == 0 {
+            continue;
+        }
         let available = storage::identify(&value)?;
         let value = match &available {
             Some(object) => object.clone(),
@@ -35,7 +42,7 @@ pub fn inventory(input: &Value) -> Result<Inventory, Error> {
         if available.is_some() {
             result.local.insert(name);
             if value.data_type()? == DataType::Tree {
-                pending.extend(fields(&value)?);
+                pending.extend(fields(&value)?.into_iter().map(|child| (child, false)));
             }
         }
     }
@@ -43,11 +50,8 @@ pub fn inventory(input: &Value) -> Result<Inventory, Error> {
 }
 
 pub fn byte_size(value: &Value) -> Result<u64, Error> {
-    Ok(value
-        .len()?
-        .saturating_mul(if value.data_type()? == DataType::Tree {
-            32
-        } else {
-            1
-        }))
+    let bytes = value.raw_handle_bytes()?;
+    fixhandle::Handle::parse_ref(&bytes)
+        .map(|handle| handle.byte_len())
+        .map_err(|_| Error::WrongType)
 }

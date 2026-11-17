@@ -302,9 +302,13 @@ impl Plumbing {
 }
 
 pub fn init() -> Result<(), CliError> {
+    init_repository(".fix").map(|_| ())
+}
+
+pub(crate) fn init_repository(path: &str) -> Result<Repository, CliError> {
     let bootstrap = crate::bootstrap_store::repository()
         .map_err(|error| CliError::Backend(error.to_string()))?;
-    let repository = Repository::init(".fix")?;
+    let repository = Repository::init(path)?;
     let mut remotes = repository.remotes()?;
     if !remotes.iter().any(|remote| remote.name == "bootstrap") {
         remotes.push(fixrepository::Remote {
@@ -315,7 +319,7 @@ pub fn init() -> Result<(), CliError> {
         });
         repository.set_remotes(remotes)?;
     }
-    Ok(())
+    Ok(repository)
 }
 
 fn print(output: &mut Output, handle: impl core::fmt::Display) -> Result<(), CliError> {

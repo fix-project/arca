@@ -174,3 +174,18 @@ Panic and trap responses are reported as parser errors, with the source and
 parser name. The envelope lets expressions contain literal error-shaped values
 without treating those values as parser failures. Runtime failures include the
 operation, input name, and runtime diagnostic alongside their exit status.
+
+Evaluation has one overall activity row, rows for labeled computations, and
+application task titles and counts reported through advice. Tasks identify the
+Fix value and operation: Evaluate, Think, Force, Apply, Select, or Load. Load
+shows both source and destination. Each evaluation row names its location:
+`local`, a configured remote name, or a route through nested remotes. The same label can name a Thunk and the evaluation of its combination.
+Anonymous internal traversal is collapsed; the input's own Tree-child count
+remains visible. Transfer byte bars are suppressed during evaluation.
+
+Each participating Fix runtime also reports busy workers, its application-worker
+queue, and allocated VM memory. These are runtime measurements, not host load
+averages or process RSS. The final report includes application and collector
+invocation counts, worker time, peak worker occupancy and queue depth, and the
+largest sampled VM allocation. Worker time includes time spent inside worker
+invocations, including host scheduling delays; it is not measured CPU time.

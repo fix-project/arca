@@ -6,7 +6,10 @@ use crate::{
     shell::{Value, child},
 };
 use alloc::{string::String, vec::Vec};
-use core::task::Poll;
+use core::{
+    future::{Future, poll_fn},
+    task::Poll,
+};
 use fixwasm::{Blob, Error, Value as AsValue, tree};
 
 fn as_bool(value: &Value) -> Result<bool, Error> {
@@ -277,13 +280,49 @@ async fn connection(
             6 => Node::select(input)?,
             _ => return Err(Error::WrongType.into()),
         };
-        let result = if let Some(graph) = graph {
-            graph.defer(&node).await?
-        } else {
-            node.dispatch(policy).await?
+        let reporting = crate::progress::operation(incoming.task.operation, input);
+        protocol::asynchronous::send(
+            &mut stream,
+            protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+        )
+        .await?;
+        let evaluation = async {
+            let result = if let Some(graph) = graph {
+                graph.defer(&node).await?
+            } else {
+                node.dispatch(policy).await?
+            };
+            collector::validate(result, incoming.task.operation, input)?.ok_or(Error::WrongType)
         };
-        let result =
-            collector::validate(result, incoming.task.operation, input)?.ok_or(Error::WrongType)?;
+        let mut evaluation = core::pin::pin!(evaluation);
+        let result = loop {
+            let tick = stream.1.request(tree![Blob::create(b"sleep"), 250u64]);
+            let mut tick = core::pin::pin!(tick);
+            let result = poll_fn(|cx| {
+                if let Poll::Ready(result) = evaluation.as_mut().poll(cx) {
+                    return Poll::Ready(Some(result));
+                }
+                if tick.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(None);
+                }
+                Poll::Pending
+            })
+            .await;
+            protocol::asynchronous::send(
+                &mut stream,
+                protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+            )
+            .await?;
+            if let Some(result) = result {
+                drop(reporting);
+                protocol::asynchronous::send(
+                    &mut stream,
+                    protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+                )
+                .await?;
+                break result?;
+            }
+        };
         let encoded =
             export(core::slice::from_ref(&result), &[]).map_err(ConnectionError::Operation)?;
         let transfer = protocol::Transfer::decode(&encoded).map_err(|_| Error::WrongType)?;

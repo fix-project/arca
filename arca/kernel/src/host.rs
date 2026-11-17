@@ -94,6 +94,29 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn observe_evaluation() -> bool {
+        matches!(
+            crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&common::protocol::control::Request::ObserveEvaluation),
+            common::protocol::control::Response::Bool(true)
+        )
+    }
+
+    pub fn evaluation_progress(snapshot: common::protocol::control::EvaluationSnapshot) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::EvaluationProgress(snapshot),
+        );
+    }
+
+    pub fn sleep(milliseconds: u64) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::Sleep(milliseconds));
+    }
+
     pub fn tree_progress(task: [u8; 32], children: Vec<[u8; 32]>, completed: u64, total: u64) {
         let _ = crate::pipe::HOST.get().unwrap().request(
             &common::protocol::control::Request::TreeProgress {
@@ -105,17 +128,26 @@ pub mod os {
         );
     }
 
-    pub fn task_finished(task: [u8; 32]) {
+    pub fn task_finished(
+        task: [u8; 32],
+        operation: Option<common::protocol::control::EvaluationOperation>,
+    ) {
         let _ = crate::pipe::HOST
             .get()
             .unwrap()
-            .request(&common::protocol::control::Request::TaskFinished(task));
+            .request(&common::protocol::control::Request::TaskFinished { task, operation });
     }
 
-    pub fn task_advice(task: [u8; 32], key: &[u8], payload: &[u8]) {
+    pub fn task_advice(
+        task: [u8; 32],
+        operation: Option<common::protocol::control::EvaluationOperation>,
+        key: &[u8],
+        payload: &[u8],
+    ) {
         let _ = crate::pipe::HOST.get().unwrap().request(
             &common::protocol::control::Request::TaskAdvice {
                 task,
+                operation,
                 key: key.to_vec(),
                 payload: payload.to_vec(),
             },
