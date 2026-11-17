@@ -153,12 +153,11 @@ git_override(
     patch_strip = 1,
 )
 
-git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
-
-git_repository(
+http_archive(
     name = "llvm-raw",
-    remote = "https://github.com/fix-project/llvm-project.git",
-    commit = "3c24197a97c8f1200596d2dc3dd4335960a3bbc6",
+    urls = ["https://github.com/fix-project/llvm-project/archive/4572d948ac4ac5ce7a6b8e73af1aa63fabdd8f3b.tar.gz"],
+    sha256 = "b33ab3e187d583c844fe813550bac6be124e34a3c0f3801202690c9871033879",
+    strip_prefix = "llvm-project-4572d948ac4ac5ce7a6b8e73af1aa63fabdd8f3b",
     build_file = "//bootstrap:llvm.BUILD.bazel",
     patches = ["//bootstrap:toolchain-tags.patch", "//bootstrap:llvm-permissions.patch"],
     patch_args = ["-p1"],
