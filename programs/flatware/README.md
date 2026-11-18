@@ -19,4 +19,4 @@ snapshots.
 
 This build has no `texmf.cnf`, so
 `TEXINPUTS` and `TFMFONTS` name the directories searched for input files and
-font metrics. `cmr10.tfm` is `texk/web2c/tests/cmr10.tfm` from TeX Live.
+font metrics. `//third_party/tex:cmr10` copies `cmr10.tfm` from `texk/web2c/tests` in TeX Live.

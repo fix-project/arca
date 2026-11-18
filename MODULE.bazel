@@ -140,7 +140,7 @@ http_archive(
     urls = ["https://github.com/tex-live/texlive-source/archive/dce038dd1bd98fac739254da4a2066c8347cdf6c.tar.gz"],
     sha256 = "de7e13512e32f1676007046de98ea217a456aa64a144455e09aac0a76a8c09c4",
     strip_prefix = "texlive-source-dce038dd1bd98fac739254da4a2066c8347cdf6c",
-    build_file_content = 'filegroup(name = "sources", srcs = glob(["**"]), visibility = ["//visibility:public"])\nexports_files(["configure"])',
+    build_file_content = 'filegroup(name = "sources", srcs = glob(["**"]), visibility = ["//visibility:public"])\nexports_files(["configure", "texk/web2c/tests/cmr10.tfm"])',
     patches = [
         "//third_party/tex:wasip1.patch",
     ],

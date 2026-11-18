@@ -28,3 +28,11 @@ genrule(
     ],
     visibility = ["//programs/flatware:__pkg__"],
 )
+
+genrule(
+    name = "cmr10",
+    srcs = ["@texlive_src//:texk/web2c/tests/cmr10.tfm"],
+    outs = ["cmr10.tfm"],
+    cmd = "cp $< $@",
+    visibility = ["//programs/flatware:__pkg__"],
+)
