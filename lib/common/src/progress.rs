@@ -43,8 +43,8 @@ struct State {
     closed: Mutex<bool>,
 }
 
+#[derive(Default)]
 struct MachineDisplay {
-    progress: Progress,
     tasks: BTreeMap<TaskKey, Task>,
     stats: MachineProgress,
     peak_busy: u64,
@@ -53,7 +53,6 @@ struct MachineDisplay {
     completed: u64,
     privileged_completed: u64,
     cpu_ns: Option<u64>,
-    cpu_load: Option<f64>,
     bytes_sent: u64,
     bytes_received: u64,
 }
@@ -416,28 +415,6 @@ pub fn observing_evaluation() -> bool {
     advised().is_some()
 }
 
-fn availability(status: Option<&RemoteAvailability>, used: bool) -> String {
-    let message = match status {
-        Some(RemoteAvailability::Configured) => "configured; not contacted".into(),
-        Some(RemoteAvailability::Connecting) => "connecting".into(),
-        Some(RemoteAvailability::Available { workers, .. }) => {
-            if *workers == 0 {
-                "storage available".into()
-            } else if used {
-                "available".into()
-            } else {
-                "available; unused".into()
-            }
-        }
-        Some(RemoteAvailability::Unavailable(error)) => format!("unavailable: {error}"),
-        None => String::new(),
-    };
-    message
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect()
-}
-
 fn byte_unit(bytes: u64) -> (f64, &'static str) {
     for (scale, unit) in [
         (1u64 << 40, "TiB"),
@@ -478,34 +455,6 @@ fn capacity(machine: &MachineProgress) -> (Option<u64>, Option<u64>) {
     }
 }
 
-fn load_bar(fraction: f64) -> String {
-    let filled = (fraction.clamp(0.0, 1.0) * 10.0).round() as usize;
-    format!("[{}{}]", "█".repeat(filled), "░".repeat(10 - filled))
-}
-
-impl MachineDisplay {
-    fn new(location: &str) -> Self {
-        let progress = Progress::new(format!("  {location}"), None, false);
-        if let Some(state) = &progress.0 {
-            state.last_report.store(u64::MAX, Ordering::Relaxed);
-        }
-        Self {
-            progress,
-            tasks: BTreeMap::new(),
-            stats: MachineProgress::default(),
-            peak_busy: 0,
-            peak_queue: 0,
-            peak_memory: 0,
-            completed: 0,
-            privileged_completed: 0,
-            cpu_ns: None,
-            cpu_load: None,
-            bytes_sent: 0,
-            bytes_received: 0,
-        }
-    }
-}
-
 fn report_evaluation(state: &State, outcome: &str) -> bool {
     let machines = state.machines.lock().unwrap();
     if machines.is_empty() || state.reported.swap(true, Ordering::Relaxed) {
@@ -517,9 +466,6 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
         }
     }
     for machine in machines.values() {
-        if let Some(progress) = &machine.progress.0 {
-            progress.bar.finish_and_clear();
-        }
         for task in machine.tasks.values() {
             if let Some(progress) = &task.progress.0 {
                 progress.bar.finish_and_clear();
@@ -675,26 +621,43 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
             }
         }
         let mut machines = state.machines.lock().unwrap();
-        let machine = machines
-            .entry(location.clone())
-            .or_insert_with(|| MachineDisplay::new(&location));
+        let machine = machines.entry(location.clone()).or_default();
+        let connection = match (&stats.availability, &machine.stats.availability) {
+            (
+                Some(RemoteAvailability::Available { .. }),
+                Some(RemoteAvailability::Available { .. }),
+            ) => None,
+            (Some(RemoteAvailability::Available { workers, .. }), _) => Some((
+                true,
+                if *workers == 0 {
+                    String::from("storage")
+                } else {
+                    format!("{workers} workers")
+                },
+            )),
+            (Some(RemoteAvailability::Unavailable(error)), previous) if !matches!(previous, Some(RemoteAvailability::Unavailable(old)) if old == error) => {
+                Some((
+                    false,
+                    error
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .collect(),
+                ))
+            }
+            _ => None,
+        };
         if !stats.location.is_empty()
-            && matches!(stats.availability, Some(RemoteAvailability::Available { workers, .. }) if workers > 0)
-            && !matches!(
-                machine.stats.availability,
-                Some(RemoteAvailability::Available { .. })
-            )
-            && let Some(RemoteAvailability::Available { workers, .. }) = &stats.availability
+            && let Some((success, result)) = connection
         {
-            line(format!("{location}: available ({workers} workers)"));
+            let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;
+            line(format!(
+                "[{completed}] {}Connect {location} ({result})",
+                if success { "" } else { "FAILED " }
+            ));
         }
         let Some(runtime) = &stats.runtime else {
             machine.stats.location = stats.location;
             machine.stats.availability = stats.availability;
-            machine.progress.message(availability(
-                machine.stats.availability.as_ref(),
-                machine.stats.used,
-            ));
             continue;
         };
         let baseline = (!stats.used && !stats.location.is_empty()).then_some(runtime);
@@ -721,39 +684,6 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         machine.peak_busy = machine.peak_busy.max(runtime.peak_busy_workers);
         machine.peak_queue = machine.peak_queue.max(runtime.peak_queued);
         machine.peak_memory = machine.peak_memory.max(runtime.peak_memory);
-        let cpu = previous.and_then(|old| {
-            let elapsed = runtime.elapsed_ns.checked_sub(old.elapsed_ns)?;
-            let cpu = runtime.cpu_ns?.checked_sub(old.cpu_ns?)?;
-            (elapsed > 0).then_some(cpu as f64 / elapsed as f64 / runtime.workers.max(1) as f64)
-        });
-        if let Some(load) = cpu {
-            machine.cpu_load = Some(load);
-        } else if runtime.cpu_ns.is_none()
-            || previous.is_some_and(|old| old.elapsed_ns > runtime.elapsed_ns)
-        {
-            machine.cpu_load = None;
-        }
-        let cpu = machine.cpu_load.map_or_else(
-            || "CPU —".into(),
-            |load| format!("CPU {} {:.0}%", load_bar(load), load * 100.0),
-        );
-        let memory = if runtime.memory_total > 0 {
-            let (scale, unit) = byte_unit(runtime.memory_total.max(runtime.memory_used));
-            format!(
-                "Mem {} {}/{} {unit}",
-                load_bar(runtime.memory_used as f64 / runtime.memory_total as f64),
-                number(runtime.memory_used as f64 / scale),
-                number(runtime.memory_total as f64 / scale)
-            )
-        } else {
-            "Mem —".into()
-        };
-        let unused = if !stats.location.is_empty() && !machine.stats.used && !stats.used {
-            "  unused"
-        } else {
-            ""
-        };
-        machine.progress.message(format!("{cpu}  {memory}{unused}"));
         {
             let parents: BTreeMap<_, _> = stats
                 .tasks
@@ -824,17 +754,6 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     }
     let steps = snapshot.steps;
     let machines = state.machines.lock().unwrap();
-    let busy: u64 = machines
-        .values()
-        .filter_map(|machine| machine.stats.runtime.as_ref())
-        .map(|runtime| runtime.busy_workers)
-        .sum();
-    let queued: u64 = machines
-        .values()
-        .filter_map(|machine| machine.stats.runtime.as_ref())
-        .map(|runtime| runtime.queued)
-        .sum();
-    let completed: u64 = machines.values().map(|machine| machine.completed).sum();
     let labels = state.labels.lock().unwrap();
     let local = state.advice.lock().unwrap();
     let label_names = &*labels;
@@ -857,13 +776,23 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         })
         .map(|(location, key, task, labels)| {
             format!(
-                " | {location}: {}",
+                "{location}: {}",
                 task_title(key.0, &task.title, task.operation, labels)
             )
         })
-        .unwrap_or_default();
-    *state.detail.lock().unwrap() =
-        format!("{busy} busy, {queued} queued, {completed} applications{current}");
+        .unwrap_or_else(|| {
+            machines
+                .iter()
+                .find_map(|(location, machine)| {
+                    matches!(
+                        machine.stats.availability,
+                        Some(RemoteAvailability::Connecting)
+                    )
+                    .then(|| format!("Connecting to {location}"))
+                })
+                .unwrap_or_else(|| String::from("Evaluating"))
+        });
+    *state.detail.lock().unwrap() = current;
     drop(local);
     drop(labels);
     drop(machines);

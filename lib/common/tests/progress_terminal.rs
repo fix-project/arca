@@ -138,7 +138,11 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
             "{mode}: {visible:?}"
         );
         assert!(
-            visible.contains("[1] local: Apply named computation"),
+            visible.contains("[1] Connect origin (4 workers)"),
+            "{mode}: {visible:?}"
+        );
+        assert!(
+            visible.contains("[2] local: Apply named computation"),
             "{mode}: {visible:?}"
         );
         assert!(

@@ -198,19 +198,14 @@ Live application advice and multi-part Tree evaluation use progress displays
 while running. Counts describe completed units rather than an estimate of time
 remaining. Cancelled discovery attempts do not appear as completed steps.
 
-Every configured remote appears during evaluation. A successful handshake marks
-it available even when no evaluation is delegated to it. Configured but
-uncontacted remotes and failed connections are distinguished from available
-nodes with no evaluation work sent. File remotes are identified as storage.
-Connected nodes report CPU and VM memory load on the existing connection,
-including when unused. Unknown measurements remain unspecified.
+Remote connections appear as numbered steps, showing the remote name and
+worker capacity (or storage-only status). Connection failures include the cause.
 
 With `--summarize`, the final per-node table reports applications, collector calls, CPU time, peak
 worker count / available workers, peak queue length (`Qmax`), peak allocated VM
 memory / VM capacity, and bytes sent and received. Units appear once in each column header; every row
 uses that column's unit. CPU time is measured across the worker process's
-threads, including its VM and host I/O work; live CPU load is its change between
-samples, normalized by the worker count (or one scheduler core with `-j0`). Memory is the VM allocator's allocation,
+threads, including its VM and host I/O work. Memory is the VM allocator's allocation,
 not process RSS; its peak is the allocator's high-water mark. Transport counters
 include protocol and status traffic. Counters accumulate from the first runtime
 sample; memory peaks cover the VM lifetime. A long-running server retains its
