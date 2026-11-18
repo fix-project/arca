@@ -120,6 +120,13 @@ Bindings and the other global options (`-C`, `-l`, `-j`, `--memory`,
 `--memoize`, `--scheduler`, `--collector`, `--profile`) may appear before or
 after the command. Label names, archive paths, and URIs remain host operands.
 
+Set CPU and memory defaults for your account on this machine with
+`fix config --global jobs 8` and `fix config --global memory 16384`.
+Memory is in MiB; `jobs auto` uses all available CPUs and `jobs 0` disables
+local applications. Repository settings override account defaults, and `-j`
+and `--memory` override both. SSH workers read the remote machine account's
+settings independently.
+
 The library accesses storage directly. Evaluation publishes its input to the
 repository and runs the embedded Fix kernel through Arca's VMM library. Each
 invocation owns its VM and returns its result through the repository.

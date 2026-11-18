@@ -43,6 +43,10 @@ pub struct Config {
     pub pull_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
 }
 
 pub fn read_config(path: &Path) -> Result<Config, Error> {
