@@ -177,9 +177,6 @@ impl Cluster {
         let mut inventories = Vec::new();
         for remote in configured()? {
             if remote.address.starts_with("file://") {
-                if inventory {
-                    super::report_status(&remote.name, "connecting", None, "");
-                }
                 let information = if inventory {
                     super::file_information(&remote.address)
                 } else {
@@ -192,16 +189,6 @@ impl Cluster {
                         (Information::default(), Some(error))
                     }
                 };
-                if inventory {
-                    match &failure {
-                        Some(error) => {
-                            super::report_status(&remote.name, "unavailable", None, error)
-                        }
-                        None => {
-                            super::report_status(&remote.name, "available", Some(&information), "")
-                        }
-                    }
-                }
                 inventories.push(information);
                 peers.push(Rc::new(RefCell::new(PeerSlot::default())));
                 failures.push(failure);
@@ -421,8 +408,8 @@ impl Cluster {
             names,
         };
         let remote = pending.peer.as_ref().unwrap().name.clone();
-        let _load = crate::progress::load(&pending.input, "", &remote);
-        protocol::asynchronous::send_proposal(
+        let load = crate::progress::load(&pending.input, "", &remote);
+        let sent = protocol::asynchronous::send_proposal(
             &mut pending.peer.as_mut().unwrap().connection,
             protocol::MAX_MESSAGE_SIZE,
             pending.task.as_ref(),
@@ -431,8 +418,9 @@ impl Cluster {
             super::read_object,
             |name, keys| super::certify(name, keys).ok(),
         )
-        .await
-        .map_err(Failure::Send)?;
+        .await;
+        load.finish(sent.is_ok());
+        sent.map_err(Failure::Send)?;
         Ok(Some(pending))
     }
 
@@ -478,101 +466,113 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
         .await
         .map_err(|error| alloc::format!("{error:?}"))?
         .ok_or_else(|| String::from("could not start bootstrap server"))?;
-    let _load = crate::progress::load(&scheduler, "", &remote.name);
-    protocol::asynchronous::send_proposal(
-        &mut initial,
-        protocol::MAX_MESSAGE_SIZE,
-        Some(&task),
-        None,
-        proposal,
-        super::read_object,
-        |name, keys| super::certify(name, keys).ok(),
-    )
-    .await
-    .map_err(|error| alloc::format!("program transfer failed: {error}"))?;
-    match protocol::asynchronous::receive(&mut initial, protocol::MAX_MESSAGE_SIZE)
+    let load = crate::progress::load(&scheduler, "", &remote.name);
+    let result = async {
+        protocol::asynchronous::send_proposal(
+            &mut initial,
+            protocol::MAX_MESSAGE_SIZE,
+            Some(&task),
+            None,
+            proposal,
+            super::read_object,
+            |name, keys| super::certify(name, keys).ok(),
+        )
         .await
-        .map_err(|error| alloc::format!("program transfer failed: {error}"))?
-    {
-        Some(Message::ObjectReceived(name)) if name == task.input => (),
-        Some(Message::Failure(error)) => return Err(error),
-        response => {
-            return Err(alloc::format!(
-                "unexpected program transfer response: {response:?}"
-            ));
+        .map_err(|error| alloc::format!("program transfer failed: {error}"))?;
+        match protocol::asynchronous::receive(&mut initial, protocol::MAX_MESSAGE_SIZE)
+            .await
+            .map_err(|error| alloc::format!("program transfer failed: {error}"))?
+        {
+            Some(Message::ObjectReceived(name)) if name == task.input => (),
+            Some(Message::Failure(error)) => return Err(error),
+            response => {
+                return Err(alloc::format!(
+                    "unexpected program transfer response: {response:?}"
+                ));
+            }
         }
+        Ok(initial)
     }
-    Ok(initial)
+    .await;
+    load.finish(result.is_ok());
+    result
 }
 
 impl PendingTransfer {
     /// Import an accepted transfer, checking the expected result or evaluation coupon.
     pub async fn receive(mut self) -> Result<Value, Failure> {
         let trusted_keys = super::trusted_keys()?;
-        let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
-        let remote = peer.name.clone();
+        let remote = self.peer.as_ref().ok_or(Failure::Closed)?.name.clone();
         let mut download = None;
-        let incoming = protocol::asynchronous::receive_transfer_observed(
-            &mut peer.connection,
-            protocol::MAX_MESSAGE_SIZE,
-            &Information {
-                parallelism: worker::count()?.try_into().map_err(|_| Failure::Task)?,
-                ..Information::default()
-            },
-            &trusted_keys,
-            |offers| super::missing(offers).ok().flatten(),
-            None,
-            |message| match message {
-                Message::EvaluationProgress(snapshot) => {
-                    let _ = super::report_progress(&remote, snapshot, true);
-                }
-                Message::ProposeTransfer { .. } => {
-                    download.get_or_insert_with(|| crate::progress::load(&self.input, &remote, ""));
-                }
-                _ => (),
-            },
-        )
-        .await
-        .map_err(Failure::Receive)?
-        .ok_or(Failure::Closed)?;
-        drop(download);
-        if incoming.task != self.task || incoming.result.is_none() {
-            return Err(Failure::Task);
-        }
-        let reusable = match status(peer).await {
-            Ok(()) => true,
-            Err(error) => {
-                super::report_status(&remote, "unavailable", None, &error);
-                false
-            }
-        };
-        let bytes = incoming.transfer.encode().map_err(|_| Failure::Task)?;
-        let roots = super::import(&bytes).map_err(Failure::Import)?;
-        let [coupon] = roots.as_slice() else {
-            return Err(Failure::Coupon);
-        };
-        let coupon = if let Some(task) = &self.task {
-            crate::collector::validate(coupon.clone(), task.operation, &self.input)?
-                .ok_or(Failure::Coupon)?
-        } else {
-            let mut expected = storage::canonical_value(&self.input)?.raw_handle_bytes()?;
-            expected[31] &= 0xe0;
-            if incoming.result != Some(expected) || coupon.raw_handle_bytes()? != expected {
+        let result = async {
+            let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
+            let incoming = protocol::asynchronous::receive_transfer_observed(
+                &mut peer.connection,
+                protocol::MAX_MESSAGE_SIZE,
+                &Information {
+                    parallelism: worker::count()?.try_into().map_err(|_| Failure::Task)?,
+                    ..Information::default()
+                },
+                &trusted_keys,
+                |offers| super::missing(offers).ok().flatten(),
+                None,
+                |message| match message {
+                    Message::EvaluationProgress(snapshot) => {
+                        let _ = super::report_progress(&remote, snapshot, true);
+                    }
+                    Message::ProposeTransfer { .. } => {
+                        download
+                            .get_or_insert_with(|| crate::progress::load(&self.input, &remote, ""));
+                    }
+                    _ => (),
+                },
+            )
+            .await
+            .map_err(Failure::Receive)?
+            .ok_or(Failure::Closed)?;
+            if incoming.task != self.task || incoming.result.is_none() {
                 return Err(Failure::Task);
             }
-            coupon.clone()
-        };
-        peer.information.data.append(&mut self.names);
-        if let Some(task) = &self.task
-            && !peer.information.results.contains(task)
-        {
-            peer.information.results.push(task.clone());
-        }
-        if reusable && let Some(slot) = self.slot.upgrade() {
-            slot.borrow_mut().peer = self.peer.take();
-        }
+            let reusable = match status(peer).await {
+                Ok(()) => true,
+                Err(error) => {
+                    super::report_status(&remote, "unavailable", None, &error);
+                    false
+                }
+            };
+            let bytes = incoming.transfer.encode().map_err(|_| Failure::Task)?;
+            let roots = super::import(&bytes).map_err(Failure::Import)?;
+            let [coupon] = roots.as_slice() else {
+                return Err(Failure::Coupon);
+            };
+            let coupon = if let Some(task) = &self.task {
+                crate::collector::validate(coupon.clone(), task.operation, &self.input)?
+                    .ok_or(Failure::Coupon)?
+            } else {
+                let mut expected = storage::canonical_value(&self.input)?.raw_handle_bytes()?;
+                expected[31] &= 0xe0;
+                if incoming.result != Some(expected) || coupon.raw_handle_bytes()? != expected {
+                    return Err(Failure::Task);
+                }
+                coupon.clone()
+            };
+            peer.information.data.append(&mut self.names);
+            if let Some(task) = &self.task
+                && !peer.information.results.contains(task)
+            {
+                peer.information.results.push(task.clone());
+            }
+            if reusable && let Some(slot) = self.slot.upgrade() {
+                slot.borrow_mut().peer = self.peer.take();
+            }
 
-        Ok(coupon)
+            Ok(coupon)
+        }
+        .await;
+        if let Some(load) = download {
+            load.finish(result.is_ok());
+        }
+        result
     }
 }
 

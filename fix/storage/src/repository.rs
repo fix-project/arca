@@ -4,7 +4,9 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use fixrepository::{Repository, RepositoryError};
 use memory::ShardedMap;
 
-#[derive(Debug)]
+/// None reports the start of a read; Some reports whether the read succeeded.
+pub type LoadObserver = dyn Fn(Object, Option<bool>) + Send + Sync;
+
 pub struct RepositoryStorage {
     repository: Repository,
     sources: Vec<Repository>,
@@ -12,6 +14,16 @@ pub struct RepositoryStorage {
     /// One gate per Object being read, so concurrent loads read it once.
     loading: ShardedMap<[u8; HANDLE_SIZE], Arc<Mutex<()>>>,
     resident: ShardedMap<[u8; HANDLE_SIZE], ()>,
+    load_observer: Mutex<Option<Arc<LoadObserver>>>,
+}
+
+impl core::fmt::Debug for RepositoryStorage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RepositoryStorage")
+            .field("repository", &self.repository)
+            .field("sources", &self.sources)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AsRef<memory::MemoryStorage> for RepositoryStorage {
@@ -34,6 +46,7 @@ impl RepositoryStorage {
             memory: memory::MemoryStorage::default(),
             loading: ShardedMap::default(),
             resident: ShardedMap::default(),
+            load_observer: Mutex::new(None),
         }
     }
 
@@ -44,6 +57,11 @@ impl RepositoryStorage {
 
     pub fn add_source(&mut self, source: Repository) {
         self.sources.push(source);
+    }
+
+    /// Observe actual repository reads without materializing additional backing.
+    pub fn observe_loads(&self, observer: Option<Arc<LoadObserver>>) {
+        *self.load_observer.lock() = observer;
     }
 
     pub fn repository(&self) -> &Repository {
@@ -139,6 +157,10 @@ impl RepositoryStorage {
         if self.memory.contains(handle) {
             return true;
         }
+        let observer = self.load_observer.lock().clone();
+        if let Some(observer) = &observer {
+            observer(object, None);
+        }
         let read = |repository: &Repository| match object.view() {
             ObjectView::Blob(blob) => repository.read_blob(*blob),
             ObjectView::Tree(tree) => repository.read_tree(*tree).map(|children| {
@@ -169,6 +191,9 @@ impl RepositoryStorage {
             }
         }
         self.loading.with(&key, |loading| loading.remove(&key));
+        if let Some(observer) = observer {
+            observer(object, Some(bytes.is_ok()));
+        }
         bytes.is_ok()
     }
 

@@ -157,11 +157,23 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
             "{mode}: {visible:?}"
         );
         assert!(
-            visible.contains("[2] local: Apply named computation"),
+            visible.contains("[3] local: Apply named computation"),
             "{mode}: {visible:?}"
         );
         assert!(
             visible.contains("final diagnostic\nfix: finished"),
+            "{mode}: {visible:?}"
+        );
+        assert!(
+            visible.contains("[2] local: Load named input (from origin)"),
+            "{mode}: {visible:?}"
+        );
+        assert!(
+            visible.contains("[4] FAILED origin: Load generated result (from local)"),
+            "{mode}: {visible:?}"
+        );
+        assert!(
+            visible.contains("[5] local: Load resident input (0.00s)"),
             "{mode}: {visible:?}"
         );
         if summarize {

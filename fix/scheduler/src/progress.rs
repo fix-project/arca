@@ -98,11 +98,26 @@ pub(crate) fn operation(operation: u64, input: &Value) -> Evaluation {
     }
 }
 
-pub(crate) struct Load(Option<Value>);
+pub(crate) struct Load {
+    input: Option<Value>,
+    success: Option<bool>,
+}
+impl Load {
+    pub(crate) fn finish(mut self, success: bool) {
+        self.success = Some(success);
+    }
+}
 impl Drop for Load {
     fn drop(&mut self) {
-        if let Some(input) = &self.0 {
-            let _ = coordinate(b"load_finish", core::slice::from_ref(input));
+        if let Some(input) = &self.input {
+            let outcome = match self.success {
+                Some(true) => "completed",
+                Some(false) => "failed",
+                None => "cancelled",
+            };
+            if let Ok(outcome) = capture(fixwasm::Blob::create(outcome)) {
+                let _ = coordinate(b"load_finish", &[input.clone(), outcome]);
+            }
         }
     }
 }
@@ -121,7 +136,10 @@ pub(crate) fn load(input: &Value, source: &str, destination: &str) -> Load {
         Ok(())
     })()
     .is_ok();
-    Load(started.then(|| input.clone()))
+    Load {
+        input: started.then(|| input.clone()),
+        success: None,
+    }
 }
 
 /// End a reported operation without a completion line when its result was reused.

@@ -400,20 +400,25 @@ fn location_name(location: &[String]) -> String {
         .collect()
 }
 
+fn task_location(task: &crate::protocol::control::EvaluationTask, location: &[String]) -> String {
+    match &task.transfer {
+        Some((_, destination)) => location_name(&[location, destination.as_slice()].concat()),
+        None => location_name(location),
+    }
+}
+
 fn reported_title(
     task: &crate::protocol::control::EvaluationTask,
-    machine: &MachineProgress,
+    location: &[String],
     labels: &BTreeMap<[u8; 32], String>,
 ) -> String {
     let title = task_title(task.id, &task.title, task.operation, labels);
     if let Some((source, destination)) = &task.transfer {
-        let source = [machine.location.as_slice(), source.as_slice()].concat();
-        let destination = [machine.location.as_slice(), destination.as_slice()].concat();
-        format!(
-            "{title} ({} -> {})",
-            location_name(&source),
-            location_name(&destination)
-        )
+        if source == destination {
+            return title;
+        }
+        let source = [location, source.as_slice()].concat();
+        format!("{title} (from {})", location_name(&source))
     } else {
         title
     }
@@ -635,14 +640,9 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                 Some(RemoteAvailability::Available { .. }),
                 Some(RemoteAvailability::Available { .. }),
             ) => None,
-            (Some(RemoteAvailability::Available { workers, .. }), _) => Some((
-                true,
-                if *workers == 0 {
-                    String::from("storage")
-                } else {
-                    format!("{workers} workers")
-                },
-            )),
+            (Some(RemoteAvailability::Available { workers, .. }), _) => {
+                Some((true, format!("{workers} workers")))
+            }
             (Some(RemoteAvailability::Unavailable(error)), previous) if !matches!(previous, Some(RemoteAvailability::Unavailable(old)) if old == error) => {
                 Some((
                     false,
@@ -729,7 +729,19 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                     ancestor = *parent;
                 }
                 let task = machine.tasks.entry(key).or_insert_with(|| Task {
-                    progress: Progress(None),
+                    progress: if entry.operation == Some(EvaluationOperation::Load) {
+                        Progress::new(
+                            format!(
+                                "{}: {}",
+                                task_location(entry, &stats.location),
+                                reported_title(entry, &stats.location, &labels)
+                            ),
+                            None,
+                            false,
+                        )
+                    } else {
+                        Progress(None)
+                    },
                     title: entry.title.clone(),
                     operation: entry.operation,
                     depth,
@@ -738,15 +750,19 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                     bar.bar.set_prefix(format!(
                         "{}{}: {}",
                         "  ".repeat(depth),
-                        location,
-                        reported_title(entry, &stats, &labels)
+                        task_location(entry, &stats.location),
+                        reported_title(entry, &stats.location, &labels)
                     ));
                 }
                 task.title = entry.title.clone();
                 if let Some((completed, total)) = entry.progress {
                     if task.progress.0.is_none() && total > 0 && completed < total {
                         task.progress = Progress::new(
-                            format!("{}: {}", location, reported_title(entry, &stats, &labels)),
+                            format!(
+                                "{}: {}",
+                                task_location(entry, &stats.location),
+                                reported_title(entry, &stats.location, &labels)
+                            ),
                             Some(total),
                             false,
                         );
@@ -821,13 +837,15 @@ pub fn evaluation_step(step: EvaluationStep) {
     let mut labels = state.labels.lock().unwrap().clone();
     if step.location.is_empty() {
         state.advice.lock().unwrap().remove(&key);
-    } else if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
+    }
+    if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
         for (name, label) in &machine.stats.labels {
             labels.insert(data_name(*name), label.clone());
         }
         machine.tasks.remove(&key);
     }
-    let title = task_title(step.task.id, &step.task.title, step.task.operation, &labels);
+    let location = task_location(&step.task, &step.location);
+    let title = reported_title(&step.task, &step.location, &labels);
     let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;
     line(format!(
         "[{completed}] {}{location}: {title} ({:.2}s)",

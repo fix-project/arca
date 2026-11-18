@@ -11,6 +11,12 @@ fn main() {
     progress::enable();
     progress::summarize(std::env::args().any(|arg| arg == "--summarize"));
     let evaluation = Progress::advised("Evaluate named batch");
+    let load = EvaluationTask {
+        id: [2; 32],
+        operation: Some(EvaluationOperation::Load),
+        transfer: Some((vec!["origin".into()], Vec::new())),
+        ..EvaluationTask::default()
+    };
     progress::evaluation_progress(EvaluationSnapshot {
         machines: vec![
             MachineProgress {
@@ -23,6 +29,8 @@ fn main() {
                     ..RuntimeStats::default()
                 }),
                 used: true,
+                tasks: vec![load.clone()],
+                labels: vec![([2; 32], "named input".into())],
                 ..MachineProgress::default()
             },
             MachineProgress {
@@ -51,10 +59,40 @@ fn main() {
     diagnostic.write_all(b"preserved\n").unwrap();
     progress::evaluation_step(EvaluationStep {
         location: Vec::new(),
+        task: load,
+        elapsed_ns: 250_000_000,
+        success: true,
+    });
+    progress::evaluation_step(EvaluationStep {
+        location: Vec::new(),
         task: EvaluationTask {
             id: [1; 32],
             operation: Some(EvaluationOperation::Apply),
             title: "named computation".into(),
+            ..EvaluationTask::default()
+        },
+        elapsed_ns: 1_000_000,
+        success: true,
+    });
+    progress::evaluation_step(EvaluationStep {
+        location: Vec::new(),
+        task: EvaluationTask {
+            id: [3; 32],
+            title: "generated result".into(),
+            operation: Some(EvaluationOperation::Load),
+            transfer: Some((Vec::new(), vec!["origin".into()])),
+            ..EvaluationTask::default()
+        },
+        elapsed_ns: 1_000_000,
+        success: false,
+    });
+    progress::evaluation_step(EvaluationStep {
+        location: Vec::new(),
+        task: EvaluationTask {
+            id: [4; 32],
+            title: "resident input".into(),
+            operation: Some(EvaluationOperation::Load),
+            transfer: Some((Vec::new(), Vec::new())),
             ..EvaluationTask::default()
         },
         elapsed_ns: 1_000_000,

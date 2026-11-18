@@ -45,12 +45,13 @@ fn seed(directory: &Path, scheduler: &str) -> Repository {
 struct Worker {
     child: Child,
     logs: BufReader<ChildStderr>,
+    startup: String,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
-        let mut logs = String::new();
+        let mut logs = std::mem::take(&mut self.startup);
         self.logs.read_to_string(&mut logs).unwrap();
         if !logs.is_empty() {
             eprintln!("worker: {logs}");
@@ -219,13 +220,26 @@ fn start_worker(worker_dir: &Path, worker_agent: &Agent, jobs: u64) -> (Worker, 
         .unwrap();
     let mut logs = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
-    logs.read_line(&mut line).unwrap();
-    let address = line
-        .trim()
-        .strip_prefix("listening on ")
-        .expect(&line)
-        .to_string();
-    (Worker { child, logs }, address)
+    let mut startup = String::new();
+    let address = loop {
+        line.clear();
+        assert!(
+            logs.read_line(&mut line).unwrap() > 0,
+            "worker exited before listening: {startup}"
+        );
+        startup.push_str(&line);
+        if let Some(address) = line.trim().strip_prefix("listening on ") {
+            break address.to_string();
+        }
+    };
+    (
+        Worker {
+            child,
+            logs,
+            startup,
+        },
+        address,
+    )
 }
 
 #[test]
@@ -924,8 +938,10 @@ fn remote_labels_and_transfer_modes() {
     sign_seed(&server, &agent, true);
 
     let data = directory.join("data");
-    std::fs::create_dir_all(data.join("fix/bootstrap")).unwrap();
-    std::os::unix::fs::symlink(server.join(".fix"), data.join("fix/bootstrap/.fix")).unwrap();
+    let bootstrap = data.join("fix/bootstrap");
+    seed(&bootstrap, env!("SERIAL"));
+    configuration(&bootstrap.join("user"), &agent, &compiler, &[]);
+    sign_seed(&bootstrap, &agent, true);
     let ssh_dir = directory.join("bin");
     std::fs::create_dir(&ssh_dir).unwrap();
     let ssh = ssh_dir.join("ssh");
@@ -1058,17 +1074,67 @@ fn remote_labels_and_transfer_modes() {
         .into_ref()
         .selection();
     local.write_label("slice", selection.into()).unwrap();
-    let selected = run(
-        &client_dir,
-        &["eval", "--encode", "@label(\"slice\")"],
-        true,
+    let selection_output = command(&client_dir, &["eval", "--encode", "@label(\"slice\")"]);
+    assert!(
+        selection_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selection_output.stderr)
     );
+    let selection_progress = String::from_utf8_lossy(&selection_output.stderr);
+    assert!(
+        selection_progress
+            .lines()
+            .any(|line| line.contains("local: Load ")
+                && line.contains("(from origin)")
+                && (line.contains("origin:payload") || line.contains("payload-ref"))),
+        "{selection_progress}"
+    );
+    let selected = String::from_utf8(selection_output.stdout).unwrap();
     assert_eq!(
         selected.trim(),
         Blob::literal(&payload[1..4])
             .unwrap()
             .as_handle()
             .to_string()
+    );
+    let file_address = format!("file://{}", repository.path());
+    run(&directory, &["clone", &file_address, "file-client"], true);
+    let file_client = directory.join("file-client");
+    let loaded = command(
+        &file_client,
+        &[
+            "--summarize",
+            "pull",
+            "--strict",
+            "origin",
+            "payload",
+            "payload",
+        ],
+    );
+    assert!(
+        loaded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&loaded.stderr)
+    );
+    let diagnostics = String::from_utf8_lossy(&loaded.stderr);
+    assert!(
+        diagnostics.contains("local: Load origin:payload ("),
+        "{diagnostics}"
+    );
+    let summary = diagnostics.split("\nNode ").nth(1).expect("node summary");
+    let nodes: Vec<_> = summary
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(nodes, ["local"]);
+    assert_eq!(
+        Repository::open(file_client.join(".fix").to_str().unwrap())
+            .unwrap()
+            .read_blob(original)
+            .unwrap()
+            .as_ref(),
+        payload
     );
     run(
         &client_dir,
@@ -1082,6 +1148,38 @@ fn remote_labels_and_transfer_modes() {
             .same_encoding(&original.into())
     );
     assert_eq!(local.read_blob(original).unwrap().as_ref(), payload);
+    local
+        .write_label("resident", original.into_ref().into())
+        .unwrap();
+    let resident_selection = local
+        .create_tree(&[
+            original.into_ref().into(),
+            Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
+            Blob::literal(&5u64.to_le_bytes()).unwrap().into(),
+        ])
+        .unwrap()
+        .into_ref()
+        .selection();
+    local
+        .write_label("resident-slice", resident_selection.into())
+        .unwrap();
+    let resident = command(
+        &client_dir,
+        &["eval", "--encode", "@label(\"resident-slice\")"],
+    );
+    assert!(
+        resident.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resident.stderr)
+    );
+    let diagnostics = String::from_utf8_lossy(&resident.stderr);
+    assert!(
+        diagnostics.lines().any(|line| line.contains("local: Load ")
+            && (line.contains("payload") || line.contains("resident"))
+            && !line.contains("(from ")),
+        "{diagnostics}"
+    );
+
     run(
         &client_dir,
         &["pull", "--exact", "origin", "sum", "sum"],

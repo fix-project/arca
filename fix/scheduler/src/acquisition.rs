@@ -68,16 +68,26 @@ pub fn acquire_from(value: &Value, uri: &Value) -> Result<Option<Value>, Error> 
     let size = usize::try_from(u64::from_le_bytes(length))?;
     let uri = bytes(uri)?;
     let uri = core::str::from_utf8(&uri).map_err(|_| Error::WrongType)?;
-    let object = match expected[31] {
-        0x80 => fixwasm::importers::blob(uri, size)?,
-        0xa0 => fixwasm::importers::directory(uri)?,
-        _ => return Ok(None),
+    let source = if uri.starts_with("file://") || !uri.contains("://") {
+        ""
+    } else {
+        uri
     };
-    if let Some(object) = object {
-        let object = storage::put(&Value::from_inner(object))?;
-        if object.raw_handle_bytes()? == expected {
-            return Ok(Some(object));
+    let load = crate::progress::load(value, source, "");
+    let result = (|| {
+        let object = match expected[31] {
+            0x80 => fixwasm::importers::blob(uri, size)?,
+            0xa0 => fixwasm::importers::directory(uri)?,
+            _ => return Ok(None),
+        };
+        if let Some(object) = object {
+            let object = storage::put(&Value::from_inner(object))?;
+            if object.raw_handle_bytes()? == expected {
+                return Ok(Some(object));
+            }
         }
-    }
-    Ok(None)
+        Ok(None)
+    })();
+    load.finish(result.as_ref().is_ok_and(|object| object.is_some()));
+    result
 }

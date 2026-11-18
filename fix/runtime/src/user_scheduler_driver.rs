@@ -31,6 +31,7 @@ pub trait Services: Send + Sync {
     fn remotes(&self) -> &[fixremote::Remote] {
         &[]
     }
+    fn observe_loads(&self, _: Option<Arc<crate::storage::repository::LoadObserver>>) {}
     fn labels(
         &self,
     ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
@@ -149,6 +150,9 @@ impl Services for RepositoryServices {
         let repository = self.storage.repository();
         let value = repository.lookup(&value)?;
         repository.compare_and_write_label(label, expected, value)
+    }
+    fn observe_loads(&self, observer: Option<Arc<crate::storage::repository::LoadObserver>>) {
+        self.storage.observe_loads(observer);
     }
     fn labels(
         &self,
@@ -551,6 +555,27 @@ impl Shared {
         kernel::host::os::evaluation_step(step);
     }
 
+    fn start_load(
+        &self,
+        input: Handle,
+        source: Vec<alloc::string::String>,
+        destination: Vec<alloc::string::String>,
+    ) {
+        self.advised.lock().insert(
+            (*input.as_bytes(), Some(EvaluationOperation::Load)),
+            ActiveTask::new(
+                EvaluationTask {
+                    id: *input.as_bytes(),
+                    operation: Some(EvaluationOperation::Load),
+                    transfer: Some((source, destination)),
+                    ..EvaluationTask::default()
+                },
+                false,
+            ),
+        );
+        kernel::host::os::evaluation_progress(self.snapshot());
+    }
+
     fn finish_task(&self, key: TaskKey, outcome: &str) {
         let task = self.advised.lock().remove(&key);
         kernel::host::os::task_finished(key.0, key.1);
@@ -566,7 +591,10 @@ impl Shared {
                 && outcome != "cached"
                 && (named
                     || !task.progress.title.is_empty()
-                    || key.1 == Some(EvaluationOperation::Apply))
+                    || matches!(
+                        key.1,
+                        Some(EvaluationOperation::Apply | EvaluationOperation::Load)
+                    ))
             {
                 self.record_step(EvaluationStep {
                     location: Vec::new(),
@@ -710,6 +738,7 @@ pub fn start_profiled<
             services
                 .remotes()
                 .iter()
+                .filter(|remote| !remote.address.starts_with("file://"))
                 .map(|remote| {
                     (
                         remote.name.clone(),
@@ -762,6 +791,35 @@ pub fn start_profiled<
         executed: (0..workers).map(|_| AtomicUsize::new(0)).collect(),
         profile: profile.then(|| KMutex::new(BTreeMap::new())),
     });
+
+    let observer = Arc::downgrade(&shared);
+    shared
+        .services
+        .observe_loads(Some(Arc::new(move |object, completion| {
+            let Some(shared) = observer.upgrade() else {
+                return;
+            };
+            let input: Handle = object.into();
+            let mut name = *input.as_bytes();
+            name[31] &= 0xe0;
+            if !shared.labels.iter().any(|(label, _)| {
+                let mut label = *label;
+                label[31] &= 0xe0;
+                label == name
+            }) {
+                return;
+            }
+            match completion {
+                None => shared.start_load(input, Vec::new(), Vec::new()),
+                Some(success) => {
+                    shared.finish_task(
+                        (*input.as_bytes(), Some(EvaluationOperation::Load)),
+                        if success { "completed" } else { "failed" },
+                    );
+                    kernel::host::os::evaluation_progress(shared.snapshot());
+                }
+            }
+        })));
 
     let coordinator = kthread::current();
     let observing = kernel::host::os::observe_evaluation();
@@ -856,6 +914,7 @@ pub fn start_profiled<
     while shared.saving.load(Ordering::Acquire) {
         kthread::park();
     }
+    shared.services.observe_loads(None);
     if observing {
         kernel::host::os::evaluation_progress(shared.snapshot());
     }
@@ -1561,27 +1620,15 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     alloc::vec![name]
                 })
             };
-            shared.advised.lock().insert(
-                (*input.as_bytes(), Some(EvaluationOperation::Load)),
-                ActiveTask::new(
-                    EvaluationTask {
-                        id: *input.as_bytes(),
-                        operation: Some(EvaluationOperation::Load),
-                        transfer: Some((endpoint(*source)?, endpoint(*destination)?)),
-                        ..EvaluationTask::default()
-                    },
-                    false,
-                ),
-            );
-            kernel::host::os::evaluation_progress(shared.snapshot());
+            shared.start_load(input, endpoint(*source)?, endpoint(*destination)?);
             Ok(number(0))
         }
-        (b"load_finish", [input]) => {
+        (b"load_finish", [input, outcome]) => {
             let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
-            shared
-                .advised
-                .lock()
-                .remove(&(*input.as_bytes(), Some(EvaluationOperation::Load)));
+            shared.finish_task(
+                (*input.as_bytes(), Some(EvaluationOperation::Load)),
+                &text(storage, *outcome)?,
+            );
             kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }

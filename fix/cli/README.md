@@ -199,8 +199,16 @@ Live application advice and multi-part Tree evaluation use progress displays
 while running. Counts describe completed units rather than an estimate of time
 remaining. Cancelled discovery attempts do not appear as completed steps.
 
+Loads show the destination as the step's node and identify their source, for
+example `local: Load origin:program (from origin)`. Active loads remain visible
+without an estimated percentage; completed loads remain as numbered steps.
+Named reads from the current repository and file remotes appear under the
+node reading them. File remotes do not appear as separate nodes. The source is
+omitted when it is the same node as the destination. Retrieval through pinned
+source URIs also reports Load activity.
+
 Remote connections appear as numbered steps, showing the remote name and
-worker capacity (or storage-only status). Connection failures include the cause.
+worker capacity. Connection failures include the cause.
 
 With `--summarize`, the final per-node table reports applications, collector calls, CPU time, peak
 worker count / available workers, peak queue length (`Qmax`), peak allocated VM
