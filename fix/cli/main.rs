@@ -51,8 +51,8 @@ struct Global {
     #[arg(long, value_name = "PATH", global = true)]
     perf: Option<PathBuf>,
     /// VM memory budget in MiB, a power of two.
-    #[arg(long, value_name = "MIB", default_value_t = 16384, global = true)]
-    memory: usize,
+    #[arg(long, value_name = "MIB", global = true)]
+    memory: Option<usize>,
     /// Persist coupons: auto, always, or never.
     #[arg(long, value_name = "MODE", default_value_t = Memoization::Auto, global = true)]
     memoize: Memoization,
@@ -287,9 +287,19 @@ impl Global {
             unsigned: self.unsigned,
             jobs: match self.jobs {
                 Some(jobs) => jobs,
-                None => std::thread::available_parallelism()?.get(),
+                None => {
+                    configuration::jobs(settings.get("jobs").map(String::as_str).unwrap_or("auto"))?
+                }
             },
-            memory_mib: self.memory,
+            memory_mib: match self.memory {
+                Some(memory) => configuration::memory(&memory.to_string())?,
+                None => configuration::memory(
+                    settings
+                        .get("memory")
+                        .map(String::as_str)
+                        .unwrap_or("16384"),
+                )?,
+            },
             memoize: self.memoize,
             ..Options::default()
         })

@@ -778,3 +778,61 @@ fn zero_workers_reject_local_applications_without_waiting_for_a_worker() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn account_resource_defaults_and_command_overrides() {
+    let directory = repository("resource-defaults");
+    let config = directory.join("account-config");
+    std::fs::create_dir(&config).unwrap();
+    std::fs::copy(
+        directory.join(".fix/labels/collector"),
+        config.join("trusted_taggers"),
+    )
+    .unwrap();
+    let run = |arguments: &[&str]| {
+        Command::new(input(env!("BACKEND")))
+            .args(["--unsigned", "--memoize", "never"])
+            .args(arguments)
+            .env("FIX_CONFIG_DIR", &config)
+            .env("FIX_TRUST", directory.join(".fix/trust"))
+            .env_remove("FIX_JOBS")
+            .current_dir(&directory)
+            .output()
+            .unwrap()
+    };
+    let succeeds = |arguments: &[&str]| {
+        let output = run(arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    succeeds(&["config", "--global", "jobs", "0"]);
+    succeeds(&["config", "--global", "memory", "2048"]);
+    let expression = "#(1073741824u64 @label(\"add\") 1u64 2u64)";
+    let output = run(&["eval", "--encode", expression]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("local application execution is disabled")
+    );
+    succeeds(&["-j", "1", "eval", "--encode", expression]);
+    succeeds(&["config", "jobs", "1"]);
+    succeeds(&["eval", "--encode", expression]);
+    succeeds(&["config", "--global", "memory", "512"]);
+    let output = run(&["eval", "--encode", expression]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("memory admission rejected"));
+    succeeds(&["--memory", "2048", "eval", "--encode", expression]);
+    succeeds(&["config", "memory", "2048"]);
+    succeeds(&["eval", "--encode", expression]);
+    for (key, value) in [
+        ("jobs", "-1"),
+        ("jobs", "bad"),
+        ("memory", "0"),
+        ("memory", "17"),
+    ] {
+        assert!(!run(&["config", "--global", key, value]).status.success());
+    }
+}

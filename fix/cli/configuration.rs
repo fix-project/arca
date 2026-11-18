@@ -16,6 +16,8 @@ const KEYS: &[(&str, &str)] = &[
     ("compiler", "compile"),
     ("pull.mode", "shallow"),
     ("push.mode", "shallow"),
+    ("jobs", "auto"),
+    ("memory", "16384"),
 ];
 
 #[derive(Subcommand)]
@@ -52,6 +54,8 @@ fn selected<'a>(
         "compiler" => config.compiler.as_ref(),
         "pull.mode" => config.pull_mode.as_ref(),
         "push.mode" => config.push_mode.as_ref(),
+        "jobs" => config.jobs.as_ref(),
+        "memory" => config.memory.as_ref(),
         _ => return Err(format!("unknown Fix setting {key:?}").into()),
     })
 }
@@ -61,6 +65,17 @@ fn select(
     key: &str,
     value: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(value) = &value {
+        match key {
+            "jobs" => {
+                jobs(value)?;
+            }
+            "memory" => {
+                memory(value)?;
+            }
+            _ => {}
+        }
+    }
     if matches!(key, "pull.mode" | "push.mode")
         && let Some(value) = &value
     {
@@ -73,9 +88,29 @@ fn select(
         "compiler" => &mut config.compiler,
         "pull.mode" => &mut config.pull_mode,
         "push.mode" => &mut config.push_mode,
+        "jobs" => &mut config.jobs,
+        "memory" => &mut config.memory,
         _ => return Err(format!("unknown Fix setting {key:?}").into()),
     } = value;
     Ok(())
+}
+
+pub fn jobs(value: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    if value == "auto" {
+        Ok(std::thread::available_parallelism()?.get())
+    } else {
+        value
+            .parse()
+            .map_err(|_| "jobs must be a nonnegative integer or auto".into())
+    }
+}
+
+pub fn memory(value: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|size| *size >= 16 && size.is_power_of_two() && size.checked_mul(1 << 20).is_some())
+        .ok_or_else(|| "memory must be a power of two in MiB, at least 16 MiB".into())
 }
 
 pub fn settings() -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
