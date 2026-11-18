@@ -540,7 +540,6 @@ impl PendingTransfer {
         let trusted_keys = super::trusted_keys()?;
         let remote = self.peer.as_ref().ok_or(Failure::Closed)?.name.clone();
         let mut download = None;
-        let mut result_name = None;
         let result = async {
             let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
             let incoming = protocol::asynchronous::receive_transfer_observed(
@@ -551,26 +550,31 @@ impl PendingTransfer {
                     ..Information::default()
                 },
                 &trusted_keys,
-                |offers| super::missing(offers).ok().flatten(),
+                |offers| {
+                    let missing = super::missing(offers).ok().flatten()?;
+                    let data = offers
+                        .iter()
+                        .filter(|offer| offer.backing && missing.contains(&offer.name))
+                        .max_by_key(|offer| {
+                            (
+                                crate::progress::named(offer.name).unwrap_or(false),
+                                fixhandle::Handle::parse_ref(&offer.name)
+                                    .map(|value| value.byte_len())
+                                    .unwrap_or(0),
+                            )
+                        });
+                    if let Some(data) = data
+                        && let Ok(value) = storage::reference_named(data.name)
+                    {
+                        download = Some(crate::progress::load(&value, &remote, ""));
+                    }
+                    Some(missing)
+                },
                 None,
-                |message| match message {
-                    Message::EvaluationProgress(snapshot) => {
+                |message| {
+                    if let Message::EvaluationProgress(snapshot) = message {
                         let _ = super::report_progress(&remote, snapshot, true);
                     }
-                    Message::ProposeTransfer { result, .. } => result_name = *result,
-                    Message::BlobData(record)
-                    | Message::TreeData(record)
-                    | Message::ShallowTreeData(record)
-                        if record.data.is_some() =>
-                    {
-                        if download.is_none()
-                            && let Some(name) = result_name
-                            && let Ok(value) = storage::reference_named(name)
-                        {
-                            download = Some(crate::progress::load(&value, &remote, ""));
-                        }
-                    }
-                    _ => (),
                 },
             )
             .await

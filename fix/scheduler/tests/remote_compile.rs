@@ -111,14 +111,11 @@ fn cloned_compilation_thunks_can_be_applied() {
         &["create-blob", module.to_str().unwrap()],
         None,
     );
+    let wasm_name = String::from_utf8(wasm.stdout).unwrap();
+    let wasm_name = wasm_name.trim();
     source.run(
         &repository,
-        &[
-            "label",
-            "set",
-            "addblob.wasm",
-            String::from_utf8(wasm.stdout).unwrap().trim(),
-        ],
+        &["label", "set", "addblob.wasm", wasm_name],
         None,
     );
     source.run(
@@ -153,12 +150,23 @@ fn cloned_compilation_thunks_can_be_applied() {
         Some(&bin),
     );
     let cloned = destination.directory.join("repo");
-    let evaluated = destination.run(
+    let evaluated = destination.run_with_jobs(
         &cloned,
-        &["*#(\"\" *@label(\"origin:addblob\") 20u64 22u64)"],
+        &["*#(\"\" *#(\"\" *'@label(\"origin:bootstrap:compile\") *'@label(\"origin:addblob.wasm\")) 20u64 22u64)"],
         Some(&bin),
+        1,
     );
-    eprintln!("{}", String::from_utf8_lossy(&evaluated.stderr));
+    let diagnostics = String::from_utf8_lossy(&evaluated.stderr);
+    eprintln!("{diagnostics}");
+    assert!(
+        diagnostics.contains("origin: Apply compile Wasm"),
+        "{diagnostics}"
+    );
+    let data = format!("{}ffff", &wasm_name[..60]);
+    assert!(
+        !cloned.join(".fix/data").join(data).exists(),
+        "{diagnostics}"
+    );
     let result = String::from_utf8(evaluated.stdout).unwrap();
     let value = destination.run(&cloned, &["read-blob", "--u64", result.trim()], None);
     assert_eq!(String::from_utf8(value.stdout).unwrap().trim(), "42");

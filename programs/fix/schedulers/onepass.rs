@@ -156,7 +156,7 @@ pub struct Job {
     pub cached: BTreeSet<usize>,
     pub output_bytes: u64,
     pub memory_bytes: Option<u64>,
-    pub parallel: bool,
+    pub parallel: u64,
 }
 
 fn unsigned(value: &Value) -> Result<Option<u64>, Error> {
@@ -201,7 +201,8 @@ pub fn assign(
             }
             continue;
         }
-        if !(request.is_eval() || request.is_think() || request.is_select()) {
+        if !(request.is_eval() || request.is_think() || request.is_select() || request.code() == 3)
+        {
             continue;
         }
         if let Some(worker) = job
@@ -212,8 +213,13 @@ pub fn assign(
             assignments.insert(request, (*worker, 0));
             continue;
         }
-        if job.parallel && eligible(job, &workers[0]) {
-            assignments.insert(request, (0, 0));
+        if (request.code() == 3
+            || (request.is_eval() && request.input().value_type() == ValueType::Encode))
+            && job.dependencies.len() == 1
+            && let Some(choice) = assignments.get(job.dependencies.first().unwrap()).copied()
+            && eligible(job, &workers[choice.0])
+        {
+            assignments.insert(request, choice);
             continue;
         }
         let mut present = job.present.clone();
@@ -232,13 +238,21 @@ pub fn assign(
             }
         }
         let local = present.get(&0).copied().unwrap_or(0);
+        let parallelism = |worker: usize| {
+            let capacity = u64::from(workers[worker].parallelism);
+            if job.parallel == 0 {
+                capacity
+            } else {
+                capacity.min(job.parallel)
+            }
+        };
         let choice = present
             .iter()
             .filter(|(worker, _)| eligible(job, &workers[**worker]))
             .max_by_key(|(worker, bytes)| {
                 (
                     **bytes,
-                    workers[**worker].parallelism,
+                    parallelism(**worker),
                     **worker == 0,
                     core::cmp::Reverse(**worker),
                 )
@@ -246,10 +260,20 @@ pub fn assign(
             .map_or_else(
                 || {
                     (
-                        workers
-                            .iter()
-                            .position(|worker| eligible(job, worker))
-                            .unwrap_or(0),
+                        if job.parallel == 0 {
+                            workers.iter().position(|worker| eligible(job, worker))
+                        } else {
+                            (0..workers.len())
+                                .filter(|worker| eligible(job, &workers[*worker]))
+                                .max_by_key(|worker| {
+                                    (
+                                        parallelism(*worker),
+                                        *worker == 0,
+                                        core::cmp::Reverse(*worker),
+                                    )
+                                })
+                        }
+                        .unwrap_or(0),
                         0,
                     )
                 },
@@ -266,6 +290,45 @@ pub fn assign(
             );
         assignments.insert(request, choice);
     }
+}
+
+fn output_size(
+    request: &Node,
+    jobs: &BTreeMap<Node, Job>,
+    sizes: &mut BTreeMap<Node, u64>,
+) -> Result<u64, Error> {
+    if let Some(size) = sizes.get(request) {
+        return Ok(*size);
+    }
+    let job = &jobs[request];
+    sizes.insert(request.clone(), job.output_bytes);
+    let mut children = 0u64;
+    let mut largest = 1u64;
+    for child in &job.dependencies {
+        let size = output_size(child, jobs, sizes)?;
+        children = children.saturating_add(size);
+        largest = largest.max(size);
+    }
+    let input = request.input();
+    let size = if job.cached.contains(&0) || job.output_bytes != 1 {
+        job.output_bytes
+    } else if matches!(input.value_type(), ValueType::Thunk | ValueType::Encode)
+        && input.unsound_thunk_type()? == ThunkType::Identification
+    {
+        storage::byte_size(input)?
+    } else if request.is_eval() {
+        if input.value_type() == ValueType::Encode {
+            largest
+        } else {
+            storage::byte_size(input)?.saturating_add(children)
+        }
+    } else if request.code() == 3 {
+        largest
+    } else {
+        job.output_bytes
+    };
+    sizes.insert(request.clone(), size);
+    Ok(size)
 }
 
 impl<'a> OnePass<'a> {
@@ -385,10 +448,7 @@ impl<'a> OnePass<'a> {
             }
             if let Some(coupon) = coupon {
                 job.cached.insert(0);
-                job.output_bytes = storage::identify(&fixscheduler::collector::result(&coupon)?)?
-                    .map(|value| storage::byte_size(&value))
-                    .transpose()?
-                    .unwrap_or(1);
+                job.output_bytes = storage::byte_size(&fixscheduler::collector::result(&coupon)?)?;
             } else {
                 let operand = if request.is_select() {
                     match storage::identify(request.input())? {
@@ -447,7 +507,7 @@ impl<'a> OnePass<'a> {
                         Ok(self.advice.borrow().get(&key.raw_handle_bytes()?).copied())
                     };
                     job.output_bytes = read(b"fix::output-size")?.unwrap_or(1);
-                    job.parallel = read(b"fix::parallel")?.is_some_and(|n| n != 0);
+                    job.parallel = read(b"fix::parallel")?.unwrap_or(0);
                     if matches!(
                         request.input().value_type(),
                         ValueType::Thunk | ValueType::Encode
@@ -460,6 +520,11 @@ impl<'a> OnePass<'a> {
                     }
                 }
             }
+        }
+        let mut sizes = BTreeMap::new();
+        output_size(request, &jobs, &mut sizes)?;
+        for (request, size) in sizes {
+            jobs.get_mut(&request).unwrap().output_bytes = size;
         }
         Ok(jobs)
     }

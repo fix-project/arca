@@ -1556,19 +1556,11 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 let output = source
                     .create_blob(if case == 2 { &output_size } else { b"bad" })
                     .unwrap();
-                let fan_out: Handle = Blob::literal(&64u64.to_le_bytes()).unwrap().into();
                 let parallel: Handle = Blob::literal(&u64::from(case == 4).to_le_bytes())
                     .unwrap()
                     .into();
                 let advised = source
-                    .create_tree(&[
-                        large.into(),
-                        advisor,
-                        call.into(),
-                        output.into(),
-                        fan_out,
-                        parallel,
-                    ])
+                    .create_tree(&[large.into(), advisor, call.into(), output.into(), parallel])
                     .unwrap();
                 advised.into_ref().application().strict().into()
             };
@@ -1620,7 +1612,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 None,
                 if case == 6 { 0 } else { 1 },
             );
-            let diagnostics = String::from_utf8_lossy(&output.stderr);
+            let diagnostics = String::from_utf8_lossy(&output.stderr).into_owned();
             if case == 6 {
                 assert!(output.status.success(), "{diagnostics}");
                 let row = diagnostics
@@ -1692,20 +1684,17 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                     "policy {index}, case {case}: root was not delegated"
                 );
             }
-            let (operation, target, expected_remote) = if !(2..5).contains(&case) {
-                (1u64, input, case >= 5 || (case == 0 && index == 0))
+            let expected_remote = if !(2..5).contains(&case) {
+                case >= 5 || (case == 0 && index == 0)
             } else {
-                (4u64, thunk.into(), case != 4 && index == 0)
+                case != 4 && index == 0
             };
-            let prefix = [
-                Blob::literal(&operation.to_le_bytes()).unwrap().into(),
-                target,
-            ];
             if case != 5 {
+                let remote_application = format!("worker: Apply {}", call.as_handle());
                 assert_eq!(
-                    !destination.claims(&prefix).unwrap().is_empty(),
+                    diagnostics.contains(&remote_application),
                     expected_remote,
-                    "policy {index}, case {case}"
+                    "policy {index}, case {case}: {diagnostics}"
                 );
             }
         }

@@ -360,6 +360,18 @@ fn data_name(mut name: [u8; 32]) -> [u8; 32] {
     name
 }
 
+fn identification(id: &[u8; 32], operation: Option<EvaluationOperation>) -> bool {
+    id[31] & 0x0c == 0x08
+        && matches!(
+            operation,
+            Some(
+                EvaluationOperation::Evaluate
+                    | EvaluationOperation::Think
+                    | EvaluationOperation::Force
+            )
+        )
+}
+
 fn task_title(
     id: [u8; 32],
     title: &str,
@@ -704,6 +716,9 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                 .collect();
             let mut active = std::collections::BTreeSet::new();
             for entry in &stats.tasks {
+                if identification(&entry.id, entry.operation) {
+                    continue;
+                }
                 let named = labels.contains_key(&data_name(entry.id));
                 let root = state
                     .input
@@ -827,6 +842,9 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
 }
 
 pub fn evaluation_step(step: EvaluationStep) {
+    if identification(&step.task.id, step.task.operation) {
+        return;
+    }
     let Some(state) = advised() else { return };
     let closed = state.closed.lock().unwrap();
     if *closed {

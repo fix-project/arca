@@ -74,16 +74,26 @@ fn locality_and_cache() -> Result<(), Error> {
     assert_eq!(assignments[&request], (0, 0));
     let job = jobs.get_mut(&request).unwrap();
     job.cached.insert(1);
-    job.parallel = true;
+    job.parallel = 4;
     onepass::assign(&request, &jobs, &workers, &mut assignments);
     assert_eq!(assignments[&request], (1, 0));
     let job = jobs.get_mut(&request).unwrap();
     job.cached.clear();
-    job.parallel = false;
+    job.parallel = 0;
     job.memory_bytes = None;
     job.present.clear();
     onepass::assign(&request, &jobs, &workers, &mut assignments);
     assert_eq!(assignments[&request], (0, 0));
+    let job = jobs.get_mut(&request).unwrap();
+    job.present = [(0, 100), (1, 100)].into();
+    job.parallel = 1;
+    onepass::assign(&request, &jobs, &workers, &mut assignments);
+    assert_eq!(assignments[&request], (0, 100));
+    jobs.get_mut(&request).unwrap().parallel = 4;
+    onepass::assign(&request, &jobs, &workers, &mut assignments);
+    assert_eq!(assignments[&request], (1, 0));
+    hint::pull_back_outputs(&request, &jobs, &workers, &mut assignments);
+    assert_eq!(assignments[&request], (1, 0));
     Ok(())
 }
 

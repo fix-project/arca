@@ -38,24 +38,26 @@ For example, the [recomputation scheduler](tests/recompute.rs) uses the graph di
 
 Register a program with `fix_scheduler(name = "NAME", modules = ["parallel.rs"])`. List the other scheduler files it uses in `modules`. The rule provides the Wasm entry point and allocator; `NAME::run` contains the program's launch and final-retention choices.
 
-Each scheduling round uses a map from request to `(worker, locality score)`. Worker zero is local. OnePass prefers cached results, then parallelism advice, then the worker with the most resident bytes; ties favor greater parallelism, then local execution. Without a locality candidate it stays local. Local scores count retained bytes; remote scores measure the advantage over local execution. Higher scores run first.
+Each scheduling round uses a map from request to `(worker, locality score)`. Worker zero is local. OnePass prefers cached results, then the worker with the most resident bytes; ties favor usable parallelism, capped by advice when supplied, then local execution. Without a locality candidate, explicit parallelism advice chooses usable capacity; otherwise it stays local. Local scores count retained bytes; remote scores measure the advantage over local execution. Higher scores run first.
 
 Hint starts with OnePass's assignments. It pulls back work when the estimated output outweighs the remote locality advantage, then reconsiders parents after their children. It retains twice the local parallelism and sends lower-score excess work round-robin to a prefix of remotes with sufficient capacity. Assignments are rebuilt as evaluation reveals more dependencies. Dispatch stops at a remotely assigned root, leaving its descendants to that worker.
 
-These follow the original OnePass and Hint design without its pass-class hierarchy. Fix coupons distinguish Force, Apply, and Select; only Eval/Think requests are assigned remotely by these policies. Data locality is estimated from reachable backing objects, and unknown output size defaults to one byte. Inventories and cached-result advertisements are hints; imported coupons still require valid certificates and a matching collector, operation, and input.
+These follow the original OnePass and Hint design without its pass-class hierarchy. Eval, Think, Force, and Select requests can be assigned remotely. Force and Encode wrappers follow a single dependency’s placement. Known descriptor sizes and Tree dependencies supply output estimates; unknown application output defaults to one byte. Inventories and cached-result advertisements are hints; imported coupons still require valid certificates and a matching collector, operation, and input.
 
 ## Advice and memory limits
 
 Applications can use `fixwasm::advise(target, key, payload)` with these keys:
 
 - `fix::output-size`: estimated output bytes.
-- `fix::parallel`: nonzero requests local expansion before distributing dependencies.
+- `fix::parallel`: estimated number of independent jobs. One means serial work; larger counts describe parallelism that will become available after expansion. Zero leaves parallelism unspecified.
 
 Payloads are eight-byte little-endian unsigned integers. Advice can target an available combination before returning its application thunk. It does not change the value or its identity. Advice is delivered synchronously through `on_advice`; it carries no continuation or reply. Execution continues automatically after the callback. The supplied advice handler ignores unknown keys, malformed payloads, and unavailable targets.
 
+`compile` advises the next compilation thunk about the independent C compilation jobs before they are generated. It uses the input Wasm size as a rough output-size estimate; these estimates do not affect evaluation results or progress totals.
+
 An empty metadata Blob means no deterministic memory limit is specified. An eight-byte little-endian unsigned integer specifies the limit in bytes. Placement uses this as an additional hint against advertised worker memory. Enforcement is not implemented. Other metadata encodings do not supply a placement limit.
 
-Without advice, OnePass uses actual input locality, cached results, and worker parallelism. Hint uses observed dependency fan-out. The original fan-out estimate did not affect these placement algorithms; neither policy uses it as a priority. OnePass and Hint fall back to local execution when a remote fails. Unknown memory capacity does not exclude a worker.
+With equal input locality, a parallelism estimate favors a machine that can use more of the expected jobs. Hint keeps that capacity advantage when considering whether to pull work back locally. Without advice, OnePass uses actual input locality, cached results, and worker parallelism. Hint uses observed dependency fan-out. OnePass and Hint fall back to local execution when a remote fails. Unknown memory capacity does not exclude a worker.
 
 ## Remote workers
 

@@ -170,7 +170,10 @@ pub fn pull_back_outputs(
             if !seen.insert(request.clone()) {
                 continue;
             }
-            if worker != 0 && !job.parallel && eligible(job, &workers[0]) {
+            let remote_parallelism = job.parallel.min(u64::from(workers[worker].parallelism));
+            let local_parallelism = job.parallel.min(u64::from(workers[0].parallelism));
+            if worker != 0 && remote_parallelism <= local_parallelism && eligible(job, &workers[0])
+            {
                 if job.cached.contains(&0) {
                     assignments.insert(request.clone(), (0, job.output_bytes));
                 } else if job.cached.is_empty() && score <= job.output_bytes {
@@ -186,9 +189,6 @@ pub fn pull_back_outputs(
                         .map(|child| (child.clone(), false)),
                 );
             }
-            continue;
-        }
-        if job.parallel {
             continue;
         }
         let tree = request.is_eval()
@@ -267,14 +267,7 @@ pub fn spread_independent(
             continue;
         }
         let dependencies = &jobs[&request].dependencies;
-        let mut parallel = false;
-        for child in dependencies {
-            if jobs[child].parallel {
-                assignments.insert(child.clone(), (0, 0));
-                parallel = true;
-            }
-        }
-        if !parallel && dependencies.len() >= local_jobs {
+        if dependencies.len() >= local_jobs {
             let mut local: Vec<_> = dependencies
                 .iter()
                 .filter_map(|child| {

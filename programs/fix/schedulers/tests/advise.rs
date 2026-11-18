@@ -4,11 +4,7 @@ use fixwasm::{Any, Error, Handle, Object, Tree, Value as AsValue};
 #[fixwasm::apply]
 fn apply(combination: &Handle<Object<Tree>>) -> Result<Handle<Any>, Error> {
     let target = combination.get(2);
-    for (index, key) in [
-        (3, "fix::output-size"),
-        (4, "fix::fan-out"),
-        (5, "fix::parallel"),
-    ] {
+    for (index, key) in [(3, "fix::output-size"), (4, "fix::parallel")] {
         let payload = combination.get(index);
         let mut bytes = [0; 8];
         let length = usize::try_from(payload.len()?.min(8))?;

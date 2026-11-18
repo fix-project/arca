@@ -52,24 +52,25 @@ impl Drop for Evaluation {
     }
 }
 
+pub(crate) fn named(mut name: [u8; 32]) -> Result<bool, fixwasm::Error> {
+    if LABELS.0.borrow().is_none() {
+        let values = effect(b"evaluation_labels", &[])?;
+        let mut labels = BTreeSet::new();
+        for value in fields(&values)? {
+            let mut name = [0; 32];
+            value.read_into(0, &mut name)?;
+            name[31] &= 0xe0;
+            labels.insert(name);
+        }
+        *LABELS.0.borrow_mut() = Some(labels);
+    }
+    name[31] &= 0xe0;
+    Ok(LABELS.0.borrow().as_ref().unwrap().contains(&name))
+}
+
 /// Report the lifetime of an operation on a value named in the repository.
 pub(crate) fn evaluation(operation: u64, input: &Value) -> Evaluation {
-    let result = (|| -> Result<bool, fixwasm::Error> {
-        if LABELS.0.borrow().is_none() {
-            let values = effect(b"evaluation_labels", &[])?;
-            let mut labels = BTreeSet::new();
-            for value in fields(&values)? {
-                let mut name = [0; 32];
-                value.read_into(0, &mut name)?;
-                name[31] &= 0xe0;
-                labels.insert(name);
-            }
-            *LABELS.0.borrow_mut() = Some(labels);
-        }
-        let mut name = input.raw_handle_bytes()?;
-        name[31] &= 0xe0;
-        Ok(LABELS.0.borrow().as_ref().unwrap().contains(&name))
-    })();
+    let result = input.raw_handle_bytes().and_then(named);
     if result.unwrap_or(false) {
         self::operation(operation, input)
     } else {
