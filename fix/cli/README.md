@@ -18,14 +18,39 @@ fix -l doubled '@script("double.fix" 21u64)'
 fix compile '@file("program.wasm")'
 ```
 
-`fix init SEED` creates a repository from a seed archive and adds the expression
-parser as a Wasm module.
-Each module compiles with the seed's `compile`, which by default splits a
-module into one C translation unit per 128 KiB of Wasm so that large modules
-compile in parallel. Label `fix-parser` names the parser's compilation. Commands use this
-label, and memoization reuses each compilation after its first evaluation.
-`--precompile` evaluates them all during `init`. `//fix/cli:precompiled`
-archives such a repository.
+`fix label delete NAME` (also `fix label remove NAME`) deletes a local label
+without removing its value or backing data. A missing label is an error.
+
+`fix bootstrap SEED` creates a store at `$XDG_DATA_HOME/fix/bootstrap/.fix`
+(default `~/.local/share/fix/bootstrap/.fix`), imports and signs
+the seed's compiler, scheduler, collector, and parser, and trusts the compiler
+and collector. `fix init` creates an empty `.fix` repository with a `bootstrap`
+file remote pointing to that store. Run `fix pull bootstrap` to fetch its label
+refs, then `fix remote labels bootstrap` to list them or
+`fix pull bootstrap compile compile` to create a local label. It needs no seed
+archive; backing data for a selected program is copied from the bootstrap store
+or an available file remote when the program is persisted locally. The seed's `compile` splits each
+Wasm module into one C translation unit per 128 KiB by default.
+A home repository is optional and works like any other repository.
+
+`fix config KEY`, `fix config KEY NAME`, `fix config --unset KEY`, and
+`fix config --list` manage scheduler, collector, parser, and compiler selections.
+Reads combine user and repository settings; writes default to the current
+repository. Use `--global` for user settings or `--local` to read only this
+repository's settings. `fix bootstrap SEED` records the
+canonical handles of the selected bootstrap programs. Bare names resolve in the active
+repository. Command-line
+options override settings for one invocation. `fix trust` manages trust and
+signing identities in `$XDG_CONFIG_HOME/fix` (default `~/.config/fix`).
+`FIX_CONFIG_DIR` overrides that directory; `XDG_DATA_HOME` selects the
+bootstrap store's parent data directory. A home repository can be added as an
+ordinary file remote. Run `fix pull` for all configured remotes, or `fix pull REMOTE` to
+select one, then
+`fix remote labels REMOTE` to list them. File remotes supply backing data for
+canonical handles when those values are saved in a project.
+`//bootstrap:seed` is the seed archive for build actions.
+Use `--unsigned` only for staging; normal bootstrap requires configured signing
+identities.
 
 `fix repl` reads low-level Fix expressions and prints their canonical handles.
 Each input uses the same syntax and imports as a command-line expression.
@@ -45,12 +70,20 @@ With Runnable programs labelled `fib` and `add`, recursive Fibonacci evaluation 
 bazel run //fix -- eval --encode '#("" @label("fib") 8u64 @label("add"))'
 ```
 
+Handle operands, including `@handle`, accept an unambiguous hexadecimal prefix
+with an optional two-digit type byte: `<prefix>[.<type>]`. For example,
+`fix info ab12cd34.90` inspects the Ref named by that prefix. Exact labels take
+precedence over prefixes. Omitting the type requires a unique full name;
+Object and Ref forms of the same data are distinct matches. Abbreviations use
+known object and shadow-label names without loading backing data. Expression
+imports also search the bootstrap store and configured file sources.
+
 The preprocessor runs on Linux. The parser runs in Fix. Imports are explicit:
 
 | Form | Meaning |
 | --- | --- |
-| `@handle("HEX")` | Import an exact canonical handle already admitted by the repository. |
-| `@label("NAME")` | Resolve a repository label. |
+| `@handle("HEX")` | Import a canonical name; Objects require locally admitted backing. |
+| `@label("NAME")` | Resolve a repository label, including remote shadow labels such as `origin:program`, without retrieving data. |
 | `@file("PATH")` | Import a file's contents as a Blob, or a directory's contents as a Tree of Flatware child descriptors. |
 | `@script("PATH" EXPR ... name=EXPR ...)` | Instantiate a script. |
 | `@todo("REF" "URI" ...)` | Declare a pinned Ref and its acquisition hints. |
@@ -80,7 +113,7 @@ Recursive imports and missing or excess positional arguments are errors.
 Named CLI arguments use `-b name=EXPRESSION`, for example:
 
 ```sh
-fix -b compiler='@label("clang")' '@script("build.fix" @file("main.c"))'
+fix -b answer='42u64' '$answer'
 ```
 
 Bindings and the other global options (`-C`, `-l`, `-j`, `--memory`,
@@ -98,3 +131,127 @@ for available targets without fetching data solely to satisfy a hint. `always`
 persists all intermediate coupons. `never` disables automatic persistence and
 disk-cache lookup. In `never` mode the scheduler returns the result directly;
 generated coupons are not published and `eval` and `think` skip coupon verification.
+
+## Serving remote evaluations
+
+Start a TCP server for the current repository with:
+
+```sh
+fix -C /path/to/repository serve --listen 127.0.0.1:9000 -j 4
+```
+
+For SSH remotes, `fix serve --stdio` starts automatically on the remote machine.
+The remote URL supplies the repository path. See the
+[two-machine setup](../remote/README.md#ssh-clone-and-distributed-evaluation)
+for cloning, trust, and the distributed scheduler.
+
+The server uses the usual scheduler, collector, memory, remote, and signing
+options, together with the repository's remotes and the user's trust settings.
+It prints its bound address on stderr; port zero selects an available port.
+All connections share one VM. The scheduler handles connections and evaluations;
+I/O waits run on kernel threads without occupying evaluation workers. `--jobs`
+and `--memory` configure the whole server. Transfers use the negotiated Fix protocol and
+signed coupon certificates described in [remote runtimes](../remote/README.md).
+
+## Progress
+
+Progress is written to stderr; stdout remains available for Fix values and
+protocol data. Terminals display indicatif task rows. Redirected stderr gets
+activity messages and elapsed-time updates while operations are running.
+
+Transfers count the payload bytes actually read or written. Signing counts
+Tags after all configured identities have signed each one. Archive operations
+name their current activity, such as extraction or indexing, without inventing
+an overall percentage. Evaluation displays task titles and completed/total
+units from advice, plus the scheduler's actual completed Tree-child counts.
+Work without a measured total shows a spinner, elapsed time, and its current
+activity. Measured tasks and Tree evaluations show a spinner until the first
+unit completes, then their own counted bars. Counts are cleared when their task
+or execution phase ends. Completing reported
+application units does not claim that the invocation has returned.
+
+Remote labels resolve without retrieving data. The scheduler reports loads
+and evaluations with their locations. All status messages,
+logs, and forwarded SSH stderr share the progress renderer. Diagnostic writes
+are collected into complete lines; result lines suspend the renderer while
+printing. Ephemeral rows are erased on completion or failure; completed named
+steps and the final report remain.
+
+The expression parser returns a one-element Tree containing its parsed value.
+Panic and trap responses are reported as parser errors, with the source and
+parser name. The envelope lets expressions contain literal error-shaped values
+without treating those values as parser failures. Runtime failures include the
+operation, input name, and runtime diagnostic alongside their exit status.
+
+`-j0` disables local application and collector workers while retaining a local
+scheduler thread. Hint, OnePass, and Distributed can delegate evaluation to a
+configured execution remote. Parsing also uses the selected scheduler in this
+mode. A local-only policy reports an error if it needs to run an application.
+
+Evaluation shows an overall completed step number, one compact live line per
+execution node, and flat, numbered completion lines. Each node line shows its
+running-worker count and one current task description. Running workers include
+collector calls; the description does not imply serial execution.
+Evaluation discovers work dynamically, so this line has no fixed total.
+Function names use dim italics on terminals; `NO_COLOR` disables this styling.
+Only tasks with reported completed/total units get individual progress bars.
+Memoized operations do not produce completion lines. `fix pull` evaluates its
+selected labels together as one Tree, allowing the scheduler to share and run
+dependencies concurrently. Label snapshots and backing data use proposal/accept
+exchanges, so stored snapshots and existing data need not be retransmitted.
+
+`--summarize` adds a per-machine overview table, separated from the step output
+by a blank line. CPU time uses the process CPU clock: it counts active work in
+runtime and host threads, including scheduler bookkeeping, and excludes blocked
+or sleeping time. It is distinct from elapsed time.
+
+Evaluation keeps completed named computations as persistent steps, with their
+operation, location, outcome, and elapsed duration. Labels and application task
+titles name steps; an application without either uses its canonical Fix name.
+Live application advice and multi-part Tree evaluation use progress displays
+while running. Counts describe completed units rather than an estimate of time
+remaining. Cancelled discovery attempts do not appear as completed steps.
+
+Loads show the destination as the step's node and identify their source, for
+example `local: Load origin:program (from origin)`. Active loads remain visible
+without an estimated percentage; completed loads remain as numbered steps.
+Named reads from the current repository and file remotes appear under the
+node reading them. File remotes do not appear as separate nodes. The source is
+omitted when it is the same node as the destination. Retrieval through pinned
+source URIs also reports Load activity.
+
+Remote connections appear as numbered steps, showing the remote name and
+worker capacity. Connection failures include the cause.
+
+With `--summarize`, the final per-node table reports applications, collector calls, CPU time, peak
+worker count / available workers, peak queue length (`Qmax`), peak allocated VM
+memory / VM capacity, and bytes sent and received. Units appear once in each column header; every row
+uses that column's unit. CPU time is measured across the worker process's
+threads, including its VM and host I/O work. Memory is the VM allocator's allocation,
+not process RSS; its peak is the allocator's high-water mark. Transport counters
+include protocol and status traffic. Counters accumulate from the first runtime
+sample; memory peaks cover the VM lifetime. A long-running server retains its
+runtime peaks across requests. Transfer byte bars remain suppressed during
+evaluation.
+
+`fix pull [REMOTE [SOURCE [DESTINATION]]]` and
+`fix push REMOTE [SOURCE [DESTINATION]]` realize labels using the selected
+scheduler. Both default to `--shallow`: existing Refs are preserved, Objects
+become Refs, and Thunks use a shallow Encode. A shallow pull of an Object or
+Ref does not fetch its backing.
+`--strict` yields an Object; `--exact` preserves the original value and loads
+its backing without evaluating it. Configure defaults with `pull.mode` and
+`push.mode`, locally or with `fix config --global`. See
+[remote labels and transfer modes](../remote/README.md#remote-refs).
+
+`fix info VALUE` analyzes a canonical name or label without evaluating it or
+retrieving remote data. It reports representation, declared type and size,
+comparability, local backing, matching labels, acquisition metadata, Tag
+certificates and fields, Tags that directly mention the value, and recognized
+coupon claims about it. Coupons identify their
+operation, input, and result; Runnable certificates are distinguished from other
+Tags. Object and Ref forms of a subject match. Inspection reports signature
+status and verifies inspected Tag data without granting execution authority or
+fetching unavailable data. Handle references use friendly display names by default;
+the top-level `Name:` line always contains the complete canonical handle. The
+global `--no-abbrev` flag selects full handles in info reports and progress output.

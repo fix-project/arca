@@ -359,6 +359,14 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
 }
 
 impl<S: Storage> Storage for Store<S> {
+    fn friendly_name(
+        &self,
+        value: Handle,
+        labels: &[([u8; 32], alloc::string::String)],
+    ) -> alloc::string::String {
+        self.inner.friendly_name(value, labels)
+    }
+
     fn identify(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         self.inner.identify(bytes)
     }

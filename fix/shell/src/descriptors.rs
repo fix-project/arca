@@ -2,6 +2,7 @@ use crate::handles::{self, Reference};
 
 pub const BASE: usize = crate::rt::HANDLE_BASE;
 const CAPACITY: u32 = (crate::rt::PAYLOAD_SIZE / fixhandle::HANDLE_SIZE) as u32;
+static mut LOCAL: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
 static mut SLOTS: fixhandle::descriptors::Descriptors = fixhandle::descriptors::Descriptors::new();
 
 pub fn initialize(value: Reference) -> u32 {
@@ -50,4 +51,19 @@ pub fn close(index: u32) {
 
 pub fn range() -> (usize, usize) {
     (BASE, unsafe { (&*(&raw const SLOTS)).len() } as usize)
+}
+
+/// Record a descriptor written with a local name since the last promotion.
+pub fn local(address: usize) {
+    if (BASE..BASE + crate::rt::PAYLOAD_SIZE).contains(&address) {
+        assert!(address.is_multiple_of(fixhandle::HANDLE_SIZE));
+        unsafe {
+            (&mut *(&raw mut LOCAL)).insert(((address - BASE) / fixhandle::HANDLE_SIZE) as u32);
+        }
+    }
+}
+
+pub fn take_local() -> alloc::vec::Vec<u8> {
+    let slots = unsafe { core::mem::take(&mut *(&raw mut LOCAL)) };
+    slots.into_iter().flat_map(u32::to_le_bytes).collect()
 }

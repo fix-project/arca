@@ -4,13 +4,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use fix::Thunk;
 use fixcli::{
     Memoization, Options, Shell as Client, commands,
-    configuration::{self, RemoteCommand, TrustCommand},
+    configuration::{self, ConfigCommand, RemoteCommand, TrustCommand},
     expressions::{Expressions, Value},
 };
 use std::{
     env,
     io::Write,
-    num::NonZeroUsize,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -20,8 +19,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Evaluates Fix expressions and manages Fix repositories.
 ///
 /// With no command, parses EXPRESSION, evaluates its imports, and prints the
-/// resulting handle. Expression imports are @handle, @label, @file, @script,
-/// and @todo.
+/// resulting handle. Expression imports are @handle, @label, @file, @compile,
+/// @script and @todo.
 #[derive(Parser)]
 #[command(name = "fix", subcommand_value_name = "COMMAND")]
 struct Cli {
@@ -45,9 +44,9 @@ struct Global {
     /// Bind NAME to the value of EXPRESSION (repeatable).
     #[arg(short, long = "bind", value_name = "NAME=EXPRESSION", value_parser = binding, global = true)]
     bindings: Vec<(String, String)>,
-    /// Evaluation parallelism [default: all CPUs]
+    /// Application workers; 0 disables local applications [default: all CPUs]
     #[arg(short, long, value_name = "N", env = "FIX_JOBS", global = true)]
-    jobs: Option<NonZeroUsize>,
+    jobs: Option<usize>,
     /// Write a time-weighted guest call graph in Linux perf.data format.
     #[arg(long, value_name = "PATH", global = true)]
     perf: Option<PathBuf>,
@@ -58,26 +57,26 @@ struct Global {
     #[arg(long, value_name = "MODE", default_value_t = Memoization::Auto, global = true)]
     memoize: Memoization,
     /// Scheduler Runnable.
-    #[arg(
-        long,
-        value_name = "NAME",
-        env = "FIX_SCHEDULER",
-        default_value = "scheduler",
-        global = true
-    )]
-    scheduler: String,
+    #[arg(long, value_name = "NAME", env = "FIX_SCHEDULER", global = true)]
+    scheduler: Option<String>,
     /// Coupon collector.
-    #[arg(
-        long,
-        value_name = "NAME",
-        env = "FIX_COLLECTOR",
-        default_value = "collector",
-        global = true
-    )]
-    collector: String,
+    #[arg(long, value_name = "NAME", env = "FIX_COLLECTOR", global = true)]
+    collector: Option<String>,
+    /// Parser Runnable.
+    #[arg(long, value_name = "NAME", global = true)]
+    parser: Option<String>,
+    /// Compiler Runnable.
+    #[arg(long, value_name = "NAME", global = true)]
+    compiler: Option<String>,
     /// Add or override a remote for this command (repeatable).
     #[arg(long = "remote", value_name = "NAME=URL", value_parser = configuration::remote_argument, global = true)]
     remotes: Vec<fixrepository::Remote>,
+    /// Select a Fix scheduler name for one remote during this command.
+    #[arg(long = "remote-scheduler", value_name = "REMOTE=FIX_NAME", value_parser = configuration::remote_name_argument, global = true)]
+    remote_schedulers: Vec<(String, String)>,
+    /// Select a Fix collector name for one remote during this command.
+    #[arg(long = "remote-collector", value_name = "REMOTE=FIX_NAME", value_parser = configuration::remote_name_argument, global = true)]
+    remote_collectors: Vec<(String, String)>,
     /// Override signing identities with public keys or public-key files (repeatable).
     #[arg(long = "identity", value_name = "KEY", global = true)]
     identities: Vec<String>,
@@ -87,28 +86,101 @@ struct Global {
     /// Report evaluation timings on stderr.
     #[arg(long, global = true)]
     profile: bool,
+    /// Print full Fix handles instead of friendly display names.
+    #[arg(long, global = true)]
+    no_abbrev: bool,
+    /// Print a per-machine resource summary after evaluation.
+    #[arg(long, global = true)]
+    summarize: bool,
+}
+
+#[derive(Args)]
+#[group(multiple = false)]
+struct TransferMode {
+    /// Evaluate a shallow Encode and store the resulting Ref (default).
+    #[arg(long)]
+    shallow: bool,
+    /// Evaluate a strict Encode and store the resulting Object.
+    #[arg(long)]
+    strict: bool,
+    /// Preserve the value and load its backing without evaluating it.
+    #[arg(long)]
+    exact: bool,
+}
+impl TransferMode {
+    fn resolve(&self, operation: &str) -> Result<fixcli::remotes::Mode> {
+        use fixcli::remotes::Mode;
+        let selected = if self.shallow {
+            Some(Mode::Shallow)
+        } else if self.strict {
+            Some(Mode::Strict)
+        } else if self.exact {
+            Some(Mode::Exact)
+        } else {
+            None
+        };
+        Mode::configured(operation, selected)
+    }
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a repository. With SEED, import it and add the expression parser
-    /// (label `fix-parser`) into the repository.
-    Init {
-        /// Bootstrap seed archive to import.
-        seed: Option<PathBuf>,
-        /// Also compile, with SEED's compiler, the modules `init` adds: the expression
-        /// parser. Later commands
-        /// reuse these compilations; without this flag, each compiles on first use.
-        #[arg(long, requires = "seed")]
-        precompile: bool,
-        /// Sign imported seed Tags with the selected identities.
-        #[arg(long)]
-        sign: bool,
+    /// Create an empty repository in the current directory.
+    Init,
+    /// Install a bootstrap seed and default programs in the user Fix store.
+    Bootstrap { seed: PathBuf },
+    /// Serve remote evaluation requests from this repository over TCP.
+    Serve {
+        /// TCP address to bind (for example, 127.0.0.1:9000).
+        #[arg(long, value_name = "HOST:PORT", required_unless_present = "stdio")]
+        listen: Option<String>,
+        /// Speak the Fix protocol over standard input and output (for SSH).
+        #[arg(long, conflicts_with = "listen")]
+        stdio: bool,
     },
     /// Read and evaluate low-level Fix expressions interactively.
     Repl,
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Read or edit user or repository settings.
+    Config {
+        /// Use user configuration rather than this repository's configuration.
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+        /// Use this repository's configuration.
+        #[arg(long)]
+        local: bool,
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["unset", "list"])]
+        get: Option<String>,
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["get", "list"])]
+        unset: Option<String>,
+        #[arg(long, conflicts_with_all = ["get", "unset"])]
+        list: bool,
+        /// KEY [VALUE]: read or set a setting.
+        #[arg(num_args = 0..=2)]
+        arguments: Vec<String>,
+    },
+    /// Create an empty repository with `origin` and fetch its refs.
+    Clone { address: String, directory: PathBuf },
+    /// Fetch and realize remote labels (all remotes by default).
+    Pull {
+        remote: Option<String>,
+        #[arg(requires = "remote")]
+        source: Option<String>,
+        #[arg(requires = "source")]
+        destination: Option<String>,
+        #[command(flatten)]
+        mode: TransferMode,
+    },
+    /// Realize local labels and publish them to an SSH or file remote.
+    Push {
+        remote: String,
+        source: Option<String>,
+        #[arg(requires = "source")]
+        destination: Option<String>,
+        #[command(flatten)]
+        mode: TransferMode,
+    },
     #[command(subcommand)]
     Trust(TrustCommand),
     /// Evaluate an expression.
@@ -182,10 +254,31 @@ fn is_command(argument: &str) -> bool {
 
 impl Global {
     fn options(&self) -> Result<Options> {
+        let settings = configuration::settings()?;
         Ok(Options {
-            scheduler: self.scheduler.clone(),
-            collector: self.collector.clone(),
+            scheduler: self
+                .scheduler
+                .clone()
+                .or_else(|| settings.get("scheduler").cloned())
+                .unwrap_or_else(|| "scheduler".into()),
+            collector: self
+                .collector
+                .clone()
+                .or_else(|| settings.get("collector").cloned())
+                .unwrap_or_else(|| "collector".into()),
+            parser: self
+                .parser
+                .clone()
+                .or_else(|| settings.get("parser").cloned())
+                .unwrap_or_else(|| "fix-parser".into()),
+            compiler: self
+                .compiler
+                .clone()
+                .or_else(|| settings.get("compiler").cloned())
+                .unwrap_or_else(|| "compile".into()),
             remotes: self.remotes.clone(),
+            remote_schedulers: self.remote_schedulers.clone(),
+            remote_collectors: self.remote_collectors.clone(),
             identities: self
                 .identities
                 .iter()
@@ -194,9 +287,8 @@ impl Global {
             unsigned: self.unsigned,
             jobs: match self.jobs {
                 Some(jobs) => jobs,
-                None => std::thread::available_parallelism()?,
-            }
-            .get(),
+                None => std::thread::available_parallelism()?.get(),
+            },
             memory_mib: self.memory,
             memoize: self.memoize,
             ..Options::default()
@@ -213,7 +305,12 @@ impl Global {
         if let Some(label) = &self.label {
             client.label(label, value)?;
         }
-        println!("{}", client.save(value)?);
+        let name = client.save(value)?;
+        common::progress::suspend(|| -> std::io::Result<()> {
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "{name}")?;
+            stdout.flush()
+        })?;
         Ok(0)
     }
 }
@@ -240,6 +337,8 @@ fn run() -> Result<u8> {
         command,
         expression,
     } = Cli::parse();
+    common::progress::summarize(global.summarize);
+    common::progress::abbreviate(!global.no_abbrev);
     for directory in &global.directories {
         env::set_current_dir(directory)?;
     }
@@ -253,7 +352,23 @@ fn run() -> Result<u8> {
         .as_ref()
         .map(fixcli::PerfCapture::start)
         .transpose()?;
+    let evaluation = matches!(
+        &command,
+        Some(
+            Command::Eval { .. }
+                | Command::Think { .. }
+                | Command::Compile { .. }
+                | Command::Run { .. }
+        )
+    ) || command.is_none() && expression.is_some();
+    let progress = evaluation
+        .then(|| common::progress::Progress::advised(global.label.as_deref().unwrap_or_default()));
     let result = run_command(global, command, expression);
+    if let Some(progress) = progress
+        && matches!(result, Ok(0))
+    {
+        progress.finish();
+    }
     if let Some(perf) = perf {
         perf.finish()?;
     }
@@ -261,7 +376,11 @@ fn run() -> Result<u8> {
 }
 
 fn run_command(global: Global, command: Option<Command>, expression: Option<String>) -> Result<u8> {
-    let options = global.options()?;
+    let options = if matches!(&command, Some(Command::Config { .. })) {
+        Options::default()
+    } else {
+        global.options()?
+    };
     let bindings = global.bindings.clone();
     let Some(command) = command else {
         let Some(expression) = expression else {
@@ -280,7 +399,16 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     if !bindings.is_empty()
         && matches!(
             command,
-            Command::Init { .. } | Command::Plumbing(_) | Command::Remote(_) | Command::Trust(_)
+            Command::Init
+                | Command::Bootstrap { .. }
+                | Command::Plumbing(_)
+                | Command::Remote(_)
+                | Command::Config { .. }
+                | Command::Clone { .. }
+                | Command::Pull { .. }
+                | Command::Push { .. }
+                | Command::Trust(_)
+                | Command::Serve { .. }
         )
     {
         return Err("this command takes no -b bindings".into());
@@ -288,18 +416,28 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
     if global.label.is_some()
         && matches!(
             command,
-            Command::Init { .. }
+            Command::Init
+                | Command::Bootstrap { .. }
                 | Command::Remote(_)
+                | Command::Config { .. }
+                | Command::Clone { .. }
+                | Command::Pull { .. }
+                | Command::Push { .. }
                 | Command::Trust(_)
                 | Command::Todo(_)
                 | Command::Export { .. }
                 | Command::FlatwareExport { .. }
                 | Command::Repl
+                | Command::Serve { .. }
         )
     {
         return Err("-l labels an expression result".into());
     }
     match command {
+        Command::Serve { listen, stdio } => {
+            global.open(options)?.serve(listen.as_deref(), stdio)?;
+            Ok(0)
+        }
         Command::Repl => repl::run(global.open(options)?, bindings),
         Command::Eval { ref expression, .. }
         | Command::Think { ref expression }
@@ -402,47 +540,126 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             configuration::remote(command)?;
             Ok(0)
         }
+        Command::Config {
+            global,
+            local,
+            get,
+            unset,
+            list,
+            arguments,
+        } => {
+            let command = match (get, unset, list, arguments.as_slice()) {
+                (Some(key), None, false, []) => ConfigCommand::Get { key },
+                (None, Some(key), false, []) => ConfigCommand::Unset { key },
+                (None, None, true, []) | (None, None, false, []) => ConfigCommand::List,
+                (None, None, false, [key]) => ConfigCommand::Get { key: key.clone() },
+                (None, None, false, [key, value]) => ConfigCommand::Set {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                _ => return Err("invalid fix config arguments; see 'fix config --help'".into()),
+            };
+            configuration::config(global, local, command)?;
+            Ok(0)
+        }
+        Command::Clone { address, directory } => {
+            let scheduler = options
+                .remote_schedulers
+                .iter()
+                .find(|(remote, _)| remote == "origin")
+                .map(|(_, name)| name.as_str());
+            let collector = options
+                .remote_collectors
+                .iter()
+                .find(|(remote, _)| remote == "origin")
+                .map(|(_, name)| name.as_str());
+            fixcli::remotes::clone(&address, &directory, scheduler, collector)?;
+            Ok(0)
+        }
+        Command::Pull {
+            remote,
+            source,
+            destination,
+            mode,
+        } => {
+            fixcli::remotes::pull(
+                &mut global.open(options)?,
+                remote.as_deref(),
+                source.as_deref(),
+                destination.as_deref(),
+                mode.resolve("pull")?,
+            )?;
+            Ok(0)
+        }
+        Command::Push {
+            remote,
+            source,
+            destination,
+            mode,
+        } => {
+            fixcli::remotes::push(
+                &mut global.open(options)?,
+                &remote,
+                source.as_deref(),
+                destination.as_deref(),
+                mode.resolve("push")?,
+            )?;
+            Ok(0)
+        }
         Command::Trust(command) => {
             configuration::trust(command)?;
             Ok(0)
         }
-        Command::Init {
-            seed,
-            precompile,
-            sign,
-        } => {
+        Command::Init => {
             commands::init()?;
-            let Some(seed) = seed else {
-                return Ok(0);
+            Ok(0)
+        }
+        Command::Bootstrap { seed } => {
+            if !options.unsigned
+                && options.identities.is_empty()
+                && fixcertificates::linux::load()?.identities.is_empty()
+            {
+                return Err(
+                    "configure an SSH signing identity first with 'fix trust add-agent'".into(),
+                );
+            }
+            let seed = seed.canonicalize()?;
+            let config = fixcertificates::linux::directory()?;
+            let config = if config.is_absolute() {
+                config
+            } else {
+                env::current_dir()?.join(config)
             };
+            let bootstrap_repository = fixcli::bootstrap_store::repository()?;
+            let directory = bootstrap_repository
+                .parent()
+                .ok_or("invalid bootstrap repository")?
+                .to_owned();
+            unsafe { env::set_var("FIX_CONFIG_DIR", config) };
+            std::fs::create_dir_all(&directory)?;
+            env::set_current_dir(&directory)?;
+            match fixrepository::Repository::open(".fix") {
+                Ok(_) => (),
+                Err(fixrepository::RepositoryError::NotInitialized) => {
+                    fixrepository::Repository::init(".fix")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
             commands::run(
                 commands::Plumbing::Import {
                     archive: seed,
-                    sign,
+                    sign: !options.unsigned,
                 },
                 None,
                 options.clone(),
                 global.profile,
             )?;
-            let options = if precompile && options.unsigned {
-                Options {
-                    trust: Some(env::current_dir()?.join(".fix/trust")),
-                    ..options
-                }
-            } else {
-                options
-            };
-            let mut client = global.open(options)?;
-            let parser = fixcli::expressions::install(&mut client)?;
-            let compilations = vec![("the expression parser".to_owned(), parser)];
-            if precompile {
-                eprintln!("fix: precompiling {} modules", compilations.len());
-                let requests: Vec<_> = compilations
-                    .into_iter()
-                    .map(|(_, request)| request)
-                    .collect();
-                client.precompile(&requests)?;
-            }
+            let compiler = std::fs::read_to_string(".fix/trust")?;
+            fixcertificates::linux::update("compiler", compiler.trim(), true)?;
+            configuration::trust(configuration::TrustCommand::AddTagger {
+                tagger: "collector".into(),
+            })?;
+            configuration::autoconfigure(&fixrepository::Repository::open(".fix")?)?;
             Ok(0)
         }
         Command::Plumbing(plumbing) => Ok(commands::run(
@@ -455,11 +672,16 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    common::progress::enable();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(
+            common::progress::Stderr::default(),
+        )))
+        .init();
     match run() {
         Ok(status) => ExitCode::from(status),
         Err(error) => {
-            eprintln!("fix: {error}");
+            common::progress::println(error.to_string());
             ExitCode::from(2)
         }
     }

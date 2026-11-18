@@ -20,7 +20,7 @@ impl Evaluation {
         Self::with_scheduler(runtime, workers, "FIX_SCHEDULER")
     }
 
-    fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
+    pub(super) fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
         let scheduler = test_program(runtime.storage(), kernel::testing::fixture(fixture));
         let collector = test_program(runtime.storage(), kernel::testing::fixture("FIX_COLLECTOR"));
         let compiler = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -46,11 +46,12 @@ impl Evaluation {
         self.runtime.storage()
     }
 
-    fn run(&self, mode: &str, input: Handle) -> Handle {
+    fn run(&self, mode: &str, input: Handle) -> (Handle, usize) {
         let mode = self.storage().add_blob(mode.as_bytes());
         let combination = self.storage().add_tree(&[
-            mode.into(),
+            Blob::literal(b"").unwrap().into(),
             self.scheduler.into(),
+            mode.into(),
             self.collector.into(),
             input,
         ]);
@@ -70,14 +71,21 @@ impl Evaluation {
         .unwrap();
         let coupon = Tree::try_from(report.result.unwrap()).unwrap();
         let claim = self.storage().certificate_claim(coupon).unwrap();
-        self.storage().get_tree(claim).unwrap()[2]
+        (
+            self.storage().get_tree(claim).unwrap()[2],
+            report.executed.iter().sum(),
+        )
     }
 
     pub(super) fn eval(&self, input: Handle) -> Handle {
+        self.run("eval", input).0
+    }
+
+    pub(super) fn eval_count(&self, input: Handle) -> (Handle, usize) {
         self.run("eval", input)
     }
 
     pub(super) fn think(&self, input: Thunk) -> Handle {
-        self.run("think", input.into())
+        self.run("think", input.into()).0
     }
 }

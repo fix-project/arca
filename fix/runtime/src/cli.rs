@@ -6,6 +6,7 @@ use crate::{
 };
 use alloc::{format, string::String, vec::Vec};
 use common::protocol::control::{ErrorKind, StandardStream};
+use fixstorage::Storage;
 use kernel::host::fs::File;
 
 #[derive(Debug)]
@@ -30,16 +31,24 @@ impl core::fmt::Display for CliError {
                 f.write_str("invalid Fix repository")
             }
             Self::Repository(RepositoryError::InvalidLabel) => f.write_str("invalid label name"),
+            Self::Repository(RepositoryError::LabelConflict) => f.write_str("label changed"),
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingObject { name, repository }) => {
+                write!(f, "value {name} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingBacking { name, repository }) => {
+                write!(
+                    f,
+                    "backing data for {name} not found in repository {repository:?}"
+                )
             }
             Self::Repository(RepositoryError::NonCanonical) => {
                 f.write_str("expected a canonical handle")
             }
             Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
-            Self::Repository(RepositoryError::Io(ErrorKind::NotFound)) => {
-                f.write_str("value or label is not present in this repository")
-            }
+            Self::Repository(error @ RepositoryError::AmbiguousName { .. }) => write!(f, "{error}"),
             Self::Handle(Error::WrongType)
             | Self::Repository(RepositoryError::Handle(Error::WrongType)) => {
                 f.write_str("value has the wrong Fix type")
@@ -98,8 +107,18 @@ fn report(
 }
 
 pub fn run(arguments: &[String]) -> Result<u8, CliError> {
-    let (status, output) = execute(arguments, &mut None)?;
-    File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    let (no_result, arguments) = if let [flag, rest @ ..] = arguments
+        && flag == "--no-result"
+    {
+        (true, rest)
+    } else {
+        (false, arguments)
+    };
+    let (status, output) =
+        execute(arguments, &mut None).unwrap_or_else(|error| (2, format!("{error}\n")));
+    if !no_result || status == 2 {
+        File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    }
     Ok(status)
 }
 
@@ -124,6 +143,16 @@ fn execute(
     } else {
         fixremote::Config::default()
     };
+    let workers = if let [flag, count, rest @ ..] = arguments
+        && flag == "--workers"
+    {
+        arguments = rest;
+        count
+            .parse::<usize>()
+            .map_err(|_| CliError::Usage("invalid application worker count"))?
+    } else {
+        kernel::ncores()
+    };
     let profile = if arguments.first().is_some_and(|arg| arg == "--profile") {
         arguments = &arguments[1..];
         true
@@ -144,26 +173,40 @@ fn execute(
             .map_err(CliError::Usage)?;
         arguments.drain(index..index + 2);
     }
-    let storage = retained
-        .get_or_insert_with(|| {
-            alloc::sync::Arc::new(crate::storage::repository::RepositoryStorage::new(
-                repository,
-            ))
-        })
-        .clone();
+    if retained.is_none() {
+        let mut storage = crate::storage::repository::RepositoryStorage::new(repository);
+        for remote in &remotes.remotes {
+            if let Some(path) = remote.address.strip_prefix("file://") {
+                match Repository::open(path) {
+                    Ok(source) if source.path() != storage.repository().path() => {
+                        storage.add_source(source.with_policy(remotes.policy.clone()));
+                    }
+                    Ok(_) | Err(RepositoryError::NotInitialized) => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        *retained = Some(alloc::sync::Arc::new(storage));
+    }
+    let storage = retained.as_ref().unwrap().clone();
     let repository = storage.repository();
     for name in &remotes.policy.trusted_taggers {
-        let tagger = Tree::try_from(crate::api::resolve(repository, name)?)?;
-        trust
-            .add_tagger(&*storage, tagger)
-            .map_err(CliError::Trust)?;
+        trust.trust_tagger_name(name).map_err(CliError::Trust)?;
     }
     if command == "call" {
+        if workers == 0 {
+            return Err(CliError::Backend(
+                "local application execution is disabled (-j0); use a distributed scheduler".into(),
+            ));
+        }
         let [combination] = arguments.as_slice() else {
             return Err(CliError::Usage("expected a callable combination"));
         };
         let combination = Tree::try_from(crate::api::resolve(repository, combination)?)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes);
         return report(&backend, backend.call(combination));
     }
     if command == "schedule" {
@@ -201,7 +244,26 @@ fn execute(
                 .add_tagger(&*storage, tagger)
                 .map_err(CliError::Trust)?;
         }
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let fields = storage.get_tree(combination).map_err(|error| {
+            CliError::Backend(alloc::format!(
+                "could not read scheduler combination: {error:?}"
+            ))
+        })?;
+        if let Some(collector) = fields.get(3)
+            && let Ok(collector) = Tree::try_from(*collector)
+            && !collector.is_empty()
+            && !trust
+                .is_tagger(&*storage, collector)
+                .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes);
         let result = backend
             .schedule(combination, todos)
             .map_err(CliError::Backend)?;
@@ -214,10 +276,18 @@ fn execute(
         let scheduler = Tree::try_from(crate::api::resolve(repository, scheduler)?)?;
         let collector = Tree::try_from(crate::api::resolve(repository, collector)?)?;
         let value = crate::api::resolve(repository, value)?;
-        trust
-            .add_tagger(&*storage, collector)
-            .map_err(CliError::Trust)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        if !trust
+            .is_tagger(&*storage, collector)
+            .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes);
         let result = backend
             .eval(value, scheduler, collector)
             .map_err(CliError::Backend)?;

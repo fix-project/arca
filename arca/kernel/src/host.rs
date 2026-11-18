@@ -94,14 +94,87 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn cpu_time() -> Option<u64> {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::CpuTime)
+        {
+            common::protocol::control::Response::CpuTime(value) => value,
+            _ => None,
+        }
+    }
+
+    pub fn evaluation_step(step: common::protocol::control::EvaluationStep) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::EvaluationStep(step));
+    }
+
+    pub fn observe_evaluation() -> bool {
+        matches!(
+            crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&common::protocol::control::Request::ObserveEvaluation),
+            common::protocol::control::Response::Bool(true)
+        )
+    }
+
+    pub fn evaluation_progress(snapshot: common::protocol::control::EvaluationSnapshot) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::EvaluationProgress(snapshot),
+        );
+    }
+
+    pub fn sleep(milliseconds: u64) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::Sleep(milliseconds));
+    }
+
+    pub fn tree_progress(task: [u8; 32], children: Vec<[u8; 32]>, completed: u64, total: u64) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::TreeProgress {
+                task,
+                children,
+                completed,
+                total,
+            },
+        );
+    }
+
+    pub fn task_finished(
+        task: [u8; 32],
+        operation: Option<common::protocol::control::EvaluationOperation>,
+    ) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::TaskFinished { task, operation });
+    }
+
+    pub fn task_advice(
+        task: [u8; 32],
+        operation: Option<common::protocol::control::EvaluationOperation>,
+        key: &[u8],
+        payload: &[u8],
+    ) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::TaskAdvice {
+                task,
+                operation,
+                key: key.to_vec(),
+                payload: payload.to_vec(),
+            },
+        );
+    }
     use crate::prelude::*;
     use common::protocol::*;
 
-    pub fn ssh_sign(
-        identity: &str,
-        namespace: &str,
-        message: &[u8],
-    ) -> Result<String, control::ErrorKind> {
+    pub fn ssh_sign(identity: &str, namespace: &str, message: &[u8]) -> Result<String, String> {
         let buffer = crate::allocator::buffer(Vec::from(message));
         match crate::pipe::HOST
             .get()
@@ -112,8 +185,9 @@ pub mod os {
                 message: buffer.slice(..),
             }) {
             control::Response::Signature(signature) => Ok(signature),
-            control::Response::Err(error) => Err(error.into()),
-            _ => Err(control::ErrorKind::Other),
+            control::Response::SignatureError(error) => Err(error),
+            control::Response::Err(error) => Err(alloc::format!("{error:?}")),
+            _ => Err("invalid SSH signing response".into()),
         }
     }
 
@@ -172,28 +246,40 @@ pub mod net {
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            Self::try_bind(ip, port).expect("host TCP listen failed")
+        }
+
+        pub fn try_bind(ip: &[u8; 4], port: u16) -> Result<TcpListener, ErrorKind> {
             let host = crate::pipe::HOST.get().unwrap();
             let ip = *ip;
-            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
-            else {
-                todo!();
-            };
-            unsafe {
-                TcpListener {
-                    pipe: KMutex::new(ListenerPipe::new(get_pipe(id))),
-                }
+            match host.request(&control::Request::Listen { ip, port }) {
+                control::Response::Pipe(id) => Ok(TcpListener {
+                    pipe: KMutex::new(unsafe { ListenerPipe::new(get_pipe(id)) }),
+                }),
+                control::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
+            }
+        }
+
+        pub fn local_addr(&self) -> Result<([u8; 4], u16), ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::LocalAddress) {
+                listener::Response::Address(ip, port) => Ok((ip, port)),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let mut pipe = self.pipe.lock();
-            let listener::Response::Pipe(id) = pipe.request(&listener::Request::Accept) else {
-                todo!();
-            };
-            unsafe {
-                TcpStream {
-                    pipe: StreamPipe::new(get_pipe(id)),
-                }
+            self.try_accept().expect("host TCP accept failed")
+        }
+
+        pub fn try_accept(&self) -> Result<TcpStream, ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::Accept) {
+                listener::Response::Pipe(id) => Ok(TcpStream {
+                    pipe: unsafe { StreamPipe::new(get_pipe(id)) },
+                }),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
     }
@@ -218,6 +304,31 @@ pub mod net {
                 host: hostname.into(),
                 port,
             }))
+        }
+
+        pub fn ssh_connect(
+            host: &str,
+            repository: &str,
+            scheduler: Option<&str>,
+            collector: Option<&str>,
+        ) -> Result<Stream, ErrorKind> {
+            Self::from_response(crate::pipe::HOST.get().unwrap().request(
+                &control::Request::SshConnect {
+                    host: host.into(),
+                    repository: repository.into(),
+                    scheduler: scheduler.map(str::to_owned),
+                    collector: collector.map(str::to_owned),
+                },
+            ))
+        }
+
+        pub fn stdio_stream() -> Result<Stream, ErrorKind> {
+            Self::from_response(
+                crate::pipe::HOST
+                    .get()
+                    .unwrap()
+                    .request(&control::Request::StdioStream),
+            )
         }
 
         pub fn open_uri(uri: &str) -> Result<Stream, ErrorKind> {
@@ -359,6 +470,21 @@ pub mod fs {
         let (bytes, _) = Box::into_raw_with_allocator(unsafe { region.into_owned() });
         // The global allocator accepts page-aligned Buddy allocations.
         Ok(unsafe { Box::from_raw(bytes) }.into_vec())
+    }
+
+    pub fn read_range(path: &str, offset: u64, length: usize) -> Result<Vec<u8>, ErrorKind> {
+        let mut file = File::open(path, true, false, false, false, false)?;
+        file.seek(Whence::Start(offset));
+        let mut buffer = crate::allocator::buffer(vec![0; length]);
+        let mut read = 0;
+        while read < length {
+            let count = file.try_read(&mut buffer.slice_mut(read..))?;
+            if count == 0 {
+                return Err(ErrorKind::InvalidData);
+            }
+            read += count;
+        }
+        Ok(buffer.to_vec())
     }
 
     pub fn write(path: &str, bytes: &[u8]) -> Result<(), ErrorKind> {

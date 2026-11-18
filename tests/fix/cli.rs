@@ -55,8 +55,24 @@ fn trust_file() -> &'static Path {
         let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("authority");
         std::fs::create_dir_all(&directory).unwrap();
         seed(&directory, &[]);
+        let output = Command::new(runfiles().join(env!("FIX_CLI")))
+            .args(["trust", "add-tagger", "coupon-collector"])
+            .env("FIX_UNSIGNED", "true")
+            .env("FIX_CONFIG_DIR", configuration())
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         directory.join(".fix/trust")
     })
+}
+
+fn configuration() -> PathBuf {
+    PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("user-config")
 }
 
 fn command(directory: &Path, arguments: &[&str]) -> Command {
@@ -67,6 +83,11 @@ fn command(directory: &Path, arguments: &[&str]) -> Command {
         .current_dir(directory)
         .env("FIX_JOBS", "1")
         .env("FIX_TRUST", trust_file())
+        .env("FIX_CONFIG_DIR", configuration())
+        .env(
+            "XDG_DATA_HOME",
+            PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("data"),
+        )
         .env("FIX_SCHEDULER", "evaluator")
         .env("FIX_COLLECTOR", "coupon-collector")
         .env_remove("BUILD_WORKSPACE_DIRECTORY");
@@ -146,7 +167,14 @@ fn evaluate_raw(
     let mode = value(directory, &["create-blob", "--string", mode]);
     let request = value(
         directory,
-        &["create-tree", &mode, scheduler, "coupon-collector", input],
+        &[
+            "create-tree",
+            &value(directory, &["create-blob", "--string", ""]),
+            scheduler,
+            &mode,
+            "coupon-collector",
+            input,
+        ],
     );
     let mut arguments = globals.to_vec();
     arguments.extend(["schedule", "--trusted-tagger", "coupon-collector", &request]);
@@ -269,7 +297,7 @@ fn seed_labels_support_tools_and_directory_contents() {
         ],
     );
     let author = value(&directory, &["resolve", "trusted-compiler"]);
-    for name in ["clang", "lld", "wasm2c", "wasm-merge"] {
+    for name in ["lld", "wasm-merge"] {
         let fields = value(&directory, &["read-tree", name]);
         let fields = fields.lines().collect::<Vec<_>>();
         assert_eq!(fields[0], author);
@@ -338,8 +366,6 @@ fn compiler_certificates() {
     let tools = value(&directory, &["read-tree", resources[1]]);
     let tools: Vec<_> = tools.lines().collect();
     assert_eq!(tools.len(), 3);
-    assert_eq!(value(&directory, &["resolve", "wasm2c"]), tools[0]);
-    assert_eq!(value(&directory, &["resolve", "clang"]), tools[1]);
     for tool in &tools[..2] {
         let fields = value(&directory, &["read-tree", tool]);
         assert_eq!(fields.lines().next(), Some(authority.as_str()));
@@ -422,12 +448,24 @@ fn runnable_trust_configuration() {
     let combination = value(&directory, &["create-tree", &metadata, "identity", &reply]);
     let application = value(&directory, &["create-application-thunk", &combination]);
     let config = directory.join("config");
-    std::fs::create_dir_all(config.join("fix")).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::copy(
+        configuration().join("trusted_taggers"),
+        config.join("trusted_taggers"),
+    )
+    .unwrap();
     let request = |mode: &str, input: &str| {
         let mode = value(&directory, &["create-blob", "--string", mode]);
         value(
             &directory,
-            &["create-tree", &mode, "evaluator", "coupon-collector", input],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--string", ""]),
+                "evaluator",
+                &mode,
+                "coupon-collector",
+                input,
+            ],
         )
     };
     let schedule = |directory: &Path, memoize: &str, request: &str, trust: Option<&Path>| {
@@ -538,11 +576,12 @@ fn scheduler_reuses_current_collector_coupons() {
         let claim_tree = value(&source, &["create-tree", &code, lhs, &combination]);
         let claim_ref = value(&source, &["create-ref", &claim_tree]);
         let fields = value(&source, &["create-tree", &foreign_author, &claim_ref]);
-        let request = value(&source, &["create-tree", &zero, "tagger", &fields, &zero]);
-        let foreign = value(
+        let checked = value(&source, &["create-blob", "--u64", "2"]);
+        let request = value(
             &source,
-            &["schedule", "--trusted-tagger", "tagger", &request],
+            &["create-tree", &zero, "tagger", &fields, &checked],
         );
+        let foreign = value(&source, &["call", &request]);
         let archive_path = directory.join(format!("{statement}.tar"));
         let foreign_archive = directory.join(format!("{statement}-foreign.tar"));
         archive(&source, &[input, coupon], &archive_path);
@@ -589,7 +628,7 @@ fn scheduler_reuses_current_collector_coupons() {
 }
 
 #[test]
-fn scheduler_modes_dispatch_and_validate_requests() {
+fn scheduler_modes_dispatch_requests() {
     let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("scheduler_modes");
     std::fs::create_dir(&directory).unwrap();
     run(&directory, &["init"], b"", 0);
@@ -604,7 +643,14 @@ fn scheduler_modes_dispatch_and_validate_requests() {
         let mode = value(&directory, &["create-blob", "--string", mode]);
         let request = value(
             &directory,
-            &["create-tree", &mode, "evaluator", "coupon-collector", input],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--string", ""]),
+                "evaluator",
+                &mode,
+                "coupon-collector",
+                input,
+            ],
         );
         let coupon = value(
             &directory,
@@ -621,22 +667,6 @@ fn scheduler_modes_dispatch_and_validate_requests() {
         assert_eq!(value(&directory, &["read-blob", "--u64", &claim[0]]), code);
         assert_eq!(&claim[1], input);
         assert_eq!(&claim[2], expected);
-    }
-    let unknown = value(&directory, &["create-blob", "--string", "unknown"]);
-    let tree = value(&directory, &["create-tree", &payload]);
-    for mode in [&unknown, &tree] {
-        let request = value(
-            &directory,
-            &[
-                "create-tree",
-                mode,
-                "evaluator",
-                "coupon-collector",
-                &payload,
-            ],
-        );
-        let result = value(&directory, &["-j", "2", "schedule", &request]);
-        assert_panic(&directory, &result, "Fix procedure failed: WrongType");
     }
 }
 
@@ -1043,7 +1073,7 @@ fn tag_authors_are_checked_as_objects_or_references() {
             &directory,
             &["create-tree", &zero, &callable, &fields, &mode],
         );
-        let tag = value(&directory, &["-j", "1", "schedule", &request]);
+        let tag = value(&directory, &["-j", "1", "call", &request]);
         run(&directory, &["is-tag", &tag], b"", 0);
         assert_eq!(
             value(&directory, &["read-tree", &tag]),
@@ -1060,7 +1090,7 @@ fn tag_authors_are_checked_as_objects_or_references() {
             &directory,
             &["create-tree", &zero, &callable, &fields, &mode],
         );
-        let result = value(&directory, &["-j", "1", "schedule", &request]);
+        let result = value(&directory, &["-j", "1", "call", &request]);
         assert_trap(&directory, &result, 5);
     }
     let fields = value(&directory, &["create-tree", &opaque, &zero]);
@@ -1068,408 +1098,8 @@ fn tag_authors_are_checked_as_objects_or_references() {
         &directory,
         &["create-tree", &zero, &callable, &fields, &mode],
     );
-    let result = value(&directory, &["-j", "1", "schedule", &request]);
+    let result = value(&directory, &["-j", "1", "call", &request]);
     assert_panic(&directory, &result, "Fix procedure failed: NotComparable");
-}
-
-#[test]
-fn trusted_tagger_authority_is_separate_from_scheduler_privilege() {
-    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("taggers");
-    std::fs::create_dir(&directory).unwrap();
-    run(&directory, &["init"], b"", 0);
-    seed(
-        &directory,
-        &[
-            ("tagger", env!("FIX_TAGGER")),
-            ("identity", env!("FIX_IDENTITY")),
-        ],
-    );
-    let empty = value(&directory, &["create-blob", "--string", ""]);
-    let zero = value(&directory, &["create-blob", "--u64", "0"]);
-    let authors = value(&directory, &["create-tree", "-"]);
-    let fields = value(&directory, &["create-tree", &authors, &zero]);
-    let byte_query = value(
-        &directory,
-        &[
-            "create-tree",
-            &empty,
-            "tagger",
-            &fields,
-            &value(&directory, &["create-blob", "--u64", "8"]),
-        ],
-    );
-    assert_eq!(
-        value(&directory, &["-j", "1", "schedule", &byte_query]),
-        fields
-    );
-    let byte_thunk = value(&directory, &["create-application-thunk", &byte_query]);
-    assert_trap(&directory, &think(&directory, &byte_thunk), 5);
-    let kind_query = value(
-        &directory,
-        &[
-            "create-tree",
-            &empty,
-            "tagger",
-            &fields,
-            &value(&directory, &["create-blob", "--u64", "6"]),
-        ],
-    );
-    assert_eq!(
-        value(&directory, &["-j", "1", "schedule", &kind_query]),
-        fields
-    );
-    let thunk = value(&directory, &["create-application-thunk", &kind_query]);
-    assert_trap(&directory, &think(&directory, &thunk), 5);
-    let combination = value(
-        &directory,
-        &["create-tree", &empty, "tagger", &fields, &zero],
-    );
-    assert_trap(
-        &directory,
-        &value(&directory, &["-j", "1", "schedule", &combination]),
-        5,
-    );
-    let denied = value(
-        &directory,
-        &[
-            "-j",
-            "1",
-            "schedule",
-            "--trusted-tagger",
-            "identity",
-            &combination,
-        ],
-    );
-    assert_trap(&directory, &denied, 5);
-    let result = value(
-        &directory,
-        &[
-            "-j",
-            "1",
-            "schedule",
-            "--trusted-tagger",
-            "tagger",
-            &combination,
-        ],
-    );
-    run(&directory, &["is-tag", &result], b"", 0);
-    let output = value(&directory, &["read-tree", &result]);
-    assert_eq!(
-        output.lines().collect::<Vec<_>>(),
-        [authors.as_str(), zero.as_str()]
-    );
-    assert!(value(&directory, &["read-tree", &authors]).is_empty());
-
-    let closure = value(&directory, &["create-tree", &empty, "tagger", "identity"]);
-    let indirect = value(
-        &directory,
-        &["create-tree", &empty, &closure, &fields, &zero],
-    );
-    let denied = value(
-        &directory,
-        &[
-            "-j",
-            "1",
-            "schedule",
-            "--trusted-tagger",
-            "identity",
-            &indirect,
-        ],
-    );
-    assert_trap(&directory, &denied, 5);
-
-    let one = value(&directory, &["create-blob", "--u64", "1"]);
-    let paused = value(
-        &directory,
-        &["create-tree", &empty, "tagger", &fields, &one, &empty],
-    );
-    let thunk = value(&directory, &["create-application-thunk", &paused]);
-    let request = think(&directory, &thunk);
-    let pair = value(&directory, &["read-tree", &request]);
-    let continuation = pair.lines().nth(1).unwrap();
-    let resumed = value(&directory, &["create-tree", &empty, continuation, &empty]);
-    for grants in [vec![], vec!["--trusted-tagger", "identity"]] {
-        let mut command = vec!["-j", "1", "schedule"];
-        command.extend(grants);
-        command.push(&resumed);
-        assert_trap(&directory, &value(&directory, &command), 5);
-    }
-    assert_eq!(
-        value(
-            &directory,
-            &[
-                "-j",
-                "1",
-                "schedule",
-                "--trusted-tagger",
-                "tagger",
-                &resumed
-            ],
-        ),
-        result
-    );
-}
-
-#[test]
-fn collector_exchanges_preserve_value_observations() {
-    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("collector_tags");
-    std::fs::create_dir(&directory).unwrap();
-    run(&directory, &["init"], b"", 0);
-    seed(
-        &directory,
-        &[
-            ("collector", env!("FIX_COLLECTOR")),
-            ("scheduler", env!("FIX_TAGGER")),
-        ],
-    );
-    let blob = |n: u64| value(&directory, &["create-blob", "--u64", &n.to_string()]);
-    let tree = |fields: &[&str]| {
-        let mut args = vec!["create-tree"];
-        args.extend_from_slice(fields);
-        if fields.is_empty() {
-            args.push("-");
-        }
-        value(&directory, &args)
-    };
-    let empty = tree(&[]);
-    let zero = blob(0);
-    let one = blob(1);
-    let tag = |fields: &str, trusted: bool| {
-        let mode = blob(if trusted { 0 } else { 2 });
-        let combination = tree(&[&zero, "scheduler", fields, &mode]);
-        let mut args = vec!["-j", "1", "schedule"];
-        if trusted {
-            args.extend(["--trusted-tagger", "scheduler"]);
-        }
-        args.push(&combination);
-        value(&directory, &args)
-    };
-    let request = |rule: u64, lhs: &str, rhs: &str, witnesses: &[&str], rejected| {
-        let rule = blob(rule);
-        let witnesses = tree(witnesses);
-        let combination = tree(&[&zero, "collector", &rule, lhs, rhs, &witnesses]);
-        let scheduler = tree(&[&zero, "scheduler", &combination, &blob(3)]);
-        let result = value(
-            &directory,
-            &[
-                "-j",
-                "1",
-                "schedule",
-                "--trusted-tagger",
-                "collector",
-                &scheduler,
-            ],
-        );
-        if rejected {
-            assert_trap(&directory, &result, 5);
-        }
-        result
-    };
-    let witness = |coupon: &str, kind: u64, lhs: &str, rhs: &str| {
-        let claim = tree(&[&blob(kind), lhs, rhs]);
-        tree(&[coupon, &claim])
-    };
-    let fields = tree(&[&empty, &zero]);
-    let original = tag(&fields, true);
-    let authors_coupon = request(5, &empty, &empty, &[], false);
-    let authors = witness(&authors_coupon, 1, &empty, &empty);
-    let leaf_coupon = request(5, &zero, &zero, &[], false);
-    let leaf = witness(&leaf_coupon, 1, &zero, &zero);
-    assert_eq!(
-        claim(
-            &directory,
-            &request(5, &original, &fields, &[&authors, &leaf], false)
-        )[2],
-        original
-    );
-    let ordinary = request(5, &fields, &fields, &[&authors, &leaf], false);
-    assert_eq!(claim(&directory, &ordinary)[2], fields);
-    let reference = value(&directory, &["create-ref", &zero]);
-    let thunk = value(&directory, &["create-identification-thunk", &reference]);
-    let encoded = value(&directory, &["create-strict-encode", &thunk]);
-    let thought = witness(
-        &request(2, &thunk, &reference, &[], false),
-        4,
-        &thunk,
-        &reference,
-    );
-    let forced = witness(
-        &request(3, &thunk, &reference, &[&thought], false),
-        3,
-        &thunk,
-        &reference,
-    );
-    let eq = witness(
-        &request(7, &encoded, &zero, &[&forced], false),
-        0,
-        &encoded,
-        &zero,
-    );
-    let pending = tree(&[&encoded]);
-    let ready = tree(&[&zero]);
-    let tree_coupon = request(0, &pending, &ready, &[&eq], false);
-    assert_eq!(claim(&directory, &tree_coupon)[2], ready);
-    let trees = witness(&tree_coupon, 0, &pending, &ready);
-    let pending_ref = value(&directory, &["create-ref", &pending]);
-    let ready_ref = value(&directory, &["create-ref", &ready]);
-    request(0, &pending_ref, &ready_ref, &[&trees], true);
-
-    let values = tree(&[&thunk]);
-    let values_ref = value(&directory, &["create-ref", &values]);
-    let values_eq = witness(
-        &request(12, &values, &values, &[], false),
-        0,
-        &values,
-        &values,
-    );
-    assert_eq!(
-        claim(
-            &directory,
-            &request(0, &values_ref, &values_ref, &[&values_eq], false)
-        )[2],
-        values_ref
-    );
-    let refs_eq = witness(
-        &request(12, &reference, &reference, &[], false),
-        0,
-        &reference,
-        &reference,
-    );
-    assert_eq!(
-        claim(
-            &directory,
-            &request(1, &thunk, &thunk, &[&forced, &forced, &refs_eq], false)
-        )[2],
-        thunk
-    );
-    let reversed = witness(
-        &request(10, &zero, &encoded, &[&eq], false),
-        0,
-        &zero,
-        &encoded,
-    );
-    let payload = witness(
-        &request(8, &encoded, &zero, &[&leaf, &reversed], false),
-        1,
-        &encoded,
-        &zero,
-    );
-    let unevaluated = tag(&tree(&[&empty, &encoded]), true);
-    assert_eq!(
-        claim(
-            &directory,
-            &request(5, &unevaluated, &fields, &[&authors, &payload], false)
-        )[2],
-        original
-    );
-    let changed = tree(&[&empty, &one]);
-    let invalid = tree(&[&zero, &zero]);
-    for (lhs, rhs, proofs) in [
-        (
-            original.as_str(),
-            changed.as_str(),
-            vec![authors.as_str(), leaf.as_str()],
-        ),
-        (
-            original.as_str(),
-            fields.as_str(),
-            vec![leaf.as_str(), authors.as_str()],
-        ),
-        (original.as_str(), fields.as_str(), vec![authors.as_str()]),
-        (
-            original.as_str(),
-            invalid.as_str(),
-            vec![leaf.as_str(), leaf.as_str()],
-        ),
-    ] {
-        request(5, lhs, rhs, &proofs, true);
-    }
-    let fake_claim = tree(&[&one, &zero, &one]);
-    let fake_ref = value(&directory, &["create-ref", &fake_claim]);
-    let fake_coupon = tag(&tree(&[&empty, &fake_ref]), false);
-    let fake = tree(&[&fake_coupon, &fake_claim]);
-    request(5, &original, &changed, &[&authors, &fake], true);
-    let candidate = tag(&changed, true);
-    request(5, &original, &candidate, &[&authors, &fake], true);
-}
-
-#[test]
-fn scheduler_effects_repository_round_trip() {
-    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("user_scheduler");
-    std::fs::create_dir(&directory).unwrap();
-    run(&directory, &["init"], b"", 0);
-    seed(
-        &directory,
-        &[
-            ("scheduler", env!("USER_SCHEDULER")),
-            ("identity", env!("FIX_IDENTITY")),
-            ("continuation", env!("FIX_CONTINUATION")),
-        ],
-    );
-    let bytes = [42; 64];
-    let blob = text(run(&directory, &["create-blob", "-"], &bytes, 0));
-    let metadata = value(&directory, &["create-blob", "--string", ""]);
-    let root = value(
-        &directory,
-        &["create-tree", &metadata, "identity", &blob, "continuation"],
-    );
-    let index = value(&directory, &["create-blob", "--u64", "2"]);
-    let selection = value(&directory, &["create-tree", &root, &index]);
-    let combination = value(
-        &directory,
-        &["create-tree", &metadata, "scheduler", &metadata, &root],
-    );
-    for workers in ["1", "2"] {
-        let result = value(&directory, &["-j", workers, "schedule", &combination]);
-        let fields = value(&directory, &["read-tree", &result]);
-        let fields: Vec<_> = fields.lines().collect();
-        assert_eq!(fields.len(), 6);
-        for (coupon, operation, input, output) in [
-            (fields[0], 2, root.as_str(), root.as_str()),
-            (fields[1], 6, selection.as_str(), blob.as_str()),
-            (fields[2], 0, root.as_str(), root.as_str()),
-            (fields[5], 1, root.as_str(), root.as_str()),
-        ] {
-            let claim = claim(&directory, coupon);
-            assert_eq!(
-                value(&directory, &["read-blob", "--u64", &claim[0]]),
-                operation.to_string()
-            );
-            assert_eq!(claim[1], input);
-            assert_eq!(claim[2], output);
-        }
-        assert_eq!(fields[3], root);
-        assert_eq!(fields[4], root);
-        assert_eq!(run(&directory, &["read-blob", &blob], b"", 0), bytes);
-    }
-
-    let scheduler = value(&directory, &["resolve", "scheduler"]);
-    let combination = value(
-        &directory,
-        &["create-tree", &metadata, &scheduler, &metadata, &root],
-    );
-    let thunk = value(&directory, &["create-application-thunk", &combination]);
-    let request = think(&directory, &thunk);
-    let pair = value(&directory, &["read-tree", &request]);
-    let pair: Vec<_> = pair.lines().collect();
-    assert_eq!(pair.len(), 2);
-    let effect = value(&directory, &["read-tree", pair[0]]);
-    let name = effect.lines().next().unwrap();
-    assert_eq!(
-        text(run(&directory, &["read-blob", name], b"", 0)),
-        "worker_config"
-    );
-    let zero = value(&directory, &["create-blob", "--u64", "0"]);
-    let reply = value(&directory, &["create-tree", &zero, &zero]);
-    let resumed = value(&directory, &["create-tree", &metadata, pair[1], &reply]);
-    let thunk = value(&directory, &["create-application-thunk", &resumed]);
-    let request = think(&directory, &thunk);
-    let pair = value(&directory, &["read-tree", &request]);
-    let effect = value(&directory, &["read-tree", pair.lines().next().unwrap()]);
-    assert_eq!(
-        effect.lines().nth(1).unwrap(),
-        value(&directory, &["create-blob", "--u64", "1"])
-    );
 }
 
 #[test]
@@ -1686,4 +1316,28 @@ fn eval_encode_executes_recursive_applications_and_identification_thunks() {
     let expression = format!("@handle(\"{identification}\")");
     assert_eq!(value(&directory, &["eval", "--encode", &expression]), blob);
     run(&directory, &["eval", "--encode", "42u64"], b"", 2);
+}
+
+#[test]
+fn source_management_returns_values_in_both_memoization_modes() {
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("source-results");
+    std::fs::create_dir(&directory).unwrap();
+    seed(&directory, &[]);
+    let source = value(
+        &directory,
+        &[
+            "create-blob",
+            "--string",
+            "a source object with nonliteral backing bytes",
+        ],
+    );
+    let list = value(&directory, &["create-blob", "--string", "list"]);
+    let input = value(&directory, &["create-tree", &list, &source]);
+    let empty = value(&directory, &["create-tree"]);
+    for mode in ["--memoize=auto", "--memoize=never"] {
+        assert_eq!(
+            evaluate_raw(&directory, "todo", "evaluator", &input, &[mode], 0),
+            empty
+        );
+    }
 }

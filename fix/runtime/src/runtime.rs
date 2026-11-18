@@ -21,10 +21,31 @@ pub struct InvalidApplication;
 
 impl InvalidApplication {
     /// The `Fix.error` request reporting the failure.
-    pub fn request(storage: &dyn Storage) -> Tree {
+    pub fn request(storage: &dyn Storage, combination: Handle) -> Tree {
+        let name = |value| -> alloc::string::String {
+            match storage.canonicalize(value) {
+                Ok(value) => alloc::format!("{}", Handle::from(value)),
+                Err(error) => alloc::format!("<canonical name unavailable: {error:?}>"),
+            }
+        };
+        let callable = Tree::try_from(combination)
+            .ok()
+            .and_then(|tree| storage.get_tree(tree).ok())
+            .and_then(|fields| fields.get(1).copied());
+        let message = match callable {
+            Some(callable) => alloc::format!(
+                "cannot apply combination {}: callable {} is not a function",
+                name(combination),
+                name(callable)
+            ),
+            None => alloc::format!(
+                "cannot apply combination {}: no callable at index 1",
+                name(combination)
+            ),
+        };
         storage.add_tree(&[
             storage.add_blob(b"Fix.error").into(),
-            storage.add_blob(b"not a function").into(),
+            storage.add_blob(message.as_bytes()).into(),
         ])
     }
 }

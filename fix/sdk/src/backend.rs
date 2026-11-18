@@ -13,6 +13,11 @@ pub type Reference = fix::Reference<Shell>;
 pub type Thunk = fix::Thunk<Shell>;
 pub type Encode = fix::Encode<Shell>;
 
+/// Return the currently executing combination.
+pub fn combination() -> Tree {
+    Tree::try_from(Value::from_inner(Shell::combination())).expect("invocation combination")
+}
+
 static mut COMBINATION: Option<u32> = None;
 pub(crate) struct InvocationGuard;
 impl InvocationGuard {

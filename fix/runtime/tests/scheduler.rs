@@ -3,10 +3,32 @@ use fixruntime::{Blob, Handle, Runtime, Thunk, Tree, stdlib};
 use kernel::prelude::Vec;
 
 #[kernel::test]
+fn scheduler_tcp_listener_round_trip() {
+    use fixruntime::user_scheduler_driver::{PersistenceOnly, start};
+    use kernel::prelude::Arc;
+
+    let runtime = Arc::new(test_runtime());
+    let storage = runtime.storage();
+    let program = test_program(storage, kernel::testing::fixture("FIX_TCP_LISTENER"));
+    let collector = test_program(storage, kernel::testing::fixture("FIX_COLLECTOR"));
+    let combination = storage.add_tree(&[
+        Tree::empty().into(),
+        program.into(),
+        Tree::empty().into(),
+        collector.into(),
+    ]);
+    let report = start(runtime.clone(), combination, 1, PersistenceOnly(Ok)).unwrap();
+    let result = Blob::try_from(report.result.unwrap()).unwrap();
+    assert_eq!(storage.get_blob(result).unwrap().as_ref(), b"roundtrip");
+}
+
+#[kernel::test]
 fn scheduler_evaluates_wide_application_graphs() {
     for evaluator in [
         Evaluation::new(test_runtime()),
         Evaluation::with_workers(test_runtime(), 2),
+        Evaluation::with_scheduler(test_runtime(), 2, "FIX_ONEPASS_SCHEDULER"),
+        Evaluation::with_scheduler(test_runtime(), 2, "FIX_HINT_SCHEDULER"),
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
@@ -100,6 +122,7 @@ fn scheduler_evaluates_shared_dependencies() {
         Evaluation::new(test_runtime()),
         Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
+        Evaluation::with_scheduler(test_runtime(), 4, "FIX_RECOMPUTE_SCHEDULER"),
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
@@ -145,6 +168,7 @@ fn scheduler_preserves_tree_order_and_duplicate_premises() {
         Evaluation::new(test_runtime()),
         Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
+        Evaluation::with_scheduler(test_runtime(), 4, "FIX_RECOMPUTE_SCHEDULER"),
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
@@ -189,6 +213,7 @@ fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
         Evaluation::new(test_runtime()),
         Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
+        Evaluation::with_scheduler(test_runtime(), 4, "FIX_RECOMPUTE_SCHEDULER"),
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
@@ -312,5 +337,35 @@ fn rust_sdk_returns_complete_panic_messages() {
                 .as_ref(),
             b"early return"
         );
+    }
+}
+
+#[kernel::test]
+fn scheduler_controls_memoization_without_losing_shared_results() {
+    for (fixture, repeated) in [("FIX_SCHEDULER", 0), ("FIX_RECOMPUTE_SCHEDULER", 1)] {
+        let evaluator = Evaluation::with_scheduler(test_runtime(), 4, fixture);
+        let storage = evaluator.storage();
+        let program = test_program(storage, stdlib::PRIMITIVES[0].1);
+        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let input = storage.add_tree(
+            &kernel::prelude::vec![combination.into_ref().application().strict().into(); 64],
+        );
+        let expected = storage.add_tree(&kernel::prelude::vec![combination.into(); 64]);
+        for count in [1, repeated] {
+            let (result, executed) = evaluator.eval_count(input.into());
+            assert!(storage.equals(result, expected.into()).unwrap());
+            assert_eq!(executed, count);
+        }
+        let claims = evaluator
+            .runtime()
+            .cached_claims_in(
+                &[
+                    Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
+                    combination.into(),
+                ],
+                &fixruntime::arca::SavedClaims::default(),
+            )
+            .unwrap();
+        assert_eq!(claims.is_empty(), fixture == "FIX_RECOMPUTE_SCHEDULER");
     }
 }

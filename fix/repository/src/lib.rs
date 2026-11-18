@@ -8,6 +8,7 @@ pub use fixcertificates::{Certificate, Policy};
 pub use fixhandle as handle;
 
 mod config;
+mod names;
 mod signing;
 pub use config::Remote;
 
@@ -43,9 +44,29 @@ pub enum RepositoryError {
     NonCanonical,
     InvalidRepository,
     InvalidLabel,
+    LabelConflict,
     Certificate(fixcertificates::Error),
     MissingLabel { name: String, repository: String },
+    MissingObject { name: String, repository: String },
+    MissingBacking { name: String, repository: String },
+    AmbiguousName { name: String, matches: Vec<String> },
 }
+
+impl core::fmt::Display for RepositoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::AmbiguousName { name, matches } => {
+                write!(
+                    formatter,
+                    "ambiguous Fix name {name:?}: {}",
+                    matches.join(", ")
+                )
+            }
+            _ => write!(formatter, "{self:?}"),
+        }
+    }
+}
+impl core::error::Error for RepositoryError {}
 
 impl From<fixcertificates::Error> for RepositoryError {
     fn from(error: fixcertificates::Error) -> Self {
@@ -134,25 +155,30 @@ impl Repository {
         if object.is_empty() && object.as_handle().same_encoding(&Tree::empty().into()) {
             return Ok(Vec::new());
         }
-        let record = if self.lookup(object.as_handle().as_bytes()).is_ok() {
-            *object.as_handle()
-        } else {
-            let reference = object.into_ref();
-            self.lookup(reference.as_handle().as_bytes())?
-        };
-        let mut paths = alloc::vec![format!(".fix/objects/{record}")];
+        let mut paths = Vec::new();
+        for record in [*object.as_handle(), object.into_ref().into()] {
+            let path = format!(".fix/objects/{record}");
+            match fs::read_link(&format!("{}/objects/{record}", self.path)) {
+                Ok(_) => paths.push(path),
+                Err(ErrorKind::NotFound) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
         if object.as_handle().as_bytes()[31] & 0x40 != 0 {
             let directory = self.certificate_directory(object.as_handle().as_bytes());
             match fs::read_dir(&directory) {
                 Ok(entries) => {
                     for entry in entries {
-                        paths.push(format!(".fix/certificates/{}/{entry}", object.as_handle()));
+                        paths.push(format!(
+                            ".fix/tags/signatures/{}/{entry}",
+                            object.as_handle()
+                        ));
                     }
                 }
                 Err(ErrorKind::NotFound) => (),
                 Err(error) => return Err(error.into()),
             }
-            for certificate in self.certificate_blobs(record.as_bytes())? {
+            for certificate in self.certificate_blobs(object.as_handle().as_bytes())? {
                 paths.extend(self.object_paths(certificate.object(), true)?);
             }
         }
@@ -167,80 +193,47 @@ impl Repository {
             ".fix/data/{}",
             Self::data_key(object.as_handle().as_bytes())
         ));
-        if let ObjectView::Tree(tree) = object.view()
-            && tree.is_tag()
-        {
-            let fields = self.read_tree(*tree)?;
-            let index = Self::tag_index(&fields);
-            for index in [
-                Some(index),
-                self.claim_fields(&fields)?
-                    .map(|claim| Self::index("claims", &claim)),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let entry = format!("{index}/entries/{}", object.as_handle());
-                if fs::exists(&format!("{}/{entry}", self.path))? {
-                    paths.push(format!(".fix/{entry}"));
-                }
-            }
-        }
         Ok(paths)
     }
 
-    pub fn visit(
+    /// Visit backing Objects in post-order, optionally including deferred definitions.
+    pub fn visit<E: From<RepositoryError>>(
         &self,
-        values: &[Handle],
+        root: Handle,
         without_backing: &[Object],
-        mut visitor: impl FnMut(Object, bool) -> Result<(), RepositoryError>,
-    ) -> Result<(), RepositoryError> {
-        let mut pending: Vec<_> = values.iter().rev().copied().collect();
+        deferred: bool,
+        mut visitor: impl FnMut(Object) -> Result<(), E>,
+    ) -> Result<(), E> {
         let mut seen = hashbrown::HashSet::new();
-        while let Some(value) = pending.pop() {
-            let reference = match value.view() {
-                HandleView::Object(object) => object.into_ref(),
-                HandleView::Ref(reference) => *reference,
-                HandleView::Thunk(thunk) => match thunk.view() {
-                    ThunkView::Identification(reference) => reference,
-                    ThunkView::Application(reference) | ThunkView::Selection(reference) => {
-                        reference.into()
-                    }
-                },
-                HandleView::Encode(encode) => {
-                    let thunk = match encode.view() {
-                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
-                    };
-                    pending.push(thunk.into());
-                    continue;
+        fixhandle::minrepo::visit(
+            root,
+            deferred,
+            &mut |tree: Tree| {
+                if without_backing
+                    .iter()
+                    .any(|object| object.as_handle().same_encoding(tree.as_handle()))
+                    || !seen.insert(*tree.as_handle().as_bytes())
+                    || !self.has_backing(tree.into())?
+                {
+                    return Ok(Vec::new().into_iter());
                 }
-            };
-            let object = reference.object_descriptor();
-            if matches!(object.as_handle().name(), Name::Literal(_))
-                || !seen.insert(*object.as_handle().as_bytes())
-            {
-                continue;
-            }
-            self.lookup(reference.as_handle().as_bytes())?;
-            let include_backing = !without_backing
-                .iter()
-                .any(|excluded| excluded.as_handle().as_bytes() == object.as_handle().as_bytes());
-            visitor(object, include_backing)?;
-            if let Some(metadata) = self.get_todo(object.into_ref())? {
-                pending.push(metadata);
-            }
-            if let ObjectView::Tree(tree) = object.view()
-                && include_backing
-                && self.has_backing(object)?
-            {
-                pending.extend(self.read_tree(*tree)?.iter().rev().copied());
-            }
-        }
-        Ok(())
+                self.read_tree(tree)
+                    .map(|children| children.into_vec().into_iter())
+                    .map_err(E::from)
+            },
+            &mut visitor,
+        )
     }
 
     pub fn init(path: &str) -> Result<Self, RepositoryError> {
-        for directory in ["data", "objects", "labels"] {
+        for directory in [
+            "data",
+            "objects",
+            "labels",
+            "tags/signatures",
+            "tags/by-subject",
+            "tags/by-author",
+        ] {
             fs::mkdir(&format!("{path}/{directory}"))?;
         }
         Self::open(path)
@@ -264,7 +257,14 @@ impl Repository {
     }
 
     pub fn open(path: &str) -> Result<Self, RepositoryError> {
-        for directory in ["data", "objects", "labels"] {
+        for directory in [
+            "data",
+            "objects",
+            "labels",
+            "tags/signatures",
+            "tags/by-subject",
+            "tags/by-author",
+        ] {
             match fs::is_directory(&format!("{path}/{directory}")) {
                 Ok(true) => (),
                 Ok(false) | Err(ErrorKind::NotFound) => {
@@ -282,15 +282,19 @@ impl Repository {
     }
 
     pub fn inventory(&self) -> Result<Vec<Handle>, RepositoryError> {
+        let backing: hashbrown::HashSet<_> = fs::read_dir(&format!("{}/data", self.path))?
+            .into_iter()
+            .collect();
         let mut objects = Vec::new();
         for entry in fs::read_dir(&format!("{}/objects", self.path))? {
             let mut name = [0; 32];
             if hex::decode_to_slice(&entry, &mut name).is_err() || name[31] & 0x1f != 0 {
                 continue;
             }
-            if let Ok(handle) = self.lookup(&name)
-                && let Ok(object) = Object::try_from(handle)
-                && self.has_backing(object).unwrap_or(false)
+            if let Ok(handle) = unsafe { Handle::parse(name) }
+                && handle.is_canonical()
+                && Object::try_from(handle).is_ok()
+                && backing.contains(&Self::data_key(&name))
             {
                 objects.push(handle);
             }
@@ -305,7 +309,7 @@ impl Repository {
         }
         match self.lookup(object.as_handle().as_bytes()) {
             Ok(_) => {}
-            Err(RepositoryError::Io(ErrorKind::NotFound)) => return Ok(false),
+            Err(RepositoryError::MissingObject { .. }) => return Ok(false),
             Err(error) => return Err(error),
         }
         if matches!(object.as_handle().name(), Name::Literal(_)) {
@@ -369,6 +373,9 @@ impl Repository {
         if !view.is_canonical() {
             return Err(RepositoryError::NonCanonical);
         }
+        if !matches!(view.view(), HandleBytesView::Object(_)) {
+            return Ok(unsafe { view.to_owned() });
+        }
         if !matches!(view.name(), Name::Literal(_)) {
             let mut object = *bytes;
             object[31] &= 0xe0;
@@ -378,9 +385,12 @@ impl Repository {
             if object[31] & 0x40 != 0 {
                 let policy = self.policy()?;
                 let verify = |name: [u8; 32]| -> Result<(), RepositoryError> {
-                    let certificate = self
-                        .stored_certificates(name)?
-                        .ok_or(RepositoryError::Io(ErrorKind::NotFound))?;
+                    let certificate = self.stored_certificates(name)?.ok_or_else(|| {
+                        RepositoryError::MissingObject {
+                            name: hex::encode(name),
+                            repository: self.path.clone(),
+                        }
+                    })?;
                     if policy.unsigned
                         || certificate
                             .iter()
@@ -407,7 +417,20 @@ impl Repository {
                 Ok(target) => target,
                 Err(ErrorKind::NotFound) if bytes[31] & 0x10 != 0 => {
                     object[31] |= 0x10;
-                    fs::read_link(&format!("{}/objects/{}", self.path, hex::encode(object)))?
+                    fs::read_link(&format!("{}/objects/{}", self.path, hex::encode(object)))
+                        .map_err(|error| match error {
+                            ErrorKind::NotFound => RepositoryError::MissingObject {
+                                name: hex::encode(object),
+                                repository: self.path.clone(),
+                            },
+                            error => error.into(),
+                        })?
+                }
+                Err(ErrorKind::NotFound) => {
+                    return Err(RepositoryError::MissingObject {
+                        name: hex::encode(object),
+                        repository: self.path.clone(),
+                    });
                 }
                 Err(error) => return Err(error.into()),
             };
@@ -415,8 +438,35 @@ impl Repository {
                 return Err(RepositoryError::InvalidRepository);
             }
         }
-        // The exact Object or Ref record establishes the requested handle's provenance.
         Ok(unsafe { view.to_owned() })
+    }
+
+    /// Reads unverified backing bytes. The receiver must verify the complete object.
+    pub fn read_backing_range(
+        &self,
+        object: Object,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, RepositoryError> {
+        self.lookup(object.as_handle().as_bytes())?;
+        if offset
+            .checked_add(length as u64)
+            .is_none_or(|end| end > object.byte_len())
+        {
+            return Err(RepositoryError::InvalidRepository);
+        }
+        let path = format!(
+            "{}/data/{}",
+            self.path,
+            Self::data_key(object.as_handle().as_bytes())
+        );
+        fs::read_range(&path, offset, length).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingBacking {
+                name: hex::encode(object.as_handle().as_bytes()),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })
     }
 
     pub fn read_blob(&self, blob: Blob) -> Result<Box<[u8]>, RepositoryError> {
@@ -425,7 +475,14 @@ impl Repository {
             return Ok(bytes.into());
         }
         let bytes = self.read_data(blob.into())?;
+        #[cfg(target_os = "linux")]
+        let progress = (bytes.len() >= 1024 * 1024)
+            .then(|| common::progress::Progress::activity("Verifying repository Blob data"));
         blob.verify(&bytes)?;
+        #[cfg(target_os = "linux")]
+        if let Some(progress) = progress {
+            progress.finish();
+        }
         Ok(bytes)
     }
 
@@ -435,15 +492,36 @@ impl Repository {
         }
         self.lookup(tree.as_handle().as_bytes())?;
         let bytes = self.read_data(tree.into())?;
+        #[cfg(target_os = "linux")]
+        let progress = (bytes.len() >= 1024 * 1024).then(|| {
+            common::progress::Progress::activity("Verifying and decoding repository Tree data")
+        });
         tree.verify_bytes(&bytes)?;
         let mut children = Vec::with_capacity(tree.len());
-        for child in bytes.as_chunks::<32>().0 {
+        for (index, child) in bytes.as_chunks::<32>().0.iter().enumerate() {
+            if tree.is_tag() && index == 0 {
+                let author = Handle::parse_ref(child)?;
+                if let Ok(object) = Object::try_from(unsafe { author.to_owned() }) {
+                    self.lookup(object.into_ref().as_handle().as_bytes())?;
+                    children.push(object.into());
+                    continue;
+                }
+            }
             children.push(self.lookup(child)?);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(progress) = progress {
+            progress.finish();
         }
         Ok(children.into_boxed_slice())
     }
 
     pub fn read_label(&self, name: &str) -> Result<Handle, RepositoryError> {
+        self.lookup(&self.label_name(name)?)
+    }
+
+    /// Read a canonical label name without resolving its value or checking backing.
+    pub fn label_name(&self, name: &str) -> Result<[u8; 32], RepositoryError> {
         let path = self.label_path(name)?;
         let bytes = fs::read(&path).map_err(|error| match error {
             ErrorKind::NotFound => RepositoryError::MissingLabel {
@@ -456,7 +534,10 @@ impl Repository {
         let mut key = [0; 32];
         hex::decode_to_slice(text.trim(), &mut key)
             .map_err(|_| RepositoryError::InvalidRepository)?;
-        self.lookup(&key)
+        if !Handle::parse_ref(&key)?.is_canonical() {
+            return Err(RepositoryError::NonCanonical);
+        }
+        Ok(key)
     }
 
     pub fn labels(&self) -> Result<Vec<String>, RepositoryError> {
@@ -465,22 +546,12 @@ impl Repository {
         Ok(names)
     }
 
-    /// Finds stored Tags whose fields after the author start with `prefix`.
-    /// Index entries are hints; the stored Tag establishes provenance and contents.
-    pub fn tags(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
-        self.find_tags("tags", prefix)
-    }
-
     /// Finds Ref-backed assertion Tags by the supplied assertion's field prefix.
     pub fn claims(&self, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
-        self.find_tags("claims", prefix)
-    }
-
-    fn find_tags(&self, index: &str, prefix: &[Handle]) -> Result<Vec<Tree>, RepositoryError> {
         if prefix.iter().any(|field| !field.is_canonical()) {
             return Err(RepositoryError::NonCanonical);
         }
-        let mut path = format!("{}/{index}", self.path);
+        let mut path = format!("{}/tags/by-subject", self.path);
         for field in prefix.iter().take(INDEX_FIELDS) {
             path.push('/');
             path.push_str(&format!("{field}"));
@@ -509,11 +580,7 @@ impl Repository {
                         };
                         if tag.is_tag() {
                             let fields = self.read_tree(tag)?;
-                            let fields = if index == "claims" {
-                                self.claim_fields(&fields)?
-                            } else {
-                                Some(fields.get(1..).unwrap_or(&[]).into())
-                            };
+                            let fields = self.claim_fields(&fields)?;
                             if fields.is_some_and(|fields| {
                                 fields.len() >= prefix.len()
                                     && fields.iter().zip(prefix).all(|(a, b)| a.same_encoding(b))
@@ -533,6 +600,50 @@ impl Repository {
         Ok(tags)
     }
 
+    pub fn claim_results(&self, author: Handle) -> Result<Vec<(u64, Handle)>, RepositoryError> {
+        let root = format!("{}/tags/by-author/{author}", self.path);
+        let operations = match fs::read_dir(&root) {
+            Ok(operations) => operations,
+            Err(ErrorKind::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut results = Vec::new();
+        for operation in operations {
+            let mut name = [0; 32];
+            if hex::decode_to_slice(&operation, &mut name).is_err() {
+                continue;
+            }
+            let Ok(handle) = (unsafe { Handle::parse(name) }) else {
+                continue;
+            };
+            let Ok(kind) = Blob::try_from(handle) else {
+                continue;
+            };
+            let Some(bytes) = kind.literal_bytes() else {
+                continue;
+            };
+            let Ok(bytes) = <[u8; 8]>::try_from(bytes) else {
+                continue;
+            };
+            let code = u64::from_le_bytes(bytes);
+            if !matches!(code, 1 | 2 | 3 | 4 | 6) {
+                continue;
+            }
+            for input in fs::read_dir(&format!("{root}/{operation}"))? {
+                let mut name = [0; 32];
+                if hex::decode_to_slice(&input, &mut name).is_err() {
+                    continue;
+                }
+                if let Ok(handle) = unsafe { Handle::parse(name) }
+                    && handle.is_canonical()
+                {
+                    results.push((code, handle));
+                }
+            }
+        }
+        Ok(results)
+    }
+
     fn claim_fields(&self, fields: &[Handle]) -> Result<Option<Box<[Handle]>>, RepositoryError> {
         let [_, reference] = fields else {
             return Ok(None);
@@ -542,16 +653,20 @@ impl Repository {
         };
         match self.read_tree(reference.object_descriptor()) {
             Ok(fields) => Ok(Some(fields)),
-            Err(RepositoryError::Io(ErrorKind::NotFound)) => Ok(None),
+            Err(
+                RepositoryError::Io(ErrorKind::NotFound)
+                | RepositoryError::MissingObject { .. }
+                | RepositoryError::MissingBacking { .. },
+            ) => Ok(None),
             Err(error) => Err(error),
         }
     }
 
     pub fn index_tag(&self, tag: Tree) -> Result<(), RepositoryError> {
         let fields = self.read_tree(tag)?;
-        self.index_entry(tag, "tags", fields.get(1..).unwrap_or(&[]))?;
         if let Some(claim) = self.claim_fields(&fields)? {
-            self.index_entry(tag, "claims", &claim)?;
+            self.index_entry(tag, "tags/by-subject", &claim, 2)?;
+            self.index_entry(tag, &format!("tags/by-author/{}", fields[0]), &claim, 3)?;
         }
         Ok(())
     }
@@ -559,13 +674,18 @@ impl Repository {
     fn index_entry(
         &self,
         tag: Tree,
-        index: &str,
+        base: &str,
         fields: &[Handle],
+        base_depth: usize,
     ) -> Result<(), RepositoryError> {
         let count = fields.len().min(INDEX_FIELDS);
-        let path = format!("{}/{}/entries", self.path, Self::index(index, fields));
+        let path = format!("{}/{}/entries", self.path, Self::index(base, fields));
         fs::mkdir(&path)?;
-        let target = format!("{}objects/{}", "../".repeat(count + 2), tag.as_handle());
+        let target = format!(
+            "{}objects/{}",
+            "../".repeat(count + base_depth + 1),
+            tag.as_handle()
+        );
         let record = format!("{path}/{}", tag.as_handle());
         match fs::symlink(&target, &record) {
             Ok(()) => Ok(()),
@@ -574,12 +694,8 @@ impl Repository {
         }
     }
 
-    fn tag_index(fields: &[Handle]) -> String {
-        Self::index("tags", fields.get(1..).unwrap_or(&[]))
-    }
-
-    fn index(index: &str, fields: &[Handle]) -> String {
-        let mut path = String::from(index);
+    fn index(base: &str, fields: &[Handle]) -> String {
+        let mut path = String::from(base);
         for field in fields.iter().take(INDEX_FIELDS) {
             path.push('/');
             path.push_str(&format!("{field}"));
@@ -590,7 +706,93 @@ impl Repository {
     pub fn write_label(&self, name: &str, value: Handle) -> Result<(), RepositoryError> {
         let path = self.label_path(name)?;
         let value = self.lookup(value.as_bytes())?;
+        self.check_label_backing(value)?;
         self.write_atomic(&path, format!("{value}\n").as_bytes())
+    }
+
+    pub fn remove_label(&self, name: &str) -> Result<(), RepositoryError> {
+        fs::remove_file(&self.label_path(name)?).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingLabel {
+                name: name.into(),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })
+    }
+
+    fn check_label_backing(&self, root: Handle) -> Result<(), RepositoryError> {
+        let mut pending = alloc::vec![(root, false)];
+        let mut seen = hashbrown::HashSet::new();
+        while let Some((value, author)) = pending.pop() {
+            if !seen.insert((*value.as_bytes(), author)) {
+                continue;
+            }
+            let reference = match value.view() {
+                HandleView::Object(object) => object.into_ref(),
+                HandleView::Ref(reference) => *reference,
+                HandleView::Thunk(thunk) => match thunk.view() {
+                    ThunkView::Identification(reference) => reference,
+                    ThunkView::Application(reference) | ThunkView::Selection(reference) => {
+                        reference.into()
+                    }
+                },
+                HandleView::Encode(encode) => {
+                    let thunk = match encode.view() {
+                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
+                    };
+                    pending.push((thunk.into(), author));
+                    continue;
+                }
+            };
+            let object = reference.object_descriptor();
+            self.lookup(reference.as_handle().as_bytes())?;
+            if !author && matches!(value.view(), HandleView::Object(_)) {
+                if !self.has_backing(object)? {
+                    return Err(RepositoryError::Io(ErrorKind::NotFound));
+                }
+                if let ObjectView::Tree(tree) = object.view() {
+                    pending.extend(
+                        self.read_tree(*tree)?
+                            .iter()
+                            .enumerate()
+                            .map(|(index, child)| (*child, tree.is_tag() && index == 0)),
+                    );
+                }
+            }
+            if let Some(metadata) = self.get_todo(object.into_ref())? {
+                pending.push((metadata, false));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn compare_and_write_label(
+        &self,
+        name: &str,
+        expected: Option<[u8; 32]>,
+        value: Handle,
+    ) -> Result<(), RepositoryError> {
+        self.label_path(name)?;
+        let lock = format!("{}/data/.label-lock-{}", self.path, hex::encode(name));
+        fs::write_with(
+            &lock,
+            b"",
+            FileMode {
+                write: true,
+                create_new: true,
+                ..Default::default()
+            },
+        )?;
+        let _lock = Temporary(Some(lock));
+        let current = match self.read_label(name) {
+            Ok(handle) => Some(*handle.as_bytes()),
+            Err(RepositoryError::MissingLabel { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if current != expected {
+            return Err(RepositoryError::LabelConflict);
+        }
+        self.write_label(name, value)
     }
 
     fn label_path(&self, name: &str) -> Result<String, RepositoryError> {
@@ -613,7 +815,13 @@ impl Repository {
 
     fn read_data(&self, object: Handle) -> Result<Box<[u8]>, RepositoryError> {
         let path = format!("{}/data/{}", self.path, Self::data_key(object.as_bytes()));
-        let bytes = fs::read(&path)?;
+        let bytes = fs::read(&path).map_err(|error| match error {
+            ErrorKind::NotFound => RepositoryError::MissingBacking {
+                name: hex::encode(object.as_bytes()),
+                repository: self.path.clone(),
+            },
+            error => error.into(),
+        })?;
         if bytes.len() as u64 != object.byte_len() {
             return Err(RepositoryError::InvalidRepository);
         }
@@ -662,7 +870,7 @@ impl Repository {
         if matches!(handle.name(), Name::Literal(_)) {
             return Ok(());
         }
-        self.publish_record(*handle, None)
+        self.publish_link(*handle)
     }
 
     pub fn publish_certified_reference(
@@ -726,11 +934,8 @@ impl Repository {
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            kernel::host::os::ssh_sign(identity, namespace, message).map_err(
-                                |error| {
-                                    fixcertificates::Error::Signing(alloc::format!("{error:?}"))
-                                },
-                            )
+                            kernel::host::os::ssh_sign(identity, namespace, message)
+                                .map_err(fixcertificates::Error::Signing)
                         }
                     },
                 )?;
@@ -835,7 +1040,7 @@ impl Repository {
     fn certificate_directory(&self, name: &[u8; 32]) -> String {
         let mut object = *name;
         object[31] &= 0xe0;
-        format!("{}/certificates/{}", self.path, hex::encode(object))
+        format!("{}/tags/signatures/{}", self.path, hex::encode(object))
     }
 
     fn write_certificates(

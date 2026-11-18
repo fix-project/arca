@@ -59,7 +59,8 @@ pub struct Trust {
 pub enum TrustError {
     InvalidAuthority,
     InvalidRunnable,
-    UntrustedAuthority,
+    UntrustedAuthority(Handle),
+    UntrustedTagger,
     Storage(StorageError),
 }
 
@@ -76,7 +77,12 @@ impl core::fmt::Display for TrustError {
                 f.write_str("trust file requires canonical handle names, one per line")
             }
             Self::InvalidRunnable => f.write_str("expected a Runnable Tag containing an ELF Blob"),
-            Self::UntrustedAuthority => f.write_str("Runnable certificate has an untrusted author"),
+            Self::UntrustedAuthority(author) => {
+                write!(f, "Runnable certificate has an untrusted author {author}")
+            }
+            Self::UntrustedTagger => {
+                f.write_str("requested coupon collector is not a trusted tagger on this machine")
+            }
             Self::Storage(error) => write!(f, "Runnable certificate storage error: {error:?}"),
         }
     }
@@ -107,11 +113,18 @@ impl Trust {
         Ok(())
     }
 
-    pub(super) fn is_tagger(
-        &self,
-        storage: &dyn Storage,
-        combination: Tree,
-    ) -> Result<bool, TrustError> {
+    pub fn trust_tagger_name(&mut self, name: &str) -> Result<(), TrustError> {
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(name, &mut bytes).map_err(|_| TrustError::InvalidAuthority)?;
+        let handle = Handle::parse_ref(&bytes).map_err(|_| TrustError::InvalidAuthority)?;
+        if !handle.is_canonical() || !handle.is_tree_data() || bytes[31] & 0x40 == 0 {
+            return Err(TrustError::InvalidAuthority);
+        }
+        self.taggers.insert(bytes);
+        Ok(())
+    }
+
+    pub fn is_tagger(&self, storage: &dyn Storage, combination: Tree) -> Result<bool, TrustError> {
         if self.taggers.is_empty() {
             return Ok(false);
         }
@@ -142,7 +155,7 @@ impl Trust {
         if !is_kernel_author(author) {
             let canonical: Handle = storage.canonicalize(author)?.into();
             if !self.authors.contains(canonical.as_bytes()) {
-                return Err(TrustError::UntrustedAuthority);
+                return Err(TrustError::UntrustedAuthority(canonical));
             }
         }
         Ok(executable)

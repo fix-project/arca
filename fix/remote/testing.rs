@@ -50,22 +50,37 @@ impl Agent {
                 assert!(length < 4096);
                 let mut request = vec![0; length];
                 stream.read_exact(&mut request).unwrap();
-                assert_eq!(request[0], 13);
-                let mut request = &request[1..];
-                let identity = string(&mut request);
-                let data = string(&mut request);
-                assert_eq!(request, &0u32.to_be_bytes());
-                let response = if let Some(key) = keys
-                    .iter()
-                    .find(|key| identity == key.public_key().to_bytes().unwrap())
-                {
-                    let signature = Vec::<u8>::try_from(sign(key, data)).unwrap();
-                    let mut response = vec![14];
-                    response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
-                    response.extend_from_slice(&signature);
-                    response
-                } else {
-                    vec![5]
+                let response = match request.as_slice() {
+                    [11] => {
+                        let mut response = vec![12];
+                        response.extend_from_slice(&(keys.len() as u32).to_be_bytes());
+                        for key in &keys {
+                            let bytes = key.public_key().to_bytes().unwrap();
+                            response.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                            response.extend_from_slice(&bytes);
+                            response.extend_from_slice(&0u32.to_be_bytes());
+                        }
+                        response
+                    }
+                    [13, request @ ..] => {
+                        let mut request = request;
+                        let identity = string(&mut request);
+                        let data = string(&mut request);
+                        assert_eq!(request, &0u32.to_be_bytes());
+                        if let Some(key) = keys
+                            .iter()
+                            .find(|key| identity == key.public_key().to_bytes().unwrap())
+                        {
+                            let signature = Vec::<u8>::try_from(sign(key, data)).unwrap();
+                            let mut response = vec![14];
+                            response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
+                            response.extend_from_slice(&signature);
+                            response
+                        } else {
+                            vec![5]
+                        }
+                    }
+                    _ => vec![5],
                 };
                 stream
                     .write_all(&(response.len() as u32).to_be_bytes())

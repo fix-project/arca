@@ -22,6 +22,8 @@ HOST = [
     "//tools:postprocess",
     "//tools/module-combiner:wasm_merge",
     "//fix/cli:fix",
+    "//fix/scheduler:distributed_test",
+    "//fix/scheduler:tasks_test",
     "//build:fix_test",
     "//programs/fix:addblob",
     "//programs/flatware:ls_wasm",
@@ -49,7 +51,7 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//bootstrap:seed_tool", "//flatware:tree", "//fix/preprocessor", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
+CHECKS = HOST + GUEST + ["//programs/fix/schedulers:" + name + "_wasm" for name in ["serial", "parallel", "distributed", "onepass", "hint", "advisor", "recompute"]] + ["//bootstrap:seed_tool", "//flatware:tree", "//fix/preprocessor", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 
@@ -74,8 +76,8 @@ test_suite(name = "lint", tags = ["manual"], tests = [":rust_lint", "//fix/sdk:l
 sh_test(
     name = "compile_test",
     srcs = ["compile_test.sh"],
-    args = ["$(rootpath //fix/cli:fix)", "$(rootpath //programs/fix:fib_module)", "$(rootpath //programs/fix:addblob_module)", "$(rootpath //fix/cli:precompiled)"],
-    data = ["//fix/cli:fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//fix/cli:precompiled"],
+    args = ["$(rootpath //fix/cli:fix)", "$(rootpath //programs/fix:fib_module)", "$(rootpath //programs/fix:addblob_module)", "$(rootpath //bootstrap:seed)"],
+    data = ["//fix/cli:fix", "//programs/fix:fib_module", "//programs/fix:addblob_module", "//bootstrap:seed"],
     size = "large",
     timeout = "moderate",
     tags = ["kvm", "local", "manual"],

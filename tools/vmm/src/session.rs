@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Write},
     os::{
         fd::{AsFd, AsRawFd, OwnedFd, RawFd},
         unix::net::UnixStream,
@@ -20,6 +20,7 @@ pub struct Session {
     callbacks: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
     output: Option<Mutex<Vec<u8>>>,
     stdio: Option<UnixStream>,
+    diagnostics: Mutex<common::progress::Stderr>,
 }
 
 impl std::fmt::Debug for Session {
@@ -43,8 +44,13 @@ impl Session {
             callbacks: Mutex::new(Vec::new()),
             output: capture.then(|| Mutex::new(Vec::new())),
             stdio,
+            diagnostics: Mutex::new(common::progress::Stderr::default()),
         })
     }
+    pub fn write_diagnostic(&self, bytes: &[u8]) {
+        let _ = self.diagnostics.lock().unwrap().write_all(bytes);
+    }
+
     pub fn has_stdio(&self) -> bool {
         self.stdio.is_some()
     }
@@ -53,6 +59,21 @@ impl Session {
             .as_ref()
             .map(|stream| stream.as_fd().try_clone_to_owned())
     }
+    pub fn wait_for_stop(&self, timeout: std::time::Duration) {
+        let mut descriptor = libc::pollfd {
+            fd: self.cancel.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
+            );
+        }
+    }
+
     pub fn stopped(&self) -> bool {
         self.status.load(Ordering::Acquire) != 256
     }
@@ -107,6 +128,7 @@ impl Session {
                 let _ = worker.join();
             }
         }
+        let _ = self.diagnostics.lock().unwrap().flush();
     }
     pub fn captures_output(&self) -> bool {
         self.output.is_some()

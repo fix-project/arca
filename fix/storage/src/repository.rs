@@ -4,13 +4,27 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use fixrepository::{Repository, RepositoryError};
 use memory::ShardedMap;
 
-#[derive(Debug)]
+/// None reports the start of a read; Some reports whether the read succeeded.
+pub type LoadObserver = dyn Fn(Object, Option<bool>) + Send + Sync;
+
 pub struct RepositoryStorage {
     repository: Repository,
+    sources: Vec<Repository>,
     memory: memory::MemoryStorage,
     /// One gate per Object being read, so concurrent loads read it once.
     loading: ShardedMap<[u8; HANDLE_SIZE], Arc<Mutex<()>>>,
     resident: ShardedMap<[u8; HANDLE_SIZE], ()>,
+    load_observer: Mutex<Option<Arc<LoadObserver>>>,
+    names_loaded: Mutex<bool>,
+}
+
+impl core::fmt::Debug for RepositoryStorage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RepositoryStorage")
+            .field("repository", &self.repository)
+            .field("sources", &self.sources)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AsRef<memory::MemoryStorage> for RepositoryStorage {
@@ -29,14 +43,38 @@ impl RepositoryStorage {
     pub fn new(repository: Repository) -> Self {
         Self {
             repository,
+            sources: Vec::new(),
             memory: memory::MemoryStorage::default(),
             loading: ShardedMap::default(),
             resident: ShardedMap::default(),
+            load_observer: Mutex::new(None),
+            names_loaded: Mutex::new(false),
         }
+    }
+
+    pub fn with_source(mut self, source: Repository) -> Self {
+        self.add_source(source);
+        self
+    }
+
+    pub fn add_source(&mut self, source: Repository) {
+        self.sources.push(source);
+        *self.names_loaded.lock() = false;
+    }
+
+    /// Observe actual repository reads without materializing additional backing.
+    pub fn observe_loads(&self, observer: Option<Arc<LoadObserver>>) {
+        *self.load_observer.lock() = observer;
     }
 
     pub fn repository(&self) -> &Repository {
         &self.repository
+    }
+
+    /// Expand a handle abbreviation across this repository and its local sources.
+    pub fn resolve_name(&self, name: &str) -> Result<[u8; 32], RepositoryError> {
+        self.repository
+            .resolve_name_with_sources(name, self.sources.iter())
     }
 
     pub fn save(&self, handle: Handle) -> Result<Handle, RepositoryError> {
@@ -49,7 +87,24 @@ impl RepositoryStorage {
         Ok(handle)
     }
 
+    /// Persist an Object already available in memory or a local source repository.
+    pub fn persist_available(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<bool, RepositoryError> {
+        let Ok(handle) = self.identify(bytes) else {
+            return Ok(false);
+        };
+        let object = Object::try_from(handle)?;
+        let available = match object.view() {
+            ObjectView::Blob(blob) => self.has_blob(*blob),
+            ObjectView::Tree(tree) => self.has_tree(*tree),
+        };
+        if available {
+            self.save(handle)?;
+        }
+        Ok(available)
+    }
+
     fn publish(&self, handle: Handle) -> Result<(), RepositoryError> {
+        self.memory.register_names([*handle.as_bytes()]);
         let object = match handle.view() {
             HandleView::Object(object) => *object,
             HandleView::Ref(reference) => reference.object_descriptor(),
@@ -112,9 +167,13 @@ impl RepositoryStorage {
         if self.memory.contains(handle) {
             return true;
         }
-        let bytes = match object.view() {
-            ObjectView::Blob(blob) => self.repository.read_blob(*blob),
-            ObjectView::Tree(tree) => self.repository.read_tree(*tree).map(|children| {
+        let observer = self.load_observer.lock().clone();
+        if let Some(observer) = &observer {
+            observer(object, None);
+        }
+        let read = |repository: &Repository| match object.view() {
+            ObjectView::Blob(blob) => repository.read_blob(*blob),
+            ObjectView::Tree(tree) => repository.read_tree(*tree).map(|children| {
                 children
                     .iter()
                     .flat_map(|child| *child.as_bytes())
@@ -122,6 +181,19 @@ impl RepositoryStorage {
                     .into_boxed_slice()
             }),
         };
+        let bytes = read(&self.repository).or_else(|error| {
+            if matches!(
+                error,
+                RepositoryError::MissingObject { .. } | RepositoryError::MissingBacking { .. }
+            ) {
+                for source in &self.sources {
+                    if let Ok(bytes) = read(source) {
+                        return Ok(bytes);
+                    }
+                }
+            }
+            Err(error)
+        });
         if let Ok(bytes) = &bytes {
             unsafe {
                 self.memory
@@ -129,6 +201,9 @@ impl RepositoryStorage {
             }
         }
         self.loading.with(&key, |loading| loading.remove(&key));
+        if let Some(observer) = observer {
+            observer(object, Some(bytes.is_ok()));
+        }
         bytes.is_ok()
     }
 
@@ -141,10 +216,32 @@ impl RepositoryStorage {
 }
 
 impl Storage for RepositoryStorage {
+    fn friendly_name(&self, value: Handle, labels: &[([u8; 32], String)]) -> String {
+        let mut loaded = self.names_loaded.lock();
+        if !*loaded {
+            for repository in core::iter::once(&self.repository).chain(&self.sources) {
+                let Ok(names) = repository.inventory() else {
+                    return alloc::format!("{value}");
+                };
+                self.memory
+                    .register_names(names.iter().map(|name| *name.as_bytes()));
+            }
+            *loaded = true;
+        }
+        drop(loaded);
+        self.memory.friendly_name(value, labels)
+    }
+
     fn identify(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         self.memory.identify(bytes).or_else(|_| {
             self.repository
                 .lookup(bytes)
+                .or_else(|error| {
+                    self.sources
+                        .iter()
+                        .find_map(|source| source.lookup(bytes).ok())
+                        .ok_or(error)
+                })
                 .map_err(|_| StorageError::NotFound)
         })
     }
@@ -200,10 +297,20 @@ impl Storage for RepositoryStorage {
     }
 
     fn has_blob(&self, name: Blob) -> bool {
-        self.memory.has_blob(name) || self.repository.has_backing(name.object()).unwrap_or(false)
+        self.memory.has_blob(name)
+            || self.repository.has_backing(name.object()).unwrap_or(false)
+            || self
+                .sources
+                .iter()
+                .any(|source| source.has_backing(name.object()).unwrap_or(false))
     }
     fn has_tree(&self, name: Tree) -> bool {
-        self.memory.has_tree(name) || self.repository.has_backing(name.into()).unwrap_or(false)
+        self.memory.has_tree(name)
+            || self.repository.has_backing(name.into()).unwrap_or(false)
+            || self
+                .sources
+                .iter()
+                .any(|source| source.has_backing(name.into()).unwrap_or(false))
     }
 
     fn canonicalize(&self, handle: Handle) -> Result<CanonicalHandle, StorageError> {
