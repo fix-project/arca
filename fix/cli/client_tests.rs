@@ -701,3 +701,28 @@ fn info_describes_unloaded_names_metadata_and_coupon_claims() {
         assert!(report.contains(text), "missing {text:?}: {report}");
     }
 }
+
+#[test]
+fn zero_workers_reject_local_applications_without_waiting_for_a_worker() {
+    let directory = repository("zero-workers");
+    let output = Command::new(input(env!("BACKEND")))
+        .args([
+            "--unsigned",
+            "-j0",
+            "--memory",
+            "128",
+            "eval",
+            "--encode",
+            "#(\"\" @label(\"add\") 1u64 2u64)",
+        ])
+        .env("FIX_TRUST", directory.join(".fix/trust"))
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("local application execution is disabled"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

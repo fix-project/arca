@@ -1,4 +1,5 @@
 use crate::abi::{coordinate, coordinated};
+pub use crate::progress::cached;
 use crate::shell::{Value, as_tree, capture, child};
 use fixwasm::{Blob, Error, Value as AsValue, tree};
 pub use fixwasm::{map, stream};

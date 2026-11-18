@@ -10,8 +10,20 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
+
+pub fn encode_labels(labels: &[(String, Name)]) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(labels)
+}
+
+pub fn decode_labels(bytes: &[u8]) -> Result<Vec<(String, Name)>, postcard::Error> {
+    let (labels, trailing) = postcard::take_from_bytes(bytes)?;
+    if !trailing.is_empty() {
+        return Err(postcard::Error::DeserializeBadEncoding);
+    }
+    Ok(labels)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -162,7 +174,6 @@ pub enum Message {
         Vec<u8>,
     ),
     RequestLabels,
-    Labels(Vec<(String, Name)>),
     ObjectReceived(Name),
     UpdateLabel {
         label: String,

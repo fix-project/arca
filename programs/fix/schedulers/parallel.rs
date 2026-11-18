@@ -21,6 +21,7 @@ impl Scheduler for Parallel<'_> {
     /// Reuse an Eval coupon or queue dependency evaluation for any worker.
     async fn eval(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(1, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(1, input)?;
             return Ok(coupon);
         }
         let node = Node::eval(input)?;
@@ -36,6 +37,7 @@ impl Scheduler for Parallel<'_> {
     /// For think, reuse a coupon or evaluate with shared dependencies.
     async fn think(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(4, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(4, input)?;
             return Ok(coupon);
         }
         let node = Node::think(input)?;
@@ -48,6 +50,7 @@ impl Scheduler for Parallel<'_> {
     /// For force, reuse a coupon or evaluate with shared dependencies.
     async fn force(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(3, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(3, input)?;
             return Ok(coupon);
         }
         let node = Node::force(input)?;
@@ -60,6 +63,7 @@ impl Scheduler for Parallel<'_> {
     /// For apply, reuse a coupon or queue dependency work.
     async fn apply(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(2, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(2, input)?;
             return Ok(coupon);
         }
         let node = Node::apply(input)?;
@@ -75,6 +79,7 @@ impl Scheduler for Parallel<'_> {
     /// For select, reuse a coupon or queue dependency work.
     async fn select(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(6, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(6, input)?;
             return Ok(coupon);
         }
         let node = Node::select(input)?;

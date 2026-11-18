@@ -139,17 +139,7 @@ impl Control {
         use common::protocol::control::*;
         match request {
             Request::GetArgs => Response::Args(self.argv.clone()),
-            Request::CpuTime => {
-                let mut time = core::mem::MaybeUninit::<libc::timespec>::uninit();
-                let cpu = unsafe {
-                    (libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, time.as_mut_ptr()) == 0)
-                        .then(|| {
-                            let time = time.assume_init();
-                            time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
-                        })
-                };
-                Response::CpuTime(cpu)
-            }
+            Request::CpuTime => Response::CpuTime(cpu_time()),
             Request::EvaluationStep(step) => {
                 common::progress::evaluation_step(step);
                 Response::Ack
@@ -1054,5 +1044,52 @@ impl Read for Diagnostics {
 impl Seek for Diagnostics {
     fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
         Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+fn cpu_time() -> Option<u64> {
+    let mut time = core::mem::MaybeUninit::<libc::timespec>::uninit();
+    unsafe {
+        (libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, time.as_mut_ptr()) == 0).then(|| {
+            let time = time.assume_init();
+            time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+        })
+    }
+}
+
+#[cfg(test)]
+mod cpu_clock_tests {
+    #[test]
+    fn cpu_clock_counts_execution_and_excludes_sleep() {
+        if std::env::var_os("FIX_CPU_CLOCK_PROBE").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "comm::cpu_clock_tests::cpu_clock_counts_execution_and_excludes_sleep",
+                    "--nocapture",
+                ])
+                .env("FIX_CPU_CLOCK_PROBE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let before = super::cpu_time().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let after = super::cpu_time().unwrap();
+        assert!(
+            after - before < 50_000_000,
+            "sleep counted as CPU time: {} ns",
+            after - before
+        );
+        while super::cpu_time().unwrap() - after < 40_000_000 {
+            std::hint::spin_loop();
+        }
+        assert!(super::cpu_time().unwrap() - after >= 40_000_000);
     }
 }

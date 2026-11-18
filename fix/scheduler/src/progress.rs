@@ -123,3 +123,16 @@ pub(crate) fn load(input: &Value, source: &str, destination: &str) -> Load {
     .is_ok();
     Load(started.then(|| input.clone()))
 }
+
+/// End a reported operation without a completion line when its result was reused.
+pub fn cached(operation: u64, input: &Value) -> Result<(), fixwasm::Error> {
+    coordinate(
+        b"evaluation_finish",
+        &[
+            input.clone(),
+            capture(operation)?,
+            capture(fixwasm::Blob::create(b"cached"))?,
+        ],
+    )?;
+    Ok(())
+}

@@ -23,6 +23,7 @@ pub struct Backend {
     storage: Arc<RepositoryStorage>,
     runtime: Arc<FixOnArca<Arc<RepositoryStorage>>>,
     profile: bool,
+    workers: usize,
     remotes: Arc<fixremote::Config>,
 }
 
@@ -32,8 +33,14 @@ impl Backend {
             runtime: Arc::new(FixOnArca::memoized(storage.clone(), memoize).with_trust(trust)),
             storage,
             profile: false,
+            workers: kernel::ncores(),
             remotes: Arc::new(fixremote::Config::default()),
         }
+    }
+
+    pub fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = workers;
+        self
     }
 
     pub fn with_profile(mut self, enabled: bool) -> Self {
@@ -138,7 +145,7 @@ impl Backend {
         let report = crate::user_scheduler_driver::start_profiled(
             self.runtime.clone(),
             combination,
-            kernel::ncores(),
+            self.workers,
             crate::user_scheduler_driver::RepositoryServices {
                 storage: self.storage.clone(),
                 todos,

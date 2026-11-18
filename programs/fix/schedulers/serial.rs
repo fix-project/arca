@@ -19,6 +19,7 @@ impl Scheduler for Serial {
     /// For eval, reuse a coupon or execute inline.
     async fn eval(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(1, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(1, input)?;
             return Ok(coupon);
         }
         collector::eval(self, input, &mut |coupon| self.retain(coupon)).await
@@ -26,6 +27,7 @@ impl Scheduler for Serial {
     /// For think, reuse a coupon or execute inline.
     async fn think(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(4, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(4, input)?;
             return Ok(coupon);
         }
         collector::think(self, input, &mut |coupon| self.retain(coupon)).await
@@ -33,6 +35,7 @@ impl Scheduler for Serial {
     /// For force, reuse a coupon or execute inline.
     async fn force(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(3, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(3, input)?;
             return Ok(coupon);
         }
         collector::force(self, input, &mut |coupon| self.retain(coupon)).await
@@ -40,6 +43,7 @@ impl Scheduler for Serial {
     /// For apply, reuse a coupon or execute inline.
     async fn apply(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(2, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(2, input)?;
             return Ok(coupon);
         }
         collector::apply(self, input, &mut |coupon| self.retain(coupon)).await
@@ -47,6 +51,7 @@ impl Scheduler for Serial {
     /// For select, reuse a coupon or execute inline.
     async fn select(&self, input: &Value) -> Result<Value, Error> {
         if let Some(coupon) = collector::claims(6, input)?.into_iter().next() {
+            fixscheduler::kernel::cached(6, input)?;
             return Ok(coupon);
         }
         collector::select(input, &mut |coupon| self.retain(coupon)).await

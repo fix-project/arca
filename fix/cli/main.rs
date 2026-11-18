@@ -10,7 +10,6 @@ use fixcli::{
 use std::{
     env,
     io::Write,
-    num::NonZeroUsize,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -45,9 +44,9 @@ struct Global {
     /// Bind NAME to the value of EXPRESSION (repeatable).
     #[arg(short, long = "bind", value_name = "NAME=EXPRESSION", value_parser = binding, global = true)]
     bindings: Vec<(String, String)>,
-    /// Evaluation parallelism [default: all CPUs]
+    /// Application workers; 0 disables local applications [default: all CPUs]
     #[arg(short, long, value_name = "N", env = "FIX_JOBS", global = true)]
-    jobs: Option<NonZeroUsize>,
+    jobs: Option<usize>,
     /// Write a time-weighted guest call graph in Linux perf.data format.
     #[arg(long, value_name = "PATH", global = true)]
     perf: Option<PathBuf>,
@@ -87,6 +86,9 @@ struct Global {
     /// Report evaluation timings on stderr.
     #[arg(long, global = true)]
     profile: bool,
+    /// Print a per-machine resource summary after evaluation.
+    #[arg(long, global = true)]
+    summarize: bool,
 }
 
 #[derive(Args)]
@@ -282,9 +284,8 @@ impl Global {
             unsigned: self.unsigned,
             jobs: match self.jobs {
                 Some(jobs) => jobs,
-                None => std::thread::available_parallelism()?,
-            }
-            .get(),
+                None => std::thread::available_parallelism()?.get(),
+            },
             memory_mib: self.memory,
             memoize: self.memoize,
             ..Options::default()
@@ -333,6 +334,7 @@ fn run() -> Result<u8> {
         command,
         expression,
     } = Cli::parse();
+    common::progress::summarize(global.summarize);
     for directory in &global.directories {
         env::set_current_dir(directory)?;
     }

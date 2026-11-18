@@ -9,7 +9,8 @@ use std::{io::Write, time::Duration};
 
 fn main() {
     progress::enable();
-    let evaluation = Progress::advised("ephemeral evaluation");
+    progress::summarize(std::env::args().any(|arg| arg == "--summarize"));
+    let evaluation = Progress::advised("Evaluate named batch");
     progress::evaluation_progress(EvaluationSnapshot {
         machines: vec![
             MachineProgress {
@@ -35,6 +36,7 @@ fn main() {
         ],
         steps: Vec::new(),
     });
+    evaluation.message("ephemeral coordinator progress");
     let activity = Progress::activity(format!("ephemeral activity {}", "long label ".repeat(20)));
     activity.message("work in progress");
     progress::advice(

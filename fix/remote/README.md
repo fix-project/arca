@@ -122,6 +122,12 @@ remote. Pull's default destination is `REMOTE:SOURCE`; push's is SOURCE.
 Selected destinations are updated. Push supports SSH and file remotes; TCP
 servers reject label updates.
 
+`pull` batches the selected labels into one scheduler evaluation. Label snapshots
+also use proposal/accept; repeating a pull reuses unchanged snapshots and memoized
+results. `-j0` with Hint, OnePass, or Distributed runs applications and collector
+calls remotely while keeping the scheduler local. Add `--summarize` for the
+per-machine resource table.
+
 Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:
 
 | Mode | Result |

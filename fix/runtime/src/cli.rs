@@ -142,6 +142,16 @@ fn execute(
     } else {
         fixremote::Config::default()
     };
+    let workers = if let [flag, count, rest @ ..] = arguments
+        && flag == "--workers"
+    {
+        arguments = rest;
+        count
+            .parse::<usize>()
+            .map_err(|_| CliError::Usage("invalid application worker count"))?
+    } else {
+        kernel::ncores()
+    };
     let profile = if arguments.first().is_some_and(|arg| arg == "--profile") {
         arguments = &arguments[1..];
         true
@@ -183,11 +193,17 @@ fn execute(
         trust.trust_tagger_name(name).map_err(CliError::Trust)?;
     }
     if command == "call" {
+        if workers == 0 {
+            return Err(CliError::Backend(
+                "local application execution is disabled (-j0); use a distributed scheduler".into(),
+            ));
+        }
         let [combination] = arguments.as_slice() else {
             return Err(CliError::Usage("expected a callable combination"));
         };
         let combination = Tree::try_from(crate::api::resolve(repository, combination)?)?;
         let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
             .with_profile(profile)
             .with_remotes(remotes);
         return report(&backend, backend.call(combination));
@@ -244,6 +260,7 @@ fn execute(
             ));
         }
         let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
             .with_profile(profile)
             .with_remotes(remotes);
         let result = backend
@@ -267,6 +284,7 @@ fn execute(
             ));
         }
         let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
             .with_profile(profile)
             .with_remotes(remotes);
         let result = backend

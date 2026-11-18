@@ -1,5 +1,5 @@
 use crate::Shell;
-use crate::shell::{Object, Reference, Thunk, Value};
+use crate::shell::{Object, Reference, Thunk, Tree, Value};
 use fix::ValueType;
 use fixremote::{
     linux::RemoteConnection,
@@ -88,13 +88,13 @@ pub(crate) fn file_refs(repository: &Repository) -> Result<Vec<(String, [u8; 32]
         .labels()?
         .into_iter()
         .map(|label| {
-            let name = *repository.read_label(&label)?.as_bytes();
+            let name = repository.label_name(&label)?;
             Ok((label, name))
         })
         .collect()
 }
 
-fn fetch_refs(remote: &Remote) -> Result<Vec<(String, [u8; 32])>> {
+fn fetch_refs(remote: &Remote, repository: Option<&Repository>) -> Result<Vec<(String, [u8; 32])>> {
     let _progress =
         common::progress::Progress::activity(format!("Reading labels from {}", remote.name));
     let result = (|| -> Result<_> {
@@ -103,11 +103,7 @@ fn fetch_refs(remote: &Remote) -> Result<Vec<(String, [u8; 32])>> {
         }
         let mut stream = RemoteConnection::connect(remote)?;
         send(&mut stream, Message::RequestLabels)?;
-        match receive(&mut stream)? {
-            Message::Labels(refs) => Ok(refs),
-            Message::Failure(error) => Err(error.into()),
-            reply => Err(format!("remote returned {reply:?} instead of labels").into()),
-        }
+        receive_labels(&mut stream, repository)
     })();
     result.map_err(|error| {
         format!(
@@ -131,7 +127,7 @@ pub fn clone(
         scheduler: scheduler.map(str::to_owned),
         collector: collector.map(str::to_owned),
     };
-    let refs = fetch_refs(&remote)?;
+    let refs = fetch_refs(&remote, None)?;
     match std::fs::create_dir(directory) {
         Ok(()) => (),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && directory.is_dir() => (),
@@ -149,7 +145,9 @@ pub fn clone(
     });
     repository.set_remotes(remotes)?;
     let count = refs.len();
+    let snapshot = protocol::encode_labels(&refs)?;
     repository.set_remote_refs("origin", refs)?;
+    repository.create_blob(&snapshot)?;
     common::progress::println(format!(
         "cloned {} with {count} remote refs",
         directory.display()
@@ -193,10 +191,36 @@ impl Mode {
     }
 
     fn realize(self, value: Value) -> Result<Value> {
+        let value = self.encode(value)?;
         if self == Self::Exact {
-            return Shell::with(|client| client.load(value.inner()))
+            Shell::with(|client| client.load(value.inner()))
                 .map(Value::from_inner)
-                .map_err(Into::into);
+                .map_err(Into::into)
+        } else {
+            value.eval().map_err(Into::into)
+        }
+    }
+
+    fn realize_all(self, values: Vec<Value>) -> Result<Vec<Value>> {
+        let values = values
+            .into_iter()
+            .map(|value| self.encode(value))
+            .collect::<Result<Vec<_>>>()?;
+        let tree = Tree::new(&values).into_value();
+        let result = if self == Self::Exact {
+            Shell::with(|client| client.load(tree.inner())).map(Value::from_inner)?
+        } else {
+            tree.eval()?
+        };
+        Tree::try_from(result)?
+            .into_iter()
+            .map(|value| value.map_err(Into::into))
+            .collect()
+    }
+
+    fn encode(self, value: Value) -> Result<Value> {
+        if self == Self::Exact {
+            return Ok(value);
         }
         let thunk = match value.value_type() {
             ValueType::Object => Object::try_from(value)?.reference().identification(),
@@ -222,7 +246,7 @@ impl Mode {
             Self::Strict => thunk.strict(),
             Self::Exact => unreachable!(),
         };
-        encoded.eval().map_err(Into::into)
+        Ok(encoded.into_value())
     }
 }
 
@@ -247,10 +271,39 @@ pub fn pull(
     }
     let repository = Repository::open(&shell.repository())?;
     let mut failures = Vec::new();
+    let mut selected = Vec::new();
     for remote in remotes {
-        if let Err(error) = pull_remote(shell, &repository, remote, source, destination, mode) {
-            failures.push(format!("remote {}: {error}", remote.name));
+        match pull_remote(&repository, remote, source, destination) {
+            Ok(labels) => selected.extend(labels),
+            Err(error) => failures.push(format!("remote {}: {error}", remote.name)),
         }
+    }
+    if !selected.is_empty() {
+        let progress =
+            common::progress::Progress::advised(format!("Pull {} labels", selected.len()));
+        let values = selected
+            .iter()
+            .map(|(reference, _, _)| shell.label_value(reference))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let results = mode
+            .realize_all(values)
+            .map_err(|error| format!("pulling {} labels: {error}", selected.len()))?;
+        if results.len() != selected.len() {
+            return Err(format!(
+                "pulling {} labels: scheduler returned {} results",
+                selected.len(),
+                results.len()
+            )
+            .into());
+        }
+        progress.message("Saving labels");
+        for ((_, target, name), mut value) in selected.into_iter().zip(results) {
+            if mode == Mode::Exact {
+                value = shell.lookup(&hex::encode(name))?;
+            }
+            Shell::with(|client| client.label_imported(&target, value.inner()))?;
+        }
+        progress.finish();
     }
     if failures.is_empty() {
         Ok(())
@@ -260,14 +313,12 @@ pub fn pull(
 }
 
 fn pull_remote(
-    shell: &mut Shell,
     repository: &Repository,
     remote: &Remote,
     source: Option<&str>,
     destination: Option<&str>,
-    mode: Mode,
-) -> Result<()> {
-    let refs = fetch_refs(remote)?;
+) -> Result<Vec<(String, String, [u8; 32])>> {
+    let refs = fetch_refs(remote, Some(repository))?;
     let selected = match source {
         Some(source) => vec![
             refs.iter()
@@ -286,20 +337,14 @@ fn pull_remote(
         refs
     };
     repository.set_remote_refs(&remote.name, refs)?;
-    for (label, name) in selected {
-        let reference = format!("{}:{label}", remote.name);
-        let value = shell.label_value(&reference)?;
-        let mut value = mode
-            .realize(value)
-            .map_err(|error| format!("pulling {reference}: {error}"))?;
-        if mode == Mode::Exact {
-            value = shell.lookup(&hex::encode(name))?;
-        }
-        let target = destination.unwrap_or(&reference);
-        Shell::with(|client| client.label_imported(target, value.inner()))?;
-        common::progress::println(format!("saved {reference} as {target}"));
-    }
-    Ok(())
+    Ok(selected
+        .into_iter()
+        .map(|(label, name)| {
+            let reference = format!("{}:{label}", remote.name);
+            let target = destination.unwrap_or(&reference).to_owned();
+            (reference, target, name)
+        })
+        .collect())
 }
 
 pub fn push(
@@ -330,11 +375,7 @@ pub fn push(
     } else {
         let stream = stream.as_mut().unwrap();
         send(stream, Message::RequestLabels)?;
-        match receive(stream)? {
-            Message::Labels(labels) => labels,
-            Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
-            reply => return Err(format!("expected remote labels, received {reply:?}").into()),
-        }
+        receive_labels(stream, Some(&repository))?
     };
     for local in labels {
         let label = destination.unwrap_or(&local);
@@ -443,4 +484,63 @@ fn read_backing(repository: &Repository, name: [u8; 32]) -> Result<Vec<u8>> {
         .map_err(fixrepository::RepositoryError::from)?;
     let length = usize::try_from(object.byte_len())?;
     Ok(repository.read_backing_range(object, 0, length)?)
+}
+
+fn receive_labels(
+    stream: &mut RemoteConnection,
+    repository: Option<&Repository>,
+) -> Result<Vec<(String, [u8; 32])>> {
+    let incoming =
+        protocol::receive_transfer(stream, protocol::MAX_MESSAGE_SIZE, 0, &[], |offers| {
+            match repository {
+                Some(repository) => fixremote::missing(repository, offers).ok(),
+                None => Some(offers.iter().map(|offer| offer.name).collect()),
+            }
+        })
+        .map_err(|error| format!("receiving label snapshot: {error}"))?
+        .ok_or("remote closed without providing its label snapshot")?;
+    let [name] = incoming.transfer.roots.as_slice() else {
+        return Err("remote label snapshot must contain one Blob".into());
+    };
+    if incoming.task.is_some() || incoming.result != Some(*name) {
+        return Err("unexpected evaluation result while reading remote labels".into());
+    }
+    let handle = fixhandle::Handle::parse_ref(name)
+        .map_err(|error| format!("invalid label snapshot name: {error:?}"))?;
+    if !handle.is_canonical() {
+        return Err("remote label snapshot is not canonical".into());
+    }
+    let blob = fixhandle::Blob::try_from(unsafe { handle.to_owned() })
+        .map_err(fixrepository::RepositoryError::from)?;
+    if incoming
+        .transfer
+        .records
+        .iter()
+        .any(|record| record.name != *name)
+        || !incoming.transfer.certificates.is_empty()
+    {
+        return Err("remote label snapshot contains unrelated objects".into());
+    }
+    let bytes = if let Some(bytes) = blob.literal_bytes() {
+        bytes.to_vec()
+    } else if let Some(data) = incoming
+        .transfer
+        .records
+        .iter()
+        .find_map(|record| record.data.as_ref())
+    {
+        data.clone()
+    } else {
+        repository
+            .ok_or("remote did not send its label snapshot")?
+            .read_blob(blob)?
+            .into_vec()
+    };
+    blob.verify(&bytes)
+        .map_err(fixrepository::RepositoryError::from)?;
+    let labels = protocol::decode_labels(&bytes)?;
+    if let Some(repository) = repository {
+        repository.create_blob(&bytes)?;
+    }
+    Ok(labels)
 }

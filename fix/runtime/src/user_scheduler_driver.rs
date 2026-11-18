@@ -50,9 +50,6 @@ pub trait Services: Send + Sync {
     ) -> Result<(), fixrepository::RepositoryError> {
         Err(fixrepository::RepositoryError::InvalidRepository)
     }
-    fn export(&self, _: &[Handle], _: &[Object]) -> Result<Vec<u8>, alloc::string::String> {
-        Err("object export is unsupported".into())
-    }
     fn information(
         &self,
         _: Handle,
@@ -161,41 +158,13 @@ impl Services for RepositoryServices {
             .labels()?
             .into_iter()
             .map(|label| {
-                let value = repository.read_label(&label)?;
-                Ok((label, *value.as_bytes()))
+                let name = repository.label_name(&label)?;
+                Ok((label, name))
             })
             .collect()
     }
     fn remotes(&self) -> &[fixremote::Remote] {
         &self.remotes.remotes
-    }
-    fn export(
-        &self,
-        roots: &[Handle],
-        without_backing: &[Object],
-    ) -> Result<Vec<u8>, alloc::string::String> {
-        let roots = roots
-            .iter()
-            .map(|value| self.put(*value))
-            .collect::<Result<Vec<_>, _>>()?;
-        let without_backing = without_backing
-            .iter()
-            .map(|object| {
-                self.storage
-                    .canonicalize((*object).into())
-                    .map_err(|error| {
-                        alloc::format!("cannot canonicalize omitted object: {error:?}")
-                    })
-            })
-            .map(|value| {
-                value.and_then(|value| {
-                    Object::try_from(Handle::from(value))
-                        .map_err(|error| alloc::format!("expected object: {error:?}"))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        fixremote::export(self.storage.repository(), &roots, &without_backing)
-            .map_err(|error| error.to_string())
     }
     fn information(
         &self,
@@ -594,6 +563,7 @@ impl Shared {
                 label == name
             });
             if outcome != "cancelled"
+                && outcome != "cached"
                 && (named
                     || !task.progress.title.is_empty()
                     || key.1 == Some(EvaluationOperation::Apply))
@@ -697,8 +667,8 @@ pub fn start_profiled<
     services: impl Services + 'static,
     profile: bool,
 ) -> Result<Report, alloc::string::String> {
-    if !(1..=256).contains(&workers) {
-        return Err("worker count must be 1..=256".into());
+    if workers > 256 {
+        return Err("worker count must be 0..=256".into());
     }
     if combination.len() < 2 {
         return Err("scheduler combination needs metadata and a callable".into());
@@ -775,7 +745,11 @@ pub fn start_profiled<
         applications: Applications::default(),
         saver: Saver::default(),
         saving: AtomicBool::new(true),
-        queues: KMutex::new(WorkQueues::new(workers, MAX_QUEUE_CAPACITY, workers + 1)),
+        queues: KMutex::new(WorkQueues::new(
+            workers.max(1),
+            MAX_QUEUE_CAPACITY,
+            workers + 1,
+        )),
         maps: KMutex::new(Maps::new()),
         event: WorkerEvent::default(),
         services: Box::new(services),
@@ -1081,6 +1055,11 @@ fn handle_async_task<
     let storage = runtime.storage();
     Ok(match (name, args) {
         (b"application_start", [effect]) => {
+            if shared.executed.is_empty() {
+                return Err(
+                    "local application execution is disabled (-j0); configure a reachable execution remote and a distributed scheduler",
+                );
+            }
             let call = storage
                 .get_tree(Tree::try_from(*effect).map_err(|_| "invalid invocation")?)
                 .map_err(|_| "missing invocation")?;
@@ -1185,6 +1164,16 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
 ) -> Result<(u64, Handle), &'static str> {
     let start = shared.profile.as_ref().map(|_| kernel::tsc::read());
     let storage = runtime.storage();
+    if shared.executed.is_empty()
+        && matches!(
+            name,
+            b"callable_run" | b"callable_apply" | b"callable_invoke" | b"callable_resume"
+        )
+    {
+        return Err(
+            "local application execution is disabled (-j0); configure a reachable execution remote and a distributed scheduler",
+        );
+    }
     if coordination_only
         && !matches!(
             name,
@@ -1872,25 +1861,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .update_label(&label, expected, value)
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(number(0))
-        }
-        (b"storage_export", [roots, without_backing]) => {
-            let roots = storage
-                .get_tree(Tree::try_from(*roots).map_err(|_| Error::Invalid)?)
-                .map_err(|_| Error::Invalid)?;
-            let omitted = storage
-                .get_tree(Tree::try_from(*without_backing).map_err(|_| Error::Invalid)?)
-                .map_err(|_| Error::Invalid)?;
-            let omitted = omitted
-                .iter()
-                .map(|value| {
-                    todo_reference(storage, *value).map(|reference| reference.object_descriptor())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let bytes = shared
-                .services
-                .export(&roots, &omitted)
-                .map_err(TaskError::Message)?;
-            Ok(storage.add_blob(&bytes).into())
         }
         (b"remote_information", [collector, memory]) => {
             let information = shared

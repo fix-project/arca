@@ -174,6 +174,23 @@ parser name. The envelope lets expressions contain literal error-shaped values
 without treating those values as parser failures. Runtime failures include the
 operation, input name, and runtime diagnostic alongside their exit status.
 
+`-j0` disables local application and collector workers while retaining a local
+scheduler thread. Hint, OnePass, and Distributed can delegate evaluation to a
+configured execution remote. Parsing also uses the selected scheduler in this
+mode. A local-only policy reports an error if it needs to run an application.
+
+Evaluation uses a compact live status line and flat, numbered completion lines.
+Only tasks with reported completed/total units get individual progress bars.
+Memoized operations do not produce completion lines. `fix pull` evaluates its
+selected labels together as one Tree, allowing the scheduler to share and run
+dependencies concurrently. Label snapshots and backing data use proposal/accept
+exchanges, so stored snapshots and existing data need not be retransmitted.
+
+`--summarize` adds a per-machine overview table, separated from the step output
+by a blank line. CPU time uses the process CPU clock: it counts active work in
+runtime and host threads, including scheduler bookkeeping, and excludes blocked
+or sleeping time. It is distinct from elapsed time.
+
 Evaluation keeps completed named computations as persistent steps, with their
 operation, location, outcome, and elapsed duration. Labels and application task
 titles name steps; an application without either uses its canonical Fix name.
@@ -188,12 +205,12 @@ nodes with no evaluation work sent. File remotes are identified as storage.
 Connected nodes report CPU and VM memory load on the existing connection,
 including when unused. Unknown measurements remain unspecified.
 
-The final per-node table reports applications, collector calls, CPU time, peak
+With `--summarize`, the final per-node table reports applications, collector calls, CPU time, peak
 worker count / available workers, peak queue length (`Qmax`), peak allocated VM
 memory / VM capacity, and bytes sent and received. Units appear once in each column header; every row
 uses that column's unit. CPU time is measured across the worker process's
 threads, including its VM and host I/O work; live CPU load is its change between
-samples, normalized by the worker count. Memory is the VM allocator's allocation,
+samples, normalized by the worker count (or one scheduler core with `-j0`). Memory is the VM allocator's allocation,
 not process RSS; its peak is the allocator's high-water mark. Transport counters
 include protocol and status traffic. Counters accumulate from the first runtime
 sample; memory peaks cover the VM lifetime. A long-running server retains its

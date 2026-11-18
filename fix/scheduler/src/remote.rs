@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::{format, string::String, vec::Vec};
 pub use cluster::{Cluster, Failure, PendingTransfer};
-use fixwasm::{Blob, Error, Tree, Value as AsValue, tree};
+use fixwasm::{Blob, Error, Value as AsValue, tree};
 
 pub use fixprotocol as protocol;
 pub use fixtransport as framing;
@@ -140,6 +140,46 @@ pub fn propose_object(
     postcard::from_bytes(&encoded).map_err(|error| format!("invalid export proposal: {error}"))
 }
 
+/// Propose the reachable data for several roots without reading Blob backing.
+pub fn propose(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+    let mut roots = Vec::new();
+    let mut records = alloc::collections::BTreeMap::new();
+    let mut certificates = alloc::collections::BTreeMap::new();
+    let mut backing = alloc::collections::BTreeSet::new();
+    for value in values {
+        let name = value
+            .raw_handle_bytes()
+            .map_err(|error| format!("{error:?}"))?;
+        let (transfer, objects) = propose_object(name, true)?;
+        roots.push(name);
+        records.extend(
+            transfer
+                .records
+                .into_iter()
+                .map(|record| (record.name, record)),
+        );
+        certificates.extend(
+            transfer
+                .certificates
+                .into_iter()
+                .map(|record| (record.name, record)),
+        );
+        backing.extend(objects);
+    }
+    Ok((
+        protocol::Transfer {
+            roots,
+            certificates: certificates
+                .into_iter()
+                .filter(|(name, _)| !records.contains_key(name))
+                .map(|(_, record)| record)
+                .collect(),
+            records: records.into_values().collect(),
+        },
+        backing.into_iter().collect(),
+    ))
+}
+
 pub fn read_backing(name: protocol::Name, offset: u64, length: usize) -> Result<Vec<u8>, String> {
     let (status, value) = request(tree![
         Blob::create(b"remote_read_backing"),
@@ -170,20 +210,6 @@ pub fn update_label(
         Ok(())
     } else {
         Err(request_failure(status, &response))
-    }
-}
-
-pub fn export(values: &[Value], without_backing: &[Value]) -> Result<Vec<u8>, String> {
-    let (status, value) = request(tree![
-        Blob::create(b"storage_export"),
-        Tree::from_iter(values),
-        Tree::from_iter(without_backing)
-    ])
-    .map_err(|error| format!("{error:?}"))?;
-    if status == 0 {
-        bytes(&value).map_err(|error| format!("{error:?}"))
-    } else {
-        Err(request_failure(status, &value))
     }
 }
 

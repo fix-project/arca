@@ -21,7 +21,7 @@ impl Session {
     ) -> std::io::Result<Self> {
         let (stream, guest) = UnixStream::pair()?;
         let worker = std::thread::spawn(move || {
-            vmm::runtime::Runtime::new(jobs, memory, kernel).run_stream(
+            vmm::runtime::Runtime::new(jobs.max(1), memory, kernel).run_stream(
                 vec!["fix".into(), "--session".into()],
                 &directory,
                 guest,

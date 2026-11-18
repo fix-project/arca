@@ -546,6 +546,11 @@ impl Repository {
     }
 
     pub fn read_label(&self, name: &str) -> Result<Handle, RepositoryError> {
+        self.lookup(&self.label_name(name)?)
+    }
+
+    /// Read a canonical label name without resolving its value or checking backing.
+    pub fn label_name(&self, name: &str) -> Result<[u8; 32], RepositoryError> {
         let path = self.label_path(name)?;
         let bytes = fs::read(&path).map_err(|error| match error {
             ErrorKind::NotFound => RepositoryError::MissingLabel {
@@ -558,7 +563,10 @@ impl Repository {
         let mut key = [0; 32];
         hex::decode_to_slice(text.trim(), &mut key)
             .map_err(|_| RepositoryError::InvalidRepository)?;
-        self.lookup(&key)
+        if !Handle::parse_ref(&key)?.is_canonical() {
+            return Err(RepositoryError::NonCanonical);
+        }
+        Ok(key)
     }
 
     pub fn labels(&self) -> Result<Vec<String>, RepositoryError> {

@@ -24,9 +24,18 @@ impl Machine {
         }
     }
     fn run(&self, cwd: &Path, arguments: &[&str], ssh: Option<&Path>) -> Output {
+        self.run_with_jobs(cwd, arguments, ssh, 4)
+    }
+    fn run_with_jobs(
+        &self,
+        cwd: &Path,
+        arguments: &[&str],
+        ssh: Option<&Path>,
+        jobs: usize,
+    ) -> Output {
         let mut command = Command::new(fixture(env!("FIX")));
         command
-            .args(["-j", "4", "--memory", "2048"])
+            .args(["-j", &jobs.to_string(), "--memory", "2048"])
             .args(arguments)
             .current_dir(cwd)
             .env("FIX_CONFIG_DIR", self.directory.join("config"))
@@ -153,4 +162,23 @@ fn cloned_compilation_thunks_can_be_applied() {
     let result = String::from_utf8(evaluated.stdout).unwrap();
     let value = destination.run(&cloned, &["read-blob", "--u64", result.trim()], None);
     assert_eq!(String::from_utf8(value.stdout).unwrap().trim(), "42");
+    let evaluated = destination.run_with_jobs(
+        &cloned,
+        &[
+            "--summarize",
+            "*#(\"\" *@label(\"origin:addblob\") 1u64 2u64)",
+        ],
+        Some(&bin),
+        0,
+    );
+    let diagnostics = String::from_utf8_lossy(&evaluated.stderr);
+    let row = diagnostics
+        .lines()
+        .find(|line| line.starts_with("local "))
+        .unwrap();
+    let fields: Vec<_> = row.split_whitespace().collect();
+    assert_eq!(&fields[1..3], &["0", "0"], "{diagnostics}");
+    let result = String::from_utf8(evaluated.stdout).unwrap();
+    let value = destination.run(&cloned, &["read-blob", "--u64", result.trim()], None);
+    assert_eq!(String::from_utf8(value.stdout).unwrap().trim(), "3");
 }

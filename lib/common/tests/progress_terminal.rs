@@ -80,7 +80,7 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
     let probe = PathBuf::from(std::env::var_os("TEST_SRCDIR").unwrap())
         .join(std::env::var_os("TEST_WORKSPACE").unwrap())
         .join(env!("PROBE"));
-    for mode in ["complete", "stop"] {
+    for (mode, summarize) in [("complete", true), ("stop", true), ("complete", false)] {
         let (mut master, mut slave) = (-1, -1);
         let size = libc::winsize {
             ws_row: 40,
@@ -102,14 +102,19 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
         );
         let mut terminal = unsafe { File::from_raw_fd(master) };
         let slave = unsafe { OwnedFd::from_raw_fd(slave) };
-        let mut child = Command::new(&probe)
-            .arg(mode)
+        let mut command = Command::new(&probe);
+        command.arg(mode);
+        if summarize {
+            command.arg("--summarize");
+        }
+        let mut child = command
             .env("TERM", "xterm-256color")
             .env("NO_COLOR", "1")
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave))
             .spawn()
             .unwrap();
+        drop(command);
         let mut output = Vec::new();
         let mut bytes = [0; 4096];
         loop {
@@ -133,13 +138,33 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
             "{mode}: {visible:?}"
         );
         assert!(
-            visible.contains("✓ local: Apply named computation"),
+            visible.contains("[1] local: Apply named computation"),
             "{mode}: {visible:?}"
         );
         assert!(
             visible.contains("final diagnostic\nfix: finished"),
             "{mode}: {visible:?}"
         );
+        if summarize {
+            let lines: Vec<_> = visible.lines().collect();
+            let header = lines
+                .iter()
+                .position(|line| line.starts_with("Node "))
+                .unwrap();
+            assert!(
+                header > 0 && lines[header - 1].trim().is_empty(),
+                "{mode}: summary is not separated: {visible:?}"
+            );
+            assert!(
+                visible.contains("Mem peak") && visible.contains("Received"),
+                "{visible:?}"
+            );
+        } else {
+            assert!(
+                !visible.contains("Mem peak"),
+                "summary requires --summarize: {visible:?}"
+            );
+        }
         assert!(!visible.contains("ephemeral"), "{mode}: {visible:?}");
         assert!(!visible.contains("work in progress"), "{mode}: {visible:?}");
     }

@@ -374,21 +374,20 @@ impl Cluster {
         }
         let collector = storage::put(&crate::collector::callable()?)?;
         let input = storage::put(input)?;
-        let bytes =
-            super::export(&[collector.clone(), input.clone()], &[]).map_err(Failure::Export)?;
-        let transfer = Transfer::decode(&bytes).map_err(|_| Error::WrongType)?;
-        self.submit_transfer(location, operation, &input, transfer)
+        let proposal = super::propose(&[collector, input.clone()]).map_err(Failure::Export)?;
+        self.submit_transfer(location, operation, &input, proposal)
             .await
     }
 
-    /// Submit a caller-prepared transfer, including its choice of backing data and TODOs.
+    /// Submit a proposal with caller-selected backing data and TODOs.
     pub async fn submit_transfer(
         &self,
         location: usize,
         operation: u64,
         input: &Value,
-        transfer: Transfer,
+        proposal: (Transfer, Vec<protocol::Name>),
     ) -> Result<Option<PendingTransfer>, Failure> {
+        let (transfer, backing) = proposal;
         let Some(slot) = location
             .checked_sub(1)
             .and_then(|index| self.peers.get(index))
@@ -403,7 +402,7 @@ impl Cluster {
         let names = transfer
             .records
             .iter()
-            .filter(|record| record.data.is_some())
+            .filter(|record| record.data.is_some() || backing.contains(&record.name))
             .map(|record| record.name)
             .collect();
         let task = Task {
@@ -423,12 +422,13 @@ impl Cluster {
         };
         let remote = pending.peer.as_ref().unwrap().name.clone();
         let _load = crate::progress::load(&pending.input, "", &remote);
-        protocol::asynchronous::send_transfer(
+        protocol::asynchronous::send_proposal(
             &mut pending.peer.as_mut().unwrap().connection,
             protocol::MAX_MESSAGE_SIZE,
-            pending.task.as_ref().unwrap(),
+            pending.task.as_ref(),
             None,
-            transfer,
+            (transfer, backing),
+            super::read_object,
             |name, keys| super::certify(name, keys).ok(),
         )
         .await
@@ -465,9 +465,7 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
     };
     let scheduler = storage::put(&scheduler).map_err(|error| alloc::format!("{error:?}"))?;
     let collector = storage::put(&collector).map_err(|error| alloc::format!("{error:?}"))?;
-    let transfer = super::export(&[collector.clone(), scheduler.clone()], &[])?;
-    let transfer = Transfer::decode(&transfer)
-        .map_err(|error| alloc::format!("invalid program transfer: {error}"))?;
+    let proposal = super::propose(&[collector.clone(), scheduler.clone()])?;
     let task = Task::stage_programs(
         collector
             .raw_handle_bytes()
@@ -481,12 +479,13 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
         .map_err(|error| alloc::format!("{error:?}"))?
         .ok_or_else(|| String::from("could not start bootstrap server"))?;
     let _load = crate::progress::load(&scheduler, "", &remote.name);
-    protocol::asynchronous::send_transfer(
+    protocol::asynchronous::send_proposal(
         &mut initial,
         protocol::MAX_MESSAGE_SIZE,
-        &task,
+        Some(&task),
         None,
-        transfer,
+        proposal,
+        super::read_object,
         |name, keys| super::certify(name, keys).ok(),
     )
     .await

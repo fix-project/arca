@@ -397,6 +397,11 @@ impl Client {
             .map_err(error)
     }
     pub fn call(&mut self, value: &Value) -> Result<Value, Error> {
+        if self.options.jobs == 0 {
+            let thunk = self.application(value)?;
+            let request = self.strict(&thunk)?;
+            return self.eval(&request);
+        }
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {
@@ -416,6 +421,8 @@ impl Client {
             remotes.policy.trusted_compilers.join("\n"),
             "--remotes".into(),
             serde_json::to_string(&remotes).map_err(error)?,
+            "--workers".into(),
+            self.options.jobs.to_string(),
         ];
         if self.profile {
             argv.push("--profile".into());
@@ -432,9 +439,6 @@ impl Client {
             .checked_mul(1 << 20)
             .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
             .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
-        if self.options.jobs == 0 {
-            return Err(message("jobs must be positive"));
-        }
         let (vm, peer) = UnixStream::pair().map_err(error)?;
         let mut incoming = peer.try_clone().map_err(error)?;
         let mut outgoing = peer;
@@ -455,7 +459,7 @@ impl Client {
             }
         });
         let (status, result) =
-            vmm::runtime::Runtime::new(self.options.jobs, memory, kernel().clone())
+            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel().clone())
                 .run_stream_captured(argv, &self.directory, vm);
         output.join().map_err(error)?.map_err(error)?;
         if status == 0 {
@@ -706,6 +710,8 @@ impl Client {
         argv.extend([
             "--remotes".into(),
             serde_json::to_string(&remotes).map_err(error)?,
+            "--workers".into(),
+            self.options.jobs.to_string(),
         ]);
         if self.profile {
             argv.push("--profile".into());
@@ -718,9 +724,6 @@ impl Client {
             .checked_mul(1 << 20)
             .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
             .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
-        if self.options.jobs == 0 {
-            return Err(message("jobs must be positive"));
-        }
         let start = std::time::Instant::now();
         let (status, output) = if self.persistent {
             if self.session.is_none() {
@@ -740,7 +743,7 @@ impl Client {
                 .execute(&argv[1..], self.reuse_storage)
                 .map_err(error)?
         } else {
-            vmm::runtime::Runtime::new(self.options.jobs, memory, kernel.clone())
+            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel.clone())
                 .run_captured(argv, &self.directory)
         };
         self.reuse_storage = self.retain_storage;

@@ -212,7 +212,7 @@ pub fn assign(
             assignments.insert(request, (*worker, 0));
             continue;
         }
-        if job.parallel {
+        if job.parallel && eligible(job, &workers[0]) {
             assignments.insert(request, (0, 0));
             continue;
         }
@@ -243,16 +243,27 @@ pub fn assign(
                     core::cmp::Reverse(**worker),
                 )
             })
-            .map_or((0, 0), |(&worker, &bytes)| {
-                (
-                    worker,
-                    if worker == 0 {
-                        local
-                    } else {
-                        bytes.saturating_sub(local)
-                    },
-                )
-            });
+            .map_or_else(
+                || {
+                    (
+                        workers
+                            .iter()
+                            .position(|worker| eligible(job, worker))
+                            .unwrap_or(0),
+                        0,
+                    )
+                },
+                |(&worker, &bytes)| {
+                    (
+                        worker,
+                        if worker == 0 {
+                            local
+                        } else {
+                            bytes.saturating_sub(local)
+                        },
+                    )
+                },
+            );
         assignments.insert(request, choice);
     }
 }
@@ -497,6 +508,7 @@ impl<'a> OnePass<'a> {
                 .into_iter()
                 .next()
             {
+                fixscheduler::kernel::cached(request.code(), request.input())?;
                 self.graph.complete(request, &coupon)?;
                 return Ok(coupon);
             }

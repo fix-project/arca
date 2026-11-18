@@ -164,6 +164,7 @@ fn run_with_jobs(
 ) -> std::process::Output {
     Command::new(fixture(env!("FIX")))
         .args([
+            "--summarize",
             "--memory",
             "512",
             "-j",
@@ -937,8 +938,8 @@ fn remote_labels_and_transfer_modes() {
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let ssh_args = directory.join("ssh-args");
-    let run = |cwd: &Path, args: &[&str], success: bool| {
-        let output = Command::new(fixture(env!("FIX")))
+    let command = |cwd: &Path, args: &[&str]| {
+        Command::new(fixture(env!("FIX")))
             .args(args)
             .current_dir(cwd)
             .env(
@@ -955,7 +956,10 @@ fn remote_labels_and_transfer_modes() {
             .env("SSH_AUTH_SOCK", &agent.socket)
             .env_remove("BUILD_WORKSPACE_DIRECTORY")
             .output()
-            .unwrap();
+            .unwrap()
+    };
+    let run = |cwd: &Path, args: &[&str], success: bool| {
+        let output = command(cwd, args);
         assert_eq!(
             output.status.success(),
             success,
@@ -1144,6 +1148,39 @@ fn remote_labels_and_transfer_modes() {
         HandleView::Ref(_)
     ));
     assert!(run(&client_dir, &["remote", "labels", "origin"], true).contains("origin:sum"));
+    let args = ["--summarize", "pull", "--shallow", "origin"];
+    let first = command(&client_dir, &args);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_report = String::from_utf8_lossy(&first.stderr);
+    assert_eq!(
+        first_report
+            .lines()
+            .filter(|line| line.starts_with("Pull ") && line.contains(" completed ("))
+            .count(),
+        1,
+        "{first_report}"
+    );
+    let repeated = command(&client_dir, &args);
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    let report = String::from_utf8_lossy(&repeated.stderr);
+    let local = report
+        .lines()
+        .find(|line| line.starts_with("local "))
+        .unwrap();
+    let columns: Vec<_> = local.split_whitespace().collect();
+    assert_eq!(
+        &columns[1..3],
+        &["0", "0"],
+        "unchanged pull performed computation: {report}"
+    );
 }
 
 #[test]
@@ -1336,7 +1373,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
         let collector = source.read_label("collector").unwrap();
         let function = source.read_label("add").unwrap();
         let advisor = source.read_label("advisor").unwrap();
-        for case in 0u64..6 {
+        for case in 0u64..7 {
             let first: Handle = Blob::literal(&(20 + index * 10 + case).to_le_bytes())
                 .unwrap()
                 .into();
@@ -1354,7 +1391,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
             }
             let call = source.create_tree(&arguments).unwrap();
             let thunk = call.into_ref().application();
-            let input: Handle = if case < 2 || case == 5 {
+            let input: Handle = if !(2..5).contains(&case) {
                 thunk.strict().into()
             } else {
                 let output_size = (64u64 << 20).to_le_bytes();
@@ -1408,17 +1445,35 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
             if case == 1 {
                 source.write_label("bounded-add", input).unwrap();
             }
-            let output = run_with_jobs(&source_dir, &source_agent, request, None, 1);
+            let output = run_with_jobs(
+                &source_dir,
+                &source_agent,
+                request,
+                None,
+                if case == 6 { 0 } else { 1 },
+            );
             let diagnostics = String::from_utf8_lossy(&output.stderr);
+            if case == 6 {
+                assert!(output.status.success(), "{diagnostics}");
+                let row = diagnostics
+                    .lines()
+                    .find(|line| line.starts_with("local "))
+                    .unwrap();
+                let fields: Vec<_> = row.split_whitespace().collect();
+                assert_eq!(
+                    &fields[1..3],
+                    &["0", "0"],
+                    "local applications or collector calls ran: {row}"
+                );
+                assert!(diagnostics.contains("worker: Apply"), "{diagnostics}");
+            }
             if case == 1 {
                 assert!(
-                    diagnostics.lines().any(|line| line.contains("worker")
-                        && line.contains("available")
-                        && line.contains("unused")),
+                    diagnostics.lines().any(|line| line.starts_with("worker ")),
                     "{diagnostics}"
                 );
                 assert!(
-                    diagnostics.contains("✓ local: Evaluate bounded-add"),
+                    diagnostics.contains("local: Evaluate bounded-add"),
                     "{diagnostics}"
                 );
                 assert!(
@@ -1427,7 +1482,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 );
             }
             if case == 0 && index == 0 {
-                assert!(diagnostics.contains("✓ worker: Apply"), "{diagnostics}");
+                assert!(diagnostics.contains("worker: Apply"), "{diagnostics}");
             }
             let result = returned(&source, output);
             assert!(
@@ -1469,8 +1524,8 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                     "policy {index}, case {case}: root was not delegated"
                 );
             }
-            let (operation, target, expected_remote) = if case < 2 || case == 5 {
-                (1u64, input, case == 5 || (case == 0 && index == 0))
+            let (operation, target, expected_remote) = if !(2..5).contains(&case) {
+                (1u64, input, case >= 5 || (case == 0 && index == 0))
             } else {
                 (4u64, thunk.into(), case != 4 && index == 0)
             };

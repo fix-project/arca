@@ -15,6 +15,11 @@ use std::{
 type TaskKey = ([u8; 32], Option<EvaluationOperation>);
 
 static DISPLAY: OnceLock<Display> = OnceLock::new();
+static SUMMARIZE: AtomicBool = AtomicBool::new(false);
+
+pub fn summarize(enabled: bool) {
+    SUMMARIZE.store(enabled, Ordering::Relaxed);
+}
 
 struct Display {
     bars: MultiProgress,
@@ -34,6 +39,7 @@ struct State {
     input: Mutex<Option<[u8; 32]>>,
     machines: Mutex<BTreeMap<String, MachineDisplay>>,
     reported: AtomicBool,
+    steps: AtomicU64,
     closed: Mutex<bool>,
 }
 
@@ -108,10 +114,14 @@ pub fn enable() {
 }
 
 pub fn println(message: impl AsRef<str>) {
+    line(format!("fix: {}", message.as_ref()));
+}
+
+fn line(message: impl AsRef<str>) {
     if let Some(display) = DISPLAY.get().filter(|display| display.terminal) {
-        let _ = display.bars.println(format!("fix: {}", message.as_ref()));
+        let _ = display.bars.println(message.as_ref());
     } else {
-        eprintln!("fix: {}", message.as_ref());
+        eprintln!("{}", message.as_ref());
     }
 }
 
@@ -195,25 +205,24 @@ fn style(total: Option<u64>, bytes: bool) -> ProgressStyle {
         }
         (Some(_), true) => "{spinner} {prefix} [{elapsed_precise}] {bytes}/{total_bytes} {msg}",
         (Some(_), false) => "{spinner} {prefix} [{elapsed_precise}] {pos}/{len} {msg}",
-        _ => "{prefix} [{elapsed_precise}] {msg}",
+        _ => "[{elapsed_precise}] {prefix}: {wide_msg}",
     };
     ProgressStyle::with_template(template).unwrap()
 }
 
 impl Progress {
     pub fn activity(label: impl Into<String>) -> Self {
-        Self::new(format!("local: {}", label.into()), None, false)
+        if advised().is_some() {
+            return Self(None);
+        }
+        Self::new(label.into(), None, false)
     }
 
     pub fn advised(label: impl Into<String>) -> Self {
         if advised().is_some() {
-            return Self::activity(label);
+            return Self(None);
         }
-        let progress = Self::new(
-            format!("{} [coordinator: local]", label.into()),
-            None,
-            false,
-        );
+        let progress = Self::new(label.into(), None, false);
         if let (Some(display), Some(state)) = (DISPLAY.get(), &progress.0) {
             *display.advised.lock().unwrap() = Some(Arc::downgrade(state));
         }
@@ -272,6 +281,7 @@ impl Progress {
             input: Mutex::new(None),
             machines: Mutex::new(BTreeMap::new()),
             reported: AtomicBool::new(false),
+            steps: AtomicU64::new(0),
             closed: Mutex::new(false),
         });
         display.active.lock().unwrap().push(Arc::downgrade(&state));
@@ -307,22 +317,7 @@ impl Progress {
 
     pub fn position(&self, completed: u64, total: u64) {
         if let Some(state) = &self.0 {
-            if total == 0 || completed > total {
-                return;
-            }
-            if completed == total {
-                state.bar.unset_length();
-                state.bar.set_style(
-                    ProgressStyle::with_template("{prefix} [{elapsed_precise}] {msg}").unwrap(),
-                );
-                self.message(format!(
-                    "{completed}/{total} reported units complete; task still running"
-                ));
-                return;
-            }
-            state.bar.set_style(style(Some(total), false));
-            state.bar.set_length(total);
-            state.bar.set_position(completed);
+            position(state, completed, total);
         }
     }
 
@@ -342,6 +337,22 @@ impl Progress {
         if let Some(display) = DISPLAY.get() {
             display.bars.remove(&state.bar);
         }
+    }
+}
+
+fn position(state: &State, completed: u64, total: u64) {
+    if total == 0 || completed > total {
+        return;
+    }
+    if completed == total {
+        state.bar.unset_length();
+        state.bar.set_style(style(None, false));
+        *state.detail.lock().unwrap() =
+            format!("{completed}/{total} reported units complete; task still running");
+    } else {
+        state.bar.set_style(style(Some(total), false));
+        state.bar.set_length(total);
+        state.bar.set_position(completed);
     }
 }
 
@@ -515,10 +526,15 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
             }
         }
     }
-    println(format!(
-        "evaluation {outcome} [{:.2}s]",
+    line(format!(
+        "{} {outcome} ({:.2}s)",
+        state.bar.prefix(),
         state.started.elapsed().as_secs_f64()
     ));
+    if !SUMMARIZE.load(Ordering::Relaxed) {
+        return true;
+    }
+    line("");
     let (memory_scale, memory_unit) = byte_unit(
         machines
             .values()
@@ -556,8 +572,8 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
     } else {
         (1e9, "s")
     };
-    println(format!(
-        "{:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}  Status",
+    line(format!(
+        "{:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}",
         "Node",
         "Apps",
         "Collector",
@@ -569,7 +585,6 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
         format!("Received ({received_unit})")
     ));
     for (location, machine) in machines.iter() {
-        let status = availability(machine.stats.availability.as_ref(), machine.stats.used);
         let measured = machine.stats.runtime.is_some();
         let (workers, memory) = capacity(&machine.stats);
         let peak_workers = if measured {
@@ -622,8 +637,8 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
                 "—".into()
             },
         ];
-        println(format!(
-            "{location:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}  {status}",
+        line(format!(
+            "{location:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}",
             values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]
         ));
     }
@@ -663,6 +678,16 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         let machine = machines
             .entry(location.clone())
             .or_insert_with(|| MachineDisplay::new(&location));
+        if !stats.location.is_empty()
+            && matches!(stats.availability, Some(RemoteAvailability::Available { workers, .. }) if workers > 0)
+            && !matches!(
+                machine.stats.availability,
+                Some(RemoteAvailability::Available { .. })
+            )
+            && let Some(RemoteAvailability::Available { workers, .. }) = &stats.availability
+        {
+            line(format!("{location}: available ({workers} workers)"));
+        }
         let Some(runtime) = &stats.runtime else {
             machine.stats.location = stats.location;
             machine.stats.availability = stats.availability;
@@ -699,8 +724,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         let cpu = previous.and_then(|old| {
             let elapsed = runtime.elapsed_ns.checked_sub(old.elapsed_ns)?;
             let cpu = runtime.cpu_ns?.checked_sub(old.cpu_ns?)?;
-            (elapsed > 0 && runtime.workers > 0)
-                .then_some(cpu as f64 / elapsed as f64 / runtime.workers as f64)
+            (elapsed > 0).then_some(cpu as f64 / elapsed as f64 / runtime.workers.max(1) as f64)
         });
         if let Some(load) = cpu {
             machine.cpu_load = Some(load);
@@ -767,16 +791,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                     ancestor = *parent;
                 }
                 let task = machine.tasks.entry(key).or_insert_with(|| Task {
-                    progress: Progress::new(
-                        format!(
-                            "{}{}: {}",
-                            "  ".repeat(depth),
-                            location,
-                            reported_title(entry, &stats, &labels)
-                        ),
-                        None,
-                        false,
-                    ),
+                    progress: Progress(None),
                     title: entry.title.clone(),
                     operation: entry.operation,
                     depth,
@@ -789,7 +804,15 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                         reported_title(entry, &stats, &labels)
                     ));
                 }
+                task.title = entry.title.clone();
                 if let Some((completed, total)) = entry.progress {
+                    if task.progress.0.is_none() && total > 0 && completed < total {
+                        task.progress = Progress::new(
+                            format!("{}: {}", location, reported_title(entry, &stats, &labels)),
+                            Some(total),
+                            false,
+                        );
+                    }
                     task.progress.position(completed, total);
                 }
             }
@@ -812,15 +835,37 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         .map(|runtime| runtime.queued)
         .sum();
     let completed: u64 = machines.values().map(|machine| machine.completed).sum();
-    let reporting = machines
-        .values()
-        .filter(|machine| machine.stats.runtime.is_some())
-        .count();
-    let unused = machines.values().filter(|machine| !machine.stats.used
-        && matches!(machine.stats.availability, Some(RemoteAvailability::Available { workers, .. }) if workers > 0)).count();
-    *state.detail.lock().unwrap() = format!(
-        "{busy} workers busy, {queued} queued, {completed} applications complete across {reporting} reporting runtimes; {unused} available remotes unused"
-    );
+    let labels = state.labels.lock().unwrap();
+    let local = state.advice.lock().unwrap();
+    let label_names = &*labels;
+    let current = local
+        .iter()
+        .map(|(key, task)| ("local", key, task, label_names))
+        .chain(machines.iter().flat_map(|(location, machine)| {
+            machine
+                .tasks
+                .iter()
+                .map(move |(key, task)| (location.as_str(), key, task, label_names))
+        }))
+        .filter(|(_, _, task, _)| !task.title.is_empty())
+        .min_by_key(|(_, _, task, _)| {
+            if task.operation == Some(EvaluationOperation::Apply) {
+                0
+            } else {
+                1
+            }
+        })
+        .map(|(location, key, task, labels)| {
+            format!(
+                " | {location}: {}",
+                task_title(key.0, &task.title, task.operation, labels)
+            )
+        })
+        .unwrap_or_default();
+    *state.detail.lock().unwrap() =
+        format!("{busy} busy, {queued} queued, {completed} applications{current}");
+    drop(local);
+    drop(labels);
     drop(machines);
     drop(closed);
     for step in steps {
@@ -837,24 +882,19 @@ pub fn evaluation_step(step: EvaluationStep) {
     let location = location_name(&step.location);
     let key = (step.task.id, step.task.operation);
     let mut labels = state.labels.lock().unwrap().clone();
-    let mut depth = 1;
     if step.location.is_empty() {
-        if let Some(task) = state.advice.lock().unwrap().remove(&key) {
-            depth = task.depth;
-        }
+        state.advice.lock().unwrap().remove(&key);
     } else if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
         for (name, label) in &machine.stats.labels {
             labels.insert(data_name(*name), label.clone());
         }
-        if let Some(task) = machine.tasks.remove(&key) {
-            depth = task.depth;
-        }
+        machine.tasks.remove(&key);
     }
     let title = task_title(step.task.id, &step.task.title, step.task.operation, &labels);
-    println(format!(
-        "{}{} {location}: {title} [{:.2}s]",
-        "  ".repeat(depth),
-        if step.success { "✓" } else { "×" },
+    let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;
+    line(format!(
+        "[{completed}] {}{location}: {title} ({:.2}s)",
+        if step.success { "" } else { "FAILED " },
         step.elapsed_ns as f64 / 1e9
     ));
 }
@@ -886,31 +926,36 @@ fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) 
         ancestor = *parent;
     }
     drop(parents);
+    tasks.entry(id).or_insert_with(|| Task {
+        progress: Progress(None),
+        title: String::new(),
+        operation: id.1,
+        depth,
+    })
+}
+
+fn counted_task<'a>(
+    state: &State,
+    tasks: &'a mut BTreeMap<TaskKey, Task>,
+    id: TaskKey,
+) -> &'a mut Task {
     let parent = state.parents.lock().unwrap().get(&id).copied();
     let parent_bar = parent
         .and_then(|id| tasks.get(&id))
         .and_then(|task| task.progress.0.as_ref())
         .map(|state| state.bar.clone())
         .unwrap_or_else(|| state.bar.clone());
-    tasks.entry(id).or_insert_with(|| {
-        let title = String::new();
-        let display_title = task_title(id.0, &title, id.1, &state.labels.lock().unwrap());
-        let progress = Progress::new_after(
-            format!("{}local: {display_title}", "  ".repeat(depth)),
+    let task = task(state, tasks, id);
+    if task.progress.0.is_none() {
+        let title = task_title(id.0, &task.title, id.1, &state.labels.lock().unwrap());
+        task.progress = Progress::new_after(
+            format!("{}local: {title}", "  ".repeat(task.depth)),
             None,
             false,
             Some(&parent_bar),
         );
-        if let Some(state) = &progress.0 {
-            state.last_report.store(u64::MAX, Ordering::Relaxed);
-        }
-        Task {
-            progress,
-            title,
-            operation: id.1,
-            depth,
-        }
-    })
+    }
+    task
 }
 
 pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], payload: &[u8]) {
@@ -949,7 +994,7 @@ pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], 
             if completed > total {
                 return;
             }
-            let task = task(&state, &mut tasks, (id, operation));
+            let task = counted_task(&state, &mut tasks, (id, operation));
             if let Some(state) = &task.progress.0 {
                 state.last_report.store(0, Ordering::Relaxed);
             }
@@ -979,12 +1024,16 @@ pub fn tree_progress(id: [u8; 32], children: &[[u8; 32]], completed: u64, total:
         .lock()
         .unwrap()
         .is_some_and(|input| data_name(input) == data_name(id));
-    if !named && !root {
+    if root {
+        position(&state, completed, total);
+        return;
+    }
+    if !named {
         return;
     }
     let mut tasks = state.advice.lock().unwrap();
     {
-        let task = task(
+        let task = counted_task(
             &state,
             &mut tasks,
             (id, Some(EvaluationOperation::Evaluate)),

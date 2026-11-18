@@ -111,9 +111,19 @@ async fn connection(
                 continue;
             }
             protocol::Message::RequestLabels => {
-                protocol::asynchronous::send(
+                let labels = crate::abi::effect(b"remote_labels", &[])?;
+                let labels = crate::storage::put(&labels)?;
+                let name = labels.raw_handle_bytes()?;
+                let proposal =
+                    super::propose_object(name, true).map_err(ConnectionError::Operation)?;
+                protocol::asynchronous::send_proposal(
                     &mut stream,
-                    protocol::Message::Labels(super::labels()?),
+                    protocol::MAX_MESSAGE_SIZE,
+                    None,
+                    Some(name),
+                    proposal,
+                    super::read_object,
+                    |name, keys| certify(name, keys).ok(),
                 )
                 .await?;
                 continue;
