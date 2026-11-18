@@ -6,7 +6,7 @@ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("//build:cc.bzl", "cc_object")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
-FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-nostdlib", "-nostartfiles", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3", "-static"]
+FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-fno-stack-protector", "-nostdlib", "-nostartfiles", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3", "-static"]
 
 ARCA = "//build/platforms:arca"
 ARCA_USER = "//build/platforms:arca_user"
