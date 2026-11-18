@@ -108,6 +108,7 @@ impl<K, V> Node<K, V> {
 pub struct Maps<K, V> {
     maps: Vec<Link<K, V>>,
     version: u64,
+    names: Vec<(Vec<u8>, usize)>,
 }
 
 impl<K, V> Default for Maps<K, V> {
@@ -121,6 +122,7 @@ impl<K, V> Maps<K, V> {
         Self {
             maps: Vec::new(),
             version: 0,
+            names: Vec::new(),
         }
     }
     pub fn count(&self) -> usize {
@@ -129,6 +131,14 @@ impl<K, V> Maps<K, V> {
     pub fn create(&mut self) -> usize {
         let index = self.maps.len();
         self.maps.push(None);
+        index
+    }
+    pub fn named(&mut self, key: &[u8]) -> usize {
+        if let Some((_, index)) = self.names.iter().find(|(name, _)| name == key) {
+            return *index;
+        }
+        let index = self.create();
+        self.names.push((key.to_vec(), index));
         index
     }
     pub fn get(

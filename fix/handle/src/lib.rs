@@ -2,6 +2,7 @@
 #![feature(portable_simd)]
 
 pub mod descriptors;
+pub mod minrepo;
 
 use core::{fmt, mem, simd::u8x32};
 
@@ -153,6 +154,11 @@ wrapper!(TreeRef, |h: &Handle| h.0[31] & 0x1f == 0x10
     && h.0[31] & 0xa0 == 0xa0);
 
 impl Handle {
+    /// The underlying data descriptor, without accessing or requiring its backing.
+    pub fn object_descriptor(self) -> Object {
+        Object(self.flags::<0, 0x1f>())
+    }
+
     /// # Safety
     /// The caller must establish naming provenance for the resulting Handle.
     /// Local addresses must identify live storage in the runtime that resolves

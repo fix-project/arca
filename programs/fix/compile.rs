@@ -175,12 +175,12 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
     };
     fixwasm::advise(
         combination,
-        fixwasm::advice::PROGRESS,
+        fixwasm::advice::TITLE,
         match phase {
-            0 => b"translate Wasm" as &[u8],
-            1 => b"compile C",
-            2 => b"link",
-            3 => b"complete",
+            0 => b"compile Wasm: translating Wasm" as &[u8],
+            1 => b"compile Wasm: compiling C",
+            2 => b"compile Wasm: linking",
+            3 => b"compile Wasm: issuing Runnable",
             _ => unreachable!(),
         },
     )?;
@@ -300,6 +300,12 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
         }
         _ => unreachable!(),
     };
+    let output_bytes = wasm.len()?;
+    let parallel = if phase == 0 {
+        object_count as u64
+    } else {
+        1u64
+    };
     let state = children(vec![
         closure.clone(),
         wasm,
@@ -308,5 +314,8 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
         children(jobs),
     ]);
     let state = value(tree![identity, state, Blob::create(b"Compilation")].tag()?);
-    Ok(application(vec![value(combination.get(0)), closure, state]))
+    let next = Tree::from_iter([value(combination.get(0)), closure, state]);
+    fixwasm::advise(&next, "fix::output-size", &output_bytes.to_le_bytes())?;
+    fixwasm::advise(&next, "fix::parallel", &parallel.to_le_bytes())?;
+    Ok(value(next.application()))
 }

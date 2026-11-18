@@ -4,7 +4,7 @@ Capture a guest call graph with the normal command:
 
 ```sh
 fix --perf run.perf.data -j 1 run /path/to/workload.fix
-fix --perf precompile.perf.data -j 16 --memory 16384 init /path/to/seed.tar --precompile
+fix --perf bootstrap.perf.data -j 16 --memory 16384 bootstrap /path/to/seed.tar
 ```
 
 Open the report:

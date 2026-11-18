@@ -24,6 +24,9 @@ def _run(ctx, commands, inputs, outputs, mnemonic, jobs, memory):
             'export FIX_UNSIGNED=true',
             "work=$(mktemp -d)",
             "trap 'rm -rf \"$work\"' EXIT",
+            'export FIX_CONFIG_DIR="$work/config"',
+            'export XDG_DATA_HOME="$work/data"',
+            'export FIX_SCHEDULER=scheduler FIX_COLLECTOR=collector FIX_PARSER=fix-parser',
             'cd "$work"',
         ] + commands),
         inputs = inputs + [ctx.file.fix],
@@ -57,6 +60,7 @@ def _fix_run_impl(ctx):
     bindings = " ".join(["-b " + shell.quote(name + "=" + expression) for name, expression in ctx.attr.bindings.items()])
     commands += [
         'export FIX_TRUST="$work/.fix/trust"',
+        '"$fix" trust add-tagger collector',
         '"$fix" -j %d --memory %d %s eval %s > "$execroot"/%s' % (jobs, memory, bindings, shell.quote(ctx.attr.expression), shell.quote(handle.path)),
         _archive(archive.path, "--exclude=.fix/labels "),
     ]
@@ -75,28 +79,6 @@ fix_run = rule(
         "bindings": attr.string_dict(),
         "data": attr.label_keyed_string_dict(allow_files = True, doc = "Files copied into the working directory under the given names."),
         "archives": attr.label_list(allow_files = [".tar"], doc = "Repository archives to import."),
-        "jobs": attr.int(default = 0),
-        "memory": attr.int(default = 0, doc = "VM memory in MiB; 0 means 1 GiB per job, at least 16 GiB, rounded up to a power of two."),
-        "_jobs": attr.label(default = "//build:fix-jobs"),
-        "fix": attr.label(default = "//fix/cli:fix", allow_single_file = True, doc = "The Fix CLI that evaluates."),
-    },
-)
-
-def _fix_repository_impl(ctx):
-    archive = ctx.actions.declare_file(ctx.label.name + ".tar")
-    jobs, memory = _resources(ctx)
-    commands = [
-        '"$fix" -j %d --memory %d init "$execroot"/%s --precompile' % (jobs, memory, shell.quote(ctx.file.seed.path)),
-        _archive(archive.path),
-    ]
-    _run(ctx, commands, [ctx.file.seed], [archive], "FixRepository", jobs, memory)
-    return [DefaultInfo(files = depset([archive]))]
-
-fix_repository = rule(
-    doc = "Archives a repository made by `fix init SEED --precompile`.",
-    implementation = _fix_repository_impl,
-    attrs = {
-        "seed": attr.label(default = "//bootstrap:seed", allow_single_file = [".tar"]),
         "jobs": attr.int(default = 0),
         "memory": attr.int(default = 0, doc = "VM memory in MiB; 0 means 1 GiB per job, at least 16 GiB, rounded up to a power of two."),
         "_jobs": attr.label(default = "//build:fix-jobs"),

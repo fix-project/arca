@@ -7,6 +7,93 @@ use serde::{Deserialize, Serialize};
 
 pub use embedded_io::ErrorKind;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EvaluationOperation {
+    Evaluate,
+    Think,
+    Force,
+    Apply,
+    Select,
+    Load,
+}
+
+impl core::fmt::Display for EvaluationOperation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Evaluate => "Evaluate",
+            Self::Think => "Think",
+            Self::Force => "Force",
+            Self::Apply => "Apply",
+            Self::Select => "Select",
+            Self::Load => "Load",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationSnapshot {
+    pub machines: Vec<MachineProgress>,
+    pub steps: Vec<EvaluationStep>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MachineProgress {
+    pub location: Vec<String>,
+    pub availability: Option<RemoteAvailability>,
+    pub used: bool,
+    pub runtime: Option<RuntimeStats>,
+    pub tasks: Vec<EvaluationTask>,
+    pub labels: Vec<([u8; 32], String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RemoteAvailability {
+    Configured,
+    Connecting,
+    Available {
+        workers: u64,
+        memory_bytes: Option<u64>,
+    },
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RuntimeStats {
+    pub elapsed_ns: u64,
+    pub workers: u64,
+    pub busy_workers: u64,
+    pub queued: u64,
+    pub peak_busy_workers: u64,
+    pub peak_queued: u64,
+    pub completed: u64,
+    pub privileged_completed: u64,
+    pub cpu_ns: Option<u64>,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub peak_memory: u64,
+    pub memory_used: u64,
+    pub memory_total: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvaluationStep {
+    pub location: Vec<String>,
+    pub task: EvaluationTask,
+    pub elapsed_ns: u64,
+    pub success: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationTask {
+    pub id: [u8; 32],
+    pub title: String,
+    pub operation: Option<EvaluationOperation>,
+    pub transfer: Option<(Vec<String>, Vec<String>)>,
+    pub name: String,
+    pub progress: Option<(u64, u64)>,
+    pub children: Vec<([u8; 32], Option<EvaluationOperation>)>,
+}
+
 /// A control message and the id that pairs a response with its request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Tagged<T> {
@@ -17,6 +104,27 @@ pub struct Tagged<T> {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
     GetArgs,
+    ObserveEvaluation,
+    CpuTime,
+    EvaluationStep(EvaluationStep),
+    EvaluationProgress(EvaluationSnapshot),
+    Sleep(u64),
+    TaskAdvice {
+        task: [u8; 32],
+        operation: Option<EvaluationOperation>,
+        key: Vec<u8>,
+        payload: Vec<u8>,
+    },
+    TreeProgress {
+        task: [u8; 32],
+        children: Vec<[u8; 32]>,
+        completed: u64,
+        total: u64,
+    },
+    TaskFinished {
+        task: [u8; 32],
+        operation: Option<EvaluationOperation>,
+    },
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),
@@ -37,6 +145,13 @@ pub enum Request<B = Region> {
         port: u16,
     },
     OpenUri(String),
+    StdioStream,
+    SshConnect {
+        host: String,
+        repository: String,
+        scheduler: Option<String>,
+        collector: Option<String>,
+    },
     ReadDirectory(String),
     Exists(String),
     /// Returns the file's contents as [`Response::Bytes`].
@@ -56,6 +171,7 @@ pub enum Response {
     Pipe(PipeData),
     Ack,
     Bool(bool),
+    CpuTime(Option<u64>),
     Path(String),
     Err(IoErrorKind),
     Names(Vec<String>),
@@ -64,6 +180,7 @@ pub enum Response {
     Bytes(Region),
     DirectoryEntries(Vec<DirectoryEntry>),
     Signature(String),
+    SignatureError(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

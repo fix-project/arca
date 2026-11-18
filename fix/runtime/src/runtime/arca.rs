@@ -50,6 +50,12 @@ pub struct Suspended {
     application: Option<Tree>,
 }
 
+impl Suspended {
+    pub(crate) fn combination(&self) -> Tree {
+        self.invocation.combination
+    }
+}
+
 struct Invocation {
     runtime_id: usize,
     function: Function,
@@ -285,6 +291,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         self
     }
 
+    pub fn trusts_tagger(&self, callable: Tree) -> Result<bool, trust::TrustError> {
+        self.storage.trust.is_tagger(&self.storage, callable)
+    }
+
     /// Runs an application or privileged callable, yielding each advice event to the caller.
     /// Applications complete with an Apply coupon; privileged calls return their raw result.
     /// Resuming never supplies scheduler data to the application.
@@ -293,23 +303,25 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         combination: Tree,
         privileged: bool,
     ) -> Result<Execution, InvalidApplication> {
+        self.observe(combination, privileged, !privileged)
+    }
+
+    /// Run an ordinary application with advice delivery and no Apply coupon.
+    pub fn run_observed(&self, combination: Tree) -> Result<Execution, InvalidApplication> {
+        self.observe(combination, false, false)
+    }
+
+    fn observe(
+        &self,
+        combination: Tree,
+        privileged: bool,
+        certify: bool,
+    ) -> Result<Execution, InvalidApplication> {
         if !privileged {
             assert!(
                 combination.as_handle().is_value(),
                 "application requires an evaluated combination"
             );
-            if self.memoization.is_some() {
-                let apply = self.storage.add_blob(&2u64.to_le_bytes());
-                for coupon in self
-                    .cached_claims(&[apply.into(), combination.into()])
-                    .unwrap()
-                {
-                    let fields = self.storage.get_tree(coupon).unwrap();
-                    if fields.len() == 2 && trust::is_kernel_author(fields[0]) {
-                        return Ok(Execution::Complete(coupon.into()));
-                    }
-                }
-            }
         }
         let execution = self.storage.invoke(
             combination,
@@ -318,7 +330,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
             &mut None,
             true,
         )?;
-        self.complete_observed(execution, (!privileged).then_some(combination))
+        self.complete_observed(execution, certify.then_some(combination))
     }
 
     /// Resumes an invocation belonging to this runtime with its fixed acknowledgement.
@@ -341,9 +353,6 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
             Execution::Complete(value) => {
                 let value = if let Some(combination) = application {
                     let coupon = self.storage.certificate(2, combination.into(), value);
-                    if self.memoization.is_some() {
-                        self.index_claim(coupon.into()).unwrap();
-                    }
                     coupon.into()
                 } else {
                     value
@@ -587,7 +596,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 0
             };
             f = match &*effect {
-                b"coordinate" => {
+                b"coordinate" | b"coordinate_handles" => {
                     let callback = coordinator
                         .as_mut()
                         .expect("scheduler coordination requires scheduler mode");
@@ -600,9 +609,20 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let Some(Value::Blob(name)) = args.pop_back() else {
                         panic!("missing coordination name")
                     };
-                    let tree = Tree::try_from(handles::resolve(&mut k, unpack_reference(&bytes)))
-                        .expect("coordination arguments must be a Tree Object");
-                    let arguments = self.get_tree(tree).unwrap();
+                    let arguments = if &*effect == b"coordinate_handles" {
+                        assert_eq!(bytes.len() % 8, 0);
+                        bytes
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .map(|bytes| handles::resolve(&mut k, handles::reference(bytes)))
+                            .collect::<Vec<_>>()
+                    } else {
+                        let tree =
+                            Tree::try_from(handles::resolve(&mut k, unpack_reference(&bytes)))
+                                .expect("coordination arguments must be a Tree Object");
+                        self.get_tree(tree).unwrap().to_vec()
+                    };
                     let (status, result) = match callback(&name, &arguments) {
                         CoordinationAction::Resume(status, value) => (status, value),
                         CoordinationAction::Stop(value) => return Ok(Execution::Complete(value)),
@@ -718,17 +738,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                 }
                 b"lift" => {
-                    let length: kernel::prelude::Word =
-                        args.pop_back().unwrap().try_into().unwrap();
-                    let address: kernel::prelude::Word =
-                        args.pop_back().unwrap().try_into().unwrap();
+                    let slots: ArcaBlob = args.pop_back().unwrap().try_into().unwrap();
                     let objects: Tuple = args.pop_back().unwrap().try_into().unwrap();
-                    self.lift(
-                        &mut k,
-                        objects,
-                        address.read() as usize,
-                        length.read() as usize,
-                    );
+                    self.lift(&mut k, objects, &slots);
                     k.apply(kernel::prelude::Word::new(0))
                 }
                 b"is_privileged" => {

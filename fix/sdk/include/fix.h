@@ -93,6 +93,11 @@ __attribute__((import_module("fix"), import_name("attach_tree_bytes"))) void
 fix_attach_tree_bytes(uint32_t arg0, uint32_t arg1);
 __attribute__((import_module("fix"), import_name("effect"))) uint32_t
 fix_effect(uint32_t arg0);
+__attribute__((import_module("fix"),
+               import_name("coordinate_handles"))) fix_handle
+fix_coordinate_handles(const uint8_t *name, uint32_t name_length,
+                       const fix_handle *arguments, uint32_t count,
+                       uint64_t *status);
 __attribute__((import_module("fix"), import_name("coordinate"))) fix_handle
 fix_coordinate(const uint8_t *name, uint32_t name_length, fix_handle arguments,
                uint64_t *status);

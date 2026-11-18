@@ -20,5 +20,6 @@ pub fn apply<'a>(
     let source = Handle::<Object<Blob>>::try_from(combination.get(2))?.read()?;
     let source = core::str::from_utf8(&source).expect("source should be valid UTF-8");
     let tokens = Lexer::new(source).tokenize().expect("failed to tokenize");
-    Parser::new(tokens, combination)?.parse_program()
+    let value = Parser::new(tokens, combination)?.parse_program()?;
+    Ok(fixwasm::tree![value].erase())
 }

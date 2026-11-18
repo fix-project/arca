@@ -270,6 +270,7 @@ impl<'a> AllocatorLevel<'a> {
 struct AllocatorMetadata {
     refcnt: AtomicUsize,
     used_size: AtomicUsize,
+    peak_size: AtomicUsize,
     raw_size: usize,
     total_size: usize,
     max_align: usize,
@@ -337,6 +338,7 @@ impl AllocatorInner {
             (&raw mut (*p).meta).write(AllocatorMetadata {
                 refcnt: AtomicUsize::new(1),
                 used_size: AtomicUsize::new(0),
+                peak_size: AtomicUsize::new(0),
                 raw_size,
                 total_size,
                 max_align,
@@ -687,10 +689,9 @@ impl BuddyAllocatorImpl {
             .reserve(self.base, index, size_log2)
             .inspect(|x| log::debug!("reserved {x:#x}@{size_log2}"))
             .inspect(|_| {
-                self.inner
-                    .meta
-                    .used_size
-                    .fetch_add(1 << size_log2, Ordering::SeqCst);
+                let size = 1 << size_log2;
+                let used = self.inner.meta.used_size.fetch_add(size, Ordering::SeqCst) + size;
+                self.inner.meta.peak_size.fetch_max(used, Ordering::SeqCst);
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
@@ -787,10 +788,9 @@ impl BuddyAllocatorImpl {
             .allocate_unchecked(self.base, size_log2)
             .inspect(|x| log::debug!("allocated {x:#x}@{size_log2}"))
             .inspect(|_| {
-                self.inner
-                    .meta
-                    .used_size
-                    .fetch_add(1 << size_log2, Ordering::SeqCst);
+                let size = 1 << size_log2;
+                let used = self.inner.meta.used_size.fetch_add(size, Ordering::SeqCst) + size;
+                self.inner.meta.peak_size.fetch_max(used, Ordering::SeqCst);
             })
             .map_or(core::ptr::null_mut(), |i| {
                 self.base.wrapping_byte_add(i * (1 << size_log2))
@@ -883,6 +883,11 @@ impl BuddyAllocatorImpl {
 
     pub fn used_size(&self) -> usize {
         self.inner.meta.used_size.load(Ordering::SeqCst)
+    }
+
+    /// Return the highest allocated byte count since this allocator was initialized.
+    pub fn peak_size(&self) -> usize {
+        self.inner.meta.peak_size.load(Ordering::SeqCst)
     }
 
     pub fn total_size(&self) -> usize {

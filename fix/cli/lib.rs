@@ -1,7 +1,7 @@
 pub use fix::Memoization;
 use fix::{DataType, EncodeType, ValueType};
 use fixhandle::{Encode, EncodeView, Handle, HandleView, Object, Ref, Thunk, Tree, TreeRef};
-use fixrepository::Repository;
+use fixrepository::{Repository, RepositoryError};
 use fixstorage::{Storage, repository::RepositoryStorage};
 use std::{
     fmt,
@@ -10,18 +10,26 @@ use std::{
 };
 
 mod archive;
+pub mod bootstrap_store;
 pub mod commands;
 pub mod configuration;
 pub mod expressions;
+mod info;
+pub mod remotes;
 pub mod shell;
 pub use shell::Shell;
+mod serve;
 mod session;
 mod trust;
 
 #[derive(Debug)]
 pub enum Error {
     Backend(String),
-    Execution(u8),
+    Execution {
+        status: u8,
+        operation: String,
+        diagnostic: String,
+    },
     /// The evaluation failed with the `Fix.error` request carrying this message.
     Fix(String),
 }
@@ -29,7 +37,20 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Backend(message) => f.write_str(message),
-            Self::Execution(status) => write!(f, "Fix execution exited with status {status}"),
+            Self::Execution {
+                status,
+                operation,
+                diagnostic,
+            } => {
+                if diagnostic.is_empty() {
+                    write!(
+                        f,
+                        "{operation} failed with exit status {status}; runtime returned no diagnostic"
+                    )
+                } else {
+                    write!(f, "{operation} failed: {diagnostic} (exit status {status})")
+                }
+            }
             Self::Fix(message) => f.write_str(message),
         }
     }
@@ -67,8 +88,12 @@ impl fmt::Debug for Value {
 pub struct Options {
     pub scheduler: String,
     pub collector: String,
+    pub parser: String,
+    pub compiler: String,
     pub trust: Option<PathBuf>,
     pub remotes: Vec<fixremote::Remote>,
+    pub remote_schedulers: Vec<(String, String)>,
+    pub remote_collectors: Vec<(String, String)>,
     pub identities: Vec<String>,
     pub unsigned: bool,
     pub jobs: usize,
@@ -80,8 +105,12 @@ impl Default for Options {
         Self {
             scheduler: "scheduler".into(),
             collector: "collector".into(),
+            parser: "fix-parser".into(),
+            compiler: "compile".into(),
             trust: None,
             remotes: Vec::new(),
+            remote_schedulers: Vec::new(),
+            remote_collectors: Vec::new(),
             identities: Vec::new(),
             unsigned: false,
             jobs: 1,
@@ -107,6 +136,11 @@ pub struct Client {
     retain_storage: bool,
     reuse_storage: bool,
 }
+fn kernel() -> &'static Arc<[u8]> {
+    static KERNEL: OnceLock<Arc<[u8]>> = OnceLock::new();
+    KERNEL.get_or_init(|| Arc::from(&include_bytes!(env!("FIX_KERNEL"))[..]))
+}
+
 impl Client {
     pub fn open(directory: &Path, options: Options) -> Result<Self, Error> {
         let directory = directory.canonicalize().map_err(error)?;
@@ -117,7 +151,7 @@ impl Client {
         )
         .map_err(error)?;
         let repository = options.configure(repository);
-        Ok(Self {
+        let mut client = Self {
             storage: Arc::new(RepositoryStorage::new(repository)),
             options,
             directory,
@@ -126,7 +160,37 @@ impl Client {
             session: None,
             retain_storage: false,
             reuse_storage: false,
-        })
+        };
+        let config = client.remote_config()?;
+        let mut policy = config.policy;
+        policy.identities.clear();
+        let bootstrap = bootstrap_store::repository()?;
+        let path = bootstrap
+            .to_str()
+            .ok_or_else(|| message("bootstrap repository path is not UTF-8"))?;
+        match Repository::open(path) {
+            Ok(source) if source.path() != client.storage.repository().path() => {
+                Arc::get_mut(&mut client.storage)
+                    .unwrap()
+                    .add_source(source.with_policy(policy.clone()));
+            }
+            Ok(_) | Err(RepositoryError::NotInitialized) => (),
+            Err(error) => return Err(self::error(error)),
+        }
+        for remote in config.remotes {
+            if let Some(path) = remote.address.strip_prefix("file://") {
+                match Repository::open(path) {
+                    Ok(source) if source.path() != client.storage.repository().path() => {
+                        Arc::get_mut(&mut client.storage)
+                            .unwrap()
+                            .add_source(source.with_policy(policy.clone()));
+                    }
+                    Ok(_) | Err(RepositoryError::NotInitialized) => (),
+                    Err(error) => return Err(self::error(error)),
+                }
+            }
+        }
+        Ok(client)
     }
     pub fn reuse_vm(&mut self) {
         self.persistent = true;
@@ -175,10 +239,24 @@ impl Client {
                 .iter_mut()
                 .find(|existing| existing.name == remote.name)
             {
-                *existing = remote.clone();
+                existing.address = remote.address.clone();
             } else {
                 remotes.push(remote.clone());
             }
+        }
+        for (name, scheduler) in &self.options.remote_schedulers {
+            remotes
+                .iter_mut()
+                .find(|remote| &remote.name == name)
+                .ok_or_else(|| message("unknown remote for scheduler override"))?
+                .scheduler = Some(scheduler.clone());
+        }
+        for (name, collector) in &self.options.remote_collectors {
+            remotes
+                .iter_mut()
+                .find(|remote| &remote.name == name)
+                .ok_or_else(|| message("unknown remote for collector override"))?
+                .collector = Some(collector.clone());
         }
         Ok(fixremote::Config { policy, remotes })
     }
@@ -247,12 +325,18 @@ impl Client {
     }
 
     pub fn missing(&self, offers: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, Error> {
-        fixremote::missing(self.storage.repository(), offers).map_err(error)
+        let mut missing = Vec::new();
+        for name in fixremote::missing(self.storage.repository(), offers).map_err(error)? {
+            if !self.storage.persist_available(&name).map_err(error)? {
+                missing.push(name);
+            }
+        }
+        Ok(missing)
     }
 
     pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
         let values = fixremote::import(self.storage.repository(), bytes, &self.remote_config()?)
-            .map_err(error)?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
         Ok(values.into_iter().map(|handle| self.keep(handle)).collect())
     }
     pub fn set_profile(&mut self, enabled: bool) {
@@ -271,13 +355,25 @@ impl Client {
         }
         Ok(value.handle)
     }
-    /// Reads the value of the label `name`.
+    /// Reads a label in the active repository.
     pub fn label_value(&mut self, name: &str) -> Result<Value, Error> {
         let handle = self.storage.repository().read_label(name).map_err(error)?;
         Ok(self.keep(handle))
     }
     pub fn lookup(&mut self, name: &str) -> Result<Value, Error> {
-        Ok(self.keep(resolve(self.storage.repository(), name).map_err(error)?))
+        if !(name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && self.storage.repository().label_name(name).is_ok()
+        {
+            return self.label_value(name);
+        }
+        let bytes = self.storage.resolve_name(name).map_err(error)?;
+        let handle = self.storage.identify(&bytes).map_err(|_| {
+            self::error(RepositoryError::MissingObject {
+                name: name.into(),
+                repository: self.storage.repository().path().into(),
+            })
+        })?;
+        Ok(self.keep(handle))
     }
     pub fn save(&mut self, value: &Value) -> Result<String, Error> {
         Ok(self
@@ -293,26 +389,100 @@ impl Client {
             .write_label(name, value)
             .map_err(error)
     }
+    pub(crate) fn label_imported(&mut self, name: &str, value: &Value) -> Result<(), Error> {
+        let value = self.handle(value)?;
+        self.storage
+            .repository()
+            .write_label(name, value)
+            .map_err(error)
+    }
     pub fn call(&mut self, value: &Value) -> Result<Value, Error> {
+        if self.options.jobs == 0 {
+            let thunk = self.application(value)?;
+            let request = self.strict(&thunk)?;
+            return self.eval(&request);
+        }
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {
-            eprintln!("profile call input: {:?}", start.elapsed());
+            common::progress::println(format!("profile call input: {:?}", start.elapsed()));
         }
         self.execute(&["call".into(), name])
     }
+    pub fn schedule_stream(&mut self, value: &Value) -> Result<Value, Error> {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+        let name = self.save(value)?;
+        let remotes = self.remote_config()?;
+        let mut argv = vec![
+            "fix".into(),
+            "--trust".into(),
+            remotes.policy.trusted_compilers.join("\n"),
+            "--remotes".into(),
+            serde_json::to_string(&remotes).map_err(error)?,
+            "--workers".into(),
+            self.options.jobs.to_string(),
+        ];
+        if self.profile {
+            argv.push("--profile".into());
+        }
+        argv.extend([
+            "schedule".into(),
+            "--memoize".into(),
+            self.options.memoize.to_string(),
+            name.clone(),
+        ]);
+        let memory = self
+            .options
+            .memory_mib
+            .checked_mul(1 << 20)
+            .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
+            .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
+        let (vm, peer) = UnixStream::pair().map_err(error)?;
+        let mut incoming = peer.try_clone().map_err(error)?;
+        let mut outgoing = peer;
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin(), &mut incoming);
+            let _ = incoming.shutdown(Shutdown::Write);
+        });
+        let output = std::thread::spawn(move || {
+            let mut stdout = std::io::stdout().lock();
+            let mut bytes = [0; 65536];
+            loop {
+                let length = outgoing.read(&mut bytes)?;
+                if length == 0 {
+                    return Ok::<(), std::io::Error>(());
+                }
+                stdout.write_all(&bytes[..length])?;
+                stdout.flush()?;
+            }
+        });
+        let (status, result) =
+            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel().clone())
+                .run_stream_captured(argv, &self.directory, vm);
+        output.join().map_err(error)?.map_err(error)?;
+        if status == 0 {
+            self.lookup(std::str::from_utf8(&result).map_err(error)?.trim())
+        } else {
+            Err(Error::Execution {
+                status,
+                operation: format!("schedule {name}"),
+                diagnostic: String::from_utf8_lossy(&result).trim().into(),
+            })
+        }
+    }
+
     pub fn schedule(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         if self.profile {
-            eprintln!("profile schedule input: {:?}", start.elapsed());
+            common::progress::println(format!("profile schedule input: {:?}", start.elapsed()));
         }
         self.execute(&[
             "schedule".into(),
             "--memoize".into(),
             self.options.memoize.to_string(),
-            "--trusted-tagger".into(),
-            self.options.collector.clone(),
             name,
         ])
     }
@@ -345,10 +515,9 @@ impl Client {
     }
 
     /// Evaluates compilation requests together, persisting their coupons.
-    pub fn precompile(&mut self, requests: &[Value]) -> Result<(), Error> {
+    pub fn precompile(&mut self, requests: &[Value]) -> Result<Value, Error> {
         let requests = self.tree(requests)?;
-        self.eval(&requests)?;
-        Ok(())
+        self.eval(&requests)
     }
 
     /// The strict application of `compile` to a Wasm module, with `compile`'s default
@@ -359,7 +528,7 @@ impl Client {
         units: Option<u64>,
     ) -> Result<Value, Error> {
         let limits = self.blob(b"")?;
-        let compile = self.lookup("compile")?;
+        let compile = self.lookup(&self.options.compiler.clone())?;
         let mut fields = vec![limits, compile, module.clone()];
         if let Some(units) = units {
             fields.push(self.blob(&units.to_le_bytes())?);
@@ -377,7 +546,15 @@ impl Client {
     ) -> Result<Value, Error> {
         let mode = self.blob(mode.as_bytes())?;
         let scheduler = self.lookup(&self.options.scheduler.clone())?;
-        self.tree(&[mode, scheduler, collector.clone(), input.clone()])
+        let limits = self.blob(b"")?;
+        self.tree(&[limits, scheduler, mode, collector.clone(), input.clone()])
+    }
+
+    /// Load backing through the scheduler, preserving the input value.
+    pub fn load(&mut self, value: &Value) -> Result<Value, Error> {
+        let collector = self.lookup(&self.options.collector.clone())?;
+        let combination = self.scheduler_request("load", &collector, value)?;
+        self.schedule(&combination)
     }
 
     /// Performs one Think step on `value` and returns its result.
@@ -495,28 +672,58 @@ impl Client {
     }
 
     pub(crate) fn execute(&mut self, arguments: &[String]) -> Result<Value, Error> {
+        let operation = arguments.first().map(String::as_str).unwrap_or("execute");
+        let input = arguments.last().map(String::as_str).unwrap_or("");
+        let label = self.storage.repository().labels().ok().and_then(|labels| {
+            labels.into_iter().find(|label| {
+                std::fs::read_to_string(Path::new(self.repository()).join("labels").join(label))
+                    .is_ok_and(|value| value.trim() == input)
+            })
+        });
+        let progress = common::progress::Progress::advised(format!(
+            "{operation} {}",
+            label.as_deref().unwrap_or(input)
+        ));
+        let names = self
+            .storage
+            .repository()
+            .labels()
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|label| {
+                self.storage
+                    .repository()
+                    .read_label(&label)
+                    .ok()
+                    .map(|handle| (*handle.as_bytes(), label))
+            })
+            .collect::<Vec<_>>();
+        let mut input_name = [0; 32];
+        let input_name = hex::decode_to_slice(input, &mut input_name)
+            .ok()
+            .map(|_| input_name);
+        progress.evaluation_names(input_name, names);
         let remotes = self.remote_config()?;
         let trust = remotes.policy.trusted_compilers.join("\n");
         let mut argv = vec!["fix".into(), "--trust".into(), trust];
         argv.extend([
             "--remotes".into(),
             serde_json::to_string(&remotes).map_err(error)?,
+            "--workers".into(),
+            self.options.jobs.to_string(),
         ]);
         if self.profile {
             argv.push("--profile".into());
         }
         argv.extend_from_slice(arguments);
-        static KERNEL: OnceLock<Arc<[u8]>> = OnceLock::new();
-        let kernel = KERNEL.get_or_init(|| Arc::from(&include_bytes!(env!("FIX_KERNEL"))[..]));
+        let kernel = kernel();
         let memory = self
             .options
             .memory_mib
             .checked_mul(1 << 20)
             .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
             .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
-        if self.options.jobs == 0 {
-            return Err(message("jobs must be positive"));
-        }
         let start = std::time::Instant::now();
         let (status, output) = if self.persistent {
             if self.session.is_none() {
@@ -536,28 +743,28 @@ impl Client {
                 .execute(&argv[1..], self.reuse_storage)
                 .map_err(error)?
         } else {
-            vmm::runtime::Runtime::new(self.options.jobs, memory, kernel.clone())
+            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel.clone())
                 .run_captured(argv, &self.directory)
         };
         self.reuse_storage = self.retain_storage;
         if self.profile {
-            eprintln!(
+            common::progress::println(format!(
                 "profile {} VM: {:?} (status {status})",
                 arguments[0],
                 start.elapsed()
-            );
+            ));
         }
         if status != 0 && status != fix::FIX_ERROR_STATUS {
-            if self.persistent && status == 2 {
-                return Err(Error::Backend(
-                    String::from_utf8_lossy(&output).into_owned(),
-                ));
-            }
-            return Err(Error::Execution(status));
+            return Err(Error::Execution {
+                status,
+                operation: format!("{operation} {}", label.as_deref().unwrap_or(input)),
+                diagnostic: String::from_utf8_lossy(&output).trim().into(),
+            });
         }
         let name = std::str::from_utf8(&output).map_err(error)?.trim();
         let value = self.lookup(name)?;
         if status == 0 {
+            progress.finish();
             return Ok(value);
         }
         let message = self.get(&value, 1)?;
@@ -716,15 +923,19 @@ impl Client {
     pub fn eval(&mut self, value: &Value) -> Result<Value, Error> {
         let start = std::time::Instant::now();
         let name = self.save(value)?;
+        let scheduler = self.lookup(&self.options.scheduler.clone())?;
+        let scheduler = self.save(&scheduler)?;
+        let collector = self.lookup(&self.options.collector.clone())?;
+        let collector = self.save(&collector)?;
         if self.profile {
-            eprintln!("profile evaluate input: {:?}", start.elapsed());
+            common::progress::println(format!("profile evaluate input: {:?}", start.elapsed()));
         }
         self.execute(&[
             "evaluate".into(),
             "--memoize".into(),
             self.options.memoize.to_string(),
-            self.options.scheduler.clone(),
-            self.options.collector.clone(),
+            scheduler,
+            collector,
             name,
         ])
     }
@@ -734,14 +945,7 @@ pub(crate) fn resolve(
     repository: &Repository,
     name: &str,
 ) -> Result<Handle, fixrepository::RepositoryError> {
-    if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
-        let mut bytes = [0; 32];
-        hex::decode_to_slice(name, &mut bytes)
-            .map_err(|_| fixrepository::RepositoryError::Handle(fixhandle::Error::InvalidName))?;
-        repository.lookup(&bytes)
-    } else {
-        repository.read_label(name)
-    }
+    repository.lookup(&repository.resolve_name(name)?)
 }
 pub(crate) fn reference(value: Handle) -> Result<Ref, fixhandle::Error> {
     match value.view() {

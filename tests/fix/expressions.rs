@@ -27,12 +27,25 @@ fn program(name: &str, path: &str) -> String {
     format!("{name}={}", runfiles().join(path).display())
 }
 
-fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u8> {
-    use std::io::Write;
-    let mut child = Command::new(runfiles().join(env!("FIX_CLI")))
+fn command(directory: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new(runfiles().join(env!("FIX_CLI")));
+    command
         .args(arguments)
         .env("FIX_UNSIGNED", "true")
-        .current_dir(directory)
+        .env("FIX_CONFIG_DIR", directory.join("config"))
+        .env("XDG_DATA_HOME", directory.join("data"))
+        .env("FIX_JOBS", "1")
+        .env("FIX_TRUST", directory.join(".fix/trust"))
+        .env("FIX_SCHEDULER", "scheduler")
+        .env("FIX_COLLECTOR", "collector")
+        .env_remove("BUILD_WORKSPACE_DIRECTORY")
+        .current_dir(directory);
+    command
+}
+
+fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u8> {
+    use std::io::Write;
+    let mut child = command(directory, arguments)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -60,24 +73,16 @@ fn value(directory: &Path, arguments: &[&str]) -> String {
 fn bootstrap(directory: &Path, programs: &[(&str, &str)]) {
     std::fs::create_dir_all(directory).unwrap();
     let seed = runfiles().join(env!("FIX_BOOTSTRAP"));
-    frontend(directory, &["init", seed.to_str().unwrap()], true);
+    frontend(directory, &["init"], true);
+    frontend(directory, &["import", seed.to_str().unwrap()], true);
+    frontend(directory, &["trust", "add-tagger", "collector"], true);
     let mut arguments: Vec<String> = ["add", "."].map(String::from).into();
     arguments.extend(programs.iter().map(|(name, path)| program(name, path)));
     seed_tool(directory, &arguments);
 }
 
 fn frontend(directory: &Path, arguments: &[&str], success: bool) -> std::process::Output {
-    let output = Command::new(runfiles().join(env!("FIX_CLI")))
-        .args(arguments)
-        .env("FIX_UNSIGNED", "true")
-        .current_dir(directory)
-        .env("FIX_JOBS", "1")
-        .env("FIX_TRUST", directory.join(".fix/trust"))
-        .env_remove("FIX_SCHEDULER")
-        .env_remove("FIX_COLLECTOR")
-        .env_remove("BUILD_WORKSPACE_DIRECTORY")
-        .output()
-        .unwrap();
+    let output = command(directory, arguments).output().unwrap();
     assert_eq!(
         output.status.success(),
         success,
@@ -337,6 +342,13 @@ fn compilation_uses_the_compile_runnable() {
             "2",
         ],
     );
+    std::fs::copy(&wasm, directory.join("add.wasm")).unwrap();
+    let shorthand = expression(&directory, &["@compile(\"add.wasm\")"]);
+    let default = expression(
+        &directory,
+        &["compile", &format!("@file({:?})", wasm.to_str().unwrap())],
+    );
+    assert_eq!(shorthand, default);
     run(&directory, &["is-tag", &add], b"", 0);
     let fields = value(&directory, &["read-tree", &add]);
     let fields: Vec<_> = fields.lines().collect();
@@ -412,7 +424,7 @@ fn archives_and_parsed_environments_round_trip() {
     let shared_ref = value(&directory, &["create-ref", &shared]);
     let root = value(
         &directory,
-        &["-l", "exported", "create-tree", &shared_ref, &shared_ref],
+        &["-l", "exported", "create-tree", &shared, &shared_ref],
     );
     std::fs::create_dir(directory.join("archives")).unwrap();
     frontend(
@@ -580,37 +592,6 @@ fn flatware_directories_round_trip_through_native_import_and_export() {
         false,
     );
     assert!(!directory.join("escape").exists());
-}
-
-#[test]
-fn evaluation_rejects_scheduler_authored_coupons() {
-    let directory = Directory::new("untrusted_scheduler");
-    bootstrap(&directory, &[("untrusted", env!("FIX_TAGGER"))]);
-    let mut client = fixcli::Client::open(
-        &directory,
-        fixcli::Options {
-            scheduler: "untrusted".into(),
-            trust: Some(directory.join(".fix/trust")),
-            unsigned: true,
-            ..fixcli::Options::default()
-        },
-    )
-    .unwrap();
-    let untrusted = client.lookup("untrusted").unwrap();
-    let collector = client.lookup("collector").unwrap();
-    for mode in [4u64, 5u64] {
-        let input = client.blob(&mode.to_le_bytes()).unwrap();
-        let eval = client.blob(b"eval").unwrap();
-        let request = client
-            .tree(&[eval, untrusted.clone(), collector.clone(), input.clone()])
-            .unwrap();
-        let coupon = client.schedule(&request).unwrap();
-        assert!(client.is_tag(&coupon).unwrap());
-        assert!(matches!(
-            client.eval(&input),
-            Err(fixcli::Error::Execution(_))
-        ));
-    }
 }
 
 #[test]

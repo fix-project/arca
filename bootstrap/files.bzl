@@ -88,7 +88,14 @@ def wasm_tools(name, rootfs = ":release_rootfs", wasm2c = ":wasm2c", merge = "//
     mapped_directory(name = name, srcs = sources, allow_overwrites = True, **kwargs)
 
 def toolchain_files(name, stage0, resources, **kwargs):
-    directory_path(name = name + "_usr", directory = stage0, path = "usr", tags = ["manual"])
-    sources = {":" + name + "_usr": "usr"}
+    sources = {}
+    for role, path in [
+        ("linker", "usr/bin/ld.lld"),
+        ("clang_headers", "usr/lib/clang/23/include"),
+        ("wasi_headers", "usr/include/wasm32-wasip1"),
+    ]:
+        target = name + "_" + role
+        directory_path(name = target, directory = stage0, path = path, tags = ["manual"])
+        sources[":" + target] = path
     sources.update(resources)
     mapped_directory(name = name, srcs = sources, **kwargs)

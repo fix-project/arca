@@ -13,25 +13,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PARSER: &[u8] = include_bytes!(env!("FIX_PARSER_MODULE"));
-
-/// The label naming the compilation of the expression parser.
-pub const PARSER_LABEL: &str = "fix-parser";
-
-/// Adds the expression parser module and labels its compilation; returns the compilation.
-pub fn install(client: &mut Client) -> Result<Value, Error> {
-    let module = Blob::new(PARSER).into_value();
-    let compilation = client.compilation_request(&module, None)?;
-    client.label(PARSER_LABEL, &compilation)?;
-    Ok(compilation)
-}
-
 type Bindings = Vec<(String, String)>;
 
 enum Kind {
     Handle(String),
     Label(String),
     File(PathBuf),
+    Compile(PathBuf),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -45,7 +33,6 @@ struct Scope {
 }
 
 struct Imports {
-    repository: PathBuf,
     keys: BTreeMap<(preprocessor::Import, PathBuf), usize>,
     records: Vec<(usize, Kind)>,
     recorded: BTreeSet<usize>,
@@ -53,40 +40,6 @@ struct Imports {
     stack: Vec<PathBuf>,
     scopes: Vec<Scope>,
     next: usize,
-}
-
-fn admit_reference(repository: &Path, name: &str) -> Result<(), String> {
-    use fixhandle::{Handle, HandleBytesView, Name};
-    let mut bytes = [0; 32];
-    hex::decode_to_slice(name, &mut bytes).map_err(|error| format!("invalid handle: {error}"))?;
-    let view = Handle::parse_ref(&bytes).map_err(|error| format!("invalid handle: {error:?}"))?;
-    if !view.is_canonical() {
-        return Err("expected a canonical handle".into());
-    }
-    if !matches!(view.view(), HandleBytesView::Ref(_)) {
-        return Err("expected a Ref name".into());
-    }
-    if matches!(view.name(), Name::Literal(_)) {
-        return Ok(());
-    }
-    bytes[31] &= 0xe0;
-    let mut key = bytes;
-    key[30..].fill(0xff);
-    let target = PathBuf::from(format!("../data/{}", hex::encode(key)));
-    let record = repository.join("objects").join(hex::encode({
-        let mut reference = bytes;
-        reference[31] |= 0x10;
-        reference
-    }));
-    match std::os::unix::fs::symlink(&target, &record) {
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if fs::read_link(&record).map_err(|error| error.to_string())? != target {
-                return Err("invalid object record".into());
-            }
-            Ok(())
-        }
-        result => result.map_err(|error| error.to_string()),
-    }
 }
 
 impl Imports {
@@ -147,15 +100,13 @@ impl Imports {
                     preprocessor::Import::Handle(name) => Kind::Handle(name.clone()),
                     preprocessor::Import::Label(name) => Kind::Label(name.clone()),
                     preprocessor::Import::File(path) => Kind::File(base.join(path)),
+                    preprocessor::Import::Compile(path) => Kind::Compile(base.join(path)),
                     preprocessor::Import::Todo { reference, uris } => {
                         if uris
                             .iter()
                             .any(|uri| uri.is_empty() || uri.chars().any(char::is_control))
                         {
                             return Err(String::from("invalid Todo URI"));
-                        }
-                        if let Some(reference) = reference {
-                            admit_reference(&self.repository, reference)?;
                         }
                         Kind::Todo {
                             reference: reference.clone(),
@@ -349,7 +300,7 @@ impl<'a> Expressions<'a> {
         if let Some(parser) = &self.parser {
             return Ok(parser.clone());
         }
-        let parser = self.client.label_value(PARSER_LABEL)?;
+        let parser = self.client.lookup(&self.client.options().parser.clone())?;
         self.parser = Some(parser.clone());
         Ok(parser)
     }
@@ -359,6 +310,10 @@ impl<'a> Expressions<'a> {
             Kind::Handle(name) => self.client.lookup(name),
             Kind::Label(name) => self.client.label_value(name),
             Kind::File(path) => self.client.file(path),
+            Kind::Compile(path) => {
+                let module = self.client.file(path)?;
+                self.client.compilation(&module, None)
+            }
             Kind::Todo {
                 reference,
                 uris,
@@ -377,7 +332,7 @@ impl<'a> Expressions<'a> {
                         value
                     };
                     let name = self.client.save(&value)?;
-                    eprintln!("{} → {name}", uris[0]);
+                    common::progress::println(format!("{} → {name}", uris[0]));
                     Ok(value)
                 }
             }
@@ -386,9 +341,7 @@ impl<'a> Expressions<'a> {
 
     /// Parses `source` relative to `base` without evaluating it.
     pub fn parse(&mut self, source: &str, base: &Path) -> Result<Value, Error> {
-        let repository = PathBuf::from(self.client.repository());
         let mut imports = Imports {
-            repository,
             keys: Default::default(),
             records: Vec::new(),
             recorded: Default::default(),
@@ -412,8 +365,45 @@ impl<'a> Expressions<'a> {
         let limits = Blob::new(b"");
         let parser = self.parser()?;
         let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
-        let application = combination.application();
-        self.client.think(application.as_value())
+        let result = self.client.call(&combination.into_value())?;
+        let parser = self.client.options().parser;
+        let envelope = Tree::try_from(result.clone()).map_err(|cause| {
+            error(format!(
+                "parser {parser} returned a non-Tree response for {source:?}: {cause:?}"
+            ))
+        })?;
+        if envelope.len() == 1 {
+            return envelope
+                .get(0)?
+                .ok_or_else(|| error("parser success response has no value"));
+        }
+        if envelope.len() == 2 {
+            let fields = envelope.into_iter().collect::<Result<Vec<_>, _>>()?;
+            if let (Ok(kind), Ok(detail)) = (Blob::try_from(&fields[0]), Blob::try_from(&fields[1]))
+            {
+                let kind = kind.to_vec()?;
+                let detail = detail.to_vec()?;
+                match kind.as_slice() {
+                    b"Rust.panic" | b"Fix.error" => {
+                        return Err(error(format!(
+                            "parser {parser} failed for {source:?}: {}",
+                            String::from_utf8_lossy(&detail)
+                        )));
+                    }
+                    b"Wasm.trap" if detail.len() == 4 => {
+                        return Err(error(format!(
+                            "parser {parser} trapped for {source:?}: Wasm trap code {}",
+                            u32::from_le_bytes(detail.try_into().unwrap())
+                        )));
+                    }
+                    _ => (),
+                }
+            }
+        }
+        let result = self.client.save(&result)?;
+        Err(error(format!(
+            "parser {parser} returned malformed response {result} for {source:?}; expected a one-element success Tree"
+        )))
     }
 
     /// Parses `path` as a script invocation.
@@ -442,7 +432,11 @@ impl<'a> Expressions<'a> {
         let tree = Tree::try_from(tree)?;
         let count = tree.len();
         if count != sources.len() {
-            return Err(error("expression argument count mismatch"));
+            return Err(error(format!(
+                "parser {} returned {count} values for {} expression arguments {sources:?}; expected one result per argument",
+                self.client.options().parser,
+                sources.len()
+            )));
         }
         tree.into_iter().map(|value| self.realize(value?)).collect()
     }

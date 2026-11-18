@@ -46,8 +46,10 @@ fn run(command: &mut Command, input: Option<&[u8]>) -> Result<(), CliError> {
         } else {
             Stdio::null()
         })
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(failure)?;
+    common::progress::forward_stderr(child.stderr.take().unwrap());
     if let Some(input) = input {
         child
             .stdin
@@ -69,6 +71,7 @@ pub fn export(
     mut paths: Vec<String>,
     archive: &Path,
 ) -> Result<(), CliError> {
+    let progress = common::progress::Progress::activity(format!("Exporting {}", archive.display()));
     if archive.symlink_metadata().is_ok() {
         return Err(CliError::Backend(format!(
             "destination already exists: {}",
@@ -104,7 +107,10 @@ pub fn export(
                             .map_err(fixrepository::RepositoryError::from)
                     })?;
                 staging.publish_reference(object.into_ref())?;
-                staging.retain_certificates(&bytes, &repository.export_certificates(tag)?)?;
+                staging.retain_certificates(
+                    object.as_handle().as_bytes(),
+                    &repository.export_certificates(tag)?,
+                )?;
                 staged.extend(staging.object_paths(object, false)?);
             } else {
                 originals.push(path);
@@ -120,6 +126,7 @@ pub fn export(
         input.extend_from_slice(path.as_bytes());
         input.push(0);
     }
+    progress.message("writing archive");
     run(
         Command::new("tar")
             .args(["--create", "--auto-compress", "--file"])
@@ -139,11 +146,15 @@ pub fn export(
             .arg(parent(repository))
             .args(["--null", "--files-from", "-"]),
         Some(&input),
-    )
+    )?;
+    progress.finish();
+    Ok(())
 }
 
 /// Extracts the `.fix` contents of an archive into the repository.
 pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(), CliError> {
+    let progress = common::progress::Progress::activity(format!("Importing {}", archive.display()));
+    progress.message("reading archive contents");
     let listing = Command::new("tar")
         .args(["--list", "--quoting-style=escape", "--file"])
         .arg(archive)
@@ -164,6 +175,7 @@ pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(),
             tags.push(bytes);
         }
     }
+    progress.message("extracting repository data");
     run(
         Command::new("tar")
             .arg("--directory")
@@ -178,11 +190,15 @@ pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(),
             ]),
         None,
     )?;
+    progress.message("checking imported Tags");
     repository.inspect_tags(&tags)?;
     if sign {
+        progress.message("signing imported Tags");
         repository.sign_tags(&tags)?;
     } else {
+        progress.message("indexing imported Tags");
         repository.index_trusted_tags()?;
     }
+    progress.finish();
     Ok(())
 }

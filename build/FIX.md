@@ -1,7 +1,7 @@
 # Fix build rules
 
 `fix_run` from `//build:fix.bzl` evaluates one Fix expression in a fresh
-repository. It imports `archives` (repository archives such as `//fix/cli:precompiled`),
+repository. It imports `archives` (repository archives such as `//bootstrap:seed`),
 copies `data` files into the working directory under their given names, and
 evaluates `expression` with named `bindings`, as `fix -b NAME=VALUE... eval
 EXPRESSION` would. Its outputs are the result handle and an archive of the whole
@@ -14,12 +14,11 @@ fix_run(
     expression = '@script("compile.fix")',
     bindings = {"compile": '@label("compile")'},
     data = {"compile.fix": "compile.fix", ":module": "module.wasm"},
-    archives = ["//fix/cli:precompiled"],
+    archives = ["//bootstrap:seed"],
 )
 ```
 
-`fix_repository` archives a whole repository made by `fix init SEED
---precompile`; `seed` defaults to `//bootstrap:seed`.
+`//bootstrap:seed` is the repository archive used by the build rules.
 
 Both rules evaluate with the CLI named by `fix`, `//fix/cli:fix` by default;
 `//bootstrap:compilations` uses a release build of it.

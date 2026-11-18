@@ -97,9 +97,11 @@ fn eager_parser_returns_values_and_applications() {
         environment,
     ]);
     let result = runtime.execute_privileged(combination).unwrap();
+    let parsed = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert_eq!(parsed.len(), 1);
     assert_eq!(
         storage
-            .get_blob(Blob::try_from(result).unwrap())
+            .get_blob(Blob::try_from(parsed[0]).unwrap())
             .unwrap()
             .as_ref(),
         42u64.to_le_bytes()
@@ -111,7 +113,12 @@ fn eager_parser_returns_values_and_applications() {
         environment,
     ]);
     let result = runtime.execute_privileged(combination).unwrap();
-    assert!(matches!(result.view(), fixruntime::HandleView::Encode(_)));
+    let parsed = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert!(matches!(
+        parsed[0].view(),
+        fixruntime::HandleView::Encode(_)
+    ));
 }
 
 #[path = "evaluation.rs"]

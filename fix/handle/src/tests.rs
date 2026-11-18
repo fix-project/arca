@@ -354,3 +354,47 @@ fn value_metadata_and_verification() {
     let forged = Blob::try_from(unsafe { Handle::parse(forged) }.unwrap()).unwrap();
     assert_eq!(forged.verify(&[7; 64]), Err(Error::InvalidValueBit));
 }
+
+#[test]
+fn minrepo_is_post_order_and_keeps_deferred_handles_opaque() {
+    let leaf = Blob::canonical(&[71; 64]).unwrap();
+    let opaque = Blob::canonical(&[72; 64]).unwrap();
+    let inner_fields = [leaf.into(), opaque.into_ref().into()];
+    let inner = Tree::canonical(&inner_fields).unwrap();
+    let root_fields = [
+        inner.into(),
+        opaque.into_ref().identification().strict().into(),
+    ];
+    let root = Tree::canonical(&root_fields).unwrap();
+    let mut visited = [None; 3];
+    let mut count = 0;
+    crate::minrepo::visit(
+        root.into(),
+        false,
+        &mut |tree: Tree| -> Result<_, ()> {
+            Ok(if tree.as_handle().same_encoding(root.as_handle()) {
+                root_fields.iter().copied()
+            } else {
+                assert!(tree.as_handle().same_encoding(inner.as_handle()));
+                inner_fields.iter().copied()
+            })
+        },
+        &mut |object| {
+            visited[count] = Some(object);
+            count += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    for (actual, expected) in visited
+        .into_iter()
+        .zip([leaf.object(), inner.into(), root.into()])
+    {
+        assert!(
+            actual
+                .unwrap()
+                .as_handle()
+                .same_encoding(expected.as_handle())
+        );
+    }
+}

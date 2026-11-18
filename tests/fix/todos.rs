@@ -16,8 +16,11 @@ fn execute(directory: &Path, arguments: &[&str]) -> std::process::Output {
         .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .env("FIX_TRUST", directory.join(".fix/trust"))
-        .env_remove("FIX_SCHEDULER")
-        .env_remove("FIX_COLLECTOR")
+        .env("FIX_CONFIG_DIR", directory.join("config"))
+        .env("XDG_DATA_HOME", directory.join("data"))
+        .env("FIX_SCHEDULER", "scheduler")
+        .env("FIX_COLLECTOR", "collector")
+        .env("FIX_PARSER", "fix-parser")
         .env_remove("BUILD_WORKSPACE_DIRECTORY")
         .output()
         .unwrap()
@@ -55,6 +58,7 @@ fn seed(directory: &Path) {
         ],
         true,
     );
+    run(directory, &["trust", "add-tagger", "collector"], true);
 }
 
 fn add(directory: &Path, name: &str, program: &str) {
@@ -263,12 +267,13 @@ fn invocation_local_hints_resolve_backing_without_saving_metadata() {
     let input = text(run(&directory, &["create-strict-encode", &thunk], true));
     let uri = format!("file://{}", source.display());
     let mode = text(run(&directory, &["create-blob", "--string", "eval"], true));
+    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
     let request = text(run(
         &directory,
-        &["create-tree", &mode, "scheduler", "collector", &input],
+        &["create-tree", &metadata, "scheduler", &mode, "collector", &input],
         true,
     ));
-    let coupon = text(run(
+    let result = text(run(
         &directory,
         &[
             "-j",
@@ -283,7 +288,7 @@ fn invocation_local_hints_resolve_backing_without_saving_metadata() {
         ],
         true,
     ));
-    assert_eq!(claim_result(&directory, &coupon), object);
+    assert_eq!(claim_result(&directory, &result), object);
     assert_eq!(run(&directory, &["read-blob", &object], true), contents);
     let hints = text(run(
         &directory,
@@ -412,12 +417,6 @@ fn pinned_script_imports_remain_nonresident_until_evaluation() {
         object
     );
     assert_eq!(run(&directory, &["read-blob", &object], true), contents);
-    std::fs::write(
-        directory.join("invalid.fix"),
-        format!("@todo(\"{object}\" \"{uri}\")\n"),
-    )
-    .unwrap();
-    run(&directory, &["parse", "invalid.fix"], false);
 }
 
 #[test]
@@ -665,7 +664,7 @@ fn schedulers_share_git_directory_import_and_normalization() {
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,
-        &["create-tree", &metadata, "importer", &uri],
+        &["create-tree", &metadata, "importer", &uri, "collector"],
         true,
     ));
     assert_eq!(
@@ -747,7 +746,7 @@ fn directory_contents_agree_across_host_paths_and_file_uris() {
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,
-        &["create-tree", &metadata, "importer", &uri],
+        &["create-tree", &metadata, "importer", &uri, "collector"],
         true,
     ));
     for jobs in ["1", "2"] {

@@ -59,8 +59,10 @@ to stderr; stdout contains only results.
 `.fix/data/KEY` contains raw Blob bytes or canonical 32-byte Tree entries.
 The key is the Object handle with bytes 30 and 31 replaced by `FF` (a lowercase
 hexadecimal filename ending in `ffff`, not a Fix handle).
-`.fix/objects/HANDLE` symlinks to `../data/KEY` authorize specific Objects;
-matching data alone does not authorize another Object or Tag.
+`.fix/objects/HANDLE` records symlink to `../data/KEY`. Tag certificates are
+ordinary Blobs, indexed separately by Tag and signing key under
+`.fix/certificates/TAG/SIGNER`. Reload validates their signatures against
+user-authorized keys. Matching data alone does not authorize a Tag.
 `.fix/labels/NAME` contains a hexadecimal value handle and newline.
 Literal blobs are self-contained and need no files.
 
@@ -69,10 +71,9 @@ trusted boundary that turns identifier bytes into authorized handles. Typed
 Fix constructors build Refs, Thunks, and Encodes from those handles without
 additional records. Host I/O supplies files and streams, without Fix logic.
 
-Objects and labels are published atomically. Trusted backing data is not
-rehashed during reads. The repository assumes its files are controlled by the
-trusted store; manually editing them can invalidate that assumption. Atomic
-publication does not promise durability across power loss.
+Objects and labels are published atomically. Backing data is rehashed on reads,
+and nested Tag certificates are validated before returning their handles.
+Atomic publication does not promise durability across power loss.
 
 Evaluation defaults to the host's available parallelism. Input objects are read
 from the repository on demand; newly produced objects are persisted before the
@@ -81,12 +82,14 @@ result handle is printed.
 `eval` and `think` are wrapper commands. Both accept `--scheduler CALLABLE` and
 `--collector CALLABLE`, defaulting to `FIX_SCHEDULER`/`FIX_COLLECTOR` or repository
 labels `scheduler`/`collector`. These callables need ordinary Runnable admission.
-The wrappers construct `[metadata, scheduler, collector, input]`, run `schedule`
-with a tagging grant for the collector alone, and print the certified result.
+The wrappers construct `[memory_limit, scheduler, mode, collector, input]`, run `schedule`
+with the configured local taggers and a tagging grant for the selected collector,
+and print the certified result.
 They check the returned coupon’s claim and reject assumptions other than the
 configured collector.
-The scheduler returns an Eval coupon by default; an eight-byte metadata Blob
-containing 4 requests a Think coupon. `--memoize=auto` (the default) keeps
+The request mode chooses an Eval or Think coupon. Combination metadata is an
+empty Blob for an unspecified memory limit, or a little-endian u64 byte limit;
+the prototype uses it for placement and does not enforce it. `--memoize=auto` (the default) keeps
 intermediate coupons in memory and persists only the final evaluation coupon. `always` persists intermediate coupons too;
 `never` disables automatic persistence and disk cache lookup. In `never` mode the scheduler returns the result directly; generated coupons
 are not published and the wrappers skip coupon verification.
@@ -106,16 +109,17 @@ Prefix lookup checks the actual stored Tag; the index does not confer authority.
 Repositories imported without index entries remain usable, but those Tags will
 not be found until saved again.
 
-Calling an ELF requires a Tag `[authors, ELF, "Runnable"]`; every author must
-be trusted. Empty-author certificates are unconditional. Trusting an ELF as
-an author does not permit calling it without a certificate.
+Calling an ELF requires a Tag `[author, ELF, "Runnable"]`. Its author must be a
+trusted compiler or the empty kernel author. All persisted Tags also need a
+valid SSH signature, including kernel-authored coupons.
 
-Trusted author handles are read from `$XDG_CONFIG_HOME/fix/trust`, or
-`~/.config/fix/trust` when `XDG_CONFIG_HOME` is unset. Each line contains one
-canonical handle. `FIX_TRUST` selects another file. A missing default file
-trusts no authors; an explicitly selected file must exist. Repository trust
-files are never loaded automatically. To use an explicitly trusted bootstrap,
-set `FIX_TRUST` to its `.fix/trust` file.
+User SSH keys, signing identities, compiler trust, and callable-tagger trust live
+in `$XDG_CONFIG_HOME/fix` (default `~/.config/fix`).
+Use `fix trust` to update them. Repository remotes live in `.fix/remotes` and
+cannot grant trust. See [remote runtimes](../remote/README.md) for configuration,
+signed storage, and explicit adoption of unsigned bootstrap artifacts.
+`FIX_TRUST` remains an explicit compiler-author file override for build tools;
+repository compiler suggestions are never loaded automatically in normal mode.
 
 ## Commands
 
@@ -130,7 +134,8 @@ executable or kernel file. Besides the plumbing above, it provides:
 | `flatware-import PATH [NAME]` | UNIX file, directory, or symlink → Flatware descriptor |
 | `flatware-export EXPRESSION PATH` | Flatware descriptor → new UNIX path |
 | `export [--without-backing EXPRESSION]... EXPRESSION ARCHIVE [EXPRESSION...]` | Package values and their reachable records and data |
-| `import ARCHIVE` | Unpack a trusted repository archive using system tar |
+| `sign TAG` / `sign --all` | Add the selected identities’ signatures to one Tag or every stored Tag |
+| `import [--sign] ARCHIVE` | Import repository data, optionally signing imported Tags |
 
 The [compiler wrapper](../../programs/fix/compile.rs) behind `compile`
 authenticates its resources and phase state, checks command exit statuses, and

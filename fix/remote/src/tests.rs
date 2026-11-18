@@ -77,7 +77,8 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
             data.into(),
         ])
         .unwrap();
-    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let author = source.create_blob(&[41; 128]).unwrap();
+    let fields = [author.into(), claim.into_ref().into()];
     let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
     source
         .publish_certified(
@@ -90,12 +91,14 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
         )
         .unwrap();
     let parent = source.create_tree(&[tag.into(), data.into()]).unwrap();
-    let bytes = transfer(&source, &[parent.into()], &[]).unwrap();
+    let bytes = transfer(&source, &[parent.into(), claim.into()], &[]).unwrap();
     let imported = import(&destination, &bytes, &config()).unwrap();
     assert!(imported[0].same_encoding(&parent.into()));
     let fields = destination.read_tree(parent).unwrap();
     assert!(fields[0].same_encoding(&tag.into()));
-    assert!(destination.read_tree(tag).unwrap()[0].same_encoding(&Tree::empty().into()));
+    assert!(destination.read_tree(tag).unwrap()[0].same_encoding(&author.into()));
+    assert!(!destination.has_backing(author.object()).unwrap());
+    destination.write_label("coupon", tag.into()).unwrap();
     assert_eq!(destination.read_blob(data).unwrap().as_ref(), &[17; 4096]);
     assert_eq!(
         destination
@@ -123,6 +126,12 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
     assert!(imported[0].same_encoding(&data.into_ref().into()));
     assert!(!destination.has_backing(data.object()).unwrap());
     assert!(
+        !information(&destination, Tree::empty().into(), 1, None)
+            .unwrap()
+            .data
+            .contains(data.as_handle().as_bytes())
+    );
+    assert!(
         destination
             .get_todo(data.into_ref())
             .unwrap()
@@ -132,6 +141,109 @@ fn thin_references_transfer_todo_metadata_without_fetching_backing() {
     let bytes = transfer(&source, &[data.into()], &[]).unwrap();
     import(&destination, &bytes, &config()).unwrap();
     assert_eq!(destination.read_blob(data).unwrap().as_ref(), &[23; 4096]);
+    assert!(
+        information(&destination, Tree::empty().into(), 1, None)
+            .unwrap()
+            .data
+            .contains(data.as_handle().as_bytes())
+    );
+}
+
+#[test]
+fn thin_object_transfer_can_be_imported_as_a_reference() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let blob = source.create_blob(&[17; 128]).unwrap();
+    let bytes = transfer(&source, &[blob.into()], &[blob.object()]).unwrap();
+    let mut transfer = Transfer::decode(&bytes).unwrap();
+    transfer.roots[0][31] |= 0x10;
+    let roots = import(&destination, &transfer.encode().unwrap(), &config()).unwrap();
+    assert!(roots[0].same_encoding(&blob.into_ref().into()));
+    assert!(!destination.has_backing(blob.object()).unwrap());
+}
+
+#[test]
+fn runnable_transfer_keeps_its_author_reference_thin() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let author = source.create_blob(&[11; 4096]).unwrap();
+    let executable = source.create_blob(&[17; 128]).unwrap();
+    let fields = [
+        author.into_ref().into(),
+        executable.into(),
+        Blob::literal(b"Runnable").unwrap().into(),
+    ];
+    let runnable = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            runnable.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*runnable.as_handle().as_bytes())),
+        )
+        .unwrap();
+    let bytes = transfer(&source, &[runnable.into()], &[]).unwrap();
+    let transfer = Transfer::decode(&bytes).unwrap();
+    assert!(transfer.records.iter().any(|record| {
+        record.name == *executable.as_handle().as_bytes() && record.data.is_some()
+    }));
+    import(&destination, &bytes, &config()).unwrap();
+    destination
+        .write_label("runnable", runnable.into())
+        .unwrap();
+    assert!(!destination.has_backing(author.object()).unwrap());
+    assert!(destination.has_backing(executable.object()).unwrap());
+}
+
+#[test]
+fn pulling_a_tree_includes_coupons_for_its_children() {
+    let source = Directory::new();
+    let source = source.repository();
+    let destination = Directory::new();
+    let destination = destination.repository();
+    let input = source.create_blob(&[21; 128]).unwrap();
+    let result = source.create_blob(&[34; 256]).unwrap();
+    let claim = source
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input.into(),
+            result.into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*coupon.as_handle().as_bytes())),
+        )
+        .unwrap();
+    source.index_tag(coupon).unwrap();
+    let inner = source.create_tree(&[input.into()]).unwrap();
+    let root = source.create_tree(&[inner.into()]).unwrap();
+    let bytes = export_with_coupons(&source, &[root.into()], &[]).unwrap();
+    let imported = import(&destination, &bytes, &config()).unwrap();
+    assert_eq!(imported.len(), 1);
+    assert!(imported[0].same_encoding(&root.into()));
+    assert_eq!(destination.read_blob(result).unwrap().as_ref(), &[34; 256]);
+    let claims = destination
+        .claims(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input.into(),
+        ])
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert!(claims[0].as_handle().same_encoding(coupon.as_handle()));
 }
 
 #[test]
@@ -278,7 +390,7 @@ fn tree_dependencies_and_certificate_namespaces_are_validated() {
     });
     assert!(matches!(
         import(&destination, &bundle.encode().unwrap(), &config()),
-        Err(Error::Invalid)
+        Err(Error::Transfer(_))
     ));
 }
 
@@ -290,12 +402,11 @@ fn omitted_backing_requires_references_or_previously_admitted_objects() {
     let destination = destination.repository();
     let object = source.create_blob(&[53; 64]).unwrap();
     let thin = transfer(&source, &[object.into()], &[object.object()]).unwrap();
-    assert!(import(&destination, &thin, &config()).is_err());
-    assert!(
-        destination
-            .lookup(object.into_ref().as_handle().as_bytes())
-            .is_err()
-    );
+    let error = import(&destination, &thin, &config()).unwrap_err();
+    let message = format!("{error}");
+    assert!(message.contains("backing for Object"));
+    assert!(message.contains(&format!("{}", object.as_handle())));
+    assert!(message.contains(destination.path()));
     let full = transfer(&source, &[object.into()], &[]).unwrap();
     import(&destination, &full, &config()).unwrap();
     let values = import(&destination, &thin, &config()).unwrap();
@@ -322,15 +433,29 @@ fn framed_transfers_round_trip_over_tcp_and_reject_excessive_lengths() {
     let mut connection = Connection::connect(address).unwrap();
     let bytes = vec![71; 1 << 18];
     transport::send(&mut connection, &bytes).unwrap();
+    let mut progress = Vec::new();
+    let received = transport::complete(transport::asynchronous::receive_observed(
+        &mut transport::Blocking(&mut connection),
+        1 << 20,
+        &mut |completed, total| progress.push((completed, total)),
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(received, bytes);
+    assert_eq!(progress.first(), Some(&(0, bytes.len() as u64)));
     assert_eq!(
-        transport::receive(&mut connection, 1 << 20)
-            .unwrap()
-            .unwrap(),
-        bytes
+        progress.last(),
+        Some(&(bytes.len() as u64, bytes.len() as u64))
+    );
+    assert!(
+        progress
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0 && pair[1].0 - pair[0].0 <= 65536)
     );
     assert!(matches!(
         transport::receive(&mut connection, 1 << 20),
-        Err(transport::Error::TooLarge)
+        Err(transport::Error::TooLarge { length, limit })
+            if length == (1 << 20) + 1 && limit == 1 << 20
     ));
     server.join().unwrap();
 }
@@ -467,7 +592,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
             protocol::send_transfer(
                 &mut connection,
                 1 << 20,
-                &received.task,
+                received.task.as_ref().unwrap(),
                 Some(*tag.as_handle().as_bytes()),
                 reply,
                 |_, _| None,
@@ -488,7 +613,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
         counts
     });
     let mut connection = Connection::connect(address).unwrap();
-    protocol::send(&mut connection, Message::RequestInfo).unwrap();
+    protocol::send(&mut connection, Message::RequestInfo { inventory: true }).unwrap();
     assert!(matches!(
         protocol::receive(&mut connection, 1 << 20).unwrap(),
         Some(Message::Info(protocol::Information { parallelism: 3, .. }))
@@ -512,7 +637,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(reply.task, task);
+        assert_eq!(reply.task, Some(task.clone()));
         assert_eq!(reply.result, Some(*tag.as_handle().as_bytes()));
         assert!(
             reply
@@ -574,7 +699,7 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
             protocol::send(
                 &mut connection,
                 Message::ProposeTransfer {
-                    task: expected.clone(),
+                    task: Some(expected.clone()),
                     result: None,
                     objects: vec![Offer {
                         name,
@@ -597,6 +722,60 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
 }
 
 #[test]
+fn scheduler_staging_negotiates_missing_program_data() {
+    use crate::{
+        linux::Connection,
+        protocol::{self, Message, Task, Transfer},
+    };
+    let source = Directory::new();
+    let source = source.repository();
+    let collector = source.create_blob(&[9; 64]).unwrap();
+    let scheduler = source.create_blob(&[42; 4096]).unwrap();
+    let task = Task::stage_programs(
+        *collector.as_handle().as_bytes(),
+        *scheduler.as_handle().as_bytes(),
+    );
+    let transfer =
+        Transfer::decode(&export(&source, &[collector.into(), scheduler.into()], &[]).unwrap())
+            .unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let expected = task.clone();
+    let server = std::thread::spawn(move || {
+        let mut connection = Connection(listener.accept().unwrap().0);
+        let incoming = protocol::receive_transfer(&mut connection, 1 << 20, 1, &[], |offers| {
+            assert!(offers.iter().any(|offer| offer.name == expected.collector));
+            assert!(offers.iter().any(|offer| offer.name == expected.input));
+            Some(vec![expected.input])
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(incoming.task, Some(expected.clone()));
+        assert_eq!(
+            incoming.transfer.roots,
+            vec![expected.collector, expected.input]
+        );
+        assert!(incoming.transfer.records.iter().any(|record| {
+            record.name == expected.input && record.data.as_deref() == Some(&[42; 4096][..])
+        }));
+        assert!(
+            incoming
+                .transfer
+                .records
+                .iter()
+                .any(|record| { record.name == expected.collector && record.data.is_none() })
+        );
+        protocol::send(&mut connection, Message::ObjectReceived(expected.input)).unwrap();
+    });
+    let mut connection = Connection::connect(address).unwrap();
+    protocol::send_transfer(&mut connection, 1 << 20, &task, None, transfer, |_, _| None).unwrap();
+    assert!(
+        matches!(protocol::receive(&mut connection, 1 << 20).unwrap(), Some(Message::ObjectReceived(name)) if name == task.input)
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
     use crate::{
         linux::Connection,
@@ -607,22 +786,32 @@ fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let mut connection = Connection(listener.accept().unwrap().0);
-        let unsupported =
-            postcard::to_allocvec(&(protocol::VERSION + 1, Message::RequestInfo)).unwrap();
+        let mut unsupported = postcard::to_allocvec(&(protocol::VERSION + 1)).unwrap();
+        unsupported.push(255);
         transport::send(&mut connection, &unsupported).unwrap();
         let mut trailing =
-            postcard::to_allocvec(&(protocol::VERSION, Message::RequestInfo)).unwrap();
+            postcard::to_allocvec(&(protocol::VERSION, Message::RequestInfo { inventory: false }))
+                .unwrap();
         trailing.push(0);
         transport::send(&mut connection, &trailing).unwrap();
+        let mut malformed = postcard::to_allocvec(&protocol::VERSION).unwrap();
+        malformed.extend([255, 255, 255, 255, 255]);
+        transport::send(&mut connection, &malformed).unwrap();
         connection.0.write_all(&[0; 3]).unwrap();
     });
     let mut connection = Connection::connect(address).unwrap();
-    for _ in 0..2 {
-        assert!(matches!(
-            protocol::receive(&mut connection, 1024),
-            Err(protocol::Error::Invalid)
-        ));
-    }
+    assert!(matches!(
+        protocol::receive(&mut connection, 1024),
+        Err(protocol::Error::Version { expected, received })
+            if expected == protocol::VERSION && received == protocol::VERSION + 1
+    ));
+    assert!(matches!(
+        protocol::receive(&mut connection, 1024),
+        Err(protocol::Error::Invalid)
+    ));
+    let error = protocol::receive(&mut connection, 1024).unwrap_err();
+    assert!(matches!(error, protocol::Error::Decode { .. }), "{error}");
+    assert!(format!("{error}").contains("could not decode protocol"));
     assert!(matches!(
         protocol::receive(&mut connection, 1024),
         Err(protocol::Error::Transport(transport::Error::Truncated))
@@ -887,4 +1076,107 @@ fn concurrent_signing_retains_each_keys_certificate() {
                 .is_ok()
         }));
     }
+}
+
+#[test]
+fn requested_transfers_read_only_backing_missing_at_the_receiver() {
+    let source = Directory::new();
+    let source = source.repository();
+    let target = Directory::new();
+    let target = target.repository();
+    let shared = source.create_blob(&[41; 128]).unwrap();
+    target.create_blob(&[41; 128]).unwrap();
+    let added = source.create_blob(&[42; 128]).unwrap();
+    let root = source.create_tree(&[shared.into(), added.into()]).unwrap();
+    let name = *root.as_handle().as_bytes();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut connection = crate::linux::Connection(listener.accept().unwrap().0);
+        assert_eq!(
+            protocol::receive(&mut connection, 1 << 20).unwrap(),
+            Some(protocol::Message::RequestTransfer(name))
+        );
+        let proposal = propose_export(&source, root.into(), true).unwrap();
+        let mut read = Vec::new();
+        transport::complete(protocol::asynchronous::send_proposal(
+            &mut transport::Blocking(&mut connection),
+            1 << 20,
+            None,
+            Some(name),
+            proposal,
+            |name| {
+                assert_ne!(name, *shared.as_handle().as_bytes());
+                read.push(name);
+                let object = Object::try_from(source.lookup(&name).unwrap()).unwrap();
+                source
+                    .read_backing_range(object, 0, object.byte_len() as usize)
+                    .map_err(|error| format!("{error}"))
+            },
+            |_, _| None,
+        ))
+        .unwrap();
+        assert_eq!(read.len(), 2);
+    });
+    let mut connection = crate::linux::Connection::connect(address).unwrap();
+    protocol::send(&mut connection, protocol::Message::RequestTransfer(name)).unwrap();
+    let incoming = protocol::receive_transfer(&mut connection, 1 << 20, 1, &[], |offers| {
+        Some(missing(&target, offers).unwrap())
+    })
+    .unwrap()
+    .unwrap();
+    assert!(incoming.task.is_none());
+    assert_eq!(incoming.result, Some(name));
+    import(&target, &incoming.transfer.encode().unwrap(), &config()).unwrap();
+    assert!(target.read_tree(root).unwrap()[1].same_encoding(&added.into()));
+    assert_eq!(target.read_blob(added).unwrap().as_ref(), &[42; 128]);
+    server.join().unwrap();
+}
+
+#[test]
+fn coupon_minrepo_keeps_its_ref_claim_opaque_and_explicit_claims_keep_results_thin() {
+    let source_directory = Directory::new();
+    let source = source_directory.repository();
+    let target_directory = Directory::new();
+    let target = target_directory.repository();
+    let data = source.create_blob(&[61; 65536]).unwrap();
+    let input: Handle = Blob::literal(b"input")
+        .unwrap()
+        .into_ref()
+        .identification()
+        .shallow()
+        .into();
+    let claim = source
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input,
+            data.into_ref().into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*coupon.as_handle().as_bytes())),
+        )
+        .unwrap();
+    let (proposal, backing) = propose_export(&source, coupon.into(), true).unwrap();
+    assert!(backing.iter().all(|name| name != data.as_handle().as_bytes() && name != claim.as_handle().as_bytes()));
+    assert!(
+        proposal
+            .records
+            .iter()
+            .all(|record| record.name != *data.as_handle().as_bytes())
+    );
+    let (_, backing) = propose_export_full(&source, input).unwrap();
+    assert!(!backing.contains(data.as_handle().as_bytes()));
+    let bytes = transfer(&source, &[coupon.into(), claim.into()], &[]).unwrap();
+    import(&target, &bytes, &config()).unwrap();
+    assert!(target.read_tree(claim).unwrap()[2].same_encoding(&data.into_ref().into()));
+    assert!(!target.has_backing(data.object()).unwrap());
 }

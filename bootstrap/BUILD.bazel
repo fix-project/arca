@@ -144,14 +144,8 @@ seed_repository(
     programs = {
         ":scheduler_link": "scheduler",
         ":collector_link": "collector",
-        ":stage1_lld_link": "lld",
-        ":stage1_wasm-merge_link": "wasm-merge",
-    } | {":stage1_" + name + "_link": name for name in COMMANDS.keys() if name not in ["clang", "wasm2c", "lld", "wasm-merge"]},
-    blobs = {
-        "//flatware:merged_wasm": "flatware",
-        "//flatware:control_wasm": "flatware-control",
+        "//programs/fix/parser:parser_elf": "fix-parser",
     },
-    directories = {":wasip1_sysroot": "wasip1-sysroot"},
     tags = ["manual"],
 )
 
@@ -169,7 +163,7 @@ fix_run(
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
-    archives = ["//fix/cli:precompiled"],
+    archives = [":seed"],
     fix = ":release_fix",
     tags = ["manual"],
 )
@@ -185,7 +179,7 @@ fix_run(
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
-    archives = ["//fix/cli:precompiled", ":promoted_seed"],
+    archives = [":promoted_seed"],
     fix = ":release_fix",
     tags = ["manual"],
 )
@@ -199,7 +193,7 @@ fix_run(
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
-    archives = ["//fix/cli:precompiled", ":stabilized_seed"],
+    archives = [":stabilized_seed"],
     fix = ":release_fix",
     tags = ["manual"],
 )

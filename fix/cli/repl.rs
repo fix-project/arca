@@ -46,7 +46,7 @@ pub fn run(mut client: Client, bindings: Vec<(String, String)>) -> crate::Result
         })();
         client.end_request()?;
         if let Err(error) = result {
-            eprintln!("fix: {error}");
+            common::progress::println(error.to_string());
         }
     }
     client.close()?;

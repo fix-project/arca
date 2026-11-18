@@ -18,7 +18,7 @@ def fix_wat_program(name):
         artifact_visibility = ["//visibility:public"],
     )
 
-def fix_rust_program(name, alloc = False, importers = False, memories = 3, tables = None, artifact_visibility = ["//tests/fix:__pkg__"], deps = [], src = None, srcs = [], argument_modules = []):
+def fix_rust_program(name, alloc = False, importers = False, memories = 3, tables = None, artifact_visibility = ["//tests/fix:__pkg__"], deps = [], src = None, srcs = [], argument_modules = [], rustc_flags = []):
     """Build a Rust procedure using the Fix SDK, a native Fix ELF, and a Fix runtime launcher."""
     sdk = "//fix/sdk"
     if importers:
@@ -31,6 +31,7 @@ def fix_rust_program(name, alloc = False, importers = False, memories = 3, table
         srcs = [src or name + ".rs"] + srcs + native.glob([name + "/**/*.rs"], allow_empty = True),
         crate_root = src or name + ".rs",
         platform = WASM,
+        rustc_flags = rustc_flags,
         deps = [sdk] + deps + (["@crates//:dlmalloc"] if alloc or importers else []),
     )
     fix_procedure(

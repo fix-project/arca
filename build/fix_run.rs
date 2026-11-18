@@ -102,8 +102,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("fix-run: {error}");
-            if let Some(fixcli::Error::Execution(code)) = error.downcast_ref::<fixcli::Error>() {
-                ExitCode::from(*code)
+            if let Some(fixcli::Error::Execution { status, .. }) =
+                error.downcast_ref::<fixcli::Error>()
+            {
+                ExitCode::from(*status)
             } else {
                 ExitCode::from(2)
             }

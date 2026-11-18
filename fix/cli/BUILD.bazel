@@ -1,23 +1,24 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
-load("//build:fix.bzl", "fix_repository")
+load("//build:defs.bzl", "WASM", "fix_procedure")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test", "rust_shared_library")
 
 package(default_visibility = ["//visibility:public"])
 
 rust_library(
     name = "client",
     crate_name = "fixcli",
-    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "trust.rs", "session.rs", "configuration.rs"],
+    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "info.rs", "expressions.rs", "remotes.rs", "trust.rs", "bootstrap_store.rs", "session.rs", "configuration.rs", "serve.rs"],
     crate_root = "lib.rs",
     edition = "2024",
     deps = [
         "//fix/remote", "//fix/certificates", "@crates//:serde_json",
-        "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common",
+        "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common", "//lib/ssh",
         "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
     ],
-    compile_data = ["//fix/runtime:image_elf", "//programs/fix/parser:parser_module"],
+    compile_data = [
+        "//fix/runtime:image_elf",
+    ],
     rustc_env = {
         "FIX_KERNEL": "$(execpath //fix/runtime:image_elf)",
-        "FIX_PARSER_MODULE": "$(execpath //programs/fix/parser:parser_module)",
     },
 )
 
@@ -25,7 +26,7 @@ rust_binary(
     name = "fix",
     srcs = ["main.rs", "repl.rs"],
     edition = "2024",
-    deps = [":client", "//fix/api:api_alloc", "//fix/repository", "//fix/certificates", "@crates//:clap", "@crates//:env_logger"],
+    deps = [":client", "//fix/api:api_alloc", "//fix/repository", "//fix/certificates", "//lib/common", "@crates//:clap", "@crates//:env_logger"],
 )
 
 rust_test(
@@ -33,7 +34,7 @@ rust_test(
     srcs = ["client_tests.rs"],
     edition = "2024",
     deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
-    data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf"],
+    data = [":fix", "//bootstrap:seed_tool", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf", ":scheduler_failure_elf"],
     rustc_env = {
         "BACKEND": "$(rootpath :fix)",
         "SEED": "$(rootpath //bootstrap:seed_tool)",
@@ -41,14 +42,21 @@ rust_test(
         "SCHEDULER": "$(rootpath //programs/fix:scheduler_elf)",
         "COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
         "ADD": "$(rootpath //programs/fix:addblob_elf)",
+        "PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
+        "SCHEDULER_FAILURE": "$(rootpath :scheduler_failure_elf)",
     },
     size = "medium",
     timeout = "short",
     tags = ["kvm", "local"],
 )
 
-# The seed plus the compile coupons of the modules this CLI embeds.
-fix_repository(name = "precompiled", tags = ["manual"])
+rust_test(
+    name = "bootstrap_config_tests",
+    srcs = ["bootstrap_config_tests.rs"],
+    edition = "2024",
+    deps = [":client", "//fix/certificates", "//fix/repository"],
+    size = "small",
+)
 
 rust_test(
     name = "typed_values_test",
@@ -57,4 +65,20 @@ rust_test(
     deps = [":client", "//fix/api:api_alloc", "//fix/repository"],
     size = "small",
     timeout = "short",
+)
+
+rust_shared_library(
+    name = "scheduler_failure_wasm",
+    srcs = ["tests/scheduler_failure.rs"],
+    crate_root = "tests/scheduler_failure.rs",
+    edition = "2024",
+    platform = WASM,
+    deps = ["//fix/sdk"],
+)
+
+fix_procedure(
+    name = "scheduler_failure",
+    wasm = ":scheduler_failure_wasm",
+    memories = 3,
+    runnable = True,
 )
