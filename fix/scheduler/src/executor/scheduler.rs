@@ -1,7 +1,7 @@
-use crate::shell::{self, as_tree, capture, fields};
+use crate::shell::{self, fields};
 use crate::{kernel::Advice, shell::Value};
 use alloc::{boxed::Box, vec::Vec};
-use fixwasm::{Any, Error, Handle, Object, ThunkType, Value as AsValue, ValueType, backend::Tree};
+use fixwasm::{Error, ThunkType, Value as AsValue, ValueType, backend::Tree};
 
 /// Fix evaluation with overridable steps. Defaults recurse through the trait methods.
 #[allow(async_fn_in_trait)]
@@ -36,11 +36,12 @@ pub trait Scheduler {
     }
 
     /// Evaluate without creating coupons, recursing through the scheduler's steps.
+    /// Reconstructing Tags requires the scheduler to be a trusted tagger.
     async fn default_eval(&self, input: &Value) -> Result<Value, Error> {
         let evaluation = crate::progress::evaluation(1, input);
         let result = async {
             if input.value_type() == ValueType::Encode {
-                let thunk = thunk(self, input).await?;
+                let thunk = crate::storage::thunk(input)?;
                 let forced = Box::pin(self.force(&thunk)).await?;
                 let result = if input.is_strict()? {
                     self.load(&forced).await?
@@ -49,6 +50,9 @@ pub trait Scheduler {
                 };
                 Box::pin(self.eval(&result)).await
             } else if input.is_value()? {
+                if input.value_type() == ValueType::Object {
+                    self.load(input).await?;
+                }
                 Ok(input.clone())
             } else {
                 let data = self.load(input).await?;
@@ -64,7 +68,12 @@ pub trait Scheduler {
                         children.len() as u64,
                     )?;
                 }
-                Ok(Tree::new(&results).into_value())
+                let result = Tree::new(&results);
+                if data.is_tag()? {
+                    shell::capture(result.inner().tag_unchecked()?)
+                } else {
+                    Ok(result.into_value())
+                }
             }
         }
         .await;
@@ -75,11 +84,11 @@ pub trait Scheduler {
     async fn default_think(&self, input: &Value) -> Result<Value, Error> {
         let evaluation = crate::progress::evaluation(4, input);
         let result = async {
-            let data = self.load(input).await?;
             let kind = input.unsound_thunk_type()?;
             if kind == ThunkType::Identification {
-                return shell::reference(&data);
+                return crate::storage::reference(input);
             }
+            let data = self.load(input).await?;
             let evaluated = Box::pin(self.eval(&data)).await?;
             match kind {
                 ThunkType::Application => self.apply(&evaluated).await,
@@ -99,7 +108,7 @@ pub trait Scheduler {
             if matches!(result.value_type(), ValueType::Object | ValueType::Ref) {
                 return Ok(result);
             }
-            let next = thunk(self, &result).await?;
+            let next = crate::storage::thunk(&result)?;
             Box::pin(self.force(&next)).await
         }
         .await;
@@ -116,7 +125,17 @@ pub trait Scheduler {
     /// Select a value without requesting a Select coupon.
     async fn default_select(&self, input: &Value) -> Result<Value, Error> {
         let evaluation = crate::progress::evaluation(6, input);
-        let result = crate::storage::selection(input);
+        let result = async {
+            let target = fixwasm::backend::Tree::try_from(input.clone())?
+                .get(0)?
+                .ok_or(Error::OutOfBounds)?;
+            if !matches!(target.value_type(), ValueType::Object | ValueType::Ref) {
+                return Err(Error::WrongType);
+            }
+            self.load(&target).await?;
+            crate::storage::selection(input)
+        }
+        .await;
         evaluation.finish(result)
     }
 
@@ -124,18 +143,4 @@ pub trait Scheduler {
     async fn default_load(&self, value: &Value) -> Result<Value, Error> {
         crate::storage::identify(value)?.ok_or(Error::OutOfBounds)
     }
-}
-
-pub(crate) async fn thunk(
-    policy: &(impl Scheduler + ?Sized),
-    value: &Value,
-) -> Result<Value, Error> {
-    let data = policy.load(value).await?;
-    Ok(match value.unsound_thunk_type()? {
-        ThunkType::Application => capture(as_tree(&data)?.application())?,
-        ThunkType::Identification => {
-            capture(Handle::<Object<Any>>::try_from(data.inner())?.identification())?
-        }
-        ThunkType::Selection => capture(as_tree(&data)?.selection())?,
-    })
 }

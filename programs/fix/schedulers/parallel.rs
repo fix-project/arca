@@ -88,7 +88,7 @@ impl Scheduler for Parallel<'_> {
         }
         self.graph
             .evaluate(&node, async {
-                collector::select(input, &mut |coupon| self.retain(coupon)).await
+                collector::select(self, input, &mut |coupon| self.retain(coupon)).await
             })
             .await
     }

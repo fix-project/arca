@@ -40,6 +40,16 @@ pub fn set_todo(value: &Value, metadata: &Value) -> Result<(), Error> {
     effect(b"storage_set_todo", &[value.clone(), metadata.clone()])?;
     Ok(())
 }
+/// Recover a Thunk from a Thunk or Encode without loading its operand.
+pub fn thunk(value: &Value) -> Result<Value, Error> {
+    coordinated(b"storage_thunk", core::slice::from_ref(value))
+}
+
+/// Return the underlying data Ref without loading its backing.
+pub fn reference(value: &Value) -> Result<Value, Error> {
+    coordinated(b"storage_reference", core::slice::from_ref(value))
+}
+
 pub fn identify(value: &Value) -> Result<Option<Value>, Error> {
     let key = value.raw_handle_bytes()?;
     if let Some(object) = IDENTIFIED.0.borrow().get(&key) {

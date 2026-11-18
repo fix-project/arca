@@ -80,7 +80,12 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
     let probe = PathBuf::from(std::env::var_os("TEST_SRCDIR").unwrap())
         .join(std::env::var_os("TEST_WORKSPACE").unwrap())
         .join(env!("PROBE"));
-    for (mode, summarize) in [("complete", true), ("stop", true), ("complete", false)] {
+    for (mode, summarize, color) in [
+        ("complete", true, false),
+        ("stop", true, false),
+        ("complete", false, false),
+        ("complete", false, true),
+    ] {
         let (mut master, mut slave) = (-1, -1);
         let size = libc::winsize {
             ws_row: 40,
@@ -107,9 +112,13 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
         if summarize {
             command.arg("--summarize");
         }
+        command.env("TERM", "xterm-256color");
+        if color {
+            command.env_remove("NO_COLOR");
+        } else {
+            command.env("NO_COLOR", "1");
+        }
         let mut child = command
-            .env("TERM", "xterm-256color")
-            .env("NO_COLOR", "1")
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave))
             .spawn()
@@ -131,6 +140,12 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
             output.contains("ephemeral"),
             "{mode}: no live progress was drawn"
         );
+        if color {
+            assert!(
+                output.contains("Apply \x1b[2;3mnamed computation\x1b[0m"),
+                "{output:?}"
+            );
+        }
         let visible = screen(&output);
         assert!(visible.contains("result preserved"), "{mode}: {visible:?}");
         assert!(

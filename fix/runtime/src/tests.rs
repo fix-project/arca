@@ -65,7 +65,17 @@ fn eval_program(source: &str, evaluator: &Evaluation) -> Handle {
         environment,
     ]);
 
-    evaluator.eval(combination.into_ref().application().strict().into())
+    let parsed = evaluator.eval(combination.into_ref().application().strict().into());
+    let envelope = evaluator
+        .storage()
+        .get_tree(Tree::try_from(parsed).unwrap())
+        .unwrap();
+    assert_eq!(
+        envelope.len(),
+        1,
+        "parser did not return a successful result envelope"
+    );
+    envelope[0]
 }
 
 mod tests {

@@ -59,7 +59,7 @@ impl Scheduler for Recompute<'_> {
             return self.graph.defer(&node).await;
         }
         self.graph
-            .evaluate(&node, collector::select(input, &mut |_| Ok(())))
+            .evaluate(&node, collector::select(self, input, &mut |_| Ok(())))
             .await
     }
 

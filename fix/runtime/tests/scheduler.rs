@@ -10,7 +10,13 @@ fn scheduler_tcp_listener_round_trip() {
     let runtime = Arc::new(test_runtime());
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_TCP_LISTENER"));
-    let combination = storage.add_tree(&[Tree::empty().into(), program.into()]);
+    let collector = test_program(storage, kernel::testing::fixture("FIX_COLLECTOR"));
+    let combination = storage.add_tree(&[
+        Tree::empty().into(),
+        program.into(),
+        Tree::empty().into(),
+        collector.into(),
+    ]);
     let report = start(runtime.clone(), combination, 1, PersistenceOnly(Ok)).unwrap();
     let result = Blob::try_from(report.result.unwrap()).unwrap();
     assert_eq!(storage.get_blob(result).unwrap().as_ref(), b"roundtrip");
@@ -377,6 +383,7 @@ fn scheduler_placement_policies() {
         program.into(),
         advised.into(),
         collector.into(),
+        Blob::canonical(&[71; 4096]).unwrap().into_ref().into(),
     ]);
     let compiler = Blob::canonical(stdlib::PRIMITIVES[0].1)
         .unwrap()
@@ -388,6 +395,7 @@ fn scheduler_placement_policies() {
     ))
     .unwrap();
     trust.add_tagger(storage, collector).unwrap();
+    trust.add_tagger(storage, program).unwrap();
     let runtime = kernel::prelude::Arc::new(runtime.with_trust(trust));
     let storage = runtime.storage();
     let result = fixruntime::user_scheduler_driver::start(

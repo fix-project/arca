@@ -96,12 +96,12 @@ impl Scheduler for OnePass<'_> {
         let node = Node::select(input)?;
         if self.graph.current().is_none() {
             self.schedule(&node, || async {
-                collector::select(input, &mut |coupon| self.parallel.retain(coupon)).await
+                collector::select(self, input, &mut |coupon| self.parallel.retain(coupon)).await
             })
             .await
         } else {
             self.get(&node, || async {
-                collector::select(input, &mut |coupon| self.parallel.retain(coupon)).await
+                collector::select(self, input, &mut |coupon| self.parallel.retain(coupon)).await
             })
             .await
         }
@@ -201,7 +201,7 @@ pub fn assign(
             }
             continue;
         }
-        if !(request.is_eval() || request.is_think()) {
+        if !(request.is_eval() || request.is_think() || request.is_select()) {
             continue;
         }
         if let Some(worker) = job
@@ -390,8 +390,17 @@ impl<'a> OnePass<'a> {
                     .transpose()?
                     .unwrap_or(1);
             } else {
-                let target = storage::identify(request.input())?;
-                let mut root = input;
+                let operand = if request.is_select() {
+                    match storage::identify(request.input())? {
+                        Some(arguments) => Some(child(&arguments, 0)?),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let data = operand.as_ref().unwrap_or(request.input());
+                let target = storage::identify(data)?;
+                let mut root = storage::canonical_value(data)?.raw_handle_bytes()?;
                 root[31] &= 0xe0;
                 let present = workers
                     .iter()
@@ -406,12 +415,12 @@ impl<'a> OnePass<'a> {
                     })
                     .collect::<Vec<_>>();
                 if !present.is_empty() {
-                    let size = storage::byte_size(target.as_ref().unwrap_or(request.input()))?;
+                    let size = storage::byte_size(target.as_ref().unwrap_or(data))?;
                     for worker in present {
                         job.present.insert(worker, size);
                     }
                 } else {
-                    let inventory = storage::inventory(request.input())?;
+                    let inventory = storage::inventory(data)?;
                     for (index, worker) in workers.iter().enumerate() {
                         let bytes = inventory
                             .required
@@ -429,7 +438,7 @@ impl<'a> OnePass<'a> {
                         }
                     }
                 }
-                if let Some(target) = target {
+                if let Some(target) = storage::identify(request.input())? {
                     let read = |name: &[u8]| -> Result<Option<u64>, Error> {
                         let key = storage::canonical_value(&fixscheduler::shell::capture(tree![
                             &target,

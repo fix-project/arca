@@ -180,6 +180,7 @@ configured execution remote. Parsing also uses the selected scheduler in this
 mode. A local-only policy reports an error if it needs to run an application.
 
 Evaluation uses a compact live status line and flat, numbered completion lines.
+Function names use dim italics on terminals; `NO_COLOR` disables this styling.
 Only tasks with reported completed/total units get individual progress bars.
 Memoized operations do not produce completion lines. `fix pull` evaluates its
 selected labels together as one Tree, allowing the scheduler to share and run
@@ -214,7 +215,9 @@ evaluation.
 
 `fix pull [REMOTE [SOURCE [DESTINATION]]]` and
 `fix push REMOTE [SOURCE [DESTINATION]]` realize labels using the selected
-scheduler. Both default to `--shallow` (a shallow Encode yielding a Ref).
+scheduler. Both default to `--shallow`: existing Refs are preserved, Objects
+become Refs, and Thunks use a shallow Encode. A shallow pull of an Object or
+Ref does not fetch its backing.
 `--strict` yields an Object; `--exact` preserves the original value and loads
 its backing without evaluating it. Configure defaults with `pull.mode` and
 `push.mode`, locally or with `fix config --global`. See

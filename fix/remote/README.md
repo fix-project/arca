@@ -132,11 +132,12 @@ Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:
 
 | Mode | Result |
 | --- | --- |
-| shallow (default) | Evaluate a shallow Encode and store its resulting Ref. |
+| shallow (default) | Preserve a Ref, lower an Object to its Ref, or evaluate a shallow Encode for a Thunk. |
 | strict | Evaluate a strict Encode and store its resulting Object. |
 | exact | Load the original value's backing without evaluating it; preserve its name and kind. |
 
-Objects and Refs use identification Thunks for the encodings. Existing Encodes
+Objects and Refs use identification Thunks for the encodings. Identification
+and shallow evaluation do not load their backing; strict evaluation does. Existing Encodes
 use the requested encoding mode. Push also loads and transfers backing and
 certificates so the destination can obtain the contents without connecting back
 to the sender. Pull can obtain data from its configured source remote through

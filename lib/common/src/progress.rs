@@ -373,11 +373,19 @@ fn task_title(
         (None, false) => title.into(),
         (None, true) => task_name(&id),
     };
-    let title = operation.map_or_else(|| title.clone(), |operation| format!("{operation} {title}"));
-    title
+    let title: String = title
         .chars()
         .filter(|character| !character.is_control())
-        .collect()
+        .collect();
+    let title = if DISPLAY.get().is_some_and(|display| display.terminal)
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
+    {
+        format!("\x1b[2;3m{title}\x1b[0m")
+    } else {
+        title
+    };
+    operation.map_or_else(|| title.clone(), |operation| format!("{operation} {title}"))
 }
 
 fn location_name(location: &[String]) -> String {

@@ -1047,6 +1047,29 @@ fn remote_labels_and_transfer_modes() {
         local.read_label("payload-ref").unwrap().view(),
         HandleView::Ref(_)
     ));
+    assert!(!local.has_backing(original.into()).unwrap());
+    let selection = local
+        .create_tree(&[
+            original.into_ref().into(),
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            Blob::literal(&4u64.to_le_bytes()).unwrap().into(),
+        ])
+        .unwrap()
+        .into_ref()
+        .selection();
+    local.write_label("slice", selection.into()).unwrap();
+    let selected = run(
+        &client_dir,
+        &["eval", "--encode", "@label(\"slice\")"],
+        true,
+    );
+    assert_eq!(
+        selected.trim(),
+        Blob::literal(&payload[1..4])
+            .unwrap()
+            .as_handle()
+            .to_string()
+    );
     run(
         &client_dir,
         &["pull", "--strict", "origin", "payload", "payload"],

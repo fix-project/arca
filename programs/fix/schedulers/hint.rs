@@ -115,13 +115,13 @@ impl Scheduler for Hint<'_> {
         let node = Node::select(input)?;
         if self.graph.current().is_none() {
             self.schedule(&node, || async {
-                collector::select(input, &mut |coupon| self.onepass.retain(coupon)).await
+                collector::select(self, input, &mut |coupon| self.onepass.retain(coupon)).await
             })
             .await
         } else {
             self.onepass
                 .get(&node, || async {
-                    collector::select(input, &mut |coupon| self.onepass.retain(coupon)).await
+                    collector::select(self, input, &mut |coupon| self.onepass.retain(coupon)).await
                 })
                 .await
         }

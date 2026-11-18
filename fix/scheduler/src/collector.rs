@@ -136,7 +136,7 @@ pub async fn eval(
     let evaluation = crate::progress::evaluation(1, input);
     let result = async {
         if input.value_type() == ValueType::Encode {
-            let thunk = crate::executor::scheduler::thunk(policy, input).await?;
+            let thunk = storage::thunk(input)?;
             let forced = Box::pin(policy.force(&thunk)).await?;
             let forced_result = result(&forced)?;
             let result = if input.is_strict()? {
@@ -165,6 +165,9 @@ pub async fn eval(
             )
             .await
         } else if input.is_value()? {
+            if input.value_type() == ValueType::Object {
+                policy.load(input).await?;
+            }
             produced(crate::storage::eval(input)?, retain)
         } else {
             let data = policy.load(input).await?;
@@ -189,19 +192,19 @@ pub async fn think(
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::evaluation(4, input);
     let result = async {
-        let data = policy.load(input).await?;
         let kind = input.unsound_thunk_type()?;
         if kind == ThunkType::Identification {
             return collect(
                 policy,
                 Exchange::Think,
                 input,
-                &shell::reference(&data)?,
+                &storage::reference(input)?,
                 &[],
                 retain,
             )
             .await;
         }
+        let data = policy.load(input).await?;
         let evaluated = Box::pin(policy.eval(&data)).await?;
         let result = result(&evaluated)?;
         let coupon = match kind {
@@ -244,7 +247,7 @@ pub async fn force(
             )
             .await;
         }
-        let next = crate::executor::scheduler::thunk(policy, &result).await?;
+        let next = storage::thunk(&result)?;
         let rule = if kind == ValueType::Thunk {
             Exchange::ThunkEq
         } else if result.is_strict()? {
@@ -286,11 +289,22 @@ pub async fn apply(
 }
 /// Request a Select coupon and pass it to the supplied retention callback.
 pub async fn select(
+    policy: &(impl Scheduler + ?Sized),
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::evaluation(6, input);
-    let result = async { produced(crate::storage::select(input)?, retain) }.await;
+    let result = async {
+        let target = Tree::try_from(input.clone())?
+            .get(0)?
+            .ok_or(Error::OutOfBounds)?;
+        if !matches!(target.value_type(), ValueType::Object | ValueType::Ref) {
+            return Err(Error::WrongType);
+        }
+        policy.load(&target).await?;
+        produced(crate::storage::select(input)?, retain)
+    }
+    .await;
     evaluation.finish(result)
 }
 

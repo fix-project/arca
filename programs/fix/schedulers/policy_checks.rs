@@ -33,11 +33,15 @@ fn apply(
     reconsider_parent()?;
     round_robin()?;
     scheduler_can_follow_dependency_callbacks()?;
+    selections_follow_data(&capture(combination.get(4))?).expect("selection placement");
     let graph = fixscheduler::executor::Graph::default();
     let io = fixscheduler::io::Io;
     cancelled_applications(&capture(combination.get(2))?, &io)?;
     fixscheduler::executor::block_on(
         async {
+            descriptor_evaluation()
+                .await
+                .expect("descriptor evaluation");
             advisory_notifications(&capture(combination.get(2))?).await?;
             serial_executes_and_parallel_defers(&graph, &capture(combination.get(2))?).await?;
             default_steps_call_overrides(&graph, &capture(combination.get(2))?).await?;
@@ -541,4 +545,163 @@ fn parallel_children_are_shared_tasks(graph: &fixscheduler::executor::Graph) -> 
             notification.wait()?;
         }
     }
+}
+
+async fn descriptor_evaluation() -> Result<(), Error> {
+    use core::cell::RefCell;
+    use fixscheduler::{executor::Scheduler, shell::Value};
+    use fixwasm::{Blob, tree};
+
+    struct Probe {
+        coupons: bool,
+        loads: RefCell<alloc::vec::Vec<Value>>,
+        allow_load: core::cell::Cell<bool>,
+    }
+    impl Scheduler for Probe {
+        async fn eval(&self, input: &Value) -> Result<Value, Error> {
+            if self.coupons {
+                collector::eval(self, input, &mut |_| Ok(())).await
+            } else {
+                self.default_eval(input).await
+            }
+        }
+        async fn think(&self, input: &Value) -> Result<Value, Error> {
+            if self.coupons {
+                collector::think(self, input, &mut |_| Ok(())).await
+            } else {
+                self.default_think(input).await
+            }
+        }
+        async fn force(&self, input: &Value) -> Result<Value, Error> {
+            if self.coupons {
+                collector::force(self, input, &mut |_| Ok(())).await
+            } else {
+                self.default_force(input).await
+            }
+        }
+        async fn select(&self, input: &Value) -> Result<Value, Error> {
+            if self.coupons {
+                collector::select(self, input, &mut |_| Ok(())).await
+            } else {
+                self.default_select(input).await
+            }
+        }
+        async fn load(&self, input: &Value) -> Result<Value, Error> {
+            self.loads.borrow_mut().push(input.clone());
+            if !self.allow_load.get() {
+                return Err(Error::OutOfBounds);
+            }
+            self.default_load(input).await
+        }
+    }
+    impl Probe {
+        fn result(&self, value: Value) -> Result<Value, Error> {
+            if self.coupons {
+                Ok(collector::result(&value).expect("evaluation must return a coupon"))
+            } else {
+                Ok(value)
+            }
+        }
+    }
+    let object = capture(Blob::create(
+        b"backing must be requested through the scheduler",
+    ))?;
+    let reference = fixscheduler::shell::reference(&object)?;
+    let thunk = capture(reference.identification())?;
+    for coupons in [false, true] {
+        let policy = Probe {
+            coupons,
+            loads: RefCell::default(),
+            allow_load: core::cell::Cell::new(false),
+        };
+        assert!(
+            policy
+                .result(policy.eval(&reference).await.expect("Ref Eval"))?
+                .equals(&reference)?
+        );
+        assert_eq!(
+            fixscheduler::storage::canonical_value(
+                &policy.result(policy.eval(&thunk).await.expect("Thunk Eval"))?
+            )?
+            .raw_handle_bytes()?,
+            fixscheduler::storage::canonical_value(&thunk)?.raw_handle_bytes()?
+        );
+        assert!(
+            policy
+                .result(policy.think(&thunk).await.expect("identification Think"))?
+                .equals(&reference)?
+        );
+        assert!(
+            policy
+                .result(policy.force(&thunk).await.expect("identification Force"))?
+                .equals(&reference)?
+        );
+        assert!(
+            policy
+                .result(
+                    policy
+                        .eval(&capture(thunk.shallow())?)
+                        .await
+                        .expect("shallow identification")
+                )?
+                .equals(&reference)?
+        );
+        assert!(policy.loads.borrow().is_empty());
+        assert!(policy.eval(&capture(thunk.strict())?).await.is_err());
+        assert!(policy.eval(&object).await.is_err());
+        policy.allow_load.set(true);
+        assert!(
+            policy
+                .result(
+                    policy
+                        .eval(&capture(thunk.strict())?)
+                        .await
+                        .expect("strict identification")
+                )?
+                .equals(&object)?
+        );
+        policy.loads.borrow_mut().clear();
+        let selection = capture(tree![&reference, 0u64, 3u64])?;
+        let selected = policy.result(policy.select(&selection).await.expect("selection"))?;
+        assert!(selected.equals(&capture(Blob::create(b"bac").reference())?)?);
+        assert!(
+            policy
+                .loads
+                .borrow()
+                .iter()
+                .any(|value| value == &reference)
+        );
+        let pending = capture(thunk.shallow())?;
+        let tagged = capture(tree![Blob::create(b"author"), &pending].tag_unchecked()?)?;
+        let evaluated = policy.result(policy.eval(&tagged).await.expect("Tag Eval"))?;
+        assert!(evaluated.is_tag()?);
+        assert!(fixscheduler::shell::child(&evaluated, 1)?.equals(&reference)?);
+    }
+    Ok(())
+}
+
+fn selections_follow_data(target: &fixscheduler::shell::Value) -> Result<(), Error> {
+    use fixscheduler::{executor::Graph, storage};
+    use fixwasm::tree;
+    assert!(storage::identify(target)?.is_none());
+    let arguments = capture(tree![target, 0u64])?;
+    let request = Node::select(&arguments)?;
+    let graph = Graph::default();
+    let policy = onepass::OnePass::new(&graph)?;
+    let mut name = target.raw_handle_bytes()?;
+    name[31] &= 0xe0;
+    let workers = [
+        worker(1),
+        Information {
+            data: alloc::vec![name],
+            ..worker(1)
+        },
+    ];
+    let jobs = policy.discover(&request, &workers, || async { Err(Error::OutOfBounds) })?;
+    let mut assignments = BTreeMap::new();
+    onepass::assign(&request, &jobs, &workers, &mut assignments);
+    assert_eq!(assignments[&request].0, 1);
+    hint::assign(&request, &jobs, &workers, &mut assignments);
+    assert_eq!(assignments[&request].0, 1);
+    Ok(())
 }

@@ -1190,6 +1190,8 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_cache"
                 | b"storage_claims"
                 | b"storage_identify"
+                | b"storage_thunk"
+                | b"storage_reference"
                 | b"queue_create"
                 | b"queue_named"
                 | b"queue_count"
@@ -1408,18 +1410,11 @@ fn object_descriptor(value: Handle) -> Object {
 }
 
 fn identified(storage: &dyn Storage, value: Handle) -> Result<Handle, Error> {
-    let object = object_descriptor(value);
     storage
-        .identify(object.as_handle().as_bytes())
-        .map_err(|_| {
-            if storage
-                .identify(object.into_ref().as_handle().as_bytes())
-                .is_ok()
-            {
-                Error::Empty
-            } else {
-                Error::Invalid
-            }
+        .identify(object_descriptor(value).as_handle().as_bytes())
+        .map_err(|error| match error {
+            crate::storage::StorageError::NotFound => Error::Empty,
+            _ => Error::Invalid,
         })
 }
 
@@ -2208,6 +2203,14 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             .canonicalization_certificate(*value)
             .map(Into::into)
             .map_err(|_| Error::Invalid.into()),
+        (b"storage_thunk", [value]) => match value.view() {
+            HandleView::Thunk(_) => Ok(*value),
+            HandleView::Encode(encode) => match encode.view() {
+                EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => Ok(thunk.into()),
+            },
+            _ => Err(Error::Invalid.into()),
+        },
+        (b"storage_reference", [value]) => Ok(object_descriptor(*value).into_ref().into()),
         (b"storage_identify", [value]) => {
             let value = identified(storage, *value)?;
             let available = match value.view() {

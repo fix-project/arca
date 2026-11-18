@@ -54,7 +54,7 @@ impl Scheduler for Serial {
             fixscheduler::kernel::cached(6, input)?;
             return Ok(coupon);
         }
-        collector::select(input, &mut |coupon| self.retain(coupon)).await
+        collector::select(self, input, &mut |coupon| self.retain(coupon)).await
     }
 
     /// Identify data locally, then try its registered sources in order.
