@@ -10,7 +10,7 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 pub fn encode_labels(labels: &[(String, Name)]) -> Result<Vec<u8>, postcard::Error> {

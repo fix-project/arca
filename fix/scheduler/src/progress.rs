@@ -108,8 +108,13 @@ pub(crate) fn operation(operation: u64, input: &Value) -> Evaluation {
 pub(crate) struct Load {
     input: Option<Value>,
     success: Option<bool>,
+    value: Option<Value>,
 }
 impl Load {
+    pub(crate) fn value(&mut self, value: &Value) {
+        self.value = Some(value.clone());
+    }
+
     pub(crate) fn finish(mut self, success: bool) {
         self.success = Some(success);
     }
@@ -123,7 +128,9 @@ impl Drop for Load {
                 None => "cancelled",
             };
             if let Ok(outcome) = capture(fixwasm::Blob::create(outcome)) {
-                let _ = coordinate(b"load_finish", &[input.clone(), outcome]);
+                let mut arguments = alloc::vec![input.clone(), outcome];
+                arguments.extend(self.value.iter().cloned());
+                let _ = coordinate(b"load_finish", &arguments);
             }
         }
     }
@@ -146,6 +153,7 @@ pub(crate) fn load(input: &Value, source: &str, destination: &str) -> Load {
     Load {
         input: started.then(|| input.clone()),
         success: None,
+        value: None,
     }
 }
 

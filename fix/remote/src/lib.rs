@@ -476,6 +476,16 @@ pub fn import(
     bytes: &[u8],
     config: &Config,
 ) -> Result<Vec<Handle>, Error> {
+    import_observed(repository, bytes, config, |_| {})
+}
+
+/// Import normally and report the canonical names published by the transfer.
+pub fn import_observed(
+    repository: &Repository,
+    bytes: &[u8],
+    config: &Config,
+    mut imported: impl FnMut([u8; 32]),
+) -> Result<Vec<Handle>, Error> {
     let mut bundle = Transfer::decode(bytes)
         .map_err(|error| Error::Transfer(alloc::format!("cannot decode transfer: {error}")))?;
     bundle.records.append(&mut bundle.certificates);
@@ -721,6 +731,9 @@ pub fn import(
         if let Some(todo) = &record.todo {
             repository.set_todo(object.into_ref(), canonical(todo)?)?;
         }
+    }
+    for record in bundle.records.iter().chain(&bundle.certificates) {
+        imported(record.name);
     }
     bundle
         .roots

@@ -30,7 +30,10 @@ fn main() {
                 }),
                 used: true,
                 tasks: vec![load.clone()],
-                labels: vec![([2; 32], "named input".into())],
+                labels: vec![
+                    ([2; 32], "named input".into()),
+                    ([6; 32], "named result".into()),
+                ],
                 ..MachineProgress::default()
             },
             MachineProgress {
@@ -93,6 +96,18 @@ fn main() {
             title: "resident input".into(),
             operation: Some(EvaluationOperation::Load),
             transfer: Some((Vec::new(), Vec::new())),
+            ..EvaluationTask::default()
+        },
+        elapsed_ns: 1_000_000,
+        success: true,
+    });
+    progress::evaluation_step(EvaluationStep {
+        location: Vec::new(),
+        task: EvaluationTask {
+            id: [7; 32],
+            operation: Some(EvaluationOperation::Load),
+            transfer: Some((vec!["origin".into()], Vec::new())),
+            name: "Eval(named input, named result)".into(),
             ..EvaluationTask::default()
         },
         elapsed_ns: 1_000_000,

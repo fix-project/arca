@@ -89,6 +89,7 @@ pub struct EvaluationTask {
     pub title: String,
     pub operation: Option<EvaluationOperation>,
     pub transfer: Option<(Vec<String>, Vec<String>)>,
+    pub name: String,
     pub progress: Option<(u64, u64)>,
     pub children: Vec<([u8; 32], Option<EvaluationOperation>)>,
 }

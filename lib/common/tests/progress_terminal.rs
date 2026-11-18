@@ -176,6 +176,10 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
             visible.contains("[5] local: Load resident input (0.00s)"),
             "{mode}: {visible:?}"
         );
+        assert!(
+            visible.contains("[6] local: Load Eval(named input, named result) (from origin)"),
+            "{mode}: {visible:?}"
+        );
         if summarize {
             let lines: Vec<_> = visible.lines().collect();
             let header = lines

@@ -126,7 +126,11 @@ servers reject label updates.
 also use proposal/accept; repeating a pull reuses unchanged snapshots and memoized
 results. `-j0` with Hint, OnePass, or Distributed runs applications and collector
 calls remotely while keeping the scheduler local. Add `--summarize` for the
-per-machine resource table.
+per-machine resource table. Coupon transfers about labeled inputs or results
+include their claim, for example `Load Eval(origin:program, result-name)`.
+Storage supplies friendly names using labels, Fix notation (such as `*'name`),
+and unambiguous canonical prefixes with their hexadecimal type byte (`abcd1234.b5`).
+Coupon descriptions use only resident metadata, without loading referenced data.
 
 Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:
 

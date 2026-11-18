@@ -158,3 +158,45 @@ fn loading_retries_newly_published_descendants() {
     assert_eq!(storage.get_blob(child).unwrap().as_ref(), &contents);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn friendly_names_use_labels_and_fix_notation_without_materializing_data() {
+    let storage = MemoryStorage::default();
+    let module = Blob::canonical(&[41; 64]).unwrap();
+    let reference = module.into_ref();
+    let labels = [(
+        *reference.as_handle().as_bytes(),
+        alloc::string::String::from("module"),
+    )];
+    let input: Handle = reference.identification().strict().into();
+    assert_eq!(storage.friendly_name(input, &labels), "*'module");
+    assert_eq!(storage.friendly_name(module.into(), &labels), "module.80");
+    let coupon = storage.certificate(1, input, reference.into());
+    let coupon: Handle = storage.canonicalize(coupon.into()).unwrap().into();
+    assert_eq!(
+        storage.friendly_name(coupon, &labels),
+        "Eval(*'module, module)"
+    );
+    assert_eq!(
+        storage.friendly_name(coupon.object_descriptor().into_ref().into(), &labels),
+        "&Eval(*'module, module)"
+    );
+}
+
+#[test]
+fn friendly_canonical_prefixes_distinguish_known_names_and_preserve_type() {
+    let storage = MemoryStorage::default();
+    let module = Blob::canonical(&[42; 64]).unwrap();
+    let mut neighbor = *module.as_handle().as_bytes();
+    neighbor[4] ^= 0x10;
+    storage.register_names([neighbor]);
+    let full = format!("{}", module.as_handle());
+    assert_eq!(
+        storage.friendly_name(module.into(), &[]),
+        format!("{}.80", &full[..9])
+    );
+    assert_eq!(
+        storage.friendly_name(module.into_ref().into(), &[]),
+        format!("{}.90", &full[..9])
+    );
+}

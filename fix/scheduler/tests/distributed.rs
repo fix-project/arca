@@ -1155,7 +1155,7 @@ fn remote_labels_and_transfer_modes() {
     );
     let diagnostics = String::from_utf8_lossy(&loaded.stderr);
     assert!(
-        diagnostics.contains("local: Load origin:payload ("),
+        diagnostics.contains("local: Load origin:payload.80 ("),
         "{diagnostics}"
     );
     let summary = diagnostics.split("\nNode ").nth(1).expect("node summary");
@@ -1592,6 +1592,8 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 }
                 assert!(!source.has_backing(data.into()).unwrap());
             }
+            let call_label = format!("call-{index}-{case}");
+            source.write_label(&call_label, call.into()).unwrap();
             let request: Handle = source
                 .create_tree(&[
                     empty,
@@ -1690,10 +1692,21 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 case != 4 && index == 0
             };
             if case != 5 {
-                let remote_application = format!("worker: Apply {}", call.as_handle());
+                let full_name = call.as_handle().to_string();
+                let ran_remotely = diagnostics.lines().any(|line| {
+                    let Some((_, title)) = line.split_once("worker: Apply ") else {
+                        return false;
+                    };
+                    let Some(name) = title.split_whitespace().next() else {
+                        return false;
+                    };
+                    let Some((prefix, kind)) = name.rsplit_once('.') else {
+                        return false;
+                    };
+                    full_name.starts_with(prefix) && full_name.ends_with(kind)
+                });
                 assert_eq!(
-                    diagnostics.contains(&remote_application),
-                    expected_remote,
+                    ran_remotely, expected_remote,
                     "policy {index}, case {case}: {diagnostics}"
                 );
             }

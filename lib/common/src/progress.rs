@@ -59,6 +59,7 @@ struct MachineDisplay {
 
 struct Task {
     progress: Progress,
+    name: String,
     title: String,
     operation: Option<EvaluationOperation>,
     depth: usize,
@@ -374,15 +375,21 @@ fn identification(id: &[u8; 32], operation: Option<EvaluationOperation>) -> bool
 
 fn task_title(
     id: [u8; 32],
+    name: &str,
     title: &str,
     operation: Option<EvaluationOperation>,
     labels: &BTreeMap<[u8; 32], String>,
 ) -> String {
     let label = labels.get(&data_name(id));
-    let title = match (label, title.is_empty()) {
-        (Some(label), false) if label != title => format!("{label}: {title}"),
-        (Some(label), _) => label.clone(),
-        (None, false) => title.into(),
+    let identifier = if name.is_empty() {
+        label.map(String::as_str)
+    } else {
+        Some(name)
+    };
+    let title = match (identifier, title.is_empty()) {
+        (Some(name), false) if label.is_some() && name != title => format!("{name}: {title}"),
+        (_, false) => title.into(),
+        (Some(name), true) => name.into(),
         (None, true) => task_name(&id),
     };
     let title: String = title
@@ -424,7 +431,7 @@ fn reported_title(
     location: &[String],
     labels: &BTreeMap<[u8; 32], String>,
 ) -> String {
-    let title = task_title(task.id, &task.title, task.operation, labels);
+    let title = task_title(task.id, &task.name, &task.title, task.operation, labels);
     if let Some((source, destination)) = &task.transfer {
         if source == destination {
             return title;
@@ -757,6 +764,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                     } else {
                         Progress(None)
                     },
+                    name: entry.name.clone(),
                     title: entry.title.clone(),
                     operation: entry.operation,
                     depth,
@@ -769,6 +777,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
                         reported_title(entry, &stats.location, &labels)
                     ));
                 }
+                task.name = entry.name.clone();
                 task.title = entry.title.clone();
                 if let Some((completed, total)) = entry.progress {
                     if task.progress.0.is_none() && total > 0 && completed < total {
@@ -816,7 +825,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         .map(|(location, key, task, labels)| {
             format!(
                 "{location}: {}",
-                task_title(key.0, &task.title, task.operation, labels)
+                task_title(key.0, &task.name, &task.title, task.operation, labels)
             )
         })
         .unwrap_or_else(|| {
@@ -901,6 +910,7 @@ fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) 
     drop(parents);
     tasks.entry(id).or_insert_with(|| Task {
         progress: Progress(None),
+        name: String::new(),
         title: String::new(),
         operation: id.1,
         depth,
@@ -920,7 +930,13 @@ fn counted_task<'a>(
         .unwrap_or_else(|| state.bar.clone());
     let task = task(state, tasks, id);
     if task.progress.0.is_none() {
-        let title = task_title(id.0, &task.title, id.1, &state.labels.lock().unwrap());
+        let title = task_title(
+            id.0,
+            &task.name,
+            &task.title,
+            id.1,
+            &state.labels.lock().unwrap(),
+        );
         task.progress = Progress::new_after(
             format!("{}local: {title}", "  ".repeat(task.depth)),
             None,
@@ -951,6 +967,7 @@ pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], 
 
             let title = task_title(
                 id,
+                &task.name,
                 &task.title,
                 task.operation,
                 &state.labels.lock().unwrap(),

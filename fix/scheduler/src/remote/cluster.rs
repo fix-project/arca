@@ -619,7 +619,10 @@ impl PendingTransfer {
             Ok(coupon)
         }
         .await;
-        if let Some(load) = download {
+        if let Some(mut load) = download {
+            if let Ok(value) = &result {
+                load.value(value);
+            }
             load.finish(result.is_ok());
         }
         result

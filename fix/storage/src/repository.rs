@@ -15,6 +15,7 @@ pub struct RepositoryStorage {
     loading: ShardedMap<[u8; HANDLE_SIZE], Arc<Mutex<()>>>,
     resident: ShardedMap<[u8; HANDLE_SIZE], ()>,
     load_observer: Mutex<Option<Arc<LoadObserver>>>,
+    names_loaded: Mutex<bool>,
 }
 
 impl core::fmt::Debug for RepositoryStorage {
@@ -47,16 +48,18 @@ impl RepositoryStorage {
             loading: ShardedMap::default(),
             resident: ShardedMap::default(),
             load_observer: Mutex::new(None),
+            names_loaded: Mutex::new(false),
         }
     }
 
     pub fn with_source(mut self, source: Repository) -> Self {
-        self.sources.push(source);
+        self.add_source(source);
         self
     }
 
     pub fn add_source(&mut self, source: Repository) {
         self.sources.push(source);
+        *self.names_loaded.lock() = false;
     }
 
     /// Observe actual repository reads without materializing additional backing.
@@ -95,6 +98,7 @@ impl RepositoryStorage {
     }
 
     fn publish(&self, handle: Handle) -> Result<(), RepositoryError> {
+        self.memory.register_names([*handle.as_bytes()]);
         let object = match handle.view() {
             HandleView::Object(object) => *object,
             HandleView::Ref(reference) => reference.object_descriptor(),
@@ -206,6 +210,22 @@ impl RepositoryStorage {
 }
 
 impl Storage for RepositoryStorage {
+    fn friendly_name(&self, value: Handle, labels: &[([u8; 32], String)]) -> String {
+        let mut loaded = self.names_loaded.lock();
+        if !*loaded {
+            for repository in core::iter::once(&self.repository).chain(&self.sources) {
+                let Ok(names) = repository.inventory() else {
+                    return alloc::format!("{value}");
+                };
+                self.memory
+                    .register_names(names.iter().map(|name| *name.as_bytes()));
+            }
+            *loaded = true;
+        }
+        drop(loaded);
+        self.memory.friendly_name(value, labels)
+    }
+
     fn identify(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         self.memory.identify(bytes).or_else(|_| {
             self.repository

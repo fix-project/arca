@@ -232,7 +232,10 @@ impl Services for RepositoryServices {
         Ok(missing)
     }
     fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
-        fixremote::import(self.storage.repository(), bytes, &self.remotes)
+        fixremote::import_observed(self.storage.repository(), bytes, &self.remotes, |name| {
+            AsRef::<crate::storage::memory::MemoryStorage>::as_ref(&self.storage)
+                .register_names([name]);
+        })
     }
     fn put(&self, value: Handle) -> Result<Handle, alloc::string::String> {
         self.storage.save(value).map_err(|error| match error {
@@ -567,6 +570,7 @@ impl Shared {
     fn start_load(
         &self,
         input: Handle,
+        name: alloc::string::String,
         source: Vec<alloc::string::String>,
         destination: Vec<alloc::string::String>,
     ) {
@@ -576,6 +580,7 @@ impl Shared {
                 EvaluationTask {
                     id: *input.as_bytes(),
                     operation: Some(EvaluationOperation::Load),
+                    name,
                     transfer: Some((source, destination)),
                     ..EvaluationTask::default()
                 },
@@ -802,6 +807,7 @@ pub fn start_profiled<
     });
 
     let observer = Arc::downgrade(&shared);
+    let observed_storage = Arc::downgrade(&runtime);
     shared
         .services
         .observe_loads(Some(Arc::new(move |object, completion| {
@@ -819,7 +825,13 @@ pub fn start_profiled<
                 return;
             }
             match completion {
-                None => shared.start_load(input, Vec::new(), Vec::new()),
+                None => {
+                    let name = observed_storage
+                        .upgrade()
+                        .map(|runtime| runtime.storage().friendly_name(input, &shared.labels))
+                        .unwrap_or_default();
+                    shared.start_load(input, name, Vec::new(), Vec::new());
+                }
                 Some(success) => {
                     shared.finish_task(
                         (*input.as_bytes(), Some(EvaluationOperation::Load)),
@@ -1261,6 +1273,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_thunk"
                 | b"storage_reference"
                 | b"storage_reference_named"
+                | b"storage_friendly_name"
                 | b"queue_create"
                 | b"queue_named"
                 | b"queue_count"
@@ -1403,6 +1416,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         ActiveTask::new(
                             EvaluationTask {
                                 id: *target.as_bytes(),
+                                name: storage.friendly_name(target, &shared.labels),
                                 operation,
                                 ..EvaluationTask::default()
                             },
@@ -1594,6 +1608,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 ActiveTask::new(
                     EvaluationTask {
                         id: *input.as_bytes(),
+                        name: storage.friendly_name(input, &shared.labels),
                         operation: Some(operation),
                         children,
                         ..EvaluationTask::default()
@@ -1630,11 +1645,22 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     alloc::vec![name]
                 })
             };
-            shared.start_load(input, endpoint(*source)?, endpoint(*destination)?);
+            let name = storage.friendly_name(input, &shared.labels);
+            shared.start_load(input, name, endpoint(*source)?, endpoint(*destination)?);
             Ok(number(0))
         }
-        (b"load_finish", [input, outcome]) => {
+        (b"load_finish", [input, outcome, values @ ..]) => {
             let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            if let [value] = values {
+                let name = storage.friendly_name(*value, &shared.labels);
+                if let Some(task) = shared
+                    .advised
+                    .lock()
+                    .get_mut(&(*input.as_bytes(), Some(EvaluationOperation::Load)))
+                {
+                    task.progress.name = name;
+                }
+            }
             shared.finish_task(
                 (*input.as_bytes(), Some(EvaluationOperation::Load)),
                 &text(storage, *outcome)?,
@@ -2271,6 +2297,10 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             },
             _ => Err(Error::Invalid.into()),
         },
+        (b"storage_friendly_name", [value]) => {
+            let name = storage.friendly_name(*value, &shared.labels);
+            Ok(storage.add_blob(name.as_bytes()).into())
+        }
         (b"storage_reference_named", [name]) => {
             let bytes = storage
                 .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
