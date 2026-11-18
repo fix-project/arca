@@ -228,8 +228,12 @@ impl Control {
             }
             Request::Stdio(StandardStream::Stderr) => {
                 let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
-                self.session
-                    .spawn(move || unsafe { file_thread(Diagnostics, FilePipe::new(q)) });
+                self.session.spawn(move || unsafe {
+                    file_thread(
+                        Diagnostics(common::progress::Stderr::default()),
+                        FilePipe::new(q),
+                    )
+                });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Stdio(stream) => {
@@ -1033,14 +1037,13 @@ impl Seek for CapturedOutput {
     }
 }
 
-struct Diagnostics;
+struct Diagnostics(common::progress::Stderr);
 impl Write for Diagnostics {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        common::progress::write_stderr(bytes)?;
-        Ok(bytes.len())
+        self.0.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        self.0.flush()
     }
 }
 impl Read for Diagnostics {

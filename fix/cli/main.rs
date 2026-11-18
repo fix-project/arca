@@ -268,7 +268,12 @@ impl Global {
         if let Some(label) = &self.label {
             client.label(label, value)?;
         }
-        println!("{}", client.save(value)?);
+        let name = client.save(value)?;
+        common::progress::suspend(|| -> std::io::Result<()> {
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "{name}")?;
+            stdout.flush()
+        })?;
         Ok(0)
     }
 }
@@ -628,7 +633,9 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
 fn main() -> ExitCode {
     common::progress::enable();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .target(env_logger::Target::Pipe(Box::new(common::progress::Stderr)))
+        .target(env_logger::Target::Pipe(Box::new(
+            common::progress::Stderr::default(),
+        )))
         .init();
     match run() {
         Ok(status) => ExitCode::from(status),

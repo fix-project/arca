@@ -157,7 +157,7 @@ The scheduler SDK exposes `remote::export`, `remote::import`, `remote::missing`,
 
 ## Example wire protocol
 
-The `fixprotocol` crate follows the original Fix protocol's message structure. Serde/Postcard messages carry a protocol version, with an eight-byte big-endian frame length supplied by `fixtransport`. The codecs work over `embedded_io`, independently of TCP or a particular scheduler.
+The `fixprotocol` crate follows the original Fix protocol's message structure. Serde/Postcard messages carry a protocol version, with an eight-byte big-endian frame length supplied by `fixtransport`. The codecs work over `embedded_io`, independently of TCP or a particular scheduler. The receiver checks the version before decoding the message body. Decode failures retain the codec error and frame size; server diagnostics identify the serving protocol version.
 
 - `Run` identifies a task by coupon operation, collector, and input. `Result` identifies that task and its returned coupon.
 - `RequestProgress` obtains current runtime measurements independently of evaluation requests, so connected unused nodes remain visible.

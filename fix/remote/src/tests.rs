@@ -796,17 +796,17 @@ fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let mut connection = Connection(listener.accept().unwrap().0);
-        let unsupported = postcard::to_allocvec(&(
-            protocol::VERSION + 1,
-            Message::RequestInfo { inventory: false },
-        ))
-        .unwrap();
+        let mut unsupported = postcard::to_allocvec(&(protocol::VERSION + 1)).unwrap();
+        unsupported.push(255);
         transport::send(&mut connection, &unsupported).unwrap();
         let mut trailing =
             postcard::to_allocvec(&(protocol::VERSION, Message::RequestInfo { inventory: false }))
                 .unwrap();
         trailing.push(0);
         transport::send(&mut connection, &trailing).unwrap();
+        let mut malformed = postcard::to_allocvec(&protocol::VERSION).unwrap();
+        malformed.extend([255, 255, 255, 255, 255]);
+        transport::send(&mut connection, &malformed).unwrap();
         connection.0.write_all(&[0; 3]).unwrap();
     });
     let mut connection = Connection::connect(address).unwrap();
@@ -819,6 +819,9 @@ fn protocol_frames_reject_unknown_versions_trailing_data_and_truncation() {
         protocol::receive(&mut connection, 1024),
         Err(protocol::Error::Invalid)
     ));
+    let error = protocol::receive(&mut connection, 1024).unwrap_err();
+    assert!(matches!(error, protocol::Error::Decode { .. }), "{error}");
+    assert!(format!("{error}").contains("could not decode protocol"));
     assert!(matches!(
         protocol::receive(&mut connection, 1024),
         Err(protocol::Error::Transport(transport::Error::Truncated))

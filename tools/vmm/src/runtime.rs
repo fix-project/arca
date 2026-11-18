@@ -273,10 +273,10 @@ fn run_cpu(
                         input.read_exact(data).unwrap();
                     }
                 }
-                addr => println!(
+                addr => common::progress::println(format!(
                     "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
                     addr, data[0],
-                ),
+                )),
             },
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
@@ -386,15 +386,13 @@ fn run_cpu(
                     vcpu_fd.set_regs(&regs).unwrap();
                 }
                 0xe9 => {
-                    let data = data[0];
-                    let c = data as char;
-                    eprint!("{c}");
+                    session.write_diagnostic(data);
                 }
                 _ => {
-                    println!(
+                    common::progress::println(format!(
                         "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
                         addr, data[0],
-                    );
+                    ));
                 }
             },
             r => {

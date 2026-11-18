@@ -373,7 +373,7 @@ impl<'a> Expressions<'a> {
                         value
                     };
                     let name = self.client.save(&value)?;
-                    eprintln!("{} → {name}", uris[0]);
+                    common::progress::println(format!("{} → {name}", uris[0]));
                     Ok(value)
                 }
             }

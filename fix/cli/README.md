@@ -167,7 +167,10 @@ TCP, and file remotes transfer backing in bounded chunks under one cumulative
 byte counter; validation and persistence follow as separate activities. Pull
 requests Fix names, so moving or deleting a remote label after sync does not
 prevent retrieving data that remains in that repository. All status messages,
-logs, and forwarded SSH stderr share the progress renderer.
+logs, and forwarded SSH stderr share the progress renderer. Diagnostic writes
+are collected into complete lines; result lines suspend the renderer while
+printing. Ephemeral rows are erased on completion or failure; completed named
+steps and the final report remain.
 
 The expression parser returns a one-element Tree containing its parsed value.
 Panic and trap responses are reported as parser errors, with the source and

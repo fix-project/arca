@@ -103,16 +103,25 @@ pub(crate) fn file_refs(repository: &Repository) -> Result<Vec<(String, [u8; 32]
 fn fetch_refs(remote: &Remote) -> Result<Vec<(String, [u8; 32])>> {
     let _progress =
         common::progress::Progress::activity(format!("Reading labels from {}", remote.name));
-    if let Some(repository) = file_repository(remote)? {
-        return file_refs(&repository);
-    }
-    let mut stream = RemoteConnection::connect(remote)?;
-    send(&mut stream, Message::RequestLabels)?;
-    match receive(&mut stream)? {
-        Message::Labels(refs) => Ok(refs),
-        Message::Failure(error) => Err(error.into()),
-        reply => Err(format!("remote returned {reply:?} instead of labels").into()),
-    }
+    let result = (|| -> Result<_> {
+        if let Some(repository) = file_repository(remote)? {
+            return file_refs(&repository);
+        }
+        let mut stream = RemoteConnection::connect(remote)?;
+        send(&mut stream, Message::RequestLabels)?;
+        match receive(&mut stream)? {
+            Message::Labels(refs) => Ok(refs),
+            Message::Failure(error) => Err(error.into()),
+            reply => Err(format!("remote returned {reply:?} instead of labels").into()),
+        }
+    })();
+    result.map_err(|error| {
+        format!(
+            "reading labels from {} ({}): {error}",
+            remote.name, remote.address
+        )
+        .into()
+    })
 }
 
 pub fn clone(

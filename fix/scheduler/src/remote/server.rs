@@ -74,11 +74,22 @@ async fn connection(
     graph: Option<&Graph>,
 ) -> Result<Option<Value>, ConnectionError> {
     loop {
-        let Some(first) =
-            protocol::asynchronous::receive(&mut stream, protocol::MAX_MESSAGE_SIZE).await?
-        else {
-            return Ok(None);
-        };
+        let first =
+            match protocol::asynchronous::receive(&mut stream, protocol::MAX_MESSAGE_SIZE).await {
+                Ok(Some(message)) => message,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    let _ = protocol::asynchronous::send(
+                        &mut stream,
+                        protocol::Message::Failure(alloc::format!(
+                            "remote protocol {}: {error}",
+                            protocol::VERSION
+                        )),
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
         match first {
             protocol::Message::RequestInfo { inventory } => {
                 let information = if inventory {
@@ -442,7 +453,10 @@ pub fn run(
                         return Ok(programs);
                     }
                     Ok(None) => (),
-                    Err(error) => log(&alloc::format!("remote request failed: {error}"))?,
+                    Err(error) => log(&alloc::format!(
+                        "remote request failed (protocol {}): {error}",
+                        protocol::VERSION
+                    ))?,
                 }
                 drop(connections.swap_remove(index));
                 progress = true;

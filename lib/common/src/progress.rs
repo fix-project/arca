@@ -25,7 +25,6 @@ struct Display {
 
 struct State {
     bar: ProgressBar,
-    label: String,
     detail: Mutex<String>,
     started: Instant,
     last_report: AtomicU64,
@@ -35,6 +34,7 @@ struct State {
     input: Mutex<Option<[u8; 32]>>,
     machines: Mutex<BTreeMap<String, MachineDisplay>>,
     reported: AtomicBool,
+    closed: Mutex<bool>,
 }
 
 struct MachineDisplay {
@@ -73,7 +73,8 @@ pub fn enable() {
                     active.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
                 };
                 for state in active {
-                    if state.bar.is_finished() {
+                    let closed = state.closed.lock().unwrap();
+                    if *closed || state.bar.is_finished() {
                         continue;
                     }
                     let message = state.detail.lock().unwrap().clone();
@@ -114,17 +115,24 @@ pub fn println(message: impl AsRef<str>) {
     }
 }
 
+pub fn suspend<R>(write: impl FnOnce() -> R) -> R {
+    match DISPLAY.get() {
+        Some(display) => display.bars.suspend(write),
+        None => write(),
+    }
+}
+
 pub fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let write = || {
         let mut stderr = std::io::stderr().lock();
         stderr.write_all(bytes)?;
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            stderr.write_all(b"\n")?;
+        }
         stderr.flush()
     };
-    match DISPLAY.get() {
-        Some(display) => display.bars.suspend(write),
-        None => write(),
-    }
+    suspend(write)
 }
 
 pub fn forward_stderr(reader: impl std::io::Read + Send + 'static) {
@@ -144,15 +152,34 @@ pub fn forward_stderr(reader: impl std::io::Read + Send + 'static) {
     });
 }
 
-pub struct Stderr;
+#[derive(Default)]
+pub struct Stderr {
+    pending: Vec<u8>,
+}
 
 impl std::io::Write for Stderr {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        write_stderr(bytes)?;
+        self.pending.extend_from_slice(bytes);
+        if let Some(end) = self.pending.iter().rposition(|byte| *byte == b'\n') {
+            write_stderr(&self.pending[..=end])?;
+            self.pending.drain(..=end);
+        }
         Ok(bytes.len())
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
+        if !self.pending.is_empty() {
+            write_stderr(&self.pending)?;
+            self.pending.clear();
+        }
         Ok(())
+    }
+}
+
+impl Drop for Stderr {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let _ = self.flush();
     }
 }
 
@@ -205,6 +232,15 @@ impl Progress {
     }
 
     fn new(label: String, total: Option<u64>, bytes: bool) -> Self {
+        Self::new_after(label, total, bytes, None)
+    }
+
+    fn new_after(
+        label: String,
+        total: Option<u64>,
+        bytes: bool,
+        parent: Option<&ProgressBar>,
+    ) -> Self {
         let Some(display) = DISPLAY.get() else {
             return Self(None);
         };
@@ -215,15 +251,18 @@ impl Progress {
             .chars()
             .filter(|character| !character.is_control())
             .collect();
-        let bar = display.bars.add(ProgressBar::new_spinner());
+        let bar = ProgressBar::hidden();
         bar.set_style(style(total, bytes));
         if let Some(total) = total {
             bar.set_length(total);
         }
-        bar.set_prefix(label.clone());
+        bar.set_prefix(label);
+        let bar = match parent {
+            Some(parent) => display.bars.insert_after(parent, bar),
+            None => display.bars.add(bar),
+        };
         let state = Arc::new(State {
             bar,
-            label,
             detail: Mutex::new(String::new()),
             started: Instant::now(),
             last_report: AtomicU64::new(0),
@@ -233,6 +272,7 @@ impl Progress {
             input: Mutex::new(None),
             machines: Mutex::new(BTreeMap::new()),
             reported: AtomicBool::new(false),
+            closed: Mutex::new(false),
         });
         display.active.lock().unwrap().push(Arc::downgrade(&state));
 
@@ -287,17 +327,20 @@ impl Progress {
     }
 
     pub fn finish(self) {
-        if let Some(state) = &self.0 {
-            state.bar.finish_and_clear();
-            let reported = report_evaluation(state, "completed");
-            let child = advised().is_some_and(|root| !Arc::ptr_eq(&root, state));
-            if !reported && !child && state.started.elapsed() >= Duration::from_secs(1) {
-                println(format!(
-                    "{} completed [{:.1}s]",
-                    state.label,
-                    state.started.elapsed().as_secs_f64()
-                ));
-            }
+        self.close("completed");
+    }
+
+    fn close(&self, outcome: &str) {
+        let Some(state) = &self.0 else { return };
+        let mut closed = state.closed.lock().unwrap();
+        if *closed {
+            return;
+        }
+        *closed = true;
+        state.bar.finish_and_clear();
+        report_evaluation(state, outcome);
+        if let Some(display) = DISPLAY.get() {
+            display.bars.remove(&state.bar);
         }
     }
 }
@@ -589,6 +632,10 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
 
 pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     let Some(state) = advised() else { return };
+    let closed = state.closed.lock().unwrap();
+    if *closed {
+        return;
+    }
     for stats in snapshot.machines {
         let location = location_name(&stats.location);
         let mut labels = if stats.location.is_empty() {
@@ -752,9 +799,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         machine.stats = stats;
         machine.stats.used = used;
     }
-    for step in snapshot.steps {
-        evaluation_step(step);
-    }
+    let steps = snapshot.steps;
     let machines = state.machines.lock().unwrap();
     let busy: u64 = machines
         .values()
@@ -776,10 +821,19 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     *state.detail.lock().unwrap() = format!(
         "{busy} workers busy, {queued} queued, {completed} applications complete across {reporting} reporting runtimes; {unused} available remotes unused"
     );
+    drop(machines);
+    drop(closed);
+    for step in steps {
+        evaluation_step(step);
+    }
 }
 
 pub fn evaluation_step(step: EvaluationStep) {
     let Some(state) = advised() else { return };
+    let closed = state.closed.lock().unwrap();
+    if *closed {
+        return;
+    }
     let location = location_name(&step.location);
     let key = (step.task.id, step.task.operation);
     let mut labels = state.labels.lock().unwrap().clone();
@@ -841,15 +895,12 @@ fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) 
     tasks.entry(id).or_insert_with(|| {
         let title = String::new();
         let display_title = task_title(id.0, &title, id.1, &state.labels.lock().unwrap());
-        let progress = Progress::new(
+        let progress = Progress::new_after(
             format!("{}local: {display_title}", "  ".repeat(depth)),
             None,
             false,
+            Some(&parent_bar),
         );
-        if let (Some(display), Some(state)) = (DISPLAY.get(), &progress.0) {
-            display.bars.remove(&state.bar);
-            display.bars.insert_after(&parent_bar, state.bar.clone());
-        }
         if let Some(state) = &progress.0 {
             state.last_report.store(u64::MAX, Ordering::Relaxed);
         }
@@ -864,6 +915,10 @@ fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) 
 
 pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], payload: &[u8]) {
     let Some(state) = advised() else { return };
+    let closed = state.closed.lock().unwrap();
+    if *closed {
+        return;
+    }
     let mut tasks = state.advice.lock().unwrap();
     match key {
         b"fix::title" => {
@@ -906,6 +961,10 @@ pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], 
 
 pub fn tree_progress(id: [u8; 32], children: &[[u8; 32]], completed: u64, total: u64) {
     let Some(state) = advised() else { return };
+    let closed = state.closed.lock().unwrap();
+    if *closed {
+        return;
+    }
     for child in children {
         state
             .parents
@@ -944,14 +1003,6 @@ pub fn task_finished(id: [u8; 32], operation: Option<EvaluationOperation>) {
 
 impl Drop for Progress {
     fn drop(&mut self) {
-        if let Some(state) = &self.0 {
-            report_evaluation(state, "stopped");
-            if !state.bar.is_finished() {
-                state.bar.abandon();
-            }
-            if let Some(display) = DISPLAY.get() {
-                display.bars.remove(&state.bar);
-            }
-        }
+        self.close("stopped");
     }
 }

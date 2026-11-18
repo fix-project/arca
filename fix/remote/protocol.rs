@@ -241,7 +241,14 @@ pub fn encode(message: Message) -> Result<Vec<u8>, postcard::Error> {
 pub enum Error<E> {
     Transport(fixtransport::Error<E>),
     Invalid,
-    Version { expected: u32, received: u32 },
+    Decode {
+        length: usize,
+        error: postcard::Error,
+    },
+    Version {
+        expected: u32,
+        received: u32,
+    },
     Rejected,
     Remote(String),
 }
@@ -250,6 +257,10 @@ impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
         match self {
             Self::Transport(error) => error.fmt(f),
             Self::Invalid => f.write_str("invalid remote message"),
+            Self::Decode { length, error } => write!(
+                f,
+                "could not decode protocol {VERSION} message ({length} bytes): {error}"
+            ),
             Self::Version { expected, received } => {
                 write!(f, "protocol version {received}; expected {expected}")
             }
@@ -383,18 +394,22 @@ pub mod asynchronous {
         else {
             return Ok(None);
         };
-        let (envelope, trailing): (Envelope, _) =
-            postcard::take_from_bytes(&bytes).map_err(|_| Error::Invalid)?;
-        if envelope.version != VERSION {
+        let decode = |error| Error::Decode {
+            length: bytes.len(),
+            error,
+        };
+        let (version, body): (u32, _) = postcard::take_from_bytes(&bytes).map_err(decode)?;
+        if version != VERSION {
             return Err(Error::Version {
                 expected: VERSION,
-                received: envelope.version,
+                received: version,
             });
         }
+        let (message, trailing): (Message, _) = postcard::take_from_bytes(body).map_err(decode)?;
         if !trailing.is_empty() {
             return Err(Error::Invalid);
         }
-        Ok(Some(envelope.message))
+        Ok(Some(message))
     }
 
     fn roots(task: &Task, result: Option<Name>) -> Vec<Name> {

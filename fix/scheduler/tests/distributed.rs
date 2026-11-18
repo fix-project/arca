@@ -898,6 +898,22 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
     let _cleanup = Directory(directory.clone());
     let server = directory.join("server");
     let repository = seed(&server, env!("SERIAL"));
+    let mut programs = Command::new(fixture(env!("SEED")));
+    programs.args(["add", server.to_str().unwrap()]);
+    for (name, executable) in [
+        ("parallel", env!("PARALLEL")),
+        ("distributed", env!("DISTRIBUTED")),
+        ("onepass", env!("ONEPASS")),
+        ("hint", env!("HINT")),
+    ] {
+        programs.arg(format!("{name}={}", fixture(executable).display()));
+    }
+    let programs = programs.output().unwrap();
+    assert!(
+        programs.status.success(),
+        "{}",
+        String::from_utf8_lossy(&programs.stderr)
+    );
     let payload = vec![11; (2 << 20) + 37];
     let original = repository.create_blob(&payload).unwrap();
     repository.write_label("payload", original.into()).unwrap();
@@ -951,6 +967,16 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
     let address = "user@example:/remote";
     run(&directory, &["clone", address, "client"], true);
     let client_dir = directory.join("client");
+    for scheduler in ["parallel", "distributed", "onepass", "hint"] {
+        run(&server, &["config", "scheduler", scheduler], true);
+        run(
+            &directory,
+            &["clone", address, &format!("clone-{scheduler}")],
+            true,
+        );
+        run(&client_dir, &["sync", "origin"], true);
+    }
+    run(&server, &["config", "scheduler", "scheduler"], true);
     let local = Repository::open(client_dir.join(".fix").to_str().unwrap()).unwrap();
     assert!(local.labels().unwrap().is_empty());
     assert!(
