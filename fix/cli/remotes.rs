@@ -222,6 +222,13 @@ impl Mode {
         if self == Self::Exact {
             return Ok(value);
         }
+        if self == Self::Shallow {
+            match value.value_type() {
+                ValueType::Object => return Ok(Object::try_from(value)?.reference().into_value()),
+                ValueType::Ref => return Ok(value),
+                _ => (),
+            }
+        }
         let thunk = match value.value_type() {
             ValueType::Object => Object::try_from(value)?.reference().identification(),
             ValueType::Ref => Reference::try_from(value)?.identification(),
@@ -397,7 +404,7 @@ pub fn push(
             .map_err(|error| format!("invalid saved Fix name {name}: {error}"))?;
         let name = bytes;
         let root = repository.lookup(&name)?;
-        let (mut transfer, backing) = fixremote::propose_export(&repository, root, true)?;
+        let (mut transfer, backing) = fixremote::propose_export_full(&repository, root)?;
         let expected = current
             .iter()
             .find(|(candidate, _)| candidate == label)

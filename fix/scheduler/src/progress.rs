@@ -82,6 +82,12 @@ pub(crate) fn evaluation(operation: u64, input: &Value) -> Evaluation {
 
 /// Report an operation even when its input has no repository label.
 pub(crate) fn operation(operation: u64, input: &Value) -> Evaluation {
+    if operation == 1 && input.is_value().unwrap_or(false) {
+        return Evaluation {
+            task: None,
+            success: None,
+        };
+    }
     let started = (|| -> Result<[u8; 32], fixwasm::Error> {
         let name = input.raw_handle_bytes()?;
         let mut active = ACTIVE.0.borrow_mut();

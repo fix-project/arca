@@ -37,7 +37,7 @@ pub trait Services: Send + Sync {
     ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
         Err(fixrepository::RepositoryError::InvalidRepository)
     }
-    fn export_object(&self, _: [u8; 32], _: bool) -> Result<Vec<u8>, fixremote::Error> {
+    fn export_object(&self, _: [u8; 32], _: bool, _: bool) -> Result<Vec<u8>, fixremote::Error> {
         Err(fixremote::Error::Invalid)
     }
     fn read_backing(&self, _: [u8; 32], _: u64, _: usize) -> Result<Vec<u8>, fixremote::Error> {
@@ -122,10 +122,19 @@ impl Services for RepositoryServices {
         fixremote::information(&repository, self.put(collector)?, 0, None)
             .map_err(|error| error.to_string())
     }
-    fn export_object(&self, name: [u8; 32], backing: bool) -> Result<Vec<u8>, fixremote::Error> {
+    fn export_object(
+        &self,
+        name: [u8; 32],
+        backing: bool,
+        full: bool,
+    ) -> Result<Vec<u8>, fixremote::Error> {
         let repository = self.storage.repository();
         let root = repository.lookup(&name)?;
-        let (transfer, backing) = fixremote::propose_export(repository, root, backing)?;
+        let (transfer, backing) = if full {
+            fixremote::propose_export_full(repository, root)?
+        } else {
+            fixremote::propose_export(repository, root, backing)?
+        };
         postcard::to_allocvec(&(transfer, backing)).map_err(|_| fixremote::Error::Invalid)
     }
     fn read_backing(
@@ -1251,6 +1260,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_identify"
                 | b"storage_thunk"
                 | b"storage_reference"
+                | b"storage_reference_named"
                 | b"queue_create"
                 | b"queue_named"
                 | b"queue_count"
@@ -1866,14 +1876,18 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&labels).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_export", [name, backing]) => {
+        (b"remote_export", [name, backing, full]) => {
             let bytes = storage
                 .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
             let name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
             let bytes = shared
                 .services
-                .export_object(name, unsigned(storage, *backing)? != 0)
+                .export_object(
+                    name,
+                    unsigned(storage, *backing)? != 0,
+                    unsigned(storage, *full)? != 0,
+                )
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -2257,6 +2271,19 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             },
             _ => Err(Error::Invalid.into()),
         },
+        (b"storage_reference_named", [name]) => {
+            let bytes = storage
+                .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let mut name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            name[31] = (name[31] & 0xe0) | 0x10;
+            let descriptor = Handle::parse_ref(&name).map_err(|_| Error::Invalid)?;
+            if !descriptor.is_canonical() {
+                return Err(Error::Invalid.into());
+            }
+            // Canonical Refs are opaque names and require no backing authority.
+            Ok(unsafe { descriptor.to_owned() })
+        }
         (b"storage_reference", [value]) => Ok(object_descriptor(*value).into_ref().into()),
         (b"storage_identify", [value]) => {
             let value = identified(storage, *value)?;

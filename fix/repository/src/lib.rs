@@ -185,73 +185,33 @@ impl Repository {
         Ok(paths)
     }
 
-    pub fn visit(
+    /// Visit backing Objects in post-order, optionally including deferred definitions.
+    pub fn visit<E: From<RepositoryError>>(
         &self,
-        values: &[Handle],
+        root: Handle,
         without_backing: &[Object],
-        mut visitor: impl FnMut(Object, bool) -> Result<(), RepositoryError>,
-    ) -> Result<(), RepositoryError> {
-        let mut pending: Vec<_> = values
-            .iter()
-            .rev()
-            .copied()
-            .map(|value| (value, false))
-            .collect();
-        let mut seen = hashbrown::HashMap::new();
-        while let Some((value, thin)) = pending.pop() {
-            let reference = match value.view() {
-                HandleView::Object(object) => object.into_ref(),
-                HandleView::Ref(reference) => *reference,
-                HandleView::Thunk(thunk) => match thunk.view() {
-                    ThunkView::Identification(reference) => reference,
-                    ThunkView::Application(reference) | ThunkView::Selection(reference) => {
-                        reference.into()
-                    }
-                },
-                HandleView::Encode(encode) => {
-                    let thunk = match encode.view() {
-                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
-                    };
-                    pending.push((thunk.into(), thin));
-                    continue;
+        deferred: bool,
+        mut visitor: impl FnMut(Object) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut seen = hashbrown::HashSet::new();
+        fixhandle::minrepo::visit(
+            root,
+            deferred,
+            &mut |tree: Tree| {
+                if without_backing
+                    .iter()
+                    .any(|object| object.as_handle().same_encoding(tree.as_handle()))
+                    || !seen.insert(*tree.as_handle().as_bytes())
+                    || !self.has_backing(tree.into())?
+                {
+                    return Ok(Vec::new().into_iter());
                 }
-            };
-            let object = reference.object_descriptor();
-            if matches!(object.as_handle().name(), Name::Literal(_)) {
-                continue;
-            }
-            let include_backing = !thin
-                && !without_backing.iter().any(|excluded| {
-                    excluded.as_handle().as_bytes() == object.as_handle().as_bytes()
-                });
-            let key = *object.as_handle().as_bytes();
-            if seen
-                .get(&key)
-                .is_some_and(|previous| *previous || !include_backing)
-            {
-                continue;
-            }
-            seen.insert(key, include_backing);
-            self.lookup(reference.as_handle().as_bytes())?;
-            visitor(object, include_backing)?;
-            if let Some(metadata) = self.get_todo(object.into_ref())? {
-                pending.push((metadata, false));
-            }
-            if let ObjectView::Tree(tree) = object.view()
-                && include_backing
-                && self.has_backing(object)?
-            {
-                let children = self.read_tree(*tree)?;
-                pending.extend(
-                    children
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .map(|(index, child)| (*child, tree.is_tag() && index == 0)),
-                );
-            }
-        }
-        Ok(())
+                self.read_tree(tree)
+                    .map(|children| children.into_vec().into_iter())
+                    .map_err(E::from)
+            },
+            &mut visitor,
+        )
     }
 
     pub fn init(path: &str) -> Result<Self, RepositoryError> {

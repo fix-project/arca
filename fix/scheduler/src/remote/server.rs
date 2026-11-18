@@ -324,7 +324,10 @@ async fn connection(
         };
         let result = crate::storage::put(&result)?;
         let name = result.raw_handle_bytes()?;
-        let proposal = super::propose_object(name, true).map_err(ConnectionError::Operation)?;
+        let claim = collector::claim(&result)?.into_value();
+        let mut proposal =
+            super::propose(&[result.clone(), claim]).map_err(ConnectionError::Operation)?;
+        proposal.0.roots = alloc::vec![name];
         protocol::asynchronous::send_proposal(
             &mut stream,
             protocol::MAX_MESSAGE_SIZE,

@@ -51,8 +51,8 @@ cd project
 ```
 
 The clone stores `origin`'s label names and canonical values, then `pull`
-fetches the selected value and its backing. `distributed` delegates the Eval
-request to the first reachable remote, here `origin`; a failed delegation is
+creates a shallow local label by default; its backing remains remote.
+`distributed` delegates the Eval request to the first reachable remote, here `origin`; a failed delegation is
 an error. The remote starts `fix serve --stdio` under its own bootstrapped
 programs to accept a proposed transfer of the selected scheduler and
 collector. It then re-executes `serve` with those programs on the same SSH connection,
@@ -136,9 +136,9 @@ Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:
 | strict | Evaluate a strict Encode and store its resulting Object. |
 | exact | Load the original value's backing without evaluating it; preserve its name and kind. |
 
-Objects and Refs use identification Thunks for the encodings. Identification
-and shallow evaluation do not load their backing; strict evaluation does. Existing Encodes
-use the requested encoding mode. Push also loads and transfers backing and
+Strict encoding of Objects and Refs uses identification Thunks. Shallow
+encoding preserves their Ref descriptors without loading backing; strict
+evaluation loads it. Existing Encodes use the requested encoding mode. Push also loads and transfers backing and
 certificates so the destination can obtain the contents without connecting back
 to the sender. Pull can obtain data from its configured source remote through
 the scheduler. Tag trust is checked when data is imported, not when a remote
@@ -183,7 +183,14 @@ Tag and Tag Ref object records point to their backing data like other objects. `
 
 `fixremote` exports sets of canonical root names, object records, optional backing data, and optional TODO metadata. A prepared Tag transfer retains its available certificates separately from the backing data. Import verifies object hashes, certificate signatures, and required dependencies before publishing objects. A scheduler can send a thin Ref with arbitrary TODO metadata and transfer backing later; Fix neither interprets that metadata nor fetches data automatically.
 
-The scheduler SDK exposes `remote::export`, `remote::import`, `remote::missing`, `remote::certify`, `remote::trusted_keys`, and `remote::configured`. The Linux SDK provides `Client::export`, `Client::import`, `Client::missing`, `Client::certify`, and `Client::remote_config`. Local descriptors and continuations are never wire identities. Data transfer and trust checks do not depend on a networking protocol.
+`fixhandle::minrepo::visit` visits required Objects in post-order using the normal
+call stack. Its reader can iterate borrowed children without heap allocation. Refs, Thunks, Encodes, and Tag author identities are opaque;
+callers explicitly include coupon claims or execution definitions when needed.
+The repository adapter uses this traversal for transfer closure. Complete
+computation transfers opt into deferred definitions explicitly; attached coupons
+still use their minimum repositories.
+
+The scheduler SDK exposes `remote::propose`, `remote::propose_full`, `remote::import`, `remote::missing`, `remote::certify`, `remote::trusted_keys`, and `remote::configured`. The Linux SDK provides `Client::export`, `Client::import`, `Client::missing`, `Client::certify`, and `Client::remote_config`. Local descriptors and continuations are never wire identities. Data transfer and trust checks do not depend on a networking protocol.
 
 ## Example wire protocol
 

@@ -84,7 +84,7 @@ pub fn export(
     roots: &[Handle],
     without_backing: &[Object],
 ) -> Result<Vec<u8>, Error> {
-    export_plan(repository, roots, without_backing, true)?
+    export_plan(repository, roots, without_backing, true, &[])?
         .0
         .encode()
         .map_err(|_| Error::Invalid)
@@ -95,21 +95,67 @@ fn export_plan(
     roots: &[Handle],
     without_backing: &[Object],
     load: bool,
+    definitions: &[Handle],
 ) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
     let source = Repository::open(repository.path())?.unsigned();
     let repository = &source;
     for root in roots {
         repository.lookup(root.as_bytes())?;
     }
-    let mut objects = Vec::new();
-    repository.visit(roots, without_backing, |object, include| {
-        objects.push((object, include));
-        Ok(())
-    })?;
+    let mut objects = BTreeMap::new();
+    let mut order = Vec::new();
+    let mut ordered = BTreeSet::new();
+    let mut pending = roots.to_vec();
+    let mut seen = BTreeSet::new();
+    while let Some(root) = pending.pop() {
+        export_metadata(repository, root, &mut seen, &mut pending, &mut objects)?;
+        repository.visit(
+            root,
+            without_backing,
+            definitions.iter().any(|value| value.same_encoding(&root)),
+            |object| {
+                let include = !without_backing
+                    .iter()
+                    .any(|excluded| excluded.as_handle().same_encoding(object.as_handle()));
+                let key = *object.as_handle().as_bytes();
+                if ordered.insert(key) {
+                    order.push(key);
+                }
+                objects
+                    .entry(key)
+                    .and_modify(|(_, old)| *old |= include)
+                    .or_insert((object, include));
+                export_metadata(
+                    repository,
+                    object.into(),
+                    &mut seen,
+                    &mut pending,
+                    &mut objects,
+                )?;
+                if let ObjectView::Tree(tree) = object.view()
+                    && include
+                    && repository.has_backing(object)?
+                {
+                    for (index, child) in repository.read_tree(*tree)?.iter().enumerate() {
+                        if !tree.is_tag() || index != 0 {
+                            export_metadata(
+                                repository,
+                                *child,
+                                &mut seen,
+                                &mut pending,
+                                &mut objects,
+                            )?;
+                        }
+                    }
+                }
+                Ok::<_, Error>(())
+            },
+        )?;
+    }
     let mut records = BTreeMap::new();
     let mut backing = Vec::new();
     let mut certificate_blobs = BTreeMap::new();
-    for (object, include) in objects {
+    for (object, include) in objects.into_values() {
         let available = include && repository.has_backing(object)?;
         if available {
             backing.push(*object.as_handle().as_bytes());
@@ -180,18 +226,48 @@ fn export_plan(
         }
         record.todo = todo;
     }
+    let certificates = certificate_blobs
+        .into_iter()
+        .filter(|(name, _)| !records.contains_key(name))
+        .map(|(_, record)| record)
+        .collect();
+    let mut ordered = Vec::new();
+    for name in order {
+        if let Some(record) = records.remove(&name) {
+            ordered.push(record);
+        }
+    }
+    ordered.extend(records.into_values());
     let transfer = Transfer {
         roots: roots.iter().map(|value| *value.as_bytes()).collect(),
-        certificates: certificate_blobs
-            .into_iter()
-            .filter(|(name, _)| !records.contains_key(name))
-            .map(|(_, record)| record)
-            .collect(),
-        records: records.into_values().collect(),
+        certificates,
+        records: ordered,
     };
     backing.sort_unstable();
     backing.dedup();
     Ok((transfer, backing))
+}
+
+fn export_metadata(
+    repository: &Repository,
+    value: Handle,
+    seen: &mut BTreeSet<[u8; 32]>,
+    pending: &mut Vec<Handle>,
+    objects: &mut BTreeMap<[u8; 32], (Object, bool)>,
+) -> Result<(), Error> {
+    let object = value.object_descriptor();
+    let key = *object.as_handle().as_bytes();
+    if !seen.insert(key) {
+        return Ok(());
+    }
+    if let Some(metadata) = repository.get_todo(object.into_ref())? {
+        objects.entry(key).or_insert((object, false));
+        pending.push(metadata);
+    }
+    if !matches!(value.view(), HandleView::Object(_)) {
+        objects.entry(key).or_insert((object, false));
+    }
+    Ok(())
 }
 
 pub fn propose_export(
@@ -212,7 +288,18 @@ pub fn propose_export(
     } else {
         alloc::vec![root]
     };
-    let (mut transfer, objects) = export_plan(repository, &roots, &omitted, false)?;
+    let (mut transfer, objects) = export_plan(repository, &roots, &omitted, false, &[])?;
+    transfer.roots = alloc::vec![*root.as_bytes()];
+    Ok((transfer, objects))
+}
+
+/// Propose a complete computation's accessible backing rather than only its minimum repository.
+pub fn propose_export_full(
+    repository: &Repository,
+    root: Handle,
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
+    let roots = coupon_roots(repository, &[root], &[])?;
+    let (mut transfer, objects) = export_plan(repository, &roots, &[], false, &[root])?;
     transfer.roots = alloc::vec![*root.as_bytes()];
     Ok((transfer, objects))
 }
@@ -223,7 +310,7 @@ pub fn export_with_coupons(
     without_backing: &[Object],
 ) -> Result<Vec<u8>, Error> {
     let selected = coupon_roots(repository, roots, without_backing)?;
-    let (mut transfer, _) = export_plan(repository, &selected, without_backing, true)?;
+    let (mut transfer, _) = export_plan(repository, &selected, without_backing, true, &[])?;
     transfer.roots = roots.iter().map(|root| *root.as_bytes()).collect();
     transfer.encode().map_err(|_| Error::Invalid)
 }
@@ -235,20 +322,23 @@ fn coupon_roots(
 ) -> Result<Vec<Handle>, Error> {
     let mut inputs: BTreeMap<[u8; 32], Handle> =
         roots.iter().map(|root| (*root.as_bytes(), *root)).collect();
-    repository.visit(roots, without_backing, |object, include| {
-        if include
-            && let ObjectView::Tree(tree) = object.view()
-            && repository.has_backing(object)?
-        {
-            let children = repository.read_tree(*tree)?;
-            for (index, child) in children.iter().enumerate() {
-                if !tree.is_tag() || index != 0 {
-                    inputs.insert(*child.as_bytes(), *child);
+    for root in roots {
+        repository.visit(*root, without_backing, false, |object| {
+            if let ObjectView::Tree(tree) = object.view()
+                && !without_backing
+                    .iter()
+                    .any(|excluded| excluded.as_handle().same_encoding(object.as_handle()))
+                && repository.has_backing(object)?
+            {
+                for (index, child) in repository.read_tree(*tree)?.iter().enumerate() {
+                    if !tree.is_tag() || index != 0 {
+                        inputs.insert(*child.as_bytes(), *child);
+                    }
                 }
             }
-        }
-        Ok(())
-    })?;
+            Ok::<_, Error>(())
+        })?;
+    }
     let mut selected: BTreeMap<[u8; 32], Handle> =
         roots.iter().map(|root| (*root.as_bytes(), *root)).collect();
     for input in inputs.values() {
@@ -256,6 +346,11 @@ fn coupon_roots(
             let operation = Blob::literal(&operation.to_le_bytes()).map_err(|_| Error::Invalid)?;
             for coupon in repository.claims(&[operation.into(), *input])? {
                 selected.insert(*coupon.as_handle().as_bytes(), coupon.into());
+                let fields = repository.read_tree(coupon)?;
+                let claim = fixhandle::TreeRef::try_from(fields[1])
+                    .map_err(|_| Error::Invalid)?
+                    .object_descriptor();
+                selected.insert(*claim.as_handle().as_bytes(), claim.into());
             }
         }
     }

@@ -14,7 +14,7 @@ use alloc::{
     vec::Vec,
 };
 use core::cell::RefCell;
-use fixwasm::{Error, Value as AsValue};
+use fixwasm::{Error, ThunkType, Value as AsValue, ValueType};
 
 struct Peer {
     name: String,
@@ -361,7 +361,17 @@ impl Cluster {
         }
         let collector = storage::put(&crate::collector::callable()?)?;
         let input = storage::put(input)?;
-        let proposal = super::propose(&[collector, input.clone()]).map_err(Failure::Export)?;
+        let descriptor_only = (operation == 1 && input.is_value()?)
+            || (matches!(input.value_type(), ValueType::Thunk | ValueType::Encode)
+                && input.unsound_thunk_type()? == ThunkType::Identification
+                && (operation != 1 || input.is_shallow()?));
+        let roots = [collector, input.clone()];
+        let proposal = if descriptor_only {
+            super::propose(&roots)
+        } else {
+            super::propose_full(&roots)
+        }
+        .map_err(Failure::Export)?;
         self.submit_transfer(location, operation, &input, proposal)
             .await
     }
@@ -408,18 +418,30 @@ impl Cluster {
             names,
         };
         let remote = pending.peer.as_ref().unwrap().name.clone();
-        let load = crate::progress::load(&pending.input, "", &remote);
+        let mut input_name = pending.input.raw_handle_bytes()?;
+        input_name[31] &= 0xe0;
+        let source = if backing.contains(&input_name) {
+            pending.input.clone()
+        } else {
+            collector.clone()
+        };
+        let mut load = None;
         let sent = protocol::asynchronous::send_proposal(
             &mut pending.peer.as_mut().unwrap().connection,
             protocol::MAX_MESSAGE_SIZE,
             pending.task.as_ref(),
             None,
             (transfer, backing),
-            super::read_object,
+            |name| {
+                load.get_or_insert_with(|| crate::progress::load(&source, "", &remote));
+                super::read_object(name)
+            },
             |name, keys| super::certify(name, keys).ok(),
         )
         .await;
-        load.finish(sent.is_ok());
+        if let Some(load) = load {
+            load.finish(sent.is_ok());
+        }
         sent.map_err(Failure::Send)?;
         Ok(Some(pending))
     }
@@ -466,7 +488,16 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
         .await
         .map_err(|error| alloc::format!("{error:?}"))?
         .ok_or_else(|| String::from("could not start bootstrap server"))?;
-    let load = crate::progress::load(&scheduler, "", &remote.name);
+    let mut scheduler_name = scheduler
+        .raw_handle_bytes()
+        .map_err(|error| alloc::format!("{error:?}"))?;
+    scheduler_name[31] &= 0xe0;
+    let source = if proposal.1.contains(&scheduler_name) {
+        &scheduler
+    } else {
+        &collector
+    };
+    let mut load = None;
     let result = async {
         protocol::asynchronous::send_proposal(
             &mut initial,
@@ -474,7 +505,10 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
             Some(&task),
             None,
             proposal,
-            super::read_object,
+            |name| {
+                load.get_or_insert_with(|| crate::progress::load(source, "", &remote.name));
+                super::read_object(name)
+            },
             |name, keys| super::certify(name, keys).ok(),
         )
         .await
@@ -494,7 +528,9 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
         Ok(initial)
     }
     .await;
-    load.finish(result.is_ok());
+    if let Some(load) = load {
+        load.finish(result.is_ok());
+    }
     result
 }
 
@@ -504,6 +540,7 @@ impl PendingTransfer {
         let trusted_keys = super::trusted_keys()?;
         let remote = self.peer.as_ref().ok_or(Failure::Closed)?.name.clone();
         let mut download = None;
+        let mut result_name = None;
         let result = async {
             let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
             let incoming = protocol::asynchronous::receive_transfer_observed(
@@ -520,9 +557,18 @@ impl PendingTransfer {
                     Message::EvaluationProgress(snapshot) => {
                         let _ = super::report_progress(&remote, snapshot, true);
                     }
-                    Message::ProposeTransfer { .. } => {
-                        download
-                            .get_or_insert_with(|| crate::progress::load(&self.input, &remote, ""));
+                    Message::ProposeTransfer { result, .. } => result_name = *result,
+                    Message::BlobData(record)
+                    | Message::TreeData(record)
+                    | Message::ShallowTreeData(record)
+                        if record.data.is_some() =>
+                    {
+                        if download.is_none()
+                            && let Some(name) = result_name
+                            && let Ok(value) = storage::reference_named(name)
+                        {
+                            download = Some(crate::progress::load(&value, &remote, ""));
+                        }
                     }
                     _ => (),
                 },

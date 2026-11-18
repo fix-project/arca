@@ -127,10 +127,19 @@ pub fn propose_object(
     name: protocol::Name,
     backing: bool,
 ) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+    object_proposal(name, backing, false)
+}
+
+fn object_proposal(
+    name: protocol::Name,
+    backing: bool,
+    full: bool,
+) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
     let (status, value) = request(tree![
         Blob::create(b"remote_export"),
         Blob::create(name),
-        backing as u64
+        backing as u64,
+        full as u64
     ])
     .map_err(|error| format!("{error:?}"))?;
     if status != 0 {
@@ -140,24 +149,35 @@ pub fn propose_object(
     postcard::from_bytes(&encoded).map_err(|error| format!("invalid export proposal: {error}"))
 }
 
-/// Propose the reachable data for several roots without reading Blob backing.
+/// Propose the minimum repositories of the supplied roots without reading Blob backing.
 pub fn propose(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+    propose_values(values, false)
+}
+
+/// Propose the accessible backing of a complete computation, including deferred definitions.
+pub fn propose_full(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+    propose_values(values, true)
+}
+
+fn propose_values(
+    values: &[Value],
+    full: bool,
+) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
     let mut roots = Vec::new();
     let mut records = alloc::collections::BTreeMap::new();
+    let mut order = Vec::new();
     let mut certificates = alloc::collections::BTreeMap::new();
     let mut backing = alloc::collections::BTreeSet::new();
     for value in values {
         let name = value
             .raw_handle_bytes()
             .map_err(|error| format!("{error:?}"))?;
-        let (transfer, objects) = propose_object(name, true)?;
+        let (transfer, objects) = object_proposal(name, true, full)?;
         roots.push(name);
-        records.extend(
-            transfer
-                .records
-                .into_iter()
-                .map(|record| (record.name, record)),
-        );
+        for record in transfer.records {
+            order.push(record.name);
+            records.insert(record.name, record);
+        }
         certificates.extend(
             transfer
                 .certificates
@@ -166,15 +186,22 @@ pub fn propose(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Na
         );
         backing.extend(objects);
     }
+    let certificates = certificates
+        .into_iter()
+        .filter(|(name, _)| !records.contains_key(name))
+        .map(|(_, record)| record)
+        .collect();
+    let mut records: Vec<_> = order
+        .into_iter()
+        .rev()
+        .filter_map(|name| records.remove(&name))
+        .collect();
+    records.reverse();
     Ok((
         protocol::Transfer {
             roots,
-            certificates: certificates
-                .into_iter()
-                .filter(|(name, _)| !records.contains_key(name))
-                .map(|(_, record)| record)
-                .collect(),
-            records: records.into_values().collect(),
+            certificates,
+            records,
         },
         backing.into_iter().collect(),
     ))

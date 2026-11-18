@@ -91,7 +91,7 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
         )
         .unwrap();
     let parent = source.create_tree(&[tag.into(), data.into()]).unwrap();
-    let bytes = transfer(&source, &[parent.into()], &[]).unwrap();
+    let bytes = transfer(&source, &[parent.into(), claim.into()], &[]).unwrap();
     let imported = import(&destination, &bytes, &config()).unwrap();
     assert!(imported[0].same_encoding(&parent.into()));
     let fields = destination.read_tree(parent).unwrap();
@@ -1131,4 +1131,52 @@ fn requested_transfers_read_only_backing_missing_at_the_receiver() {
     assert!(target.read_tree(root).unwrap()[1].same_encoding(&added.into()));
     assert_eq!(target.read_blob(added).unwrap().as_ref(), &[42; 128]);
     server.join().unwrap();
+}
+
+#[test]
+fn coupon_minrepo_keeps_its_ref_claim_opaque_and_explicit_claims_keep_results_thin() {
+    let source_directory = Directory::new();
+    let source = source_directory.repository();
+    let target_directory = Directory::new();
+    let target = target_directory.repository();
+    let data = source.create_blob(&[61; 65536]).unwrap();
+    let input: Handle = Blob::literal(b"input")
+        .unwrap()
+        .into_ref()
+        .identification()
+        .shallow()
+        .into();
+    let claim = source
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            input,
+            data.into_ref().into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    source
+        .publish_certified(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*coupon.as_handle().as_bytes())),
+        )
+        .unwrap();
+    let (proposal, backing) = propose_export(&source, coupon.into(), true).unwrap();
+    assert!(backing.iter().all(|name| name != data.as_handle().as_bytes() && name != claim.as_handle().as_bytes()));
+    assert!(
+        proposal
+            .records
+            .iter()
+            .all(|record| record.name != *data.as_handle().as_bytes())
+    );
+    let (_, backing) = propose_export_full(&source, input).unwrap();
+    assert!(!backing.contains(data.as_handle().as_bytes()));
+    let bytes = transfer(&source, &[coupon.into(), claim.into()], &[]).unwrap();
+    import(&target, &bytes, &config()).unwrap();
+    assert!(target.read_tree(claim).unwrap()[2].same_encoding(&data.into_ref().into()));
+    assert!(!target.has_backing(data.object()).unwrap());
 }

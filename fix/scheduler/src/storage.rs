@@ -50,6 +50,11 @@ pub fn reference(value: &Value) -> Result<Value, Error> {
     coordinated(b"storage_reference", core::slice::from_ref(value))
 }
 
+/// Construct an opaque canonical Ref without accessing backing data.
+pub fn reference_named(name: [u8; 32]) -> Result<Value, Error> {
+    coordinated(b"storage_reference_named", &[capture(Blob::create(name))?])
+}
+
 pub fn identify(value: &Value) -> Result<Option<Value>, Error> {
     let key = value.raw_handle_bytes()?;
     if let Some(object) = IDENTIFIED.0.borrow().get(&key) {

@@ -363,14 +363,27 @@ pub fn visit(
             listed.push(format!(".fix/labels/{argument}"));
         }
     }
-    repository.visit(&handles, &without_backing, |object, include_backing| {
-        if paths {
-            listed.extend(repository.object_paths(object, include_backing)?);
-        } else {
-            output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
-        }
-        Ok(())
-    })?;
+    let mut pending = handles;
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(root) = pending.pop() {
+        repository.visit(root, &without_backing, true, |object| {
+            if !seen.insert(*object.as_handle().as_bytes()) {
+                return Ok(());
+            }
+            let include_backing = !without_backing
+                .iter()
+                .any(|excluded| excluded.as_handle().same_encoding(object.as_handle()));
+            if paths {
+                listed.extend(repository.object_paths(object, include_backing)?);
+            } else {
+                output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
+            }
+            if let Some(metadata) = repository.get_todo(object.into_ref())? {
+                pending.push(metadata);
+            }
+            Ok::<_, CliError>(())
+        })?;
+    }
     match archive {
         Some(archive) => crate::archive::export(&repository, listed, archive)?,
         None if paths => {

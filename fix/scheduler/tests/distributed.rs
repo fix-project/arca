@@ -940,6 +940,16 @@ fn remote_labels_and_transfer_modes() {
     let data = directory.join("data");
     let bootstrap = data.join("fix/bootstrap");
     seed(&bootstrap, env!("SERIAL"));
+    let added = Command::new(fixture(env!("SEED")))
+        .args(["add", bootstrap.to_str().unwrap()])
+        .arg(format!("hint={}", fixture(env!("HINT")).display()))
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
     configuration(&bootstrap.join("user"), &agent, &compiler, &[]);
     sign_seed(&bootstrap, &agent, true);
     let ssh_dir = directory.join("bin");
@@ -1064,6 +1074,33 @@ fn remote_labels_and_transfer_modes() {
         HandleView::Ref(_)
     ));
     assert!(!local.has_backing(original.into()).unwrap());
+    run(&directory, &["clone", address, "hint-client"], true);
+    let hint_client = directory.join("hint-client");
+    let hint = Repository::open(repository.path())
+        .unwrap()
+        .unsigned()
+        .read_label("hint")
+        .unwrap()
+        .to_string();
+    run(&hint_client, &["config", "scheduler", &hint], true);
+    let pulled = command(&hint_client, &["pull"]);
+    assert!(
+        pulled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    let hint_store = Repository::open(hint_client.join(".fix").to_str().unwrap()).unwrap();
+    assert!(
+        !hint_store.has_backing(original.into()).unwrap(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    assert!(
+        hint_store
+            .read_label("origin:payload")
+            .unwrap()
+            .same_encoding(&original.into_ref().into())
+    );
     let selection = local
         .create_tree(&[
             original.into_ref().into(),
@@ -1535,10 +1572,20 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                     .unwrap();
                 advised.into_ref().application().strict().into()
             };
-            let bytes = fixremote::export(&source, &[input, collector], &[]).unwrap();
+            let (mut transfer, backing) = fixremote::propose_export_full(&source, input).unwrap();
+            for record in &mut transfer.records {
+                if backing.contains(&record.name) {
+                    let object = Object::try_from(source.lookup(&record.name).unwrap()).unwrap();
+                    record.data = Some(
+                        source
+                            .read_backing_range(object, 0, object.byte_len() as usize)
+                            .unwrap(),
+                    );
+                }
+            }
             fixremote::import(
                 &destination,
-                &bytes,
+                &transfer.encode().unwrap(),
                 &fixremote::Config {
                     policy: policy.clone(),
                     ..fixremote::Config::default()
