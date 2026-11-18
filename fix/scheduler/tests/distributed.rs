@@ -1155,7 +1155,7 @@ fn remote_labels_and_transfer_modes() {
     );
     let diagnostics = String::from_utf8_lossy(&loaded.stderr);
     assert!(
-        diagnostics.contains("local: Load origin:payload.80 ("),
+        diagnostics.contains("local: Load *'origin:payload ("),
         "{diagnostics}"
     );
     let summary = diagnostics.split("\nNode ").nth(1).expect("node summary");

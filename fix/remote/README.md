@@ -130,6 +130,8 @@ per-machine resource table. Coupon transfers about labeled inputs or results
 include their claim, for example `Load Eval(origin:program, result-name)`.
 Storage supplies friendly names using labels, Fix notation (such as `*'name`),
 and unambiguous canonical prefixes with their hexadecimal type byte (`abcd1234.b5`).
+Label transformations use sigils: `&name`, `*'name`, `#name`, and `[value index]`.
+When no faithful sigil form is available, the canonical prefix retains the type byte.
 Coupon descriptions use only resident metadata, without loading referenced data.
 
 Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:

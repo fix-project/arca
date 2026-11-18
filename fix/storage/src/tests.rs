@@ -170,7 +170,31 @@ fn friendly_names_use_labels_and_fix_notation_without_materializing_data() {
     )];
     let input: Handle = reference.identification().strict().into();
     assert_eq!(storage.friendly_name(input, &labels), "*'module");
-    assert_eq!(storage.friendly_name(module.into(), &labels), "module.80");
+    assert_eq!(storage.friendly_name(module.into(), &labels), "*'module");
+    let selection = storage
+        .add_tree(&[
+            reference.into(),
+            Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
+        ])
+        .into_ref()
+        .selection();
+    assert_eq!(
+        storage.friendly_name(selection.into(), &labels),
+        "[module 0u64]"
+    );
+    assert_eq!(
+        storage.friendly_name(selection.strict().into(), &labels),
+        "*[module 0u64]"
+    );
+    let object_labels = [(
+        *module.as_handle().as_bytes(),
+        alloc::string::String::from("bytes"),
+    )];
+    assert_eq!(
+        storage.friendly_name(reference.into(), &object_labels),
+        "&bytes"
+    );
+    assert_eq!(storage.friendly_name(input, &object_labels), "*'bytes");
     let coupon = storage.certificate(1, input, reference.into());
     let coupon: Handle = storage.canonicalize(coupon.into()).unwrap().into();
     assert_eq!(

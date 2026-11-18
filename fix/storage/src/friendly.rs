@@ -79,7 +79,20 @@ impl Names {
                 let (prefix, reference) = match thunk.view() {
                     ThunkView::Identification(reference) => ("'", reference),
                     ThunkView::Application(reference) => ("#", reference.into()),
-                    ThunkView::Selection(reference) => ("", reference.into()),
+                    ThunkView::Selection(reference) => {
+                        let fields = read(reference.object_descriptor())?;
+                        if !matches!(fields.len(), 2 | 3) {
+                            return None;
+                        }
+                        let arguments = fields
+                            .iter()
+                            .map(|value| {
+                                self.named(*value, labels, read, false)
+                                    .unwrap_or_else(|| self.abbreviated(*value))
+                            })
+                            .collect::<alloc::vec::Vec<_>>();
+                        return Some(format!("[{}]", arguments.join(" ")));
+                    }
                 };
                 let operand = labels
                     .iter()
@@ -88,21 +101,20 @@ impl Names {
                     .or_else(|| {
                         self.named(reference.object_descriptor().into(), labels, read, coupons)
                     })?;
-                Some(if prefix.is_empty() {
-                    format!("{operand}.{:02x}", value.as_bytes()[31])
-                } else {
-                    format!("{prefix}{operand}")
-                })
+                Some(format!("{prefix}{operand}"))
             }
             HandleView::Ref(reference) => self
                 .named(reference.object_descriptor().into(), labels, read, coupons)
                 .map(|name| format!("&{name}")),
             HandleView::Object(object) => {
-                if let Some((_, label)) = labels.iter().find(|(name, _)| {
-                    name[..31] == value.as_bytes()[..31]
-                        && name[31] & 0xe0 == value.as_bytes()[31] & 0xe0
-                }) {
-                    return Some(format!("{label}.{:02x}", value.as_bytes()[31]));
+                if value.is_value()
+                    && let Some((_, label)) = labels.iter().find(|(name, _)| {
+                        name[..31] == value.as_bytes()[..31]
+                            && name[31] & 0xe0 == value.as_bytes()[31] & 0xe0
+                            && name[31] & 0x1f == 0x10
+                    })
+                {
+                    return Some(format!("*'{label}"));
                 }
                 if let ObjectView::Blob(blob) = object.view()
                     && let Some(bytes) = blob.literal_bytes()
