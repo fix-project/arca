@@ -25,9 +25,9 @@ without removing its value or backing data. A missing label is an error.
 (default `~/.local/share/fix/bootstrap/.fix`), imports and signs
 the seed's compiler, scheduler, collector, and parser, and trusts the compiler
 and collector. `fix init` creates an empty `.fix` repository with a `bootstrap`
-file remote pointing to that store. Run `fix sync bootstrap` to fetch its label
+file remote pointing to that store. Run `fix pull bootstrap` to fetch its label
 refs, then `fix remote labels bootstrap` to list them or
-`fix pull bootstrap:compile compile` to create a local label. It needs no seed
+`fix pull bootstrap compile compile` to create a local label. It needs no seed
 archive; backing data for a selected program is copied from the bootstrap store
 or an available file remote when the program is persisted locally. The seed's `compile` splits each
 Wasm module into one C translation unit per 128 KiB by default.
@@ -44,7 +44,7 @@ options override settings for one invocation. `fix trust` manages trust and
 signing identities in `$XDG_CONFIG_HOME/fix` (default `~/.config/fix`).
 `FIX_CONFIG_DIR` overrides that directory; `XDG_DATA_HOME` selects the
 bootstrap store's parent data directory. A home repository can be added as an
-ordinary file remote. Run `fix sync` to snapshot all configured remotes, or `fix sync REMOTE` to
+ordinary file remote. Run `fix pull` for all configured remotes, or `fix pull REMOTE` to
 select one, then
 `fix remote labels REMOTE` to list them. File remotes supply backing data for
 canonical handles when those values are saved in a project.
@@ -74,8 +74,8 @@ The preprocessor runs on Linux. The parser runs in Fix. Imports are explicit:
 
 | Form | Meaning |
 | --- | --- |
-| `@handle("HEX")` | Import an exact canonical handle already admitted by the repository. |
-| `@label("NAME")` | Resolve a repository label. |
+| `@handle("HEX")` | Import a canonical name; Objects require locally admitted backing. |
+| `@label("NAME")` | Resolve a repository label, including remote shadow labels such as `origin:program`, without retrieving data. |
 | `@file("PATH")` | Import a file's contents as a Blob, or a directory's contents as a Tree of Flatware child descriptors. |
 | `@script("PATH" EXPR ... name=EXPR ...)` | Instantiate a script. |
 | `@todo("REF" "URI" ...)` | Declare a pinned Ref and its acquisition hints. |
@@ -161,12 +161,8 @@ or canonical name. Work without a measured total has an activity line, not a
 completion bar. Completing reported application units does not claim that the
 invocation has returned.
 
-Pull first enumerates reachable objects and coupons. Its manifest gives the
-exact backing-byte total from the Fix names before bulk data is read. SSH,
-TCP, and file remotes transfer backing in bounded chunks under one cumulative
-byte counter; validation and persistence follow as separate activities. Pull
-requests Fix names, so moving or deleting a remote label after sync does not
-prevent retrieving data that remains in that repository. All status messages,
+Remote labels resolve without retrieving data. The scheduler reports loads
+and evaluations with their locations. All status messages,
 logs, and forwarded SSH stderr share the progress renderer. Diagnostic writes
 are collected into complete lines; result lines suspend the renderer while
 printing. Ephemeral rows are erased on completion or failure; completed named
@@ -203,3 +199,21 @@ include protocol and status traffic. Counters accumulate from the first runtime
 sample; memory peaks cover the VM lifetime. A long-running server retains its
 runtime peaks across requests. Transfer byte bars remain suppressed during
 evaluation.
+
+`fix pull [REMOTE [SOURCE [DESTINATION]]]` and
+`fix push REMOTE [SOURCE [DESTINATION]]` realize labels using the selected
+scheduler. Both default to `--shallow` (a shallow Encode yielding a Ref).
+`--strict` yields an Object; `--exact` preserves the original value and loads
+its backing without evaluating it. Configure defaults with `pull.mode` and
+`push.mode`, locally or with `fix config --global`. See
+[remote labels and transfer modes](../remote/README.md#remote-refs).
+
+`fix info VALUE` analyzes a canonical name or label without evaluating it or
+retrieving remote data. It reports representation, declared type and size,
+comparability, local backing, matching labels, acquisition metadata, Tag
+certificates and fields, Tags that directly mention the value, and recognized
+coupon claims about it. Coupons identify their
+operation, input, and result; Runnable certificates are distinguished from other
+Tags. Object and Ref forms of a subject match. Inspection reports signature
+status and verifies inspected Tag data without granting execution authority or
+fetching unavailable data.

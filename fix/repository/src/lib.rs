@@ -144,13 +144,15 @@ impl Repository {
         if object.is_empty() && object.as_handle().same_encoding(&Tree::empty().into()) {
             return Ok(Vec::new());
         }
-        let record = if self.lookup(object.as_handle().as_bytes()).is_ok() {
-            *object.as_handle()
-        } else {
-            let reference = object.into_ref();
-            self.lookup(reference.as_handle().as_bytes())?
-        };
-        let mut paths = alloc::vec![format!(".fix/objects/{record}")];
+        let mut paths = Vec::new();
+        for record in [*object.as_handle(), object.into_ref().into()] {
+            let path = format!(".fix/objects/{record}");
+            match fs::read_link(&format!("{}/objects/{record}", self.path)) {
+                Ok(_) => paths.push(path),
+                Err(ErrorKind::NotFound) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
         if object.as_handle().as_bytes()[31] & 0x40 != 0 {
             let directory = self.certificate_directory(object.as_handle().as_bytes());
             match fs::read_dir(&directory) {
@@ -165,7 +167,7 @@ impl Repository {
                 Err(ErrorKind::NotFound) => (),
                 Err(error) => return Err(error.into()),
             }
-            for certificate in self.certificate_blobs(record.as_bytes())? {
+            for certificate in self.certificate_blobs(object.as_handle().as_bytes())? {
                 paths.extend(self.object_paths(certificate.object(), true)?);
             }
         }
@@ -400,6 +402,9 @@ impl Repository {
         if !view.is_canonical() {
             return Err(RepositoryError::NonCanonical);
         }
+        if !matches!(view.view(), HandleBytesView::Object(_)) {
+            return Ok(unsafe { view.to_owned() });
+        }
         if !matches!(view.name(), Name::Literal(_)) {
             let mut object = *bytes;
             object[31] &= 0xe0;
@@ -462,7 +467,6 @@ impl Repository {
                 return Err(RepositoryError::InvalidRepository);
             }
         }
-        // The exact Object or Ref record establishes the requested handle's provenance.
         Ok(unsafe { view.to_owned() })
     }
 
@@ -670,7 +674,11 @@ impl Repository {
         };
         match self.read_tree(reference.object_descriptor()) {
             Ok(fields) => Ok(Some(fields)),
-            Err(RepositoryError::Io(ErrorKind::NotFound)) => Ok(None),
+            Err(
+                RepositoryError::Io(ErrorKind::NotFound)
+                | RepositoryError::MissingObject { .. }
+                | RepositoryError::MissingBacking { .. },
+            ) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -883,7 +891,7 @@ impl Repository {
         if matches!(handle.name(), Name::Literal(_)) {
             return Ok(());
         }
-        self.publish_record(*handle, None)
+        self.publish_link(*handle)
     }
 
     pub fn publish_certified_reference(

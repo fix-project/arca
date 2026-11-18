@@ -107,7 +107,10 @@ pub fn export(
                             .map_err(fixrepository::RepositoryError::from)
                     })?;
                 staging.publish_reference(object.into_ref())?;
-                staging.retain_certificates(&bytes, &repository.export_certificates(tag)?)?;
+                staging.retain_certificates(
+                    object.as_handle().as_bytes(),
+                    &repository.export_certificates(tag)?,
+                )?;
                 staged.extend(staging.object_paths(object, false)?);
             } else {
                 originals.push(path);

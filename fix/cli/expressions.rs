@@ -20,7 +20,6 @@ enum Kind {
     Label(String),
     File(PathBuf),
     Compile(PathBuf),
-    Remote(String),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -34,7 +33,6 @@ struct Scope {
 }
 
 struct Imports {
-    repository: PathBuf,
     keys: BTreeMap<(preprocessor::Import, PathBuf), usize>,
     records: Vec<(usize, Kind)>,
     recorded: BTreeSet<usize>,
@@ -42,40 +40,6 @@ struct Imports {
     stack: Vec<PathBuf>,
     scopes: Vec<Scope>,
     next: usize,
-}
-
-fn admit_reference(repository: &Path, name: &str) -> Result<(), String> {
-    use fixhandle::{Handle, HandleBytesView, Name};
-    let mut bytes = [0; 32];
-    hex::decode_to_slice(name, &mut bytes).map_err(|error| format!("invalid handle: {error}"))?;
-    let view = Handle::parse_ref(&bytes).map_err(|error| format!("invalid handle: {error:?}"))?;
-    if !view.is_canonical() {
-        return Err("expected a canonical handle".into());
-    }
-    if !matches!(view.view(), HandleBytesView::Ref(_)) {
-        return Err("expected a Ref name".into());
-    }
-    if matches!(view.name(), Name::Literal(_)) {
-        return Ok(());
-    }
-    bytes[31] &= 0xe0;
-    let mut key = bytes;
-    key[30..].fill(0xff);
-    let target = PathBuf::from(format!("../data/{}", hex::encode(key)));
-    let record = repository.join("objects").join(hex::encode({
-        let mut reference = bytes;
-        reference[31] |= 0x10;
-        reference
-    }));
-    match std::os::unix::fs::symlink(&target, &record) {
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if fs::read_link(&record).map_err(|error| error.to_string())? != target {
-                return Err("invalid object record".into());
-            }
-            Ok(())
-        }
-        result => result.map_err(|error| error.to_string()),
-    }
 }
 
 impl Imports {
@@ -137,16 +101,12 @@ impl Imports {
                     preprocessor::Import::Label(name) => Kind::Label(name.clone()),
                     preprocessor::Import::File(path) => Kind::File(base.join(path)),
                     preprocessor::Import::Compile(path) => Kind::Compile(base.join(path)),
-                    preprocessor::Import::Remote(reference) => Kind::Remote(reference.clone()),
                     preprocessor::Import::Todo { reference, uris } => {
                         if uris
                             .iter()
                             .any(|uri| uri.is_empty() || uri.chars().any(char::is_control))
                         {
                             return Err(String::from("invalid Todo URI"));
-                        }
-                        if let Some(reference) = reference {
-                            admit_reference(&self.repository, reference)?;
                         }
                         Kind::Todo {
                             reference: reference.clone(),
@@ -354,7 +314,6 @@ impl<'a> Expressions<'a> {
                 let module = self.client.file(path)?;
                 self.client.compilation(&module, None)
             }
-            Kind::Remote(reference) => crate::remotes::expression(reference).map_err(error),
             Kind::Todo {
                 reference,
                 uris,
@@ -382,9 +341,7 @@ impl<'a> Expressions<'a> {
 
     /// Parses `source` relative to `base` without evaluating it.
     pub fn parse(&mut self, source: &str, base: &Path) -> Result<Value, Error> {
-        let repository = PathBuf::from(self.client.repository());
         let mut imports = Imports {
-            repository,
             keys: Default::default(),
             records: Vec::new(),
             recorded: Default::default(),

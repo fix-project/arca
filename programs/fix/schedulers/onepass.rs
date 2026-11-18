@@ -26,8 +26,6 @@ use fixwasm::{Error, ThunkType, tree};
 pub struct OnePass<'a> {
     graph: &'a Graph,
     parallel: Parallel<'a>,
-    cluster: RefCell<Option<alloc::rc::Rc<Cluster>>>,
-    io: &'a fixscheduler::io::Io,
     advice: RefCell<BTreeMap<[u8; 32], u64>>,
     sketch: RefCell<Option<BTreeMap<Node, Job>>>,
 }
@@ -261,12 +259,10 @@ pub fn assign(
 
 impl<'a> OnePass<'a> {
     /// Use the supplied graph for local dependency evaluation.
-    pub fn new(graph: &'a Graph, io: &'a fixscheduler::io::Io) -> Result<Self, Error> {
+    pub fn new(graph: &'a Graph) -> Result<Self, Error> {
         Ok(Self {
             graph,
-            io,
             parallel: Parallel::new(graph)?,
-            cluster: RefCell::new(None),
             advice: RefCell::default(),
             sketch: RefCell::new(None),
         })
@@ -278,11 +274,7 @@ impl<'a> OnePass<'a> {
     }
 
     async fn cluster(&self) -> Result<alloc::rc::Rc<Cluster>, Error> {
-        if let Some(cluster) = self.cluster.borrow().clone() {
-            return Ok(cluster);
-        }
-        let connected = alloc::rc::Rc::new(Cluster::connect(self.io, true).await?);
-        Ok(self.cluster.borrow_mut().get_or_insert(connected).clone())
+        self.parallel.cluster().await
     }
 
     /// Connect to configured remotes and report local and remote worker information.
@@ -564,9 +556,14 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
     use fixscheduler::{executor, kernel::worker, storage};
     let graph = Graph::default();
     let io = fixscheduler::io::Io;
-    let policy = OnePass::new(&graph, &io)?;
+    let policy = OnePass::new(&graph)?;
     let result = executor::run(combination, &policy, &graph, &io)?;
-    let result = if !worker::returns_coupon()?
+    let raw = fixwasm::Value::equals(
+        &fixwasm::Value::get(combination, 2),
+        fixwasm::Blob::create(b"load"),
+    )?;
+    let result = if !raw
+        && !worker::returns_coupon()?
         && !fixwasm::Value::equals(
             &fixwasm::Value::get(combination, 2),
             fixwasm::Blob::create(b"todo"),
@@ -575,7 +572,7 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
     } else {
         result
     };
-    if worker::returns_coupon()? {
+    if !raw && worker::returns_coupon()? {
         storage::cache(&result, true)?;
     }
     worker::finish(&result)?;

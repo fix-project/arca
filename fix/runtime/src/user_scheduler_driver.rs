@@ -241,7 +241,13 @@ impl Services for RepositoryServices {
         &self,
         offers: &[fixremote::protocol::Offer],
     ) -> Result<Vec<[u8; 32]>, fixremote::Error> {
-        fixremote::missing(self.storage.repository(), offers)
+        let mut missing = Vec::new();
+        for name in fixremote::missing(self.storage.repository(), offers)? {
+            if !self.storage.persist_available(&name)? {
+                missing.push(name);
+            }
+        }
+        Ok(missing)
     }
     fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
         fixremote::import(self.storage.repository(), bytes, &self.remotes)

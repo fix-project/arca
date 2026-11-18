@@ -17,7 +17,7 @@ impl Remote {
         let mut names = hashbrown::HashSet::new();
         for remote in remotes {
             if remote.name.is_empty()
-                || remote.name.contains(':')
+                || remote.name.contains([':', '/', '\0'])
                 || remote.address.is_empty()
                 || remote.scheduler.as_deref() == Some("")
                 || remote.collector.as_deref() == Some("")
@@ -38,35 +38,18 @@ struct Config {
 }
 
 impl Repository {
-    fn remote_refs_path(&self, remote: &str) -> Result<String, RepositoryError> {
-        if remote.is_empty() {
-            return Err(RepositoryError::InvalidLabel);
-        }
-        Ok(format!("{}/remote_refs/{}", self.path, hex::encode(remote)))
-    }
-
     pub fn remote_refs(&self, remote: &str) -> Result<Vec<(String, [u8; 32])>, RepositoryError> {
-        let path = self.remote_refs_path(remote)?;
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(ErrorKind::NotFound) => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let refs: Vec<(String, [u8; 32])> =
-            serde_json::from_slice(&bytes).map_err(|_| RepositoryError::InvalidRepository)?;
-        self.validate_remote_refs(&refs)?;
-        Ok(refs)
-    }
-
-    fn validate_remote_refs(&self, refs: &[(String, [u8; 32])]) -> Result<(), RepositoryError> {
-        let mut names = hashbrown::HashSet::new();
-        for (label, name) in refs {
-            self.label_path(label)?;
-            if !names.insert(label) || !Handle::parse_ref(name)?.is_canonical() {
-                return Err(RepositoryError::InvalidRepository);
-            }
-        }
-        Ok(())
+        let prefix = format!("{remote}:");
+        self.labels()?
+            .into_iter()
+            .filter_map(|label| {
+                let suffix = label.strip_prefix(&prefix)?.into();
+                Some(
+                    self.read_label(&label)
+                        .map(|value| (suffix, *value.as_bytes())),
+                )
+            })
+            .collect()
     }
 
     pub fn set_remote_refs(
@@ -74,16 +57,33 @@ impl Repository {
         remote: &str,
         refs: Vec<(String, [u8; 32])>,
     ) -> Result<(), RepositoryError> {
-        self.validate_remote_refs(&refs)?;
-        let path = self.remote_refs_path(remote)?;
-        match fs::mkdir(&format!("{}/remote_refs", self.path)) {
-            Ok(()) | Err(ErrorKind::AlreadyExists) => (),
-            Err(error) => return Err(error.into()),
+        let mut names = hashbrown::HashSet::new();
+        let mut values = Vec::new();
+        for (label, name) in refs {
+            self.label_path(&label)?;
+            if !names.insert(label.clone()) {
+                return Err(RepositoryError::InvalidRepository);
+            }
+            let view = Handle::parse_ref(&name)?;
+            if !view.is_canonical() {
+                return Err(RepositoryError::NonCanonical);
+            }
+            let value = unsafe { view.to_owned() };
+            let value = match value.view() {
+                HandleView::Object(object) => object.into_ref().into(),
+                _ => value,
+            };
+            values.push((format!("{remote}:{label}"), value));
         }
-        self.write_atomic(
-            &path,
-            &serde_json::to_vec(&refs).map_err(|_| RepositoryError::InvalidRepository)?,
-        )
+        for (label, _) in self.remote_refs(remote)? {
+            if !names.contains(&label) {
+                self.remove_label(&format!("{remote}:{label}"))?;
+            }
+        }
+        for (label, value) in values {
+            self.write_label(&label, value)?;
+        }
+        Ok(())
     }
 
     pub fn remotes(&self) -> Result<Vec<Remote>, RepositoryError> {

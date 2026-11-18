@@ -1,7 +1,9 @@
-use crate::{Client, Shell, Value};
+use crate::Shell;
+use crate::shell::{Object, Reference, Thunk, Value};
+use fix::ValueType;
 use fixremote::{
     linux::RemoteConnection,
-    protocol::{self, Message, Transfer},
+    protocol::{self, Message},
 };
 use fixrepository::{Remote, Repository};
 use std::{error::Error, path::Path};
@@ -13,14 +15,6 @@ fn configured<'a>(remotes: &'a [Remote], name: &str) -> Result<&'a Remote> {
         .iter()
         .find(|remote| remote.name == name)
         .ok_or_else(|| format!("unknown remote {name:?}").into())
-}
-
-fn split(reference: &str) -> Result<(&str, &str)> {
-    let (remote, label) = reference.split_once(':').ok_or("expected REMOTE:LABEL")?;
-    if remote.is_empty() || label.is_empty() {
-        return Err("expected REMOTE:LABEL".into());
-    }
-    Ok((remote, label))
 }
 
 fn receive(stream: &mut RemoteConnection) -> Result<Message> {
@@ -163,29 +157,98 @@ pub fn clone(
     Ok(())
 }
 
-pub fn sync(shell: &Shell, remote: Option<&str>) -> Result<()> {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Shallow,
+    Strict,
+    Exact,
+}
+
+impl std::str::FromStr for Mode {
+    type Err = Box<dyn Error>;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "shallow" => Ok(Self::Shallow),
+            "strict" => Ok(Self::Strict),
+            "exact" => Ok(Self::Exact),
+            _ => Err(format!(
+                "unknown transfer mode {value:?}; expected shallow, strict, or exact"
+            )
+            .into()),
+        }
+    }
+}
+
+impl Mode {
+    pub fn configured(operation: &str, override_mode: Option<Self>) -> Result<Self> {
+        if let Some(mode) = override_mode {
+            return Ok(mode);
+        }
+        crate::configuration::settings()?
+            .get(&format!("{operation}.mode"))
+            .map(|value| value.parse())
+            .unwrap_or(Ok(Self::default()))
+    }
+
+    fn realize(self, value: Value) -> Result<Value> {
+        if self == Self::Exact {
+            return Shell::with(|client| client.load(value.inner()))
+                .map(Value::from_inner)
+                .map_err(Into::into);
+        }
+        let thunk = match value.value_type() {
+            ValueType::Object => Object::try_from(value)?.reference().identification(),
+            ValueType::Ref => Reference::try_from(value)?.identification(),
+            ValueType::Thunk => Thunk::try_from(value)?,
+            ValueType::Encode => {
+                let value = Shell::with(|client| -> std::result::Result<_, crate::Error> {
+                    let handle = client.handle(value.inner())?;
+                    let fixhandle::HandleView::Encode(encode) = handle.view() else {
+                        unreachable!()
+                    };
+                    let thunk = match encode.view() {
+                        fixhandle::EncodeView::Strict(thunk)
+                        | fixhandle::EncodeView::Shallow(thunk) => thunk,
+                    };
+                    Ok(Value::from_inner(client.keep(thunk.into())))
+                })?;
+                Thunk::try_from(value)?
+            }
+        };
+        let encoded = match self {
+            Self::Shallow => thunk.shallow(),
+            Self::Strict => thunk.strict(),
+            Self::Exact => unreachable!(),
+        };
+        encoded.eval().map_err(Into::into)
+    }
+}
+
+pub(crate) fn resolve(repository: &Repository, reference: &str) -> Result<[u8; 32]> {
+    Ok(*repository.read_label(reference)?.as_bytes())
+}
+
+pub fn pull(
+    shell: &mut Shell,
+    remote: Option<&str>,
+    source: Option<&str>,
+    destination: Option<&str>,
+    mode: Mode,
+) -> Result<()> {
     let config = shell.remote_config()?;
     let remotes = match remote {
         Some(name) => std::slice::from_ref(configured(&config.remotes, name)?),
         None => config.remotes.as_slice(),
     };
+    if source.is_some() && remote.is_none() {
+        return Err("pull SOURCE requires a remote".into());
+    }
     let repository = Repository::open(&shell.repository())?;
     let mut failures = Vec::new();
     for remote in remotes {
-        common::progress::println(format!(
-            "contacting {} for {} refs",
-            remote.address, remote.name
-        ));
-        let result = fetch_refs(remote).and_then(|refs| {
-            let count = refs.len();
-            repository.set_remote_refs(&remote.name, refs)?;
-            common::progress::println(format!(
-                "synced {count} refs from {}; no objects fetched",
-                remote.name
-            ));
-            Ok(())
-        });
-        if let Err(error) = result {
+        if let Err(error) = pull_remote(shell, &repository, remote, source, destination, mode) {
             failures.push(format!("remote {}: {error}", remote.name));
         }
     }
@@ -196,309 +259,188 @@ pub fn sync(shell: &Shell, remote: Option<&str>) -> Result<()> {
     }
 }
 
-pub(crate) fn resolve(repository: &Repository, reference: &str) -> Result<[u8; 32]> {
-    let (remote, label) = split(reference)?;
-    repository
-        .remote_refs(remote)?
-        .into_iter()
-        .find(|(candidate, _)| candidate == label)
-        .map(|(_, name)| name)
-        .ok_or_else(|| format!("unknown remote ref {reference:?}; run fix sync {remote}").into())
-}
-
-pub(crate) fn fetch(client: &mut Client, reference: &str, backing: bool) -> Result<Value> {
-    let progress = common::progress::Progress::activity(format!("Load {reference} -> local"));
-    progress.message("locating the remote ref");
-    let (remote, _) = split(reference)?;
-    let config = client.remote_config()?;
-    let configuration = configured(&config.remotes, remote)?;
-    let repository = Repository::open(client.repository())?.with_policy(config.policy.clone());
-    let file = file_repository(configuration)?;
-    let name = resolve(&repository, reference)?;
-    common::progress::println(format!(
-        "fetching {reference} from {}",
-        configuration.address
-    ));
-    progress.message("enumerating the remote value and its coupons");
-    let (mut transfer, backing_names, mut stream) = if let Some(source) = &file {
-        let root = source.lookup(&name)?;
-        let (transfer, objects) = fixremote::propose_export(source, root, backing)
-            .map_err(|error| format!("exporting {reference}: {error}"))?;
-        (transfer, objects, None)
-    } else {
-        let mut stream = RemoteConnection::connect(configuration)?;
-        send(
-            &mut stream,
-            Message::RequestObject {
-                name,
-                trusted_keys: config.policy.authorized_keys,
-                backing,
-            },
-        )?;
-        match receive(&mut stream)? {
-            Message::ProposeObject { transfer, backing } => (transfer, backing, Some(stream)),
-            Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
-            reply => {
-                return Err(format!(
-                    "remote {remote} returned {reply:?} while fetching {reference}"
-                )
-                .into());
-            }
-        }
-    };
-    if transfer.roots != [name] {
-        return Err("remote returned a different value".into());
-    }
-    let mut records = std::collections::BTreeMap::new();
-    for (index, record) in transfer.records.iter().enumerate() {
-        if record.data.is_some() || records.insert(record.name, index).is_some() {
-            return Err("remote supplied an invalid object manifest".into());
-        }
-    }
-    let mut requested = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut total = 0u64;
-    for name in backing_names {
-        if !records.contains_key(&name) || !seen.insert(name) {
-            return Err("remote offered backing outside its object manifest".into());
-        }
-        let handle = fixhandle::Handle::parse_ref(&name)
-            .map_err(|error| format!("invalid object in remote manifest: {error:?}"))?;
-        if !handle.is_canonical() || !matches!(handle.view(), fixhandle::HandleBytesView::Object(_))
-        {
-            return Err("remote offered backing for a noncanonical Object".into());
-        }
-        total = total
-            .checked_add(handle.byte_len())
-            .ok_or("remote transfer size overflow")?;
-        requested.push(name);
-    }
-    if let Some(stream) = &mut stream {
-        send(stream, Message::AcceptObject(requested.clone()))?;
-    }
-    progress.message(format!(
-        "retrieving {} objects ({total} backing bytes)",
-        requested.len()
-    ));
-    let download = common::progress::Progress::bytes(format!("Load {reference} -> local"), total);
-    for name in requested {
-        let length = fixhandle::Handle::parse_ref(&name).unwrap().byte_len();
-        let mut data = Vec::new();
-        let mut offset = 0;
-        while offset < length {
-            let chunk_length = (length - offset).min(protocol::OBJECT_CHUNK_SIZE as u64) as usize;
-            let chunk =
-                if let Some(source) = &file {
-                    let object = fixhandle::Object::try_from(source.lookup(&name)?)
-                        .map_err(|error| format!("invalid backing Object: {error:?}"))?;
-                    let chunk = source
-                        .read_backing_range(object, offset, chunk_length)
-                        .map_err(|error| format!("reading {reference}: {error}"))?;
-                    download.inc(chunk.len() as u64);
-                    chunk
-                } else {
-                    let mut previous = 0;
-                    let message = protocol::receive_observed(
-                        stream.as_mut().unwrap(),
-                        protocol::OBJECT_CHUNK_SIZE + 1024,
-                        |received, total| {
-                            let overhead = total.saturating_sub(chunk_length as u64);
-                            let backing_received = received.saturating_sub(overhead);
-                            download.inc(backing_received - previous);
-                            previous = backing_received;
-                        },
-                    )
-                    .map_err(|error| {
-                        format!(
-                            "receiving backing for {} at byte {offset}: {error}",
-                            hex::encode(name)
-                        )
-                    })?;
-                    match message {
-                        Some(Message::ObjectChunk {
-                            name: received,
-                            offset: position,
-                            data,
-                        }) if received == name && position == offset => data,
-                        Some(Message::Failure(error)) => {
-                            return Err(format!("remote {remote}: {error}").into());
-                        }
-                        None => {
-                            return Err(format!(
-                                "remote closed before sending backing for {} at byte {offset}",
-                                hex::encode(name)
-                            )
-                            .into());
-                        }
-                        _ => return Err(format!(
-                            "remote sent an unexpected response for backing {} at byte {offset}",
-                            hex::encode(name)
-                        )
-                        .into()),
-                    }
-                };
-            if chunk.len() != chunk_length {
-                return Err(format!(
-                    "remote backing for {} at byte {offset} has {} bytes; expected {chunk_length}",
-                    hex::encode(name),
-                    chunk.len()
-                )
-                .into());
-            }
-            offset += chunk.len() as u64;
-            data.extend_from_slice(&chunk);
-        }
-        transfer.records[records[&name]].data = Some(data);
-    }
-    download.finish();
-    if !backing
-        && matches!(
-            fixhandle::Handle::parse_ref(&name)
-                .map_err(|error| format!("invalid remote ref: {error:?}"))?
-                .view(),
-            fixhandle::HandleBytesView::Object(_)
-        )
-    {
-        transfer.roots[0][31] |= 0x10;
-    }
-    progress.message("validating and storing the received value");
-    let encoded = transfer.encode()?;
-    let roots = client
-        .import(&encoded)
-        .map_err(|error| format!("importing {reference}: {error}"))?;
-    let [value] = roots.as_slice() else {
-        return Err("remote returned the wrong number of values".into());
-    };
-    progress.finish();
-    Ok(value.clone())
-}
-
-pub(crate) fn expression(reference: &str) -> Result<crate::shell::Value> {
-    Shell::with(|client| fetch(client, reference, false)).map(fix::Value::from_inner)
-}
-
-pub fn pull(
-    _shell: &mut Shell,
-    reference: &str,
-    local: Option<&str>,
-    shallow: bool,
-    force: bool,
+fn pull_remote(
+    shell: &mut Shell,
+    repository: &Repository,
+    remote: &Remote,
+    source: Option<&str>,
+    destination: Option<&str>,
+    mode: Mode,
 ) -> Result<()> {
-    let (_, label) = split(reference)?;
-    Shell::with(|client| {
-        let local = local.unwrap_or(label);
-        if !force
-            && Repository::open(client.repository())?
-                .labels()?
-                .iter()
-                .any(|label| label == local)
-        {
-            return Err(format!(
-                "local label {local:?} already exists; use --force to overwrite it"
-            )
-            .into());
+    let refs = fetch_refs(remote)?;
+    let selected = match source {
+        Some(source) => vec![
+            refs.iter()
+                .find(|(label, _)| label == source)
+                .cloned()
+                .ok_or_else(|| format!("remote {} has no label {source:?}", remote.name))?,
+        ],
+        None => refs.clone(),
+    };
+    let refs = if source.is_some() {
+        let mut current = repository.remote_refs(&remote.name)?;
+        current.retain(|(label, _)| selected.iter().all(|(source, _)| source != label));
+        current.extend(selected.clone());
+        current
+    } else {
+        refs
+    };
+    repository.set_remote_refs(&remote.name, refs)?;
+    for (label, name) in selected {
+        let reference = format!("{}:{label}", remote.name);
+        let value = shell.label_value(&reference)?;
+        let mut value = mode
+            .realize(value)
+            .map_err(|error| format!("pulling {reference}: {error}"))?;
+        if mode == Mode::Exact {
+            value = shell.lookup(&hex::encode(name))?;
         }
-        let value = fetch(client, reference, !shallow)?;
-        client.label_imported(local, &value)?;
-        if shallow {
-            common::progress::println(format!(
-                "saved a shallow value for {reference} as local label {local}"
-            ));
-        } else {
-            common::progress::println(format!("saved {reference} as local label {local}"));
-        }
-        Ok(())
-    })
+        let target = destination.unwrap_or(&reference);
+        Shell::with(|client| client.label_imported(target, value.inner()))?;
+        common::progress::println(format!("saved {reference} as {target}"));
+    }
+    Ok(())
 }
 
-pub fn push(shell: &mut Shell, local: &str, reference: &str) -> Result<()> {
-    let (remote, label) = split(reference)?;
+pub fn push(
+    shell: &mut Shell,
+    remote: &str,
+    source: Option<&str>,
+    destination: Option<&str>,
+    mode: Mode,
+) -> Result<()> {
     let config = shell.remote_config()?;
     let configuration = configured(&config.remotes, remote)?;
-    let target = file_repository(configuration)?;
     if configuration.address.starts_with("tcp://") {
-        return Err("push requires an SSH remote".into());
+        return Err("push requires an SSH or file remote".into());
     }
     let repository = Repository::open(&shell.repository())?;
-    let expected = repository
-        .remote_refs(remote)?
-        .into_iter()
-        .find(|(candidate, _)| candidate == label)
-        .map(|(_, name)| name);
-    common::progress::println(format!(
-        "pushing {local} to {reference} at {}",
-        configuration.address
-    ));
-    let value = shell.label_value(local)?;
-    let mut transfer = Transfer::decode(&shell.export(&[value], &[])?)?;
-    let [name] = transfer.roots.as_slice() else {
-        return Err("local label has no value".into());
+    let labels = match source {
+        Some(source) => vec![source.to_owned()],
+        None => repository.labels()?,
     };
-    let name = *name;
-    if let Some(target) = target {
-        let keys = target.policy()?.authorized_keys;
-        transfer = protocol::prepare_transfer(transfer, &keys, |name, keys| {
-            shell.certify(name, keys).map_err(|error| error.to_string())
-        })?;
-        let bytes = transfer.encode()?;
-        fixremote::import(&target, &bytes, &config)?;
-        let value = target.lookup(&name)?;
-        target.compare_and_write_label(label, expected, value)?;
-        let mut refs = repository.remote_refs(remote)?;
-        if let Some((_, current)) = refs.iter_mut().find(|(candidate, _)| candidate == label) {
-            *current = name;
-        } else {
-            refs.push((label.into(), name));
-        }
-        repository.set_remote_refs(remote, refs)?;
-        common::progress::println(format!("updated remote label {reference}"));
-        return Ok(());
-    }
-    let mut stream = RemoteConnection::connect(configuration)?;
-    send(&mut stream, Message::RequestTrustedKeys)?;
-    let keys = match receive(&mut stream)? {
-        Message::TrustedKeys(keys) => keys,
-        Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
-        reply => return Err(format!("remote returned {reply:?} instead of trusted keys").into()),
-    };
-    transfer = protocol::prepare_transfer(transfer, &keys, |name, keys| {
-        shell.certify(name, keys).map_err(|error| error.to_string())
-    })?;
-    send(&mut stream, Message::SubmitObject(transfer))?;
-    match receive(&mut stream)? {
-        Message::ObjectReceived(received) if received == name => (),
-        Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
-        reply => {
-            return Err(
-                format!("remote {remote} returned {reply:?} while importing the value").into(),
-            );
-        }
-    }
-    common::progress::println(format!("{remote} accepted the data for {reference}"));
-    send(
-        &mut stream,
-        Message::UpdateLabel {
-            label: label.into(),
-            expected,
-            value: name,
-        },
-    )?;
-    match receive(&mut stream)? {
-        Message::LabelUpdated => (),
-        Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
-        reply => {
-            return Err(
-                format!("remote {remote} returned {reply:?} while updating {label}").into(),
-            );
-        }
-    }
-    let mut refs = repository.remote_refs(remote)?;
-    if let Some((_, current)) = refs.iter_mut().find(|(candidate, _)| candidate == label) {
-        *current = name;
+    let target = file_repository(configuration)?;
+    let mut stream = if target.is_none() {
+        Some(RemoteConnection::connect(configuration)?)
     } else {
+        None
+    };
+    let current = if let Some(target) = &target {
+        file_refs(target)?
+    } else {
+        let stream = stream.as_mut().unwrap();
+        send(stream, Message::RequestLabels)?;
+        match receive(stream)? {
+            Message::Labels(labels) => labels,
+            Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
+            reply => return Err(format!("expected remote labels, received {reply:?}").into()),
+        }
+    };
+    for local in labels {
+        let label = destination.unwrap_or(&local);
+        let reference = format!("{remote}:{label}");
+        let value = shell.label_value(&local)?;
+        let value = mode
+            .realize(value)
+            .map_err(|error| format!("preparing {local} for {reference}: {error}"))?;
+        let value = if mode == Mode::Exact {
+            value
+        } else {
+            Mode::Exact
+                .realize(value)
+                .map_err(|error| format!("loading backing for {reference}: {error}"))?
+        };
+        let name = shell.save(&value)?;
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(&name, &mut bytes)
+            .map_err(|error| format!("invalid saved Fix name {name}: {error}"))?;
+        let name = bytes;
+        let root = repository.lookup(&name)?;
+        let (mut transfer, backing) = fixremote::propose_export(&repository, root, true)?;
+        let expected = current
+            .iter()
+            .find(|(candidate, _)| candidate == label)
+            .map(|(_, name)| *name);
+        if let Some(target) = &target {
+            let offers: Vec<_> = transfer
+                .records
+                .iter()
+                .map(|record| {
+                    let mut offer = record.offer();
+                    offer.backing = backing.contains(&record.name);
+                    offer
+                })
+                .collect();
+            let missing = fixremote::missing(target, &offers)?;
+            for record in &mut transfer.records {
+                if missing.contains(&record.name) && backing.contains(&record.name) {
+                    record.data = Some(read_backing(&repository, record.name)?);
+                } else {
+                    record.certificates.clear();
+                }
+            }
+            let keys = target.policy()?.authorized_keys;
+            transfer = protocol::prepare_transfer(transfer, &keys, |name, keys| {
+                shell.certify(name, keys).map_err(|error| error.to_string())
+            })?;
+            fixremote::import(target, &transfer.encode()?, &config)?;
+            let value = target.lookup(&name)?;
+            target.compare_and_write_label(label, expected, value)?;
+        } else {
+            let stream = stream.as_mut().unwrap();
+            fixremote::transport::complete(protocol::asynchronous::send_proposal(
+                &mut fixremote::transport::Blocking(&mut *stream),
+                protocol::MAX_MESSAGE_SIZE,
+                None,
+                Some(name),
+                (transfer, backing),
+                |name| read_backing(&repository, name).map_err(|error| error.to_string()),
+                |name, keys| shell.certify(name, keys).ok(),
+            ))
+            .map_err(|error| format!("transferring {local} to {reference}: {error}"))?;
+            match receive(stream)? {
+                Message::ObjectReceived(received) if received == name => (),
+                Message::Failure(error) => return Err(format!("remote {remote}: {error}").into()),
+                reply => {
+                    return Err(format!(
+                        "remote {remote} returned {reply:?} while importing {local}"
+                    )
+                    .into());
+                }
+            }
+            send(
+                stream,
+                Message::UpdateLabel {
+                    label: label.into(),
+                    expected,
+                    value: name,
+                },
+            )?;
+            match receive(stream)? {
+                Message::LabelUpdated => (),
+                Message::Failure(error) => {
+                    return Err(format!("updating {reference}: {error}").into());
+                }
+                reply => {
+                    return Err(format!(
+                        "remote {remote} returned {reply:?} while updating {reference}"
+                    )
+                    .into());
+                }
+            }
+        }
+        let mut refs = repository.remote_refs(remote)?;
+        refs.retain(|(candidate, _)| candidate != label);
         refs.push((label.into(), name));
+        repository.set_remote_refs(remote, refs)?;
+        common::progress::println(format!("updated {reference} from {local}"));
     }
-    repository.set_remote_refs(remote, refs)?;
-    common::progress::println(format!("updated remote label {reference}"));
     Ok(())
+}
+
+fn read_backing(repository: &Repository, name: [u8; 32]) -> Result<Vec<u8>> {
+    let object = fixhandle::Object::try_from(repository.lookup(&name)?)
+        .map_err(fixrepository::RepositoryError::from)?;
+    let length = usize::try_from(object.byte_len())?;
+    Ok(repository.read_backing_range(object, 0, length)?)
 }

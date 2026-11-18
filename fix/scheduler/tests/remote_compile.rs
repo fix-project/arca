@@ -91,7 +91,11 @@ fn cloned_compilation_thunks_can_be_applied() {
     let repository = source.directory.join("repo");
     std::fs::create_dir(&repository).unwrap();
     source.run(&repository, &["init"], None);
-    source.run(&repository, &["sync", "bootstrap"], None);
+    source.run(
+        &repository,
+        &["pull", "--exact", "bootstrap", "compile"],
+        None,
+    );
     let module = fixture(env!("MODULE"));
     let wasm = source.run(
         &repository,
@@ -113,7 +117,7 @@ fn cloned_compilation_thunks_can_be_applied() {
         &[
             "-l",
             "addblob",
-            "#(\"\" *'@remote(\"bootstrap:compile\") @label(\"addblob.wasm\"))",
+            "#(\"\" *'@label(\"bootstrap:compile\") @label(\"addblob.wasm\"))",
         ],
         None,
     );
@@ -140,10 +144,9 @@ fn cloned_compilation_thunks_can_be_applied() {
         Some(&bin),
     );
     let cloned = destination.directory.join("repo");
-    destination.run(&cloned, &["pull", "origin:addblob"], Some(&bin));
     let evaluated = destination.run(
         &cloned,
-        &["*#(\"\" *@label(\"addblob\") 20u64 22u64)"],
+        &["*#(\"\" *@label(\"origin:addblob\") 20u64 22u64)"],
         Some(&bin),
     );
     eprintln!("{}", String::from_utf8_lossy(&evaluated.stderr));

@@ -6,7 +6,7 @@ use crate::{
     shell::{Value, child, fields},
 };
 use alloc::{format, string::String, vec::Vec};
-pub use cluster::{Cluster, Failure, PendingEvaluation};
+pub use cluster::{Cluster, Failure, PendingTransfer};
 use fixwasm::{Blob, Error, Tree, Value as AsValue, tree};
 
 pub use fixprotocol as protocol;
@@ -408,4 +408,14 @@ impl embedded_io::Error for IoError {
     fn kind(&self) -> embedded_io::ErrorKind {
         embedded_io::ErrorKind::Other
     }
+}
+
+/// Read one offered object's backing after the receiver has selected it.
+pub fn read_object(name: protocol::Name) -> Result<Vec<u8>, String> {
+    let length = fixhandle::Handle::parse_ref(&name)
+        .map_err(|error| format!("invalid backing name: {error:?}"))?
+        .byte_len();
+    let length =
+        usize::try_from(length).map_err(|_| String::from("backing exceeds address space"))?;
+    read_backing(name, 0, length)
 }

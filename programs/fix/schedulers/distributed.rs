@@ -110,7 +110,12 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
         cluster: RefCell::new(None),
     };
     let result = executor::run(combination, &policy, &graph, &io)?;
-    let result = if !worker::returns_coupon()?
+    let raw = fixwasm::Value::equals(
+        &fixwasm::Value::get(combination, 2),
+        fixwasm::Blob::create(b"load"),
+    )?;
+    let result = if !raw
+        && !worker::returns_coupon()?
         && !fixwasm::Value::equals(
             &fixwasm::Value::get(combination, 2),
             fixwasm::Blob::create(b"todo"),
@@ -119,7 +124,7 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
     } else {
         result
     };
-    if worker::returns_coupon()? {
+    if !raw && worker::returns_coupon()? {
         storage::cache(&result, true)?;
     }
     worker::finish(&result)?;

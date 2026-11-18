@@ -152,17 +152,16 @@ pub struct Cluster {
     inventories: Vec<Information>,
 }
 
-/// One outstanding evaluation owns its connection until completion.
-pub struct PendingEvaluation {
+/// One outstanding transfer owns its connection until completion.
+pub struct PendingTransfer {
     slot: Weak<RefCell<PeerSlot>>,
     peer: Option<Peer>,
-    task: Task,
+    task: Option<Task>,
     input: Value,
     names: Vec<super::protocol::Name>,
-    operation: u64,
 }
 
-impl Drop for PendingEvaluation {
+impl Drop for PendingTransfer {
     fn drop(&mut self) {
         if let Some(peer) = self.peer.take() {
             drop(peer.connection);
@@ -324,13 +323,46 @@ impl Cluster {
             .collect()
     }
 
+    /// Request data using the same proposal, acceptance, and import exchange as evaluations.
+    pub async fn request_transfer(
+        &self,
+        location: usize,
+        input: &Value,
+    ) -> Result<Option<Value>, Failure> {
+        let Some(slot) = location
+            .checked_sub(1)
+            .and_then(|index| self.peers.get(index))
+        else {
+            return Ok(None);
+        };
+        let Some(peer) = PeerSlot::take(slot).await else {
+            return Ok(None);
+        };
+        let mut name = storage::canonical_value(input)?.raw_handle_bytes()?;
+        name[31] &= 0xe0;
+        let mut pending = PendingTransfer {
+            slot: Rc::downgrade(slot),
+            peer: Some(peer),
+            task: None,
+            input: input.clone(),
+            names: Vec::new(),
+        };
+        protocol::asynchronous::send(
+            &mut pending.peer.as_mut().unwrap().connection,
+            Message::RequestTransfer(name),
+        )
+        .await
+        .map_err(Failure::Send)?;
+        pending.receive().await.map(Some)
+    }
+
     /// Transfer the inputs and start evaluation, leaving completion to `receive`.
     pub async fn submit(
         &self,
         location: usize,
         operation: u64,
         input: &Value,
-    ) -> Result<Option<PendingEvaluation>, Failure> {
+    ) -> Result<Option<PendingTransfer>, Failure> {
         if !matches!(operation, 1 | 4 | 2 | 3 | 6) || location == 0 {
             return Ok(None);
         }
@@ -356,7 +388,7 @@ impl Cluster {
         operation: u64,
         input: &Value,
         transfer: Transfer,
-    ) -> Result<Option<PendingEvaluation>, Failure> {
+    ) -> Result<Option<PendingTransfer>, Failure> {
         let Some(slot) = location
             .checked_sub(1)
             .and_then(|index| self.peers.get(index))
@@ -382,20 +414,19 @@ impl Cluster {
         let Some(peer) = PeerSlot::take(slot).await else {
             return Ok(None);
         };
-        let mut pending = PendingEvaluation {
+        let mut pending = PendingTransfer {
             slot: Rc::downgrade(slot),
             peer: Some(peer),
-            task,
+            task: Some(task),
             input,
             names,
-            operation,
         };
         let remote = pending.peer.as_ref().unwrap().name.clone();
         let _load = crate::progress::load(&pending.input, "", &remote);
         protocol::asynchronous::send_transfer(
             &mut pending.peer.as_mut().unwrap().connection,
             protocol::MAX_MESSAGE_SIZE,
-            &pending.task,
+            pending.task.as_ref().unwrap(),
             None,
             transfer,
             |name, keys| super::certify(name, keys).ok(),
@@ -475,8 +506,8 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
     Ok(initial)
 }
 
-impl PendingEvaluation {
-    /// Wait for a submitted evaluation and return its validated coupon.
+impl PendingTransfer {
+    /// Import an accepted transfer, checking the expected result or evaluation coupon.
     pub async fn receive(mut self) -> Result<Value, Failure> {
         let trusted_keys = super::trusted_keys()?;
         let peer = self.peer.as_mut().ok_or(Failure::Closed)?;
@@ -521,11 +552,22 @@ impl PendingEvaluation {
         let [coupon] = roots.as_slice() else {
             return Err(Failure::Coupon);
         };
-        let coupon = crate::collector::validate(coupon.clone(), self.operation, &self.input)?
-            .ok_or(Failure::Coupon)?;
+        let coupon = if let Some(task) = &self.task {
+            crate::collector::validate(coupon.clone(), task.operation, &self.input)?
+                .ok_or(Failure::Coupon)?
+        } else {
+            let mut expected = storage::canonical_value(&self.input)?.raw_handle_bytes()?;
+            expected[31] &= 0xe0;
+            if incoming.result != Some(expected) || coupon.raw_handle_bytes()? != expected {
+                return Err(Failure::Task);
+            }
+            coupon.clone()
+        };
         peer.information.data.append(&mut self.names);
-        if !peer.information.results.contains(&self.task) {
-            peer.information.results.push(self.task.clone());
+        if let Some(task) = &self.task
+            && !peer.information.results.contains(task)
+        {
+            peer.information.results.push(task.clone());
         }
         if reusable && let Some(slot) = self.slot.upgrade() {
             slot.borrow_mut().peer = self.peer.take();

@@ -60,6 +60,22 @@ impl RepositoryStorage {
         Ok(handle)
     }
 
+    /// Persist an Object already available in memory or a local source repository.
+    pub fn persist_available(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<bool, RepositoryError> {
+        let Ok(handle) = self.identify(bytes) else {
+            return Ok(false);
+        };
+        let object = Object::try_from(handle)?;
+        let available = match object.view() {
+            ObjectView::Blob(blob) => self.has_blob(*blob),
+            ObjectView::Tree(tree) => self.has_tree(*tree),
+        };
+        if available {
+            self.save(handle)?;
+        }
+        Ok(available)
+    }
+
     fn publish(&self, handle: Handle) -> Result<(), RepositoryError> {
         let object = match handle.view() {
             HandleView::Object(object) => *object,

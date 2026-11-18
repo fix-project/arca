@@ -6,7 +6,7 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "client",
     crate_name = "fixcli",
-    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "expressions.rs", "remotes.rs", "trust.rs", "bootstrap_store.rs", "session.rs", "configuration.rs", "serve.rs"],
+    srcs = ["lib.rs", "shell.rs", "archive.rs", "commands.rs", "info.rs", "expressions.rs", "remotes.rs", "trust.rs", "bootstrap_store.rs", "session.rs", "configuration.rs", "serve.rs"],
     crate_root = "lib.rs",
     edition = "2024",
     deps = [

@@ -14,6 +14,7 @@ pub mod bootstrap_store;
 pub mod commands;
 pub mod configuration;
 pub mod expressions;
+mod info;
 pub mod remotes;
 pub mod shell;
 pub use shell::Shell;
@@ -324,7 +325,13 @@ impl Client {
     }
 
     pub fn missing(&self, offers: &[fixremote::protocol::Offer]) -> Result<Vec<[u8; 32]>, Error> {
-        fixremote::missing(self.storage.repository(), offers).map_err(error)
+        let mut missing = Vec::new();
+        for name in fixremote::missing(self.storage.repository(), offers).map_err(error)? {
+            if !self.storage.persist_available(&name).map_err(error)? {
+                missing.push(name);
+            }
+        }
+        Ok(missing)
     }
 
     pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
@@ -354,10 +361,6 @@ impl Client {
         Ok(self.keep(handle))
     }
     pub fn lookup(&mut self, name: &str) -> Result<Value, Error> {
-        if name.contains(':') {
-            return crate::remotes::fetch(self, name, true)
-                .map_err(|error| Error::Backend(error.to_string()));
-        }
         if name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             let mut bytes = [0; 32];
             hex::decode_to_slice(name, &mut bytes).map_err(error)?;
@@ -541,6 +544,13 @@ impl Client {
         let scheduler = self.lookup(&self.options.scheduler.clone())?;
         let limits = self.blob(b"")?;
         self.tree(&[limits, scheduler, mode, collector.clone(), input.clone()])
+    }
+
+    /// Load backing through the scheduler, preserving the input value.
+    pub fn load(&mut self, value: &Value) -> Result<Value, Error> {
+        let collector = self.lookup(&self.options.collector.clone())?;
+        let combination = self.scheduler_request("load", &collector, value)?;
+        self.schedule(&combination)
     }
 
     /// Performs one Think step on `value` and returns its result.

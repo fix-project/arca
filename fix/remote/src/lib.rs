@@ -128,8 +128,16 @@ fn export_plan(
         };
         let mut certificates = Vec::new();
         if matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag()) {
-            let available: BTreeMap<_, _> = repository
-                .tag_certificates(object.into())?
+            let available = if !available
+                && repository
+                    .certificate_blobs(object.as_handle().as_bytes())?
+                    .is_empty()
+            {
+                Vec::new()
+            } else {
+                repository.tag_certificates(object.into())?
+            };
+            let available: BTreeMap<_, _> = available
                 .into_iter()
                 .map(|certificate| {
                     Ok((
@@ -154,6 +162,12 @@ fn export_plan(
                 certificates.push(CertificateRef { key, blob: name });
             }
         }
+        let todo = repository
+            .get_todo(object.into_ref())?
+            .map(|value| *value.as_bytes());
+        if !available && certificates.is_empty() && todo.is_none() {
+            continue;
+        }
         let name = *object.as_handle().as_bytes();
         let record = records.entry(name).or_insert(Record {
             name,
@@ -164,9 +178,7 @@ fn export_plan(
         if data.is_some() {
             record.data = data;
         }
-        record.todo = repository
-            .get_todo(object.into_ref())?
-            .map(|value| *value.as_bytes());
+        record.todo = todo;
     }
     let transfer = Transfer {
         roots: roots.iter().map(|value| *value.as_bytes()).collect(),
@@ -413,7 +425,9 @@ pub fn import(
                 display_name(&record.name)
             ))
         })?;
-        if matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag()) {
+        if matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag())
+            && (record.data.is_some() || !record.certificates.is_empty())
+        {
             let available = if record.certificates.is_empty() && config.policy.unsigned {
                 Vec::new()
             } else if record.certificates.is_empty() {
@@ -497,6 +511,9 @@ pub fn import(
     }
     let admitted = |bytes: &[u8; 32], require_backing: bool| -> Result<(), Error> {
         let handle = canonical(bytes)?;
+        if !require_backing || !matches!(handle.view(), HandleView::Object(_)) {
+            return Ok(());
+        }
         let mut object = *bytes;
         object[31] &= 0xe0;
         let supplied = if require_backing && matches!(handle.view(), HandleView::Object(_)) {

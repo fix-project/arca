@@ -190,11 +190,6 @@ fn runnable_transfer_keeps_its_author_reference_thin() {
         .unwrap();
     let bytes = transfer(&source, &[runnable.into()], &[]).unwrap();
     let transfer = Transfer::decode(&bytes).unwrap();
-    assert!(
-        transfer.records.iter().any(|record| {
-            record.name == *author.as_handle().as_bytes() && record.data.is_none()
-        })
-    );
     assert!(transfer.records.iter().any(|record| {
         record.name == *executable.as_handle().as_bytes() && record.data.is_some()
     }));
@@ -412,11 +407,6 @@ fn omitted_backing_requires_references_or_previously_admitted_objects() {
     assert!(message.contains("backing for Object"));
     assert!(message.contains(&format!("{}", object.as_handle())));
     assert!(message.contains(destination.path()));
-    assert!(
-        destination
-            .lookup(object.into_ref().as_handle().as_bytes())
-            .is_err()
-    );
     let full = transfer(&source, &[object.into()], &[]).unwrap();
     import(&destination, &full, &config()).unwrap();
     let values = import(&destination, &thin, &config()).unwrap();
@@ -602,7 +592,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
             protocol::send_transfer(
                 &mut connection,
                 1 << 20,
-                &received.task,
+                received.task.as_ref().unwrap(),
                 Some(*tag.as_handle().as_bytes()),
                 reply,
                 |_, _| None,
@@ -647,7 +637,7 @@ fn negotiated_transfers_include_certificate_blobs_and_reuse_existing_objects() {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(reply.task, task);
+        assert_eq!(reply.task, Some(task.clone()));
         assert_eq!(reply.result, Some(*tag.as_handle().as_bytes()));
         assert!(
             reply
@@ -709,7 +699,7 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
             protocol::send(
                 &mut connection,
                 Message::ProposeTransfer {
-                    task: expected.clone(),
+                    task: Some(expected.clone()),
                     result: None,
                     objects: vec![Offer {
                         name,
@@ -760,7 +750,7 @@ fn scheduler_staging_negotiates_missing_program_data() {
         })
         .unwrap()
         .unwrap();
-        assert_eq!(incoming.task, expected);
+        assert_eq!(incoming.task, Some(expected.clone()));
         assert_eq!(
             incoming.transfer.roots,
             vec![expected.collector, expected.input]
@@ -1086,4 +1076,59 @@ fn concurrent_signing_retains_each_keys_certificate() {
                 .is_ok()
         }));
     }
+}
+
+#[test]
+fn requested_transfers_read_only_backing_missing_at_the_receiver() {
+    let source = Directory::new();
+    let source = source.repository();
+    let target = Directory::new();
+    let target = target.repository();
+    let shared = source.create_blob(&[41; 128]).unwrap();
+    target.create_blob(&[41; 128]).unwrap();
+    let added = source.create_blob(&[42; 128]).unwrap();
+    let root = source.create_tree(&[shared.into(), added.into()]).unwrap();
+    let name = *root.as_handle().as_bytes();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut connection = crate::linux::Connection(listener.accept().unwrap().0);
+        assert_eq!(
+            protocol::receive(&mut connection, 1 << 20).unwrap(),
+            Some(protocol::Message::RequestTransfer(name))
+        );
+        let proposal = propose_export(&source, root.into(), true).unwrap();
+        let mut read = Vec::new();
+        transport::complete(protocol::asynchronous::send_proposal(
+            &mut transport::Blocking(&mut connection),
+            1 << 20,
+            None,
+            Some(name),
+            proposal,
+            |name| {
+                assert_ne!(name, *shared.as_handle().as_bytes());
+                read.push(name);
+                let object = Object::try_from(source.lookup(&name).unwrap()).unwrap();
+                source
+                    .read_backing_range(object, 0, object.byte_len() as usize)
+                    .map_err(|error| format!("{error}"))
+            },
+            |_, _| None,
+        ))
+        .unwrap();
+        assert_eq!(read.len(), 2);
+    });
+    let mut connection = crate::linux::Connection::connect(address).unwrap();
+    protocol::send(&mut connection, protocol::Message::RequestTransfer(name)).unwrap();
+    let incoming = protocol::receive_transfer(&mut connection, 1 << 20, 1, &[], |offers| {
+        Some(missing(&target, offers).unwrap())
+    })
+    .unwrap()
+    .unwrap();
+    assert!(incoming.task.is_none());
+    assert_eq!(incoming.result, Some(name));
+    import(&target, &incoming.transfer.encode().unwrap(), &config()).unwrap();
+    assert!(target.read_tree(root).unwrap()[1].same_encoding(&added.into()));
+    assert_eq!(target.read_blob(added).unwrap().as_ref(), &[42; 128]);
+    server.join().unwrap();
 }

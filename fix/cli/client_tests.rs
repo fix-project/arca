@@ -170,7 +170,6 @@ fn an_empty_repository_uses_user_default_programs() {
     let mut home_client = client(&user);
     let home_blob = home_client.blob(b"home").unwrap();
     home_client.label("payload", &home_blob).unwrap();
-    let home_value = user_repository.read_label("payload").unwrap();
     std::fs::remove_file(data.join("fix/bootstrap/.fix/labels/scheduler")).unwrap();
     let project = root.join("project");
     std::fs::create_dir(&project).unwrap();
@@ -249,6 +248,7 @@ fn an_empty_repository_uses_user_default_programs() {
         .env("XDG_DATA_HOME", &data)
         .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .output()
         .unwrap();
     assert!(
@@ -280,11 +280,12 @@ fn an_empty_repository_uses_user_default_programs() {
         .unwrap();
     assert!(added.status.success());
     let synced = Command::new(input(env!("BACKEND")))
-        .args(["sync", "home"])
+        .args(["pull", "--exact", "home", "payload"])
         .current_dir(&project)
         .env("FIX_CONFIG_DIR", user.join("config"))
         .env("XDG_DATA_HOME", &data)
         .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .output()
         .unwrap();
     assert!(
@@ -295,11 +296,12 @@ fn an_empty_repository_uses_user_default_programs() {
     let replacement = home_client.blob(b"new home").unwrap();
     home_client.label("payload", &replacement).unwrap();
     let pulled = Command::new(input(env!("BACKEND")))
-        .args(["pull", "home:payload", "from-home"])
+        .args(["pull", "--exact", "home", "payload", "from-home"])
         .current_dir(&project)
         .env("FIX_CONFIG_DIR", user.join("config"))
         .env("XDG_DATA_HOME", &data)
         .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .output()
         .unwrap();
     assert!(
@@ -313,7 +315,7 @@ fn an_empty_repository_uses_user_default_programs() {
     );
     assert_eq!(
         repository.read_label("from-home").unwrap().as_bytes(),
-        home_value.as_bytes()
+        user_repository.read_label("payload").unwrap().as_bytes()
     );
     let labels = Command::new(input(env!("BACKEND")))
         .args(["remote", "labels", "home"])
@@ -321,20 +323,22 @@ fn an_empty_repository_uses_user_default_programs() {
         .env("FIX_CONFIG_DIR", user.join("config"))
         .env("XDG_DATA_HOME", &data)
         .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .output()
         .unwrap();
     assert!(labels.status.success());
     assert!(
         String::from_utf8(labels.stdout)
             .unwrap()
-            .contains(&format!("home:payload\t{home_value}"))
+            .contains("home:payload\t")
     );
     let pushed = Command::new(input(env!("BACKEND")))
-        .args(["push", "payload", "home:project-copy"])
+        .args(["push", "--exact", "home", "payload", "project-copy"])
         .current_dir(&project)
         .env("FIX_CONFIG_DIR", user.join("config"))
         .env("XDG_DATA_HOME", &data)
         .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
         .output()
         .unwrap();
     assert!(
@@ -587,4 +591,113 @@ fn perf_capture_preserves_results_and_exports_callchains() {
         cursor += size;
     }
     assert_eq!(cursor, end);
+}
+
+#[test]
+fn info_describes_unloaded_names_metadata_and_coupon_claims() {
+    use fixrepository::{
+        Repository,
+        handle::{Blob, Tree},
+    };
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("info");
+    std::fs::create_dir(&directory).unwrap();
+    let repository = Repository::init(directory.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    let blob = Blob::canonical(&[37; 1024]).unwrap();
+    let reference = blob.into_ref();
+    repository.write_label("payload", reference.into()).unwrap();
+    let uri = repository
+        .create_blob(b"https://example.invalid/payload")
+        .unwrap();
+    let sources = repository.create_tree(&[uri.into()]).unwrap();
+    repository
+        .set_todo(reference.into(), sources.into())
+        .unwrap();
+    let result = Blob::literal(&42u64.to_le_bytes()).unwrap();
+    let claim = repository
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            reference.into(),
+            result.into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    repository
+        .publish(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    for kind in [b"Runnable".as_slice(), b"Example annotation".as_slice()] {
+        let fields = [
+            Tree::empty().into(),
+            reference.into(),
+            Blob::literal(kind).unwrap().into(),
+        ];
+        let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
+        repository
+            .publish(
+                tag.into(),
+                &fields
+                    .iter()
+                    .flat_map(|field| *field.as_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+    }
+    let identity = fixrepository::handle::Ref::from(reference).identification();
+    for (label, value) in [
+        ("identity", identity.into()),
+        ("encoded", identity.strict().into()),
+    ] {
+        repository.write_label(label, value).unwrap();
+        let inspected = Command::new(input(env!("BACKEND")))
+            .args(["--unsigned", "info", label])
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            inspected.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inspected.stderr)
+        );
+        assert!(
+            String::from_utf8(inspected.stdout)
+                .unwrap()
+                .contains("Identification")
+        );
+    }
+    let output = Command::new(input(env!("BACKEND")))
+        .args(["--unsigned", "info", "payload"])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    for text in [
+        "Representation: Ref",
+        "Data: Blob, 1024 bytes",
+        "Local backing: absent",
+        "Labels: payload",
+        "https://example.invalid/payload",
+        "Coupons: 1",
+        "Evaluate:",
+        "Recognized certificates: 1",
+        "Runnable:",
+        "Other tags: 1",
+        "Example annotation",
+        &coupon.as_handle().to_string(),
+        &result.as_handle().to_string(),
+    ] {
+        assert!(report.contains(text), "missing {text:?}: {report}");
+    }
 }

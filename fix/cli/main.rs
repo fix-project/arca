@@ -21,7 +21,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 ///
 /// With no command, parses EXPRESSION, evaluates its imports, and prints the
 /// resulting handle. Expression imports are @handle, @label, @file, @compile,
-/// @remote, @script, and @todo.
+/// @script and @todo.
 #[derive(Parser)]
 #[command(name = "fix", subcommand_value_name = "COMMAND")]
 struct Cli {
@@ -89,6 +89,35 @@ struct Global {
     profile: bool,
 }
 
+#[derive(Args)]
+#[group(multiple = false)]
+struct TransferMode {
+    /// Evaluate a shallow Encode and store the resulting Ref (default).
+    #[arg(long)]
+    shallow: bool,
+    /// Evaluate a strict Encode and store the resulting Object.
+    #[arg(long)]
+    strict: bool,
+    /// Preserve the value and load its backing without evaluating it.
+    #[arg(long)]
+    exact: bool,
+}
+impl TransferMode {
+    fn resolve(&self, operation: &str) -> Result<fixcli::remotes::Mode> {
+        use fixcli::remotes::Mode;
+        let selected = if self.shallow {
+            Some(Mode::Shallow)
+        } else if self.strict {
+            Some(Mode::Strict)
+        } else if self.exact {
+            Some(Mode::Exact)
+        } else {
+            None
+        };
+        Mode::configured(operation, selected)
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Create an empty repository in the current directory.
@@ -108,7 +137,7 @@ enum Command {
     Repl,
     #[command(subcommand)]
     Remote(RemoteCommand),
-    /// Read or edit program selection settings.
+    /// Read or edit user or repository settings.
     Config {
         /// Use user configuration rather than this repository's configuration.
         #[arg(long, conflicts_with = "local")]
@@ -128,21 +157,25 @@ enum Command {
     },
     /// Create an empty repository with `origin` and fetch its refs.
     Clone { address: String, directory: PathBuf },
-    /// Refresh remote refs (all configured remotes by default).
-    Sync { remote: Option<String> },
-    /// Fetch a remote ref and assign a local label.
+    /// Fetch and realize remote labels (all remotes by default).
     Pull {
-        reference: String,
-        local: Option<String>,
-        /// Save the value without fetching its backing data.
-        #[arg(long)]
-        shallow: bool,
-        /// Replace an existing local label.
-        #[arg(short, long)]
-        force: bool,
+        remote: Option<String>,
+        #[arg(requires = "remote")]
+        source: Option<String>,
+        #[arg(requires = "source")]
+        destination: Option<String>,
+        #[command(flatten)]
+        mode: TransferMode,
     },
-    /// Transfer a local label's value and update an SSH remote label.
-    Push { local: String, reference: String },
+    /// Realize local labels and publish them to an SSH or file remote.
+    Push {
+        remote: String,
+        source: Option<String>,
+        #[arg(requires = "source")]
+        destination: Option<String>,
+        #[command(flatten)]
+        mode: TransferMode,
+    },
     #[command(subcommand)]
     Trust(TrustCommand),
     /// Evaluate an expression.
@@ -369,7 +402,6 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 | Command::Remote(_)
                 | Command::Config { .. }
                 | Command::Clone { .. }
-                | Command::Sync { .. }
                 | Command::Pull { .. }
                 | Command::Push { .. }
                 | Command::Trust(_)
@@ -386,7 +418,6 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 | Command::Remote(_)
                 | Command::Config { .. }
                 | Command::Clone { .. }
-                | Command::Sync { .. }
                 | Command::Pull { .. }
                 | Command::Push { .. }
                 | Command::Trust(_)
@@ -542,27 +573,34 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
             fixcli::remotes::clone(&address, &directory, scheduler, collector)?;
             Ok(0)
         }
-        Command::Sync { remote } => {
-            fixcli::remotes::sync(&global.open(options)?, remote.as_deref())?;
-            Ok(0)
-        }
         Command::Pull {
-            reference,
-            local,
-            shallow,
-            force,
+            remote,
+            source,
+            destination,
+            mode,
         } => {
             fixcli::remotes::pull(
                 &mut global.open(options)?,
-                &reference,
-                local.as_deref(),
-                shallow,
-                force,
+                remote.as_deref(),
+                source.as_deref(),
+                destination.as_deref(),
+                mode.resolve("pull")?,
             )?;
             Ok(0)
         }
-        Command::Push { local, reference } => {
-            fixcli::remotes::push(&mut global.open(options)?, &local, &reference)?;
+        Command::Push {
+            remote,
+            source,
+            destination,
+            mode,
+        } => {
+            fixcli::remotes::push(
+                &mut global.open(options)?,
+                &remote,
+                source.as_deref(),
+                destination.as_deref(),
+                mode.resolve("push")?,
+            )?;
             Ok(0)
         }
         Command::Trust(command) => {

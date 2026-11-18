@@ -39,6 +39,10 @@ pub struct Config {
     pub parser: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_mode: Option<String>,
 }
 
 pub fn read_config(path: &Path) -> Result<Config, Error> {

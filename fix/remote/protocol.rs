@@ -10,8 +10,7 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 9;
-pub const OBJECT_CHUNK_SIZE: usize = 1 << 20;
+pub const VERSION: u32 = 10;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +152,7 @@ pub struct Information {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    RequestTransfer(Name),
     RequestProgress,
     EvaluationProgress(
         #[serde(
@@ -163,28 +163,6 @@ pub enum Message {
     ),
     RequestLabels,
     Labels(Vec<(String, Name)>),
-    RequestObject {
-        name: Name,
-        trusted_keys: Vec<String>,
-        backing: bool,
-    },
-    ProposeObject {
-        transfer: Transfer,
-        backing: Vec<Name>,
-    },
-    AcceptObject(Vec<Name>),
-    ObjectChunk {
-        name: Name,
-        offset: u64,
-        #[serde(
-            serialize_with = "optional_bytes::serialize_bytes",
-            deserialize_with = "optional_bytes::deserialize_bytes"
-        )]
-        data: Vec<u8>,
-    },
-    RequestTrustedKeys,
-    TrustedKeys(Vec<String>),
-    SubmitObject(Transfer),
     ObjectReceived(Name),
     UpdateLabel {
         label: String,
@@ -196,7 +174,7 @@ pub enum Message {
     Failure(String),
     Run(Task),
     Result {
-        task: Task,
+        task: Option<Task>,
         coupon: Name,
     },
     RequestInfo {
@@ -212,12 +190,12 @@ pub enum Message {
     LoadTree(Name),
     ShallowTreeData(Record),
     ProposeTransfer {
-        task: Task,
+        task: Option<Task>,
         result: Option<Name>,
         objects: Vec<Offer>,
     },
     AcceptTransfer {
-        task: Task,
+        task: Option<Task>,
         result: Option<Name>,
         objects: Vec<Name>,
         trusted_keys: Vec<String>,
@@ -276,13 +254,13 @@ impl<E> From<fixtransport::Error<E>> for Error<E> {
 }
 
 pub struct Incoming {
-    pub task: Task,
+    pub task: Option<Task>,
     pub result: Option<Name>,
     pub transfer: Transfer,
 }
 
 struct Pending {
-    task: Task,
+    task: Option<Task>,
     result: Option<Name>,
     offers: BTreeMap<Name, Offer>,
     selected: BTreeSet<Name>,
@@ -412,10 +390,10 @@ pub mod asynchronous {
         Ok(Some(message))
     }
 
-    fn roots(task: &Task, result: Option<Name>) -> Vec<Name> {
+    fn roots(task: Option<&Task>, result: Option<Name>) -> Vec<Name> {
         match result {
             Some(coupon) => alloc::vec![coupon],
-            None => alloc::vec![task.collector, task.input],
+            None => task.map_or_else(Vec::new, |task| alloc::vec![task.collector, task.input]),
         }
     }
 
@@ -425,8 +403,32 @@ pub mod asynchronous {
         task: &Task,
         result: Option<Name>,
         transfer: Transfer,
+        certify: impl FnMut(Name, &[String]) -> Option<(CertificateRef, Record)>,
+    ) -> Result<(), Error<S::Error>> {
+        send_proposal(
+            stream,
+            limit,
+            Some(task),
+            result,
+            (transfer, Vec::new()),
+            |_| Err(String::from("backing is unavailable")),
+            certify,
+        )
+        .await
+    }
+
+    /// Send a proposal, reading backing only for records selected by the receiver.
+    pub async fn send_proposal<S: AsyncRead + AsyncWrite>(
+        stream: &mut S,
+        limit: usize,
+        task: Option<&Task>,
+        result: Option<Name>,
+        proposal: (Transfer, Vec<Name>),
+        mut read: impl FnMut(Name) -> Result<Vec<u8>, String>,
         mut certify: impl FnMut(Name, &[String]) -> Option<(CertificateRef, Record)>,
     ) -> Result<(), Error<S::Error>> {
+        let (transfer, backing) = proposal;
+        let backing: BTreeSet<_> = backing.into_iter().collect();
         if transfer.roots != roots(task, result) {
             return Err(Error::Invalid);
         }
@@ -437,9 +439,17 @@ pub mod asynchronous {
         send(
             stream,
             Message::ProposeTransfer {
-                task: task.clone(),
+                task: task.cloned(),
                 result,
-                objects: transfer.records.iter().map(Record::offer).collect(),
+                objects: transfer
+                    .records
+                    .iter()
+                    .map(|record| {
+                        let mut offer = record.offer();
+                        offer.backing |= backing.contains(&record.name);
+                        offer
+                    })
+                    .collect(),
             },
         )
         .await?;
@@ -453,7 +463,7 @@ pub mod asynchronous {
             return Err(Error::Invalid);
         };
         let selected: BTreeSet<_> = objects.iter().copied().collect();
-        if accepted != *task
+        if accepted.as_ref() != task
             || accepted_result != result
             || selected.len() != objects.len()
             || !selected.is_subset(&offered)
@@ -471,6 +481,9 @@ pub mod asynchronous {
                 continue;
             }
             let mut record = record.clone();
+            if record.data.is_none() && backing.contains(&record.name) {
+                record.data = Some(read(record.name).map_err(Error::Remote)?);
+            }
             if record.name[31] & 0x40 != 0 {
                 let existing = record
                     .certificates
@@ -511,10 +524,10 @@ pub mod asynchronous {
             stream,
             match result {
                 Some(coupon) => Message::Result {
-                    task: task.clone(),
+                    task: task.cloned(),
                     coupon,
                 },
-                None => Message::Run(task.clone()),
+                None => Message::Run(task.ok_or(Error::Invalid)?.clone()),
             },
         )
         .await
@@ -677,7 +690,7 @@ pub mod asynchronous {
                 }
                 Message::Run(_) | Message::Result { .. } => {
                     let (task, result) = match message {
-                        Message::Run(task) => (task, None),
+                        Message::Run(task) => (Some(task), None),
                         Message::Result { task, coupon } => (task, Some(coupon)),
                         _ => unreachable!(),
                     };
@@ -715,7 +728,7 @@ pub mod asynchronous {
                     }
                     return Ok(Some(Incoming {
                         transfer: Transfer {
-                            roots: roots(&task, result),
+                            roots: roots(task.as_ref(), result),
                             records: pending.records.into_values().collect(),
                             certificates: Vec::new(),
                         },

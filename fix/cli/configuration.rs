@@ -3,11 +3,19 @@ use fixcertificates::linux::{Config, read_config, write_config};
 use fixrepository::{Remote, Repository};
 use std::{collections::BTreeMap, path::PathBuf};
 
+const PROGRAMS: &[(&str, &str)] = &[
+    ("scheduler", "scheduler"),
+    ("collector", "collector"),
+    ("parser", "fix-parser"),
+    ("compiler", "compile"),
+];
 const KEYS: &[(&str, &str)] = &[
     ("scheduler", "scheduler"),
     ("collector", "collector"),
     ("parser", "fix-parser"),
     ("compiler", "compile"),
+    ("pull.mode", "shallow"),
+    ("push.mode", "shallow"),
 ];
 
 #[derive(Subcommand)]
@@ -42,6 +50,8 @@ fn selected<'a>(
         "collector" => config.collector.as_ref(),
         "parser" => config.parser.as_ref(),
         "compiler" => config.compiler.as_ref(),
+        "pull.mode" => config.pull_mode.as_ref(),
+        "push.mode" => config.push_mode.as_ref(),
         _ => return Err(format!("unknown Fix setting {key:?}").into()),
     })
 }
@@ -51,11 +61,18 @@ fn select(
     key: &str,
     value: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(key, "pull.mode" | "push.mode")
+        && let Some(value) = &value
+    {
+        value.parse::<crate::remotes::Mode>()?;
+    }
     *match key {
         "scheduler" => &mut config.scheduler,
         "collector" => &mut config.collector,
         "parser" => &mut config.parser,
         "compiler" => &mut config.compiler,
+        "pull.mode" => &mut config.pull_mode,
+        "push.mode" => &mut config.push_mode,
         _ => return Err(format!("unknown Fix setting {key:?}").into()),
     } = value;
     Ok(())
@@ -65,17 +82,10 @@ pub fn settings() -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>
     let mut config = read_config(&global_path()?)?;
     if let Ok(path) = local_path() {
         let local = read_config(&path)?;
-        if local.scheduler.is_some() {
-            config.scheduler = local.scheduler;
-        }
-        if local.collector.is_some() {
-            config.collector = local.collector;
-        }
-        if local.parser.is_some() {
-            config.parser = local.parser;
-        }
-        if local.compiler.is_some() {
-            config.compiler = local.compiler;
+        for (key, _) in KEYS {
+            if let Some(value) = selected(&local, key)? {
+                select(&mut config, key, Some(value.clone()))?;
+            }
         }
     }
     let mut settings = BTreeMap::new();
@@ -93,7 +103,7 @@ pub fn settings() -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>
 pub fn autoconfigure(repository: &Repository) -> Result<(), Box<dyn std::error::Error>> {
     let path = global_path()?;
     let mut config = read_config(&path)?;
-    for (key, name) in KEYS {
+    for (key, name) in PROGRAMS {
         select(
             &mut config,
             key,
@@ -197,7 +207,7 @@ pub enum RemoteCommand {
     GetUrl {
         name: String,
     },
-    /// List cached labels from a remote; use `fix sync` to refresh them.
+    /// List cached labels from a remote; use `fix pull` to refresh them.
     Labels {
         name: String,
     },

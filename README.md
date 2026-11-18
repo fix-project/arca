@@ -45,8 +45,8 @@ with `ssh-add ~/.ssh/id_ed25519` if needed. The
 and signs its Tags using the identities configured by `trust add-agent`.
 Trust and global program settings live in `$XDG_CONFIG_HOME/fix` (default
 `~/.config/fix`). New repositories start empty and have a `bootstrap` file remote.
-Use `fix sync bootstrap` to fetch its label refs, then `fix remote labels bootstrap`
-to list them or `fix pull bootstrap:compile compile` to create a local label.
+Use `fix pull bootstrap` to fetch its label refs, then `fix remote labels bootstrap`
+to list them or `fix pull bootstrap compile compile` to create a local label.
 `fix bootstrap` records the seed's program handles in user
 configuration, so moving a label does not change the defaults. Hint is the
 seed's default scheduler. Use

@@ -209,6 +209,8 @@ pub enum Plumbing {
     /// List, read, or write labels.
     #[command(subcommand)]
     Label(LabelCommand),
+    /// Analyze a name or label without evaluation or retrieval.
+    Info(Operand),
     /// Print a value's handle.
     Resolve(Operand),
     /// Write a Blob's contents to stdout.
@@ -420,6 +422,10 @@ pub fn run(
     let mut output = Output;
     match command {
         Plumbing::Repository => print(&mut output, repository.path())?,
+        Plumbing::Info(operand) => {
+            let report = crate::info::describe(&repository, &single(&operand.value)?)?;
+            output.try_write_all(report.as_bytes())?;
+        }
         Plumbing::Import { archive, sign } => crate::archive::import(&repository, &archive, sign)?,
         Plumbing::Sign { all, value } => match (all, value) {
             (true, None) => repository.sign_all_tags()?,

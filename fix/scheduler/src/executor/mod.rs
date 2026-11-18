@@ -62,6 +62,9 @@ pub fn run(
     if mode.equals(fixwasm::Blob::create(b"todo"))? {
         return todo(&input);
     }
+    if mode.equals(fixwasm::Blob::create(b"load"))? {
+        return block_on(load(policy, &input), io)?;
+    }
     let node = operation(&capture(mode)?, &input)?;
     graph.submit(&node)?;
     let mut result = task::Task::new(graph.wait(&node));
@@ -92,6 +95,9 @@ pub fn run_inline(
     }
     if mode.equals(fixwasm::Blob::create(b"todo"))? {
         return todo(&input);
+    }
+    if mode.equals(fixwasm::Blob::create(b"load"))? {
+        return block_on(load(policy, &input), io)?;
     }
     let node = operation(&capture(mode)?, &input)?;
     block_on(node.dispatch(policy), io)?
@@ -128,4 +134,33 @@ fn todo(input: &Value) -> Result<Value, Error> {
     } else {
         Err(Error::WrongType)
     }
+}
+
+async fn load(policy: &(impl Scheduler + ?Sized), input: &Value) -> Result<Value, Error> {
+    let mut pending = alloc::vec![(input.clone(), false)];
+    let mut seen = alloc::collections::BTreeSet::new();
+    while let Some((value, completed)) = pending.pop() {
+        if completed {
+            storage::put(&value)?;
+            continue;
+        }
+        let mut name = storage::canonical_value(&value)?.raw_handle_bytes()?;
+        name[31] &= 0xe0;
+        if !seen.insert(name) {
+            continue;
+        }
+        let object = policy.load(&value).await?;
+        pending.push((object.clone(), true));
+        if object.data_type()? == fixwasm::DataType::Tree {
+            let tag = object.is_tag()?;
+            pending.extend(
+                fields(&object)?
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| !tag || *index != 0)
+                    .map(|(_, child)| (child, false)),
+            );
+        }
+    }
+    Ok(input.clone())
 }

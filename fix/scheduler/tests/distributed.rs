@@ -892,7 +892,7 @@ fn init_preserves_compiled_programs_from_an_archive() {
 }
 
 #[test]
-fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
+fn remote_labels_and_transfer_modes() {
     let directory = std::env::temp_dir().join(format!("fix-remote-labels-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let _cleanup = Directory(directory.clone());
@@ -964,9 +964,67 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
         );
         String::from_utf8(output.stdout).unwrap()
     };
+    for (setting, label) in [
+        ("scheduler", "scheduler"),
+        ("collector", "collector"),
+        ("parser", "fix-parser"),
+    ] {
+        run(
+            &server,
+            &[
+                "config",
+                "--global",
+                setting,
+                &Repository::open(repository.path())
+                    .unwrap()
+                    .unsigned()
+                    .read_label(label)
+                    .unwrap()
+                    .to_string(),
+            ],
+            true,
+        );
+    }
+    let fields = [
+        Blob::literal(b"").unwrap().into(),
+        Repository::open(repository.path())
+            .unwrap()
+            .unsigned()
+            .read_label("add")
+            .unwrap(),
+        Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+        Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
+    ];
+    let combination = Repository::open(repository.path())
+        .unwrap()
+        .unsigned()
+        .create_tree(&fields)
+        .unwrap();
+    let thunk: fixhandle::Handle = combination.into_ref().application().into();
+    repository.write_label("sum", thunk).unwrap();
     let address = "user@example:/remote";
     run(&directory, &["clone", address, "client"], true);
     let client_dir = directory.join("client");
+    let local = Repository::open(client_dir.join(".fix").to_str().unwrap()).unwrap();
+    assert!(
+        local
+            .read_label("origin:payload")
+            .unwrap()
+            .same_encoding(&original.into_ref().into())
+    );
+    assert!(
+        local
+            .read_label("origin:sum")
+            .unwrap()
+            .same_encoding(&thunk)
+    );
+    assert!(!local.has_backing(original.into()).unwrap());
+    std::fs::remove_file(&ssh_args).unwrap();
+    assert_eq!(
+        run(&client_dir, &["@label(\"origin:sum\")"], true).trim(),
+        thunk.to_string()
+    );
+    assert!(!ssh_args.exists());
     for scheduler in ["parallel", "distributed", "onepass", "hint"] {
         run(&server, &["config", "scheduler", scheduler], true);
         run(
@@ -974,153 +1032,118 @@ fn remote_refs_sync_pull_and_push_without_changing_local_labels() {
             &["clone", address, &format!("clone-{scheduler}")],
             true,
         );
-        run(&client_dir, &["sync", "origin"], true);
     }
     run(&server, &["config", "scheduler", "scheduler"], true);
-    let local = Repository::open(client_dir.join(".fix").to_str().unwrap()).unwrap();
-    assert!(local.labels().unwrap().is_empty());
-    assert!(
-        local
-            .remote_refs("origin")
-            .unwrap()
-            .contains(&("payload".into(), *original.as_handle().as_bytes()))
-    );
-    assert!(!local.has_backing(original.into()).unwrap());
-    assert!(
-        run(&client_dir, &["remote", "labels", "origin"], true)
-            .lines()
-            .any(|line| line == format!("origin:payload\t{}", original.as_handle()))
-    );
-
     run(
         &client_dir,
-        &["remote", "set-scheduler", "origin", "scheduler"],
-        true,
-    );
-    run(
-        &client_dir,
-        &["remote", "set-collector", "origin", "collector"],
-        true,
-    );
-    run(&client_dir, &["sync", "origin"], true);
-    let arguments = std::fs::read_to_string(&ssh_args).unwrap();
-    assert!(arguments.contains("--scheduler\n'scheduler'\n"));
-    assert!(arguments.contains("--collector\n'collector'\n"));
-    let scheduler_name = std::fs::read_to_string(server.join(".fix/labels/scheduler"))
-        .unwrap()
-        .trim()
-        .to_owned();
-    let collector_name = std::fs::read_to_string(server.join(".fix/labels/collector"))
-        .unwrap()
-        .trim()
-        .to_owned();
-    run(
-        &client_dir,
-        &[
-            "--remote-scheduler",
-            &format!("origin={scheduler_name}"),
-            "--remote-collector",
-            &format!("origin={collector_name}"),
-            "sync",
-            "origin",
-        ],
-        true,
-    );
-    let arguments = std::fs::read_to_string(&ssh_args).unwrap();
-    assert!(arguments.contains(&format!("--scheduler\n'{scheduler_name}'\n")));
-    assert!(arguments.contains(&format!("--collector\n'{collector_name}'\n")));
-    assert_eq!(
-        run(&client_dir, &["remote", "get-scheduler", "origin"], true),
-        "scheduler\n"
-    );
-
-    run(
-        &client_dir,
-        &["pull", "--shallow", "origin:payload", "payload-ref"],
+        &["pull", "--shallow", "origin", "payload", "payload-ref"],
         true,
     );
     assert!(matches!(
         local.read_label("payload-ref").unwrap().view(),
         HandleView::Ref(_)
     ));
-    assert!(!local.has_backing(original.into()).unwrap());
-
-    let placeholder = Blob::literal(b"local").unwrap();
-    local.write_label("payload", placeholder.into()).unwrap();
-    run(&client_dir, &["pull", "origin:payload"], false);
+    run(
+        &client_dir,
+        &["pull", "--strict", "origin", "payload", "payload"],
+        true,
+    );
     assert!(
         local
             .read_label("payload")
             .unwrap()
-            .same_encoding(&placeholder.into())
+            .same_encoding(&original.into())
     );
-    assert!(!local.has_backing(original.into()).unwrap());
-    repository
-        .write_label("payload", placeholder.into())
-        .unwrap();
-    run(&client_dir, &["pull", "-f", "origin:payload"], true);
     assert_eq!(local.read_blob(original).unwrap().as_ref(), payload);
-    repository.write_label("payload", original.into()).unwrap();
-    let changed = local.create_blob(&[22; 128]).unwrap();
-    local.write_label("payload", changed.into()).unwrap();
-    run(&client_dir, &["push", "payload", "origin:payload"], true);
+    run(
+        &client_dir,
+        &["pull", "--exact", "origin", "sum", "sum"],
+        true,
+    );
+    assert!(local.read_label("sum").unwrap().same_encoding(&thunk));
+    assert!(local.has_backing(combination.into()).unwrap());
+    run(
+        &client_dir,
+        &["push", "--shallow", "origin", "payload", "copy-ref"],
+        true,
+    );
     assert!(
         repository
-            .read_label("payload")
+            .read_label("copy-ref")
             .unwrap()
-            .same_encoding(&changed.into())
+            .same_encoding(&original.into_ref().into())
     );
-
-    let newer = repository.create_blob(&[33; 128]).unwrap();
-    repository.write_label("payload", newer.into()).unwrap();
-    run(&client_dir, &["push", "payload", "origin:payload"], false);
     run(
         &client_dir,
-        &[
-            "remote",
-            "add",
-            "storage",
-            &format!("file://{}", server.join(".fix").display()),
-        ],
+        &["push", "--strict", "origin", "payload", "copy-object"],
         true,
     );
-    run(&client_dir, &["sync"], true);
     assert!(
-        local
-            .remote_refs("storage")
+        repository
+            .read_label("copy-object")
             .unwrap()
-            .contains(&("payload".into(), *newer.as_handle().as_bytes()))
+            .same_encoding(&original.into())
     );
-    assert!(
-        local
-            .read_label("payload")
-            .unwrap()
-            .same_encoding(&changed.into())
-    );
-    assert!(
-        local
-            .remote_refs("origin")
-            .unwrap()
-            .contains(&("payload".into(), *newer.as_handle().as_bytes()))
-    );
-    run(&server, &["remote", "add", "self", address], true);
-    run(&server, &["sync", "self"], true);
-    let resolved = run(&server, &["@remote(\"self:payload\")"], true);
-    assert_eq!(resolved.trim(), newer.into_ref().as_handle().to_string());
     run(
         &client_dir,
-        &["remote", "set-url", "origin", "tcp://127.0.0.1:1"],
+        &["push", "--exact", "origin", "sum", "copy-thunk"],
         true,
     );
-    repository.write_label("later", newer.into()).unwrap();
-    run(&client_dir, &["sync"], false);
     assert!(
-        local
-            .remote_refs("storage")
+        repository
+            .read_label("copy-thunk")
             .unwrap()
-            .contains(&("later".into(), *newer.as_handle().as_bytes()))
+            .same_encoding(&thunk)
     );
-    run(&client_dir, &["push", "payload", "origin:payload"], false);
+    run(
+        &client_dir,
+        &["config", "--global", "pull.mode", "exact"],
+        true,
+    );
+    run(&client_dir, &["config", "pull.mode", "strict"], true);
+    run(
+        &client_dir,
+        &["pull", "origin", "payload", "configured"],
+        true,
+    );
+    assert!(matches!(
+        local.read_label("configured").unwrap().view(),
+        HandleView::Object(_)
+    ));
+    run(
+        &client_dir,
+        &["pull", "--shallow", "origin", "payload", "configured"],
+        true,
+    );
+    assert!(matches!(
+        local.read_label("configured").unwrap().view(),
+        HandleView::Ref(_)
+    ));
+    run(
+        &client_dir,
+        &["config", "--global", "push.mode", "exact"],
+        true,
+    );
+    run(&client_dir, &["config", "push.mode", "strict"], true);
+    run(
+        &client_dir,
+        &["push", "origin", "payload", "configured"],
+        true,
+    );
+    assert!(matches!(
+        repository.read_label("configured").unwrap().view(),
+        HandleView::Object(_)
+    ));
+    run(
+        &client_dir,
+        &["push", "--shallow", "origin", "payload", "configured"],
+        true,
+    );
+    assert!(matches!(
+        repository.read_label("configured").unwrap().view(),
+        HandleView::Ref(_)
+    ));
+    assert!(run(&client_dir, &["remote", "labels", "origin"], true).contains("origin:sum"));
 }
 
 #[test]

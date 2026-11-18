@@ -92,7 +92,7 @@ fn reloading_tags_checks_the_current_certificate_trust_and_backing() {
         std::fs::read(entries[0].path()).unwrap(),
         certificate_blob.as_handle().as_bytes()
     );
-    let parent = repository.create_tree(&[tag.into_ref().into()]).unwrap();
+    let parent = repository.create_tree(&[tag.into()]).unwrap();
     let trusted = Repository::open(repository.path())
         .unwrap()
         .with_policy(certificate_policy());
@@ -131,7 +131,7 @@ fn an_unsigned_nested_tag_is_rejected_by_normal_reads() {
                 .collect::<Vec<_>>(),
         )
         .unwrap();
-    let parent = staging.create_tree(&[tag.into_ref().into()]).unwrap();
+    let parent = staging.create_tree(&[tag.into()]).unwrap();
     let repository = Repository::open(staging.path())
         .unwrap()
         .with_policy(certificate_policy());

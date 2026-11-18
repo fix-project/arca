@@ -1,4 +1,4 @@
-use super::{Connection, bytes, certify, export, import, missing, protocol, trusted_keys};
+use super::{Connection, bytes, certify, import, missing, protocol, trusted_keys};
 use crate::{
     collector,
     executor::{Graph, Scheduler, graph::Node, task::Task},
@@ -118,26 +118,8 @@ async fn connection(
                 .await?;
                 continue;
             }
-            protocol::Message::RequestTrustedKeys => {
-                protocol::asynchronous::send(
-                    &mut stream,
-                    protocol::Message::TrustedKeys(keys.to_vec()),
-                )
-                .await?;
-                continue;
-            }
-            protocol::Message::RequestObject {
-                name,
-                trusted_keys,
-                backing,
-            } => {
-                let proposal =
-                    super::propose_object(name, backing).and_then(|(transfer, objects)| {
-                        let transfer =
-                            protocol::prepare_transfer(transfer, &trusted_keys, certify)?;
-                        Ok((transfer, objects))
-                    });
-                let (transfer, objects) = match proposal {
+            protocol::Message::RequestTransfer(name) => {
+                let proposal = match super::propose_object(name, true) {
                     Ok(proposal) => proposal,
                     Err(error) => {
                         protocol::asynchronous::send(
@@ -148,69 +130,42 @@ async fn connection(
                         continue;
                     }
                 };
-                protocol::asynchronous::send(
+                protocol::asynchronous::send_proposal(
                     &mut stream,
-                    protocol::Message::ProposeObject {
-                        transfer,
-                        backing: objects.clone(),
-                    },
+                    protocol::MAX_MESSAGE_SIZE,
+                    None,
+                    Some(name),
+                    proposal,
+                    super::read_object,
+                    |name, keys| certify(name, keys).ok(),
                 )
                 .await?;
-                let Some(protocol::Message::AcceptObject(selected)) =
-                    protocol::asynchronous::receive(&mut stream, protocol::MAX_MESSAGE_SIZE)
-                        .await?
-                else {
-                    return Err(protocol::Error::Invalid.into());
-                };
-                let offered: alloc::collections::BTreeSet<_> = objects.into_iter().collect();
-                let requested: alloc::collections::BTreeSet<_> = selected.iter().copied().collect();
-                if requested.len() != selected.len() || !requested.is_subset(&offered) {
-                    return Err(protocol::Error::Invalid.into());
-                }
-                for name in selected {
-                    let handle = fixhandle::Handle::parse_ref(&name)
-                        .map_err(|_| protocol::Error::Invalid)?
-                        .byte_len();
-                    let mut offset = 0;
-                    while offset < handle {
-                        let length =
-                            (handle - offset).min(protocol::OBJECT_CHUNK_SIZE as u64) as usize;
-                        let data = match super::read_backing(name, offset, length) {
-                            Ok(data) => data,
-                            Err(error) => {
-                                protocol::asynchronous::send(
-                                    &mut stream,
-                                    protocol::Message::Failure(error),
-                                )
-                                .await?;
-                                return Ok(None);
-                            }
-                        };
-                        protocol::asynchronous::send(
-                            &mut stream,
-                            protocol::Message::ObjectChunk { name, offset, data },
-                        )
-                        .await?;
-                        offset += length as u64;
-                    }
-                }
                 continue;
             }
-            protocol::Message::SubmitObject(transfer) if allow_updates => {
-                let name = transfer.roots.as_slice();
-                let reply = if let [name] = name {
-                    let encoded = transfer.encode().map_err(|_| Error::WrongType)?;
-                    match import(&encoded) {
-                        Ok(roots) if roots.len() == 1 && roots[0].raw_handle_bytes()? == *name => {
-                            protocol::Message::ObjectReceived(*name)
-                        }
-                        Ok(_) => protocol::Message::Failure(String::from(
-                            "imported value differs from submitted root",
-                        )),
-                        Err(error) => protocol::Message::Failure(error),
+            proposal @ protocol::Message::ProposeTransfer {
+                task: None,
+                result: Some(name),
+                ..
+            } if allow_updates => {
+                let incoming = protocol::asynchronous::receive_transfer_with_info_from(
+                    &mut stream,
+                    protocol::MAX_MESSAGE_SIZE,
+                    &capacity(memory)?,
+                    keys,
+                    |offers| missing(offers).ok().flatten(),
+                    Some(proposal),
+                )
+                .await?
+                .ok_or(protocol::Error::Invalid)?;
+                let encoded = incoming.transfer.encode().map_err(|_| Error::WrongType)?;
+                let reply = match import(&encoded) {
+                    Ok(roots) if roots.len() == 1 && roots[0].raw_handle_bytes()? == name => {
+                        protocol::Message::ObjectReceived(name)
                     }
-                } else {
-                    protocol::Message::Rejected
+                    Ok(_) => protocol::Message::Failure(String::from(
+                        "imported value differs from proposed root",
+                    )),
+                    Err(error) => protocol::Message::Failure(error),
                 };
                 protocol::asynchronous::send(&mut stream, reply).await?;
                 continue;
@@ -227,7 +182,8 @@ async fn connection(
                 protocol::asynchronous::send(&mut stream, reply).await?;
                 continue;
             }
-            protocol::Message::SubmitObject(_) | protocol::Message::UpdateLabel { .. } => {
+            protocol::Message::ProposeTransfer { task: None, .. }
+            | protocol::Message::UpdateLabel { .. } => {
                 protocol::asynchronous::send(&mut stream, protocol::Message::Rejected).await?;
                 continue;
             }
@@ -259,7 +215,8 @@ async fn connection(
         if incoming.result.is_some() {
             return Err(Error::WrongType.into());
         }
-        if incoming.task.is_stage_programs() && !allow_updates {
+        let task = incoming.task.as_ref().ok_or(protocol::Error::Invalid)?;
+        if task.is_stage_programs() && !allow_updates {
             protocol::asynchronous::send(
                 &mut stream,
                 protocol::Message::Failure(String::from("program staging requires SSH")),
@@ -279,7 +236,7 @@ async fn connection(
         let [requested_collector, input] = roots.as_slice() else {
             return Err(Error::WrongType.into());
         };
-        if incoming.task.is_stage_programs() {
+        if task.is_stage_programs() {
             if !AsValue::equals(requested_collector, Blob::create(b""))?
                 && let Err(error) = super::trust_collector(requested_collector)
             {
@@ -303,7 +260,7 @@ async fn connection(
             .await?;
             continue;
         }
-        let node = match incoming.task.operation {
+        let node = match task.operation {
             1 => Node::eval(input)?,
             2 => Node::apply(input)?,
             3 => Node::force(input)?,
@@ -312,7 +269,7 @@ async fn connection(
             _ => return Err(Error::WrongType.into()),
         };
         let observer = super::ProgressObserver::new()?;
-        let reporting = crate::progress::operation(incoming.task.operation, input);
+        let reporting = crate::progress::operation(task.operation, input);
         protocol::asynchronous::send(
             &mut stream,
             protocol::Message::EvaluationProgress(observer.snapshot()?),
@@ -324,7 +281,7 @@ async fn connection(
             } else {
                 node.dispatch(policy).await?
             };
-            collector::validate(result, incoming.task.operation, input)?.ok_or(Error::WrongType)
+            collector::validate(result, task.operation, input)?.ok_or(Error::WrongType)
         };
         let mut evaluation = core::pin::pin!(evaluation);
         let result = loop {
@@ -355,18 +312,16 @@ async fn connection(
                 break result?;
             }
         };
-        let encoded =
-            export(core::slice::from_ref(&result), &[]).map_err(ConnectionError::Operation)?;
-        let transfer = protocol::Transfer::decode(&encoded).map_err(|_| Error::WrongType)?;
-        let [coupon] = transfer.roots.as_slice() else {
-            return Err(Error::WrongType.into());
-        };
-        protocol::asynchronous::send_transfer(
+        let result = crate::storage::put(&result)?;
+        let name = result.raw_handle_bytes()?;
+        let proposal = super::propose_object(name, true).map_err(ConnectionError::Operation)?;
+        protocol::asynchronous::send_proposal(
             &mut stream,
             protocol::MAX_MESSAGE_SIZE,
-            &incoming.task,
-            Some(*coupon),
-            transfer,
+            Some(task),
+            Some(name),
+            proposal,
+            super::read_object,
             |name, keys| certify(name, keys).ok(),
         )
         .await?;

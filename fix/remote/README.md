@@ -45,7 +45,7 @@ cd ~/work
 "$fix" clone user@server:fix-repo project
 cd project
 "$fix" remote labels origin
-"$fix" pull origin:example
+"$fix" pull origin example
 "$fix" -l distributed "@compile(\"$module\")"
 "$fix" --scheduler distributed eval 1u64
 ```
@@ -62,13 +62,13 @@ A requested collector must be trusted as a tagger on the worker; use
 of its own, Distributed runs the delegated request locally. The local parser
 runs before delegation. To use this policy by default in the cloned repository,
 run `"$fix" config scheduler distributed`.
-Run `"$fix" sync origin` when the server's labels change, then inspect them
+Run `"$fix" pull origin` when the server's labels change, then inspect them
 with `"$fix" remote labels origin`.
 
 ## Remote configuration
 
 `fix init` adds a `bootstrap` file remote pointing to the user bootstrap store.
-Run `fix sync bootstrap` to fetch its label refs. File remotes provide storage,
+Run `fix pull bootstrap` to fetch its label refs. File remotes provide storage,
 not evaluation workers. Repository remotes live in `.fix/remotes`. `file:///absolute/path/to/.fix`
 uses a local repository. Network addresses can be `tcp://host:port`,
 `ssh://user@host/absolute/repository/path`, `user@host:repository/path`
@@ -102,23 +102,46 @@ work.
 
 ## Remote refs
 
-`fix clone URL DIR` creates an empty `.fix` in DIR, which may already contain other files, configures `origin`, and syncs its label refs. It does not fetch the remote's toolchain; local evaluation uses programs from the XDG bootstrap store. `fix sync` refreshes all configured remotes without fetching objects; `fix sync REMOTE` selects one. Sync attempts every selected remote and reports any failures. Remote refs store canonical handle names without changing local labels. `@remote("REMOTE:LABEL")` imports a reference to one remote value for use in an expression.
+`fix clone URL DIR` initializes `.fix` in DIR, configures `origin`, and copies
+its label names. Existing files outside `.fix` are untouched. Object names are
+stored as Ref shadow labels such as `origin:program`; Thunk and Encode names
+retain their kinds. These are ordinary labels: `@label("origin:program")`
+resolves locally without fetching backing data. Evaluation and loading belong
+to the selected scheduler. Local defaults come from the user's bootstrap.
 
-A home repository is optional. To use one from another repository, add its
-`.fix` path as an ordinary `file://` remote and sync it.
+Both commands use `REMOTE [SOURCE [DESTINATION]]`:
 
-`fix pull REMOTE:LABEL [LOCAL]` refuses to replace an existing local label; use `-f` or `--force` to overwrite it. It transfers the value, reachable backing data, and coupons whose inputs are the value or its backed Tree descendants. Coupon claims and results come with the transfer. `--shallow` saves a name without backing or coupons. `fix push LOCAL REMOTE:LABEL` transfers the local label's value and updates the remote label only if it still matches the last synced ref. Push supports SSH and file remotes; TCP servers reject label updates.
+```sh
+fix pull origin
+fix pull origin program local-program --strict
+fix push origin local-program program --exact
+```
 
-Pull resolves the saved remote ref locally and requests its Fix name, so remote
-label changes do not affect retrieval of data that is still present. The remote
-first proposes the reachable objects and certificates. After acceptance, backing
-is read and sent in bounded chunks; the download counter uses the exact byte
-total encoded in the proposed Fix names. Validation follows the download.
+Omitting SOURCE selects all labels. Bare `fix pull` selects every configured
+remote. Pull's default destination is `REMOTE:SOURCE`; push's is SOURCE.
+Selected destinations are updated. Push supports SSH and file remotes; TCP
+servers reject label updates.
 
+Both commands accept mutually exclusive `--shallow`, `--strict`, and `--exact`:
 
-Local evaluation uses the compiler and collector selected from the XDG
-bootstrap store. Imported remote Tags require a trusted signing key. A remote
-scheduler or collector override must be available and trusted on that remote.
+| Mode | Result |
+| --- | --- |
+| shallow (default) | Evaluate a shallow Encode and store its resulting Ref. |
+| strict | Evaluate a strict Encode and store its resulting Object. |
+| exact | Load the original value's backing without evaluating it; preserve its name and kind. |
+
+Objects and Refs use identification Thunks for the encodings. Existing Encodes
+use the requested encoding mode. Push also loads and transfers backing and
+certificates so the destination can obtain the contents without connecting back
+to the sender. Pull can obtain data from its configured source remote through
+the scheduler. Tag trust is checked when data is imported, not when a remote
+label's name is read.
+
+`fix config --global pull.mode strict` sets the user default;
+`fix config pull.mode exact` overrides it in this repository. `push.mode` works
+the same way. Command-line mode flags take precedence over both settings.
+
+A home repository is optional and can be configured as an ordinary file remote.
 
 ## User trust and identities
 
@@ -141,7 +164,7 @@ fix trust add-tagger COLLECTOR_HANDLE
 fix trust list
 ```
 
-`add-agent` adds every Ed25519 key loaded in ssh-agent to both signing identities and trusted keys. `remove-key`, `remove-identity`, `remove-compiler`, and `remove-tagger` remove entries. Compiler and tagger operands can also name repository labels, such as `trusted-compiler`, or synced remote refs, such as `origin:trusted-compiler`. Remote refs resolve without downloading backing data; run `fix sync origin` to refresh them. Selecting a signing identity does not automatically authorize its signatures; add its public key to `authorized_keys` too. Repeat `--identity KEY` to replace the configured signing identities for one command. KEY can be a public-key file or a complete OpenSSH public-key line.
+`add-agent` adds every Ed25519 key loaded in ssh-agent to both signing identities and trusted keys. `remove-key`, `remove-identity`, `remove-compiler`, and `remove-tagger` remove entries. Compiler and tagger operands can also name repository labels, such as `trusted-compiler`, or synced remote refs, such as `origin:trusted-compiler`. Remote refs resolve without downloading backing data; run `fix pull origin` to refresh them. Selecting a signing identity does not automatically authorize its signatures; add its public key to `authorized_keys` too. Repeat `--identity KEY` to replace the configured signing identities for one command. KEY can be a public-key file or a complete OpenSSH public-key line.
 
 Signing uses the Linux host's `SSH_AUTH_SOCK`. Load the chosen keys with `ssh-add`; private keys stay in ssh-agent and are never passed to the guest. Newly persisted Tags and explicit `fix sign` operations use every selected identity. Network transfers select a certificate after the receiver advertises its trusted keys. `fix export` adds the selected identities to archived Tag certificates without changing the source Tags. Existing signatures are preserved. Exports containing no Tags, or reusing an existing certificate, need no signing agent. Using a stored Tag requires a valid signature by at least one authorized key. Reading signed data requires no agent.
 
@@ -157,8 +180,13 @@ The scheduler SDK exposes `remote::export`, `remote::import`, `remote::missing`,
 
 ## Example wire protocol
 
+When updating the protocol, rebuild both `fix` and the bootstrap seed, then
+rerun `fix bootstrap SEED` on each machine. Explicitly configured scheduler
+programs must also use the matching protocol version.
+
 The `fixprotocol` crate follows the original Fix protocol's message structure. Serde/Postcard messages carry a protocol version, with an eight-byte big-endian frame length supplied by `fixtransport`. The codecs work over `embedded_io`, independently of TCP or a particular scheduler. The receiver checks the version before decoding the message body. Decode failures retain the codec error and frame size; server diagnostics identify the serving protocol version.
 
+- `RequestTransfer` requests data by Fix name; the sender replies through the normal proposal/accept exchange. Plain transfers carry no evaluation task. Backing is read only after the receiver selects its missing objects.
 - `Run` identifies a task by coupon operation, collector, and input. `Result` identifies that task and its returned coupon.
 - `RequestProgress` obtains current runtime measurements independently of evaluation requests, so connected unused nodes remain visible.
 - `EvaluationProgress` reports availability, live task operations and locations, completed steps, measured counts, CPU, memory, and transport counters. Each evaluation connection tracks its completion events until delivered; nested remotes retain their routes. The receiving CLI chooses the presentation.
@@ -192,17 +220,16 @@ The source can label a compilation Thunk without running it:
 
 ```sh
 fix init
-fix sync bootstrap
-fix -l addblob "#(\"\" *'@remote(\"bootstrap:compile\") @file(\"addblob.wasm\"))"
+fix pull bootstrap
+fix -l addblob "#(\"\" *'@label(\"bootstrap:compile\") @file(\"addblob.wasm\"))"
 ```
 
-After cloning and pulling on the destination:
+After cloning on the destination:
 
 ```sh
 fix clone user@server:/path/to/source project
 cd project
-fix pull origin:addblob
-fix '*#("" *@label("addblob") 20u64 22u64)'
+fix '*#("" *@label("origin:addblob") 20u64 22u64)'
 ```
 
 The function position forces the compilation Thunk before applying its result.

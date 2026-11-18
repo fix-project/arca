@@ -45,7 +45,12 @@ pub unsafe fn transform(result: Reference, value: Reference, flags: u8) {
 /// # Safety
 /// `cell` must be a fresh writable arena cell and `metadata` must describe `bytes`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn create_local(_cell: usize, _address: usize, _bytes: usize, _metadata: u16) {
+pub unsafe extern "C" fn create_local(
+    _cell: usize,
+    _address: usize,
+    _bytes: usize,
+    _metadata: u16,
+) {
     naked_asm!(
         "mov [rdi], rsi",
         "mov qword ptr [rdi + 8], 0",

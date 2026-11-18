@@ -14,6 +14,7 @@ use fixwasm::{Error, Value as AsValue};
 pub struct Parallel<'a> {
     graph: &'a Graph,
     requested: RefCell<BTreeSet<[u8; 32]>>,
+    cluster: RefCell<Option<alloc::rc::Rc<fixscheduler::remote::Cluster>>>,
 }
 
 impl Scheduler for Parallel<'_> {
@@ -97,6 +98,21 @@ impl Scheduler for Parallel<'_> {
                 return Ok(value);
             }
         }
+        let cluster = self.cluster().await?;
+        let mut failures = alloc::vec::Vec::new();
+        for (index, remote) in fixscheduler::remote::configured()?.iter().enumerate() {
+            if remote.address.starts_with("file://") {
+                continue;
+            }
+            match cluster.request_transfer(index + 1, value).await {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => (),
+                Err(error) => failures.push(alloc::format!("{}: {error:?}", remote.name)),
+            }
+        }
+        if !failures.is_empty() {
+            panic!("could not load data: {}", failures.join("; "));
+        }
         Err(Error::OutOfBounds)
     }
 
@@ -152,6 +168,19 @@ impl<'a> Parallel<'a> {
         collector::eval_tree(policy, input, &coupons, retain).await
     }
 
+    /// Reuse the connections and inventories of the configured remote machines.
+    pub(crate) async fn cluster(
+        &self,
+    ) -> Result<alloc::rc::Rc<fixscheduler::remote::Cluster>, Error> {
+        if let Some(cluster) = self.cluster.borrow().clone() {
+            return Ok(cluster);
+        }
+        let cluster = alloc::rc::Rc::new(
+            fixscheduler::remote::Cluster::connect(&fixscheduler::io::Io, true).await?,
+        );
+        Ok(self.cluster.borrow_mut().get_or_insert(cluster).clone())
+    }
+
     /// Cache coupons, retaining results for the advised input and its Thunk/Encode forms.
     pub fn retain(&self, coupon: &Tree) -> Result<(), Error> {
         let claim = storage::identify(&fixscheduler::shell::child(coupon, 1)?)?
@@ -182,6 +211,7 @@ impl<'a> Parallel<'a> {
         Ok(Self {
             graph,
             requested: RefCell::default(),
+            cluster: RefCell::new(None),
         })
     }
 }
@@ -193,7 +223,12 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
     let policy = Parallel::new(&graph)?;
     let io = fixscheduler::io::Io;
     let result = executor::run(combination, &policy, &graph, &io)?;
-    let result = if !worker::returns_coupon()?
+    let raw = fixwasm::Value::equals(
+        &fixwasm::Value::get(combination, 2),
+        fixwasm::Blob::create(b"load"),
+    )?;
+    let result = if !raw
+        && !worker::returns_coupon()?
         && !fixwasm::Value::equals(
             &fixwasm::Value::get(combination, 2),
             fixwasm::Blob::create(b"todo"),
@@ -202,7 +237,7 @@ pub fn run(combination: &fixwasm::Handle<fixwasm::Object<fixwasm::Tree>>) -> Res
     } else {
         result
     };
-    if worker::returns_coupon()? {
+    if !raw && worker::returns_coupon()? {
         storage::cache(&result, true)?;
     }
     worker::finish(&result)?;
