@@ -160,7 +160,8 @@ The scheduler SDK exposes `remote::export`, `remote::import`, `remote::missing`,
 The `fixprotocol` crate follows the original Fix protocol's message structure. Serde/Postcard messages carry a protocol version, with an eight-byte big-endian frame length supplied by `fixtransport`. The codecs work over `embedded_io`, independently of TCP or a particular scheduler.
 
 - `Run` identifies a task by coupon operation, collector, and input. `Result` identifies that task and its returned coupon.
-- `EvaluationProgress` reports task operations, locations, measured counts, and runtime worker and memory counters while a request runs. Nested remotes retain their routes; the receiving CLI chooses the presentation.
+- `RequestProgress` obtains current runtime measurements independently of evaluation requests, so connected unused nodes remain visible.
+- `EvaluationProgress` reports availability, live task operations and locations, completed steps, measured counts, CPU, memory, and transport counters. Each evaluation connection tracks its completion events until delivered; nested remotes retain their routes. The receiving CLI chooses the presentation.
 - `RequestInfo` and `Info` exchange parallelism, link speed, and inventory hints.
 - Blob, Tree, and shallow Tree requests and data messages support separate object transfer. Load messages express prefetch hints.
 - `ProposeTransfer` lists object names, backing availability, and TODO metadata, without certificate names. `AcceptTransfer` selects the missing records and, when Tags are missing, advertises the receiver's trusted SSH keys. Data messages supply those records before `Run` or `Result` completes the exchange.

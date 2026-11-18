@@ -175,17 +175,28 @@ parser name. The envelope lets expressions contain literal error-shaped values
 without treating those values as parser failures. Runtime failures include the
 operation, input name, and runtime diagnostic alongside their exit status.
 
-Evaluation has one overall activity row, rows for labeled computations, and
-application task titles and counts reported through advice. Tasks identify the
-Fix value and operation: Evaluate, Think, Force, Apply, Select, or Load. Load
-shows both source and destination. Each evaluation row names its location:
-`local`, a configured remote name, or a route through nested remotes. The same label can name a Thunk and the evaluation of its combination.
-Anonymous internal traversal is collapsed; the input's own Tree-child count
-remains visible. Transfer byte bars are suppressed during evaluation.
+Evaluation keeps completed named computations as persistent steps, with their
+operation, location, outcome, and elapsed duration. Labels and application task
+titles name steps; an application without either uses its canonical Fix name.
+Live application advice and multi-part Tree evaluation use progress displays
+while running. Counts describe completed units rather than an estimate of time
+remaining. Cancelled discovery attempts do not appear as completed steps.
 
-Each participating Fix runtime also reports busy workers, its application-worker
-queue, and allocated VM memory. These are runtime measurements, not host load
-averages or process RSS. The final report includes application and collector
-invocation counts, worker time, peak worker occupancy and queue depth, and the
-largest sampled VM allocation. Worker time includes time spent inside worker
-invocations, including host scheduling delays; it is not measured CPU time.
+Every configured remote appears during evaluation. A successful handshake marks
+it available even when no evaluation is delegated to it. Configured but
+uncontacted remotes and failed connections are distinguished from available
+nodes with no evaluation work sent. File remotes are identified as storage.
+Connected nodes report CPU and VM memory load on the existing connection,
+including when unused. Unknown measurements remain unspecified.
+
+The final per-node table reports applications, collector calls, CPU time, peak
+worker count / available workers, peak queue length (`Qmax`), peak allocated VM
+memory / VM capacity, and bytes sent and received. Units appear once in each column header; every row
+uses that column's unit. CPU time is measured across the worker process's
+threads, including its VM and host I/O work; live CPU load is its change between
+samples, normalized by the worker count. Memory is the VM allocator's allocation,
+not process RSS; its peak is the allocator's high-water mark. Transport counters
+include protocol and status traffic. Counters accumulate from the first runtime
+sample; memory peaks cover the VM lifetime. A long-running server retains its
+runtime peaks across requests. Transfer byte bars remain suppressed during
+evaluation.

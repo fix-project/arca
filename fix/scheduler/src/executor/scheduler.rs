@@ -37,73 +37,87 @@ pub trait Scheduler {
 
     /// Evaluate without creating coupons, recursing through the scheduler's steps.
     async fn default_eval(&self, input: &Value) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(1, input);
-        if input.value_type() == ValueType::Encode {
-            let thunk = thunk(self, input).await?;
-            let forced = Box::pin(self.force(&thunk)).await?;
-            let result = if input.is_strict()? {
-                self.load(&forced).await?
+        let evaluation = crate::progress::evaluation(1, input);
+        let result = async {
+            if input.value_type() == ValueType::Encode {
+                let thunk = thunk(self, input).await?;
+                let forced = Box::pin(self.force(&thunk)).await?;
+                let result = if input.is_strict()? {
+                    self.load(&forced).await?
+                } else {
+                    shell::reference(&forced)?
+                };
+                Box::pin(self.eval(&result)).await
+            } else if input.is_value()? {
+                Ok(input.clone())
             } else {
-                shell::reference(&forced)?
-            };
-            Box::pin(self.eval(&result)).await
-        } else if input.is_value()? {
-            Ok(input.clone())
-        } else {
-            let data = self.load(input).await?;
-            let mut results = Vec::new();
-            let children = fields(&data)?;
-            crate::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
-            for value in &children {
-                results.push(Box::pin(self.eval(value)).await?);
-                crate::kernel::tree_progress(
-                    input,
-                    &[],
-                    results.len() as u64,
-                    children.len() as u64,
-                )?;
+                let data = self.load(input).await?;
+                let mut results = Vec::new();
+                let children = fields(&data)?;
+                crate::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
+                for value in &children {
+                    results.push(Box::pin(self.eval(value)).await?);
+                    crate::kernel::tree_progress(
+                        input,
+                        &[],
+                        results.len() as u64,
+                        children.len() as u64,
+                    )?;
+                }
+                Ok(Tree::new(&results).into_value())
             }
-            Ok(Tree::new(&results).into_value())
         }
+        .await;
+        evaluation.finish(result)
     }
 
     /// Perform one thunk step without creating coupons.
     async fn default_think(&self, input: &Value) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(4, input);
-        let data = self.load(input).await?;
-        let kind = input.unsound_thunk_type()?;
-        if kind == ThunkType::Identification {
-            return shell::reference(&data);
+        let evaluation = crate::progress::evaluation(4, input);
+        let result = async {
+            let data = self.load(input).await?;
+            let kind = input.unsound_thunk_type()?;
+            if kind == ThunkType::Identification {
+                return shell::reference(&data);
+            }
+            let evaluated = Box::pin(self.eval(&data)).await?;
+            match kind {
+                ThunkType::Application => self.apply(&evaluated).await,
+                ThunkType::Selection => self.select(&evaluated).await,
+                _ => unreachable!(),
+            }
         }
-        let evaluated = Box::pin(self.eval(&data)).await?;
-        match kind {
-            ThunkType::Application => self.apply(&evaluated).await,
-            ThunkType::Selection => self.select(&evaluated).await,
-            _ => unreachable!(),
-        }
+        .await;
+        evaluation.finish(result)
     }
 
     /// Follow thunk results without creating coupons.
     async fn default_force(&self, input: &Value) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(3, input);
-        let result = Box::pin(self.think(input)).await?;
-        if matches!(result.value_type(), ValueType::Object | ValueType::Ref) {
-            return Ok(result);
+        let evaluation = crate::progress::evaluation(3, input);
+        let result = async {
+            let result = Box::pin(self.think(input)).await?;
+            if matches!(result.value_type(), ValueType::Object | ValueType::Ref) {
+                return Ok(result);
+            }
+            let next = thunk(self, &result).await?;
+            Box::pin(self.force(&next)).await
         }
-        let next = thunk(self, &result).await?;
-        Box::pin(self.force(&next)).await
+        .await;
+        evaluation.finish(result)
     }
 
     /// Run an ordinary application without requesting an Apply coupon.
     async fn default_apply(&self, input: &Value) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(2, input);
-        crate::kernel::run(input, &mut |advice| self.on_advice(advice)).await
+        let evaluation = crate::progress::evaluation(2, input);
+        let result = crate::kernel::run(input, &mut |advice| self.on_advice(advice)).await;
+        evaluation.finish(result)
     }
 
     /// Select a value without requesting a Select coupon.
     async fn default_select(&self, input: &Value) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(6, input);
-        crate::storage::selection(input)
+        let evaluation = crate::progress::evaluation(6, input);
+        let result = crate::storage::selection(input);
+        evaluation.finish(result)
     }
 
     /// Identify locally available backing data; report an error when it is unavailable.

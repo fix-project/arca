@@ -139,6 +139,21 @@ impl Control {
         use common::protocol::control::*;
         match request {
             Request::GetArgs => Response::Args(self.argv.clone()),
+            Request::CpuTime => {
+                let mut time = core::mem::MaybeUninit::<libc::timespec>::uninit();
+                let cpu = unsafe {
+                    (libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, time.as_mut_ptr()) == 0)
+                        .then(|| {
+                            let time = time.assume_init();
+                            time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+                        })
+                };
+                Response::CpuTime(cpu)
+            }
+            Request::EvaluationStep(step) => {
+                common::progress::evaluation_step(step);
+                Response::Ack
+            }
             Request::ObserveEvaluation => Response::Bool(common::progress::observing_evaluation()),
             Request::EvaluationProgress(snapshot) => {
                 common::progress::evaluation_progress(snapshot);

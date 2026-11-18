@@ -1356,10 +1356,31 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 ])
                 .unwrap()
                 .into();
-            let result = returned(
-                &source,
-                run_with_jobs(&source_dir, &source_agent, request, None, 1),
-            );
+            if case == 1 {
+                source.write_label("bounded-add", input).unwrap();
+            }
+            let output = run_with_jobs(&source_dir, &source_agent, request, None, 1);
+            let diagnostics = String::from_utf8_lossy(&output.stderr);
+            if case == 1 {
+                assert!(
+                    diagnostics.lines().any(|line| line.contains("worker")
+                        && line.contains("available")
+                        && line.contains("unused")),
+                    "{diagnostics}"
+                );
+                assert!(
+                    diagnostics.contains("✓ local: Evaluate bounded-add"),
+                    "{diagnostics}"
+                );
+                assert!(
+                    diagnostics.contains("Mem peak") && diagnostics.contains("Received"),
+                    "{diagnostics}"
+                );
+            }
+            if case == 0 && index == 0 {
+                assert!(diagnostics.contains("✓ worker: Apply"), "{diagnostics}");
+            }
+            let result = returned(&source, output);
             assert!(
                 result.is_tag(),
                 "policy {index}, case {case}: {:?}",

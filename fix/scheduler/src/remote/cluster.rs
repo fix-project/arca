@@ -16,10 +16,116 @@ use alloc::{
 use core::cell::RefCell;
 use fixwasm::{Error, Value as AsValue};
 
-struct Peer<'a> {
+struct Peer {
     name: String,
-    connection: Connection<'a>,
+    connection: Connection,
     information: Information,
+}
+
+#[derive(Default)]
+struct PeerSlot {
+    peer: Option<Peer>,
+    polling: bool,
+    information: Information,
+    waiters: Vec<core::task::Waker>,
+}
+
+impl PeerSlot {
+    fn new(peer: Option<Peer>) -> Self {
+        let information = peer
+            .as_ref()
+            .map(|peer| peer.information.clone())
+            .unwrap_or_default();
+        Self {
+            peer,
+            information,
+            ..Self::default()
+        }
+    }
+
+    async fn take(slot: &Rc<RefCell<Self>>) -> Option<Peer> {
+        core::future::poll_fn(|cx| {
+            let mut state = slot.borrow_mut();
+            if state.polling {
+                if !state
+                    .waiters
+                    .iter()
+                    .any(|waker| waker.will_wake(cx.waker()))
+                {
+                    state.waiters.push(cx.waker().clone());
+                }
+                core::task::Poll::Pending
+            } else {
+                core::task::Poll::Ready(state.peer.take())
+            }
+        })
+        .await
+    }
+}
+
+struct StatusPoll {
+    slot: Rc<RefCell<PeerSlot>>,
+    peer: Option<Peer>,
+}
+
+impl Drop for StatusPoll {
+    fn drop(&mut self) {
+        let mut slot = self.slot.borrow_mut();
+        slot.polling = false;
+        for waiter in slot.waiters.drain(..) {
+            waiter.wake();
+        }
+    }
+}
+
+async fn status(peer: &mut Peer) -> Result<(), String> {
+    protocol::asynchronous::send(&mut peer.connection, Message::RequestProgress)
+        .await
+        .map_err(|error| alloc::format!("status request failed: {error}"))?;
+    match protocol::asynchronous::receive(&mut peer.connection, protocol::MAX_MESSAGE_SIZE).await {
+        Ok(Some(Message::EvaluationProgress(snapshot))) => {
+            super::report_progress(&peer.name, &snapshot, false)
+                .map_err(|error| alloc::format!("invalid status: {error:?}"))?;
+            Ok(())
+        }
+        response => Err(alloc::format!("status response failed: {response:?}")),
+    }
+}
+
+async fn monitor(slot: Weak<RefCell<PeerSlot>>) {
+    loop {
+        if Io
+            .request(fixwasm::tree![fixwasm::Blob::create(b"sleep"), 1000u64])
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Some(slot) = slot.upgrade() else { return };
+        let peer = {
+            let mut state = slot.borrow_mut();
+            let Some(peer) = state.peer.take() else {
+                continue;
+            };
+            state.information = peer.information.clone();
+            state.polling = true;
+            peer
+        };
+        let mut polling = StatusPoll {
+            slot,
+            peer: Some(peer),
+        };
+        let peer = polling.peer.as_mut().unwrap();
+        match status(peer).await {
+            Ok(()) => {
+                polling.slot.borrow_mut().peer = polling.peer.take();
+            }
+            Err(error) => {
+                super::report_status(&peer.name, "unavailable", None, &error);
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -39,23 +145,24 @@ impl From<Error> for Failure {
     }
 }
 
-pub struct Cluster<'a> {
-    peers: Vec<Rc<RefCell<Option<Peer<'a>>>>>,
+pub struct Cluster {
+    peers: Vec<Rc<RefCell<PeerSlot>>>,
+    _monitors: Vec<crate::io::Background>,
     failures: Vec<Option<String>>,
     inventories: Vec<Information>,
 }
 
 /// One outstanding evaluation owns its connection until completion.
-pub struct PendingEvaluation<'a> {
-    slot: Weak<RefCell<Option<Peer<'a>>>>,
-    peer: Option<Peer<'a>>,
+pub struct PendingEvaluation {
+    slot: Weak<RefCell<PeerSlot>>,
+    peer: Option<Peer>,
     task: Task,
     input: Value,
     names: Vec<super::protocol::Name>,
     operation: u64,
 }
 
-impl Drop for PendingEvaluation<'_> {
+impl Drop for PendingEvaluation {
     fn drop(&mut self) {
         if let Some(peer) = self.peer.take() {
             drop(peer.connection);
@@ -63,13 +170,17 @@ impl Drop for PendingEvaluation<'_> {
     }
 }
 
-impl<'a> Cluster<'a> {
-    pub async fn connect(io: &'a Io, inventory: bool) -> Result<Self, Error> {
+impl Cluster {
+    pub async fn connect(io: &Io, inventory: bool) -> Result<Self, Error> {
         let mut peers = Vec::new();
+        let mut monitors = Vec::new();
         let mut failures = Vec::new();
         let mut inventories = Vec::new();
         for remote in configured()? {
             if remote.address.starts_with("file://") {
+                if inventory {
+                    super::report_status(&remote.name, "connecting", None, "");
+                }
                 let information = if inventory {
                     super::file_information(&remote.address)
                 } else {
@@ -82,14 +193,25 @@ impl<'a> Cluster<'a> {
                         (Information::default(), Some(error))
                     }
                 };
+                if inventory {
+                    match &failure {
+                        Some(error) => {
+                            super::report_status(&remote.name, "unavailable", None, error)
+                        }
+                        None => {
+                            super::report_status(&remote.name, "available", Some(&information), "")
+                        }
+                    }
+                }
                 inventories.push(information);
-                peers.push(Rc::new(RefCell::new(None)));
+                peers.push(Rc::new(RefCell::new(PeerSlot::default())));
                 failures.push(failure);
                 continue;
             }
+            super::report_status(&remote.name, "connecting", None, "");
             inventories.push(Information::default());
             let mut failure = None;
-            let peer = (async {
+            let mut peer = (async {
                 let mut connection = if remote.is_ssh()
                     && (remote.scheduler.is_none() || remote.collector.is_none())
                 {
@@ -102,7 +224,17 @@ impl<'a> Cluster<'a> {
                         }
                     }
                 } else {
-                    Connection::connect(io, &remote).await.ok().flatten()?
+                    match Connection::connect(io, &remote).await {
+                        Ok(Some(connection)) => connection,
+                        Ok(None) => {
+                            failure = Some(String::from("connection closed before handshake"));
+                            return None;
+                        }
+                        Err(error) => {
+                            failure = Some(alloc::format!("connection failed: {error:?}"));
+                            return None;
+                        }
+                    }
                 };
                 if let Err(error) = protocol::asynchronous::send(
                     &mut connection,
@@ -136,11 +268,36 @@ impl<'a> Cluster<'a> {
                 }
             })
             .await;
-            peers.push(Rc::new(RefCell::new(peer)));
+            match &peer {
+                Some(peer) => {
+                    super::report_status(&remote.name, "available", Some(&peer.information), "")
+                }
+                None => super::report_status(
+                    &remote.name,
+                    "unavailable",
+                    None,
+                    failure.as_deref().unwrap_or("connection did not complete"),
+                ),
+            }
+            if let Some(peer) = &mut peer
+                && let Err(error) = status(peer).await
+            {
+                super::report_status(&remote.name, "unavailable", None, &error);
+                failure = Some(error);
+            }
+            if failure.is_some() {
+                peer = None;
+            }
+            let slot = Rc::new(RefCell::new(PeerSlot::new(peer)));
+            if slot.borrow().peer.is_some() {
+                monitors.push(io.spawn(monitor(Rc::downgrade(&slot))));
+            }
+            peers.push(slot);
             failures.push(failure);
         }
         Ok(Self {
             peers,
+            _monitors: monitors,
             failures,
             inventories,
         })
@@ -155,9 +312,14 @@ impl<'a> Cluster<'a> {
             .iter()
             .zip(&self.inventories)
             .map(|(peer, inventory)| {
-                peer.borrow()
-                    .as_ref()
-                    .map_or_else(|| inventory.clone(), |peer| peer.information.clone())
+                let slot = peer.borrow();
+                if slot.polling {
+                    slot.information.clone()
+                } else {
+                    slot.peer
+                        .as_ref()
+                        .map_or_else(|| inventory.clone(), |peer| peer.information.clone())
+                }
             })
             .collect()
     }
@@ -168,14 +330,14 @@ impl<'a> Cluster<'a> {
         location: usize,
         operation: u64,
         input: &Value,
-    ) -> Result<Option<PendingEvaluation<'a>>, Failure> {
+    ) -> Result<Option<PendingEvaluation>, Failure> {
         if !matches!(operation, 1 | 4 | 2 | 3 | 6) || location == 0 {
             return Ok(None);
         }
         let Some(slot) = self.peers.get(location - 1) else {
             return Ok(None);
         };
-        if slot.borrow().is_none() {
+        if slot.borrow().peer.is_none() && !slot.borrow().polling {
             return Ok(None);
         }
         let collector = storage::put(&crate::collector::callable()?)?;
@@ -194,14 +356,14 @@ impl<'a> Cluster<'a> {
         operation: u64,
         input: &Value,
         transfer: Transfer,
-    ) -> Result<Option<PendingEvaluation<'a>>, Failure> {
+    ) -> Result<Option<PendingEvaluation>, Failure> {
         let Some(slot) = location
             .checked_sub(1)
             .and_then(|index| self.peers.get(index))
         else {
             return Ok(None);
         };
-        if slot.borrow().is_none() {
+        if slot.borrow().peer.is_none() && !slot.borrow().polling {
             return Ok(None);
         }
         let collector = storage::put(&crate::collector::callable()?)?;
@@ -217,9 +379,12 @@ impl<'a> Cluster<'a> {
             collector: collector.raw_handle_bytes()?,
             input: input.raw_handle_bytes()?,
         };
+        let Some(peer) = PeerSlot::take(slot).await else {
+            return Ok(None);
+        };
         let mut pending = PendingEvaluation {
             slot: Rc::downgrade(slot),
-            peer: slot.borrow_mut().take(),
+            peer: Some(peer),
             task,
             input,
             names,
@@ -253,7 +418,7 @@ impl<'a> Cluster<'a> {
     }
 }
 
-async fn stage_programs<'a>(io: &'a Io, remote: &super::Remote) -> Result<Connection<'a>, String> {
+async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, String> {
     let programs =
         super::effect(b"remote_programs", &[]).map_err(|error| alloc::format!("{error:?}"))?;
     let empty = capture(fixwasm::Blob::create(b"")).map_err(|error| alloc::format!("{error:?}"))?;
@@ -310,7 +475,7 @@ async fn stage_programs<'a>(io: &'a Io, remote: &super::Remote) -> Result<Connec
     Ok(initial)
 }
 
-impl PendingEvaluation<'_> {
+impl PendingEvaluation {
     /// Wait for a submitted evaluation and return its validated coupon.
     pub async fn receive(mut self) -> Result<Value, Failure> {
         let trusted_keys = super::trusted_keys()?;
@@ -329,7 +494,7 @@ impl PendingEvaluation<'_> {
             None,
             |message| match message {
                 Message::EvaluationProgress(snapshot) => {
-                    let _ = super::report_progress(&remote, snapshot);
+                    let _ = super::report_progress(&remote, snapshot, true);
                 }
                 Message::ProposeTransfer { .. } => {
                     download.get_or_insert_with(|| crate::progress::load(&self.input, &remote, ""));
@@ -344,6 +509,13 @@ impl PendingEvaluation<'_> {
         if incoming.task != self.task || incoming.result.is_none() {
             return Err(Failure::Task);
         }
+        let reusable = match status(peer).await {
+            Ok(()) => true,
+            Err(error) => {
+                super::report_status(&remote, "unavailable", None, &error);
+                false
+            }
+        };
         let bytes = incoming.transfer.encode().map_err(|_| Failure::Task)?;
         let roots = super::import(&bytes).map_err(Failure::Import)?;
         let [coupon] = roots.as_slice() else {
@@ -355,18 +527,18 @@ impl PendingEvaluation<'_> {
         if !peer.information.results.contains(&self.task) {
             peer.information.results.push(self.task.clone());
         }
-        if let Some(slot) = self.slot.upgrade() {
-            *slot.borrow_mut() = self.peer.take();
+        if reusable && let Some(slot) = self.slot.upgrade() {
+            slot.borrow_mut().peer = self.peer.take();
         }
 
         Ok(coupon)
     }
 }
 
-impl Drop for Cluster<'_> {
+impl Drop for Cluster {
     fn drop(&mut self) {
         for peer in &mut self.peers {
-            if let Some(peer) = peer.borrow_mut().take() {
+            if let Some(peer) = peer.borrow_mut().peer.take() {
                 drop(peer.connection);
             }
         }

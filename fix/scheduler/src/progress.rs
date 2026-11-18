@@ -14,17 +14,38 @@ unsafe impl Sync for Active {}
 static LABELS: Labels = Labels(RefCell::new(None));
 static ACTIVE: Active = Active(RefCell::new(BTreeMap::new()));
 
-pub(crate) struct Evaluation(Option<(Value, u64, [u8; 32])>);
+pub(crate) struct Evaluation {
+    task: Option<(Value, u64, [u8; 32])>,
+    success: Option<bool>,
+}
+
+impl Evaluation {
+    pub(crate) fn finish<T>(
+        mut self,
+        result: Result<T, fixwasm::Error>,
+    ) -> Result<T, fixwasm::Error> {
+        self.success = Some(result.is_ok());
+        result
+    }
+}
 impl Drop for Evaluation {
     fn drop(&mut self) {
-        if let Some((input, operation, name)) = &self.0 {
+        if let Some((input, operation, name)) = &self.task {
             let mut active = ACTIVE.0.borrow_mut();
             let count = active.get_mut(&(*operation, *name)).unwrap();
             *count -= 1;
             if *count == 0 {
                 active.remove(&(*operation, *name));
                 if let Ok(operation) = capture(*operation) {
-                    let _ = coordinate(b"evaluation_finish", &[input.clone(), operation]);
+                    let outcome = match self.success {
+                        Some(true) => "completed",
+                        Some(false) => "failed",
+                        None => "cancelled",
+                    };
+                    if let Ok(outcome) = capture(fixwasm::Blob::create(outcome)) {
+                        let _ =
+                            coordinate(b"evaluation_finish", &[input.clone(), operation, outcome]);
+                    }
                 }
             }
         }
@@ -52,7 +73,10 @@ pub(crate) fn evaluation(operation: u64, input: &Value) -> Evaluation {
     if result.unwrap_or(false) {
         self::operation(operation, input)
     } else {
-        Evaluation(None)
+        Evaluation {
+            task: None,
+            success: None,
+        }
     }
 }
 
@@ -68,7 +92,10 @@ pub(crate) fn operation(operation: u64, input: &Value) -> Evaluation {
         *count += 1;
         Ok(name)
     })();
-    Evaluation(started.ok().map(|name| (input.clone(), operation, name)))
+    Evaluation {
+        task: started.ok().map(|name| (input.clone(), operation, name)),
+        success: None,
+    }
 }
 
 pub(crate) struct Load(Option<Value>);

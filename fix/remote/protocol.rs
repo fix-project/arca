@@ -10,7 +10,7 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 pub const OBJECT_CHUNK_SIZE: usize = 1 << 20;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
@@ -153,6 +153,7 @@ pub struct Information {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    RequestProgress,
     EvaluationProgress(
         #[serde(
             serialize_with = "optional_bytes::serialize_bytes",

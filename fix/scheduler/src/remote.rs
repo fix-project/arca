@@ -48,16 +48,59 @@ pub fn configured() -> Result<Vec<Remote>, Error> {
         .collect()
 }
 
-pub(crate) fn progress_snapshot() -> Result<Vec<u8>, Error> {
-    bytes(&effect(b"progress_snapshot", &[])?)
+pub(crate) fn report_status(
+    remote: &str,
+    status: &str,
+    information: Option<&protocol::Information>,
+    error: &str,
+) {
+    let _ = (|| -> Result<(), Error> {
+        let memory = match information.and_then(|info| info.memory_bytes) {
+            Some(bytes) => crate::shell::capture(bytes)?,
+            None => crate::shell::capture(Blob::create(b""))?,
+        };
+        effect(
+            b"remote_status",
+            &[
+                crate::shell::capture(Blob::create(remote))?,
+                crate::shell::capture(Blob::create(status))?,
+                crate::shell::capture(information.map_or(0, |info| info.parallelism as u64))?,
+                memory,
+                crate::shell::capture(Blob::create(error))?,
+            ],
+        )?;
+        Ok(())
+    })();
 }
 
-pub(crate) fn report_progress(remote: &str, snapshot: &[u8]) -> Result<(), Error> {
+pub(crate) struct ProgressObserver(Value);
+
+impl ProgressObserver {
+    pub(crate) fn new() -> Result<Self, Error> {
+        Ok(Self(effect(b"progress_subscribe", &[])?))
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<Vec<u8>, Error> {
+        bytes(&effect(
+            b"progress_snapshot",
+            core::slice::from_ref(&self.0),
+        )?)
+    }
+}
+
+impl Drop for ProgressObserver {
+    fn drop(&mut self) {
+        let _ = effect(b"progress_unsubscribe", core::slice::from_ref(&self.0));
+    }
+}
+
+pub(crate) fn report_progress(remote: &str, snapshot: &[u8], used: bool) -> Result<(), Error> {
     effect(
         b"remote_progress",
         &[
             crate::shell::capture(Blob::create(remote))?,
             crate::shell::capture(Blob::create(snapshot))?,
+            crate::shell::capture(u64::from(used))?,
         ],
     )?;
     Ok(())
@@ -239,17 +282,16 @@ pub fn bytes(value: &Value) -> Result<Vec<u8>, Error> {
 }
 
 /// An asynchronous TCP connection owned by one task at a time.
-pub struct Connection<'a>(u64, &'a Io);
-impl embedded_io::ErrorType for Connection<'_> {
+pub struct Connection(u64);
+impl embedded_io::ErrorType for Connection {
     type Error = IoError;
 }
-impl fixtransport::AsyncRead for Connection<'_> {
+impl fixtransport::AsyncRead for Connection {
     async fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let (status, value) = self
-            .1
+        let (status, value) = Io
             .request(tree![
                 Blob::create(b"stream_receive"),
                 self.0,
@@ -270,11 +312,10 @@ impl fixtransport::AsyncRead for Connection<'_> {
         Ok(length)
     }
 }
-impl fixtransport::AsyncWrite for Connection<'_> {
+impl fixtransport::AsyncWrite for Connection {
     async fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error> {
         let bytes = &bytes[..bytes.len().min(65536)];
-        let (status, value) = self
-            .1
+        let (status, value) = Io
             .request(tree![
                 Blob::create(b"stream_send"),
                 self.0,
@@ -291,14 +332,14 @@ impl fixtransport::AsyncWrite for Connection<'_> {
         Ok(())
     }
 }
-impl Drop for Connection<'_> {
+impl Drop for Connection {
     fn drop(&mut self) {
         let _ = crate::abi::request(tree![Blob::create(b"stream_close"), self.0]);
     }
 }
 
-impl<'a> Connection<'a> {
-    pub async fn connect(io: &'a Io, remote: &Remote) -> Result<Option<Self>, Error> {
+impl Connection {
+    pub async fn connect(io: &Io, remote: &Remote) -> Result<Option<Self>, Error> {
         let ssh = if let Some(address) = remote.address.strip_prefix("ssh://") {
             address
                 .split_once('/')
@@ -322,7 +363,7 @@ impl<'a> Connection<'a> {
                 ])
                 .await?;
             return if status == 0 {
-                Ok(Some(Self(stream.read_u64()?, io)))
+                Ok(Some(Self(stream.read_u64()?)))
             } else {
                 Ok(None)
             };
@@ -330,7 +371,7 @@ impl<'a> Connection<'a> {
         Self::connect_tcp(io, remote).await
     }
 
-    pub async fn connect_tcp(io: &'a Io, remote: &Remote) -> Result<Option<Self>, Error> {
+    pub async fn connect_tcp(io: &Io, remote: &Remote) -> Result<Option<Self>, Error> {
         let Some(address) = remote.address.strip_prefix("tcp://") else {
             return Ok(None);
         };
@@ -348,7 +389,7 @@ impl<'a> Connection<'a> {
             ])
             .await?;
         Ok(if status == 0 {
-            Some(Self(stream.read_u64()?, io))
+            Some(Self(stream.read_u64()?))
         } else {
             None
         })

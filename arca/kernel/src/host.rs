@@ -94,6 +94,24 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn cpu_time() -> Option<u64> {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::CpuTime)
+        {
+            common::protocol::control::Response::CpuTime(value) => value,
+            _ => None,
+        }
+    }
+
+    pub fn evaluation_step(step: common::protocol::control::EvaluationStep) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::EvaluationStep(step));
+    }
+
     pub fn observe_evaluation() -> bool {
         matches!(
             crate::pipe::HOST

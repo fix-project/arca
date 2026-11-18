@@ -7,7 +7,7 @@ use crate::{
     Blob, EncodeView, Handle, HandleView, InvalidApplication, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -17,7 +17,8 @@ use kernel::{
 };
 
 use common::protocol::control::{
-    EvaluationOperation, EvaluationSnapshot, EvaluationTask, MachineProgress,
+    EvaluationOperation, EvaluationSnapshot, EvaluationStep, EvaluationTask, MachineProgress,
+    RemoteAvailability, RuntimeStats,
 };
 
 const MAX_QUEUE_CAPACITY: usize = 65536;
@@ -458,15 +459,83 @@ struct TreeProgress {
     updated: Duration,
 }
 
+struct ActiveTask {
+    progress: EvaluationTask,
+    started: Duration,
+    scoped: bool,
+}
+
+impl ActiveTask {
+    fn new(progress: EvaluationTask, scoped: bool) -> Self {
+        Self {
+            progress,
+            started: kernel::tsc::read(),
+            scoped,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ProgressObservers {
+    next_id: usize,
+    next_event: usize,
+    cursors: BTreeMap<usize, usize>,
+    steps: VecDeque<(usize, EvaluationStep)>,
+}
+
+impl ProgressObservers {
+    fn subscribe(&mut self) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.cursors.insert(id, self.next_event);
+        id
+    }
+
+    fn record(&mut self, step: EvaluationStep) {
+        if !self.cursors.is_empty() {
+            self.steps.push_back((self.next_event, step));
+            self.next_event += 1;
+        }
+    }
+
+    fn read(&mut self, id: usize) -> Result<Vec<EvaluationStep>, Error> {
+        let cursor = self.cursors.get_mut(&id).ok_or(Error::Invalid)?;
+        let steps = self
+            .steps
+            .iter()
+            .filter(|(event, _)| event >= cursor)
+            .map(|(_, step)| step.clone())
+            .collect();
+        *cursor = self.next_event;
+        self.collect();
+        Ok(steps)
+    }
+
+    fn collect(&mut self) {
+        let oldest = self
+            .cursors
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.next_event);
+        while self.steps.front().is_some_and(|(event, _)| *event < oldest) {
+            self.steps.pop_front();
+        }
+    }
+}
+
 struct Shared {
-    advised: KMutex<BTreeMap<TaskKey, EvaluationTask>>,
+    advised: KMutex<BTreeMap<TaskKey, ActiveTask>>,
+    observers: KMutex<ProgressObservers>,
     remote_progress: KMutex<BTreeMap<alloc::string::String, EvaluationSnapshot>>,
     labels: Vec<([u8; 32], alloc::string::String)>,
     started: Duration,
     busy: AtomicUsize,
     peak_busy: AtomicUsize,
     privileged_completed: AtomicUsize,
-    worker_ns: AtomicU64,
+    cpu_started: Option<u64>,
+    bytes_sent: AtomicU64,
+    bytes_received: AtomicU64,
     progress_trees: KMutex<BTreeMap<[u8; 32], TreeProgress>>,
     scheduler: Handle,
     collector: Handle,
@@ -502,32 +571,81 @@ struct EffectStats {
 }
 
 impl Shared {
+    fn record_step(&self, step: EvaluationStep) {
+        self.observers.lock().record(step.clone());
+        kernel::host::os::evaluation_step(step);
+    }
+
+    fn finish_task(&self, key: TaskKey, outcome: &str) {
+        let task = self.advised.lock().remove(&key);
+        kernel::host::os::task_finished(key.0, key.1);
+        if let Some(task) = task {
+            let mut name = task.progress.id;
+            name[31] &= 0xe0;
+            let named = self.labels.iter().any(|(label, _)| {
+                let mut label = *label;
+                label[31] &= 0xe0;
+                label == name
+            });
+            if outcome != "cancelled"
+                && (named
+                    || !task.progress.title.is_empty()
+                    || key.1 == Some(EvaluationOperation::Apply))
+            {
+                self.record_step(EvaluationStep {
+                    location: Vec::new(),
+                    elapsed_ns: kernel::tsc::read().saturating_sub(task.started).as_nanos() as u64,
+                    task: task.progress,
+                    success: outcome == "completed",
+                });
+            }
+        }
+    }
+
     fn snapshot(&self) -> EvaluationSnapshot {
         let local = MachineProgress {
             location: Vec::new(),
-            elapsed_ns: kernel::tsc::read().saturating_sub(self.started).as_nanos() as u64,
-            workers: self.executed.len() as u64,
-            busy_workers: self.busy.load(Ordering::Relaxed) as u64,
-            queued: self.applications.state.lock().queue.len() as u64,
-            peak_busy_workers: self.peak_busy.load(Ordering::Relaxed) as u64,
-            peak_queued: self.applications.peak_queued.load(Ordering::Relaxed) as u64,
-            completed: self
-                .executed
-                .iter()
-                .map(|count| count.load(Ordering::Relaxed) as u64)
-                .sum(),
-            privileged_completed: self.privileged_completed.load(Ordering::Relaxed) as u64,
-            worker_ns: self.worker_ns.load(Ordering::Relaxed),
-            memory_used: common::BuddyAllocator.used_size() as u64,
-            memory_total: common::BuddyAllocator.total_size() as u64,
-            tasks: self.advised.lock().values().cloned().collect(),
+            availability: None,
+            used: true,
+            runtime: Some(RuntimeStats {
+                elapsed_ns: kernel::tsc::read().saturating_sub(self.started).as_nanos() as u64,
+                workers: self.executed.len() as u64,
+                busy_workers: self.busy.load(Ordering::Relaxed) as u64,
+                queued: self.applications.state.lock().queue.len() as u64,
+                peak_busy_workers: self.peak_busy.load(Ordering::Relaxed) as u64,
+                peak_queued: self.applications.peak_queued.load(Ordering::Relaxed) as u64,
+                completed: self
+                    .executed
+                    .iter()
+                    .map(|count| count.load(Ordering::Relaxed) as u64)
+                    .sum(),
+                privileged_completed: self.privileged_completed.load(Ordering::Relaxed) as u64,
+                cpu_ns: self
+                    .cpu_started
+                    .zip(kernel::host::os::cpu_time())
+                    .and_then(|(start, now)| now.checked_sub(start)),
+                bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
+                bytes_received: self.bytes_received.load(Ordering::Relaxed),
+                peak_memory: common::BuddyAllocator.peak_size() as u64,
+                memory_used: common::BuddyAllocator.used_size() as u64,
+                memory_total: common::BuddyAllocator.total_size() as u64,
+            }),
+            tasks: self
+                .advised
+                .lock()
+                .values()
+                .map(|task| task.progress.clone())
+                .collect(),
             labels: self.labels.clone(),
         };
         let mut machines = alloc::vec![local];
         for snapshot in self.remote_progress.lock().values() {
             machines.extend(snapshot.machines.iter().cloned());
         }
-        EvaluationSnapshot { machines }
+        EvaluationSnapshot {
+            machines,
+            steps: Vec::new(),
+        }
     }
     // needed to signal this whole run is completed
     fn stopped(&self) -> bool {
@@ -611,13 +729,34 @@ pub fn start_profiled<
         .collect();
     let shared = Arc::new(Shared {
         advised: KMutex::new(BTreeMap::new()),
-        remote_progress: KMutex::new(BTreeMap::new()),
+        observers: KMutex::new(ProgressObservers::default()),
+        remote_progress: KMutex::new(
+            services
+                .remotes()
+                .iter()
+                .map(|remote| {
+                    (
+                        remote.name.clone(),
+                        EvaluationSnapshot {
+                            machines: alloc::vec![MachineProgress {
+                                location: alloc::vec![remote.name.clone()],
+                                availability: Some(RemoteAvailability::Configured),
+                                ..MachineProgress::default()
+                            }],
+                            steps: Vec::new(),
+                        },
+                    )
+                })
+                .collect(),
+        ),
         labels,
         started: kernel::tsc::read(),
         busy: AtomicUsize::new(0),
         peak_busy: AtomicUsize::new(0),
         privileged_completed: AtomicUsize::new(0),
-        worker_ns: AtomicU64::new(0),
+        cpu_started: kernel::host::os::cpu_time(),
+        bytes_sent: AtomicU64::new(0),
+        bytes_received: AtomicU64::new(0),
         progress_trees: KMutex::new(BTreeMap::new()),
         scheduler,
         collector,
@@ -691,7 +830,6 @@ pub fn start_profiled<
                     }
                     continue;
                 }
-                let started = kernel::tsc::read();
                 let busy = shared.busy.fetch_add(1, Ordering::Relaxed) + 1;
                 shared.peak_busy.fetch_max(busy, Ordering::Relaxed);
                 let result = handle_task(&runtime, &shared, worker, operation, &[argument], false)
@@ -702,10 +840,7 @@ pub fn start_profiled<
                             .into()
                     });
                 shared.busy.fetch_sub(1, Ordering::Relaxed);
-                shared.worker_ns.fetch_add(
-                    kernel::tsc::read().saturating_sub(started).as_nanos() as u64,
-                    Ordering::Relaxed,
-                );
+
                 let mut pending = shared.pending_effects.lock();
                 if let Some(slot) = pending.get_mut(&id) {
                     slot.result = Some(result);
@@ -1172,16 +1307,11 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     let storage = runtime.storage();
     match execution {
         Ok(Execution::Complete(value)) => {
-            let advised = !shared.advised.lock().is_empty();
-            if advised
-                && let Ok(task) = storage.canonicalize(task).map(Handle::from)
-                && shared
-                    .advised
-                    .lock()
-                    .remove(&(*task.as_bytes(), Some(EvaluationOperation::Apply)))
-                    .is_some()
-            {
-                kernel::host::os::task_finished(*task.as_bytes(), Some(EvaluationOperation::Apply));
+            if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
+                shared.finish_task(
+                    (*task.as_bytes(), Some(EvaluationOperation::Apply)),
+                    "completed",
+                );
             }
             if application {
                 shared.executed[worker].fetch_add(1, Ordering::Relaxed);
@@ -1203,11 +1333,17 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 let mut tasks = shared.advised.lock();
                 let task = tasks
                     .entry((*target.as_bytes(), operation))
-                    .or_insert_with(|| EvaluationTask {
-                        id: *target.as_bytes(),
-                        operation,
-                        ..EvaluationTask::default()
+                    .or_insert_with(|| {
+                        ActiveTask::new(
+                            EvaluationTask {
+                                id: *target.as_bytes(),
+                                operation,
+                                ..EvaluationTask::default()
+                            },
+                            false,
+                        )
                     });
+                let task = &mut task.progress;
                 if event.key == b"fix::title" {
                     task.title =
                         alloc::string::String::from_utf8_lossy(&event.payload).into_owned();
@@ -1396,17 +1532,20 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .collect();
             shared.advised.lock().insert(
                 (*input.as_bytes(), Some(operation)),
-                EvaluationTask {
-                    id: *input.as_bytes(),
-                    operation: Some(operation),
-                    children,
-                    ..EvaluationTask::default()
-                },
+                ActiveTask::new(
+                    EvaluationTask {
+                        id: *input.as_bytes(),
+                        operation: Some(operation),
+                        children,
+                        ..EvaluationTask::default()
+                    },
+                    true,
+                ),
             );
             kernel::host::os::task_advice(*input.as_bytes(), Some(operation), b"fix::title", b"");
             Ok(number(0))
         }
-        (b"evaluation_finish", [input, operation]) => {
+        (b"evaluation_finish", [input, operation, outcome]) => {
             let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
             let operation = match unsigned(storage, *operation)? {
                 1 => EvaluationOperation::Evaluate,
@@ -1416,11 +1555,10 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 6 => EvaluationOperation::Select,
                 _ => return Err(Error::Invalid.into()),
             };
-            shared
-                .advised
-                .lock()
-                .remove(&(*input.as_bytes(), Some(operation)));
-            kernel::host::os::task_finished(*input.as_bytes(), Some(operation));
+            shared.finish_task(
+                (*input.as_bytes(), Some(operation)),
+                &text(storage, *outcome)?,
+            );
             Ok(number(0))
         }
         (b"load_start", [input, source, destination]) => {
@@ -1435,12 +1573,15 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             };
             shared.advised.lock().insert(
                 (*input.as_bytes(), Some(EvaluationOperation::Load)),
-                EvaluationTask {
-                    id: *input.as_bytes(),
-                    operation: Some(EvaluationOperation::Load),
-                    transfer: Some((endpoint(*source)?, endpoint(*destination)?)),
-                    ..EvaluationTask::default()
-                },
+                ActiveTask::new(
+                    EvaluationTask {
+                        id: *input.as_bytes(),
+                        operation: Some(EvaluationOperation::Load),
+                        transfer: Some((endpoint(*source)?, endpoint(*destination)?)),
+                        ..EvaluationTask::default()
+                    },
+                    false,
+                ),
             );
             kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
@@ -1454,22 +1595,99 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
-        (b"progress_snapshot", []) => {
+        (b"progress_status", []) => {
             let bytes = postcard::to_allocvec(&shared.snapshot()).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_progress", [location, snapshot]) => {
+        (b"progress_subscribe", []) => Ok(number(shared.observers.lock().subscribe())),
+        (b"progress_unsubscribe", [id]) => {
+            let mut observers = shared.observers.lock();
+            observers.cursors.remove(&integer(storage, *id)?);
+            observers.collect();
+            Ok(number(0))
+        }
+        (b"progress_snapshot", [id]) => {
+            let mut snapshot = shared.snapshot();
+            snapshot.steps = shared.observers.lock().read(integer(storage, *id)?)?;
+            let bytes = postcard::to_allocvec(&snapshot).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_status", [location, status, workers, memory, error]) => {
+            let location = text(storage, *location)?;
+            let availability = match text(storage, *status)?.as_str() {
+                "connecting" => RemoteAvailability::Connecting,
+                "available" => RemoteAvailability::Available {
+                    workers: unsigned(storage, *workers)?,
+                    memory_bytes: if storage
+                        .get_blob(Blob::try_from(*memory).map_err(|_| Error::Invalid)?)
+                        .map_err(|_| Error::Invalid)?
+                        .is_empty()
+                    {
+                        None
+                    } else {
+                        Some(unsigned(storage, *memory)?)
+                    },
+                },
+                "unavailable" => RemoteAvailability::Unavailable(text(storage, *error)?),
+                _ => return Err(Error::Invalid.into()),
+            };
+            {
+                let mut remotes = shared.remote_progress.lock();
+                let snapshot = remotes.entry(location.clone()).or_default();
+                if let Some(machine) = snapshot
+                    .machines
+                    .iter_mut()
+                    .find(|machine| machine.location.len() == 1 && machine.location[0] == location)
+                {
+                    machine.availability = Some(availability);
+                } else {
+                    snapshot.machines.push(MachineProgress {
+                        location: alloc::vec![location],
+                        availability: Some(availability),
+                        ..MachineProgress::default()
+                    });
+                }
+            }
+            kernel::host::os::evaluation_progress(shared.snapshot());
+            Ok(number(0))
+        }
+        (b"remote_progress", [location, snapshot, used]) => {
             let location = text(storage, *location)?;
             let bytes = storage
                 .get_blob(Blob::try_from(*snapshot).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
             let mut snapshot: EvaluationSnapshot =
                 postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            let used = unsigned(storage, *used)? != 0;
             for machine in &mut snapshot.machines {
+                machine.used &= used;
                 machine.location.insert(0, location.clone());
             }
-            kernel::host::os::evaluation_progress(snapshot.clone());
-            shared.remote_progress.lock().insert(location, snapshot);
+            for mut step in snapshot.steps.drain(..) {
+                step.location.insert(0, location.clone());
+                shared.record_step(step);
+            }
+            {
+                let mut remotes = shared.remote_progress.lock();
+                if let Some(previous) = remotes.get(&location) {
+                    for machine in &mut snapshot.machines {
+                        machine.used |= previous
+                            .machines
+                            .iter()
+                            .find(|old| old.location == machine.location)
+                            .is_some_and(|old| old.used);
+                        if machine.availability.is_none() {
+                            machine.availability = previous
+                                .machines
+                                .iter()
+                                .find(|old| old.location == machine.location)
+                                .and_then(|old| old.availability.clone());
+                        }
+                    }
+                }
+                remotes.insert(location, snapshot);
+            }
+            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"sleep", [milliseconds]) => {
@@ -1563,27 +1781,36 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            if completed == total {
-                shared
-                    .advised
-                    .lock()
-                    .remove(&(task, Some(EvaluationOperation::Evaluate)));
-            } else {
+            let finished = {
                 let mut tasks = shared.advised.lock();
-                let entry = tasks
-                    .entry((task, Some(EvaluationOperation::Evaluate)))
-                    .or_insert_with(|| EvaluationTask {
-                        id: task,
-                        operation: Some(EvaluationOperation::Evaluate),
-                        ..EvaluationTask::default()
-                    });
-                entry.progress = Some((completed, total));
-                entry.children = children
-                    .iter()
-                    .map(|child| (*child, Some(EvaluationOperation::Evaluate)))
-                    .collect();
-            }
+                let key = (task, Some(EvaluationOperation::Evaluate));
+                let entry = tasks.entry(key).or_insert_with(|| {
+                    ActiveTask::new(
+                        EvaluationTask {
+                            id: task,
+                            operation: Some(EvaluationOperation::Evaluate),
+                            ..EvaluationTask::default()
+                        },
+                        false,
+                    )
+                });
+                entry.progress.progress = Some((completed, total));
+                if !children.is_empty() {
+                    entry.progress.children = children
+                        .iter()
+                        .map(|child| (*child, Some(EvaluationOperation::Evaluate)))
+                        .collect();
+                }
+                let finished = completed == total && !entry.scoped;
+                if finished {
+                    tasks.remove(&key);
+                }
+                finished
+            };
             kernel::host::os::tree_progress(task, children, completed, total);
+            if finished {
+                kernel::host::os::task_finished(task, Some(EvaluationOperation::Evaluate));
+            }
             if completed == total {
                 shared.progress_trees.lock().remove(&key);
             } else {
@@ -1840,7 +2067,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .cloned()
                 .ok_or(Error::Closed)?;
             let mut stream = stream.lock();
-            Ok(number(stream.try_send(&bytes).map_err(|_| Error::Invalid)?))
+            let length = stream.try_send(&bytes).map_err(|_| Error::Invalid)?;
+            shared
+                .bytes_sent
+                .fetch_add(length as u64, Ordering::Relaxed);
+            Ok(number(length))
         }
         (b"stream_receive", [stream, length]) => {
             let id = integer(storage, *stream)?;
@@ -1855,6 +2086,9 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .ok_or(Error::Closed)?;
             let mut stream = stream.lock();
             let length = stream.try_recv(&mut bytes).map_err(|_| Error::Invalid)?;
+            shared
+                .bytes_received
+                .fetch_add(length as u64, Ordering::Relaxed);
             Ok(storage.add_blob(&bytes[..length]).into())
         }
         (b"stream_close", [stream]) => {

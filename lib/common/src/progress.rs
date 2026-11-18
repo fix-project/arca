@@ -1,4 +1,6 @@
-use crate::protocol::control::{EvaluationOperation, EvaluationSnapshot, MachineProgress};
+use crate::protocol::control::{
+    EvaluationOperation, EvaluationSnapshot, EvaluationStep, MachineProgress, RemoteAvailability,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::{
     collections::BTreeMap,
@@ -44,7 +46,10 @@ struct MachineDisplay {
     peak_memory: u64,
     completed: u64,
     privileged_completed: u64,
-    worker_ns: u64,
+    cpu_ns: Option<u64>,
+    cpu_load: Option<f64>,
+    bytes_sent: u64,
+    bytes_received: u64,
 }
 
 struct Task {
@@ -357,6 +362,96 @@ pub fn observing_evaluation() -> bool {
     advised().is_some()
 }
 
+fn availability(status: Option<&RemoteAvailability>, used: bool) -> String {
+    let message = match status {
+        Some(RemoteAvailability::Configured) => "configured; not contacted".into(),
+        Some(RemoteAvailability::Connecting) => "connecting".into(),
+        Some(RemoteAvailability::Available { workers, .. }) => {
+            if *workers == 0 {
+                "storage available".into()
+            } else if used {
+                "available".into()
+            } else {
+                "available; unused".into()
+            }
+        }
+        Some(RemoteAvailability::Unavailable(error)) => format!("unavailable: {error}"),
+        None => String::new(),
+    };
+    message
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
+fn byte_unit(bytes: u64) -> (f64, &'static str) {
+    for (scale, unit) in [
+        (1u64 << 40, "TiB"),
+        (1 << 30, "GiB"),
+        (1 << 20, "MiB"),
+        (1 << 10, "KiB"),
+    ] {
+        if bytes >= scale {
+            return (scale as f64, unit);
+        }
+    }
+    (1.0, "B")
+}
+
+fn number(value: f64) -> String {
+    if value == 0.0 {
+        return "0".into();
+    }
+    let precision = if value >= 1.0 {
+        1
+    } else {
+        (1.0 - value.log10().floor()) as usize
+    };
+    format!("{value:.precision$}")
+}
+
+fn capacity(machine: &MachineProgress) -> (Option<u64>, Option<u64>) {
+    if let Some(runtime) = &machine.runtime {
+        (Some(runtime.workers), Some(runtime.memory_total))
+    } else if let Some(RemoteAvailability::Available {
+        workers,
+        memory_bytes,
+    }) = &machine.availability
+    {
+        (Some(*workers), *memory_bytes)
+    } else {
+        (None, None)
+    }
+}
+
+fn load_bar(fraction: f64) -> String {
+    let filled = (fraction.clamp(0.0, 1.0) * 10.0).round() as usize;
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(10 - filled))
+}
+
+impl MachineDisplay {
+    fn new(location: &str) -> Self {
+        let progress = Progress::new(format!("  {location}"), None, false);
+        if let Some(state) = &progress.0 {
+            state.last_report.store(u64::MAX, Ordering::Relaxed);
+        }
+        Self {
+            progress,
+            tasks: BTreeMap::new(),
+            stats: MachineProgress::default(),
+            peak_busy: 0,
+            peak_queue: 0,
+            peak_memory: 0,
+            completed: 0,
+            privileged_completed: 0,
+            cpu_ns: None,
+            cpu_load: None,
+            bytes_sent: 0,
+            bytes_received: 0,
+        }
+    }
+}
+
 fn report_evaluation(state: &State, outcome: &str) -> bool {
     let machines = state.machines.lock().unwrap();
     if machines.is_empty() || state.reported.swap(true, Ordering::Relaxed) {
@@ -381,18 +476,112 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
         "evaluation {outcome} [{:.2}s]",
         state.started.elapsed().as_secs_f64()
     ));
+    let (memory_scale, memory_unit) = byte_unit(
+        machines
+            .values()
+            .map(|machine| {
+                capacity(&machine.stats)
+                    .1
+                    .unwrap_or(0)
+                    .max(machine.peak_memory)
+            })
+            .max()
+            .unwrap_or(0),
+    );
+    let (sent_scale, sent_unit) = byte_unit(
+        machines
+            .values()
+            .map(|machine| machine.bytes_sent)
+            .max()
+            .unwrap_or(0),
+    );
+    let (received_scale, received_unit) = byte_unit(
+        machines
+            .values()
+            .map(|machine| machine.bytes_received)
+            .max()
+            .unwrap_or(0),
+    );
+    let (cpu_scale, cpu_unit) = if machines
+        .values()
+        .filter_map(|machine| machine.cpu_ns)
+        .max()
+        .unwrap_or(0)
+        < 1_000_000_000
+    {
+        (1e6, "ms")
+    } else {
+        (1e9, "s")
+    };
+    println(format!(
+        "{:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}  Status",
+        "Node",
+        "Apps",
+        "Collector",
+        format!("CPU ({cpu_unit})"),
+        "Workers",
+        "Qmax",
+        format!("Mem peak ({memory_unit})"),
+        format!("Sent ({sent_unit})"),
+        format!("Received ({received_unit})")
+    ));
     for (location, machine) in machines.iter() {
-        let stats = &machine.stats;
+        let status = availability(machine.stats.availability.as_ref(), machine.stats.used);
+        let measured = machine.stats.runtime.is_some();
+        let (workers, memory) = capacity(&machine.stats);
+        let peak_workers = if measured {
+            machine.peak_busy.to_string()
+        } else {
+            "—".into()
+        };
+        let peak_memory = if measured {
+            number(machine.peak_memory as f64 / memory_scale)
+        } else {
+            "—".into()
+        };
+        let values = [
+            if measured {
+                machine.completed.to_string()
+            } else {
+                "—".into()
+            },
+            if measured {
+                machine.privileged_completed.to_string()
+            } else {
+                "—".into()
+            },
+            machine
+                .cpu_ns
+                .map_or_else(|| "—".into(), |ns| number(ns as f64 / cpu_scale)),
+            workers
+                .filter(|workers| *workers > 0)
+                .map_or(peak_workers.clone(), |total| {
+                    format!("{peak_workers}/{total}")
+                }),
+            if measured {
+                machine.peak_queue.to_string()
+            } else {
+                "—".into()
+            },
+            memory
+                .filter(|memory| *memory > 0)
+                .map_or(peak_memory.clone(), |total| {
+                    format!("{peak_memory}/{}", number(total as f64 / memory_scale))
+                }),
+            if measured {
+                number(machine.bytes_sent as f64 / sent_scale)
+            } else {
+                "—".into()
+            },
+            if measured {
+                number(machine.bytes_received as f64 / received_scale)
+            } else {
+                "—".into()
+            },
+        ];
         println(format!(
-            "  {location}: {} applications, {} collector calls; {:.2}s worker time; peak workers {}/{}, queue {}; max sampled VM allocation {}/{} MiB",
-            machine.completed,
-            machine.privileged_completed,
-            machine.worker_ns as f64 / 1e9,
-            machine.peak_busy,
-            stats.workers,
-            machine.peak_queue,
-            machine.peak_memory / (1 << 20),
-            stats.memory_total / (1 << 20)
+            "{location:<16} {:>5} {:>9} {:>9} {:>7} {:>5} {:>14} {:>12} {:>14}  {status}",
+            values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]
         ));
     }
     true
@@ -426,42 +615,74 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
         let mut machines = state.machines.lock().unwrap();
         let machine = machines
             .entry(location.clone())
-            .or_insert_with(|| MachineDisplay {
-                progress: Progress::new(format!("  {location} Fix runtime"), None, false),
-                tasks: BTreeMap::new(),
-                stats: stats.clone(),
-                peak_busy: 0,
-                peak_queue: 0,
-                peak_memory: 0,
-                completed: 0,
-                privileged_completed: 0,
-                worker_ns: 0,
-            });
-        machine.completed += stats
-            .completed
-            .checked_sub(machine.stats.completed)
-            .unwrap_or(stats.completed);
-        machine.privileged_completed += stats
-            .privileged_completed
-            .checked_sub(machine.stats.privileged_completed)
-            .unwrap_or(stats.privileged_completed);
-        machine.worker_ns += stats
-            .worker_ns
-            .checked_sub(machine.stats.worker_ns)
-            .unwrap_or(stats.worker_ns);
-        machine.peak_busy = machine.peak_busy.max(stats.peak_busy_workers);
-        machine.peak_queue = machine.peak_queue.max(stats.peak_queued);
-        machine.peak_memory = machine.peak_memory.max(stats.memory_used);
-        machine.progress.message(format!(
-            "workers {}/{}, queue {}, VM allocation {}/{} MiB, {} applications, {} collector calls complete",
-            stats.busy_workers,
-            stats.workers,
-            stats.queued,
-            stats.memory_used / (1 << 20),
-            stats.memory_total / (1 << 20),
-            stats.completed,
-            stats.privileged_completed
-        ));
+            .or_insert_with(|| MachineDisplay::new(&location));
+        let Some(runtime) = &stats.runtime else {
+            machine.stats.location = stats.location;
+            machine.stats.availability = stats.availability;
+            machine.progress.message(availability(
+                machine.stats.availability.as_ref(),
+                machine.stats.used,
+            ));
+            continue;
+        };
+        let baseline = (!stats.used && !stats.location.is_empty()).then_some(runtime);
+        let previous = machine.stats.runtime.as_ref().or(baseline);
+        let delta = |now: u64, old: u64| now.checked_sub(old).unwrap_or(now);
+        machine.completed += delta(runtime.completed, previous.map_or(0, |old| old.completed));
+        machine.privileged_completed += delta(
+            runtime.privileged_completed,
+            previous.map_or(0, |old| old.privileged_completed),
+        );
+        machine.bytes_sent += delta(runtime.bytes_sent, previous.map_or(0, |old| old.bytes_sent));
+        machine.bytes_received += delta(
+            runtime.bytes_received,
+            previous.map_or(0, |old| old.bytes_received),
+        );
+        if let Some(cpu) = runtime.cpu_ns
+            && previous.is_none_or(|old| old.elapsed_ns != runtime.elapsed_ns)
+        {
+            machine.cpu_ns = Some(
+                machine.cpu_ns.unwrap_or(0)
+                    + delta(cpu, previous.and_then(|old| old.cpu_ns).unwrap_or(0)),
+            );
+        }
+        machine.peak_busy = machine.peak_busy.max(runtime.peak_busy_workers);
+        machine.peak_queue = machine.peak_queue.max(runtime.peak_queued);
+        machine.peak_memory = machine.peak_memory.max(runtime.peak_memory);
+        let cpu = previous.and_then(|old| {
+            let elapsed = runtime.elapsed_ns.checked_sub(old.elapsed_ns)?;
+            let cpu = runtime.cpu_ns?.checked_sub(old.cpu_ns?)?;
+            (elapsed > 0 && runtime.workers > 0)
+                .then_some(cpu as f64 / elapsed as f64 / runtime.workers as f64)
+        });
+        if let Some(load) = cpu {
+            machine.cpu_load = Some(load);
+        } else if runtime.cpu_ns.is_none()
+            || previous.is_some_and(|old| old.elapsed_ns > runtime.elapsed_ns)
+        {
+            machine.cpu_load = None;
+        }
+        let cpu = machine.cpu_load.map_or_else(
+            || "CPU —".into(),
+            |load| format!("CPU {} {:.0}%", load_bar(load), load * 100.0),
+        );
+        let memory = if runtime.memory_total > 0 {
+            let (scale, unit) = byte_unit(runtime.memory_total.max(runtime.memory_used));
+            format!(
+                "Mem {} {}/{} {unit}",
+                load_bar(runtime.memory_used as f64 / runtime.memory_total as f64),
+                number(runtime.memory_used as f64 / scale),
+                number(runtime.memory_total as f64 / scale)
+            )
+        } else {
+            "Mem —".into()
+        };
+        let unused = if !stats.location.is_empty() && !machine.stats.used && !stats.used {
+            "  unused"
+        } else {
+            ""
+        };
+        machine.progress.message(format!("{cpu}  {memory}{unused}"));
         {
             let parents: BTreeMap<_, _> = stats
                 .tasks
@@ -527,18 +748,61 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
             }
             machine.tasks.retain(|id, _| active.contains(id));
         }
+        let used = machine.stats.used || stats.used;
         machine.stats = stats;
-        let busy: u64 = machines
-            .values()
-            .map(|machine| machine.stats.busy_workers)
-            .sum();
-        let queued: u64 = machines.values().map(|machine| machine.stats.queued).sum();
-        let completed: u64 = machines.values().map(|machine| machine.completed).sum();
-        *state.detail.lock().unwrap() = format!(
-            "{busy} workers busy, {queued} queued, {completed} applications complete across {} Fix runtimes",
-            machines.len()
-        );
+        machine.stats.used = used;
     }
+    for step in snapshot.steps {
+        evaluation_step(step);
+    }
+    let machines = state.machines.lock().unwrap();
+    let busy: u64 = machines
+        .values()
+        .filter_map(|machine| machine.stats.runtime.as_ref())
+        .map(|runtime| runtime.busy_workers)
+        .sum();
+    let queued: u64 = machines
+        .values()
+        .filter_map(|machine| machine.stats.runtime.as_ref())
+        .map(|runtime| runtime.queued)
+        .sum();
+    let completed: u64 = machines.values().map(|machine| machine.completed).sum();
+    let reporting = machines
+        .values()
+        .filter(|machine| machine.stats.runtime.is_some())
+        .count();
+    let unused = machines.values().filter(|machine| !machine.stats.used
+        && matches!(machine.stats.availability, Some(RemoteAvailability::Available { workers, .. }) if workers > 0)).count();
+    *state.detail.lock().unwrap() = format!(
+        "{busy} workers busy, {queued} queued, {completed} applications complete across {reporting} reporting runtimes; {unused} available remotes unused"
+    );
+}
+
+pub fn evaluation_step(step: EvaluationStep) {
+    let Some(state) = advised() else { return };
+    let location = location_name(&step.location);
+    let key = (step.task.id, step.task.operation);
+    let mut labels = state.labels.lock().unwrap().clone();
+    let mut depth = 1;
+    if step.location.is_empty() {
+        if let Some(task) = state.advice.lock().unwrap().remove(&key) {
+            depth = task.depth;
+        }
+    } else if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
+        for (name, label) in &machine.stats.labels {
+            labels.insert(data_name(*name), label.clone());
+        }
+        if let Some(task) = machine.tasks.remove(&key) {
+            depth = task.depth;
+        }
+    }
+    let title = task_title(step.task.id, &step.task.title, step.task.operation, &labels);
+    println(format!(
+        "{}{} {location}: {title} [{:.2}s]",
+        "  ".repeat(depth),
+        if step.success { "✓" } else { "×" },
+        step.elapsed_ns as f64 / 1e9
+    ));
 }
 
 fn task_name(task: &[u8; 32]) -> String {
@@ -586,6 +850,9 @@ fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) 
             display.bars.remove(&state.bar);
             display.bars.insert_after(&parent_bar, state.bar.clone());
         }
+        if let Some(state) = &progress.0 {
+            state.last_report.store(u64::MAX, Ordering::Relaxed);
+        }
         Task {
             progress,
             title,
@@ -628,6 +895,9 @@ pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], 
                 return;
             }
             let task = task(&state, &mut tasks, (id, operation));
+            if let Some(state) = &task.progress.0 {
+                state.last_report.store(0, Ordering::Relaxed);
+            }
             task.progress.position(completed, total);
         }
         _ => (),
@@ -654,9 +924,7 @@ pub fn tree_progress(id: [u8; 32], children: &[[u8; 32]], completed: u64, total:
         return;
     }
     let mut tasks = state.advice.lock().unwrap();
-    if completed == total {
-        tasks.remove(&(id, Some(EvaluationOperation::Evaluate)));
-    } else {
+    {
         let task = task(
             &state,
             &mut tasks,

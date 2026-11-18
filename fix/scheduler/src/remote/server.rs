@@ -45,18 +45,28 @@ impl From<protocol::Error<super::IoError>> for ConnectionError {
     }
 }
 
-async fn accept(io: &Io, listener: u64) -> Result<Connection<'_>, Error> {
+async fn accept(io: &Io, listener: u64) -> Result<Connection, Error> {
     let (status, stream) = io
         .request(tree![Blob::create(b"tcp_accept"), listener])
         .await?;
     if status != 0 {
         return Err(Error::OutOfBounds);
     }
-    Ok(Connection(stream.read_u64()?, io))
+    Ok(Connection(stream.read_u64()?))
+}
+
+fn capacity(memory: u64) -> Result<protocol::Information, Error> {
+    Ok(protocol::Information {
+        parallelism: crate::kernel::worker::count()?
+            .try_into()
+            .map_err(|_| Error::OutOfBounds)?,
+        memory_bytes: Some(memory),
+        ..protocol::Information::default()
+    })
 }
 
 async fn connection(
-    mut stream: Connection<'_>,
+    mut stream: Connection,
     memory: u64,
     keys: &[String],
     allow_updates: bool,
@@ -70,6 +80,25 @@ async fn connection(
             return Ok(None);
         };
         match first {
+            protocol::Message::RequestInfo { inventory } => {
+                let information = if inventory {
+                    super::information(memory)?
+                } else {
+                    capacity(memory)?
+                };
+                protocol::asynchronous::send(&mut stream, protocol::Message::Info(information))
+                    .await?;
+                continue;
+            }
+            protocol::Message::RequestProgress => {
+                let snapshot = super::bytes(&crate::abi::effect(b"progress_status", &[])?)?;
+                protocol::asynchronous::send(
+                    &mut stream,
+                    protocol::Message::EvaluationProgress(snapshot),
+                )
+                .await?;
+                continue;
+            }
             protocol::Message::RequestLabels => {
                 protocol::asynchronous::send(
                     &mut stream,
@@ -193,16 +222,7 @@ async fn connection(
             }
             _ => (),
         }
-        let information = match &first {
-            protocol::Message::RequestInfo { inventory: true } => super::information(memory)?,
-            _ => protocol::Information {
-                parallelism: crate::kernel::worker::count()?
-                    .try_into()
-                    .map_err(|_| Error::OutOfBounds)?,
-                memory_bytes: Some(memory),
-                ..protocol::Information::default()
-            },
-        };
+        let information = capacity(memory)?;
         let incoming = protocol::asynchronous::receive_transfer_with_info_from(
             &mut stream,
             protocol::MAX_MESSAGE_SIZE,
@@ -280,10 +300,11 @@ async fn connection(
             6 => Node::select(input)?,
             _ => return Err(Error::WrongType.into()),
         };
+        let observer = super::ProgressObserver::new()?;
         let reporting = crate::progress::operation(incoming.task.operation, input);
         protocol::asynchronous::send(
             &mut stream,
-            protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+            protocol::Message::EvaluationProgress(observer.snapshot()?),
         )
         .await?;
         let evaluation = async {
@@ -296,7 +317,7 @@ async fn connection(
         };
         let mut evaluation = core::pin::pin!(evaluation);
         let result = loop {
-            let tick = stream.1.request(tree![Blob::create(b"sleep"), 250u64]);
+            let tick = Io.request(tree![Blob::create(b"sleep"), 250u64]);
             let mut tick = core::pin::pin!(tick);
             let result = poll_fn(|cx| {
                 if let Poll::Ready(result) = evaluation.as_mut().poll(cx) {
@@ -310,14 +331,14 @@ async fn connection(
             .await;
             protocol::asynchronous::send(
                 &mut stream,
-                protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+                protocol::Message::EvaluationProgress(observer.snapshot()?),
             )
             .await?;
             if let Some(result) = result {
-                drop(reporting);
+                let result = reporting.finish(result);
                 protocol::asynchronous::send(
                     &mut stream,
-                    protocol::Message::EvaluationProgress(super::progress_snapshot()?),
+                    protocol::Message::EvaluationProgress(observer.snapshot()?),
                 )
                 .await?;
                 break result?;
@@ -391,7 +412,7 @@ pub fn run(
             return Err(Error::WrongType);
         }
         connections.push(Task::new(connection(
-            Connection(stream.read_u64()?, io),
+            Connection(stream.read_u64()?),
             memory,
             &keys,
             true,

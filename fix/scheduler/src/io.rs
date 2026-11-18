@@ -3,10 +3,12 @@ use crate::{
     abi::{coordinate, request},
     shell::{Value, as_tree, capture, fields},
 };
-use alloc::collections::BTreeMap;
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
 use core::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    future::Future,
     future::poll_fn,
+    pin::Pin,
     task::{Poll, Waker},
 };
 use fixwasm::{Blob, Error, Value as AsValue, tree};
@@ -22,6 +24,23 @@ struct Registrations(RefCell<BTreeMap<u64, Registration>>);
 // A scheduler Wasm instance is accessed by one kernel thread.
 unsafe impl Sync for Registrations {}
 static REGISTRATIONS: Registrations = Registrations(RefCell::new(BTreeMap::new()));
+
+type BackgroundFuture = Pin<Box<dyn Future<Output = ()>>>;
+type BackgroundTask = (
+    Rc<Cell<bool>>,
+    crate::executor::task::Task<BackgroundFuture>,
+);
+struct BackgroundTasks(RefCell<Vec<BackgroundTask>>);
+// One kernel thread polls this scheduler instance.
+unsafe impl Sync for BackgroundTasks {}
+static BACKGROUND: BackgroundTasks = BackgroundTasks(RefCell::new(Vec::new()));
+
+pub(crate) struct Background(Rc<Cell<bool>>);
+impl Drop for Background {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
 
 struct Pending {
     token: u64,
@@ -51,6 +70,22 @@ impl Drop for Pending {
 }
 
 impl Io {
+    pub(crate) fn spawn(&self, future: impl Future<Output = ()> + 'static) -> Background {
+        let active = Rc::new(Cell::new(true));
+        BACKGROUND.0.borrow_mut().push((
+            active.clone(),
+            crate::executor::task::Task::new(Box::pin(future)),
+        ));
+        Background(active)
+    }
+
+    fn poll_background(&self) {
+        BACKGROUND
+            .0
+            .borrow_mut()
+            .retain_mut(|(active, task)| active.get() && task.poll().is_pending());
+    }
+
     /// Wake only the futures whose kernel effects have completed.
     pub fn wake_completed(&self) -> Result<(), Error> {
         crate::storage::clear_identified();
@@ -58,7 +93,9 @@ impl Io {
         if status != 0 {
             return Err(Error::WrongType);
         }
-        self.complete(&completed)
+        self.complete(&completed)?;
+        self.poll_background();
+        Ok(())
     }
 
     /// Listen for new events and deliver completed effects before polling futures.
@@ -71,6 +108,7 @@ impl Io {
         let events = as_tree(&events)?;
         let epoch = events.get(0).read_u64()?;
         self.complete(&capture(events.get(1))?)?;
+        self.poll_background();
         Ok(crate::kernel::worker::Notification(epoch))
     }
 

@@ -133,49 +133,53 @@ pub async fn eval(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let _evaluation = crate::progress::evaluation(1, input);
-    if input.value_type() == ValueType::Encode {
-        let thunk = crate::executor::scheduler::thunk(policy, input).await?;
-        let forced = Box::pin(policy.force(&thunk)).await?;
-        let forced_result = result(&forced)?;
-        let result = if input.is_strict()? {
-            policy.load(&forced_result).await?
+    let evaluation = crate::progress::evaluation(1, input);
+    let result = async {
+        if input.value_type() == ValueType::Encode {
+            let thunk = crate::executor::scheduler::thunk(policy, input).await?;
+            let forced = Box::pin(policy.force(&thunk)).await?;
+            let forced_result = result(&forced)?;
+            let result = if input.is_strict()? {
+                policy.load(&forced_result).await?
+            } else {
+                shell::reference(&forced_result)?
+            };
+            let evaluated = Box::pin(policy.eval(&result)).await?;
+            let eq = collect(
+                policy,
+                Exchange::ForceToEncode,
+                input,
+                &result,
+                &[forced],
+                retain,
+            )
+            .await?;
+            let sym = collect(policy, Exchange::Symmetry, &result, input, &[eq], retain).await?;
+            collect(
+                policy,
+                Exchange::EvalEq,
+                input,
+                &self::result(&evaluated)?,
+                &[evaluated, sym],
+                retain,
+            )
+            .await
+        } else if input.is_value()? {
+            produced(crate::storage::eval(input)?, retain)
         } else {
-            shell::reference(&forced_result)?
-        };
-        let evaluated = Box::pin(policy.eval(&result)).await?;
-        let eq = collect(
-            policy,
-            Exchange::ForceToEncode,
-            input,
-            &result,
-            &[forced],
-            retain,
-        )
-        .await?;
-        let sym = collect(policy, Exchange::Symmetry, &result, input, &[eq], retain).await?;
-        collect(
-            policy,
-            Exchange::EvalEq,
-            input,
-            &self::result(&evaluated)?,
-            &[evaluated, sym],
-            retain,
-        )
-        .await
-    } else if input.is_value()? {
-        produced(crate::storage::eval(input)?, retain)
-    } else {
-        let data = policy.load(input).await?;
-        let mut coupons = Vec::new();
-        let children = fields(&data)?;
-        kernel::tree_progress(input, &children, 0, children.len() as u64)?;
-        for value in &children {
-            coupons.push(Box::pin(policy.eval(value)).await?);
-            kernel::tree_progress(input, &[], coupons.len() as u64, children.len() as u64)?;
+            let data = policy.load(input).await?;
+            let mut coupons = Vec::new();
+            let children = fields(&data)?;
+            kernel::tree_progress(input, &children, 0, children.len() as u64)?;
+            for value in &children {
+                coupons.push(Box::pin(policy.eval(value)).await?);
+                kernel::tree_progress(input, &[], coupons.len() as u64, children.len() as u64)?;
+            }
+            eval_tree(policy, input, &coupons, retain).await
         }
-        eval_tree(policy, input, &coupons, retain).await
     }
+    .await;
+    evaluation.finish(result)
 }
 /// Produce a Think coupon eagerly, asking the scheduler for dependency coupons.
 pub async fn think(
@@ -183,36 +187,40 @@ pub async fn think(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let _evaluation = crate::progress::evaluation(4, input);
-    let data = policy.load(input).await?;
-    let kind = input.unsound_thunk_type()?;
-    if kind == ThunkType::Identification {
-        return collect(
+    let evaluation = crate::progress::evaluation(4, input);
+    let result = async {
+        let data = policy.load(input).await?;
+        let kind = input.unsound_thunk_type()?;
+        if kind == ThunkType::Identification {
+            return collect(
+                policy,
+                Exchange::Think,
+                input,
+                &shell::reference(&data)?,
+                &[],
+                retain,
+            )
+            .await;
+        }
+        let evaluated = Box::pin(policy.eval(&data)).await?;
+        let result = result(&evaluated)?;
+        let coupon = match kind {
+            ThunkType::Application => Box::pin(policy.apply(&result)).await?,
+            ThunkType::Selection => Box::pin(policy.select(&result)).await?,
+            _ => unreachable!(),
+        };
+        collect(
             policy,
             Exchange::Think,
             input,
-            &shell::reference(&data)?,
-            &[],
+            &self::result(&coupon)?,
+            &[evaluated, coupon],
             retain,
         )
-        .await;
+        .await
     }
-    let evaluated = Box::pin(policy.eval(&data)).await?;
-    let result = result(&evaluated)?;
-    let coupon = match kind {
-        ThunkType::Application => Box::pin(policy.apply(&result)).await?,
-        ThunkType::Selection => Box::pin(policy.select(&result)).await?,
-        _ => unreachable!(),
-    };
-    collect(
-        policy,
-        Exchange::Think,
-        input,
-        &self::result(&coupon)?,
-        &[evaluated, coupon],
-        retain,
-    )
-    .await
+    .await;
+    evaluation.finish(result)
 }
 /// Produce a Force coupon eagerly, asking the scheduler for dependency coupons.
 pub async fn force(
@@ -220,41 +228,45 @@ pub async fn force(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let _evaluation = crate::progress::evaluation(3, input);
-    let thought = Box::pin(policy.think(input)).await?;
-    let result = result(&thought)?;
-    let kind = result.value_type();
-    if matches!(kind, ValueType::Object | ValueType::Ref) {
-        return collect(
+    let evaluation = crate::progress::evaluation(3, input);
+    let result = async {
+        let thought = Box::pin(policy.think(input)).await?;
+        let result = result(&thought)?;
+        let kind = result.value_type();
+        if matches!(kind, ValueType::Object | ValueType::Ref) {
+            return collect(
+                policy,
+                Exchange::ThinkToForce,
+                input,
+                &result,
+                &[thought],
+                retain,
+            )
+            .await;
+        }
+        let next = crate::executor::scheduler::thunk(policy, &result).await?;
+        let rule = if kind == ValueType::Thunk {
+            Exchange::ThunkEq
+        } else if result.is_strict()? {
+            Exchange::ThunkStrictEq
+        } else {
+            Exchange::ThunkShallowEq
+        };
+        let forced = Box::pin(policy.force(&next)).await?;
+        let eq = collect(policy, rule, input, &next, &[thought], retain).await?;
+        let sym = collect(policy, Exchange::Symmetry, &next, input, &[eq], retain).await?;
+        collect(
             policy,
-            Exchange::ThinkToForce,
+            Exchange::ForceEq,
             input,
-            &result,
-            &[thought],
+            &self::result(&forced)?,
+            &[sym, forced],
             retain,
         )
-        .await;
+        .await
     }
-    let next = crate::executor::scheduler::thunk(policy, &result).await?;
-    let rule = if kind == ValueType::Thunk {
-        Exchange::ThunkEq
-    } else if result.is_strict()? {
-        Exchange::ThunkStrictEq
-    } else {
-        Exchange::ThunkShallowEq
-    };
-    let forced = Box::pin(policy.force(&next)).await?;
-    let eq = collect(policy, rule, input, &next, &[thought], retain).await?;
-    let sym = collect(policy, Exchange::Symmetry, &next, input, &[eq], retain).await?;
-    collect(
-        policy,
-        Exchange::ForceEq,
-        input,
-        &self::result(&forced)?,
-        &[sym, forced],
-        retain,
-    )
-    .await
+    .await;
+    evaluation.finish(result)
 }
 /// Run an application and pass its Apply coupon to the supplied retention callback.
 pub async fn apply(
@@ -262,19 +274,24 @@ pub async fn apply(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let _evaluation = crate::progress::evaluation(2, input);
-    produced(
-        crate::kernel::apply(input, &mut |advice| policy.on_advice(advice)).await?,
-        retain,
-    )
+    let evaluation = crate::progress::evaluation(2, input);
+    let result = async {
+        produced(
+            crate::kernel::apply(input, &mut |advice| policy.on_advice(advice)).await?,
+            retain,
+        )
+    }
+    .await;
+    evaluation.finish(result)
 }
 /// Request a Select coupon and pass it to the supplied retention callback.
 pub async fn select(
     input: &Value,
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let _evaluation = crate::progress::evaluation(6, input);
-    produced(crate::storage::select(input)?, retain)
+    let evaluation = crate::progress::evaluation(6, input);
+    let result = async { produced(crate::storage::select(input)?, retain) }.await;
+    evaluation.finish(result)
 }
 
 /// Exchange the supplied child Eval coupons for a tree Eval coupon.

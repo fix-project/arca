@@ -8,7 +8,7 @@ use fixwasm::Error;
 pub struct Distributed<'a> {
     graph: &'a Graph,
     parallel: Parallel<'a>,
-    cluster: RefCell<Option<alloc::rc::Rc<Cluster<'a>>>>,
+    cluster: RefCell<Option<alloc::rc::Rc<Cluster>>>,
     io: &'a fixscheduler::io::Io,
 }
 impl Scheduler for Distributed<'_> {

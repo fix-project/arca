@@ -33,11 +33,32 @@ impl core::fmt::Display for EvaluationOperation {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EvaluationSnapshot {
     pub machines: Vec<MachineProgress>,
+    pub steps: Vec<EvaluationStep>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MachineProgress {
     pub location: Vec<String>,
+    pub availability: Option<RemoteAvailability>,
+    pub used: bool,
+    pub runtime: Option<RuntimeStats>,
+    pub tasks: Vec<EvaluationTask>,
+    pub labels: Vec<([u8; 32], String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RemoteAvailability {
+    Configured,
+    Connecting,
+    Available {
+        workers: u64,
+        memory_bytes: Option<u64>,
+    },
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RuntimeStats {
     pub elapsed_ns: u64,
     pub workers: u64,
     pub busy_workers: u64,
@@ -46,11 +67,20 @@ pub struct MachineProgress {
     pub peak_queued: u64,
     pub completed: u64,
     pub privileged_completed: u64,
-    pub worker_ns: u64,
+    pub cpu_ns: Option<u64>,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub peak_memory: u64,
     pub memory_used: u64,
     pub memory_total: u64,
-    pub tasks: Vec<EvaluationTask>,
-    pub labels: Vec<([u8; 32], String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvaluationStep {
+    pub location: Vec<String>,
+    pub task: EvaluationTask,
+    pub elapsed_ns: u64,
+    pub success: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -74,6 +104,8 @@ pub struct Tagged<T> {
 pub enum Request<B = Region> {
     GetArgs,
     ObserveEvaluation,
+    CpuTime,
+    EvaluationStep(EvaluationStep),
     EvaluationProgress(EvaluationSnapshot),
     Sleep(u64),
     TaskAdvice {
@@ -138,6 +170,7 @@ pub enum Response {
     Pipe(PipeData),
     Ack,
     Bool(bool),
+    CpuTime(Option<u64>),
     Path(String),
     Err(IoErrorKind),
     Names(Vec<String>),

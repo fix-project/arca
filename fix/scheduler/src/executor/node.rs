@@ -55,15 +55,16 @@ impl Node {
         &self,
         policy: &(impl super::Scheduler + ?Sized),
     ) -> Result<Value, Error> {
-        let _evaluation = crate::progress::evaluation(self.key.0, &self.input);
-        match self.key.0 {
+        let evaluation = crate::progress::evaluation(self.key.0, &self.input);
+        let result = match self.key.0 {
             1 => policy.eval(&self.input).await,
             2 => policy.apply(&self.input).await,
             3 => policy.force(&self.input).await,
             4 => policy.think(&self.input).await,
             6 => policy.select(&self.input).await,
             _ => unreachable!(),
-        }
+        };
+        evaluation.finish(result)
     }
 }
 impl PartialEq for Node {

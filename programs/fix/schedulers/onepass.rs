@@ -26,7 +26,7 @@ use fixwasm::{Error, ThunkType, tree};
 pub struct OnePass<'a> {
     graph: &'a Graph,
     parallel: Parallel<'a>,
-    cluster: RefCell<Option<alloc::rc::Rc<Cluster<'a>>>>,
+    cluster: RefCell<Option<alloc::rc::Rc<Cluster>>>,
     io: &'a fixscheduler::io::Io,
     advice: RefCell<BTreeMap<[u8; 32], u64>>,
     sketch: RefCell<Option<BTreeMap<Node, Job>>>,
@@ -277,7 +277,7 @@ impl<'a> OnePass<'a> {
         self.parallel.retain(coupon)
     }
 
-    async fn cluster(&self) -> Result<alloc::rc::Rc<Cluster<'a>>, Error> {
+    async fn cluster(&self) -> Result<alloc::rc::Rc<Cluster>, Error> {
         if let Some(cluster) = self.cluster.borrow().clone() {
             return Ok(cluster);
         }
