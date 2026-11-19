@@ -21,7 +21,7 @@ set_gdt:
   push rax
   lea rax, new_gdt[rip]
   push rax
-  rex.w lret
+  retfq
 new_gdt:
   ret
 

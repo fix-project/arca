@@ -50,6 +50,8 @@ trap 'rm -rf "$work"' EXIT
 execroot=$PWD
 cd "$work"
 export FIX_UNSIGNED=true
+export FIX_CONFIG_DIR="$work/config"
+export XDG_DATA_HOME="$work/data"
 "$execroot/$1" init
 "$execroot/$1" import "$execroot/$2"
 "$execroot/$1" import "$execroot/$3"

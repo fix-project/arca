@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::{format, vec, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 use fixwasm::{Any, Blob, Error, Handle, Object, Thunk, Tree, Value, tree};
 
 #[global_allocator]
@@ -53,6 +53,7 @@ fn descriptor(name: &str, filetype: u8, contents: Expression) -> Expression {
     children(vec![text(name), stat(filetype), contents])
 }
 fn command(
+    memory: u64,
     executable: Expression,
     arguments: Vec<Expression>,
     toolchain: Expression,
@@ -60,7 +61,7 @@ fn command(
 ) -> Result<Expression, Error> {
     let stream = |name| value(tree![Blob::create(name), tree![], Blob::create(b"")]);
     let application = application(vec![
-        value(4u64 << 30),
+        value(memory),
         executable,
         children(arguments),
         children(vec![
@@ -78,13 +79,16 @@ fn command(
         value(0u64),
         value(0u64),
     ]);
+    fixwasm::advise(&application, fixwasm::advice::CANONICALIZE, b"")?;
     let result = shallow(value(application.capture()?))?;
     let filesystem = shallow(select(result.clone(), 0))?;
-    Ok(children(vec![
+    let step = children(vec![
         strict(select(filesystem, 4))?,
         strict(select(result.clone(), 1))?,
         result,
-    ]))
+    ]);
+    fixwasm::advise(&step, fixwasm::advice::CANONICALIZE, b"")?;
+    Ok(step)
 }
 fn work(result: Expression) -> Result<Expression, Error> {
     child(result, 0)
@@ -138,6 +142,21 @@ fn authenticated(tag: Expression, author: &Expression, claim: &str) -> Result<Ex
     child(tag, 1)
 }
 
+fn memory_limit(explicit: u64, bytes: u64, base: u64, factor: u64) -> Result<u64, Error> {
+    if explicit != 0 {
+        return Ok(explicit);
+    }
+    bytes
+        .checked_mul(factor)
+        .and_then(|scaled| scaled.checked_add(base))
+        .ok_or(Error::OutOfBounds)
+}
+
+fn clang_compile_memory(explicit: u64, bytes: u64) -> Result<u64, Error> {
+    let smaller = bytes.min(16 << 20);
+    memory_limit(explicit, bytes - smaller, (768 << 20) + 64 * smaller, 128)
+}
+
 #[fixwasm::apply]
 fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
     fixwasm::advise(combination, fixwasm::advice::CANONICALIZE, b"")?;
@@ -150,19 +169,39 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
     let clang = child(resources.clone(), 1)?;
     let toolchain = child(resources, 2)?;
     let input = combination.get(2);
-    let (wasm, partitions, phase, results) = if input.value_type()? == fixwasm::ValueType::Object
+    let (wasm, partitions, phase, results, wasm2c_memory, clang_memory) = if input.value_type()?
+        == fixwasm::ValueType::Object
         && input.data_type()? == fixwasm::DataType::Blob
     {
-        let partitions = match combination.len()? {
-            3 => input.len()?.div_ceil(UNIT_BYTES).max(1),
-            4 => combination.get(3).read_u64()?,
-            _ => panic!("expected a module and an optional unit count"),
+        let mut next = 3;
+        let mut partitions = input.len()?.div_ceil(UNIT_BYTES).max(1);
+        if next < combination.len()? as usize
+            && combination.get(next).data_type()? == fixwasm::DataType::Blob
+        {
+            partitions = combination.get(next).read_u64()?;
+            next += 1;
+        }
+        let (wasm2c_memory, clang_memory) = if next < combination.len()? as usize {
+            let budgets = combination.get(next);
+            assert_eq!(budgets.len()?, 2);
+            next += 1;
+            (budgets.get(0).read_u64()?, budgets.get(1).read_u64()?)
+        } else {
+            (0, 0)
         };
-        (value(input), partitions, 0, children(vec![]))
+        assert_eq!(combination.len()?, next as u64);
+        (
+            value(input),
+            partitions,
+            0,
+            children(vec![]),
+            wasm2c_memory,
+            clang_memory,
+        )
     } else {
         assert_eq!(combination.len()?, 3);
         let state = authenticated(value(input), &identity, "Compilation")?;
-        assert_eq!(state.len()?, 5);
+        assert_eq!(state.len()?, 7);
         assert!(child(state.clone(), 0)?.equals(&closure)?);
         let phase = child(state.clone(), 3)?.read_u64()?;
         assert!((1..=3).contains(&phase));
@@ -170,7 +209,9 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
             child(state.clone(), 1)?,
             child(state.clone(), 2)?.read_u64()?,
             phase,
-            child(state, 4)?,
+            child(state.clone(), 4)?,
+            child(state.clone(), 5)?.read_u64()?,
+            child(state, 6)?.read_u64()?,
         )
     };
     fixwasm::advise(
@@ -195,10 +236,17 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
         for index in 0..usize::try_from(results.len()?)? {
             let result = child(results.clone(), index)?;
             let status = child(result.clone(), 1)?;
-            assert_eq!(status.len()?, 4);
             let mut bytes = [0; 4];
-            status.read_into(0, &mut bytes)?;
-            if u32::from_le_bytes(bytes) != 0 {
+            let exit_status =
+                if status.data_type()? == fixwasm::DataType::Blob && status.len()? == 4 {
+                    status.read_into(0, &mut bytes)?;
+                    Some(u32::from_le_bytes(bytes))
+                } else {
+                    None
+                };
+            if child(result.clone(), 0)?.data_type()? != fixwasm::DataType::Tree
+                || exit_status != Some(0)
+            {
                 let original = strict(value(child(result, 2)?.identification()))?;
                 return Ok(value(
                     tree![identity.clone(), original, Blob::create(b"Error")].tag()?,
@@ -230,18 +278,43 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
                 text("/work/module.c"),
             ])
             .collect();
-            vec![command(wasm2c, arguments, toolchain, directory)?]
+            let memory = if wasm2c_memory == 0 {
+                memory_limit(0, wasm.len()?, 4 << 30, 45)?
+                    .checked_next_multiple_of(256 << 20)
+                    .ok_or(Error::OutOfBounds)?
+            } else {
+                wasm2c_memory
+            };
+            vec![command(memory, wasm2c, arguments, toolchain, directory)?]
         }
         1 => {
             let directory = work(child(results, 0)?)?;
+            let files = child(directory.clone(), 2)?;
+            let mut by_name = BTreeMap::new();
+            for index in 0..usize::try_from(files.len()?)? {
+                let file = child(files.clone(), index)?;
+                let name = child(file.clone(), 0)?.read()?;
+                by_name.entry(name).or_insert(file);
+            }
+            let headers: Vec<_> = [b"module.h".as_slice(), b"module-impl.h".as_slice()]
+                .into_iter()
+                .filter_map(|name| by_name.remove(name))
+                .collect();
             let mut jobs = Vec::new();
             for index in 0..object_count {
-                let source = if index == partitions {
-                    text("/toolchain/share/fix/wasm-rt.c")
-                } else if partitions == 1 {
-                    text("/work/module.c")
+                let (source, bytes, files) = if index == partitions {
+                    (text("/toolchain/share/fix/wasm-rt.c"), 0, headers.clone())
                 } else {
-                    text(&format!("/work/module_{index}.c"))
+                    let name = if partitions == 1 {
+                        String::from("module.c")
+                    } else {
+                        format!("module_{index}.c")
+                    };
+                    let file = by_name.remove(name.as_bytes()).ok_or(Error::OutOfBounds)?;
+                    let bytes = child(file.clone(), 2)?.len()?;
+                    let mut files = headers.clone();
+                    files.push(file);
+                    (text(&format!("/work/{name}")), bytes, files)
                 };
                 let mut arguments: Vec<Expression> = flags();
                 if index == partitions {
@@ -249,16 +322,18 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
                 }
                 arguments.extend([text("-c"), source, text("-o"), text("/work/object.o")]);
                 jobs.push(command(
+                    clang_compile_memory(clang_memory, bytes)?,
                     clang.clone(),
                     arguments,
                     toolchain.clone(),
-                    directory.clone(),
+                    descriptor("/work", 3, children(files)),
                 )?);
             }
             jobs
         }
         2 => {
             let mut files = Vec::new();
+            let mut bytes = 0u64;
             let mut arguments: Vec<Expression> = flags();
             arguments.extend(
                 [
@@ -273,15 +348,14 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
                 .map(text),
             );
             for index in 0..object_count {
-                files.push(descriptor(
-                    &format!("object_{index}.o"),
-                    4,
-                    output(child(results.clone(), index)?, "object.o")?,
-                ));
+                let object = output(child(results.clone(), index)?, "object.o")?;
+                bytes = bytes.checked_add(object.len()?).ok_or(Error::OutOfBounds)?;
+                files.push(descriptor(&format!("object_{index}.o"), 4, object));
                 arguments.push(text(&format!("/work/object_{index}.o")));
             }
             arguments.extend(["/toolchain/share/fix/libfixshell.a"].into_iter().map(text));
             vec![command(
+                memory_limit(clang_memory, bytes, 1 << 30, 12)?,
                 clang,
                 arguments,
                 toolchain,
@@ -312,6 +386,8 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Expression, Error> {
         value(partitions as u64),
         value(phase + 1),
         children(jobs),
+        value(wasm2c_memory),
+        value(clang_memory),
     ]);
     let state = value(tree![identity, state, Blob::create(b"Compilation")].tag()?);
     let next = Tree::from_iter([value(combination.get(0)), closure, state]);

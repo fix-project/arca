@@ -1,4 +1,4 @@
-use crate::{Client, Error, Options, Value as RawValue};
+use crate::{Client, CompilationOptions, Error, Options, Value as RawValue};
 use fix::{DataType, EncodeType, FixShell, ValueType};
 use std::{cell::RefCell, path::Path};
 
@@ -123,8 +123,12 @@ impl Shell {
     pub fn file(&mut self, path: &Path) -> Result<Value, Error> {
         Self::with(|client| client.file(path)).map(Value::from_inner)
     }
-    pub fn compilation(&mut self, module: &Value, units: Option<u64>) -> Result<Value, Error> {
-        Self::with(|client| client.compilation(module.inner(), units)).map(Value::from_inner)
+    pub fn compilation(
+        &mut self,
+        module: &Value,
+        options: CompilationOptions,
+    ) -> Result<Value, Error> {
+        Self::with(|client| client.compilation(module.inner(), options)).map(Value::from_inner)
     }
     pub fn precompile(&mut self, requests: &[Value]) -> Result<Value, Error> {
         let requests: Vec<_> = requests.iter().map(|value| value.inner().clone()).collect();
@@ -133,9 +137,9 @@ impl Shell {
     pub fn compilation_request(
         &mut self,
         module: &Value,
-        units: Option<u64>,
+        options: CompilationOptions,
     ) -> Result<Value, Error> {
-        Self::with(|client| client.compilation_request(module.inner(), units))
+        Self::with(|client| client.compilation_request(module.inner(), options))
             .map(Value::from_inner)
     }
     pub fn think(&mut self, value: &Value) -> Result<Value, Error> {

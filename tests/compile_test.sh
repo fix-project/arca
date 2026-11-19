@@ -12,7 +12,7 @@ export FIX_TRUST="$TEST_TMPDIR/.fix/trust"
 fib=$("$fix" -j 4 compile "@file(\"$root/$2\")" 2)
 "$fix" is-tag "$fib"
 add=$("$fix" -j 4 compile "@file(\"$root/$3\")" 2)
-result=$("$fix" -j 4 "*#(\"\" @handle(\"$fib\") 5u64 @handle(\"$add\"))")
+result=$("$fix" -j 4 "*#(536870912u64 @handle(\"$fib\") 5u64 @handle(\"$add\"))")
 test "$("$fix" read-blob --u64 "$result")" = 8
 error=$("$fix" -j 4 compile '"not WebAssembly"')
 "$fix" is-tag "$error"

@@ -5,6 +5,7 @@ use fixwasm::{Blob, Error, Handle, Object, Tree, Value, tree};
 fn apply(_: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
     let unused = tree![].application().strict();
     let files = tree![
+        tree![Blob::create(b"module.c"), tree![], Blob::create(b"source")],
         tree![Blob::create(b"object.o"), tree![], Blob::create(b"object")],
         tree![
             Blob::create(b"program.elf"),

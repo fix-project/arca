@@ -1,0 +1,40 @@
+name: Native LLVM SDK
+description: Select the pinned LLVM SDK for native CI compilation
+runs:
+  using: composite
+  steps:
+    - name: Configure native LLVM tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        compiler=$(bazel cquery @llvm_sdk//:bin/clang --output=files)
+        sdk_bin="$(bazel info output_base)/$(dirname "$compiler")"
+        tools="$RUNNER_TEMP/arca-llvm/bin"
+        mkdir -p "$tools"
+        digest=$(sha256sum "$sdk_bin/clang" | cut -d ' ' -f 1)
+        manifest=$(sha256sum MODULE.bazel | cut -d ' ' -f 1)
+        for driver in clang clang++; do
+          {
+            printf '#!/bin/bash\n# LLVM compiler SHA256: %s\n' "$digest"
+            printf '# SDK manifest SHA256: %s\n' "$manifest"
+            printf 'exec %q --no-default-config -no-canonical-prefixes --target=x86_64-unknown-linux-gnu -B%q "$@"\n' "$sdk_bin/$driver" "$tools/"
+          } > "$tools/$driver"
+          chmod +x "$tools/$driver"
+        done
+        ln -sf clang "$tools/gcc"
+        ln -sf clang++ "$tools/g++"
+        ln -sf "$sdk_bin/llvm-ar" "$tools/ar"
+        ln -sf "$sdk_bin/llvm-ranlib" "$tools/ranlib"
+        ln -sf "$sdk_bin/ld.lld" "$tools/ld"
+        ln -sf "$sdk_bin/ld.lld" "$tools/ld.lld"
+        ln -sf "$sdk_bin/wasm-ld" "$tools/wasm-ld"
+        "$tools/clang" --version
+        "$tools/clang" --print-targets | grep -w x86-64
+        {
+          echo "CC=$tools/clang"
+          echo "CXX=$tools/clang++"
+          echo "AR=$tools/ar"
+          echo "RANLIB=$tools/ranlib"
+          echo "LD=$tools/ld.lld"
+        } >> "$GITHUB_ENV"
+        echo "$tools" >> "$GITHUB_PATH"
