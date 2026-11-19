@@ -22,6 +22,8 @@ pub struct Backend {
     profile: bool,
     workers: usize,
     remotes: Arc<fixremote::Config>,
+    session: Option<Arc<crate::session::Scheduler>>,
+    stdio: Option<u64>,
 }
 
 impl Backend {
@@ -32,7 +34,19 @@ impl Backend {
             profile: false,
             workers: kernel::ncores(),
             remotes: Arc::new(fixremote::Config::default()),
+            session: None,
+            stdio: None,
         }
+    }
+
+    pub fn with_session(
+        mut self,
+        session: Option<Arc<crate::session::Scheduler>>,
+        stdio: Option<u64>,
+    ) -> Self {
+        self.session = session;
+        self.stdio = stdio;
+        self
     }
 
     pub fn with_workers(mut self, workers: usize) -> Self {
@@ -137,6 +151,20 @@ impl Backend {
     }
 
     pub fn schedule(&self, combination: Tree, todos: Vec<(Ref, Blob)>) -> Result<Outcome> {
+        if let Some(session) = &self.session {
+            return session.execute(
+                self.runtime.clone(),
+                combination,
+                self.workers,
+                crate::user_scheduler_driver::RepositoryServices {
+                    storage: self.storage.clone(),
+                    todos,
+                    remotes: self.remotes.clone(),
+                },
+                self.profile,
+                self.stdio,
+            );
+        }
         let report = crate::user_scheduler_driver::start_profiled(
             self.runtime.clone(),
             combination,

@@ -79,6 +79,55 @@ fn client(directory: &Path) -> Client {
 }
 
 #[test]
+fn repository_sessions_join_once_and_keep_their_settings() {
+    let directory = repository("shared-session");
+    let mut options = client(&directory).options().clone();
+    options.session_id = Some([17; 16]);
+    let mut first = Client::open(&directory, options.clone()).unwrap();
+    let node = first.node_identity().unwrap();
+    let mut proposed = options.clone();
+    proposed.jobs = 3;
+    proposed.memory_mib = 4096;
+    proposed.scheduler = "unused-proposed-scheduler".into();
+    proposed.collector = "unused-proposed-collector".into();
+    let mut repeated = Client::open(&directory, proposed.clone()).unwrap();
+    assert_eq!(repeated.node_identity().unwrap(), node);
+    assert_eq!(repeated.options().jobs, options.jobs);
+    assert_eq!(repeated.options().memory_mib, options.memory_mib);
+    assert_eq!(repeated.options().scheduler, options.scheduler);
+    assert_eq!(repeated.options().collector, options.collector);
+    proposed.session_id = Some([29; 16]);
+    let mut conflicting = Client::open(&directory, proposed.clone()).unwrap();
+    assert!(
+        conflicting
+            .node_identity()
+            .unwrap_err()
+            .to_string()
+            .contains("different session")
+    );
+    proposed.join_session = true;
+    let mut joined = Client::open(&directory, proposed).unwrap();
+    assert_eq!(joined.node_identity().unwrap(), node);
+    drop(first);
+    let expected = joined.blob(b"shared result").unwrap();
+    let actual = joined.eval(&expected).unwrap();
+    assert_eq!(
+        joined.save(&actual).unwrap(),
+        joined.save(&expected).unwrap()
+    );
+    drop(repeated);
+    let actual = joined.eval(&expected).unwrap();
+    assert_eq!(
+        joined.save(&actual).unwrap(),
+        joined.save(&expected).unwrap()
+    );
+    drop(joined);
+    options.session_id = Some([31; 16]);
+    let mut replacement = Client::open(&directory, options).unwrap();
+    assert_ne!(replacement.node_identity().unwrap(), node);
+}
+
+#[test]
 fn scheduler_failures_report_the_scheduler_and_guest_error() {
     let directory = repository("scheduler-errors");
     for (input, expected) in [
@@ -413,7 +462,6 @@ fn local_values_can_be_read_without_an_evaluator_and_saved() {
 fn persistent_session_values_evaluation_and_storage() {
     let directory = repository("roundtrip");
     let mut session = client(&directory);
-    session.reuse_vm();
     let left = session.blob(&20u64.to_le_bytes()).unwrap();
     let right = session.blob(&22u64.to_le_bytes()).unwrap();
     let add = session.lookup("add").unwrap();
@@ -544,7 +592,6 @@ fn coupon_persistence_modes() {
 fn persistent_session_returns_guest_traps() {
     let directory = repository("failed-session");
     let mut session = client(&directory);
-    session.reuse_vm();
     let add = session.lookup("add").unwrap();
     let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();

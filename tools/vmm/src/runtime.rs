@@ -587,6 +587,27 @@ impl Runtime {
         )
     }
 
+    pub(crate) fn run_service(
+        &mut self,
+        settings: common::protocol::session::Settings,
+        broker: Arc<crate::service::Broker>,
+    ) -> u8 {
+        let mut arguments = vec![
+            "fix".into(),
+            "--daemon".into(),
+            settings.scheduler,
+            settings.collector,
+            settings.memoize,
+        ];
+        arguments.extend(settings.arguments);
+        self.run_session(
+            arguments,
+            PathBuf::from(settings.repository),
+            Session::with_broker(broker),
+        )
+        .0
+    }
+
     fn run_session(
         &mut self,
         argv: Vec<String>,
@@ -600,6 +621,9 @@ impl Runtime {
         unsafe {
             common::buddy::with_allocator(&allocator, || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(broker) = &session.broker {
+                        broker.start(&session);
+                    }
                     self.run_inner(argv, directory, session.clone());
                 }));
                 if result.is_err() {

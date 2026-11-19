@@ -56,6 +56,12 @@ struct Global {
     /// Persist coupons: auto, always, or never.
     #[arg(long, value_name = "MODE", default_value_t = Memoization::Auto, global = true)]
     memoize: Memoization,
+    /// SSH session creation ID (32 hexadecimal digits).
+    #[arg(long, global = true)]
+    session_id: Option<String>,
+    /// Join the existing repository session and use its settings.
+    #[arg(long, global = true)]
+    join: bool,
     /// Scheduler Runnable.
     #[arg(long, value_name = "NAME", env = "FIX_SCHEDULER", global = true)]
     scheduler: Option<String>,
@@ -252,6 +258,16 @@ fn is_command(argument: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
+fn hex_session_id(text: &str, id: &mut [u8; 16]) -> Result<()> {
+    if text.len() != 32 {
+        return Err("session ID must contain 32 hexadecimal digits".into());
+    }
+    for (byte, pair) in id.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
+    }
+    Ok(())
+}
+
 impl Global {
     fn options(&self) -> Result<Options> {
         let settings = configuration::settings()?;
@@ -301,6 +317,16 @@ impl Global {
                 )?,
             },
             memoize: self.memoize,
+            session_id: self
+                .session_id
+                .as_ref()
+                .map(|text| {
+                    let mut id = [0; 16];
+                    hex_session_id(text, &mut id)?;
+                    Ok::<_, Box<dyn std::error::Error>>(id)
+                })
+                .transpose()?,
+            join_session: self.join,
             ..Options::default()
         })
     }

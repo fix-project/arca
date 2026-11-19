@@ -154,6 +154,19 @@ impl Graph {
         self.completed.borrow().get(request).cloned().transpose()
     }
 
+    pub fn scheduled_elsewhere(&self, node: &Node) -> bool {
+        self.executing.borrow().as_ref() != Some(node) && self.nodes.borrow().contains_key(node)
+    }
+
+    /// Claim delegated work and requeue it locally if the transfer is abandoned.
+    pub fn reserve(&self, node: &Node) -> Result<Option<Owned<'_>>, Error> {
+        Ok(matches!(self.claim(node)?, Claim::Owned).then(|| Owned {
+            graph: self,
+            node: node.clone(),
+            finished: false,
+        }))
+    }
+
     /// Await a previously submitted request, registering the current task's waker.
     pub async fn wait(&self, request: &Node) -> Result<Value, Error> {
         let registration = Waiting {
@@ -182,12 +195,22 @@ impl Graph {
     }
 
     fn complete_result(&self, request: &Node, result: &Result<Value, Error>) -> Result<(), Error> {
-        self.completed
-            .borrow_mut()
-            .entry(request.clone())
-            .or_insert_with(|| result.clone());
+        let wakers = self
+            .wakers
+            .borrow()
+            .get(request)
+            .cloned()
+            .unwrap_or_default();
+        if result.is_ok() || wakers.iter().any(|waker| waker.strong_count() != 0) {
+            self.completed
+                .borrow_mut()
+                .entry(request.clone())
+                .or_insert_with(|| result.clone());
+        }
         self.nodes.borrow_mut().remove(request);
-        let wakers = self.wakers.borrow_mut().remove(request).unwrap_or_default();
+        if result.is_ok() {
+            self.wakers.borrow_mut().remove(request);
+        }
         for registration in wakers {
             if let Some(waker) = registration
                 .upgrade()
@@ -237,12 +260,16 @@ impl Drop for Waiting<'_> {
             wakers.retain(|entry| !entry.ptr_eq(&weak));
             if wakers.is_empty() {
                 entries.remove(&self.node);
+                let mut completed = self.graph.completed.borrow_mut();
+                if completed.get(&self.node).is_some_and(Result::is_err) {
+                    completed.remove(&self.node);
+                }
             }
         }
     }
 }
 
-struct Owned<'a> {
+pub struct Owned<'a> {
     graph: &'a Graph,
     node: Node,
     finished: bool,

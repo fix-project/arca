@@ -12,9 +12,9 @@ mod continuation;
 mod handles;
 mod images;
 mod locals;
-pub mod trust;
 use continuation::Store;
 use core::sync::atomic::{AtomicUsize, Ordering};
+pub use fixtrust as trust;
 use kernel::kthread::KMutex;
 use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
 

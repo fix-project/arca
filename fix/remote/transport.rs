@@ -90,10 +90,11 @@ pub mod asynchronous {
         progress: &mut impl FnMut(u64, u64),
     ) -> Result<Option<Vec<u8>>, Error<S::Error>> {
         let mut header = [0; 8];
-        if stream.read(&mut header[..1]).await.map_err(Error::Io)? == 0 {
+        let length = stream.read(&mut header).await.map_err(Error::Io)?;
+        if length == 0 {
             return Ok(None);
         }
-        read_exact(stream, &mut header[1..]).await?;
+        read_exact(stream, &mut header[length..]).await?;
         let announced = u64::from_be_bytes(header);
         let length = usize::try_from(announced).map_err(|_| Error::TooLarge {
             length: announced,
@@ -132,9 +133,16 @@ pub mod asynchronous {
         bytes: &[u8],
         progress: &mut impl FnMut(u64, u64),
     ) -> Result<(), Error<S::Error>> {
-        write_all(stream, &(bytes.len() as u64).to_be_bytes()).await?;
-        let mut written = 0;
         progress(0, bytes.len() as u64);
+        let header = (bytes.len() as u64).to_be_bytes();
+        let mut written = bytes.len().min(65536 - header.len());
+        let mut first = Vec::with_capacity(header.len() + written);
+        first.extend_from_slice(&header);
+        first.extend_from_slice(&bytes[..written]);
+        write_all(stream, &first).await?;
+        if written > 0 {
+            progress(written as u64, bytes.len() as u64);
+        }
         while written < bytes.len() {
             let end = (written + 65536).min(bytes.len());
             let count = stream

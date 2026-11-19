@@ -69,6 +69,11 @@ async fn admitted(operation: &[u8], combination: &Value) -> Result<(u64, Value),
             .request(tree![Blob::create(b"memory_wait"), required])
             .await?;
         if status != 0 || ready.read_u64()? == 0 {
+            crate::io::log(&alloc::format!(
+                "memory admission rejected: requested {} bytes, {} bytes available",
+                required.read_u64()?,
+                worker::available_memory()?,
+            ))?;
             return Err(Error::MemoryUnavailable);
         }
     }
@@ -171,6 +176,10 @@ pub mod worker {
 
     pub fn available_memory() -> Result<u64, Error> {
         config(4)
+    }
+
+    pub fn memory_capacity() -> Result<u64, Error> {
+        config(5)
     }
 
     pub fn returns_coupon() -> Result<bool, Error> {

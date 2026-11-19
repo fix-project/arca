@@ -14,7 +14,7 @@ fn main() {
     let handler: Function = elfloader::load_elf(HANDLER).unwrap();
     loop {
         let handler = handler.clone();
-        let mut stream = listener.accept();
+        let stream = listener.accept();
         kthread::spawn(move || {
             let mut handler = handler;
             loop {

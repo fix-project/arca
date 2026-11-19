@@ -265,3 +265,23 @@ fn diagnostics_and_completed_steps_survive_terminal_cleanup() {
         assert!(!visible.contains("work in progress"), "{mode}: {visible:?}");
     }
 }
+
+#[test]
+fn topology_aliases_share_one_machine_and_stale_samples_preserve_counts() {
+    let probe = PathBuf::from(std::env::var_os("TEST_SRCDIR").unwrap())
+        .join(std::env::var_os("TEST_WORKSPACE").unwrap())
+        .join(env!("PROBE"));
+    let output = Command::new(probe).arg("--topology").output().unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stderr).unwrap();
+    let rows: Vec<_> = output
+        .lines()
+        .skip_while(|line| !line.starts_with("Node "))
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(rows.len(), 1, "{output}");
+    let fields: Vec<_> = rows[0].split_whitespace().collect();
+    assert_eq!(fields[1], "3", "{output}");
+    assert_eq!(fields[4], "2/4", "{output}");
+}

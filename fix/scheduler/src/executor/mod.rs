@@ -29,7 +29,7 @@ pub fn block_on<F: core::future::Future>(
     }
 }
 
-/// Poll evaluation tasks and start another queued operation when available.
+/// Poll evaluation tasks and start queued operations.
 pub(crate) fn work<'a>(
     graph: &'a Graph,
     policy: &'a (impl Scheduler + ?Sized),
@@ -39,7 +39,7 @@ pub(crate) fn work<'a>(
     for result in completed {
         result?;
     }
-    if let Some(node) = graph.take()? {
+    while let Some(node) = graph.take()? {
         tasks.spawn(graph.execute(node, policy));
         progress = true;
     }
@@ -63,15 +63,17 @@ pub fn run(
         return todo(&input);
     }
     if mode.equals(fixwasm::Blob::create(b"load"))? {
-        return block_on(load(policy, &input), io)?;
+        return serving(load(policy, &input), policy, io)?;
     }
     let node = operation(&capture(mode)?, &input)?;
     graph.submit(&node)?;
     let mut result = task::Task::new(graph.wait(&node));
     let mut tasks = task::Tasks::default();
+    let mut requests = task::Tasks::default();
     loop {
         let notification = io.listen()?;
-        let progress = work(graph, policy, &mut tasks)?;
+        let progress = work(graph, policy, &mut tasks)?
+            | crate::remote::server::work(policy, Some(graph), &mut requests)?;
         if let core::task::Poll::Ready(value) = result.poll() {
             return value;
         }
@@ -97,13 +99,45 @@ pub fn run_inline(
         return todo(&input);
     }
     if mode.equals(fixwasm::Blob::create(b"load"))? {
-        return block_on(load(policy, &input), io)?;
+        return serving(load(policy, &input), policy, io)?;
     }
     let node = operation(&capture(mode)?, &input)?;
-    block_on(node.dispatch(policy), io)?
+    serving(node.dispatch(policy), policy, io)?
 }
 
-fn operation(mode: &Value, input: &Value) -> Result<Node, Error> {
+fn serving<F: core::future::Future>(
+    future: F,
+    policy: &(impl Scheduler + ?Sized),
+    io: &crate::io::Io,
+) -> Result<F::Output, Error> {
+    drive(future, policy, None, io)
+}
+
+pub(crate) fn drive<F: core::future::Future>(
+    future: F,
+    policy: &(impl Scheduler + ?Sized),
+    graph: Option<&Graph>,
+    io: &crate::io::Io,
+) -> Result<F::Output, Error> {
+    let mut task = task::Task::new(future);
+    let mut requests = task::Tasks::default();
+    let mut work = task::Tasks::default();
+    loop {
+        let notification = io.listen()?;
+        let mut progress = crate::remote::server::work(policy, graph, &mut requests)?;
+        if let Some(graph) = graph {
+            progress |= self::work(graph, policy, &mut work)?;
+        }
+        if let core::task::Poll::Ready(value) = task.poll() {
+            return Ok(value);
+        }
+        if !progress && !task.is_ready() {
+            notification.wait()?;
+        }
+    }
+}
+
+pub(crate) fn operation(mode: &Value, input: &Value) -> Result<Node, Error> {
     if AsValue::equals(mode, fixwasm::Blob::create(b"eval"))? {
         Node::eval(input)
     } else if AsValue::equals(mode, fixwasm::Blob::create(b"think"))? {
@@ -119,7 +153,7 @@ fn operation(mode: &Value, input: &Value) -> Result<Node, Error> {
     }
 }
 
-fn todo(input: &Value) -> Result<Value, Error> {
+pub(crate) fn todo(input: &Value) -> Result<Value, Error> {
     let action = child(input, 0)?;
     let value = child(input, 1)?;
     if AsValue::equals(&action, fixwasm::Blob::create(b"import"))? {
@@ -136,7 +170,10 @@ fn todo(input: &Value) -> Result<Value, Error> {
     }
 }
 
-async fn load(policy: &(impl Scheduler + ?Sized), input: &Value) -> Result<Value, Error> {
+pub(crate) async fn load(
+    policy: &(impl Scheduler + ?Sized),
+    input: &Value,
+) -> Result<Value, Error> {
     let mut pending = alloc::vec![(input.clone(), false)];
     let mut seen = alloc::collections::BTreeSet::new();
     while let Some((value, completed)) = pending.pop() {

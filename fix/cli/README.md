@@ -56,7 +56,7 @@ identities.
 Each input uses the same syntax and imports as a command-line expression.
 Use `:{` and `:}` on separate lines for multiline input, and `:quit` or EOF to exit.
 Bindings are local to each input; `-b NAME=EXPRESSION` supplies bindings to all inputs.
-The REPL reuses one VM, starting a new scheduler for each request.
+The REPL uses one repository session, scheduler, and collector across requests.
 
 Parsing constructs a Fix value. An outer encode requests evaluation; thunks and
 Trees are otherwise retained as constructed. For example, `#(...)` constructs an
@@ -148,6 +148,17 @@ fix -C /path/to/repository serve --listen 127.0.0.1:9000 -j 4
 ```
 
 For SSH remotes, `fix serve --stdio` starts automatically on the remote machine.
+Each initiating session generates an SSH creation ID. Repeating a creation request
+with that ID joins the running repository session. A different creation ID cannot
+start another runtime in the same repository. `fix --join serve --stdio` explicitly
+joins the existing session without comparing creation IDs. TCP connections always
+join the server at their endpoint; SSH creation IDs do not constrain TCP joins.
+
+A session owns one runtime, scheduler, and collector. Its creator selects CPU,
+memory, scheduler, collector, and memoization settings; joins use those settings. A private
+account socket and repository lock prevent duplicate runtimes. The session stops
+when its last client and network connection close.
+
 The remote URL supplies the repository path. See the
 [two-machine setup](../remote/README.md#ssh-clone-and-distributed-evaluation)
 for cloning, trust, and the distributed scheduler.

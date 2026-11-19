@@ -35,6 +35,10 @@ pub trait Scheduler {
         Ok(())
     }
 
+    fn discovering(&self) -> bool {
+        false
+    }
+
     /// Evaluate without creating coupons, recursing through the scheduler's steps.
     /// Reconstructing Tags requires the scheduler to be a trusted tagger.
     async fn default_eval(&self, input: &Value) -> Result<Value, Error> {

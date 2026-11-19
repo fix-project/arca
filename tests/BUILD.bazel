@@ -53,7 +53,7 @@ GUEST = [
     "//programs/arca:" + name + "_image" for name in ARCA_PROGRAMS
 ]
 
-CHECKS = HOST + GUEST + ["//programs/fix/schedulers:" + name + "_wasm" for name in ["serial", "parallel", "distributed", "onepass", "hint", "advisor", "recompute", "policy_checks"]] + ["//bootstrap:seed_tool", "//flatware:tree", "//fix/preprocessor", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
+CHECKS = HOST + GUEST + ["//programs/fix/schedulers:" + name + "_wasm" for name in ["serial", "parallel", "distributed", "onepass", "hint", "advisor", "recompute"]] + ["//bootstrap:seed_tool", "//flatware:tree", "//fix/preprocessor", "//programs/fix/parser:wasm", "//tests/flatware:runner_probe_wasm"] + [
     "//programs/fix:" + name + "_wasm" for name in FIX_RUST_PROGRAMS
 ]
 

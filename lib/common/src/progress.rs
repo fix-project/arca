@@ -67,6 +67,24 @@ struct MachineDisplay {
     bytes_received: u64,
 }
 
+impl MachineDisplay {
+    fn merge(&mut self, other: Self) {
+        self.stats.merge(&other.stats);
+        self.peak_busy = self.peak_busy.max(other.peak_busy);
+        self.peak_queue = self.peak_queue.max(other.peak_queue);
+        self.peak_memory = self.peak_memory.max(other.peak_memory);
+        self.completed = self.completed.max(other.completed);
+        self.privileged_completed = self.privileged_completed.max(other.privileged_completed);
+        self.cpu_ns = self.cpu_ns.max(other.cpu_ns);
+        self.bytes_sent = self.bytes_sent.max(other.bytes_sent);
+        self.bytes_received = self.bytes_received.max(other.bytes_received);
+        self.tasks.extend(other.tasks);
+        if self.progress.is_none() {
+            self.progress = other.progress;
+        }
+    }
+}
+
 struct Task {
     progress: Progress,
     name: String,
@@ -441,7 +459,7 @@ fn location_name(location: &[String]) -> String {
     let location = if location.is_empty() {
         "local".into()
     } else {
-        location.join(" / ")
+        location.join("!")
     };
     location
         .chars()
@@ -677,8 +695,18 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     if *closed {
         return;
     }
-    for stats in snapshot.machines {
-        let location = location_name(&stats.location);
+    let locations: std::collections::BTreeSet<_> = snapshot
+        .machines
+        .iter()
+        .map(|machine| location_name(&machine.location))
+        .collect();
+    state.machines.lock().unwrap().retain(|location, machine| {
+        machine.stats.runtime.is_some() || locations.contains(location)
+    });
+    for mut stats in snapshot.machines {
+        stats.location =
+            crate::protocol::control::location_path(stats.location.iter().map(String::as_str));
+        let mut location = location_name(&stats.location);
         let mut labels = if stats.location.is_empty() {
             state.labels.lock().unwrap().clone()
         } else {
@@ -701,7 +729,40 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
             }
         }
         let mut machines = state.machines.lock().unwrap();
+        let aliases: Vec<_> = machines
+            .iter()
+            .filter(|(name, machine)| {
+                *name == &location || (stats.node.is_some() && machine.stats.node == stats.node)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !aliases.is_empty() {
+            let mut machine = machines.remove(&aliases[0]).unwrap();
+            for alias in &aliases[1..] {
+                machine.merge(machines.remove(alias).unwrap());
+            }
+            if (&machine.stats.location.len(), &machine.stats.location)
+                < (&stats.location.len(), &stats.location)
+            {
+                stats.location = machine.stats.location.clone();
+            }
+            location = location_name(&stats.location);
+            machines.insert(location.clone(), machine);
+        }
         let machine = machines.entry(location.clone()).or_default();
+        if stats.node.is_some() && stats.node == machine.stats.node {
+            machine.stats.location = stats.location.clone();
+        }
+        if stats.node.is_some()
+            && stats.node == machine.stats.node
+            && stats
+                .runtime
+                .as_ref()
+                .zip(machine.stats.runtime.as_ref())
+                .is_some_and(|(now, old)| now.elapsed_ns < old.elapsed_ns)
+        {
+            continue;
+        }
         let connection = match (&stats.availability, &machine.stats.availability) {
             (
                 Some(RemoteAvailability::Available { .. }),
@@ -731,12 +792,22 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
             ));
         }
         let Some(runtime) = &stats.runtime else {
+            machine.stats.node = stats.node.or(machine.stats.node);
             machine.stats.location = stats.location;
             machine.stats.availability = stats.availability;
             continue;
         };
         let baseline = (!stats.used && !stats.location.is_empty()).then_some(runtime);
-        let previous = machine.stats.runtime.as_ref().or(baseline);
+        let previous = machine
+            .stats
+            .runtime
+            .as_ref()
+            .filter(|_| {
+                machine.stats.node.is_none()
+                    || stats.node.is_none()
+                    || machine.stats.node == stats.node
+            })
+            .or(baseline);
         let delta = |now: u64, old: u64| now.checked_sub(old).unwrap_or(now);
         machine.completed += delta(runtime.completed, previous.map_or(0, |old| old.completed));
         machine.privileged_completed += delta(
@@ -919,7 +990,7 @@ pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     }
 }
 
-pub fn evaluation_step(step: EvaluationStep) {
+pub fn evaluation_step(mut step: EvaluationStep) {
     if identification(&step.task.id, step.task.operation) {
         return;
     }
@@ -928,18 +999,35 @@ pub fn evaluation_step(step: EvaluationStep) {
     if *closed {
         return;
     }
+    step.location =
+        crate::protocol::control::location_path(step.location.iter().map(String::as_str));
     let location = location_name(&step.location);
     let key = (step.task.id, step.task.operation);
     let mut labels = state.labels.lock().unwrap().clone();
     if step.location.is_empty() {
         state.advice.lock().unwrap().remove(&key);
     }
-    if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
+    let mut machines = state.machines.lock().unwrap();
+    let location = step
+        .node
+        .and_then(|node| {
+            machines.iter().find_map(|(name, machine)| {
+                (machine.stats.node == Some(node)).then(|| name.clone())
+            })
+        })
+        .unwrap_or(location);
+    if let Some(machine) = machines.get_mut(&location) {
+        if (&machine.stats.location.len(), &machine.stats.location)
+            < (&step.location.len(), &step.location)
+        {
+            step.location = machine.stats.location.clone();
+        }
         for (name, label) in &machine.stats.labels {
             labels.insert(data_name(*name), label.clone());
         }
         machine.tasks.remove(&key);
     }
+    drop(machines);
     let location = task_location(&step.task, &step.location);
     let title = reported_title(&step.task, &step.location, &labels);
     let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;

@@ -8,6 +8,10 @@ use common::{
 use std::{io::Write, time::Duration};
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--topology") {
+        topology();
+        return;
+    }
     progress::enable();
     progress::summarize(std::env::args().any(|arg| arg == "--summarize"));
     progress::abbreviate(!std::env::args().any(|arg| arg == "--no-abbrev"));
@@ -85,12 +89,16 @@ fn main() {
     std::thread::sleep(Duration::from_millis(250));
     diagnostic.write_all(b"preserved\n").unwrap();
     progress::evaluation_step(EvaluationStep {
+        node: None,
+        sequence: 0,
         location: Vec::new(),
         task: load,
         elapsed_ns: 250_000_000,
         success: true,
     });
     progress::evaluation_step(EvaluationStep {
+        node: None,
+        sequence: 0,
         location: Vec::new(),
         task: EvaluationTask {
             id: [1; 32],
@@ -102,6 +110,8 @@ fn main() {
         success: true,
     });
     progress::evaluation_step(EvaluationStep {
+        node: None,
+        sequence: 0,
         location: Vec::new(),
         task: EvaluationTask {
             id: [3; 32],
@@ -114,6 +124,8 @@ fn main() {
         success: false,
     });
     progress::evaluation_step(EvaluationStep {
+        node: None,
+        sequence: 0,
         location: Vec::new(),
         task: EvaluationTask {
             id: [4; 32],
@@ -126,6 +138,8 @@ fn main() {
         success: true,
     });
     progress::evaluation_step(EvaluationStep {
+        node: None,
+        sequence: 0,
         location: Vec::new(),
         task: EvaluationTask {
             id: [7; 32],
@@ -148,4 +162,33 @@ fn main() {
     diagnostic.flush().unwrap();
     std::thread::sleep(Duration::from_millis(250));
     progress::println("finished");
+}
+
+fn topology() {
+    progress::enable();
+    progress::summarize(true);
+    let evaluation = Progress::advised("topology");
+    for (location, elapsed_ns, completed) in [
+        (vec!["coordinator!large".into()], 20, 2),
+        (vec!["large".into()], 30, 3),
+        (vec!["coordinator!large".into()], 20, 2),
+    ] {
+        progress::evaluation_progress(EvaluationSnapshot {
+            machines: vec![MachineProgress {
+                node: Some([1; 16]),
+                location,
+                used: true,
+                runtime: Some(RuntimeStats {
+                    elapsed_ns,
+                    completed,
+                    workers: 4,
+                    peak_busy_workers: 2,
+                    ..RuntimeStats::default()
+                }),
+                ..MachineProgress::default()
+            }],
+            steps: Vec::new(),
+        });
+    }
+    evaluation.finish();
 }

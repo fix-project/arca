@@ -105,14 +105,11 @@ impl Scheduler for Parallel<'_> {
         }
         let cluster = self.cluster().await?;
         let mut failures = alloc::vec::Vec::new();
-        for (index, remote) in fixscheduler::remote::configured()?.iter().enumerate() {
-            if remote.address.starts_with("file://") {
-                continue;
-            }
-            match cluster.request_transfer(index + 1, value).await {
+        for (location, name) in cluster.sources(value)? {
+            match cluster.request_transfer(location, value).await {
                 Ok(Some(value)) => return Ok(value),
                 Ok(None) => (),
-                Err(error) => failures.push(alloc::format!("{}: {error:?}", remote.name)),
+                Err(error) => failures.push(alloc::format!("{name}: {error:?}")),
             }
         }
         if !failures.is_empty() {

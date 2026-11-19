@@ -6,7 +6,7 @@ use fixstorage::{Storage, repository::RepositoryStorage};
 use std::{
     fmt,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 mod archive;
@@ -98,6 +98,8 @@ pub struct Options {
     pub unsigned: bool,
     pub jobs: usize,
     pub memory_mib: usize,
+    pub session_id: Option<[u8; 16]>,
+    pub join_session: bool,
     pub memoize: Memoization,
 }
 impl Default for Options {
@@ -115,6 +117,8 @@ impl Default for Options {
             unsigned: false,
             jobs: 1,
             memory_mib: 16384,
+            session_id: None,
+            join_session: false,
             memoize: Memoization::Auto,
         }
     }
@@ -129,16 +133,8 @@ impl Options {
 pub struct Client {
     storage: Arc<RepositoryStorage>,
     options: Options,
-    directory: PathBuf,
     profile: bool,
-    persistent: bool,
     session: Option<session::Session>,
-    retain_storage: bool,
-    reuse_storage: bool,
-}
-fn kernel() -> &'static Arc<[u8]> {
-    static KERNEL: OnceLock<Arc<[u8]>> = OnceLock::new();
-    KERNEL.get_or_init(|| Arc::from(&include_bytes!(env!("FIX_KERNEL"))[..]))
 }
 
 impl Client {
@@ -154,12 +150,8 @@ impl Client {
         let mut client = Self {
             storage: Arc::new(RepositoryStorage::new(repository)),
             options,
-            directory,
             profile: false,
-            persistent: false,
             session: None,
-            retain_storage: false,
-            reuse_storage: false,
         };
         let config = client.remote_config()?;
         let mut policy = config.policy;
@@ -192,26 +184,70 @@ impl Client {
         }
         Ok(client)
     }
-    pub fn reuse_vm(&mut self) {
-        self.persistent = true;
-    }
-    pub fn begin_request(&mut self) {
-        self.retain_storage = true;
-        self.reuse_storage = false;
+    pub fn node_identity(&mut self) -> Result<[u8; 16], Error> {
+        Ok(self.ensure_session()?.node_identity)
     }
 
-    pub fn end_request(&mut self) -> Result<(), Error> {
-        self.retain_storage = false;
-        self.reuse_storage = false;
-        if let Some(session) = &mut self.session {
-            let (status, output) = session.execute(&[], false).map_err(error)?;
-            if status != 0 {
-                return Err(Error::Backend(
-                    String::from_utf8_lossy(&output).into_owned(),
-                ));
+    fn ensure_session(&mut self) -> Result<&mut session::Session, Error> {
+        if self.session.is_none() {
+            let remotes = self.remote_config()?;
+            let mut arguments = vec![
+                "--trust".into(),
+                remotes.policy.trusted_compilers.join("\n"),
+                "--remotes".into(),
+                serde_json::to_string(&remotes).map_err(error)?,
+                "--workers".into(),
+                self.options.jobs.to_string(),
+            ];
+            if self.profile {
+                arguments.push("--profile".into());
             }
+            let memory = self
+                .options
+                .memory_mib
+                .checked_mul(1 << 20)
+                .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
+                .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
+            let repository = Path::new(self.repository()).canonicalize().map_err(error)?;
+            let key = fixhandle::Blob::canonical(repository.as_os_str().as_encoded_bytes())
+                .map_err(error)?;
+            let key = hex::encode(key.as_handle().as_bytes());
+            let settings = common::protocol::session::Settings {
+                id: match self.options.session_id {
+                    Some(id) => id,
+                    None => vmm::service::identity().map_err(error)?,
+                },
+                repository: repository
+                    .parent()
+                    .unwrap()
+                    .to_str()
+                    .ok_or_else(|| message("non-UTF-8 path"))?
+                    .into(),
+                workers: self.options.jobs,
+                memory,
+                scheduler: self.options.scheduler.clone(),
+                collector: self.options.collector.clone(),
+                memoize: self.options.memoize.to_string(),
+                arguments,
+                profile: vmm::profiling::output_directory()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            };
+            let session = session::Session::open(
+                include_bytes!(env!("FIX_SESSION_OWNER")),
+                &key,
+                settings,
+                !self.options.join_session,
+            )
+            .map_err(error)?;
+            self.options.session_id = Some(session.settings.id);
+            self.options.jobs = session.settings.workers;
+            self.options.memory_mib = session.settings.memory >> 20;
+            self.options.scheduler = session.settings.scheduler.clone();
+            self.options.collector = session.settings.collector.clone();
+            self.options.memoize = session.settings.memoize.parse().map_err(message)?;
+            self.session = Some(session);
         }
-        Ok(())
+        Ok(self.session.as_mut().unwrap())
     }
 
     pub fn options(&self) -> &Options {
@@ -397,6 +433,7 @@ impl Client {
             .map_err(error)
     }
     pub fn call(&mut self, value: &Value) -> Result<Value, Error> {
+        self.ensure_session()?;
         if self.options.jobs == 0 {
             let thunk = self.application(value)?;
             let request = self.strict(&thunk)?;
@@ -410,40 +447,24 @@ impl Client {
         self.execute(&["call".into(), name])
     }
     pub fn schedule_stream(&mut self, value: &Value) -> Result<Value, Error> {
+        self.schedule_stream_prefetched(value, Vec::new())
+    }
+    fn schedule_stream_prefetched(
+        &mut self,
+        value: &Value,
+        prefix: Vec<u8>,
+    ) -> Result<Value, Error> {
         use std::io::{Read, Write};
         use std::net::Shutdown;
-        use std::os::unix::net::UnixStream;
         let name = self.save(value)?;
-        let remotes = self.remote_config()?;
-        let mut argv = vec![
-            "fix".into(),
-            "--trust".into(),
-            remotes.policy.trusted_compilers.join("\n"),
-            "--remotes".into(),
-            serde_json::to_string(&remotes).map_err(error)?,
-            "--workers".into(),
-            self.options.jobs.to_string(),
-        ];
-        if self.profile {
-            argv.push("--profile".into());
-        }
-        argv.extend([
-            "schedule".into(),
-            "--memoize".into(),
-            self.options.memoize.to_string(),
-            name.clone(),
-        ]);
-        let memory = self
-            .options
-            .memory_mib
-            .checked_mul(1 << 20)
-            .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
-            .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
-        let (vm, peer) = UnixStream::pair().map_err(error)?;
+        let peer = self.ensure_session()?.attach().map_err(error)?;
         let mut incoming = peer.try_clone().map_err(error)?;
         let mut outgoing = peer;
         std::thread::spawn(move || {
-            let _ = std::io::copy(&mut std::io::stdin(), &mut incoming);
+            let _ = std::io::copy(
+                &mut std::io::Cursor::new(prefix).chain(std::io::stdin()),
+                &mut incoming,
+            );
             let _ = incoming.shutdown(Shutdown::Write);
         });
         let output = std::thread::spawn(move || {
@@ -458,9 +479,10 @@ impl Client {
                 stdout.flush()?;
             }
         });
-        let (status, result) =
-            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel().clone())
-                .run_stream_captured(argv, &self.directory, vm);
+        let (status, result) = self
+            .ensure_session()?
+            .execute(&["schedule".into(), name.clone()], true)
+            .map_err(error)?;
         output.join().map_err(error)?.map_err(error)?;
         if status == 0 {
             self.lookup(std::str::from_utf8(&result).map_err(error)?.trim())
@@ -552,6 +574,7 @@ impl Client {
 
     /// Load backing through the scheduler, preserving the input value.
     pub fn load(&mut self, value: &Value) -> Result<Value, Error> {
+        self.ensure_session()?;
         let collector = self.lookup(&self.options.collector.clone())?;
         let combination = self.scheduler_request("load", &collector, value)?;
         self.schedule(&combination)
@@ -559,6 +582,7 @@ impl Client {
 
     /// Performs one Think step on `value` and returns its result.
     pub fn think(&mut self, value: &Value) -> Result<Value, Error> {
+        self.ensure_session()?;
         let collector = self.lookup(&self.options.collector.clone())?;
         let combination = self.scheduler_request("think", &collector, value)?;
         let coupon = self.schedule(&combination)?;
@@ -704,49 +728,14 @@ impl Client {
             .ok()
             .map(|_| input_name);
         progress.evaluation_names(input_name, names);
-        let remotes = self.remote_config()?;
-        let trust = remotes.policy.trusted_compilers.join("\n");
-        let mut argv = vec!["fix".into(), "--trust".into(), trust];
-        argv.extend([
-            "--remotes".into(),
-            serde_json::to_string(&remotes).map_err(error)?,
-            "--workers".into(),
-            self.options.jobs.to_string(),
-        ]);
-        if self.profile {
-            argv.push("--profile".into());
-        }
-        argv.extend_from_slice(arguments);
-        let kernel = kernel();
-        let memory = self
-            .options
-            .memory_mib
-            .checked_mul(1 << 20)
-            .filter(|size| *size >= 16 << 20 && size.is_power_of_two())
-            .ok_or_else(|| message("memory must be a power of two, at least 16 MiB"))?;
+        let configuration = self.remote_config()?;
+        fixtrust::Trust::parse(&configuration.policy.trusted_compilers.join("\n"))
+            .map_err(|failure| message(&failure.to_string()))?;
         let start = std::time::Instant::now();
-        let (status, output) = if self.persistent {
-            if self.session.is_none() {
-                self.session = Some(
-                    session::Session::new(
-                        self.options.jobs,
-                        memory,
-                        kernel.clone(),
-                        self.directory.clone(),
-                    )
-                    .map_err(error)?,
-                );
-            }
-            self.session
-                .as_mut()
-                .unwrap()
-                .execute(&argv[1..], self.reuse_storage)
-                .map_err(error)?
-        } else {
-            vmm::runtime::Runtime::new(self.options.jobs.max(1), memory, kernel.clone())
-                .run_captured(argv, &self.directory)
-        };
-        self.reuse_storage = self.retain_storage;
+        let (status, output) = self
+            .ensure_session()?
+            .execute(arguments, false)
+            .map_err(error)?;
         if self.profile {
             common::progress::println(format!(
                 "profile {} VM: {:?} (status {status})",
@@ -921,6 +910,7 @@ impl Client {
         ))
     }
     pub fn eval(&mut self, value: &Value) -> Result<Value, Error> {
+        self.ensure_session()?;
         let start = std::time::Instant::now();
         let name = self.save(value)?;
         let scheduler = self.lookup(&self.options.scheduler.clone())?;

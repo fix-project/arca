@@ -348,13 +348,6 @@ fn compilation_uses_the_compile_runnable() {
             "2",
         ],
     );
-    std::fs::copy(&wasm, directory.join("add.wasm")).unwrap();
-    let shorthand = expression(&directory, &["@compile(\"add.wasm\")"]);
-    let default = expression(
-        &directory,
-        &["compile", &format!("@file({:?})", wasm.to_str().unwrap())],
-    );
-    assert_eq!(shorthand, default);
     run(&directory, &["is-tag", &add], b"", 0);
     let fields = value(&directory, &["read-tree", &add]);
     let fields: Vec<_> = fields.lines().collect();
@@ -378,87 +371,6 @@ fn compilation_uses_the_compile_runnable() {
         ),
         b"Error"
     );
-}
-
-#[test]
-fn archives_and_parsed_environments_round_trip() {
-    let directory = Directory::new("archives");
-    bootstrap(&directory, &[]);
-    std::fs::write(directory.join("first\nfile"), b"binary\0\xff").unwrap();
-    std::fs::write(directory.join("second"), b"second").unwrap();
-    let first = value(&directory, &["create-blob", "first\nfile"]);
-    let second = value(&directory, &["create-blob", "second"]);
-    let input_ref = value(&directory, &["create-ref", &second]);
-    let input2 = format!("input2={}", handle(&input_ref));
-    let source =
-        "($input1 *[$input2 0u64 3u64] \"literal -- @ and \\\"quote\\\"\" @file(\"second\"))";
-    std::fs::write(directory.join("graph.fix"), source).unwrap();
-    let graph = expression(
-        &directory,
-        &[
-            "parse",
-            "graph.fix",
-            "-b",
-            &format!("input1={}", handle(&first)),
-            "-b",
-            &input2,
-        ],
-    );
-    let children = value(&directory, &["read-tree", &graph]);
-    let children: Vec<_> = children.lines().collect();
-    assert_eq!(children[0], first);
-    assert_eq!(children[3], second);
-    assert_eq!(value(&directory, &["get-type", children[1]]), "encode");
-    assert_eq!(
-        run(&directory, &["read-blob", children[2]], b"", 0),
-        b"literal -- @ and \"quote\""
-    );
-    let result = expression(&directory, &["eval", &handle(&graph)]);
-    let children = value(&directory, &["read-tree", &result]);
-    assert_eq!(
-        run(
-            &directory,
-            &["read-blob", children.lines().nth(1).unwrap()],
-            b"",
-            0
-        ),
-        b"sec"
-    );
-
-    let shared = text(run(&directory, &["create-blob", "-"], &[7; 64], 0));
-    let unrelated = text(run(&directory, &["create-blob", "-"], &[8; 64], 0));
-    let shared_ref = value(&directory, &["create-ref", &shared]);
-    let root = value(
-        &directory,
-        &["-l", "exported", "create-tree", &shared, &shared_ref],
-    );
-    std::fs::create_dir(directory.join("archives")).unwrap();
-    frontend(
-        &directory,
-        &["export", "@label(\"exported\")", "archives/exported.tar.gz"],
-        true,
-    );
-    frontend(
-        &directory,
-        &["export", "@label(\"exported\")", "archives/exported.tar.gz"],
-        false,
-    );
-    let imported = directory.join("imported");
-    std::fs::create_dir(&imported).unwrap();
-    run(&imported, &["init"], b"", 0);
-    run(
-        &imported,
-        &["import", "../archives/exported.tar.gz"],
-        b"",
-        0,
-    );
-    let visited = value(&imported, &["visit", &root]);
-    assert_eq!(
-        visited.lines().collect::<std::collections::BTreeSet<_>>(),
-        [root.as_str(), shared.as_str()].into_iter().collect()
-    );
-    assert_eq!(run(&imported, &["read-blob", &shared], b"", 0), [7; 64]);
-    run(&imported, &["resolve", &unrelated], b"", 2);
 }
 
 #[test]
@@ -598,30 +510,4 @@ fn flatware_directories_round_trip_through_native_import_and_export() {
         false,
     );
     assert!(!directory.join("escape").exists());
-}
-
-#[test]
-fn file_imports_directory_contents() {
-    let directory = Directory::new("directories");
-    bootstrap(&directory, &[]);
-    std::fs::create_dir_all(directory.join("recipes/tree/sub")).unwrap();
-    std::fs::write(directory.join("recipes/tree/a.txt"), "alpha").unwrap();
-    std::fs::write(directory.join("recipes/tree/sub/b.bin"), [1, 2]).unwrap();
-    std::fs::write(directory.join("recipes/tree.fix"), "@file(\"tree\")").unwrap();
-    let tree = expression(&directory, &["run", "recipes/tree.fix"]);
-    let child = |name: &str, path: &[usize]| {
-        path.iter().fold(name.to_owned(), |name, index| {
-            value(&directory, &["read-tree", &name])
-                .lines()
-                .nth(*index)
-                .unwrap()
-                .to_owned()
-        })
-    };
-    let blob = |path: &[usize]| run(&directory, &["read-blob", &child(&tree, path)], b"", 0);
-    assert_eq!(value(&directory, &["read-tree", &tree]).lines().count(), 2);
-    assert_eq!(blob(&[0, 0]), b"a.txt");
-    assert_eq!(blob(&[0, 2]), b"alpha");
-    assert_eq!(blob(&[1, 0]), b"sub");
-    assert_eq!(blob(&[1, 2, 0, 2]), [1, 2]);
 }

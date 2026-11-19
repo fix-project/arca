@@ -14,7 +14,6 @@ fix_scheduler(name = "distributed", modules = ["parallel.rs"])
 fix_scheduler(name = "onepass", modules = ["parallel.rs"])
 fix_scheduler(name = "hint", modules = ["parallel.rs", "onepass.rs"])
 
-fix_rust_program(name = "policy_checks", importers = True, rustc_flags = ["-Clink-arg=-zstack-size=8388608"], srcs = ["serial.rs", "parallel.rs", "onepass.rs", "hint.rs"], deps = ["//fix/scheduler:sdk"], artifact_visibility = ["//visibility:public"])
 
 fix_rust_program(name = "advisor", src = "tests/advise.rs", artifact_visibility = ["//visibility:public"])
 

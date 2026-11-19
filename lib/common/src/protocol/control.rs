@@ -38,12 +38,55 @@ pub struct EvaluationSnapshot {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MachineProgress {
+    pub node: Option<[u8; 16]>,
     pub location: Vec<String>,
     pub availability: Option<RemoteAvailability>,
     pub used: bool,
     pub runtime: Option<RuntimeStats>,
     pub tasks: Vec<EvaluationTask>,
     pub labels: Vec<([u8; 32], String)>,
+}
+
+impl MachineProgress {
+    pub fn merge(&mut self, other: &Self) {
+        if self
+            .node
+            .zip(other.node)
+            .is_some_and(|(old, new)| old != new)
+        {
+            *self = other.clone();
+            return;
+        }
+        let location =
+            if (&other.location.len(), &other.location) < (&self.location.len(), &self.location) {
+                other.location.clone()
+            } else {
+                self.location.clone()
+            };
+        let used = self.used || other.used;
+        let node = other.node.or(self.node);
+        let availability = other.availability.clone().or(self.availability.clone());
+        if other.runtime.as_ref().is_some_and(|incoming| {
+            self.runtime
+                .as_ref()
+                .is_none_or(|previous| incoming.elapsed_ns >= previous.elapsed_ns)
+        }) {
+            *self = other.clone();
+        }
+        self.location = location;
+        self.used = used;
+        self.node = node;
+        self.availability = availability;
+    }
+}
+
+pub fn location_path<'a>(segments: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    segments
+        .into_iter()
+        .flat_map(|segment| segment.split('!'))
+        .filter(|segment| !segment.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +121,8 @@ pub struct RuntimeStats {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvaluationStep {
+    pub node: Option<[u8; 16]>,
+    pub sequence: u64,
     pub location: Vec<String>,
     pub task: EvaluationTask,
     pub elapsed_ns: u64,
@@ -104,6 +149,14 @@ pub struct Tagged<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
+    NodeIdentity,
+    SessionNext,
+    SessionReply {
+        connection: super::session::Id,
+        request: u64,
+        status: u8,
+        output: Vec<u8>,
+    },
     GetArgs,
     ObserveEvaluation,
     CpuTime,
@@ -147,6 +200,15 @@ pub enum Request<B = Region> {
     },
     OpenUri(String),
     StdioStream,
+    StreamReceive {
+        id: u64,
+        length: usize,
+    },
+    StreamSend {
+        id: u64,
+        bytes: Vec<u8>,
+    },
+    StreamClose(u64),
     SshConnect {
         host: String,
         repository: String,
@@ -168,6 +230,10 @@ pub enum Request<B = Region> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
+    NodeIdentity([u8; 16]),
+    SessionCommand(Option<super::session::Command>),
+    Stream(u64),
+    StreamBytes(Vec<u8>),
     Args(Vec<String>),
     Pipe(PipeData),
     Ack,

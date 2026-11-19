@@ -7,7 +7,7 @@ use crate::{
     Blob, EncodeView, ExecutionError, Handle, HandleView, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -37,7 +37,13 @@ pub trait Services: Send + Sync {
     ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
         Err(fixrepository::RepositoryError::InvalidRepository)
     }
-    fn export_object(&self, _: [u8; 32], _: bool, _: bool) -> Result<Vec<u8>, fixremote::Error> {
+    fn export_object(
+        &self,
+        _: [u8; 32],
+        _: bool,
+        _: bool,
+        _: &[[u8; 32]],
+    ) -> Result<Vec<u8>, fixremote::Error> {
         Err(fixremote::Error::Invalid)
     }
     fn read_backing(&self, _: [u8; 32], _: u64, _: usize) -> Result<Vec<u8>, fixremote::Error> {
@@ -54,10 +60,14 @@ pub trait Services: Send + Sync {
     fn information(
         &self,
         _: Handle,
-        _: u32,
-        _: u64,
+        parallelism: u32,
+        memory: u64,
     ) -> Result<fixremote::protocol::Information, alloc::string::String> {
-        Err("object inventory is unsupported".into())
+        Ok(fixremote::protocol::Information {
+            parallelism,
+            memory_bytes: Some(memory),
+            ..Default::default()
+        })
     }
     fn file_information(
         &self,
@@ -108,6 +118,19 @@ pub struct RepositoryServices {
     pub todos: Vec<(Ref, Blob)>,
     pub remotes: Arc<fixremote::Config>,
 }
+
+impl fixremote::ProposalStorage for RepositoryServices {
+    fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, fixrepository::RepositoryError> {
+        self.storage
+            .get_tree(tree)
+            .map_err(fixrepository::RepositoryError::Storage)
+    }
+
+    fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, fixrepository::RepositoryError> {
+        self.storage.get_todo(reference)
+    }
+}
+
 impl Services for RepositoryServices {
     fn file_information(
         &self,
@@ -127,14 +150,15 @@ impl Services for RepositoryServices {
         name: [u8; 32],
         backing: bool,
         full: bool,
+        known: &[[u8; 32]],
     ) -> Result<Vec<u8>, fixremote::Error> {
         let repository = self.storage.repository();
-        let root = repository.lookup(&name)?;
-        let (transfer, backing) = if full {
-            fixremote::propose_export_full(repository, root)?
-        } else {
-            fixremote::propose_export(repository, root, backing)?
-        };
+        let root = self
+            .storage
+            .identify(&name)
+            .map_err(fixrepository::RepositoryError::Storage)?;
+        let (transfer, backing) =
+            fixremote::propose_loaded(repository, self, root, backing, full, known)?;
         postcard::to_allocvec(&(transfer, backing)).map_err(|_| fixremote::Error::Invalid)
     }
     fn read_backing(
@@ -143,12 +167,38 @@ impl Services for RepositoryServices {
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>, fixremote::Error> {
-        let repository = self.storage.repository();
-        let object =
-            Object::try_from(repository.lookup(&name)?).map_err(|_| fixremote::Error::Invalid)?;
-        repository
-            .read_backing_range(object, offset, length)
-            .map_err(Into::into)
+        let (object, offset) = (
+            Object::try_from(
+                self.storage
+                    .identify(&name)
+                    .map_err(fixrepository::RepositoryError::Storage)?,
+            )
+            .map_err(|_| fixremote::Error::Invalid)?,
+            usize::try_from(offset).map_err(|_| fixremote::Error::Invalid)?,
+        );
+        let bytes = match object.view() {
+            ObjectView::Blob(blob) => self.storage.get_blob_backing(*blob),
+            ObjectView::Tree(tree) => self.storage.get_tree_backing(*tree),
+        }
+        .map_err(fixrepository::RepositoryError::Storage)?;
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > bytes.len())
+        {
+            return Err(fixremote::Error::Invalid);
+        }
+        let mut output = alloc::vec![0; length];
+        let mut copied = 0;
+        while copied < length {
+            let (page, position) = bytes.page(offset + copied);
+            let count = (length - copied).min(page.len() - position);
+            assert_eq!(
+                page.read(position, &mut output[copied..copied + count]),
+                count
+            );
+            copied += count;
+        }
+        Ok(output)
     }
     fn update_label(
         &self,
@@ -232,10 +282,18 @@ impl Services for RepositoryServices {
         Ok(missing)
     }
     fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
-        fixremote::import_observed(self.storage.repository(), bytes, &self.remotes, |name| {
-            AsRef::<crate::storage::memory::MemoryStorage>::as_ref(&self.storage)
-                .register_names([name]);
-        })
+        fixremote::import_observed(
+            self.storage.repository(),
+            bytes,
+            &self.remotes,
+            |name, todo| {
+                if todo.is_some() {
+                    self.storage.invalidate_todo(&name);
+                }
+                AsRef::<crate::storage::memory::MemoryStorage>::as_ref(&self.storage)
+                    .register_names([name]);
+            },
+        )
     }
     fn put(&self, value: Handle) -> Result<Handle, alloc::string::String> {
         self.storage.save(value).map_err(|error| match error {
@@ -248,7 +306,6 @@ impl Services for RepositoryServices {
     fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, &'static str> {
         let stored = self
             .storage
-            .repository()
             .get_todo(reference)
             .map_err(|_| "could not read todo metadata")?;
         let extra: Vec<_> = self
@@ -284,7 +341,6 @@ impl Services for RepositoryServices {
             .put(value)
             .map_err(|_| "could not persist todo metadata")?;
         self.storage
-            .repository()
             .set_todo(reference, value)
             .map_err(|_| "could not save todo metadata")
     }
@@ -344,19 +400,48 @@ impl WorkerEvent {
 struct Saver {
     state: KMutex<SaverState>,
     changed: KCondvar,
+    saved: KCondvar,
 }
 
 #[derive(Default)]
 struct SaverState {
     queue: alloc::collections::VecDeque<Handle>,
+    submitted: usize,
+    completed: usize,
     closed: bool,
     error: Option<alloc::string::String>,
 }
 
 impl Saver {
     fn push(&self, value: Handle) {
-        self.state.lock().queue.push_back(value);
+        let mut state = self.state.lock();
+        state.submitted = state.submitted.checked_add(1).expect("save IDs exhausted");
+        state.queue.push_back(value);
         self.changed.notify_one();
+    }
+
+    fn checkpoint(&self) -> usize {
+        self.state.lock().submitted
+    }
+
+    fn complete(&self, result: Result<(), alloc::string::String>) {
+        let mut state = self.state.lock();
+        if let Err(error) = result {
+            state.error.get_or_insert(error);
+        }
+        state.completed += 1;
+        self.saved.notify_all();
+    }
+
+    fn wait(&self, checkpoint: usize) -> Result<(), alloc::string::String> {
+        let mut state = self.state.lock();
+        while state.completed < checkpoint {
+            state = self.saved.wait(state);
+        }
+        match &state.error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     fn pop(&self) -> Option<Handle> {
@@ -434,7 +519,7 @@ fn discard_advice(storage: &dyn Storage, shared: &Shared, result: EffectResult) 
     })();
 }
 
-type SharedStream = Arc<KMutex<kernel::host::net::Stream>>;
+type SharedStream = Arc<kernel::host::net::Stream>;
 type SharedListener = Arc<kernel::host::net::TcpListener>;
 type EffectResult = Result<Handle, &'static str>;
 type TaskKey = ([u8; 32], Option<EvaluationOperation>);
@@ -515,7 +600,12 @@ impl ProgressObservers {
     }
 }
 
+static NEXT_STEP: AtomicU64 = AtomicU64::new(0);
+
 struct Shared {
+    session: Option<Arc<crate::session::Scheduler>>,
+    node_identity: [u8; 16],
+    observed_steps: KMutex<BTreeSet<([u8; 16], u64)>>,
     advised: KMutex<BTreeMap<TaskKey, ActiveTask>>,
     observers: KMutex<ProgressObservers>,
     remote_progress: KMutex<BTreeMap<alloc::string::String, EvaluationSnapshot>>,
@@ -534,7 +624,7 @@ struct Shared {
     suspended: KMutex<BTreeMap<usize, (bool, Suspended, kernel::memory::FreeMemory)>>,
     next_suspended: AtomicUsize,
     applications: Applications,
-    saver: Saver,
+    saver: Arc<Saver>,
     saving: AtomicBool,
     queues: KMutex<WorkQueues<Handle>>,
     maps: KMutex<Maps<Handle, Handle>>,
@@ -562,7 +652,18 @@ struct EffectStats {
 }
 
 impl Shared {
-    fn record_step(&self, step: EvaluationStep) {
+    fn record_step(&self, mut step: EvaluationStep) {
+        let node = match step.node {
+            Some(node) => node,
+            None => {
+                step.node = Some(self.node_identity);
+                step.sequence = NEXT_STEP.fetch_add(1, Ordering::Relaxed);
+                self.node_identity
+            }
+        };
+        if !self.observed_steps.lock().insert((node, step.sequence)) {
+            return;
+        }
         self.observers.lock().record(step.clone());
         kernel::host::os::evaluation_step(step);
     }
@@ -587,12 +688,13 @@ impl Shared {
                 false,
             ),
         );
-        kernel::host::os::evaluation_progress(self.snapshot());
     }
 
     fn finish_task(&self, key: TaskKey, outcome: &str) {
         let task = self.advised.lock().remove(&key);
-        kernel::host::os::task_finished(key.0, key.1);
+        if self.session.is_none() {
+            kernel::host::os::task_finished(key.0, key.1);
+        }
         if let Some(task) = task {
             let mut name = task.progress.id;
             name[31] &= 0xe0;
@@ -611,6 +713,8 @@ impl Shared {
                     ))
             {
                 self.record_step(EvaluationStep {
+                    node: None,
+                    sequence: 0,
                     location: Vec::new(),
                     elapsed_ns: kernel::tsc::read().saturating_sub(task.started).as_nanos() as u64,
                     task: task.progress,
@@ -622,6 +726,7 @@ impl Shared {
 
     fn snapshot(&self) -> EvaluationSnapshot {
         let local = MachineProgress {
+            node: Some(self.node_identity),
             location: Vec::new(),
             availability: None,
             used: true,
@@ -659,7 +764,17 @@ impl Shared {
         };
         let mut machines = alloc::vec![local];
         for snapshot in self.remote_progress.lock().values() {
-            machines.extend(snapshot.machines.iter().cloned());
+            for machine in &snapshot.machines {
+                let previous = machines.iter_mut().find(|previous| {
+                    (machine.node.is_some() && previous.node == machine.node)
+                        || previous.location == machine.location
+                });
+                if let Some(previous) = previous {
+                    previous.merge(machine);
+                } else {
+                    machines.push(machine.clone());
+                }
+            }
         }
         EvaluationSnapshot {
             machines,
@@ -710,6 +825,39 @@ pub fn start_profiled<
     services: impl Services + 'static,
     profile: bool,
 ) -> Result<Report, alloc::string::String> {
+    start_with_session(runtime, combination, workers, services, profile, None)
+}
+
+pub fn start_session<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: Arc<FixOnArca<S>>,
+    combination: Tree,
+    workers: usize,
+    services: impl Services + 'static,
+    profile: bool,
+    session: Arc<crate::session::Scheduler>,
+) -> Result<Report, alloc::string::String> {
+    start_with_session(
+        runtime,
+        combination,
+        workers,
+        services,
+        profile,
+        Some(session),
+    )
+}
+
+fn start_with_session<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: Arc<FixOnArca<S>>,
+    combination: Tree,
+    workers: usize,
+    services: impl Services + 'static,
+    profile: bool,
+    session: Option<Arc<crate::session::Scheduler>>,
+) -> Result<Report, alloc::string::String> {
     if workers > 256 {
         return Err("worker count must be 0..=256".into());
     }
@@ -747,6 +895,9 @@ pub fn start_profiled<
         .map(|(label, name)| (name, label))
         .collect();
     let shared = Arc::new(Shared {
+        session,
+        node_identity: kernel::host::os::node_identity(),
+        observed_steps: KMutex::new(BTreeSet::new()),
         advised: KMutex::new(BTreeMap::new()),
         observers: KMutex::new(ProgressObservers::default()),
         remote_progress: KMutex::new(
@@ -787,7 +938,7 @@ pub fn start_profiled<
         completed_effects: KMutex::new(Vec::new()),
         next_suspended: AtomicUsize::new(0),
         applications: Applications::default(),
-        saver: Saver::default(),
+        saver: Arc::new(Saver::default()),
         saving: AtomicBool::new(true),
         queues: KMutex::new(WorkQueues::new(
             workers.max(1),
@@ -838,7 +989,6 @@ pub fn start_profiled<
                         (*input.as_bytes(), Some(EvaluationOperation::Load)),
                         if success { "completed" } else { "failed" },
                     );
-                    kernel::host::os::evaluation_progress(shared.snapshot());
                 }
             }
         })));
@@ -868,9 +1018,7 @@ pub fn start_profiled<
                         .index_claim(saved)
                         .map_err(|_| "could not index a saved coupon".into())
                 });
-                if let Err(error) = saved {
-                    shared.saver.state.lock().error.get_or_insert(error);
-                }
+                shared.saver.complete(saved);
             }
             shared.saving.store(false, Ordering::Release);
             coordinator.unpark();
@@ -1443,12 +1591,14 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     }
                 }
                 drop(tasks);
-                kernel::host::os::task_advice(
-                    *target.as_bytes(),
-                    operation,
-                    &event.key,
-                    &event.payload,
-                );
+                if shared.session.is_none() {
+                    kernel::host::os::task_advice(
+                        *target.as_bytes(),
+                        operation,
+                        &event.key,
+                        &event.payload,
+                    );
+                }
             }
             let token = shared
                 .next_suspended
@@ -1543,7 +1693,7 @@ fn text(storage: &dyn Storage, value: Handle) -> Result<alloc::string::String, E
 }
 
 fn add_stream(shared: &Shared, stream: kernel::host::net::Stream) -> usize {
-    insert_resource(&mut shared.streams.lock(), Arc::new(KMutex::new(stream)))
+    insert_resource(&mut shared.streams.lock(), Arc::new(stream))
 }
 
 fn insert_resource<T>(resources: &mut Vec<Option<T>>, resource: T) -> usize {
@@ -1641,7 +1791,14 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     true,
                 ),
             );
-            kernel::host::os::task_advice(*input.as_bytes(), Some(operation), b"fix::title", b"");
+            if shared.session.is_none() {
+                kernel::host::os::task_advice(
+                    *input.as_bytes(),
+                    Some(operation),
+                    b"fix::title",
+                    b"",
+                );
+            }
             Ok(number(0))
         }
         (b"evaluation_finish", [input, operation, outcome]) => {
@@ -1690,7 +1847,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 (*input.as_bytes(), Some(EvaluationOperation::Load)),
                 &text(storage, *outcome)?,
             );
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"progress_status", []) => {
@@ -1710,8 +1866,18 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&snapshot).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_status", [location, status, workers, memory, error]) => {
+        (b"remote_status", [location, status, workers, memory, error, node]) => {
             let location = text(storage, *location)?;
+            let bytes = storage
+                .get_blob(Blob::try_from(*node).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let node = if bytes.is_empty() {
+                None
+            } else {
+                Some(bytes.as_ref().try_into().map_err(|_| Error::Invalid)?)
+            };
+            let path =
+                common::protocol::control::location_path(core::iter::once(location.as_str()));
             let availability = match text(storage, *status)?.as_str() {
                 "connecting" => RemoteAvailability::Connecting,
                 "available" => RemoteAvailability::Available {
@@ -1732,21 +1898,20 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             {
                 let mut remotes = shared.remote_progress.lock();
                 let snapshot = remotes.entry(location.clone()).or_default();
-                if let Some(machine) = snapshot
-                    .machines
-                    .iter_mut()
-                    .find(|machine| machine.location.len() == 1 && machine.location[0] == location)
-                {
+                if let Some(machine) = snapshot.machines.iter_mut().find(|machine| {
+                    machine.location == path || (node.is_some() && machine.node == node)
+                }) {
+                    machine.node = node.or(machine.node);
                     machine.availability = Some(availability);
                 } else {
                     snapshot.machines.push(MachineProgress {
-                        location: alloc::vec![location],
+                        node,
+                        location: path,
                         availability: Some(availability),
                         ..MachineProgress::default()
                     });
                 }
             }
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"remote_progress", [location, snapshot, used]) => {
@@ -1757,12 +1922,25 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let mut snapshot: EvaluationSnapshot =
                 postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
             let used = unsigned(storage, *used)? != 0;
+            let local = shared.node_identity;
+            snapshot
+                .machines
+                .retain(|machine| machine.node.is_some_and(|node| node != local));
+            snapshot
+                .steps
+                .retain(|step| step.node.is_some_and(|node| node != local));
             for machine in &mut snapshot.machines {
                 machine.used &= used;
-                machine.location.insert(0, location.clone());
+                machine.location = common::protocol::control::location_path(
+                    core::iter::once(location.as_str())
+                        .chain(machine.location.iter().map(alloc::string::String::as_str)),
+                );
             }
             for mut step in snapshot.steps.drain(..) {
-                step.location.insert(0, location.clone());
+                step.location = common::protocol::control::location_path(
+                    core::iter::once(location.as_str())
+                        .chain(step.location.iter().map(alloc::string::String::as_str)),
+                );
                 shared.record_step(step);
             }
             {
@@ -1785,7 +1963,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 }
                 remotes.insert(location, snapshot);
             }
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"sleep", [milliseconds]) => {
@@ -1905,9 +2082,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 }
                 finished
             };
-            kernel::host::os::tree_progress(task, children, completed, total);
-            if finished {
-                kernel::host::os::task_finished(task, Some(EvaluationOperation::Evaluate));
+            if shared.session.is_none() {
+                kernel::host::os::tree_progress(task, children, completed, total);
+                if finished {
+                    kernel::host::os::task_finished(task, Some(EvaluationOperation::Evaluate));
+                }
             }
             if completed == total {
                 shared.progress_trees.lock().remove(&key);
@@ -1927,17 +2106,30 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&labels).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_export", [name, backing, full]) => {
+        (b"remote_export", [name, backing, full, hint @ ..]) if hint.len() <= 1 => {
             let bytes = storage
                 .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
             let name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            let known = hint
+                .first()
+                .map(|handle| {
+                    storage
+                        .get_blob(Blob::try_from(*handle).map_err(|_| Error::Invalid)?)
+                        .map_err(|_| Error::Invalid)
+                })
+                .transpose()?;
+            let (known, extra) = known.as_deref().unwrap_or_default().as_chunks::<32>();
+            if !extra.is_empty() {
+                return Err(Error::Invalid.into());
+            }
             let bytes = shared
                 .services
                 .export_object(
                     name,
                     unsigned(storage, *backing)? != 0,
                     unsigned(storage, *full)? != 0,
+                    known,
                 )
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(storage.add_blob(&bytes).into())
@@ -1969,8 +2161,20 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(number(0))
         }
-        (b"remote_information", [collector, memory]) => {
+        (b"remote_inventory", [collector]) => {
             let information = shared
+                .services
+                .information(*collector, 0, 0)
+                .map_err(TaskError::Message)?;
+            let inventory = fixremote::protocol::Inventory {
+                data: information.data,
+                results: information.results,
+            };
+            let bytes = postcard::to_allocvec(&inventory).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_information", [collector, memory]) => {
+            let mut information = shared
                 .services
                 .information(
                     *collector,
@@ -1982,6 +2186,9 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     unsigned(storage, *memory)?.min(kernel::memory::available() as u64),
                 )
                 .map_err(TaskError::Message)?;
+            information.memory_capacity_bytes = Some(
+                unsigned(storage, *memory)?.min(common::buddy::BuddyAllocator.total_size() as u64),
+            );
             let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -2149,7 +2356,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .and_then(Option::as_ref)
                 .cloned()
                 .ok_or(Error::Closed)?;
-            let mut stream = stream.lock();
             let length = stream.try_send(&bytes).map_err(|_| Error::Invalid)?;
             shared
                 .bytes_sent
@@ -2167,7 +2373,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .and_then(Option::as_ref)
                 .cloned()
                 .ok_or(Error::Closed)?;
-            let mut stream = stream.lock();
             let length = stream.try_recv(&mut bytes).map_err(|_| Error::Invalid)?;
             shared
                 .bytes_received
@@ -2182,6 +2387,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .get_mut(id)
                 .and_then(Option::take)
                 .ok_or(Error::Closed)?;
+            stream.shutdown();
             drop(stream);
             Ok(number(0))
         }
@@ -2194,6 +2400,45 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 kernel::memory::wait_until_available(required).is_ok(),
             )))
         }
+        (b"session_next", []) => {
+            let session = shared.session.as_ref().ok_or(Error::Invalid)?;
+            let request = session.next().ok_or(Error::Closed)?;
+            let stream = request
+                .stdio
+                .map(|id| add_stream(shared, kernel::host::net::Stream::from_id(id)));
+            Ok(storage
+                .add_tree(&[
+                    number(request.id),
+                    request.combination.into(),
+                    stream
+                        .map(number)
+                        .unwrap_or_else(|| storage.add_blob(b"").into()),
+                ])
+                .into())
+        }
+        (b"session_reply", [id, status, value]) => {
+            let session = shared.session.as_ref().ok_or(Error::Invalid)?;
+            let result = match integer(storage, *status)? {
+                0 => Ok(Ok(*value)),
+                2 => Err(text(storage, *value)?),
+                _ => Err(alloc::format!(
+                    "scheduler request failed with error {}",
+                    unsigned(storage, *value)?
+                )),
+            };
+            let id = integer(storage, *id)?;
+            let checkpoint = shared.saver.checkpoint();
+            let session = session.clone();
+            let saver = shared.saver.clone();
+            let snapshot = shared.snapshot();
+            spawn(move || {
+                let result = saver.wait(checkpoint).and(result);
+                kernel::host::os::evaluation_progress(snapshot);
+                session.reply(id, result);
+            });
+            Ok(number(0))
+        }
+        (b"node_identity", []) => Ok(storage.add_blob(&kernel::host::os::node_identity()).into()),
         (b"worker_wait", [epoch]) => {
             shared.event.wait(unsigned(storage, *epoch)?)?;
             Ok(number(0))
@@ -2209,6 +2454,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 2 => usize::from(shared.stopped()),
                 3 => usize::from(runtime.memoize != fix::Memoization::Never),
                 4 => kernel::memory::available(),
+                5 => common::buddy::BuddyAllocator.total_size(),
                 _ => return Err(Error::Invalid.into()),
             };
             Ok(number(value))
@@ -2361,11 +2607,32 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             }
             Ok(value)
         }
-        (b"storage_get_todo", [key]) => shared
-            .services
-            .get_todo(todo_reference(storage, *key)?)
-            .map_err(|_| Error::Invalid)?
-            .ok_or(Error::Empty.into()),
+        (b"storage_get_todo", [key]) => {
+            let reference = todo_reference(storage, *key)?;
+            let existing = shared
+                .services
+                .get_todo(reference)
+                .map_err(|_| Error::Invalid)?;
+            let mut extra = shared
+                .session
+                .as_ref()
+                .map(|session| session.todo(reference))
+                .unwrap_or_default();
+            if extra.is_empty() {
+                existing.ok_or(Error::Empty.into())
+            } else {
+                if let Some(existing) = existing {
+                    extra.extend(
+                        storage
+                            .get_tree(Tree::try_from(existing).map_err(|_| Error::Invalid)?)
+                            .map_err(|_| Error::Invalid)?
+                            .iter()
+                            .copied(),
+                    );
+                }
+                Ok(storage.add_tree(&extra).into())
+            }
+        }
         (b"storage_set_todo", [key, value]) => {
             shared
                 .services

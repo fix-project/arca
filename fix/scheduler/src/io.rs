@@ -16,6 +16,21 @@ use fixwasm::{Blob, Error, Value as AsValue, tree};
 /// Access this scheduler instance’s completion registrations.
 #[derive(Default)]
 pub struct Io;
+
+pub struct Notification(crate::kernel::worker::Notification);
+impl Notification {
+    pub fn wait(self) -> Result<(), Error> {
+        let ready = BACKGROUND
+            .0
+            .borrow()
+            .iter()
+            .any(|(active, task)| active.get() && task.is_ready());
+        if !ready {
+            self.0.wait()?;
+        }
+        Ok(())
+    }
+}
 struct Registration {
     waker: Option<Waker>,
     result: Option<Value>,
@@ -99,7 +114,7 @@ impl Io {
     }
 
     /// Listen for new events and deliver completed effects before polling futures.
-    pub fn listen(&self) -> Result<crate::kernel::worker::Notification, Error> {
+    pub fn listen(&self) -> Result<Notification, Error> {
         crate::storage::clear_identified();
         let (status, events) = coordinate(b"worker_events", &[])?;
         if status != 0 {
@@ -109,7 +124,7 @@ impl Io {
         let epoch = events.get(0).read_u64()?;
         self.complete(&capture(events.get(1))?)?;
         self.poll_background();
-        Ok(crate::kernel::worker::Notification(epoch))
+        Ok(Notification(crate::kernel::worker::Notification(epoch)))
     }
 
     fn complete(&self, completed: &Value) -> Result<(), Error> {

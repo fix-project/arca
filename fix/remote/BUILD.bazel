@@ -45,6 +45,6 @@ rust_library(
     name = "protocol",
     crate_name = "fixprotocol",
     edition = "2024",
-    srcs = ["protocol.rs"],
+    srcs = ["protocol.rs", "topology.rs"],
     deps = [":transport", "@crates//:embedded-io", "@crates//:postcard", "@crates//:serde"],
 )

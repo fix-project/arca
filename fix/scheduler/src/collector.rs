@@ -116,6 +116,9 @@ async fn collect(
     premises: &[Value],
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    if policy.discovering() {
+        return core::future::pending().await;
+    }
     let premises = premises
         .iter()
         .cloned()

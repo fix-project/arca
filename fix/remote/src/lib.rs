@@ -1,16 +1,19 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+mod topology_tests;
 #[cfg(target_os = "linux")]
 extern crate std;
 
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     string::String,
     vec::Vec,
 };
 use fixcertificates::{Certificate, Policy};
-use fixhandle::{Blob, Handle, HandleView, Name, Object, ObjectView};
+use fixhandle::{Blob, Handle, HandleView, Name, Object, ObjectView, Ref, Tree};
 pub use fixrepository::Remote;
 use fixrepository::{Repository, RepositoryError};
 use serde::{Deserialize, Serialize};
@@ -98,22 +101,110 @@ fn export_plan(
     definitions: &[Handle],
 ) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
     let source = Repository::open(repository.path())?.unsigned();
-    let repository = &source;
     for root in roots {
-        repository.lookup(root.as_bytes())?;
+        source.lookup(root.as_bytes())?;
     }
+    export_from(
+        &source,
+        &source,
+        roots,
+        without_backing,
+        load,
+        definitions,
+        &[],
+    )
+}
+
+/// Backing and acquisition metadata used to construct a transfer.
+pub trait ProposalStorage {
+    /// An Object supplied by this source denotes resident backing.
+    const RESIDENT: bool = true;
+    fn has_backing(&self, _object: Object) -> Result<bool, RepositoryError> {
+        Ok(true)
+    }
+    fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError>;
+    fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError>;
+}
+
+impl ProposalStorage for Repository {
+    const RESIDENT: bool = false;
+    fn has_backing(&self, object: Object) -> Result<bool, RepositoryError> {
+        self.has_backing(object)
+    }
+    fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError> {
+        self.read_tree(tree)
+    }
+    fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError> {
+        self.get_todo(reference)
+    }
+}
+
+fn visit<S: ProposalStorage>(
+    source: &S,
+    root: Handle,
+    without_backing: &[Object],
+    deferred: bool,
+    known: &[[u8; 32]],
+    mut visitor: impl FnMut(Object) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if S::RESIDENT && matches!(root.view(), HandleView::Ref(_)) {
+        return Ok(());
+    }
+    let mut seen = BTreeSet::new();
+    fixhandle::minrepo::visit(
+        root,
+        deferred,
+        &mut |tree: Tree| {
+            if already_backed(known, tree.into())
+                || without_backing
+                    .iter()
+                    .any(|object| object.as_handle().same_encoding(tree.as_handle()))
+                || !seen.insert(*tree.as_handle().as_bytes())
+                || !source.has_backing(tree.into())?
+            {
+                return Ok(Vec::new().into_iter());
+            }
+            let mut children = source.read_tree(tree)?.into_vec();
+            if S::RESIDENT {
+                children.retain(|child| !matches!(child.view(), HandleView::Ref(_)));
+            }
+            Ok(children.into_iter())
+        },
+        &mut visitor,
+    )
+}
+
+fn already_backed(known: &[[u8; 32]], object: Object) -> bool {
+    let name = object.as_handle().as_bytes();
+    name[31] & 0x40 == 0 && known.binary_search(name).is_ok()
+}
+
+fn export_from<S: ProposalStorage>(
+    repository: &Repository,
+    source: &S,
+    roots: &[Handle],
+    without_backing: &[Object],
+    load: bool,
+    definitions: &[Handle],
+    known: &[[u8; 32]],
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
     let mut objects = BTreeMap::new();
     let mut order = Vec::new();
     let mut ordered = BTreeSet::new();
     let mut pending = roots.to_vec();
     let mut seen = BTreeSet::new();
     while let Some(root) = pending.pop() {
-        export_metadata(repository, root, &mut seen, &mut pending, &mut objects)?;
-        repository.visit(
+        export_metadata(source, root, &mut seen, &mut pending, &mut objects)?;
+        visit(
+            source,
             root,
             without_backing,
             definitions.iter().any(|value| value.same_encoding(&root)),
+            known,
             |object| {
+                if already_backed(known, object) {
+                    return Ok(());
+                }
                 let include = !without_backing
                     .iter()
                     .any(|excluded| excluded.as_handle().same_encoding(object.as_handle()));
@@ -125,26 +216,14 @@ fn export_plan(
                     .entry(key)
                     .and_modify(|(_, old)| *old |= include)
                     .or_insert((object, include));
-                export_metadata(
-                    repository,
-                    object.into(),
-                    &mut seen,
-                    &mut pending,
-                    &mut objects,
-                )?;
+                export_metadata(source, object.into(), &mut seen, &mut pending, &mut objects)?;
                 if let ObjectView::Tree(tree) = object.view()
                     && include
-                    && repository.has_backing(object)?
+                    && source.has_backing(object)?
                 {
-                    for (index, child) in repository.read_tree(*tree)?.iter().enumerate() {
+                    for (index, child) in source.read_tree(*tree)?.iter().enumerate() {
                         if !tree.is_tag() || index != 0 {
-                            export_metadata(
-                                repository,
-                                *child,
-                                &mut seen,
-                                &mut pending,
-                                &mut objects,
-                            )?;
+                            export_metadata(source, *child, &mut seen, &mut pending, &mut objects)?;
                         }
                     }
                 }
@@ -156,14 +235,14 @@ fn export_plan(
     let mut backing = Vec::new();
     let mut certificate_blobs = BTreeMap::new();
     for (object, include) in objects.into_values() {
-        let available = include && repository.has_backing(object)?;
+        let available = include && source.has_backing(object)?;
         if available {
             backing.push(*object.as_handle().as_bytes());
         }
         let data = if available && load {
             Some(match object.view() {
                 ObjectView::Blob(blob) => repository.read_blob(*blob)?.into_vec(),
-                ObjectView::Tree(tree) => repository
+                ObjectView::Tree(tree) => source
                     .read_tree(*tree)?
                     .iter()
                     .flat_map(|child| *child.as_bytes())
@@ -173,7 +252,7 @@ fn export_plan(
             None
         };
         let mut certificates = Vec::new();
-        if matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag()) {
+        if !S::RESIDENT && matches!(object.view(), ObjectView::Tree(tree) if tree.is_tag()) {
             let available = if !available
                 && repository
                     .certificate_blobs(object.as_handle().as_bytes())?
@@ -208,9 +287,13 @@ fn export_plan(
                 certificates.push(CertificateRef { key, blob: name });
             }
         }
-        let todo = repository
-            .get_todo(object.into_ref())?
-            .map(|value| *value.as_bytes());
+        let todo = if S::RESIDENT && available {
+            None
+        } else {
+            source
+                .get_todo(object.into_ref())?
+                .map(|value| *value.as_bytes())
+        };
         if !available && certificates.is_empty() && todo.is_none() {
             continue;
         }
@@ -248,19 +331,22 @@ fn export_plan(
     Ok((transfer, backing))
 }
 
-fn export_metadata(
-    repository: &Repository,
+fn export_metadata<S: ProposalStorage>(
+    source: &S,
     value: Handle,
     seen: &mut BTreeSet<[u8; 32]>,
     pending: &mut Vec<Handle>,
     objects: &mut BTreeMap<[u8; 32], (Object, bool)>,
 ) -> Result<(), Error> {
+    if S::RESIDENT && !matches!(value.view(), HandleView::Ref(_)) {
+        return Ok(());
+    }
     let object = value.object_descriptor();
     let key = *object.as_handle().as_bytes();
     if !seen.insert(key) {
         return Ok(());
     }
-    if let Some(metadata) = repository.get_todo(object.into_ref())? {
+    if let Some(metadata) = source.get_todo(object.into_ref())? {
         objects.entry(key).or_insert((object, false));
         pending.push(metadata);
     }
@@ -275,6 +361,17 @@ pub fn propose_export(
     root: Handle,
     backing: bool,
 ) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
+    propose_from(repository, repository, root, backing, false, &[])
+}
+
+fn propose_from<S: ProposalStorage>(
+    repository: &Repository,
+    source: &S,
+    root: Handle,
+    backing: bool,
+    full: bool,
+    known: &[[u8; 32]],
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
     let omitted = if backing {
         Vec::new()
     } else {
@@ -283,12 +380,26 @@ pub fn propose_export(
             _ => Vec::new(),
         }
     };
-    let roots = if backing {
+    let roots = if backing && !S::RESIDENT {
         coupon_roots(repository, &[root], &omitted)?
     } else {
         alloc::vec![root]
     };
-    let (mut transfer, objects) = export_plan(repository, &roots, &omitted, false, &[])?;
+    let definition = [root];
+    let definitions = if full { definition.as_slice() } else { &[] };
+    let (mut transfer, objects) = if S::RESIDENT {
+        export_from(
+            repository,
+            source,
+            &roots,
+            &omitted,
+            false,
+            definitions,
+            known,
+        )?
+    } else {
+        export_plan(repository, &roots, &omitted, false, definitions)?
+    };
     transfer.roots = alloc::vec![*root.as_bytes()];
     Ok((transfer, objects))
 }
@@ -298,10 +409,19 @@ pub fn propose_export_full(
     repository: &Repository,
     root: Handle,
 ) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
-    let roots = coupon_roots(repository, &[root], &[])?;
-    let (mut transfer, objects) = export_plan(repository, &roots, &[], false, &[root])?;
-    transfer.roots = alloc::vec![*root.as_bytes()];
-    Ok((transfer, objects))
+    propose_from(repository, repository, root, true, true, &[])
+}
+
+/// Construct a proposal from the runtime's storage, including objects loaded on demand.
+pub fn propose_loaded(
+    repository: &Repository,
+    source: &impl ProposalStorage,
+    root: Handle,
+    backing: bool,
+    full: bool,
+    known: &[[u8; 32]],
+) -> Result<(Transfer, Vec<[u8; 32]>), Error> {
+    propose_from(repository, source, root, backing || full, full, known)
 }
 
 pub fn export_with_coupons(
@@ -434,6 +554,7 @@ pub fn information(
     Ok(protocol::Information {
         parallelism,
         memory_bytes,
+        memory_capacity_bytes: memory_bytes,
         link_speed: 0.0,
         data: inventory.iter().map(|handle| *handle.as_bytes()).collect(),
         results,
@@ -476,7 +597,7 @@ pub fn import(
     bytes: &[u8],
     config: &Config,
 ) -> Result<Vec<Handle>, Error> {
-    import_observed(repository, bytes, config, |_| {})
+    import_observed(repository, bytes, config, |_, _| {})
 }
 
 /// Import normally and report the canonical names published by the transfer.
@@ -484,7 +605,7 @@ pub fn import_observed(
     repository: &Repository,
     bytes: &[u8],
     config: &Config,
-    mut imported: impl FnMut([u8; 32]),
+    mut imported: impl FnMut([u8; 32], Option<[u8; 32]>),
 ) -> Result<Vec<Handle>, Error> {
     let mut bundle = Transfer::decode(bytes)
         .map_err(|error| Error::Transfer(alloc::format!("cannot decode transfer: {error}")))?;
@@ -733,7 +854,7 @@ pub fn import_observed(
         }
     }
     for record in bundle.records.iter().chain(&bundle.certificates) {
-        imported(record.name);
+        imported(record.name, record.todo);
     }
     bundle
         .roots

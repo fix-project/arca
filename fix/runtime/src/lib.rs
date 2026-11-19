@@ -4,6 +4,7 @@
 pub mod api;
 pub mod cli;
 pub mod computation;
+pub mod session;
 pub use fixcoupon as coupon;
 pub mod repository;
 pub mod runtime;

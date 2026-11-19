@@ -10,16 +10,21 @@ rust_library(
     crate_root = "lib.rs",
     edition = "2024",
     deps = [
-        "//fix/remote", "//fix/certificates", "@crates//:serde_json",
+        "//fix/remote", "//fix/certificates", "//fix/runtime:trust", "@crates//:serde_json",
         "//fix/api:api_alloc", "//fix/handle", "//fix/preprocessor", "//fix/repository", "//fix/storage", "//flatware:tree", "//lib/common", "//lib/ssh",
         "@crates//:bytes", "@crates//:clap", "@crates//:hex", "//tools/vmm:lib",
     ],
-    compile_data = [
-        "//fix/runtime:image_elf",
-    ],
-    rustc_env = {
-        "FIX_KERNEL": "$(execpath //fix/runtime:image_elf)",
-    },
+    compile_data = [":session_owner"],
+    rustc_env = {"FIX_SESSION_OWNER": "$(execpath :session_owner)"},
+)
+
+rust_binary(
+    name = "session_owner",
+    srcs = ["session_owner.rs"],
+    edition = "2024",
+    deps = ["//tools/vmm:lib"],
+    compile_data = ["//fix/runtime:image_elf"],
+    rustc_env = {"FIX_KERNEL": "$(execpath //fix/runtime:image_elf)"},
 )
 
 rust_binary(
