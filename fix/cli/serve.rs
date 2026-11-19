@@ -1,36 +1,74 @@
 use crate::Client;
 use std::net::{SocketAddr, ToSocketAddrs};
 
-fn restart(client: &Client, scheduler: [u8; 32], collector: [u8; 32]) -> std::io::Error {
-    use std::os::unix::process::CommandExt;
-    let empty = *fixhandle::Blob::literal(b"")
-        .unwrap()
-        .as_handle()
-        .as_bytes();
-    let replaced = |argument: &str| {
-        (scheduler != empty && argument == "--scheduler")
-            || (collector != empty && argument == "--collector")
+fn prepare(client: &mut Client) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use fixremote::{linux::Duplex, protocol};
+    let mut stream = Duplex {
+        input: std::io::stdin(),
+        output: std::io::stdout(),
     };
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    let mut arguments = std::env::args_os().skip(1);
-    while let Some(argument) = arguments.next() {
-        let text = argument.to_string_lossy();
-        if text == "-C" || replaced(&text) {
-            arguments.next();
-        } else if !text
-            .split_once('=')
-            .is_some_and(|(option, _)| replaced(option))
+    let first = protocol::receive(&mut stream, protocol::MAX_MESSAGE_SIZE)
+        .map_err(|error| error.to_string())?
+        .ok_or("connection closed before its first request")?;
+    let staging = matches!(&first, protocol::Message::ProposeTransfer { task: Some(task), .. } if task.is_stage_programs());
+    if !staging {
+        let bytes = protocol::encode(first)?;
+        let mut framed = (bytes.len() as u64).to_be_bytes().to_vec();
+        framed.extend(bytes);
+        return Ok(framed);
+    }
+    let config = client.remote_config()?;
+    let incoming =
+        fixremote::transport::complete(protocol::asynchronous::receive_transfer_with_info_from(
+            &mut fixremote::transport::Blocking(&mut stream),
+            protocol::MAX_MESSAGE_SIZE,
+            &protocol::Information::default(),
+            &config.policy.authorized_keys,
+            |offers| fixremote::missing(client.storage.repository(), offers).ok(),
+            Some(first),
+        ))
+        .map_err(|error| error.to_string())?
+        .ok_or("connection closed during program staging")?;
+    let task = incoming.task.ok_or("missing program staging task")?;
+    if incoming.result.is_some() {
+        return Err("unexpected program staging result".into());
+    }
+    let roots = fixremote::import(
+        client.storage.repository(),
+        &incoming.transfer.encode()?,
+        &config,
+    )?;
+    let [collector, scheduler] = roots.as_slice() else {
+        return Err("expected a scheduler and collector".into());
+    };
+    if !collector.is_empty() {
+        let mut trust = fixtrust::Trust::parse(&config.policy.trusted_compilers.join("\n"))
+            .map_err(|error| error.to_string())?;
+        for name in &config.policy.trusted_taggers {
+            trust
+                .trust_tagger_name(name)
+                .map_err(|error| error.to_string())?;
+        }
+        if !trust
+            .is_tagger(
+                &*client.storage,
+                fixhandle::Tree::try_from(*collector).map_err(|error| format!("{error:?}"))?,
+            )
+            .map_err(|error| error.to_string())?
         {
-            command.arg(argument);
+            return Err(
+                "requested coupon collector is not a trusted tagger on this machine".into(),
+            );
         }
+        client.options.collector = hex::encode(collector.as_bytes());
     }
-    command.arg("-C").arg(&client.directory);
-    for (option, name) in [("--scheduler", scheduler), ("--collector", collector)] {
-        if name != empty {
-            command.args([option, &hex::encode(name)]);
-        }
+    if !scheduler.is_empty() {
+        client.options.scheduler = hex::encode(scheduler.as_bytes());
     }
-    command.env("FIX_SERVE_ACK", hex::encode(scheduler)).exec()
+    client.ensure_session()?;
+    protocol::send(&mut stream, protocol::Message::ObjectReceived(task.input))
+        .map_err(|error| error.to_string())?;
+    Ok(Vec::new())
 }
 
 pub(crate) fn run(
@@ -38,6 +76,8 @@ pub(crate) fn run(
     listen: Option<&str>,
     stdio: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let prefix = if stdio { prepare(client)? } else { Vec::new() };
+    client.ensure_session()?;
     let address = listen
         .unwrap_or("127.0.0.1:0")
         .to_socket_addrs()?
@@ -57,30 +97,7 @@ pub(crate) fn run(
     let limits = client.blob(&(1u64 << 30).to_le_bytes())?;
     let combination = client.tree(&[limits, scheduler, mode, collector, input])?;
     if stdio {
-        if let Some(name) = std::env::var_os("FIX_SERVE_ACK") {
-            use std::io::Write;
-            let mut bytes = [0; 32];
-            hex::decode_to_slice(name.to_string_lossy().as_bytes(), &mut bytes)
-                .map_err(|error| format!("invalid server restart acknowledgement: {error}"))?;
-            unsafe { std::env::remove_var("FIX_SERVE_ACK") };
-            let message =
-                fixremote::protocol::encode(fixremote::protocol::Message::ObjectReceived(bytes))?;
-            let mut output = std::io::stdout().lock();
-            output.write_all(&(message.len() as u64).to_be_bytes())?;
-            output.write_all(&message)?;
-            output.flush()?;
-        }
-        let result = client.schedule_stream(&combination)?;
-        if client.len(&result)? == 2 {
-            let scheduler = client.get(&result, 0)?;
-            let collector = client.get(&result, 1)?;
-            return Err(restart(
-                client,
-                *client.handle(&scheduler)?.as_bytes(),
-                *client.handle(&collector)?.as_bytes(),
-            )
-            .into());
-        }
+        client.schedule_stream_prefetched(&combination, prefix)?;
     } else {
         client.schedule(&combination)?;
     }

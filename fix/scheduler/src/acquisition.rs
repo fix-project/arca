@@ -73,7 +73,7 @@ pub fn acquire_from(value: &Value, uri: &Value) -> Result<Option<Value>, Error> 
     } else {
         uri
     };
-    let load = crate::progress::load(value, source, "");
+    let load = crate::progress::load(value, source, "", None);
     let result = (|| {
         let object = match expected[31] {
             0x80 => fixwasm::importers::blob(uri, size)?,
@@ -88,6 +88,10 @@ pub fn acquire_from(value: &Value, uri: &Value) -> Result<Option<Value>, Error> 
         }
         Ok(None)
     })();
-    load.finish(result.as_ref().is_ok_and(|object| object.is_some()));
+    let success = result.as_ref().is_ok_and(|object| object.is_some());
+    load.finish(
+        success,
+        (success && expected[31] == 0x80).then_some(size as u64),
+    );
     result
 }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::platform::Mutex;
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use fixrepository::{Repository, RepositoryError};
 use memory::ShardedMap;
 
@@ -16,6 +16,7 @@ pub struct RepositoryStorage {
     resident: ShardedMap<[u8; HANDLE_SIZE], ()>,
     load_observer: Mutex<Option<Arc<LoadObserver>>>,
     names_loaded: Mutex<bool>,
+    todos: Mutex<BTreeMap<[u8; HANDLE_SIZE], Option<Handle>>>,
 }
 
 impl core::fmt::Debug for RepositoryStorage {
@@ -49,6 +50,7 @@ impl RepositoryStorage {
             resident: ShardedMap::default(),
             load_observer: Mutex::new(None),
             names_loaded: Mutex::new(false),
+            todos: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -69,6 +71,31 @@ impl RepositoryStorage {
 
     pub fn repository(&self) -> &Repository {
         &self.repository
+    }
+
+    pub fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError> {
+        let mut todos = self.todos.lock();
+        let name = *reference.object_descriptor().as_handle().as_bytes();
+        if let Some(todo) = todos.get(&name) {
+            return Ok(*todo);
+        }
+        let todo = self.repository.get_todo(reference)?;
+        todos.insert(name, todo);
+        Ok(todo)
+    }
+
+    pub fn set_todo(&self, reference: Ref, value: Handle) -> Result<(), RepositoryError> {
+        let mut todos = self.todos.lock();
+        self.repository.set_todo(reference, value)?;
+        todos.insert(
+            *reference.object_descriptor().as_handle().as_bytes(),
+            Some(value),
+        );
+        Ok(())
+    }
+
+    pub fn invalidate_todo(&self, name: &[u8; HANDLE_SIZE]) {
+        self.todos.lock().remove(name);
     }
 
     /// Expand a handle abbreviation across this repository and its local sources.

@@ -14,16 +14,13 @@ unsafe impl Sync for Active {}
 static LABELS: Labels = Labels(RefCell::new(None));
 static ACTIVE: Active = Active(RefCell::new(BTreeMap::new()));
 
-pub(crate) struct Evaluation {
+pub struct Evaluation {
     task: Option<(Value, u64, [u8; 32])>,
     success: Option<bool>,
 }
 
 impl Evaluation {
-    pub(crate) fn finish<T>(
-        mut self,
-        result: Result<T, fixwasm::Error>,
-    ) -> Result<T, fixwasm::Error> {
+    pub fn finish<T, E>(mut self, result: Result<T, E>) -> Result<T, E> {
         self.success = Some(result.is_ok());
         result
     }
@@ -69,7 +66,7 @@ pub(crate) fn named(mut name: [u8; 32]) -> Result<bool, fixwasm::Error> {
 }
 
 /// Report the lifetime of an operation on a value named in the repository.
-pub(crate) fn evaluation(operation: u64, input: &Value) -> Evaluation {
+pub fn evaluation(operation: u64, input: &Value) -> Evaluation {
     let result = input.raw_handle_bytes().and_then(named);
     if result.unwrap_or(false) {
         self::operation(operation, input)
@@ -105,59 +102,50 @@ pub(crate) fn operation(operation: u64, input: &Value) -> Evaluation {
     }
 }
 
-pub(crate) struct Load {
-    input: Option<Value>,
-    success: Option<bool>,
-    value: Option<Value>,
-}
+pub(crate) struct Load(Option<Value>);
+
 impl Load {
-    pub(crate) fn value(&mut self, value: &Value) {
-        self.value = Some(value.clone());
+    pub(crate) fn finish(mut self, success: bool, bytes: Option<u64>) {
+        self.end(if success { "completed" } else { "failed" }, bytes);
     }
 
-    pub(crate) fn finish(mut self, success: bool) {
-        self.success = Some(success);
-    }
-}
-impl Drop for Load {
-    fn drop(&mut self) {
-        if let Some(input) = &self.input {
-            let outcome = match self.success {
-                Some(true) => "completed",
-                Some(false) => "failed",
-                None => "cancelled",
-            };
-            if let Ok(outcome) = capture(fixwasm::Blob::create(outcome)) {
-                let mut arguments = alloc::vec![input.clone(), outcome];
-                arguments.extend(self.value.iter().cloned());
-                let _ = coordinate(b"load_finish", &arguments);
-            }
+    fn end(&mut self, outcome: &str, bytes: Option<u64>) {
+        if let Some(id) = self.0.take()
+            && let (Ok(outcome), Ok(bytes)) = (
+                capture(fixwasm::Blob::create(outcome)),
+                capture(bytes.unwrap_or(u64::MAX)),
+            )
+        {
+            let _ = coordinate(b"load_finish", &[id, outcome, bytes]);
         }
     }
 }
 
+impl Drop for Load {
+    fn drop(&mut self) {
+        self.end("cancelled", None);
+    }
+}
+
 /// Report a transfer's value and endpoints without choosing a display format.
-pub(crate) fn load(input: &Value, source: &str, destination: &str) -> Load {
-    let started = (|| -> Result<(), fixwasm::Error> {
+pub(crate) fn load(input: &Value, source: &str, destination: &str, peer: Option<[u8; 16]>) -> Load {
+    let started = (|| {
         effect(
             b"load_start",
             &[
                 input.clone(),
                 capture(fixwasm::Blob::create(source))?,
                 capture(fixwasm::Blob::create(destination))?,
+                capture(fixwasm::Blob::create(
+                    peer.as_ref().map_or(&[][..], |id| &id[..]),
+                ))?,
             ],
-        )?;
-        Ok(())
-    })()
-    .is_ok();
-    Load {
-        input: started.then(|| input.clone()),
-        success: None,
-        value: None,
-    }
+        )
+    })();
+    Load(started.ok())
 }
 
-/// End a reported operation without a completion line when its result was reused.
+/// End a reported operation when its result was reused.
 pub fn cached(operation: u64, input: &Value) -> Result<(), fixwasm::Error> {
     coordinate(
         b"evaluation_finish",

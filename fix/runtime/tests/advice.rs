@@ -4,11 +4,16 @@ use kernel::prelude::Vec;
 
 #[kernel::test]
 fn advice_events_preserve_order_targets_and_application_identity() {
+    use kernel::memory::{Admission, available};
+
     let runtime = test_runtime();
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE"));
+    let budget = 2usize << 30;
     let combination = storage.add_tree(&[
-        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+        Blob::literal(&(budget as u64).to_le_bytes())
+            .unwrap()
+            .into(),
         program.into(),
         storage.add_blob(b"argument").into(),
     ]);
@@ -24,6 +29,8 @@ fn advice_events_preserve_order_targets_and_application_identity() {
         (b"sample::local", b"probe"),
     ];
     for privileged in [Some(false), Some(true), None] {
+        let _other_reservation =
+            (privileged != Some(true)).then(|| Admission::new(available() - budget).unwrap());
         let mut execution = match privileged {
             Some(privileged) => runtime.execute_observed(combination, privileged),
             None => runtime.run_observed(combination),

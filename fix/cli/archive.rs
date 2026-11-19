@@ -126,7 +126,6 @@ pub fn export(
         input.extend_from_slice(path.as_bytes());
         input.push(0);
     }
-    progress.message("writing archive");
     run(
         Command::new("tar")
             .args(["--create", "--auto-compress", "--file"])
@@ -154,7 +153,6 @@ pub fn export(
 /// Extracts the `.fix` contents of an archive into the repository.
 pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(), CliError> {
     let progress = common::progress::Progress::activity(format!("Importing {}", archive.display()));
-    progress.message("reading archive contents");
     let listing = Command::new("tar")
         .args(["--list", "--quoting-style=escape", "--file"])
         .arg(archive)
@@ -175,7 +173,6 @@ pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(),
             tags.push(bytes);
         }
     }
-    progress.message("extracting repository data");
     run(
         Command::new("tar")
             .arg("--directory")
@@ -190,13 +187,10 @@ pub fn import(repository: &Repository, archive: &Path, sign: bool) -> Result<(),
             ]),
         None,
     )?;
-    progress.message("checking imported Tags");
     repository.inspect_tags(&tags)?;
     if sign {
-        progress.message("signing imported Tags");
         repository.sign_tags(&tags)?;
     } else {
-        progress.message("indexing imported Tags");
         repository.index_trusted_tags()?;
     }
     progress.finish();

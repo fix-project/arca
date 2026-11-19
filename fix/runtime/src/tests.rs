@@ -46,40 +46,6 @@ fn test_program(storage: &dyn fixruntime::storage::Storage, bytes: &[u8]) -> fix
         .tag_descriptor()
 }
 
-fn eval_program(source: &str, evaluator: &Evaluation) -> Handle {
-    let processed = fixpreprocessor::Preprocessor::new(source)
-        .preprocess(|path| {
-            kernel::host::fs::File::open(path, true, false, false, false, false)
-                .and_then(|mut file| file.try_read_to_end())
-                .map_err(|error| format!("{error:?}"))
-        })
-        .unwrap();
-    let parser: Handle =
-        test_program(evaluator.storage(), kernel::testing::fixture("FIX_PARSER")).into();
-    let source = evaluator.storage().add_blob(processed.as_bytes());
-    let environment = stdlib::build_environment(evaluator.storage());
-    let combination = evaluator.storage().add_tree(&[
-        fixhandle::Blob::literal(&(2u64 << 30).to_le_bytes())
-            .unwrap()
-            .into(),
-        parser,
-        source.into(),
-        environment,
-    ]);
-
-    let parsed = evaluator.eval(combination.into_ref().application().strict().into());
-    let envelope = evaluator
-        .storage()
-        .get_tree(Tree::try_from(parsed).unwrap())
-        .unwrap();
-    assert_eq!(
-        envelope.len(),
-        1,
-        "parser did not return a successful result envelope"
-    );
-    envelope[0]
-}
-
 mod tests {
     use super::*;
     use fixhandle::{Blob, Tree};
@@ -2451,65 +2417,6 @@ mod tests {
                 assert!(actual_name.same_encoding(&expected));
                 actual
             });
-        }
-    }
-
-    fn eval_value(source: &str, evaluator: &Evaluation) -> Vec<u8> {
-        let handle = eval_program(source, evaluator);
-        let object = match handle.view() {
-            HandleView::Object(object) => *object,
-            HandleView::Ref(reference) => reference.object_descriptor(),
-            _ => panic!(),
-        };
-        match object.view() {
-            ObjectView::Blob(blob) => evaluator.storage().get_blob(*blob).unwrap().into(),
-            ObjectView::Tree(tree) => tree.len().to_le_bytes().into(),
-        }
-    }
-
-    #[kernel::test]
-    fn test_number() {
-        let evaluator = Evaluation::new(test_runtime());
-
-        {
-            assert_eq!(eval_value("42u8", &evaluator), 42u8.to_le_bytes());
-            //assert_eq!(eval_value("-1", &evaluator), (-1i64).to_le_bytes());
-            assert_eq!(eval_value("\"hello\"", &evaluator), b"hello");
-
-            assert_eq!(eval_value("(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
-            assert_eq!(eval_value("()", &evaluator), 0u64.to_le_bytes());
-
-            assert_eq!(eval_value("&\"hello\"", &evaluator), b"hello");
-            assert_eq!(eval_value("&(1u8 2u8 3u8)", &evaluator), 3u64.to_le_bytes());
-
-            assert_eq!(eval_value("*'&2u8", &evaluator), 2u8.to_le_bytes());
-            assert_eq!(
-                eval_value("*[(1u8 2u8 3u8 4u8) 2u64]", &evaluator),
-                3u8.to_le_bytes()
-            );
-
-            assert_eq!(eval_value("x = 42u64\nx", &evaluator), 42u64.to_le_bytes());
-            assert_eq!(
-                eval_value("x = 1u8\ny = 2u8\n(x y)", &evaluator),
-                2u64.to_le_bytes()
-            );
-
-            assert_eq!(
-                eval_value("x = 1u8\nx = 2u64\nx", &evaluator),
-                2u64.to_le_bytes()
-            );
-            assert_eq!(
-                eval_value("x = 1u64\ny = x\nx = 2u8\ny", &evaluator),
-                1u64.to_le_bytes()
-            );
-        }
-
-        // primitive test
-        {
-            assert_eq!(
-                eval_value("*#(268435456u64 $identity 2u8)", &evaluator),
-                3u64.to_le_bytes()
-            );
         }
     }
 }

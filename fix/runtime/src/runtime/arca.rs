@@ -12,9 +12,9 @@ mod continuation;
 mod handles;
 mod images;
 mod locals;
-pub mod trust;
 use continuation::Store;
 use core::sync::atomic::{AtomicUsize, Ordering};
+pub use fixtrust as trust;
 use kernel::kthread::KMutex;
 use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
 
@@ -36,6 +36,7 @@ pub struct Advice {
     pub target: Handle,
     pub key: AdviceBytes,
     pub payload: AdviceBytes,
+    pub(crate) delivery_memory: kernel::memory::FreeMemory,
 }
 
 #[derive(Clone, Debug)]
@@ -83,12 +84,6 @@ pub enum Execution {
 pub struct Suspended {
     invocation: Invocation,
     application: Option<Tree>,
-}
-
-impl Suspended {
-    pub(crate) fn combination(&self) -> Tree {
-        self.invocation.combination
-    }
 }
 
 struct Invocation {
@@ -290,12 +285,26 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         let [operation, input] = prefix else {
             return Err("expected operation and input");
         };
-        let mut coupons = self.storage.memory().claims([*operation, *input]);
+        let memory = self.storage.memory();
+        let mut coupons = memory.claims([*operation, *input]);
+        let Some(canonical) = memory.known_canonical(*input) else {
+            return Ok(coupons);
+        };
+        if !input.same_encoding(&canonical) {
+            for coupon in memory.claims([*operation, canonical]) {
+                if !coupons
+                    .iter()
+                    .any(|saved| saved.as_handle().same_encoding(coupon.as_handle()))
+                {
+                    coupons.push(coupon);
+                }
+            }
+        }
         if let Some(cache) = &self.memoization {
-            if !operation.is_canonical() || !input.is_canonical() {
+            if !operation.is_canonical() {
                 return Ok(coupons);
             }
-            let prefix = [*operation, *input];
+            let prefix = [*operation, canonical];
             let stored = match saved {
                 Some(saved) => saved.get(cache.repository(), &prefix)?,
                 None => cache
@@ -749,14 +758,26 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         return self.allocation_failure(&memory);
                     }
                     temporary += copied;
+                    let observed_bytes = copied
+                        .saturating_mul(2)
+                        .saturating_add(crate::storage::OBJECT_METADATA);
+                    let delivery_bytes = copied.saturating_add(4 * crate::storage::OBJECT_METADATA);
+                    if memory
+                        .charge(observed_bytes.saturating_add(delivery_bytes))
+                        .is_err()
+                    {
+                        return self.allocation_failure(&memory);
+                    }
                     if observing {
                         memory.release(temporary);
                         let observer_memory = Arc::new(
-                            kernel::memory::FreeMemory::new(
-                                copied.saturating_mul(2).saturating_add(16384),
-                            )
-                            .map_err(ExecutionError::Admission)?,
+                            memory
+                                .retain(observed_bytes)
+                                .expect("advice has an admission"),
                         );
+                        let delivery_memory = memory
+                            .retain(delivery_bytes)
+                            .expect("advice has an admission");
                         return Ok(Execution::Advice {
                             event: Advice {
                                 target,
@@ -768,6 +789,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                                     bytes: Arc::from(&*payload),
                                     _memory: observer_memory,
                                 },
+                                delivery_memory,
                             },
                             suspended: Suspended {
                                 invocation: Invocation {

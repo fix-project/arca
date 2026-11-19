@@ -13,3 +13,7 @@ pub mod pipe;
 pub mod profiling;
 pub mod runtime;
 pub mod session;
+
+mod stream;
+
+pub mod service;

@@ -36,15 +36,21 @@ Schedulers implement `Scheduler` directly. A scheduler can compose another sched
 - `Graph` coalesces requests and provides dependency, queue, and completion operations. Completing a request publishes an opaque Fix value and wakes dependents. Results need not be coupons and remain available independently of persistent memoization. `evaluate` coordinates inline dependency evaluation; `defer` submits a dependency and awaits its result. `submit` starts shared work independently of a waiter. The scheduler chooses which operation to use.
 - `Map::named` opens a shared map by byte-string name within the scheduler run. `Queue::named` likewise opens a shared queue, requiring callers to agree on its capacity. Neither depends on allocation order. Maps provide get, batched membership checks, insert, remove, and versioned compare-exchange.
 - `storage` exposes identification, canonicalization, retention, claim lookup, source metadata, and acquisition. `inventory` enumerates reachable backing objects and their sizes; it does not fetch missing objects.
-- `remote` exposes import/export, missing-object negotiation, certificates, and signing independently of transport. `Cluster` is an optional asynchronous TCP helper. Connecting, transferring, and receiving use the scheduler's I/O registrations. `submit_transfer` accepts a proposal with caller-selected backing data and TODOs; `submit` prepares that proposal using the same object export mechanism as retrieval. Backing is read only after the receiver accepts it. `PendingEvaluation::receive` waits for a validated coupon, and `execute` combines submission and completion.
+- `remote` exposes import/export, missing-object negotiation, certificates, and signing independently of transport. `Cluster` discovers workers over bidirectional TCP and SSH connections. Reachable workers have stable slots within a cluster, with duplicate connections sharing one worker slot. Placement sees the wider graph; requests go to the selected route's immediate neighbor, which schedules them independently. Connecting, transferring, and receiving use the scheduler's I/O registrations. `submit_transfer` accepts a proposal with caller-selected backing data and TODOs; `submit` prepares that proposal using the same object export mechanism as retrieval. Backing is read only after the receiver accepts it. `PendingTransfer::receive` waits for a validated coupon, and `execute` combines submission and completion.
 
 Canonicalization, persistence, movement, and replication are operations the scheduler calls. The SDK does not interpret advice or choose destinations, retention, retrieval order, traversal, or remote-failure behavior.
 
+Transfer proposals advertise Refs whose backing the sender can provide. The receiving worker can place a selection on that sender or request the backing separately.
+
+Proposals can also advertise cached Eval and Apply claims for their inputs. A worker can request the signed coupon by its operation, input, and result. It validates the coupon before using the result.
+
+Workers can request a value by its full canonical name. Ref, Thunk, and Encode requests return the named descriptor. Object requests can transfer backing.
+
 ## Advice and execution
 
-Advice is a synchronous, one-way notification. The scheduler receives the target, key, and payload through `on_advice`; it receives no continuation and supplies no reply to the application. The SDK returns automatically to the invocation after the callback. The runtime retains its native invocation during delivery rather than constructing a Fix continuation. There is no advice queue.
+Advice is a one-way notification. The runtime records progress as advice arrives and continues the invocation. The scheduler receives the target, key, and payload through `on_advice` in emission order before receiving the result. Delivery carries no continuation and requires no reply from the scheduler.
 
-One scheduler instance runs on its own kernel thread. Application and collector invocations run asynchronously on a fixed pool of kernel threads; `-j` sets the pool size. The scheduler shares VM cores with these workers. Running guest code is not preempted when its future is dropped. Advice provides no cancellation or rescheduling operation. Multiple remote requests can be outstanding; dropping a pending TCP evaluation closes its connection but does not cancel the remote computation.
+One scheduler instance runs on its own kernel thread. Application and collector invocations run asynchronously on a fixed pool of kernel threads; `-j` sets the pool size. The scheduler shares VM cores with these workers. Running guest code is not preempted when its future is dropped. Advice provides no cancellation or rescheduling operation. Multiple remote requests can be outstanding; dropping a pending evaluation closes its logical request channel but does not cancel the remote computation.
 
 `Graph::default` creates an in-process graph using Rust maps, a queue, and wakers. Schedulers share it by reference. Persistent deletion is not exposed yet.
 
@@ -69,6 +75,9 @@ completions and checks task readiness before sleeping.
 `Graph::wait` awaits an explicitly submitted request. Completing a graph operation
 wakes its waiting Rust tasks directly.
 All connections share the VM's storage, worker pool, and memory budget.
+Evaluating schedulers also serve requests arriving over their outgoing connections.
+A remote can therefore return work through its coordinator to reach another worker.
+Names use a local remote alias when available, or a `!`-separated chain for an indirect route. Unnamed links use the runtime identity.
 The protocol's synchronous and asynchronous APIs use the same implementation.
 
 ## Cancellation

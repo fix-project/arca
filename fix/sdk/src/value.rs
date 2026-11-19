@@ -274,6 +274,13 @@ pub trait Value {
         unsafe { ffi::read_handle_bytes(self.handle().as_raw(), bytes.as_mut_ptr() as u32) };
         Ok(bytes)
     }
+    /// Compare handle encodings. Requires privilege.
+    fn same_handle_bytes(&self, other: &impl Value) -> bool
+    where
+        Self: Sized,
+    {
+        unsafe { ffi::same_handle_bytes(self.handle().as_raw(), other.handle().as_raw()) != 0 }
+    }
     fn read_into(&self, offset: usize, bytes: &mut [u8]) -> Result<(), Error> {
         if self.value_type()? != ValueType::Object || self.data_type()? != DataType::Blob {
             return Err(Error::WrongType);

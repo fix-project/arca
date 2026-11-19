@@ -1,13 +1,13 @@
 extern crate alloc;
 
-use crate::runtime::arca::{EffectAction, Execution, FixOnArca, SavedClaims, Suspended};
+use crate::runtime::arca::{Advice, EffectAction, Execution, FixOnArca, SavedClaims};
 use crate::user_maps::Maps;
 use crate::user_queues::{Error, WorkQueues};
 use crate::{
     Blob, EncodeView, ExecutionError, Handle, HandleView, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -17,8 +17,8 @@ use kernel::{
 };
 
 use common::protocol::control::{
-    EvaluationOperation, EvaluationSnapshot, EvaluationStep, EvaluationTask, MachineProgress,
-    RemoteAvailability, RuntimeStats,
+    EvaluationOperation, EvaluationOutcome, EvaluationPhase, EvaluationSnapshot, EvaluationStep,
+    EvaluationTask, MachineProgress, RemoteAvailability, RuntimeStats,
 };
 
 const MAX_QUEUE_CAPACITY: usize = 65536;
@@ -37,7 +37,13 @@ pub trait Services: Send + Sync {
     ) -> Result<Vec<(alloc::string::String, [u8; 32])>, fixrepository::RepositoryError> {
         Err(fixrepository::RepositoryError::InvalidRepository)
     }
-    fn export_object(&self, _: [u8; 32], _: bool, _: bool) -> Result<Vec<u8>, fixremote::Error> {
+    fn export_object(
+        &self,
+        _: [u8; 32],
+        _: bool,
+        _: bool,
+        _: &[[u8; 32]],
+    ) -> Result<Vec<u8>, fixremote::Error> {
         Err(fixremote::Error::Invalid)
     }
     fn read_backing(&self, _: [u8; 32], _: u64, _: usize) -> Result<Vec<u8>, fixremote::Error> {
@@ -54,10 +60,14 @@ pub trait Services: Send + Sync {
     fn information(
         &self,
         _: Handle,
-        _: u32,
-        _: u64,
+        parallelism: u32,
+        memory: u64,
     ) -> Result<fixremote::protocol::Information, alloc::string::String> {
-        Err("object inventory is unsupported".into())
+        Ok(fixremote::protocol::Information {
+            parallelism,
+            memory_bytes: Some(memory),
+            ..Default::default()
+        })
     }
     fn file_information(
         &self,
@@ -108,6 +118,76 @@ pub struct RepositoryServices {
     pub todos: Vec<(Ref, Blob)>,
     pub remotes: Arc<fixremote::Config>,
 }
+
+impl fixremote::ProposalStorage for RepositoryServices {
+    fn coupon_offers(&self, input: Handle) -> Vec<fixremote::protocol::CouponOffer> {
+        let memory: &crate::storage::memory::MemoryStorage = self.storage.as_ref();
+        if !input.is_canonical() {
+            return Vec::new();
+        }
+        [1u64, 2]
+            .into_iter()
+            .filter(|operation| *operation != 2 || input.is_tree_data())
+            .flat_map(|operation| {
+                let kind = Blob::literal(&operation.to_le_bytes()).unwrap().into();
+                memory
+                    .claims([kind, input])
+                    .into_iter()
+                    .filter_map(move |coupon| coupon_offer(&*self.storage, coupon, operation))
+            })
+            .collect()
+    }
+
+    fn has_ref_backing(&self, reference: Ref) -> Result<bool, fixrepository::RepositoryError> {
+        Ok(match reference.object_descriptor().view() {
+            ObjectView::Blob(blob) => self.storage.has_blob(*blob),
+            ObjectView::Tree(tree) => self.storage.has_tree(*tree),
+        })
+    }
+
+    fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, fixrepository::RepositoryError> {
+        self.storage
+            .get_tree(tree)
+            .map_err(fixrepository::RepositoryError::Storage)
+    }
+
+    fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, fixrepository::RepositoryError> {
+        self.storage.get_todo(reference)
+    }
+}
+
+fn coupon_offer(
+    storage: &dyn Storage,
+    coupon: Tree,
+    operation: u64,
+) -> Option<fixremote::protocol::CouponOffer> {
+    let fields = storage.get_tree(coupon).ok()?;
+    let [author, reference] = *fields else {
+        return None;
+    };
+    let reference = fixhandle::TreeRef::try_from(reference).ok()?;
+    let claim = storage.get_tree(reference.object_descriptor()).ok()?;
+    let [_, input, result] = *claim else {
+        return None;
+    };
+    let name = |value: Handle| -> Option<[u8; 32]> {
+        if value.is_canonical() {
+            Some(*value.as_bytes())
+        } else {
+            storage
+                .canonicalize(value)
+                .ok()
+                .map(|value| *Handle::from(value).as_bytes())
+        }
+    };
+    Some(fixremote::protocol::CouponOffer {
+        operation,
+        author: name(author)?,
+        input: name(input)?,
+        result: name(result)?,
+    })
+}
+
 impl Services for RepositoryServices {
     fn file_information(
         &self,
@@ -127,15 +207,22 @@ impl Services for RepositoryServices {
         name: [u8; 32],
         backing: bool,
         full: bool,
+        known: &[[u8; 32]],
     ) -> Result<Vec<u8>, fixremote::Error> {
         let repository = self.storage.repository();
-        let root = repository.lookup(&name)?;
-        let (transfer, backing) = if full {
-            fixremote::propose_export_full(repository, root)?
+        let handle = Handle::parse_ref(&name).map_err(|_| fixremote::Error::Invalid)?;
+        if !handle.is_canonical() {
+            return Err(fixremote::Error::Invalid);
+        }
+        let root = if matches!(handle.view(), fixhandle::HandleBytesView::Object(_)) {
+            self.storage
+                .identify(&name)
+                .map_err(fixrepository::RepositoryError::Storage)?
         } else {
-            fixremote::propose_export(repository, root, backing)?
+            repository.lookup(&name)?
         };
-        postcard::to_allocvec(&(transfer, backing)).map_err(|_| fixremote::Error::Invalid)
+        let proposal = fixremote::propose_loaded(repository, self, root, backing, full, known)?;
+        postcard::to_allocvec(&proposal).map_err(|_| fixremote::Error::Invalid)
     }
     fn read_backing(
         &self,
@@ -143,12 +230,38 @@ impl Services for RepositoryServices {
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>, fixremote::Error> {
-        let repository = self.storage.repository();
-        let object =
-            Object::try_from(repository.lookup(&name)?).map_err(|_| fixremote::Error::Invalid)?;
-        repository
-            .read_backing_range(object, offset, length)
-            .map_err(Into::into)
+        let (object, offset) = (
+            Object::try_from(
+                self.storage
+                    .identify(&name)
+                    .map_err(fixrepository::RepositoryError::Storage)?,
+            )
+            .map_err(|_| fixremote::Error::Invalid)?,
+            usize::try_from(offset).map_err(|_| fixremote::Error::Invalid)?,
+        );
+        let bytes = match object.view() {
+            ObjectView::Blob(blob) => self.storage.get_blob_backing(*blob),
+            ObjectView::Tree(tree) => self.storage.get_tree_backing(*tree),
+        }
+        .map_err(fixrepository::RepositoryError::Storage)?;
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > bytes.len())
+        {
+            return Err(fixremote::Error::Invalid);
+        }
+        let mut output = alloc::vec![0; length];
+        let mut copied = 0;
+        while copied < length {
+            let (page, position) = bytes.page(offset + copied);
+            let count = (length - copied).min(page.len() - position);
+            assert_eq!(
+                page.read(position, &mut output[copied..copied + count]),
+                count
+            );
+            copied += count;
+        }
+        Ok(output)
     }
     fn update_label(
         &self,
@@ -232,10 +345,18 @@ impl Services for RepositoryServices {
         Ok(missing)
     }
     fn import(&self, bytes: &[u8]) -> Result<Vec<Handle>, fixremote::Error> {
-        fixremote::import_observed(self.storage.repository(), bytes, &self.remotes, |name| {
-            AsRef::<crate::storage::memory::MemoryStorage>::as_ref(&self.storage)
-                .register_names([name]);
-        })
+        fixremote::import_observed(
+            self.storage.repository(),
+            bytes,
+            &self.remotes,
+            |name, todo| {
+                if todo.is_some() {
+                    self.storage.invalidate_todo(&name);
+                }
+                AsRef::<crate::storage::memory::MemoryStorage>::as_ref(&self.storage)
+                    .register_names([name]);
+            },
+        )
     }
     fn put(&self, value: Handle) -> Result<Handle, alloc::string::String> {
         self.storage.save(value).map_err(|error| match error {
@@ -248,7 +369,6 @@ impl Services for RepositoryServices {
     fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, &'static str> {
         let stored = self
             .storage
-            .repository()
             .get_todo(reference)
             .map_err(|_| "could not read todo metadata")?;
         let extra: Vec<_> = self
@@ -284,7 +404,6 @@ impl Services for RepositoryServices {
             .put(value)
             .map_err(|_| "could not persist todo metadata")?;
         self.storage
-            .repository()
             .set_todo(reference, value)
             .map_err(|_| "could not save todo metadata")
     }
@@ -344,19 +463,48 @@ impl WorkerEvent {
 struct Saver {
     state: KMutex<SaverState>,
     changed: KCondvar,
+    saved: KCondvar,
 }
 
 #[derive(Default)]
 struct SaverState {
     queue: alloc::collections::VecDeque<Handle>,
+    submitted: usize,
+    completed: usize,
     closed: bool,
     error: Option<alloc::string::String>,
 }
 
 impl Saver {
     fn push(&self, value: Handle) {
-        self.state.lock().queue.push_back(value);
+        let mut state = self.state.lock();
+        state.submitted = state.submitted.checked_add(1).expect("save IDs exhausted");
+        state.queue.push_back(value);
         self.changed.notify_one();
+    }
+
+    fn checkpoint(&self) -> usize {
+        self.state.lock().submitted
+    }
+
+    fn complete(&self, result: Result<(), alloc::string::String>) {
+        let mut state = self.state.lock();
+        if let Err(error) = result {
+            state.error.get_or_insert(error);
+        }
+        state.completed += 1;
+        self.saved.notify_all();
+    }
+
+    fn wait(&self, checkpoint: usize) -> Result<(), alloc::string::String> {
+        let mut state = self.state.lock();
+        while state.completed < checkpoint {
+            state = self.saved.wait(state);
+        }
+        match &state.error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     fn pop(&self) -> Option<Handle> {
@@ -418,51 +566,31 @@ impl Applications {
     }
 }
 
-fn discard_advice(storage: &dyn Storage, shared: &Shared, result: EffectResult) {
-    let _ = (|| {
-        let reply = storage.get_tree(Tree::try_from(result.ok()?).ok()?).ok()?;
-        if integer(storage, *reply.first()?).ok()? == 2 {
-            let event = storage
-                .get_tree(Tree::try_from(*reply.get(1)?).ok()?)
-                .ok()?;
-            shared
-                .suspended
-                .lock()
-                .remove(&integer(storage, *event.first()?).ok()?);
-        }
-        Some(())
-    })();
-}
-
-type SharedStream = Arc<KMutex<kernel::host::net::Stream>>;
+type SharedStream = Arc<kernel::host::net::Stream>;
 type SharedListener = Arc<kernel::host::net::TcpListener>;
 type EffectResult = Result<Handle, &'static str>;
 type TaskKey = ([u8; 32], Option<EvaluationOperation>);
 
-struct PendingEffect {
-    invocation: bool,
-    result: Option<EffectResult>,
-}
-
-#[derive(Clone, Copy)]
-struct TreeProgress {
-    task: [u8; 32],
-    updated: Duration,
-}
-
+#[derive(Clone)]
 struct ActiveTask {
     progress: EvaluationTask,
     started: Duration,
-    scoped: bool,
+    announced: bool,
 }
 
 impl ActiveTask {
-    fn new(progress: EvaluationTask, scoped: bool) -> Self {
+    fn new(progress: EvaluationTask) -> Self {
         Self {
             progress,
             started: kernel::tsc::read(),
-            scoped,
+            announced: false,
         }
+    }
+
+    fn announce(&mut self, shared: &Shared) {
+        self.announced = true;
+        self.started = kernel::tsc::read();
+        shared.task_event(self.progress.clone(), EvaluationPhase::Started);
     }
 }
 
@@ -515,8 +643,15 @@ impl ProgressObservers {
     }
 }
 
+static NEXT_STEP: AtomicU64 = AtomicU64::new(0);
+
 struct Shared {
+    session: Option<Arc<crate::session::Scheduler>>,
+    node_identity: [u8; 16],
+    observed_steps: KMutex<BTreeSet<([u8; 16], u64)>>,
     advised: KMutex<BTreeMap<TaskKey, ActiveTask>>,
+    transfers: KMutex<BTreeMap<u64, ActiveTask>>,
+    next_transfer: AtomicU64,
     observers: KMutex<ProgressObservers>,
     remote_progress: KMutex<BTreeMap<alloc::string::String, EvaluationSnapshot>>,
     labels: Vec<([u8; 32], alloc::string::String)>,
@@ -527,21 +662,18 @@ struct Shared {
     cpu_started: Option<u64>,
     bytes_sent: AtomicU64,
     bytes_received: AtomicU64,
-    progress_trees: KMutex<BTreeMap<[u8; 32], TreeProgress>>,
     scheduler: Handle,
     collector: Handle,
     saved_claims: SavedClaims,
-    suspended: KMutex<BTreeMap<usize, (bool, Suspended, kernel::memory::FreeMemory)>>,
-    next_suspended: AtomicUsize,
     applications: Applications,
-    saver: Saver,
+    saver: Arc<Saver>,
     saving: AtomicBool,
     queues: KMutex<WorkQueues<Handle>>,
     maps: KMutex<Maps<Handle, Handle>>,
     event: WorkerEvent,
     streams: KMutex<Vec<Option<SharedStream>>>,
     listeners: KMutex<Vec<Option<SharedListener>>>,
-    pending_effects: KMutex<BTreeMap<usize, PendingEffect>>,
+    pending_effects: KMutex<BTreeMap<usize, Option<EffectResult>>>,
     next_effect: AtomicUsize,
     completed_effects: KMutex<Vec<usize>>,
     services: Box<dyn Services>,
@@ -562,74 +694,91 @@ struct EffectStats {
 }
 
 impl Shared {
-    fn record_step(&self, step: EvaluationStep) {
+    fn record_step(&self, mut step: EvaluationStep) {
+        let node = match step.node {
+            Some(node) => node,
+            None => {
+                step.node = Some(self.node_identity);
+                step.sequence = NEXT_STEP.fetch_add(1, Ordering::Relaxed);
+                self.node_identity
+            }
+        };
+        if !self.observed_steps.lock().insert((node, step.sequence)) {
+            return;
+        }
         self.observers.lock().record(step.clone());
         kernel::host::os::evaluation_step(step);
     }
 
-    fn start_load(
-        &self,
+    fn task_event(&self, task: EvaluationTask, phase: EvaluationPhase) {
+        self.record_step(EvaluationStep {
+            node: None,
+            sequence: 0,
+            location: Vec::new(),
+            task,
+            phase,
+        });
+    }
+
+    fn start_task(&self, task: EvaluationTask, named: bool) {
+        self.advised
+            .lock()
+            .entry((task.id, task.operation))
+            .or_insert_with(|| {
+                let mut task = ActiveTask::new(task);
+                if named {
+                    task.announce(self);
+                }
+                task
+            });
+    }
+
+    fn load_task(
         input: Handle,
         name: alloc::string::String,
         source: Vec<alloc::string::String>,
         destination: Vec<alloc::string::String>,
-    ) {
-        self.advised.lock().insert(
-            (*input.as_bytes(), Some(EvaluationOperation::Load)),
-            ActiveTask::new(
-                EvaluationTask {
-                    id: *input.as_bytes(),
-                    operation: Some(EvaluationOperation::Load),
-                    name,
-                    transfer: Some((source, destination)),
-                    ..EvaluationTask::default()
-                },
-                false,
-            ),
-        );
-        kernel::host::os::evaluation_progress(self.snapshot());
+        peer: Option<[u8; 16]>,
+    ) -> EvaluationTask {
+        EvaluationTask {
+            id: *input.as_bytes(),
+            operation: Some(EvaluationOperation::Load),
+            name,
+            transfer: Some((source, destination)),
+            transfer_peer: peer,
+            ..EvaluationTask::default()
+        }
     }
 
-    fn finish_task(&self, key: TaskKey, outcome: &str) {
-        let task = self.advised.lock().remove(&key);
-        kernel::host::os::task_finished(key.0, key.1);
-        if let Some(task) = task {
-            let mut name = task.progress.id;
-            name[31] &= 0xe0;
-            let named = self.labels.iter().any(|(label, _)| {
-                let mut label = *label;
-                label[31] &= 0xe0;
-                label == name
-            });
-            if outcome != "cancelled"
-                && outcome != "cached"
-                && (named
-                    || !task.progress.title.is_empty()
-                    || matches!(
-                        key.1,
-                        Some(EvaluationOperation::Apply | EvaluationOperation::Load)
-                    ))
-            {
-                self.record_step(EvaluationStep {
-                    location: Vec::new(),
+    fn end_task(&self, task: ActiveTask, outcome: EvaluationOutcome, bytes: Option<u64>) {
+        if task.announced {
+            self.task_event(
+                task.progress,
+                EvaluationPhase::Finished {
                     elapsed_ns: kernel::tsc::read().saturating_sub(task.started).as_nanos() as u64,
-                    task: task.progress,
-                    success: outcome == "completed",
-                });
-            }
+                    outcome,
+                    bytes,
+                },
+            );
+        }
+    }
+
+    fn finish_task(&self, key: TaskKey, outcome: EvaluationOutcome) {
+        let task = self.advised.lock().remove(&key);
+        if let Some(task) = task {
+            self.end_task(task, outcome, None);
         }
     }
 
     fn snapshot(&self) -> EvaluationSnapshot {
         let local = MachineProgress {
+            node: Some(self.node_identity),
             location: Vec::new(),
             availability: None,
             used: true,
             runtime: Some(RuntimeStats {
                 elapsed_ns: kernel::tsc::read().saturating_sub(self.started).as_nanos() as u64,
                 workers: self.executed.len() as u64,
-                busy_workers: self.busy.load(Ordering::Relaxed) as u64,
-                queued: self.applications.state.lock().queue.len() as u64,
                 peak_busy_workers: self.peak_busy.load(Ordering::Relaxed) as u64,
                 peak_queued: self.applications.peak_queued.load(Ordering::Relaxed) as u64,
                 completed: self
@@ -645,21 +794,22 @@ impl Shared {
                 bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
                 bytes_received: self.bytes_received.load(Ordering::Relaxed),
                 peak_memory: common::BuddyAllocator.peak_size() as u64,
-                memory_used: common::BuddyAllocator.used_size() as u64,
                 memory_total: common::BuddyAllocator.total_size() as u64,
-                memory_available: kernel::memory::available() as u64,
             }),
-            tasks: self
-                .advised
-                .lock()
-                .values()
-                .map(|task| task.progress.clone())
-                .collect(),
-            labels: self.labels.clone(),
         };
         let mut machines = alloc::vec![local];
         for snapshot in self.remote_progress.lock().values() {
-            machines.extend(snapshot.machines.iter().cloned());
+            for machine in &snapshot.machines {
+                let previous = machines.iter_mut().find(|previous| {
+                    (machine.node.is_some() && previous.node == machine.node)
+                        || previous.location == machine.location
+                });
+                if let Some(previous) = previous {
+                    previous.merge(machine);
+                } else {
+                    machines.push(machine.clone());
+                }
+            }
         }
         EvaluationSnapshot {
             machines,
@@ -710,6 +860,39 @@ pub fn start_profiled<
     services: impl Services + 'static,
     profile: bool,
 ) -> Result<Report, alloc::string::String> {
+    start_with_session(runtime, combination, workers, services, profile, None)
+}
+
+pub fn start_session<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: Arc<FixOnArca<S>>,
+    combination: Tree,
+    workers: usize,
+    services: impl Services + 'static,
+    profile: bool,
+    session: Arc<crate::session::Scheduler>,
+) -> Result<Report, alloc::string::String> {
+    start_with_session(
+        runtime,
+        combination,
+        workers,
+        services,
+        profile,
+        Some(session),
+    )
+}
+
+fn start_with_session<
+    S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync + 'static,
+>(
+    runtime: Arc<FixOnArca<S>>,
+    combination: Tree,
+    workers: usize,
+    services: impl Services + 'static,
+    profile: bool,
+    session: Option<Arc<crate::session::Scheduler>>,
+) -> Result<Report, alloc::string::String> {
     if workers > 256 {
         return Err("worker count must be 0..=256".into());
     }
@@ -747,7 +930,12 @@ pub fn start_profiled<
         .map(|(label, name)| (name, label))
         .collect();
     let shared = Arc::new(Shared {
+        session,
+        node_identity: kernel::host::os::node_identity(),
+        observed_steps: KMutex::new(BTreeSet::new()),
         advised: KMutex::new(BTreeMap::new()),
+        transfers: KMutex::new(BTreeMap::new()),
+        next_transfer: AtomicU64::new(0),
         observers: KMutex::new(ProgressObservers::default()),
         remote_progress: KMutex::new(
             services
@@ -777,17 +965,14 @@ pub fn start_profiled<
         cpu_started: kernel::host::os::cpu_time(),
         bytes_sent: AtomicU64::new(0),
         bytes_received: AtomicU64::new(0),
-        progress_trees: KMutex::new(BTreeMap::new()),
         scheduler,
         collector,
         saved_claims: SavedClaims::with_profile(profile),
-        suspended: KMutex::new(BTreeMap::new()),
         pending_effects: KMutex::new(BTreeMap::new()),
         next_effect: AtomicUsize::new(0),
         completed_effects: KMutex::new(Vec::new()),
-        next_suspended: AtomicUsize::new(0),
         applications: Applications::default(),
-        saver: Saver::default(),
+        saver: Arc::new(Saver::default()),
         saving: AtomicBool::new(true),
         queues: KMutex::new(WorkQueues::new(
             workers.max(1),
@@ -831,14 +1016,20 @@ pub fn start_profiled<
                         .upgrade()
                         .map(|runtime| runtime.storage().friendly_name(input, &shared.labels))
                         .unwrap_or_default();
-                    shared.start_load(input, name, Vec::new(), Vec::new());
+                    shared.start_task(
+                        Shared::load_task(input, name, Vec::new(), Vec::new(), None),
+                        true,
+                    );
                 }
                 Some(success) => {
                     shared.finish_task(
                         (*input.as_bytes(), Some(EvaluationOperation::Load)),
-                        if success { "completed" } else { "failed" },
+                        if success {
+                            EvaluationOutcome::Completed
+                        } else {
+                            EvaluationOutcome::Failed
+                        },
                     );
-                    kernel::host::os::evaluation_progress(shared.snapshot());
                 }
             }
         })));
@@ -868,9 +1059,7 @@ pub fn start_profiled<
                         .index_claim(saved)
                         .map_err(|_| "could not index a saved coupon".into())
                 });
-                if let Err(error) = saved {
-                    shared.saver.state.lock().error.get_or_insert(error);
-                }
+                shared.saver.complete(saved);
             }
             shared.saving.store(false, Ordering::Release);
             coordinator.unpark();
@@ -883,30 +1072,31 @@ pub fn start_profiled<
         spawn(move || {
             while let Some((id, operation, argument)) = shared.applications.pop() {
                 if !shared.pending_effects.lock().contains_key(&id) {
-                    if operation == b"callable_resume"
-                        && let Ok(token) = integer(runtime.storage(), argument)
-                    {
-                        shared.suspended.lock().remove(&token);
-                    }
                     continue;
                 }
                 let busy = shared.busy.fetch_add(1, Ordering::Relaxed) + 1;
                 shared.peak_busy.fetch_max(busy, Ordering::Relaxed);
-                let result = handle_task(&runtime, &shared, worker, operation, &[argument], false)
-                    .map(|(status, value)| {
-                        let storage = runtime.storage();
-                        storage
-                            .add_tree(&[storage.add_blob(&status.to_le_bytes()).into(), value])
-                            .into()
-                    });
+                let result = handle_task(
+                    &runtime,
+                    &shared,
+                    worker,
+                    operation,
+                    &[argument],
+                    false,
+                    Some(id),
+                )
+                .map(|(status, value)| {
+                    let storage = runtime.storage();
+                    storage
+                        .add_tree(&[storage.add_blob(&status.to_le_bytes()).into(), value])
+                        .into()
+                });
                 shared.busy.fetch_sub(1, Ordering::Relaxed);
 
                 let mut pending = shared.pending_effects.lock();
                 if let Some(slot) = pending.get_mut(&id) {
-                    slot.result = Some(result);
+                    *slot = Some(result);
                     shared.completed_effects.lock().push(id);
-                } else {
-                    discard_advice(runtime.storage(), &shared, result);
                 }
                 drop(pending);
                 let _ = shared.event.wake(true);
@@ -931,12 +1121,17 @@ pub fn start_profiled<
     while shared.remaining.load(Ordering::Acquire) != 0 {
         kthread::park();
     }
-    shared.suspended.lock().clear();
     shared.saver.close();
     while shared.saving.load(Ordering::Acquire) {
         kthread::park();
     }
     shared.services.observe_loads(None);
+    for (_, task) in core::mem::take(&mut *shared.advised.lock()) {
+        shared.end_task(task, EvaluationOutcome::Stopped, None);
+    }
+    for (_, task) in core::mem::take(&mut *shared.transfers.lock()) {
+        shared.end_task(task, EvaluationOutcome::Stopped, None);
+    }
     if observing {
         kernel::host::os::evaluation_progress(shared.snapshot());
     }
@@ -1080,7 +1275,7 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync +
             ) {
                 handle_async_task(runtime, shared, worker, name, args)
             } else {
-                handle_task(runtime, shared, worker, name, args, true)
+                handle_task(runtime, shared, worker, name, args, true, None)
             };
             match reply {
                 Ok((status, value)) if !shared.stopped() => {
@@ -1154,36 +1349,23 @@ fn handle_async_task<
                 b"callable_run" => b"callable_run",
                 b"callable_apply" => b"callable_apply",
                 b"callable_invoke" => b"callable_invoke",
-                b"callable_resume" => b"callable_resume",
                 _ => return Err("invalid invocation operation"),
             };
             let id = shared.next_effect.fetch_add(1, Ordering::Relaxed);
-            shared.pending_effects.lock().insert(
-                id,
-                PendingEffect {
-                    invocation: true,
-                    result: None,
-                },
-            );
+            shared.pending_effects.lock().insert(id, None);
             shared.applications.push(id, operation, *argument);
             (0, storage.add_blob(&(id as u64).to_le_bytes()).into())
         }
         (b"effect_start", [effect]) => {
             let id = shared.next_effect.fetch_add(1, Ordering::Relaxed);
-            shared.pending_effects.lock().insert(
-                id,
-                PendingEffect {
-                    invocation: false,
-                    result: None,
-                },
-            );
+            shared.pending_effects.lock().insert(id, None);
             let effect = *effect;
             let runtime = runtime.clone();
             let shared = shared.clone();
             spawn(move || {
                 let result = handle_effect(&runtime, &shared, worker, effect);
                 if let Some(slot) = shared.pending_effects.lock().get_mut(&id) {
-                    slot.result = Some(result);
+                    *slot = Some(result);
                     shared.completed_effects.lock().push(id);
                 }
                 let _ = shared.event.wake(true);
@@ -1197,7 +1379,7 @@ fn handle_async_task<
             for id in completed {
                 let effect = shared.pending_effects.lock().remove(&id);
                 if let Some(effect) = effect {
-                    let result = effect.result.expect("notified effect must be complete")?;
+                    let result = effect.expect("notified effect must be complete")?;
                     results.push(
                         storage
                             .add_tree(&[
@@ -1222,16 +1404,10 @@ fn handle_async_task<
         }
         (b"effect_discard", [id]) => {
             let id = integer(storage, *id).map_err(|_| "invalid effect token")?;
-            if let Some(PendingEffect {
-                invocation: true,
-                result: Some(result),
-            }) = shared.pending_effects.lock().remove(&id)
-            {
-                discard_advice(storage, shared, result);
-            }
+            shared.pending_effects.lock().remove(&id);
             (0, storage.add_blob(b"").into())
         }
-        _ => handle_task(runtime, shared, worker, name, args, false)?,
+        _ => handle_task(runtime, shared, worker, name, args, false, None)?,
     })
 }
 
@@ -1242,13 +1418,14 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     name: &[u8],
     args: &[Handle],
     coordination_only: bool,
+    request: Option<usize>,
 ) -> Result<(u64, Handle), &'static str> {
     let start = shared.profile.as_ref().map(|_| kernel::tsc::read());
     let storage = runtime.storage();
     if shared.executed.is_empty()
         && matches!(
             name,
-            b"callable_run" | b"callable_apply" | b"callable_invoke" | b"callable_resume"
+            b"callable_run" | b"callable_apply" | b"callable_invoke"
         )
     {
         return Err(
@@ -1259,8 +1436,6 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         && !matches!(
             name,
             b"callable_invoke"
-                | b"callable_resume"
-                | b"callable_discard"
                 | b"map_create"
                 | b"map_named"
                 | b"map_count"
@@ -1287,7 +1462,6 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"worker_config"
                 | b"worker_finish"
                 | b"worker_yield"
-                | b"tree_progress"
                 | b"evaluation_start"
                 | b"evaluation_finish"
                 | b"load_finish"
@@ -1298,35 +1472,17 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     let task: Result<(u64, Handle), TaskError> = (|| match (name, args) {
         (b"callable_run", [value]) => {
             let execution = runtime.run_observed(value_combination(*value)?);
-            observed_reply(runtime, shared, worker, true, *value, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, true, *value, execution, request)
+                .map_err(Into::into)
         }
         (b"callable_apply", [value]) => {
             let execution = runtime.execute_observed(value_combination(*value)?, false);
-            observed_reply(runtime, shared, worker, true, *value, execution).map_err(Into::into)
+            observed_reply(runtime, shared, worker, true, *value, execution, request)
+                .map_err(Into::into)
         }
         (b"callable_invoke", [value]) => {
             let execution = runtime.execute_observed(combination(*value)?, true);
-            observed_reply(runtime, shared, worker, false, *value, execution).map_err(Into::into)
-        }
-        (b"callable_discard", [token]) => {
-            let token = integer(storage, *token)?;
-            shared
-                .suspended
-                .lock()
-                .remove(&token)
-                .ok_or(Error::Invalid)?;
-            Ok((0, storage.add_blob(b"").into()))
-        }
-        (b"callable_resume", [token]) => {
-            let token = integer(storage, *token)?;
-            let (application, suspended, _memory) = shared
-                .suspended
-                .lock()
-                .remove(&token)
-                .ok_or(Error::Invalid)?;
-            let task = suspended.combination().into();
-            let execution = runtime.resume_observed(suspended);
-            observed_reply(runtime, shared, worker, application, task, execution)
+            observed_reply(runtime, shared, worker, false, *value, execution, request)
                 .map_err(Into::into)
         }
         _ => execute_task(runtime, shared, worker, name, args).map(|value| (0, value)),
@@ -1382,98 +1538,98 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     worker: usize,
     application: bool,
     task: Handle,
-    execution: Result<Execution, ExecutionError>,
+    mut execution: Result<Execution, ExecutionError>,
+    request: Option<usize>,
 ) -> Result<(u64, Handle), Error> {
     let storage = runtime.storage();
-    match execution {
-        Ok(Execution::Complete(value)) => {
-            if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
-                shared.finish_task(
-                    (*task.as_bytes(), Some(EvaluationOperation::Apply)),
-                    "completed",
-                );
+    let mut advice: Vec<Advice> = Vec::new();
+    loop {
+        match execution {
+            Ok(Execution::Complete(value)) => {
+                if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
+                    shared.finish_task(
+                        (*task.as_bytes(), Some(EvaluationOperation::Apply)),
+                        EvaluationOutcome::Completed,
+                    );
+                }
+                if application {
+                    shared.executed[worker].fetch_add(1, Ordering::Relaxed);
+                } else {
+                    shared.privileged_completed.fetch_add(1, Ordering::Relaxed);
+                }
+                return if advice.is_empty() {
+                    Ok((0, value))
+                } else {
+                    let events = advice
+                        .into_iter()
+                        .map(|event| {
+                            let key = storage.add_blob(&event.key);
+                            let payload = storage.add_blob(&event.payload);
+                            let reply =
+                                storage.add_tree(&[event.target, key.into(), payload.into()]);
+                            runtime.keep_memory(event.delivery_memory);
+                            reply.into()
+                        })
+                        .collect::<Vec<_>>();
+                    let events = storage.add_tree(&events);
+                    Ok((2, storage.add_tree(&[value, events.into()]).into()))
+                };
             }
-            if application {
-                shared.executed[worker].fetch_add(1, Ordering::Relaxed);
-            } else {
-                shared.privileged_completed.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok((0, value))
-        }
-        Ok(Execution::Advice { event, suspended }) => {
-            let cost = fixhandle::accounting::allocation(event.key.len())
-                .saturating_add(fixhandle::accounting::allocation(event.payload.len()))
-                .saturating_add(crate::storage::OBJECT_METADATA.saturating_mul(4));
-            let mut memory = match kernel::memory::FreeMemory::new(cost) {
-                Ok(memory) => memory,
-                Err(error) => return Ok(admission_reply(storage, error)),
-            };
-            if matches!(event.key.as_slice(), b"fix::title" | b"fix::progress")
-                && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
-            {
-                let operation = storage
-                    .canonicalize(task)
-                    .ok()
-                    .map(Handle::from)
-                    .filter(|task| task.same_encoding(&target))
-                    .map(|_| EvaluationOperation::Apply);
-                let mut tasks = shared.advised.lock();
-                let task = tasks
-                    .entry((*target.as_bytes(), operation))
-                    .or_insert_with(|| {
-                        ActiveTask::new(
-                            EvaluationTask {
-                                id: *target.as_bytes(),
-                                name: storage.friendly_name(target, &shared.labels),
+            Ok(Execution::Advice { event, suspended }) => {
+                if shared.stopped()
+                    || request.is_some_and(|id| !shared.pending_effects.lock().contains_key(&id))
+                {
+                    return Ok((0, storage.add_blob(b"").into()));
+                }
+                if application
+                    && event.key == b"fix::title"
+                    && let Ok(title) = core::str::from_utf8(&event.payload)
+                    && !title.is_empty()
+                    && let Ok(input) = storage.canonicalize(task).map(Handle::from)
+                    && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
+                    && input.same_encoding(&target)
+                {
+                    let operation = Some(EvaluationOperation::Apply);
+                    let mut tasks = shared.advised.lock();
+                    let task = tasks
+                        .entry((*input.as_bytes(), operation))
+                        .or_insert_with(|| {
+                            ActiveTask::new(EvaluationTask {
+                                id: *input.as_bytes(),
                                 operation,
                                 ..EvaluationTask::default()
-                            },
-                            false,
-                        )
-                    });
-                let task = &mut task.progress;
-                if event.key == b"fix::title" {
-                    task.title =
-                        alloc::string::String::from_utf8_lossy(&event.payload).into_owned();
-                } else if event.payload.len() == 16 {
-                    let completed = u64::from_le_bytes(event.payload[..8].try_into().unwrap());
-                    let total = u64::from_le_bytes(event.payload[8..].try_into().unwrap());
-                    if completed <= total {
-                        task.progress = Some((completed, total));
+                            })
+                        });
+                    if task.progress.title != title {
+                        shared.end_task(task.clone(), EvaluationOutcome::Completed, None);
+                        task.progress.title = title.into();
+                        task.announce(shared);
                     }
                 }
-                drop(tasks);
-                kernel::host::os::task_advice(
-                    *target.as_bytes(),
-                    operation,
-                    &event.key,
-                    &event.payload,
-                );
+                advice.push(event);
+                execution = runtime.resume_observed(suspended);
             }
-            let token = shared
-                .next_suspended
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .map_err(|_| Error::Invalid)?;
-            shared.suspended.lock().insert(
-                token,
-                (
-                    application,
-                    suspended,
-                    memory.split(crate::storage::OBJECT_METADATA),
-                ),
-            );
-            let token = storage.add_blob(&(token as u64).to_le_bytes());
-            let key = storage.add_blob(&event.key);
-            let payload = storage.add_blob(&event.payload);
-            let event = storage.add_tree(&[token.into(), event.target, key.into(), payload.into()]);
-            runtime.keep_memory(memory);
-            Ok((2, event.into()))
+            Err(ExecutionError::Admission(error)) => return Ok(admission_reply(storage, error)),
+            Err(error) => {
+                if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
+                    shared.finish_task(
+                        (*task.as_bytes(), Some(EvaluationOperation::Apply)),
+                        EvaluationOutcome::Failed,
+                    );
+                }
+                shared.fail(storage, task, error);
+                return Err(Error::Invalid);
+            }
         }
-        Err(ExecutionError::Admission(error)) => Ok(admission_reply(storage, error)),
-        Err(error) => {
-            shared.fail(storage, task, error);
-            Err(Error::Invalid)
-        }
+    }
+}
+
+fn evaluation_outcome(storage: &dyn Storage, value: Handle) -> Result<EvaluationOutcome, Error> {
+    match text(storage, value)?.as_str() {
+        "completed" | "cached" => Ok(EvaluationOutcome::Completed),
+        "cancelled" => Ok(EvaluationOutcome::Stopped),
+        "failed" => Ok(EvaluationOutcome::Failed),
+        _ => Err(Error::Invalid),
     }
 }
 
@@ -1543,7 +1699,7 @@ fn text(storage: &dyn Storage, value: Handle) -> Result<alloc::string::String, E
 }
 
 fn add_stream(shared: &Shared, stream: kernel::host::net::Stream) -> usize {
-    insert_resource(&mut shared.streams.lock(), Arc::new(KMutex::new(stream)))
+    insert_resource(&mut shared.streams.lock(), Arc::new(stream))
 }
 
 fn insert_resource<T>(resources: &mut Vec<Option<T>>, resource: T) -> usize {
@@ -1600,48 +1756,22 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 6 => EvaluationOperation::Select,
                 _ => return Err(Error::Invalid.into()),
             };
-            let child = match (operation, input.view()) {
-                (EvaluationOperation::Force, _) => Some((input, EvaluationOperation::Think)),
-                (EvaluationOperation::Think, HandleView::Thunk(thunk))
-                    if !matches!(thunk.view(), ThunkView::Identification(_)) =>
-                {
-                    Some((
-                        object_descriptor(input).into(),
-                        EvaluationOperation::Evaluate,
-                    ))
-                }
-                (EvaluationOperation::Evaluate, HandleView::Encode(encode)) => {
-                    let thunk = match encode.view() {
-                        EncodeView::Strict(thunk) | EncodeView::Shallow(thunk) => thunk,
-                    };
-                    Some((thunk.into(), EvaluationOperation::Force))
-                }
-                _ => None,
-            };
-            let children = child
-                .into_iter()
-                .filter_map(|(child, operation)| {
-                    storage
-                        .canonicalize(child)
-                        .ok()
-                        .map(Handle::from)
-                        .map(|child| (*child.as_bytes(), Some(operation)))
-                })
-                .collect();
-            shared.advised.lock().insert(
-                (*input.as_bytes(), Some(operation)),
-                ActiveTask::new(
-                    EvaluationTask {
-                        id: *input.as_bytes(),
-                        name: storage.friendly_name(input, &shared.labels),
-                        operation: Some(operation),
-                        children,
-                        ..EvaluationTask::default()
-                    },
-                    true,
-                ),
+            let mut name = *input.as_bytes();
+            name[31] &= 0xe0;
+            let named = shared.labels.iter().any(|(label, _)| {
+                let mut label = *label;
+                label[31] &= 0xe0;
+                label == name
+            });
+            shared.start_task(
+                EvaluationTask {
+                    id: *input.as_bytes(),
+                    name: storage.friendly_name(input, &shared.labels),
+                    operation: Some(operation),
+                    ..EvaluationTask::default()
+                },
+                named,
             );
-            kernel::host::os::task_advice(*input.as_bytes(), Some(operation), b"fix::title", b"");
             Ok(number(0))
         }
         (b"evaluation_finish", [input, operation, outcome]) => {
@@ -1656,11 +1786,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             };
             shared.finish_task(
                 (*input.as_bytes(), Some(operation)),
-                &text(storage, *outcome)?,
+                evaluation_outcome(storage, *outcome)?,
             );
             Ok(number(0))
         }
-        (b"load_start", [input, source, destination]) => {
+        (b"load_start", [input, source, destination, peer]) => {
             let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
             let endpoint = |value| -> Result<Vec<alloc::string::String>, Error> {
                 let name = text(storage, value)?;
@@ -1671,26 +1801,33 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 })
             };
             let name = storage.friendly_name(input, &shared.labels);
-            shared.start_load(input, name, endpoint(*source)?, endpoint(*destination)?);
-            Ok(number(0))
+            let peer = storage
+                .get_blob(Blob::try_from(*peer).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let peer = if peer.is_empty() {
+                None
+            } else {
+                Some(<[u8; 16]>::try_from(peer.as_ref()).map_err(|_| Error::Invalid)?)
+            };
+            let mut task = ActiveTask::new(Shared::load_task(
+                input,
+                name,
+                endpoint(*source)?,
+                endpoint(*destination)?,
+                peer,
+            ));
+            let id = shared.next_transfer.fetch_add(1, Ordering::Relaxed);
+            task.announce(shared);
+            shared.transfers.lock().insert(id, task);
+            Ok(storage.add_blob(&id.to_le_bytes()).into())
         }
-        (b"load_finish", [input, outcome, values @ ..]) => {
-            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
-            if let [value] = values {
-                let name = storage.friendly_name(*value, &shared.labels);
-                if let Some(task) = shared
-                    .advised
-                    .lock()
-                    .get_mut(&(*input.as_bytes(), Some(EvaluationOperation::Load)))
-                {
-                    task.progress.name = name;
-                }
+        (b"load_finish", [id, outcome, bytes]) => {
+            let outcome = evaluation_outcome(storage, *outcome)?;
+            let bytes = unsigned(storage, *bytes)?;
+            let task = shared.transfers.lock().remove(&unsigned(storage, *id)?);
+            if let Some(task) = task {
+                shared.end_task(task, outcome, (bytes != u64::MAX).then_some(bytes));
             }
-            shared.finish_task(
-                (*input.as_bytes(), Some(EvaluationOperation::Load)),
-                &text(storage, *outcome)?,
-            );
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"progress_status", []) => {
@@ -1710,8 +1847,18 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&snapshot).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_status", [location, status, workers, memory, error]) => {
+        (b"remote_status", [location, status, workers, memory, error, node]) => {
             let location = text(storage, *location)?;
+            let bytes = storage
+                .get_blob(Blob::try_from(*node).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let node = if bytes.is_empty() {
+                None
+            } else {
+                Some(bytes.as_ref().try_into().map_err(|_| Error::Invalid)?)
+            };
+            let path =
+                common::protocol::control::location_path(core::iter::once(location.as_str()));
             let availability = match text(storage, *status)?.as_str() {
                 "connecting" => RemoteAvailability::Connecting,
                 "available" => RemoteAvailability::Available {
@@ -1732,21 +1879,20 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             {
                 let mut remotes = shared.remote_progress.lock();
                 let snapshot = remotes.entry(location.clone()).or_default();
-                if let Some(machine) = snapshot
-                    .machines
-                    .iter_mut()
-                    .find(|machine| machine.location.len() == 1 && machine.location[0] == location)
-                {
+                if let Some(machine) = snapshot.machines.iter_mut().find(|machine| {
+                    machine.location == path || (node.is_some() && machine.node == node)
+                }) {
+                    machine.node = node.or(machine.node);
                     machine.availability = Some(availability);
                 } else {
                     snapshot.machines.push(MachineProgress {
-                        location: alloc::vec![location],
+                        node,
+                        location: path,
                         availability: Some(availability),
                         ..MachineProgress::default()
                     });
                 }
             }
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"remote_progress", [location, snapshot, used]) => {
@@ -1757,12 +1903,25 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let mut snapshot: EvaluationSnapshot =
                 postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
             let used = unsigned(storage, *used)? != 0;
+            let local = shared.node_identity;
+            snapshot
+                .machines
+                .retain(|machine| machine.node.is_some_and(|node| node != local));
+            snapshot
+                .steps
+                .retain(|step| step.node.is_some_and(|node| node != local));
             for machine in &mut snapshot.machines {
                 machine.used &= used;
-                machine.location.insert(0, location.clone());
+                machine.location = common::protocol::control::location_path(
+                    core::iter::once(location.as_str())
+                        .chain(machine.location.iter().map(alloc::string::String::as_str)),
+                );
             }
             for mut step in snapshot.steps.drain(..) {
-                step.location.insert(0, location.clone());
+                step.location = common::protocol::control::location_path(
+                    core::iter::once(location.as_str())
+                        .chain(step.location.iter().map(alloc::string::String::as_str)),
+                );
                 shared.record_step(step);
             }
             {
@@ -1785,7 +1944,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 }
                 remotes.insert(location, snapshot);
             }
-            kernel::host::os::evaluation_progress(shared.snapshot());
             Ok(number(0))
         }
         (b"sleep", [milliseconds]) => {
@@ -1836,89 +1994,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             }
             Ok(number(0))
         }
-        (b"tree_progress", [task, children, completed, total]) => {
-            let completed = unsigned(storage, *completed)?;
-            let total = unsigned(storage, *total)?;
-            if completed > total {
-                return Err(Error::Invalid.into());
-            }
-            let key = *task.as_bytes();
-            let now = kernel::tsc::read();
-            let previous = shared.progress_trees.lock().get(&key).copied();
-            if let Some(previous) = previous
-                && completed != total
-                && now.saturating_sub(previous.updated) < Duration::from_millis(100)
-            {
-                return Ok(number(0));
-            }
-            let task = match previous {
-                Some(previous) => previous.task,
-                None => *storage
-                    .canonicalize(*task)
-                    .map_err(|error| {
-                        TaskError::Message(alloc::format!(
-                            "cannot identify progress task: {error:?}"
-                        ))
-                    })
-                    .map(Handle::from)?
-                    .as_bytes(),
-            };
-            let children = storage
-                .get_tree(Tree::try_from(*children).map_err(|_| Error::Invalid)?)
-                .map_err(|_| Error::Invalid)?;
-            let children = children
-                .iter()
-                .map(|child| {
-                    storage
-                        .canonicalize(*child)
-                        .map(|child| *Handle::from(child).as_bytes())
-                        .map_err(|error| {
-                            TaskError::Message(alloc::format!(
-                                "cannot identify Tree child: {error:?}"
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let finished = {
-                let mut tasks = shared.advised.lock();
-                let key = (task, Some(EvaluationOperation::Evaluate));
-                let entry = tasks.entry(key).or_insert_with(|| {
-                    ActiveTask::new(
-                        EvaluationTask {
-                            id: task,
-                            operation: Some(EvaluationOperation::Evaluate),
-                            ..EvaluationTask::default()
-                        },
-                        false,
-                    )
-                });
-                entry.progress.progress = Some((completed, total));
-                if !children.is_empty() {
-                    entry.progress.children = children
-                        .iter()
-                        .map(|child| (*child, Some(EvaluationOperation::Evaluate)))
-                        .collect();
-                }
-                let finished = completed == total && !entry.scoped;
-                if finished {
-                    tasks.remove(&key);
-                }
-                finished
-            };
-            kernel::host::os::tree_progress(task, children, completed, total);
-            if finished {
-                kernel::host::os::task_finished(task, Some(EvaluationOperation::Evaluate));
-            }
-            if completed == total {
-                shared.progress_trees.lock().remove(&key);
-            } else {
-                shared
-                    .progress_trees
-                    .lock()
-                    .insert(key, TreeProgress { task, updated: now });
-            }
-            Ok(number(0))
-        }
         (b"remote_labels", []) => {
             let labels = shared
                 .services
@@ -1927,17 +2002,30 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             let bytes = postcard::to_allocvec(&labels).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
-        (b"remote_export", [name, backing, full]) => {
+        (b"remote_export", [name, backing, full, hint @ ..]) if hint.len() <= 1 => {
             let bytes = storage
                 .get_blob(Blob::try_from(*name).map_err(|_| Error::Invalid)?)
                 .map_err(|_| Error::Invalid)?;
             let name: [u8; 32] = bytes.as_ref().try_into().map_err(|_| Error::Invalid)?;
+            let known = hint
+                .first()
+                .map(|handle| {
+                    storage
+                        .get_blob(Blob::try_from(*handle).map_err(|_| Error::Invalid)?)
+                        .map_err(|_| Error::Invalid)
+                })
+                .transpose()?;
+            let (known, extra) = known.as_deref().unwrap_or_default().as_chunks::<32>();
+            if !extra.is_empty() {
+                return Err(Error::Invalid.into());
+            }
             let bytes = shared
                 .services
                 .export_object(
                     name,
                     unsigned(storage, *backing)? != 0,
                     unsigned(storage, *full)? != 0,
+                    known,
                 )
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(storage.add_blob(&bytes).into())
@@ -1969,8 +2057,53 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .map_err(|error| TaskError::Message(error.to_string()))?;
             Ok(number(0))
         }
-        (b"remote_information", [collector, memory]) => {
+        (b"remote_inventory", [collector]) => {
             let information = shared
+                .services
+                .information(*collector, 0, 0)
+                .map_err(TaskError::Message)?;
+            let inventory = fixremote::protocol::Inventory {
+                data: information.data,
+                results: information.results,
+            };
+            let bytes = postcard::to_allocvec(&inventory).map_err(|_| Error::Invalid)?;
+            Ok(storage.add_blob(&bytes).into())
+        }
+        (b"remote_coupon", [request]) => {
+            use fixremote::protocol::{CouponOffer, Task};
+            let bytes = storage
+                .get_blob(Blob::try_from(*request).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?;
+            let (task, expected): (Task, [u8; 32]) =
+                postcard::from_bytes(&bytes).map_err(|_| Error::Invalid)?;
+            if !CouponOffer::supports(task.operation) {
+                return Err(Error::Invalid.into());
+            }
+            let input = Handle::parse_ref(&task.input).map_err(|_| Error::Invalid)?;
+            if !input.is_canonical() {
+                return Err(Error::Invalid.into());
+            }
+            let input = unsafe { input.to_owned() };
+            let kind = Blob::literal(&task.operation.to_le_bytes()).unwrap().into();
+            let coupons = runtime
+                .cached_claims_in(&[kind, input], &shared.saved_claims)
+                .map_err(|_| Error::Invalid)?;
+            let kernel = Tree::empty();
+            coupons
+                .into_iter()
+                .find(|coupon| {
+                    coupon_offer(storage, *coupon, task.operation).is_some_and(|offer| {
+                        offer.input == task.input
+                            && offer.result == expected
+                            && (offer.author == task.collector
+                                || offer.author == *kernel.as_handle().as_bytes())
+                    })
+                })
+                .map(Into::into)
+                .ok_or_else(|| Error::Empty.into())
+        }
+        (b"remote_information", [collector, memory]) => {
+            let mut information = shared
                 .services
                 .information(
                     *collector,
@@ -1982,6 +2115,9 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     unsigned(storage, *memory)?.min(kernel::memory::available() as u64),
                 )
                 .map_err(TaskError::Message)?;
+            information.memory_capacity_bytes = Some(
+                unsigned(storage, *memory)?.min(common::buddy::BuddyAllocator.total_size() as u64),
+            );
             let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
             Ok(storage.add_blob(&bytes).into())
         }
@@ -2149,7 +2285,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .and_then(Option::as_ref)
                 .cloned()
                 .ok_or(Error::Closed)?;
-            let mut stream = stream.lock();
             let length = stream.try_send(&bytes).map_err(|_| Error::Invalid)?;
             shared
                 .bytes_sent
@@ -2167,7 +2302,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .and_then(Option::as_ref)
                 .cloned()
                 .ok_or(Error::Closed)?;
-            let mut stream = stream.lock();
             let length = stream.try_recv(&mut bytes).map_err(|_| Error::Invalid)?;
             shared
                 .bytes_received
@@ -2182,6 +2316,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .get_mut(id)
                 .and_then(Option::take)
                 .ok_or(Error::Closed)?;
+            stream.shutdown();
             drop(stream);
             Ok(number(0))
         }
@@ -2194,6 +2329,45 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 kernel::memory::wait_until_available(required).is_ok(),
             )))
         }
+        (b"session_next", []) => {
+            let session = shared.session.as_ref().ok_or(Error::Invalid)?;
+            let request = session.next().ok_or(Error::Closed)?;
+            let stream = request
+                .stdio
+                .map(|id| add_stream(shared, kernel::host::net::Stream::from_id(id)));
+            Ok(storage
+                .add_tree(&[
+                    number(request.id),
+                    request.combination.into(),
+                    stream
+                        .map(number)
+                        .unwrap_or_else(|| storage.add_blob(b"").into()),
+                ])
+                .into())
+        }
+        (b"session_reply", [id, status, value]) => {
+            let session = shared.session.as_ref().ok_or(Error::Invalid)?;
+            let result = match integer(storage, *status)? {
+                0 => Ok(Ok(*value)),
+                2 => Err(text(storage, *value)?),
+                _ => Err(alloc::format!(
+                    "scheduler request failed with error {}",
+                    unsigned(storage, *value)?
+                )),
+            };
+            let id = integer(storage, *id)?;
+            let checkpoint = shared.saver.checkpoint();
+            let session = session.clone();
+            let saver = shared.saver.clone();
+            let snapshot = shared.snapshot();
+            spawn(move || {
+                let result = saver.wait(checkpoint).and(result);
+                kernel::host::os::evaluation_progress(snapshot);
+                session.reply(id, result);
+            });
+            Ok(number(0))
+        }
+        (b"node_identity", []) => Ok(storage.add_blob(&kernel::host::os::node_identity()).into()),
         (b"worker_wait", [epoch]) => {
             shared.event.wait(unsigned(storage, *epoch)?)?;
             Ok(number(0))
@@ -2209,6 +2383,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 2 => usize::from(shared.stopped()),
                 3 => usize::from(runtime.memoize != fix::Memoization::Never),
                 4 => kernel::memory::available(),
+                5 => common::buddy::BuddyAllocator.total_size(),
                 _ => return Err(Error::Invalid.into()),
             };
             Ok(number(value))
@@ -2361,11 +2536,32 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             }
             Ok(value)
         }
-        (b"storage_get_todo", [key]) => shared
-            .services
-            .get_todo(todo_reference(storage, *key)?)
-            .map_err(|_| Error::Invalid)?
-            .ok_or(Error::Empty.into()),
+        (b"storage_get_todo", [key]) => {
+            let reference = todo_reference(storage, *key)?;
+            let existing = shared
+                .services
+                .get_todo(reference)
+                .map_err(|_| Error::Invalid)?;
+            let mut extra = shared
+                .session
+                .as_ref()
+                .map(|session| session.todo(reference))
+                .unwrap_or_default();
+            if extra.is_empty() {
+                existing.ok_or(Error::Empty.into())
+            } else {
+                if let Some(existing) = existing {
+                    extra.extend(
+                        storage
+                            .get_tree(Tree::try_from(existing).map_err(|_| Error::Invalid)?)
+                            .map_err(|_| Error::Invalid)?
+                            .iter()
+                            .copied(),
+                    );
+                }
+                Ok(storage.add_tree(&extra).into())
+            }
+        }
         (b"storage_set_todo", [key, value]) => {
             shared
                 .services

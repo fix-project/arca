@@ -33,7 +33,6 @@ rust_library(
         "@crates//:snafu",
     ] + select({
         "//build/platforms:linux": [
-            "@crates//:indicatif",
             "@crates//:libc",
             "@crates//:nix",
         ],
@@ -66,7 +65,6 @@ rust_test(
     name = "progress_terminal_test",
     srcs = ["tests/progress_terminal.rs"],
     edition = "2024",
-    deps = ["@crates//:libc"],
     data = [":progress_probe"],
     rustc_env = {"PROBE": "$(rootpath :progress_probe)"},
     size = "small",

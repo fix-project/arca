@@ -94,6 +94,16 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn node_identity() -> [u8; 16] {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::NodeIdentity)
+        {
+            common::protocol::control::Response::NodeIdentity(value) => value,
+            _ => panic!("invalid runtime identity response"),
+        }
+    }
     pub fn cpu_time() -> Option<u64> {
         match crate::pipe::HOST
             .get()
@@ -135,42 +145,6 @@ pub mod os {
             .request(&common::protocol::control::Request::Sleep(milliseconds));
     }
 
-    pub fn tree_progress(task: [u8; 32], children: Vec<[u8; 32]>, completed: u64, total: u64) {
-        let _ = crate::pipe::HOST.get().unwrap().request(
-            &common::protocol::control::Request::TreeProgress {
-                task,
-                children,
-                completed,
-                total,
-            },
-        );
-    }
-
-    pub fn task_finished(
-        task: [u8; 32],
-        operation: Option<common::protocol::control::EvaluationOperation>,
-    ) {
-        let _ = crate::pipe::HOST
-            .get()
-            .unwrap()
-            .request(&common::protocol::control::Request::TaskFinished { task, operation });
-    }
-
-    pub fn task_advice(
-        task: [u8; 32],
-        operation: Option<common::protocol::control::EvaluationOperation>,
-        key: &[u8],
-        payload: &[u8],
-    ) {
-        let _ = crate::pipe::HOST.get().unwrap().request(
-            &common::protocol::control::Request::TaskAdvice {
-                task,
-                operation,
-                key: key.to_vec(),
-                payload: payload.to_vec(),
-            },
-        );
-    }
     use crate::prelude::*;
     use common::protocol::*;
 
@@ -239,7 +213,7 @@ pub mod net {
     }
 
     pub struct Stream {
-        pipe: StreamPipe,
+        id: u64,
     }
 
     pub type TcpStream = Stream;
@@ -275,9 +249,7 @@ pub mod net {
 
         pub fn try_accept(&self) -> Result<TcpStream, ErrorKind> {
             match self.pipe.lock().request(&listener::Request::Accept) {
-                listener::Response::Pipe(id) => Ok(TcpStream {
-                    pipe: unsafe { StreamPipe::new(get_pipe(id)) },
-                }),
+                listener::Response::Stream(id) => Ok(TcpStream { id }),
                 listener::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
@@ -294,6 +266,9 @@ pub mod net {
     }
 
     impl Stream {
+        pub fn from_id(id: u64) -> Self {
+            Self { id }
+        }
         pub fn connect(hostname: &str, port: u16) -> TcpStream {
             Self::try_connect(hostname, port).expect("host TCP connect failed")
         }
@@ -338,57 +313,68 @@ pub mod net {
 
         fn from_response(response: control::Response) -> Result<TcpStream, ErrorKind> {
             match response {
-                control::Response::Pipe(id) => unsafe {
-                    Ok(TcpStream {
-                        pipe: StreamPipe::new(get_pipe(id)),
-                    })
-                },
+                control::Response::Stream(id) => Ok(TcpStream { id }),
                 control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
-        pub fn send(&mut self, bytes: &[u8]) -> usize {
+        pub fn send(&self, bytes: &[u8]) -> usize {
             self.try_send(bytes).expect("host TCP send failed")
         }
 
-        pub fn try_send(&mut self, bytes: &[u8]) -> Result<usize, ErrorKind> {
-            match self.pipe.request(&stream::Request::Send(bytes.into())) {
-                stream::Response::Length(len) if len <= bytes.len() => Ok(len),
-                stream::Response::Err(error) => Err(error.into()),
+        pub fn try_send(&self, bytes: &[u8]) -> Result<usize, ErrorKind> {
+            match crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamSend {
+                    id: self.id,
+                    bytes: bytes.into(),
+                }) {
+                control::Response::Length(len) if len <= bytes.len() => Ok(len),
+                control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
-        pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
+        pub fn recv(&self, bytes: &mut [u8]) -> usize {
             self.try_recv(bytes).expect("host TCP receive failed")
         }
 
-        pub fn try_recv(&mut self, bytes: &mut [u8]) -> Result<usize, ErrorKind> {
-            match self.pipe.request(&stream::Request::Receive(bytes.len())) {
-                stream::Response::Bytes(buf) if buf.len() <= bytes.len() => {
+        pub fn try_recv(&self, bytes: &mut [u8]) -> Result<usize, ErrorKind> {
+            match crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamReceive {
+                    id: self.id,
+                    length: bytes.len(),
+                }) {
+                control::Response::StreamBytes(buf) if buf.len() <= bytes.len() => {
                     bytes[..buf.len()].copy_from_slice(&buf);
                     Ok(buf.len())
                 }
-                stream::Response::Err(error) => Err(error.into()),
+                control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
+        pub fn shutdown(&self) {
+            let _ = crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamClose(self.id));
+        }
+
         pub fn close(self) {
-            let _ = self;
+            self.shutdown();
         }
     }
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let stream::Response::Ack = self.pipe.request(&stream::Request::Close) else {
-                panic!("bad response");
-            };
+            self.shutdown();
         }
     }
-
-    impl !Sync for TcpStream {}
 
     impl core::fmt::Write for TcpStream {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -721,4 +707,38 @@ pub mod fs {
     }
 
     impl !Sync for File {}
+}
+
+pub mod session {
+    use common::protocol::{
+        control::{ErrorKind, Request, Response},
+        session::Command,
+    };
+    pub fn next() -> Result<Option<Command>, ErrorKind> {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&Request::SessionNext)
+        {
+            Response::SessionCommand(command) => Ok(command),
+            Response::Err(error) => Err(error.into()),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+    pub fn reply(
+        connection: common::protocol::session::Id,
+        request: u64,
+        status: u8,
+        output: alloc::vec::Vec<u8>,
+    ) {
+        crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&Request::SessionReply {
+                connection,
+                request,
+                status,
+                output,
+            });
+    }
 }

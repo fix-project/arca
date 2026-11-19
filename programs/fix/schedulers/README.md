@@ -38,7 +38,7 @@ For example, the [recomputation scheduler](tests/recompute.rs) uses the graph di
 
 Register a program with `fix_scheduler(name = "NAME", modules = ["parallel.rs"])`. List the other scheduler files it uses in `modules`. The rule provides the Wasm entry point and allocator; `NAME::run` contains the program's launch and final-retention choices.
 
-Each scheduling round uses a map from request to `(worker, locality score)`. Worker zero is local. OnePass prefers cached results, then the worker with the most resident bytes; ties favor usable parallelism, capped by advice when supplied, then local execution. Without a locality candidate, explicit parallelism advice chooses usable capacity; otherwise it stays local. Local scores count retained bytes; remote scores measure the advantage over local execution. Higher scores run first.
+Each scheduling round uses a map from request to `(worker, locality score)`. Worker zero is local. OnePass prefers cached results, then the worker with the most resident bytes; ties favor usable parallelism, capped by advice when supplied, then local execution. When the scheduler knows which workers have a selection's Ref backing, it places that selection on one of those workers. Without a locality candidate, explicit parallelism advice chooses usable capacity; otherwise it stays local. Local scores count retained bytes; remote scores measure the advantage over local execution. Higher scores run first.
 
 Hint starts with OnePass's assignments. It pulls back work when the estimated output outweighs the remote locality advantage, then reconsiders parents after their children. It retains twice the local parallelism and sends lower-score excess work round-robin to a prefix of remotes with sufficient capacity. Assignments are rebuilt as evaluation reveals more dependencies. Dispatch stops at a remotely assigned root, leaving its descendants to that worker.
 
@@ -51,7 +51,7 @@ Applications can use `fixwasm::advise(target, key, payload)` with these keys:
 - `fix::output-size`: estimated output bytes.
 - `fix::parallel`: estimated number of independent jobs. One means serial work; larger counts describe parallelism that will become available after expansion. Zero leaves parallelism unspecified.
 
-Payloads are eight-byte little-endian unsigned integers. Advice can target an available combination before returning its application thunk. It does not change the value or its identity. Advice is delivered synchronously through `on_advice`; it carries no continuation or reply. Execution continues automatically after the callback. The supplied advice handler ignores unknown keys, malformed payloads, and unavailable targets.
+Payloads are eight-byte little-endian unsigned integers. Advice can target an available combination before returning its application thunk. It does not change the value or its identity. The runtime delivers advice through `on_advice` before the application result. The supplied advice handler ignores unknown keys, malformed payloads, and unavailable targets.
 
 `compile` advises the next compilation thunk about the independent C compilation jobs before they are generated. It uses the input Wasm size as a rough output-size estimate; these estimates do not affect evaluation results or progress totals.
 

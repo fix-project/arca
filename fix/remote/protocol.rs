@@ -9,8 +9,10 @@ use alloc::{
 use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
+pub mod topology;
+
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 20;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 pub fn encode_labels(labels: &[(String, Name)]) -> Result<Vec<u8>, postcard::Error> {
@@ -30,6 +32,20 @@ pub struct Task {
     pub operation: u64,
     pub collector: Name,
     pub input: Name,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CouponOffer {
+    pub operation: u64,
+    pub author: Name,
+    pub input: Name,
+    pub result: Name,
+}
+
+impl CouponOffer {
+    pub fn supports(operation: u64) -> bool {
+        matches!(operation, 1 | 2)
+    }
 }
 impl Task {
     pub fn stage_programs(collector: Name, scheduler: Name) -> Self {
@@ -98,6 +114,13 @@ pub struct Offer {
     pub todo: Option<Name>,
 }
 
+impl Offer {
+    /// A Ref in a proposal describes backing available separately from its sender.
+    pub fn is_ref(&self) -> bool {
+        self.name[31] & 0x1f == 0x10
+    }
+}
+
 impl Record {
     pub fn offer(&self) -> Offer {
         Offer {
@@ -113,6 +136,26 @@ pub struct Transfer {
     pub roots: Vec<Name>,
     pub records: Vec<Record>,
     pub certificates: Vec<Record>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Proposal {
+    pub transfer: Transfer,
+    pub backing: Vec<Name>,
+    /// Refs whose backing is available from the sender in a separate request.
+    pub refs: Vec<Name>,
+    pub coupons: Vec<CouponOffer>,
+}
+
+impl From<(Transfer, Vec<Name>)> for Proposal {
+    fn from((transfer, backing): (Transfer, Vec<Name>)) -> Self {
+        Self {
+            transfer,
+            backing,
+            refs: Vec::new(),
+            coupons: Vec::new(),
+        }
+    }
 }
 impl Transfer {
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
@@ -157,13 +200,43 @@ pub fn prepare_transfer(
 pub struct Information {
     pub parallelism: u32,
     pub memory_bytes: Option<u64>,
+    pub memory_capacity_bytes: Option<u64>,
     pub link_speed: f64,
     pub data: Vec<Name>,
     pub results: Vec<Task>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Inventory {
+    pub data: Vec<Name>,
+    pub results: Vec<Task>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkerCapacity {
+    pub parallelism: u32,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Packet {
+    Topology(topology::Topology),
+    Progress(Vec<u8>),
+    Start(u64, Message),
+    Job(u64, Message),
+    Stop(u64),
+    Inventory(topology::NodeId, Inventory),
+    Capacity(topology::NodeId, u64, WorkerCapacity),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    Hello {
+        link: topology::LinkId,
+        node: topology::NodeId,
+    },
+    HelloAccepted(topology::NodeId),
     RequestTransfer(Name),
     RequestProgress,
     EvaluationProgress(
@@ -205,6 +278,7 @@ pub enum Message {
         task: Option<Task>,
         result: Option<Name>,
         objects: Vec<Offer>,
+        coupons: Vec<CouponOffer>,
     },
     AcceptTransfer {
         task: Option<Task>,
@@ -212,19 +286,46 @@ pub enum Message {
         objects: Vec<Name>,
         trusted_keys: Vec<String>,
     },
+    RequestCoupon {
+        task: Task,
+        result: Name,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
-struct Envelope {
+struct Envelope<T> {
     version: u32,
-    message: Message,
+    message: T,
 }
 
 pub fn encode(message: Message) -> Result<Vec<u8>, postcard::Error> {
+    encode_wire(message)
+}
+
+fn encode_wire<T: Serialize>(message: T) -> Result<Vec<u8>, postcard::Error> {
     postcard::to_allocvec(&Envelope {
         version: VERSION,
         message,
     })
+}
+
+fn decode_wire<T: for<'a> Deserialize<'a>, E>(bytes: &[u8]) -> Result<T, Error<E>> {
+    let decode = |error| Error::Decode {
+        length: bytes.len(),
+        error,
+    };
+    let (version, body): (u32, _) = postcard::take_from_bytes(bytes).map_err(decode)?;
+    if version != VERSION {
+        return Err(Error::Version {
+            expected: VERSION,
+            received: version,
+        });
+    }
+    let (message, trailing): (T, _) = postcard::take_from_bytes(body).map_err(decode)?;
+    if !trailing.is_empty() {
+        return Err(Error::Invalid);
+    }
+    Ok(message)
 }
 
 #[derive(Debug)]
@@ -239,6 +340,7 @@ pub enum Error<E> {
         expected: u32,
         received: u32,
     },
+    IncompleteTransfer,
     Rejected,
     Remote(String),
 }
@@ -254,6 +356,7 @@ impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
             Self::Version { expected, received } => {
                 write!(f, "protocol version {received}; expected {expected}")
             }
+            Self::IncompleteTransfer => f.write_str("connection closed during transfer"),
             Self::Rejected => f.write_str("remote rejected the request"),
             Self::Remote(message) => f.write_str(message),
         }
@@ -278,6 +381,23 @@ struct Pending {
     selected: BTreeSet<Name>,
     requested: BTreeSet<Name>,
     records: BTreeMap<Name, Record>,
+}
+
+pub fn send_packet<S: Write>(stream: &mut S, packet: Packet) -> Result<(), Error<S::Error>> {
+    fixtransport::complete(asynchronous::send_packet(
+        &mut fixtransport::Blocking(stream),
+        packet,
+    ))
+}
+
+pub fn receive_packet<S: Read>(
+    stream: &mut S,
+    limit: usize,
+) -> Result<Option<Packet>, Error<S::Error>> {
+    fixtransport::complete(asynchronous::receive_packet(
+        &mut fixtransport::Blocking(stream),
+        limit,
+    ))
 }
 
 pub fn send<S: Write>(stream: &mut S, message: Message) -> Result<(), Error<S::Error>> {
@@ -354,24 +474,72 @@ pub fn receive_transfer_with_info<S: Read + Write>(
 pub mod asynchronous {
     use super::*;
     use fixtransport::{AsyncRead, AsyncWrite};
-    pub async fn send<S: AsyncWrite>(
+
+    pub trait ReadMessage: embedded_io::ErrorType {
+        fn read_message(
+            &mut self,
+            limit: usize,
+        ) -> impl core::future::Future<Output = Result<Option<Message>, Error<Self::Error>>>;
+    }
+
+    impl<S: AsyncRead> ReadMessage for S {
+        async fn read_message(
+            &mut self,
+            limit: usize,
+        ) -> Result<Option<Message>, Error<Self::Error>> {
+            receive_observed(self, limit, &mut |_, _| {}).await
+        }
+    }
+
+    pub trait WriteMessage: embedded_io::ErrorType {
+        fn write_message(
+            &mut self,
+            message: Message,
+        ) -> impl core::future::Future<Output = Result<(), Error<Self::Error>>>;
+    }
+
+    impl<S: AsyncWrite> WriteMessage for S {
+        async fn write_message(&mut self, message: Message) -> Result<(), Error<Self::Error>> {
+            send_wire(self, message).await
+        }
+    }
+
+    async fn send_wire<S: AsyncWrite, T: Serialize>(
         stream: &mut S,
-        message: Message,
+        message: T,
     ) -> Result<(), Error<S::Error>> {
-        let bytes = postcard::to_allocvec(&Envelope {
-            version: VERSION,
-            message,
-        })
-        .map_err(|_| Error::Invalid)?;
+        let bytes = encode_wire(message).map_err(|_| Error::Invalid)?;
         fixtransport::asynchronous::send(stream, &bytes).await?;
         Ok(())
     }
 
-    pub async fn receive<S: AsyncRead>(
+    pub async fn send_packet<S: AsyncWrite>(
+        stream: &mut S,
+        packet: Packet,
+    ) -> Result<(), Error<S::Error>> {
+        send_wire(stream, packet).await
+    }
+
+    pub async fn receive_packet<S: AsyncRead>(
+        stream: &mut S,
+        limit: usize,
+    ) -> Result<Option<Packet>, Error<S::Error>> {
+        let bytes = fixtransport::asynchronous::receive(stream, limit).await?;
+        bytes.as_deref().map(decode_wire).transpose()
+    }
+
+    pub async fn send<S: WriteMessage>(
+        stream: &mut S,
+        message: Message,
+    ) -> Result<(), Error<S::Error>> {
+        stream.write_message(message).await
+    }
+
+    pub async fn receive<S: ReadMessage>(
         stream: &mut S,
         limit: usize,
     ) -> Result<Option<Message>, Error<S::Error>> {
-        receive_observed(stream, limit, &mut |_, _| {}).await
+        stream.read_message(limit).await
     }
 
     pub async fn receive_observed<S: AsyncRead>(
@@ -379,27 +547,8 @@ pub mod asynchronous {
         limit: usize,
         progress: &mut impl FnMut(u64, u64),
     ) -> Result<Option<Message>, Error<S::Error>> {
-        let Some(bytes) =
-            fixtransport::asynchronous::receive_observed(stream, limit, progress).await?
-        else {
-            return Ok(None);
-        };
-        let decode = |error| Error::Decode {
-            length: bytes.len(),
-            error,
-        };
-        let (version, body): (u32, _) = postcard::take_from_bytes(&bytes).map_err(decode)?;
-        if version != VERSION {
-            return Err(Error::Version {
-                expected: VERSION,
-                received: version,
-            });
-        }
-        let (message, trailing): (Message, _) = postcard::take_from_bytes(body).map_err(decode)?;
-        if !trailing.is_empty() {
-            return Err(Error::Invalid);
-        }
-        Ok(Some(message))
+        let bytes = fixtransport::asynchronous::receive_observed(stream, limit, progress).await?;
+        bytes.as_deref().map(decode_wire).transpose()
     }
 
     fn roots(task: Option<&Task>, result: Option<Name>) -> Vec<Name> {
@@ -409,7 +558,7 @@ pub mod asynchronous {
         }
     }
 
-    pub async fn send_transfer<S: AsyncRead + AsyncWrite>(
+    pub async fn send_transfer<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         task: &Task,
@@ -427,19 +576,25 @@ pub mod asynchronous {
             certify,
         )
         .await
+        .map(|_| ())
     }
 
-    /// Send a proposal, reading backing only for records selected by the receiver.
-    pub async fn send_proposal<S: AsyncRead + AsyncWrite>(
+    /// Send selected records and return their total data payload in bytes.
+    pub async fn send_proposal<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         task: Option<&Task>,
         result: Option<Name>,
-        proposal: (Transfer, Vec<Name>),
+        proposal: impl Into<Proposal>,
         mut read: impl FnMut(Name) -> Result<Vec<u8>, String>,
         mut certify: impl FnMut(Name, &[String]) -> Option<(CertificateRef, Record)>,
-    ) -> Result<(), Error<S::Error>> {
-        let (transfer, backing) = proposal;
+    ) -> Result<u64, Error<S::Error>> {
+        let Proposal {
+            transfer,
+            backing,
+            refs,
+            coupons,
+        } = proposal.into();
         let backing: BTreeSet<_> = backing.into_iter().collect();
         if transfer.roots != roots(task, result) {
             return Err(Error::Invalid);
@@ -461,19 +616,29 @@ pub mod asynchronous {
                         offer.backing |= backing.contains(&record.name);
                         offer
                     })
+                    .chain(refs.into_iter().map(|name| Offer {
+                        name,
+                        backing: true,
+                        todo: None,
+                    }))
                     .collect(),
+                coupons,
             },
         )
         .await?;
-        let Some(Message::AcceptTransfer {
-            task: accepted,
-            result: accepted_result,
-            objects,
-            trusted_keys,
-        }) = receive(stream, limit).await?
-        else {
-            return Err(Error::Invalid);
-        };
+        let (accepted, accepted_result, objects, trusted_keys) =
+            match receive(stream, limit).await? {
+                Some(Message::AcceptTransfer {
+                    task,
+                    result,
+                    objects,
+                    trusted_keys,
+                }) => (task, result, objects, trusted_keys),
+                Some(Message::Failure(message)) => return Err(Error::Remote(message)),
+                Some(Message::Rejected) => return Err(Error::Rejected),
+                None => return Err(Error::IncompleteTransfer),
+                _ => return Err(Error::Invalid),
+            };
         let selected: BTreeSet<_> = objects.iter().copied().collect();
         if accepted.as_ref() != task
             || accepted_result != result
@@ -488,6 +653,7 @@ pub mod asynchronous {
             .map(|record| (record.name, record))
             .collect();
         let mut sent = BTreeSet::new();
+        let mut bytes = 0;
         for record in &transfer.records {
             if !selected.contains(&record.name) || !sent.insert(record.name) {
                 continue;
@@ -521,10 +687,12 @@ pub mod asynchronous {
                     return Err(Error::Invalid);
                 }
                 if sent.insert(blob.name) {
+                    bytes += blob.data.as_ref().map_or(0, |data| data.len() as u64);
                     send(stream, Message::BlobData(blob)).await?;
                 }
                 record.certificates = alloc::vec![certificate];
             }
+            bytes += record.data.as_ref().map_or(0, |data| data.len() as u64);
             let message = if record.name[31] & 0x20 != 0 {
                 Message::TreeData(record)
             } else {
@@ -542,10 +710,11 @@ pub mod asynchronous {
                 None => Message::Run(task.ok_or(Error::Invalid)?.clone()),
             },
         )
-        .await
+        .await?;
+        Ok(bytes)
     }
 
-    pub async fn receive_transfer<S: AsyncRead + AsyncWrite>(
+    pub async fn receive_transfer<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         parallelism: u32,
@@ -565,7 +734,7 @@ pub mod asynchronous {
         .await
     }
 
-    pub async fn receive_transfer_with_info<S: AsyncRead + AsyncWrite>(
+    pub async fn receive_transfer_with_info<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         information: &Information,
@@ -576,7 +745,7 @@ pub mod asynchronous {
             .await
     }
 
-    pub async fn receive_transfer_with_info_from<S: AsyncRead + AsyncWrite>(
+    pub async fn receive_transfer_with_info_from<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         information: &Information,
@@ -596,7 +765,7 @@ pub mod asynchronous {
         .await
     }
 
-    pub async fn receive_transfer_observed<S: AsyncRead + AsyncWrite>(
+    pub async fn receive_transfer_observed<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         limit: usize,
         information: &Information,
@@ -617,7 +786,7 @@ pub mod asynchronous {
                 return if pending.is_none() {
                     Ok(None)
                 } else {
-                    Err(Error::Invalid)
+                    Err(Error::IncompleteTransfer)
                 };
             };
             progress(&message);
@@ -630,8 +799,10 @@ pub mod asynchronous {
                 Message::ProposeTransfer {
                     task,
                     result,
-                    objects,
+                    mut objects,
+                    ..
                 } if pending.is_none() => {
+                    objects.retain(|offer| !offer.is_ref());
                     let offered: BTreeSet<_> = objects.iter().map(|offer| offer.name).collect();
                     if offered.len() != objects.len() {
                         return Err(Error::Invalid);

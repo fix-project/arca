@@ -105,14 +105,11 @@ impl Scheduler for Parallel<'_> {
         }
         let cluster = self.cluster().await?;
         let mut failures = alloc::vec::Vec::new();
-        for (index, remote) in fixscheduler::remote::configured()?.iter().enumerate() {
-            if remote.address.starts_with("file://") {
-                continue;
-            }
-            match cluster.request_transfer(index + 1, value).await {
+        for (location, name) in cluster.sources(value)? {
+            match cluster.request_transfer(location, value).await {
                 Ok(Some(value)) => return Ok(value),
                 Ok(None) => (),
-                Err(error) => failures.push(alloc::format!("{}: {error:?}", remote.name)),
+                Err(error) => failures.push(alloc::format!("{name}: {error:?}")),
             }
         }
         if !failures.is_empty() {
@@ -154,23 +151,18 @@ impl<'a> Parallel<'a> {
         }
         let data = policy.load(input).await?;
         let children = fields(&data)?;
-        let completed = core::cell::Cell::new(0u64);
-        fixscheduler::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
-        let coupons = fixscheduler::executor::task::try_join_all(children.iter().map(|child| {
-            alloc::boxed::Box::pin(async {
-                let coupon = policy.eval(child).await?;
-                completed.set(completed.get() + 1);
-                fixscheduler::kernel::tree_progress(
-                    input,
-                    &[],
-                    completed.get(),
-                    children.len() as u64,
-                )?;
-                Ok::<Value, Error>(coupon)
-            })
-        }))
-        .await?;
-        collector::eval_tree(policy, input, &coupons, retain).await
+        let evaluation = fixscheduler::progress::evaluation(1, input);
+        let result = async {
+            let coupons = fixscheduler::executor::task::try_join_all(
+                children
+                    .iter()
+                    .map(|child| alloc::boxed::Box::pin(policy.eval(child))),
+            )
+            .await?;
+            collector::eval_tree(policy, input, &coupons, retain).await
+        }
+        .await;
+        evaluation.finish(result)
     }
 
     /// Reuse the connections and inventories of the configured remote machines.

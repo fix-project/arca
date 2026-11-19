@@ -1,4 +1,5 @@
 mod cluster;
+mod network;
 pub mod server;
 use crate::io::Io;
 use crate::{
@@ -54,6 +55,16 @@ pub(crate) fn report_status(
     information: Option<&protocol::Information>,
     error: &str,
 ) {
+    report_node_status(remote, status, information, error, None);
+}
+
+pub(crate) fn report_node_status(
+    remote: &str,
+    status: &str,
+    information: Option<&protocol::Information>,
+    error: &str,
+    node: Option<protocol::topology::NodeId>,
+) {
     let _ = (|| -> Result<(), Error> {
         let memory = match information.and_then(|info| info.memory_bytes) {
             Some(bytes) => crate::shell::capture(bytes)?,
@@ -67,6 +78,9 @@ pub(crate) fn report_status(
                 crate::shell::capture(information.map_or(0, |info| info.parallelism as u64))?,
                 memory,
                 crate::shell::capture(Blob::create(error))?,
+                crate::shell::capture(Blob::create(
+                    node.as_ref().map_or(&[][..], |node| &node[..]),
+                ))?,
             ],
         )?;
         Ok(())
@@ -123,10 +137,7 @@ fn request_failure(status: u64, value: &Value) -> String {
     format!("scheduler operation failed with status {status}")
 }
 
-pub fn propose_object(
-    name: protocol::Name,
-    backing: bool,
-) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+pub fn propose_object(name: protocol::Name, backing: bool) -> Result<protocol::Proposal, String> {
     object_proposal(name, backing, false)
 }
 
@@ -134,7 +145,7 @@ fn object_proposal(
     name: protocol::Name,
     backing: bool,
     full: bool,
-) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+) -> Result<protocol::Proposal, String> {
     let (status, value) = request(tree![
         Blob::create(b"remote_export"),
         Blob::create(name),
@@ -142,6 +153,10 @@ fn object_proposal(
         full as u64
     ])
     .map_err(|error| format!("{error:?}"))?;
+    decode_proposal(status, value)
+}
+
+fn decode_proposal(status: u64, value: Value) -> Result<protocol::Proposal, String> {
     if status != 0 {
         return Err(request_failure(status, &value));
     }
@@ -150,30 +165,57 @@ fn object_proposal(
 }
 
 /// Propose the minimum repositories of the supplied roots without reading Blob backing.
-pub fn propose(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
-    propose_values(values, false)
+pub fn propose(values: &[Value]) -> Result<protocol::Proposal, String> {
+    let mut proposals = Vec::new();
+    for value in values {
+        let name = value
+            .raw_handle_bytes()
+            .map_err(|error| format!("{error:?}"))?;
+        proposals.push((name, object_proposal(name, true, false)?));
+    }
+    Ok(merge_proposals(proposals))
 }
 
-/// Propose the accessible backing of a complete computation, including deferred definitions.
-pub fn propose_full(values: &[Value]) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
-    propose_values(values, true)
-}
-
-fn propose_values(
-    values: &[Value],
+pub(crate) async fn propose_task(
+    collector: &Value,
+    input: &Value,
+    backing: bool,
     full: bool,
-) -> Result<(protocol::Transfer, Vec<protocol::Name>), String> {
+    inventory: Option<&Value>,
+) -> Result<protocol::Proposal, String> {
+    let empty = crate::shell::capture(Blob::create(b"")).map_err(|error| format!("{error:?}"))?;
+    let inventory = inventory.unwrap_or(&empty);
+    let mut proposals = Vec::new();
+    for (value, backing, full) in [(collector, true, false), (input, backing, full)] {
+        let name = value
+            .raw_handle_bytes()
+            .map_err(|error| format!("{error:?}"))?;
+        let (status, value) = crate::io::Io
+            .request(tree![
+                Blob::create(b"remote_export"),
+                Blob::create(name),
+                backing as u64,
+                full as u64,
+                inventory,
+            ])
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        proposals.push((name, decode_proposal(status, value)?));
+    }
+    Ok(merge_proposals(proposals))
+}
+
+fn merge_proposals(proposals: Vec<(protocol::Name, protocol::Proposal)>) -> protocol::Proposal {
     let mut roots = Vec::new();
     let mut records = alloc::collections::BTreeMap::new();
     let mut order = Vec::new();
     let mut certificates = alloc::collections::BTreeMap::new();
     let mut backing = alloc::collections::BTreeSet::new();
-    for value in values {
-        let name = value
-            .raw_handle_bytes()
-            .map_err(|error| format!("{error:?}"))?;
-        let (transfer, objects) = object_proposal(name, true, full)?;
+    let mut refs = alloc::collections::BTreeSet::new();
+    let mut coupons = alloc::collections::BTreeSet::new();
+    for (name, proposal) in proposals {
         roots.push(name);
+        let transfer = proposal.transfer;
         for record in transfer.records {
             order.push(record.name);
             records.insert(record.name, record);
@@ -184,7 +226,9 @@ fn propose_values(
                 .into_iter()
                 .map(|record| (record.name, record)),
         );
-        backing.extend(objects);
+        backing.extend(proposal.backing);
+        refs.extend(proposal.refs);
+        coupons.extend(proposal.coupons);
     }
     let certificates = certificates
         .into_iter()
@@ -197,14 +241,16 @@ fn propose_values(
         .filter_map(|name| records.remove(&name))
         .collect();
     records.reverse();
-    Ok((
-        protocol::Transfer {
+    protocol::Proposal {
+        transfer: protocol::Transfer {
             roots,
             certificates,
             records,
         },
-        backing.into_iter().collect(),
-    ))
+        backing: backing.into_iter().collect(),
+        refs: refs.into_iter().collect(),
+        coupons: coupons.into_iter().collect(),
+    }
 }
 
 pub fn read_backing(name: protocol::Name, offset: u64, length: usize) -> Result<Vec<u8>, String> {
@@ -334,12 +380,12 @@ pub fn bytes(value: &Value) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// An asynchronous TCP connection owned by one task at a time.
-pub struct Connection(u64);
-impl embedded_io::ErrorType for Connection {
+/// An asynchronous host byte stream.
+pub struct RawStream(u64);
+impl embedded_io::ErrorType for &RawStream {
     type Error = IoError;
 }
-impl fixtransport::AsyncRead for Connection {
+impl fixtransport::AsyncRead for &RawStream {
     async fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
         if bytes.is_empty() {
             return Ok(0);
@@ -365,7 +411,7 @@ impl fixtransport::AsyncRead for Connection {
         Ok(length)
     }
 }
-impl fixtransport::AsyncWrite for Connection {
+impl fixtransport::AsyncWrite for &RawStream {
     async fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error> {
         let bytes = &bytes[..bytes.len().min(65536)];
         let (status, value) = Io
@@ -385,9 +431,57 @@ impl fixtransport::AsyncWrite for Connection {
         Ok(())
     }
 }
-impl Drop for Connection {
+impl RawStream {
+    fn close(&self) {
+        let _ = crate::abi::request(tree![Blob::create(b"stream_close"), self.0]);
+    }
+}
+impl Drop for RawStream {
     fn drop(&mut self) {
         let _ = crate::abi::request(tree![Blob::create(b"stream_close"), self.0]);
+    }
+}
+
+pub enum Connection {
+    Raw(alloc::rc::Rc<RawStream>),
+    Request(network::Request),
+}
+impl Connection {
+    fn raw(id: u64) -> Self {
+        Self::Raw(alloc::rc::Rc::new(RawStream(id)))
+    }
+
+    fn finish_request(&mut self) {
+        if let Self::Request(request) = self {
+            request.finish();
+        }
+    }
+}
+impl embedded_io::ErrorType for Connection {
+    type Error = IoError;
+}
+impl protocol::asynchronous::ReadMessage for Connection {
+    async fn read_message(
+        &mut self,
+        limit: usize,
+    ) -> Result<Option<protocol::Message>, protocol::Error<IoError>> {
+        match self {
+            Self::Raw(stream) => protocol::asynchronous::receive(&mut stream.as_ref(), limit).await,
+            Self::Request(request) => Ok(request.read().await),
+        }
+    }
+}
+impl protocol::asynchronous::WriteMessage for Connection {
+    async fn write_message(
+        &mut self,
+        message: protocol::Message,
+    ) -> Result<(), protocol::Error<IoError>> {
+        match self {
+            Self::Raw(stream) => protocol::asynchronous::send(&mut stream.as_ref(), message).await,
+            Self::Request(request) => request
+                .write(message)
+                .map_err(|error| protocol::Error::Transport(fixtransport::Error::Io(error))),
+        }
     }
 }
 
@@ -416,7 +510,7 @@ impl Connection {
                 ])
                 .await?;
             return if status == 0 {
-                Ok(Some(Self(stream.read_u64()?)))
+                Ok(Some(Self::raw(stream.read_u64()?)))
             } else {
                 Ok(None)
             };
@@ -442,7 +536,7 @@ impl Connection {
             ])
             .await?;
         Ok(if status == 0 {
-            Some(Self(stream.read_u64()?))
+            Some(Self::raw(stream.read_u64()?))
         } else {
             None
         })
@@ -472,3 +566,5 @@ pub fn read_object(name: protocol::Name) -> Result<Vec<u8>, String> {
         usize::try_from(length).map_err(|_| String::from("backing exceeds address space"))?;
     read_backing(name, 0, length)
 }
+
+mod local;

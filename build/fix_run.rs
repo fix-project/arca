@@ -75,6 +75,7 @@ fn run() -> Result<()> {
     let mut shell = Shell::open(
         &repository.0,
         Options {
+            executable: fix,
             trust: Some(repository.0.join(".fix/trust")),
             unsigned: true,
             jobs: jobs.get(),

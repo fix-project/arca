@@ -35,7 +35,6 @@ talc = "=4.4.3"
 time = { version = "=0.3.55", default-features = false, features = ["alloc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-indicatif = { version = "=0.18.6", default-features = false }
 toml = "=1.2.1+spec-1.1.0"
 criterion = { version = "=0.8.2", default-features = false }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }

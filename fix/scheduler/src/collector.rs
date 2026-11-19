@@ -4,7 +4,7 @@ use crate::shell::{self, Value, as_tree, capture, child, fields};
 use crate::storage;
 use alloc::{boxed::Box, vec::Vec};
 pub use fixwasm::coupon::Exchange;
-use fixwasm::{Error, ThunkType, Value as AsValue, ValueType, backend::Tree, tree};
+use fixwasm::{DataType, Error, ThunkType, Value as AsValue, ValueType, backend::Tree, tree};
 
 /// Exchange explicitly supplied coupons for a requested conclusion.
 pub async fn exchange(
@@ -19,22 +19,141 @@ pub async fn exchange(
 
 /// Build an exchange request without invoking the collector.
 pub fn request(rule: Exchange, lhs: &Value, rhs: &Value, coupons: &[Tree]) -> Result<Value, Error> {
-    let witnesses = coupons
-        .iter()
-        .map(|coupon| {
-            let claim = crate::storage::identify(&crate::shell::child(coupon, 1)?)?
-                .ok_or(Error::OutOfBounds)?;
-            capture(tree![coupon, claim])
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    capture(tree![
+    let mut operands = None;
+    if matches!(rule, Exchange::Eval | Exchange::Congruence)
+        && !coupons.is_empty()
+        && let (Ok(lhs), Ok(rhs)) = (as_tree(lhs), as_tree(rhs))
+    {
+        if lhs.len()? != coupons.len() as u64 || rhs.len()? != coupons.len() as u64 {
+            return Err(Error::WrongType);
+        }
+        operands = Some((lhs, rhs));
+    }
+    let mut canonicalize = false;
+    let mut witnesses = Vec::with_capacity(coupons.len());
+    let collector = callable()?;
+    let collector_handle = collector.capture()?;
+    for (index, coupon) in coupons.iter().enumerate() {
+        let reference = child(coupon, 1)?;
+        let claim = storage::identify(&reference)?.ok_or(Error::OutOfBounds)?;
+        if !canonicalize {
+            let author = child(coupon, 0)?.capture()?;
+            let claim = as_tree(&claim)?;
+            if claim.len()? != 3 {
+                return Err(Error::WrongType);
+            }
+            canonicalize = !reference.capture()?.same_handle_bytes(&claim.reference())
+                || !(author.same_handle_bytes(&collector_handle)
+                    || author.value_type()? == ValueType::Object
+                        && author.data_type()? == DataType::Tree
+                        && author.len()? == 0
+                        && !author.is_tag()?);
+            if let Some((lhs, rhs)) = &operands
+                && !canonicalize
+            {
+                canonicalize = !lhs.get(index).same_handle_bytes(&claim.get(1))
+                    || !rhs.get(index).same_handle_bytes(&claim.get(2));
+            }
+        }
+        witnesses.push(capture(tree![coupon, claim])?);
+    }
+    if operands.is_none() && !canonicalize {
+        canonicalize = !same_exchange_operands(rule, lhs, rhs, &witnesses)?;
+    }
+    let request = capture(tree![
         512u64 << 20,
-        &callable()?,
+        &collector,
         rule as u64,
         lhs,
         rhs,
         fixwasm::Tree::from_iter(&witnesses)
-    ])
+    ])?;
+    if canonicalize {
+        storage::canonical_value(&request)
+    } else {
+        Ok(request)
+    }
+}
+
+fn same_exchange_operands(
+    rule: Exchange,
+    lhs: &Value,
+    rhs: &Value,
+    witnesses: &[Value],
+) -> Result<bool, Error> {
+    let lhs = lhs.capture()?;
+    let rhs = rhs.capture()?;
+    let claim = |index: usize| as_tree(&child(&witnesses[index], 1)?);
+    Ok(match (rule, witnesses.len()) {
+        (Exchange::Reflexivity, 0) => lhs.same_handle_bytes(&rhs),
+        (Exchange::Eval, 0) if lhs.data_type() != Ok(DataType::Tree) => lhs.same_handle_bytes(&rhs),
+        (Exchange::Think, 0) if lhs.unsound_thunk_type()? == ThunkType::Identification => {
+            lhs.same_handle_bytes(&rhs.identification())
+        }
+        (Exchange::Think, 2) => {
+            let evaluated = claim(0)?;
+            let applied = claim(1)?;
+            let input = evaluated.get(1);
+            let thunk = match lhs.unsound_thunk_type()? {
+                ThunkType::Application => input.application(),
+                ThunkType::Selection => input.selection(),
+                ThunkType::Identification => return Ok(true),
+            };
+            lhs.same_handle_bytes(&thunk)
+                && evaluated.get(2).same_handle_bytes(&applied.get(1))
+                && rhs.same_handle_bytes(&applied.get(2))
+        }
+        (Exchange::ThinkToForce | Exchange::ThunkEq | Exchange::EvalResultEq, 1) => {
+            let premise = claim(0)?;
+            lhs.same_handle_bytes(&premise.get(1)) && rhs.same_handle_bytes(&premise.get(2))
+        }
+        (Exchange::ThunkStrictEq | Exchange::ThunkShallowEq, 1) => {
+            let premise = claim(0)?;
+            let encoded = if rule == Exchange::ThunkStrictEq {
+                rhs.strict()
+            } else {
+                rhs.shallow()
+            };
+            lhs.same_handle_bytes(&premise.get(1)) && encoded.same_handle_bytes(&premise.get(2))
+        }
+        (Exchange::ForceToEncode, 1) => {
+            let premise = claim(0)?;
+            let thunk = premise.get(1);
+            let result = premise.get(2);
+            if lhs.is_strict()? {
+                lhs.same_handle_bytes(&thunk.strict())
+                    && if result.value_type()? == ValueType::Ref {
+                        rhs.reference().same_handle_bytes(&result)
+                    } else {
+                        rhs.same_handle_bytes(&result)
+                    }
+            } else {
+                lhs.same_handle_bytes(&thunk.shallow())
+                    && if result.value_type()? == ValueType::Object {
+                        rhs.same_handle_bytes(&result.reference())
+                    } else {
+                        rhs.same_handle_bytes(&result)
+                    }
+            }
+        }
+        (Exchange::Symmetry, 1) => {
+            let premise = claim(0)?;
+            lhs.same_handle_bytes(&premise.get(2)) && rhs.same_handle_bytes(&premise.get(1))
+        }
+        (Exchange::EvalEq | Exchange::ForceEq, 2) => {
+            let first = claim(0)?;
+            let second = claim(1)?;
+            let (lhs_claim, rhs_claim) = if rule == Exchange::EvalEq {
+                (&second, &first)
+            } else {
+                (&first, &second)
+            };
+            first.get(1).same_handle_bytes(&second.get(1))
+                && lhs.same_handle_bytes(&lhs_claim.get(2))
+                && rhs.same_handle_bytes(&rhs_claim.get(2))
+        }
+        _ => true,
+    })
 }
 /// Return the collector configured for the current scheduler invocation.
 pub fn callable() -> Result<Value, Error> {
@@ -116,14 +235,17 @@ async fn collect(
     premises: &[Value],
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    if policy.discovering() {
+        return core::future::pending().await;
+    }
     let premises = premises
         .iter()
         .cloned()
         .map(coupon)
         .collect::<Result<Vec<_>, _>>()?;
     let combination = request(rule, lhs, rhs, &premises)?;
-    let coupon = kernel::invoke(&combination, &mut |advice| policy.on_advice(advice)).await?;
-    let coupon = self::coupon(coupon)?;
+    let mut on_advice = |advice: &kernel::Advice| policy.on_advice(advice);
+    let coupon = self::coupon(kernel::invoke(&combination, &mut on_advice).await?)?;
     retain(&coupon)?;
     Ok(coupon.into_value())
 }
@@ -173,10 +295,8 @@ pub async fn eval(
             let data = policy.load(input).await?;
             let mut coupons = Vec::new();
             let children = fields(&data)?;
-            kernel::tree_progress(input, &children, 0, children.len() as u64)?;
             for value in &children {
                 coupons.push(Box::pin(policy.eval(value)).await?);
-                kernel::tree_progress(input, &[], coupons.len() as u64, children.len() as u64)?;
             }
             eval_tree(policy, input, &coupons, retain).await
         }
@@ -278,13 +398,7 @@ pub async fn apply(
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::evaluation(2, input);
-    let result = async {
-        produced(
-            crate::kernel::apply(input, &mut |advice| policy.on_advice(advice)).await?,
-            retain,
-        )
-    }
-    .await;
+    let result = async { produced(policy.apply_coupon(input).await?, retain) }.await;
     evaluation.finish(result)
 }
 /// Request a Select coupon and pass it to the supplied retention callback.

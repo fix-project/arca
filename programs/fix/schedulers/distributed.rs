@@ -88,7 +88,7 @@ impl<'a> Distributed<'a> {
             })
             + 1;
         let coupon = cluster
-            .execute(location, request.code(), request.input())
+            .execute(location, request.code(), request.input(), None)
             .await
             .unwrap_or_else(|error| panic!("remote execution failed: {error:?}"))
             .expect("remote worker is unavailable");

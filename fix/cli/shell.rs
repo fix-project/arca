@@ -49,15 +49,6 @@ impl Shell {
     ) -> Result<(), Box<dyn std::error::Error>> {
         Self::with(|client| crate::serve::run(client, listen, stdio))
     }
-    pub fn reuse_vm(&mut self) {
-        Self::with(Client::reuse_vm)
-    }
-    pub fn begin_request(&mut self) {
-        Self::with(Client::begin_request)
-    }
-    pub fn end_request(&mut self) -> Result<(), Error> {
-        Self::with(Client::end_request)
-    }
     pub fn set_profile(&mut self, enabled: bool) {
         Self::with(|client| client.set_profile(enabled))
     }

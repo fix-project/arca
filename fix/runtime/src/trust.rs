@@ -1,12 +1,15 @@
-use super::*;
-use crate::storage::StorageError;
+#![no_std]
+extern crate alloc;
+use alloc::vec::Vec;
+use fixhandle::*;
+use fixstorage::{Storage, StorageError};
 use hashbrown::HashSet;
 
-pub(super) fn is_kernel_author(author: Handle) -> bool {
+pub fn is_kernel_author(author: Handle) -> bool {
     Tree::try_from(author).is_ok_and(|tree| tree.is_empty() && !tree.is_tag())
 }
 
-pub(super) fn is_author(
+pub fn is_author(
     storage: &dyn Storage,
     combination: Tree,
     author: Handle,

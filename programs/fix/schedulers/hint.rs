@@ -1,10 +1,10 @@
-use crate::onepass::{self, Job, eligible};
+use crate::onepass::{self, Job, candidate};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use core::{future::Future, task::Poll};
+use core::future::Future;
 use fixscheduler::collector;
 use fixscheduler::executor::Graph;
 use fixscheduler::executor::graph::Node;
@@ -131,6 +131,10 @@ impl Scheduler for Hint<'_> {
     async fn load(&self, value: &Value) -> Result<Value, Error> {
         self.onepass.load(value).await
     }
+    fn discovering(&self) -> bool {
+        self.onepass.discovering()
+    }
+
     /// Forward advisory notifications to the composed scheduler.
     fn on_advice(&self, advice: &Advice) -> Result<(), Error> {
         self.onepass.on_advice(advice)
@@ -143,10 +147,11 @@ pub fn assign(
     jobs: &BTreeMap<Node, Job>,
     workers: &[Information],
     assignments: &mut BTreeMap<Node, (usize, u64)>,
-) {
-    onepass::assign(root, jobs, workers, assignments);
+) -> Result<(), Node> {
+    onepass::assign(root, jobs, workers, assignments)?;
     pull_back_outputs(root, jobs, workers, assignments);
     spread_independent(root, jobs, workers, assignments);
+    Ok(())
 }
 
 /// Pull back expensive outputs; after visiting children, reconsider a parent's destination and score.
@@ -172,7 +177,7 @@ pub fn pull_back_outputs(
             }
             let remote_parallelism = job.parallel.min(u64::from(workers[worker].parallelism));
             let local_parallelism = job.parallel.min(u64::from(workers[0].parallelism));
-            if worker != 0 && remote_parallelism <= local_parallelism && eligible(job, &workers[0])
+            if worker != 0 && remote_parallelism <= local_parallelism && candidate(job, 0, workers)
             {
                 if job.cached.contains(&0) {
                     assignments.insert(request.clone(), (0, job.output_bytes));
@@ -226,11 +231,11 @@ pub fn pull_back_outputs(
                 })
             };
             if let Some((worker, score)) = choice
-                && eligible(job, &workers[worker])
+                && candidate(job, worker, workers)
             {
                 assignments.insert(request, (worker, score));
             }
-        } else {
+        } else if candidate(job, 0, workers) {
             let score = job
                 .dependencies
                 .iter()
@@ -294,7 +299,7 @@ pub fn spread_independent(
                     break;
                 }
                 if let Some(offset) = (0..count).find(|offset| {
-                    eligible(&jobs[child], &workers[remotes[(next + offset) % count]])
+                    candidate(&jobs[child], remotes[(next + offset) % count], workers)
                 }) {
                     let index = (next + offset) % count;
                     assignments.insert(child.clone(), (remotes[index], score));
@@ -314,38 +319,7 @@ impl<'a> Hint<'a> {
         request: &Node,
         evaluate: impl Fn() -> F,
     ) -> Result<Value, Error> {
-        let mut execution = alloc::boxed::Box::pin(self.onepass.get(request, &evaluate));
-        loop {
-            if let Some(coupon) = self.graph.completed(request)? {
-                return Ok(coupon);
-            }
-            let workers = self.onepass.information().await?;
-            if workers.iter().skip(1).all(|worker| worker.parallelism == 0) {
-                return execution.await;
-            }
-            let jobs = self.onepass.discover(request, &workers, &evaluate)?;
-            let mut assignments = BTreeMap::new();
-            assign(request, &jobs, &workers, &mut assignments);
-            self.onepass.dispatch(request, &jobs, &assignments).await?;
-            if let Some(coupon) = self.graph.completed(request)? {
-                return Ok(coupon);
-            }
-            let mut polled = false;
-            let result = core::future::poll_fn(|cx| {
-                if polled {
-                    return Poll::Ready(None);
-                }
-                polled = true;
-                match execution.as_mut().poll(cx) {
-                    Poll::Ready(result) => Poll::Ready(Some(result)),
-                    Poll::Pending => Poll::Pending,
-                }
-            })
-            .await;
-            if let Some(result) = result {
-                return result;
-            }
-        }
+        self.onepass.schedule_with(request, evaluate, assign).await
     }
 }
 

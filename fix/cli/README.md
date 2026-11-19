@@ -56,7 +56,7 @@ identities.
 Each input uses the same syntax and imports as a command-line expression.
 Use `:{` and `:}` on separate lines for multiline input, and `:quit` or EOF to exit.
 Bindings are local to each input; `-b NAME=EXPRESSION` supplies bindings to all inputs.
-The REPL reuses one VM, starting a new scheduler for each request.
+The REPL uses one repository session, scheduler, and collector across requests.
 
 Parsing constructs a Fix value. An outer encode requests evaluation; thunks and
 Trees are otherwise retained as constructed. For example, `#(...)` constructs an
@@ -148,6 +148,17 @@ fix -C /path/to/repository serve --listen 127.0.0.1:9000 -j 4
 ```
 
 For SSH remotes, `fix serve --stdio` starts automatically on the remote machine.
+Each initiating session generates an SSH creation ID. Repeating a creation request
+with that ID joins the running repository session. A different creation ID cannot
+start another runtime in the same repository. `fix --join serve --stdio` explicitly
+joins the existing session without comparing creation IDs. TCP connections always
+join the server at their endpoint; SSH creation IDs do not constrain TCP joins.
+
+A session owns one runtime, scheduler, and collector. Its creator selects CPU,
+memory, scheduler, collector, and memoization settings; joins use those settings. A private
+account socket and repository lock prevent duplicate runtimes. The session stops
+when its last client and network connection close.
+
 The remote URL supplies the repository path. See the
 [two-machine setup](../remote/README.md#ssh-clone-and-distributed-evaluation)
 for cloning, trust, and the distributed scheduler.
@@ -162,27 +173,10 @@ signed coupon certificates described in [remote runtimes](../remote/README.md).
 
 ## Progress
 
-Progress is written to stderr; stdout remains available for Fix values and
-protocol data. Terminals display indicatif task rows. Redirected stderr gets
-activity messages and elapsed-time updates while operations are running.
-
-Transfers count the payload bytes actually read or written. Signing counts
-Tags after all configured identities have signed each one. Archive operations
-name their current activity, such as extraction or indexing, without inventing
-an overall percentage. Evaluation displays task titles and completed/total
-units from advice, plus the scheduler's actual completed Tree-child counts.
-Work without a measured total shows a spinner, elapsed time, and its current
-activity. Measured tasks and Tree evaluations show a spinner until the first
-unit completes, then their own counted bars. Counts are cleared when their task
-or execution phase ends. Completing reported
-application units does not claim that the invocation has returned.
-
-Remote labels resolve without retrieving data. The scheduler reports loads
-and evaluations with their locations. All status messages,
-logs, and forwarded SSH stderr share the progress renderer. Diagnostic writes
-are collected into complete lines; result lines suspend the renderer while
-printing. Ephemeral rows are erased on completion or failure; completed named
-steps and the final report remain.
+Progress is a line log on stderr. Named operations log their start and end.
+End lines include elapsed time. Byte transfers with measured payloads also
+report the byte count and average rate. Use `--summarize` for per-worker
+statistics. Stdout carries Fix values and protocol data.
 
 The expression parser returns a one-element Tree containing its parsed value.
 Panic and trap responses are reported as parser errors, with the source and
@@ -195,40 +189,16 @@ scheduler thread. Hint, OnePass, and Distributed can delegate evaluation to a
 configured execution remote. Parsing also uses the selected scheduler in this
 mode. A local-only policy reports an error if it needs to run an application.
 
-Evaluation shows an overall completed step number, one compact live line per
-execution node, and flat, numbered completion lines. Each node line shows its
-running-worker count and one current task description. Running workers include
-collector calls; the description does not imply serial execution.
-Evaluation discovers work dynamically, so this line has no fixed total.
-Function names use dim italics on terminals; `NO_COLOR` disables this styling.
-Only tasks with reported completed/total units get individual progress bars.
-Memoized operations do not produce completion lines. `fix pull` evaluates its
-selected labels together as one Tree, allowing the scheduler to share and run
-dependencies concurrently. Label snapshots and backing data use proposal/accept
-exchanges, so stored snapshots and existing data need not be retransmitted.
+Labels and application titles name evaluation events. A new application title
+starts a new named phase. Load events show their destination and source, for
+example `START local: Load origin:program (from origin)`. Local repository
+reads and file remotes are attributed to the node reading them. Connections
+report the remote name and its worker count or failure reason.
 
-`--summarize` adds a per-machine overview table, separated from the step output
-by a blank line. CPU time uses the process CPU clock: it counts active work in
-runtime and host threads, including scheduler bookkeeping, and excludes blocked
-or sleeping time. It is distinct from elapsed time.
-
-Evaluation keeps completed named computations as persistent steps, with their
-operation, location, outcome, and elapsed duration. Labels and application task
-titles name steps; an application without either uses its canonical Fix name.
-Live application advice and multi-part Tree evaluation use progress displays
-while running. Counts describe completed units rather than an estimate of time
-remaining. Cancelled discovery attempts do not appear as completed steps.
-
-Loads show the destination as the step's node and identify their source, for
-example `local: Load origin:program (from origin)`. Active loads remain visible
-without an estimated percentage; completed loads remain as numbered steps.
-Named reads from the current repository and file remotes appear under the
-node reading them. File remotes do not appear as separate nodes. The source is
-omitted when it is the same node as the destination. Retrieval through pinned
-source URIs also reports Load activity.
-
-Remote connections appear as numbered steps, showing the remote name and
-worker capacity. Connection failures include the cause.
+`fix pull` evaluates the selected labels together as one Tree, allowing the
+scheduler to share and run dependencies concurrently. Label snapshots and
+backing data use proposal/accept exchanges, so stored snapshots and existing
+data need not be retransmitted.
 
 With `--summarize`, the final per-node table reports applications, collector calls, CPU time, peak
 worker count / available workers, peak queue length (`Qmax`), peak allocated VM
@@ -238,8 +208,7 @@ threads, including its VM and host I/O work. Memory is the VM allocator's alloca
 not process RSS; its peak is the allocator's high-water mark. Transport counters
 include protocol and status traffic. Counters accumulate from the first runtime
 sample; memory peaks cover the VM lifetime. A long-running server retains its
-runtime peaks across requests. Transfer byte bars remain suppressed during
-evaluation.
+runtime peaks across requests.
 
 `fix pull [REMOTE [SOURCE [DESTINATION]]]` and
 `fix push REMOTE [SOURCE [DESTINATION]]` realize labels using the selected

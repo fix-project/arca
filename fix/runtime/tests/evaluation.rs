@@ -1,11 +1,11 @@
 use super::test_program;
 use fixruntime::{
-    Blob, Handle, Runtime, Storage, Thunk, Tree, arca::FixOnArca, stdlib, user_scheduler_driver,
+    Blob, Handle, Runtime, Storage, Tree, arca::FixOnArca, stdlib, user_scheduler_driver,
 };
 use kernel::prelude::{Arc, format};
 
 pub(super) struct Evaluation {
-    runtime: Arc<FixOnArca>,
+    pub(super) runtime: Arc<FixOnArca>,
     scheduler: Tree,
     collector: Tree,
     workers: usize,
@@ -14,10 +14,6 @@ pub(super) struct Evaluation {
 impl Evaluation {
     pub(super) fn new(runtime: FixOnArca) -> Self {
         Self::with_scheduler(runtime, 1, "FIX_SERIAL_SCHEDULER")
-    }
-
-    pub(super) fn with_workers(runtime: FixOnArca, workers: usize) -> Self {
-        Self::with_scheduler(runtime, workers, "FIX_SCHEDULER")
     }
 
     pub(super) fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
@@ -38,15 +34,11 @@ impl Evaluation {
         }
     }
 
-    pub(super) fn runtime(&self) -> &FixOnArca {
-        &self.runtime
-    }
-
     pub(super) fn storage(&self) -> &dyn Storage {
         self.runtime.storage()
     }
 
-    fn run(&self, mode: &str, input: Handle) -> (Handle, usize) {
+    pub(super) fn run(&self, mode: &str, input: Handle) -> Handle {
         let mode = self.storage().add_blob(mode.as_bytes());
         let combination = self.storage().add_tree(&[
             Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
@@ -84,21 +76,10 @@ impl Evaluation {
                 .collect::<kernel::prelude::Vec<_>>()
         );
         let claim = self.storage().certificate_claim(coupon).unwrap();
-        (
-            self.storage().get_tree(claim).unwrap()[2],
-            report.executed.iter().sum(),
-        )
+        self.storage().get_tree(claim).unwrap()[2]
     }
 
     pub(super) fn eval(&self, input: Handle) -> Handle {
-        self.run("eval", input).0
-    }
-
-    pub(super) fn eval_count(&self, input: Handle) -> (Handle, usize) {
         self.run("eval", input)
-    }
-
-    pub(super) fn think(&self, input: Thunk) -> Handle {
-        self.run("think", input.into()).0
     }
 }

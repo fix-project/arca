@@ -16,7 +16,7 @@ mod perf;
 
 static OUTPUT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
-fn output_directory() -> Option<PathBuf> {
+pub fn output_directory() -> Option<PathBuf> {
     OUTPUT.lock().unwrap().clone()
 }
 
@@ -380,4 +380,8 @@ fn read(cr3: u64, mut address: u64, mut output: &mut [u8]) -> bool {
         output = rest;
     }
     true
+}
+
+pub(crate) fn set_output(directory: Option<PathBuf>) {
+    *OUTPUT.lock().unwrap() = directory;
 }

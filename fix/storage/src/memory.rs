@@ -198,6 +198,14 @@ impl MemoryStorage {
         })
     }
 
+    pub fn known_canonical(&self, handle: Handle) -> Option<Handle> {
+        if handle.is_canonical() {
+            return Some(handle);
+        }
+        self.alias(handle.object_descriptor().as_handle())?;
+        self.canonicalize_handle(handle).ok()
+    }
+
     pub fn contains(&self, handle: Handle) -> bool {
         if handle.is_empty() && handle.same_encoding(&Tree::empty().into()) {
             return true;

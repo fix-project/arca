@@ -13,7 +13,11 @@ use std::{
 use vmm_sys_util::eventfd::{EFD_NONBLOCK, EventFd};
 
 pub struct Session {
+    pub(crate) node_identity: [u8; 16],
+    pub(crate) session_id: [u8; 16],
+    pub(crate) broker: Option<Arc<crate::service::Broker>>,
     pub(crate) profile: Option<crate::profiling::Profile>,
+    pub(crate) streams: crate::stream::Streams,
     status: AtomicU16,
     cancel: EventFd,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -36,7 +40,26 @@ impl Session {
         Self::with_stdio(capture, None)
     }
     pub fn with_stdio(capture: bool, stdio: Option<UnixStream>) -> Arc<Self> {
+        let mut node_identity = [0; 16];
+        let mut remaining = node_identity.as_mut_slice();
+        while !remaining.is_empty() {
+            let count =
+                unsafe { libc::getrandom(remaining.as_mut_ptr().cast(), remaining.len(), 0) };
+            if count < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("cannot allocate a runtime identity: {error}");
+            }
+            assert!(count > 0);
+            remaining = &mut remaining[count as usize..];
+        }
         Arc::new(Self {
+            node_identity,
+            session_id: crate::service::identity().expect("session identity"),
+            broker: None,
+            streams: crate::stream::Streams::default(),
             profile: crate::profiling::Profile::start(),
             status: AtomicU16::new(256),
             cancel: EventFd::new(EFD_NONBLOCK).expect("cancellation eventfd"),
@@ -47,7 +70,18 @@ impl Session {
             diagnostics: Mutex::new(common::progress::Stderr::default()),
         })
     }
+    pub(crate) fn with_broker(broker: Arc<crate::service::Broker>) -> Arc<Self> {
+        let mut session = Self::new(true);
+        let inner = Arc::get_mut(&mut session).unwrap();
+        inner.session_id = broker.settings.id;
+        inner.broker = Some(broker);
+        session
+    }
     pub fn write_diagnostic(&self, bytes: &[u8]) {
+        if let Some(broker) = &self.broker {
+            broker.diagnostic(bytes);
+            return;
+        }
         let _ = self.diagnostics.lock().unwrap().write_all(bytes);
     }
 
@@ -87,6 +121,10 @@ impl Session {
             .is_ok()
         {
             self.cancel.write(1).expect("signal cancellation");
+            self.streams.close_all();
+            if let Some(broker) = &self.broker {
+                broker.stop();
+            }
             if let Some(stream) = &self.stdio {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
@@ -107,6 +145,14 @@ impl Session {
         let mut workers = self.workers.lock().unwrap();
         if self.stopped() {
             return;
+        }
+        let mut index = 0;
+        while index < workers.len() {
+            if workers[index].is_finished() {
+                let _ = workers.swap_remove(index).join();
+            } else {
+                index += 1;
+            }
         }
         let session = self.clone();
         let allocator = common::buddy::current_allocator();
@@ -148,6 +194,9 @@ impl Session {
             .unwrap_or_default()
     }
     pub fn wait(&self, fd: RawFd, events: i16) -> io::Result<()> {
+        self.wait_with_cancel(fd, events, self.cancel.as_raw_fd())
+    }
+    pub(crate) fn wait_with_cancel(&self, fd: RawFd, events: i16, cancel: RawFd) -> io::Result<()> {
         loop {
             if self.stopped() {
                 return Err(io::ErrorKind::Interrupted.into());
@@ -163,6 +212,11 @@ impl Session {
                     events: libc::POLLIN,
                     revents: 0,
                 },
+                libc::pollfd {
+                    fd: cancel,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
             ];
             let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
             if result < 0 {
@@ -172,7 +226,7 @@ impl Session {
                 }
                 return Err(error);
             }
-            if fds[1].revents != 0 || self.stopped() {
+            if fds[1].revents != 0 || fds[2].revents != 0 || self.stopped() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
             if fds[0].revents != 0 {

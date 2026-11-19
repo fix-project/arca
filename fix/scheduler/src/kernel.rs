@@ -1,4 +1,4 @@
-use crate::abi::{coordinate, coordinated};
+use crate::abi::coordinated;
 pub use crate::progress::cached;
 use crate::shell::{Value, as_tree, capture, child};
 use fixwasm::{Blob, Error, Value as AsValue, tree};
@@ -8,24 +8,6 @@ pub struct Advice {
     pub target: Value,
     pub key: Value,
     pub payload: Value,
-}
-
-pub fn tree_progress(
-    task: &Value,
-    children: &[Value],
-    completed: u64,
-    total: u64,
-) -> Result<(), Error> {
-    coordinated(
-        b"tree_progress",
-        &[
-            task.clone(),
-            capture(fixwasm::Tree::from_iter(children))?,
-            capture(completed)?,
-            capture(total)?,
-        ],
-    )?;
-    Ok(())
 }
 
 impl Advice {
@@ -39,9 +21,23 @@ pub async fn apply(
     combination: &Value,
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
+    apply_with_fallback(combination, on_advice, async |_| Ok(None)).await
+}
+
+/// Try another executor after local admission refuses an application.
+pub async fn apply_with_fallback(
+    combination: &Value,
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+    fallback: impl AsyncFnMut(u64) -> Result<Option<Value>, Error>,
+) -> Result<Value, Error> {
     let evaluation = crate::progress::operation(2, combination);
-    let result =
-        async { observed(admitted(b"callable_apply", combination).await?, on_advice).await }.await;
+    let result = async {
+        observed(
+            admitted(b"callable_apply", combination, fallback).await?,
+            on_advice,
+        )
+    }
+    .await;
     evaluation.finish(result)
 }
 
@@ -51,12 +47,21 @@ pub async fn run(
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::operation(2, combination);
-    let result =
-        async { observed(admitted(b"callable_run", combination).await?, on_advice).await }.await;
+    let result = async {
+        observed(
+            admitted(b"callable_run", combination, async |_| Ok(None)).await?,
+            on_advice,
+        )
+    }
+    .await;
     evaluation.finish(result)
 }
 
-async fn admitted(operation: &[u8], combination: &Value) -> Result<(u64, Value), Error> {
+async fn admitted(
+    operation: &[u8],
+    combination: &Value,
+    mut fallback: impl AsyncFnMut(u64) -> Result<Option<Value>, Error>,
+) -> Result<(u64, Value), Error> {
     loop {
         let reply = crate::io::Io
             .application(tree![Blob::create(operation), combination])
@@ -65,10 +70,21 @@ async fn admitted(operation: &[u8], combination: &Value) -> Result<(u64, Value),
             return Ok(reply);
         }
         let required = child(&reply.1, 0)?;
+        if let Some(coupon) = fallback(required.read_u64()?).await? {
+            return Ok((0, coupon));
+        }
         let (status, ready) = crate::io::Io
             .request(tree![Blob::create(b"memory_wait"), required])
             .await?;
         if status != 0 || ready.read_u64()? == 0 {
+            if let (Ok(application), Ok(available)) = (
+                crate::executor::describe_application(combination),
+                worker::available_memory(),
+            ) {
+                let _ = crate::io::log(&alloc::format!(
+                    "memory admission rejected for {application}: {available} bytes available"
+                ));
+            }
             return Err(Error::MemoryUnavailable);
         }
     }
@@ -85,47 +101,34 @@ pub async fn invoke(
             .await?,
         on_advice,
     )
-    .await
 }
 
-async fn observed(
-    mut reply: (u64, Value),
+fn observed(
+    reply: (u64, Value),
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    loop {
-        match reply {
-            (6, _) => return Err(Error::MemoryUnavailable),
-            (0, value) => return Ok(value),
-            (2, event) => {
-                if as_tree(&event)?.len()? != 4 {
+    match reply {
+        (6, _) => Err(Error::MemoryUnavailable),
+        (0, value) => Ok(value),
+        (2, reply) => {
+            if as_tree(&reply)?.len()? != 2 {
+                return Err(Error::WrongType);
+            }
+            let events = child(&reply, 1)?;
+            for index in 0..as_tree(&events)?.len()? as usize {
+                let event = child(&events, index)?;
+                if as_tree(&event)?.len()? != 3 {
                     return Err(Error::WrongType);
                 }
-                let mut invocation = AdviceReturn(Some(child(&event, 0)?));
                 on_advice(&Advice {
-                    target: child(&event, 1)?,
-                    key: child(&event, 2)?,
-                    payload: child(&event, 3)?,
+                    target: child(&event, 0)?,
+                    key: child(&event, 1)?,
+                    payload: child(&event, 2)?,
                 })?;
-                reply = crate::io::Io
-                    .application(tree![
-                        Blob::create(b"callable_resume"),
-                        invocation.0.take().unwrap()
-                    ])
-                    .await?;
             }
-            _ => return Err(Error::WrongType),
+            child(&reply, 0)
         }
-    }
-}
-
-// This token names a native invocation, not a captured Fix continuation.
-struct AdviceReturn(Option<Value>);
-
-impl Drop for AdviceReturn {
-    fn drop(&mut self) {
-        if let Some(token) = self.0.take() {
-            let _ = coordinate(b"callable_discard", &[token]);
-        }
+        _ => Err(Error::WrongType),
     }
 }
 
@@ -171,6 +174,10 @@ pub mod worker {
 
     pub fn available_memory() -> Result<u64, Error> {
         config(4)
+    }
+
+    pub fn memory_capacity() -> Result<u64, Error> {
+        config(5)
     }
 
     pub fn returns_coupon() -> Result<bool, Error> {

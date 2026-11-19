@@ -1,6 +1,10 @@
-use crate::shell::Value;
-use alloc::rc::Rc;
-use fixwasm::{Error, Value as AsValue};
+use crate::{
+    shell::{Value, child},
+    storage,
+};
+use alloc::{rc::Rc, string::String};
+use core::fmt::Write;
+use fixwasm::{Error, ThunkType, Value as AsValue, ValueType};
 
 /// A dependency-graph node, keyed by operation and input identity.
 #[derive(Clone)]
@@ -51,6 +55,21 @@ impl Node {
     pub fn code(&self) -> u64 {
         self.key.0
     }
+
+    pub fn application_description(&self) -> Result<String, Error> {
+        if !self.is_application()? {
+            return Err(Error::WrongType);
+        }
+        describe_application(self.input())
+    }
+
+    pub fn is_application(&self) -> Result<bool, Error> {
+        Ok(self.is_apply()
+            || (matches!(
+                self.input().value_type(),
+                ValueType::Thunk | ValueType::Encode
+            ) && self.input.unsound_thunk_type()? == ThunkType::Application))
+    }
     pub(crate) async fn dispatch(
         &self,
         policy: &(impl super::Scheduler + ?Sized),
@@ -66,6 +85,18 @@ impl Node {
         };
         evaluation.finish(result)
     }
+}
+
+pub(crate) fn describe_application(input: &Value) -> Result<String, Error> {
+    let combination = storage::identify(input)?.ok_or(Error::OutOfBounds)?;
+    let budget = child(&combination, 0)?.read_u64()?;
+    let canonical = storage::canonical_value(&combination)?.raw_handle_bytes()?;
+    let mut description = String::from("combination ");
+    for byte in canonical {
+        let _ = write!(description, "{byte:02x}");
+    }
+    let _ = write!(description, " (requested {budget} bytes)");
+    Ok(description)
 }
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {

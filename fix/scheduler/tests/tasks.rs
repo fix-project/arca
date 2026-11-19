@@ -80,12 +80,12 @@ fn self_wake_and_stale_waker_do_not_lose_or_misdirect_work() {
 fn concurrent_dependencies_start_together_and_preserve_order() {
     let started = [Cell::new(false), Cell::new(false)];
     let ready = [Cell::new(false), Cell::new(false)];
-    let waker = RefCell::new(None);
+    let wakers: [RefCell<Option<Waker>>; 2] = Default::default();
     let children = (0..2).map(|index| {
-        let (started, ready, waker) = (&started, &ready, &waker);
+        let (started, ready, wakers) = (&started, &ready, &wakers);
         poll_fn(move |cx| {
             started[index].set(true);
-            waker.replace(Some(cx.waker().clone()));
+            wakers[index].replace(Some(cx.waker().clone()));
             if ready[index].get() {
                 Poll::Ready(Ok::<_, ()>(index))
             } else {
@@ -97,10 +97,10 @@ fn concurrent_dependencies_start_together_and_preserve_order() {
     assert!(task.poll().is_pending());
     assert!(started.iter().all(Cell::get));
     ready[1].set(true);
-    waker.borrow().as_ref().unwrap().wake_by_ref();
+    wakers[1].borrow().as_ref().unwrap().wake_by_ref();
     assert!(task.poll().is_pending());
     ready[0].set(true);
-    waker.borrow().as_ref().unwrap().wake_by_ref();
+    wakers[0].borrow().as_ref().unwrap().wake_by_ref();
     assert_eq!(task.poll(), Poll::Ready(Ok(vec![0, 1])));
 }
 
@@ -126,4 +126,34 @@ fn a_task_set_keeps_independent_work_alive_after_a_completion() {
     waker.borrow().as_ref().unwrap().wake_by_ref();
     assert_eq!(tasks.poll(), (true, vec![9]));
     assert!(!tasks.is_ready());
+}
+
+#[test]
+fn a_nested_task_wakes_the_waiting_parent() {
+    let wake = RefCell::new(None);
+    let mut parent = Task::new(async {
+        let mut children =
+            poll_fn(|cx| Poll::Ready(task::Tasks::with_parent(cx.waker().clone()))).await;
+        children.spawn(poll_fn(|cx| {
+            if wake.borrow().is_some() {
+                Poll::Ready(7)
+            } else {
+                wake.replace(Some(cx.waker().clone()));
+                Poll::Pending
+            }
+        }));
+        poll_fn(|_| {
+            let (_, results) = children.poll();
+            match results.into_iter().next() {
+                Some(result) => Poll::Ready(result),
+                None => Poll::Pending,
+            }
+        })
+        .await
+    });
+    assert!(parent.poll().is_pending());
+    assert!(!parent.is_ready());
+    wake.borrow().as_ref().unwrap().wake_by_ref();
+    assert!(parent.is_ready());
+    assert_eq!(parent.poll(), Poll::Ready(7));
 }

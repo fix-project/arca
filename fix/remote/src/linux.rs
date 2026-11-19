@@ -93,7 +93,9 @@ impl Drop for RemoteConnection {
 
 impl Connection {
     pub fn connect(address: impl ToSocketAddrs) -> io::Result<Self> {
-        TcpStream::connect(address).map(Self)
+        let stream = TcpStream::connect(address)?;
+        stream.set_nodelay(true)?;
+        Ok(Self(stream))
     }
 }
 
@@ -152,5 +154,26 @@ impl embedded_io::Write for Connection {
     }
     fn flush(&mut self) -> Result<(), Self::Error> {
         io::Write::flush(&mut self.0).map_err(IoError)
+    }
+}
+
+pub struct Duplex<R, W> {
+    pub input: R,
+    pub output: W,
+}
+impl<R, W> embedded_io::ErrorType for Duplex<R, W> {
+    type Error = IoError;
+}
+impl<R: io::Read, W> embedded_io::Read for Duplex<R, W> {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<usize, IoError> {
+        self.input.read(bytes).map_err(IoError)
+    }
+}
+impl<R, W: io::Write> embedded_io::Write for Duplex<R, W> {
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, IoError> {
+        self.output.write(bytes).map_err(IoError)
+    }
+    fn flush(&mut self) -> Result<(), IoError> {
+        self.output.flush().map_err(IoError)
     }
 }

@@ -421,17 +421,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console"
-version = "0.16.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e96a4956774c13c126a8b5af4daa79384f4d826534c95a02d76afb39e2ab64e3"
-dependencies = [
- "encode_unicode",
- "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -716,12 +705,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
-name = "encode_unicode"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
-
-[[package]]
 name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -804,7 +787,6 @@ dependencies = [
  "env_logger",
  "hashbrown 0.17.1",
  "hex",
- "indicatif",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
@@ -978,17 +960,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "indicatif"
-version = "0.18.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9433806cd6b4ec1aba79c021c7e4c58fb4c3b9977c085062e611ac929998fb0c"
-dependencies = [
- "console",
- "portable-atomic",
- "unit-prefix",
 ]
 
 [[package]]
@@ -1794,12 +1765,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unit-prefix"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "untrusted"

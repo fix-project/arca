@@ -6,17 +6,24 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-struct Ready(AtomicBool);
+struct Ready {
+    runnable: AtomicBool,
+    parent: Option<Waker>,
+}
 impl Wake for Ready {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        self.0.store(true, Ordering::Release);
+        if !self.runnable.swap(true, Ordering::AcqRel)
+            && let Some(parent) = &self.parent
+        {
+            parent.wake_by_ref();
+        }
     }
 }
 
-/// A pinned local future, polled only initially or after its waker fires.
+/// A pinned local future with readiness tracking for the event loop.
 pub struct Task<F> {
     future: Pin<Box<F>>,
     ready: Arc<Ready>,
@@ -24,7 +31,14 @@ pub struct Task<F> {
 }
 impl<F: Future> Task<F> {
     pub fn new(future: F) -> Self {
-        let ready = Arc::new(Ready(AtomicBool::new(true)));
+        Self::with_parent(future, None)
+    }
+
+    pub(crate) fn with_parent(future: F, parent: Option<Waker>) -> Self {
+        let ready = Arc::new(Ready {
+            runnable: AtomicBool::new(true),
+            parent,
+        });
         Self {
             future: Box::pin(future),
             waker: Waker::from(ready.clone()),
@@ -32,9 +46,9 @@ impl<F: Future> Task<F> {
         }
     }
 
-    /// Poll a ready task once. A wake during polling keeps it ready for the next turn.
+    /// Poll once. A wake during polling keeps the event loop runnable.
     pub fn poll(&mut self) -> Poll<F::Output> {
-        if !self.ready.0.swap(false, Ordering::AcqRel) {
+        if !self.ready.runnable.swap(false, Ordering::AcqRel) {
             return Poll::Pending;
         }
         self.future
@@ -44,7 +58,7 @@ impl<F: Future> Task<F> {
 
     /// Check for runnable work before putting the worker to sleep.
     pub fn is_ready(&self) -> bool {
-        self.ready.0.load(Ordering::Acquire)
+        self.ready.runnable.load(Ordering::Acquire)
     }
 }
 
@@ -56,18 +70,19 @@ pub async fn try_join_all<F, T, E>(
 where
     F: Future<Output = Result<T, E>>,
 {
+    let parent = core::future::poll_fn(|cx| Poll::Ready(cx.waker().clone())).await;
     let mut pending: alloc::vec::Vec<_> = futures
         .into_iter()
-        .map(|future| Some(Box::pin(future)))
+        .map(|future| Some(Task::with_parent(future, Some(parent.clone()))))
         .collect();
     let mut results: alloc::vec::Vec<Option<T>> = (0..pending.len()).map(|_| None).collect();
-    core::future::poll_fn(|cx| {
+    core::future::poll_fn(|_| {
         let mut waiting = false;
         for (future, result) in pending.iter_mut().zip(&mut results) {
             let Some(active) = future else {
                 continue;
             };
-            match active.as_mut().poll(cx) {
+            match active.poll() {
                 Poll::Ready(Ok(value)) => {
                     *result = Some(value);
                     *future = None;
@@ -91,19 +106,28 @@ where
 /// A worker-local set of independent tasks. Dropping the set drops its futures.
 pub struct Tasks<'a, T> {
     tasks: alloc::vec::Vec<Task<Pin<Box<dyn Future<Output = T> + 'a>>>>,
+    parent: Option<Waker>,
 }
 impl<T> Default for Tasks<'_, T> {
     fn default() -> Self {
         Self {
             tasks: alloc::vec::Vec::new(),
+            parent: None,
         }
     }
 }
 impl<'a, T> Tasks<'a, T> {
     pub fn spawn(&mut self, future: impl Future<Output = T> + 'a) {
-        self.tasks.push(Task::new(Box::pin(future)));
+        self.tasks
+            .push(Task::with_parent(Box::pin(future), self.parent.clone()));
     }
-    /// Poll ready tasks once, reporting whether any task ran and collecting completions.
+    pub(crate) fn with_parent(parent: Waker) -> Self {
+        Self {
+            parent: Some(parent),
+            ..Self::default()
+        }
+    }
+    /// Poll tasks once, reporting readiness and collecting completions.
     pub fn poll(&mut self) -> (bool, alloc::vec::Vec<T>) {
         let mut progress = false;
         let mut completed = alloc::vec::Vec::new();

@@ -190,8 +190,9 @@ Tag and Tag Ref object records point to their backing data like other objects. `
 `fixremote` exports sets of canonical root names, object records, optional backing data, and optional TODO metadata. A prepared Tag transfer retains its available certificates separately from the backing data. Import verifies object hashes, certificate signatures, and required dependencies before publishing objects. A scheduler can send a thin Ref with arbitrary TODO metadata and transfer backing later; Fix neither interprets that metadata nor fetches data automatically.
 
 `fixhandle::minrepo::visit` visits required Objects in post-order using the normal
-call stack. Its reader can iterate borrowed children without heap allocation. Refs, Thunks, Encodes, and Tag author identities are opaque;
+call stack. Its reader can iterate borrowed children without heap allocation. Refs, Thunks, and Encodes are opaque;
 callers explicitly include coupon claims or execution definitions when needed.
+Tag fields follow the same backing rules as Tree fields.
 The repository adapter uses this traversal for transfer closure. Complete
 computation transfers opt into deferred definitions explicitly; attached coupons
 still use their minimum repositories.
@@ -209,8 +210,10 @@ The `fixprotocol` crate follows the original Fix protocol's message structure. S
 - `RequestTransfer` requests data by Fix name; the sender replies through the normal proposal/accept exchange. Plain transfers carry no evaluation task. Backing is read only after the receiver selects its missing objects.
 - `Run` identifies a task by coupon operation, collector, and input. `Result` identifies that task and its returned coupon.
 - `RequestProgress` obtains current runtime measurements independently of evaluation requests, so connected unused nodes remain visible.
-- `EvaluationProgress` reports availability, live task operations and locations, completed steps, measured counts, CPU, memory, and transport counters. Each evaluation connection tracks its completion events until delivered; nested remotes retain their routes. The receiving CLI chooses the presentation.
-- `RequestInfo` and `Info` exchange parallelism, link speed, and inventory hints.
+- `EvaluationProgress` reports availability, live task operations and locations, completed steps, measured counts, CPU, memory, and transport counters. Each evaluation connection tracks its completion events until delivered; nested remotes retain their routes. Runtime and completion-event identities prevent aliases and returning progress reports from duplicating measurements. The receiving CLI chooses the presentation.
+- `RequestInfo` and `Info` exchange parallelism, available memory, link speed, and inventory hints.
+- Scheduler connections exchange `Hello` and `HelloAccepted`, then carry `Multiplex` frames. Both endpoints can open independent request channels. Even channel numbers belong to the initiator; odd numbers belong to the receiver. Each channel permits one unconsumed chunk of at most 64 KiB; consuming it returns a credit. Closing a channel leaves other requests and the physical connection active.
+- Topology advertisements carry a runtime identity, an owner revision, capacity, inventory, and named links. A link is usable when both endpoints advertise it. Multiple links between the same runtimes remain distinct, while worker capacity is counted once per runtime. Nodes exchange advertisements over existing connections and delegate requests to immediate neighbors. A receiving scheduler chooses placement again.
 - Blob, Tree, and shallow Tree requests and data messages support separate object transfer. Load messages express prefetch hints.
 - `ProposeTransfer` lists object names, backing availability, and TODO metadata, without certificate names. `AcceptTransfer` selects the missing records and, when Tags are missing, advertises the receiver's trusted SSH keys. Data messages supply those records before `Run` or `Result` completes the exchange.
 

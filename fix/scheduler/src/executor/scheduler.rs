@@ -22,6 +22,10 @@ pub trait Scheduler {
     async fn apply(&self, input: &Value) -> Result<Value, Error> {
         self.default_apply(input).await
     }
+    /// Obtain an Apply coupon for an evaluated combination.
+    async fn apply_coupon(&self, input: &Value) -> Result<Value, Error> {
+        crate::kernel::apply(input, &mut |advice| self.on_advice(advice)).await
+    }
     /// Select from an evaluated combination.
     async fn select(&self, input: &Value) -> Result<Value, Error> {
         self.default_select(input).await
@@ -33,6 +37,10 @@ pub trait Scheduler {
     /// Observe advice synchronously without replying to its emitting invocation.
     fn on_advice(&self, _advice: &Advice) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn discovering(&self) -> bool {
+        false
     }
 
     /// Evaluate without creating coupons, recursing through the scheduler's steps.
@@ -58,15 +66,8 @@ pub trait Scheduler {
                 let data = self.load(input).await?;
                 let mut results = Vec::new();
                 let children = fields(&data)?;
-                crate::kernel::tree_progress(input, &children, 0, children.len() as u64)?;
                 for value in &children {
                     results.push(Box::pin(self.eval(value)).await?);
-                    crate::kernel::tree_progress(
-                        input,
-                        &[],
-                        results.len() as u64,
-                        children.len() as u64,
-                    )?;
                 }
                 let result = Tree::new(&results);
                 if data.is_tag()? {

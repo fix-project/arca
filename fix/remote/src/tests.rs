@@ -91,13 +91,18 @@ fn signed_coupons_keep_their_authors_and_claims_between_repositories() {
         )
         .unwrap();
     let parent = source.create_tree(&[tag.into(), data.into()]).unwrap();
+    let thin = transfer(&source, &[parent.into(), claim.into()], &[author.object()]).unwrap();
+    assert!(matches!(
+        import(&destination, &thin, &config()),
+        Err(Error::Transfer(message)) if message.contains(&format!("{}", author.as_handle()))
+    ));
     let bytes = transfer(&source, &[parent.into(), claim.into()], &[]).unwrap();
     let imported = import(&destination, &bytes, &config()).unwrap();
     assert!(imported[0].same_encoding(&parent.into()));
     let fields = destination.read_tree(parent).unwrap();
     assert!(fields[0].same_encoding(&tag.into()));
     assert!(destination.read_tree(tag).unwrap()[0].same_encoding(&author.into()));
-    assert!(!destination.has_backing(author.object()).unwrap());
+    assert!(destination.has_backing(author.object()).unwrap());
     destination.write_label("coupon", tag.into()).unwrap();
     assert_eq!(destination.read_blob(data).unwrap().as_ref(), &[17; 4096]);
     assert_eq!(
@@ -706,6 +711,7 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
                         backing: true,
                         todo: None,
                     }],
+                    coupons: Vec::new(),
                 },
             )
             .unwrap();
@@ -1079,6 +1085,74 @@ fn concurrent_signing_retains_each_keys_certificate() {
 }
 
 #[test]
+fn resident_transfer_includes_tag_payload_after_a_ref_author() {
+    struct Resident<'a>(&'a Repository);
+
+    impl ProposalStorage for Resident<'_> {
+        fn has_ref_backing(&self, reference: Ref) -> Result<bool, RepositoryError> {
+            self.0.has_backing(reference.object_descriptor())
+        }
+
+        fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError> {
+            self.0.read_tree(tree)
+        }
+
+        fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError> {
+            self.0.get_todo(reference)
+        }
+    }
+
+    let source = Directory::new();
+    let repository = source.repository();
+    let author = repository.create_blob(&[31; 128]).unwrap();
+    let executable = repository.create_blob(&[42; 128]).unwrap();
+    let reference = repository.create_blob(&[53; 128]).unwrap();
+    let fields = [
+        author.into_ref().into(),
+        executable.into(),
+        reference.into_ref().into(),
+    ];
+    let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
+    repository
+        .publish_certified(
+            tag.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+            Some(&certificate(*tag.as_handle().as_bytes())),
+        )
+        .unwrap();
+    let root = repository.create_tree(&[tag.into()]).unwrap();
+    for full in [false, true] {
+        let proposal = propose_loaded(
+            &repository,
+            &Resident(&repository),
+            root.into(),
+            true,
+            full,
+            &[],
+        )
+        .unwrap();
+        let backing = proposal.backing;
+        assert!(backing.contains(tag.as_handle().as_bytes()));
+        assert!(backing.contains(executable.as_handle().as_bytes()));
+        assert!(!backing.contains(author.as_handle().as_bytes()));
+        assert!(!backing.contains(reference.as_handle().as_bytes()));
+        assert!(
+            proposal
+                .refs
+                .contains(author.into_ref().as_handle().as_bytes())
+        );
+        assert!(
+            proposal
+                .refs
+                .contains(reference.into_ref().as_handle().as_bytes())
+        );
+    }
+}
+
+#[test]
 fn requested_transfers_read_only_backing_missing_at_the_receiver() {
     let source = Directory::new();
     let source = source.repository();
@@ -1087,6 +1161,8 @@ fn requested_transfers_read_only_backing_missing_at_the_receiver() {
     let shared = source.create_blob(&[41; 128]).unwrap();
     target.create_blob(&[41; 128]).unwrap();
     let added = source.create_blob(&[42; 128]).unwrap();
+    let held = source.create_blob(&[43; 128]).unwrap();
+    let held_ref = *held.into_ref().as_handle().as_bytes();
     let root = source.create_tree(&[shared.into(), added.into()]).unwrap();
     let name = *root.as_handle().as_bytes();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1097,7 +1173,8 @@ fn requested_transfers_read_only_backing_missing_at_the_receiver() {
             protocol::receive(&mut connection, 1 << 20).unwrap(),
             Some(protocol::Message::RequestTransfer(name))
         );
-        let proposal = propose_export(&source, root.into(), true).unwrap();
+        let mut proposal = Proposal::from(propose_export(&source, root.into(), true).unwrap());
+        proposal.refs.push(held_ref);
         let mut read = Vec::new();
         transport::complete(protocol::asynchronous::send_proposal(
             &mut transport::Blocking(&mut connection),
@@ -1120,9 +1197,21 @@ fn requested_transfers_read_only_backing_missing_at_the_receiver() {
     });
     let mut connection = crate::linux::Connection::connect(address).unwrap();
     protocol::send(&mut connection, protocol::Message::RequestTransfer(name)).unwrap();
-    let incoming = protocol::receive_transfer(&mut connection, 1 << 20, 1, &[], |offers| {
-        Some(missing(&target, offers).unwrap())
-    })
+    let proposal = protocol::receive(&mut connection, 1 << 20)
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&proposal, protocol::Message::ProposeTransfer { objects, .. }
+        if objects.iter().any(|offer| offer.name == held_ref && offer.is_ref() && offer.backing))
+    );
+    let incoming = transport::complete(protocol::asynchronous::receive_transfer_with_info_from(
+        &mut transport::Blocking(&mut connection),
+        1 << 20,
+        &protocol::Information::default(),
+        &[],
+        |offers| Some(missing(&target, offers).unwrap()),
+        Some(proposal),
+    ))
     .unwrap()
     .unwrap();
     assert!(incoming.task.is_none());
@@ -1130,6 +1219,7 @@ fn requested_transfers_read_only_backing_missing_at_the_receiver() {
     import(&target, &incoming.transfer.encode().unwrap(), &config()).unwrap();
     assert!(target.read_tree(root).unwrap()[1].same_encoding(&added.into()));
     assert_eq!(target.read_blob(added).unwrap().as_ref(), &[42; 128]);
+    assert!(!target.has_backing(held.into()).unwrap());
     server.join().unwrap();
 }
 

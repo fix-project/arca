@@ -12,8 +12,10 @@ fn main() {
         kernel::exit(2);
     });
 
-    let result = if arguments == ["--session"] {
-        fixruntime::cli::serve().map(|()| 0)
+    let result = if let [flag, rest @ ..] = arguments
+        && flag == "--daemon"
+    {
+        fixruntime::cli::daemon(rest).map(|()| 0)
     } else {
         fixruntime::cli::run(arguments)
     };

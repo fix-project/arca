@@ -1,20 +1,18 @@
 use crate::protocol::control::{
-    EvaluationOperation, EvaluationSnapshot, EvaluationStep, MachineProgress, RemoteAvailability,
+    EvaluationPhase, EvaluationSnapshot, EvaluationStep, EvaluationTask, MachineProgress,
+    RemoteAvailability, location_path,
 };
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::{
-    collections::BTreeMap,
-    io::IsTerminal,
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-type TaskKey = ([u8; 32], Option<EvaluationOperation>);
-
-static DISPLAY: OnceLock<Display> = OnceLock::new();
+static DISPLAY: OnceLock<Mutex<Option<Weak<Mutex<Evaluation>>>>> = OnceLock::new();
 static SUMMARIZE: AtomicBool = AtomicBool::new(false);
 static ABBREVIATE: AtomicBool = AtomicBool::new(true);
 
@@ -30,32 +28,15 @@ pub fn summarize(enabled: bool) {
     SUMMARIZE.store(enabled, Ordering::Relaxed);
 }
 
-struct Display {
-    bars: MultiProgress,
-    active: Mutex<Vec<Weak<State>>>,
-    terminal: bool,
-    advised: Mutex<Option<Weak<State>>>,
-}
-
-struct State {
-    bar: ProgressBar,
-    detail: Mutex<String>,
-    started: Instant,
-    last_report: AtomicU64,
-    advice: Mutex<BTreeMap<TaskKey, Task>>,
-    parents: Mutex<BTreeMap<TaskKey, TaskKey>>,
-    labels: Mutex<BTreeMap<[u8; 32], String>>,
-    input: Mutex<Option<[u8; 32]>>,
-    machines: Mutex<BTreeMap<String, MachineDisplay>>,
-    reported: AtomicBool,
-    steps: AtomicU64,
-    closed: Mutex<bool>,
+#[derive(Default)]
+struct Evaluation {
+    machines: BTreeMap<String, MachineDisplay>,
+    paths: BTreeMap<[u8; 16], Vec<String>>,
+    closed: bool,
 }
 
 #[derive(Default)]
 struct MachineDisplay {
-    progress: Option<Progress>,
-    tasks: BTreeMap<TaskKey, Task>,
     stats: MachineProgress,
     peak_busy: u64,
     peak_queue: u64,
@@ -67,64 +48,22 @@ struct MachineDisplay {
     bytes_received: u64,
 }
 
-struct Task {
-    progress: Progress,
-    name: String,
-    title: String,
-    operation: Option<EvaluationOperation>,
-    depth: usize,
+impl MachineDisplay {
+    fn merge(&mut self, other: Self) {
+        self.stats.merge(&other.stats);
+        self.peak_busy = self.peak_busy.max(other.peak_busy);
+        self.peak_queue = self.peak_queue.max(other.peak_queue);
+        self.peak_memory = self.peak_memory.max(other.peak_memory);
+        self.completed = self.completed.max(other.completed);
+        self.privileged_completed = self.privileged_completed.max(other.privileged_completed);
+        self.cpu_ns = self.cpu_ns.max(other.cpu_ns);
+        self.bytes_sent = self.bytes_sent.max(other.bytes_sent);
+        self.bytes_received = self.bytes_received.max(other.bytes_received);
+    }
 }
 
 pub fn enable() {
-    DISPLAY.get_or_init(|| {
-        std::thread::spawn(|| {
-            loop {
-                std::thread::sleep(Duration::from_millis(200));
-                let Some(display) = DISPLAY.get() else {
-                    continue;
-                };
-                let active = {
-                    let mut active = display.active.lock().unwrap();
-                    active.retain(|state| state.strong_count() > 0);
-                    active.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
-                };
-                for state in active {
-                    let closed = state.closed.lock().unwrap();
-                    if *closed || state.bar.is_finished() {
-                        continue;
-                    }
-                    let message = state.detail.lock().unwrap().clone();
-                    let message = evaluation_status(&state, message);
-                    state.bar.set_message(message.clone());
-                    state.bar.tick();
-                    let elapsed = state.started.elapsed().as_secs();
-                    let interval = elapsed / 15 + 1;
-                    if !display.terminal
-                        && elapsed >= 1
-                        && interval > state.last_report.load(Ordering::Relaxed)
-                    {
-                        state.last_report.store(interval, Ordering::Relaxed);
-                        let count = state.bar.length().map_or_else(String::new, |total| {
-                            format!(" ({}/{total})", state.bar.position())
-                        });
-                        let prefix = state.bar.prefix();
-                        let prefix = if prefix.is_empty() {
-                            String::new()
-                        } else {
-                            format!("{prefix}: ")
-                        };
-                        println(format!("{prefix}{message}{count} [{elapsed}s elapsed]"));
-                    }
-                }
-            }
-        });
-        Display {
-            bars: MultiProgress::new(),
-            active: Mutex::new(Vec::new()),
-            terminal: std::io::stderr().is_terminal(),
-            advised: Mutex::new(None),
-        }
-    });
+    DISPLAY.get_or_init(Mutex::default);
 }
 
 pub fn println(message: impl AsRef<str>) {
@@ -132,31 +71,17 @@ pub fn println(message: impl AsRef<str>) {
 }
 
 fn line(message: impl AsRef<str>) {
-    if let Some(display) = DISPLAY.get().filter(|display| display.terminal) {
-        let _ = display.bars.println(message.as_ref());
-    } else {
-        eprintln!("{}", message.as_ref());
-    }
-}
-
-pub fn suspend<R>(write: impl FnOnce() -> R) -> R {
-    match DISPLAY.get() {
-        Some(display) => display.bars.suspend(write),
-        None => write(),
-    }
+    eprintln!("{}", message.as_ref());
 }
 
 pub fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let write = || {
-        let mut stderr = std::io::stderr().lock();
-        stderr.write_all(bytes)?;
-        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-            stderr.write_all(b"\n")?;
-        }
-        stderr.flush()
-    };
-    suspend(write)
+    let mut stderr = std::io::stderr().lock();
+    stderr.write_all(bytes)?;
+    if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+        stderr.write_all(b"\n")?;
+    }
+    stderr.flush()
 }
 
 pub fn forward_stderr(reader: impl std::io::Read + Send + 'static) {
@@ -207,241 +132,157 @@ impl Drop for Stderr {
     }
 }
 
-pub struct Progress(Option<Arc<State>>);
+pub struct Progress(Option<Activity>);
 
-fn style(total: Option<u64>, bytes: bool) -> ProgressStyle {
-    let template = match (total, bytes) {
-        (Some(total), true) if total > 1 => {
-            "{spinner} [{elapsed_precise}] [{bar:20}] {bytes}/{total_bytes} {prefix} {wide_msg}"
-        }
-        (Some(total), false) if total > 1 => {
-            "{spinner} [{elapsed_precise}] [{bar:20}] {pos}/{len} {prefix} {wide_msg}"
-        }
-        _ => "{spinner} [{elapsed_precise}] {prefix} {wide_msg}",
-    };
-    ProgressStyle::with_template(template)
-        .unwrap()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-        .progress_chars("=>-")
+struct Activity {
+    label: String,
+    started: Instant,
+    evaluation: Option<Arc<Mutex<Evaluation>>>,
+    count: Option<(Cell<u64>, bool)>,
 }
 
 impl Progress {
     pub fn activity(label: impl Into<String>) -> Self {
-        if advised().is_some() {
+        if observing_evaluation() {
             return Self(None);
         }
-        Self::new(label.into(), None, false)
-    }
-
-    pub fn advised(label: impl Into<String>) -> Self {
-        if advised().is_some() {
-            return Self(None);
-        }
-        let progress = Self::new(label.into(), None, false);
-        if let (Some(display), Some(state)) = (DISPLAY.get(), &progress.0) {
-            *display.advised.lock().unwrap() = Some(Arc::downgrade(state));
-        }
-        progress
+        Self::start(label, None)
     }
 
     pub fn items(label: impl Into<String>, total: usize) -> Self {
-        Self::new(label.into(), Some(total as u64), false)
+        Self::counted(label, total as u64, false)
     }
 
     pub fn bytes(label: impl Into<String>, total: u64) -> Self {
         if observing_evaluation() {
             return Self(None);
         }
-        Self::new(label.into(), Some(total), true)
+        Self::counted(label, total, true)
     }
 
-    fn new(label: String, total: Option<u64>, bytes: bool) -> Self {
-        let label = label
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect();
-        Self::new_after(label, total, bytes, None)
-    }
-
-    fn new_after(
-        label: String,
-        total: Option<u64>,
-        bytes: bool,
-        parent: Option<&ProgressBar>,
-    ) -> Self {
-        let Some(display) = DISPLAY.get() else {
-            return Self(None);
-        };
-        if total == Some(0) {
+    fn counted(label: impl Into<String>, total: u64, bytes: bool) -> Self {
+        if total == 0 {
             return Self(None);
         }
-        let bar = ProgressBar::hidden();
-        bar.set_style(style(total, bytes));
-        if let Some(total) = total.filter(|total| *total > 1) {
-            bar.set_length(total);
+        let mut progress = Self::start(label, None);
+        if let Some(activity) = &mut progress.0 {
+            activity.count = Some((Cell::new(0), bytes));
         }
-        bar.set_prefix(label);
-        let bar = match parent {
-            Some(parent) => display.bars.insert_after(parent, bar),
-            None => display.bars.add(bar),
-        };
-        let state = Arc::new(State {
-            bar,
-            detail: Mutex::new(String::new()),
-            started: Instant::now(),
-            last_report: AtomicU64::new(0),
-            advice: Mutex::new(BTreeMap::new()),
-            parents: Mutex::new(BTreeMap::new()),
-            labels: Mutex::new(BTreeMap::new()),
-            input: Mutex::new(None),
-            machines: Mutex::new(BTreeMap::new()),
-            reported: AtomicBool::new(false),
-            steps: AtomicU64::new(0),
-            closed: Mutex::new(false),
-        });
-        display.active.lock().unwrap().push(Arc::downgrade(&state));
-
-        Self(Some(state))
-    }
-
-    pub fn evaluation_names(
-        &self,
-        input: Option<[u8; 32]>,
-        labels: impl IntoIterator<Item = ([u8; 32], String)>,
-    ) {
-        if let Some(state) = advised().or_else(|| self.0.clone()) {
-            let mut current = state.input.lock().unwrap();
-            if *current != input {
-                let mut tasks = state.advice.lock().unwrap();
-                if let Some(previous) = *current {
-                    tasks.retain(|(id, operation), _| {
-                        *operation != Some(EvaluationOperation::Evaluate)
-                            || data_name(*id) != data_name(previous)
-                    });
-                }
-                position(&state, 0, 0);
-                *current = input;
-            }
-            drop(current);
-            let mut names = state.labels.lock().unwrap();
-            for (name, label) in labels {
-                names.entry(data_name(name)).or_insert(label);
-            }
-        }
-    }
-
-    pub fn message(&self, message: impl Into<String>) {
-        if let Some(state) = &self.0 {
-            *state.detail.lock().unwrap() = message.into();
-        }
+        progress
     }
 
     pub fn inc(&self, amount: u64) {
-        if let Some(state) = &self.0 {
-            state.bar.inc(amount);
+        if let Some((count, _)) = self.0.as_ref().and_then(|activity| activity.count.as_ref()) {
+            count.set(count.get() + amount);
         }
     }
 
-    pub fn position(&self, completed: u64, total: u64) {
-        if let Some(state) = &self.0 {
-            position(state, completed, total);
+    pub fn advised(label: impl Into<String>) -> Self {
+        let Some(display) = DISPLAY.get() else {
+            return Self(None);
+        };
+        let mut display = display.lock().unwrap();
+        if display.as_ref().and_then(Weak::upgrade).is_some() {
+            return Self(None);
         }
-    }
-
-    pub fn finish(self) {
-        self.close("completed");
-    }
-
-    fn close(&self, outcome: &str) {
-        let Some(state) = &self.0 else { return };
-        let mut closed = state.closed.lock().unwrap();
-        if *closed {
-            return;
-        }
-        *closed = true;
-        state.bar.finish_and_clear();
-        report_evaluation(state, outcome);
-        if let Some(display) = DISPLAY.get() {
-            display.bars.remove(&state.bar);
-        }
-    }
-}
-
-fn position(state: &State, completed: u64, total: u64) {
-    if completed > total {
-        return;
-    }
-    if total <= 1 || completed == 0 || completed == total {
-        state.bar.set_style(style(None, false));
-        state.bar.unset_length();
-    } else {
-        state.bar.update(|state| {
-            state.set_len(total);
-            state.set_pos(completed);
-        });
-        state.bar.set_style(style(Some(total), false));
-    }
-}
-
-fn data_name(mut name: [u8; 32]) -> [u8; 32] {
-    name[31] &= 0xe0;
-    name
-}
-
-fn identification(id: &[u8; 32], operation: Option<EvaluationOperation>) -> bool {
-    id[31] & 0x0c == 0x08
-        && matches!(
-            operation,
-            Some(
-                EvaluationOperation::Evaluate
-                    | EvaluationOperation::Think
-                    | EvaluationOperation::Force
-            )
+        let evaluation = Arc::new(Mutex::new(Evaluation::default()));
+        *display = Some(Arc::downgrade(&evaluation));
+        let label = label.into();
+        Self::start(
+            if label.is_empty() {
+                "Evaluation".into()
+            } else {
+                label
+            },
+            Some(evaluation),
         )
+    }
+
+    fn start(label: impl Into<String>, evaluation: Option<Arc<Mutex<Evaluation>>>) -> Self {
+        if DISPLAY.get().is_none() {
+            return Self(None);
+        }
+        let label = clean(&label.into());
+        line(format!("START {label}"));
+        Self(Some(Activity {
+            label,
+            started: Instant::now(),
+            evaluation,
+            count: None,
+        }))
+    }
+
+    pub fn finish(mut self) {
+        self.close("END");
+    }
+
+    fn close(&mut self, outcome: &str) {
+        let Some(activity) = self.0.take() else {
+            return;
+        };
+        let elapsed = activity.started.elapsed().as_secs_f64();
+        let detail = match activity.count {
+            Some((count, true)) => transfer_detail(count.get(), elapsed),
+            Some((count, false)) => format!(", {} items", count.get()),
+            None => String::new(),
+        };
+        let evaluation = activity
+            .evaluation
+            .as_ref()
+            .map(|state| state.lock().unwrap());
+        line(format!(
+            "{outcome} {} ({elapsed:.2}s{detail})",
+            activity.label
+        ));
+        if let Some(mut evaluation) = evaluation {
+            evaluation.closed = true;
+            if SUMMARIZE.load(Ordering::Relaxed) {
+                report_evaluation(&evaluation.machines);
+            }
+        }
+    }
 }
 
-fn task_title(
-    id: [u8; 32],
-    name: &str,
-    title: &str,
-    operation: Option<EvaluationOperation>,
-    labels: &BTreeMap<[u8; 32], String>,
-) -> String {
-    let label = labels.get(&data_name(id));
-    let full = (!abbreviating()).then(|| task_name(&id));
-    let identifier = full.as_deref().or_else(|| {
-        if name.is_empty() {
-            label.map(String::as_str)
-        } else {
-            Some(name)
-        }
-    });
-    let title = match (identifier, title.is_empty()) {
-        (Some(name), false) if label.is_some() && name != title => format!("{name}: {title}"),
-        (_, false) => title.into(),
-        (Some(name), true) => name.into(),
-        (None, true) => task_name(&id),
-    };
-    let title: String = title
-        .chars()
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.close("STOPPED");
+    }
+}
+
+fn clean(text: &str) -> String {
+    text.chars()
         .filter(|character| !character.is_control())
-        .collect();
-    let title = if DISPLAY.get().is_some_and(|display| display.terminal)
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
-    {
-        format!("\x1b[2;3m{title}\x1b[0m")
+        .collect()
+}
+
+fn advised() -> Option<Arc<Mutex<Evaluation>>> {
+    DISPLAY.get()?.lock().unwrap().as_ref()?.upgrade()
+}
+
+pub fn observing_evaluation() -> bool {
+    advised().is_some()
+}
+
+fn task_title(task: &EvaluationTask) -> String {
+    let title = if task.title.is_empty() {
+        if abbreviating() && !task.name.is_empty() {
+            task.name.clone()
+        } else {
+            task_name(&task.id)
+        }
     } else {
-        title
+        task.title.clone()
     };
-    operation.map_or_else(|| title.clone(), |operation| format!("{operation} {title}"))
+    let title = clean(&title);
+    task.operation
+        .map_or_else(|| title.clone(), |operation| format!("{operation} {title}"))
 }
 
 fn location_name(location: &[String]) -> String {
     let location = if location.is_empty() {
         "local".into()
     } else {
-        location.join(" / ")
+        location.join("!")
     };
     location
         .chars()
@@ -449,9 +290,29 @@ fn location_name(location: &[String]) -> String {
         .collect()
 }
 
-fn task_location(task: &crate::protocol::control::EvaluationTask, location: &[String]) -> String {
+fn transfer_location(
+    location: &[String],
+    endpoint: &[String],
+    peer: Option<[u8; 16]>,
+    paths: &BTreeMap<[u8; 16], Vec<String>>,
+) -> String {
+    if !endpoint.is_empty()
+        && let Some(path) = peer.and_then(|node| paths.get(&node))
+    {
+        return location_name(path);
+    }
+    location_name(&[location, endpoint].concat())
+}
+
+fn task_location(
+    task: &crate::protocol::control::EvaluationTask,
+    location: &[String],
+    paths: &BTreeMap<[u8; 16], Vec<String>>,
+) -> String {
     match &task.transfer {
-        Some((_, destination)) => location_name(&[location, destination.as_slice()].concat()),
+        Some((_, destination)) => {
+            transfer_location(location, destination, task.transfer_peer, paths)
+        }
         None => location_name(location),
     }
 }
@@ -459,22 +320,18 @@ fn task_location(task: &crate::protocol::control::EvaluationTask, location: &[St
 fn reported_title(
     task: &crate::protocol::control::EvaluationTask,
     location: &[String],
-    labels: &BTreeMap<[u8; 32], String>,
+    paths: &BTreeMap<[u8; 16], Vec<String>>,
 ) -> String {
-    let title = task_title(task.id, &task.name, &task.title, task.operation, labels);
+    let title = task_title(task);
     if let Some((source, destination)) = &task.transfer {
         if source == destination {
             return title;
         }
-        let source = [location, source.as_slice()].concat();
-        format!("{title} (from {})", location_name(&source))
+        let source = transfer_location(location, source, task.transfer_peer, paths);
+        format!("{title} (from {source})")
     } else {
         title
     }
-}
-
-pub fn observing_evaluation() -> bool {
-    advised().is_some()
 }
 
 fn byte_unit(bytes: u64) -> (f64, &'static str) {
@@ -491,13 +348,15 @@ fn byte_unit(bytes: u64) -> (f64, &'static str) {
     (1.0, "B")
 }
 
-fn evaluation_status(state: &State, activity: String) -> String {
-    let machines = state.machines.lock().unwrap();
-    if machines.is_empty() {
-        return activity;
+fn transfer_detail(bytes: u64, elapsed: f64) -> String {
+    let (scale, unit) = byte_unit(bytes);
+    let amount = number(bytes as f64 / scale);
+    if elapsed == 0.0 {
+        return format!(", {amount} {unit}");
     }
-    let completed = state.steps.load(Ordering::Relaxed);
-    format!("[{completed}] {activity}")
+    let rate = bytes as f64 / elapsed;
+    let (scale, rate_unit) = byte_unit(rate as u64);
+    format!(", {amount} {unit}, {} {rate_unit}/s", number(rate / scale))
 }
 
 fn number(value: f64) -> String {
@@ -526,39 +385,9 @@ fn capacity(machine: &MachineProgress) -> (Option<u64>, Option<u64>) {
     }
 }
 
-fn report_evaluation(state: &State, outcome: &str) -> bool {
-    let machines = state.machines.lock().unwrap();
-    if machines.is_empty() || state.reported.swap(true, Ordering::Relaxed) {
-        return false;
-    }
-    for task in state.advice.lock().unwrap().values() {
-        if let Some(progress) = &task.progress.0 {
-            progress.bar.finish_and_clear();
-        }
-    }
-    for machine in machines.values() {
-        if let Some(progress) = &machine.progress
-            && let Some(state) = &progress.0
-        {
-            state.bar.finish_and_clear();
-        }
-        for task in machine.tasks.values() {
-            if let Some(progress) = &task.progress.0 {
-                progress.bar.finish_and_clear();
-            }
-        }
-    }
-    line(format!(
-        "{} {outcome} ({:.2}s)",
-        if state.bar.prefix().is_empty() {
-            "Evaluation".into()
-        } else {
-            state.bar.prefix()
-        },
-        state.started.elapsed().as_secs_f64()
-    ));
-    if !SUMMARIZE.load(Ordering::Relaxed) {
-        return true;
+fn report_evaluation(machines: &BTreeMap<String, MachineDisplay>) {
+    if machines.is_empty() {
+        return;
     }
     line("");
     let (memory_scale, memory_unit) = byte_unit(
@@ -610,7 +439,7 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
         format!("Sent ({sent_unit})"),
         format!("Received ({received_unit})")
     ));
-    for (location, machine) in machines.iter() {
+    for (location, machine) in machines {
         let measured = machine.stats.runtime.is_some();
         let (workers, memory) = capacity(&machine.stats);
         let peak_workers = if measured {
@@ -668,286 +497,195 @@ fn report_evaluation(state: &State, outcome: &str) -> bool {
             values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]
         ));
     }
-    true
 }
 
 pub fn evaluation_progress(snapshot: EvaluationSnapshot) {
     let Some(state) = advised() else { return };
-    let closed = state.closed.lock().unwrap();
-    if *closed {
+    let mut state = state.lock().unwrap();
+    if state.closed {
         return;
     }
-    for stats in snapshot.machines {
-        let location = location_name(&stats.location);
-        let mut labels = if stats.location.is_empty() {
-            state.labels.lock().unwrap().clone()
-        } else {
-            BTreeMap::new()
-        };
-        for (name, label) in &stats.labels {
-            labels
-                .entry(data_name(*name))
-                .or_insert_with(|| label.clone());
-        }
-        if stats.location.is_empty() {
-            *state.labels.lock().unwrap() = labels.clone();
-        }
-        if stats.location.is_empty() {
-            let mut parents = state.parents.lock().unwrap();
-            for task in &stats.tasks {
-                for child in &task.children {
-                    parents.insert(*child, (task.id, task.operation));
-                }
-            }
-        }
-        let mut machines = state.machines.lock().unwrap();
-        let machine = machines.entry(location.clone()).or_default();
-        let connection = match (&stats.availability, &machine.stats.availability) {
-            (
-                Some(RemoteAvailability::Available { .. }),
-                Some(RemoteAvailability::Available { .. }),
-            ) => None,
-            (Some(RemoteAvailability::Available { workers, .. }), _) => {
-                Some((true, format!("{workers} workers")))
-            }
-            (Some(RemoteAvailability::Unavailable(error)), previous) if !matches!(previous, Some(RemoteAvailability::Unavailable(old)) if old == error) => {
-                Some((
-                    false,
-                    error
-                        .chars()
-                        .filter(|character| !character.is_control())
-                        .collect(),
-                ))
-            }
-            _ => None,
-        };
-        if !stats.location.is_empty()
-            && let Some((success, result)) = connection
-        {
-            let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;
-            line(format!(
-                "[{completed}] {}Connect {location} ({result})",
-                if success { "" } else { "FAILED " }
-            ));
-        }
-        let Some(runtime) = &stats.runtime else {
-            machine.stats.location = stats.location;
-            machine.stats.availability = stats.availability;
-            continue;
-        };
-        let baseline = (!stats.used && !stats.location.is_empty()).then_some(runtime);
-        let previous = machine.stats.runtime.as_ref().or(baseline);
-        let delta = |now: u64, old: u64| now.checked_sub(old).unwrap_or(now);
-        machine.completed += delta(runtime.completed, previous.map_or(0, |old| old.completed));
-        machine.privileged_completed += delta(
-            runtime.privileged_completed,
-            previous.map_or(0, |old| old.privileged_completed),
-        );
-        machine.bytes_sent += delta(runtime.bytes_sent, previous.map_or(0, |old| old.bytes_sent));
-        machine.bytes_received += delta(
-            runtime.bytes_received,
-            previous.map_or(0, |old| old.bytes_received),
-        );
-        if let Some(cpu) = runtime.cpu_ns
-            && previous.is_none_or(|old| old.elapsed_ns != runtime.elapsed_ns)
-        {
-            machine.cpu_ns = Some(
-                machine.cpu_ns.unwrap_or(0)
-                    + delta(cpu, previous.and_then(|old| old.cpu_ns).unwrap_or(0)),
-            );
-        }
-        machine.peak_busy = machine.peak_busy.max(runtime.peak_busy_workers);
-        machine.peak_queue = machine.peak_queue.max(runtime.peak_queued);
-        machine.peak_memory = machine.peak_memory.max(runtime.peak_memory);
-        {
-            let parents: BTreeMap<_, _> = stats
-                .tasks
-                .iter()
-                .flat_map(|task| {
-                    task.children
-                        .iter()
-                        .map(move |child| (*child, (task.id, task.operation)))
-                })
-                .collect();
-            let mut active = std::collections::BTreeSet::new();
-            for entry in &stats.tasks {
-                if identification(&entry.id, entry.operation) {
-                    continue;
-                }
-                let named = labels.contains_key(&data_name(entry.id));
-                let root = state
-                    .input
-                    .lock()
-                    .unwrap()
-                    .is_some_and(|input| data_name(input) == data_name(entry.id));
-                if stats.location.is_empty() && entry.operation != Some(EvaluationOperation::Load) {
-                    continue;
-                }
-                if entry.title.is_empty() && entry.progress.is_some() && !named && !root {
-                    continue;
-                }
-                let key = (entry.id, entry.operation);
-                active.insert(key);
-                let mut depth = 1;
-                let mut ancestor = key;
-                let mut visited = std::collections::BTreeSet::new();
-                while visited.insert(ancestor) {
-                    let Some(parent) = parents.get(&ancestor) else {
-                        break;
-                    };
-                    depth += 1;
-                    ancestor = *parent;
-                }
-                let task = machine.tasks.entry(key).or_insert_with(|| Task {
-                    progress: Progress(None),
-                    name: entry.name.clone(),
-                    title: entry.title.clone(),
-                    operation: entry.operation,
-                    depth,
-                });
-                if let Some(bar) = &task.progress.0 {
-                    bar.bar.set_prefix(format!(
-                        "{}{}: {}",
-                        "  ".repeat(depth),
-                        task_location(entry, &stats.location),
-                        reported_title(entry, &stats.location, &labels)
-                    ));
-                }
-                task.name = entry.name.clone();
-                task.title = entry.title.clone();
-                if let Some((completed, total)) = entry.progress {
-                    if task.progress.0.is_none() && total > 0 && completed < total {
-                        task.progress = Progress::new_after(
-                            format!(
-                                "{}: {}",
-                                task_location(entry, &stats.location),
-                                reported_title(entry, &stats.location, &labels)
-                            ),
-                            None,
-                            false,
-                            None,
-                        );
-                    }
-                    task.progress.position(completed, total);
-                }
-            }
-            machine.tasks.retain(|id, _| active.contains(id));
-        }
-        let used = machine.stats.used || stats.used;
-        machine.stats = stats;
-        machine.stats.used = used;
+    let mut machines = snapshot.machines;
+    for stats in &mut machines {
+        stats.location = location_path(stats.location.iter().map(String::as_str));
     }
-    let steps = snapshot.steps;
-    let mut machines = state.machines.lock().unwrap();
-    let labels = state.labels.lock().unwrap();
-    let local = state.advice.lock().unwrap();
-    let label_names = &*labels;
-    for (location, machine) in machines.iter_mut() {
-        let current = local
-            .iter()
-            .filter(|_| machine.stats.location.is_empty())
-            .chain(machine.tasks.iter())
-            .filter(|(key, task)| {
-                task.operation == Some(EvaluationOperation::Apply)
-                    || task.operation == Some(EvaluationOperation::Load)
-                    || !task.title.is_empty()
-                    || !task.name.is_empty()
-                    || label_names.contains_key(&data_name(key.0))
-            })
-            .min_by_key(|(_, task)| task.operation != Some(EvaluationOperation::Apply))
-            .map(|(key, task)| {
-                let entry = machine
-                    .stats
-                    .tasks
-                    .iter()
-                    .find(|entry| (entry.id, entry.operation) == *key);
-                match entry {
-                    Some(entry) => {
-                        let title = reported_title(entry, &machine.stats.location, label_names);
-                        let destination = task_location(entry, &machine.stats.location);
-                        if destination == *location {
-                            title
-                        } else {
-                            format!("{title} (to {destination})")
-                        }
-                    }
-                    None => task_title(key.0, &task.name, &task.title, task.operation, label_names),
-                }
-            });
-        let running = machine
-            .stats
-            .runtime
-            .as_ref()
-            .map(|runtime| runtime.busy_workers);
-        let active = current.is_some() || running.is_some_and(|running| running > 0);
-        let activity = current.unwrap_or_else(|| {
-            match &machine.stats.availability {
-                Some(RemoteAvailability::Connecting) => "connecting",
-                Some(RemoteAvailability::Unavailable(_)) => "unavailable",
-                _ if active => "working",
-                _ => "idle",
+    let locations: BTreeSet<_> = machines
+        .iter()
+        .map(|stats| location_name(&stats.location))
+        .collect();
+    state.machines.retain(|location, machine| {
+        machine.stats.runtime.is_some() || locations.contains(location)
+    });
+    for stats in machines {
+        if let Some(node) = stats.node {
+            let preferred = state
+                .paths
+                .entry(node)
+                .or_insert_with(|| stats.location.clone());
+            if (stats.location.len(), &stats.location) < (preferred.len(), preferred) {
+                *preferred = stats.location.clone();
             }
-            .into()
-        });
-        let progress = machine.progress.get_or_insert_with(|| {
-            Progress::new_after(location.clone(), None, false, Some(&state.bar))
-        });
-        if let Some(state) = &progress.0 {
-            state.bar.set_style(
-                ProgressStyle::with_template(if active {
-                    "{spinner} {prefix} {wide_msg}"
-                } else {
-                    "  {prefix} {wide_msg}"
-                })
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-            );
-            state.bar.set_prefix(running.map_or_else(
-                || format!("{location}:"),
-                |running| format!("{location} ({running} running):"),
-            ));
         }
-        progress.message(activity);
+        update_machine(&mut state.machines, stats);
     }
-    *state.detail.lock().unwrap() = "Evaluating".into();
-    drop(local);
-    drop(labels);
-    drop(machines);
-    drop(closed);
-    for step in steps {
-        evaluation_step(step);
+    for step in snapshot.steps {
+        log_step(&state, step);
     }
 }
 
-pub fn evaluation_step(step: EvaluationStep) {
-    if identification(&step.task.id, step.task.operation) {
-        return;
-    }
-    let Some(state) = advised() else { return };
-    let closed = state.closed.lock().unwrap();
-    if *closed {
-        return;
-    }
-    let location = location_name(&step.location);
-    let key = (step.task.id, step.task.operation);
-    let mut labels = state.labels.lock().unwrap().clone();
-    if step.location.is_empty() {
-        state.advice.lock().unwrap().remove(&key);
-    }
-    if let Some(machine) = state.machines.lock().unwrap().get_mut(&location) {
-        for (name, label) in &machine.stats.labels {
-            labels.insert(data_name(*name), label.clone());
+fn update_machine(machines: &mut BTreeMap<String, MachineDisplay>, mut stats: MachineProgress) {
+    let mut location = location_name(&stats.location);
+    let aliases: Vec<_> = machines
+        .iter()
+        .filter(|(name, machine)| {
+            *name == &location || (stats.node.is_some() && machine.stats.node == stats.node)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !aliases.is_empty() {
+        let mut machine = machines.remove(&aliases[0]).unwrap();
+        for alias in &aliases[1..] {
+            machine.merge(machines.remove(alias).unwrap());
         }
-        machine.tasks.remove(&key);
+        if (&machine.stats.location.len(), &machine.stats.location)
+            < (&stats.location.len(), &stats.location)
+        {
+            stats.location = machine.stats.location.clone();
+        }
+        location = location_name(&stats.location);
+        machines.insert(location.clone(), machine);
     }
-    let location = task_location(&step.task, &step.location);
-    let title = reported_title(&step.task, &step.location, &labels);
-    let completed = state.steps.fetch_add(1, Ordering::Relaxed) + 1;
-    line(format!(
-        "[{completed}] {}{location}: {title} ({:.2}s)",
-        if step.success { "" } else { "FAILED " },
-        step.elapsed_ns as f64 / 1e9
-    ));
+    let machine = machines.entry(location.clone()).or_default();
+    if stats.node.is_some() && stats.node == machine.stats.node {
+        machine.stats.location = stats.location.clone();
+    }
+    if stats.node.is_some()
+        && stats.node == machine.stats.node
+        && stats
+            .runtime
+            .as_ref()
+            .zip(machine.stats.runtime.as_ref())
+            .is_some_and(|(now, old)| now.elapsed_ns < old.elapsed_ns)
+    {
+        return;
+    }
+    let connection = match (&stats.availability, &machine.stats.availability) {
+        (
+            Some(RemoteAvailability::Available { .. }),
+            Some(RemoteAvailability::Available { .. }),
+        ) => None,
+        (Some(RemoteAvailability::Available { workers, .. }), _) => {
+            Some((true, format!("{workers} workers")))
+        }
+        (Some(RemoteAvailability::Unavailable(error)), previous) if !matches!(previous, Some(RemoteAvailability::Unavailable(old)) if old == error) => {
+            Some((
+                false,
+                error
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .collect(),
+            ))
+        }
+        _ => None,
+    };
+    if !stats.location.is_empty()
+        && let Some((success, result)) = connection
+    {
+        if !matches!(
+            machine.stats.availability,
+            Some(RemoteAvailability::Connecting)
+        ) {
+            line(format!("START Connect {location}"));
+        }
+        line(format!(
+            "{} Connect {location} ({result})",
+            if success { "END" } else { "FAILED" }
+        ));
+    }
+    if matches!(stats.availability, Some(RemoteAvailability::Connecting))
+        && !matches!(
+            machine.stats.availability,
+            Some(RemoteAvailability::Connecting)
+        )
+    {
+        line(format!("START Connect {location}"));
+    }
+    let Some(runtime) = &stats.runtime else {
+        machine.stats.node = stats.node.or(machine.stats.node);
+        machine.stats.location = stats.location;
+        machine.stats.availability = stats.availability;
+        return;
+    };
+    let baseline = (!stats.used && !stats.location.is_empty()).then_some(runtime);
+    let previous = machine
+        .stats
+        .runtime
+        .as_ref()
+        .filter(|_| {
+            machine.stats.node.is_none() || stats.node.is_none() || machine.stats.node == stats.node
+        })
+        .or(baseline);
+    let delta = |now: u64, old: u64| now.checked_sub(old).unwrap_or(now);
+    machine.completed += delta(runtime.completed, previous.map_or(0, |old| old.completed));
+    machine.privileged_completed += delta(
+        runtime.privileged_completed,
+        previous.map_or(0, |old| old.privileged_completed),
+    );
+    machine.bytes_sent += delta(runtime.bytes_sent, previous.map_or(0, |old| old.bytes_sent));
+    machine.bytes_received += delta(
+        runtime.bytes_received,
+        previous.map_or(0, |old| old.bytes_received),
+    );
+    if let Some(cpu) = runtime.cpu_ns
+        && previous.is_none_or(|old| old.elapsed_ns != runtime.elapsed_ns)
+    {
+        machine.cpu_ns = Some(
+            machine.cpu_ns.unwrap_or(0)
+                + delta(cpu, previous.and_then(|old| old.cpu_ns).unwrap_or(0)),
+        );
+    }
+    machine.peak_busy = machine.peak_busy.max(runtime.peak_busy_workers);
+    machine.peak_queue = machine.peak_queue.max(runtime.peak_queued);
+    machine.peak_memory = machine.peak_memory.max(runtime.peak_memory);
+    let used = machine.stats.used || stats.used;
+    machine.stats = stats;
+    machine.stats.used = used;
+}
+
+pub fn evaluation_step(step: EvaluationStep) {
+    if let Some(state) = advised() {
+        let state = state.lock().unwrap();
+        if !state.closed {
+            log_step(&state, step);
+        }
+    }
+}
+
+fn log_step(state: &Evaluation, step: EvaluationStep) {
+    let original = location_path(step.location.iter().map(String::as_str));
+    let location = if step.task.transfer.is_none() || step.task.transfer_peer.is_some() {
+        step.node
+            .and_then(|node| state.paths.get(&node))
+            .unwrap_or(&original)
+    } else {
+        &original
+    };
+    let location_name = task_location(&step.task, location, &state.paths);
+    let title = reported_title(&step.task, location, &state.paths);
+    match step.phase {
+        EvaluationPhase::Started => line(format!("START {location_name}: {title}")),
+        EvaluationPhase::Finished {
+            elapsed_ns,
+            outcome,
+            bytes,
+        } => {
+            let elapsed = elapsed_ns as f64 / 1e9;
+            let detail = bytes.map_or_else(String::new, |bytes| transfer_detail(bytes, elapsed));
+            line(format!(
+                "{outcome} {location_name}: {title} ({elapsed:.2}s{detail})"
+            ));
+        }
+    }
 }
 
 fn task_name(task: &[u8; 32]) -> String {
@@ -957,156 +695,4 @@ fn task_name(task: &[u8; 32]) -> String {
         write!(&mut name, "{byte:02x}").unwrap();
     }
     name
-}
-
-fn advised() -> Option<Arc<State>> {
-    let state = DISPLAY.get()?.advised.lock().unwrap().as_ref()?.upgrade()?;
-    (!state.bar.is_finished()).then_some(state)
-}
-
-fn task<'a>(state: &State, tasks: &'a mut BTreeMap<TaskKey, Task>, id: TaskKey) -> &'a mut Task {
-    let mut depth = 1;
-    let parents = state.parents.lock().unwrap();
-    let mut ancestor = id;
-    let mut visited = std::collections::BTreeSet::new();
-    while visited.insert(ancestor) {
-        let Some(parent) = parents.get(&ancestor) else {
-            break;
-        };
-        depth += 1;
-        ancestor = *parent;
-    }
-    drop(parents);
-    tasks.entry(id).or_insert_with(|| Task {
-        progress: Progress(None),
-        name: String::new(),
-        title: String::new(),
-        operation: id.1,
-        depth,
-    })
-}
-
-fn counted_task<'a>(
-    state: &State,
-    tasks: &'a mut BTreeMap<TaskKey, Task>,
-    id: TaskKey,
-) -> &'a mut Task {
-    let parent = state.parents.lock().unwrap().get(&id).copied();
-    let parent_bar = parent
-        .and_then(|id| tasks.get(&id))
-        .and_then(|task| task.progress.0.as_ref())
-        .map(|state| state.bar.clone())
-        .unwrap_or_else(|| state.bar.clone());
-    let task = task(state, tasks, id);
-    if task.progress.0.is_none() {
-        let title = task_title(
-            id.0,
-            &task.name,
-            &task.title,
-            id.1,
-            &state.labels.lock().unwrap(),
-        );
-        task.progress = Progress::new_after(
-            format!("{}local: {title}", "  ".repeat(task.depth)),
-            None,
-            false,
-            Some(&parent_bar),
-        );
-    }
-    task
-}
-
-pub fn advice(id: [u8; 32], operation: Option<EvaluationOperation>, key: &[u8], payload: &[u8]) {
-    let Some(state) = advised() else { return };
-    let closed = state.closed.lock().unwrap();
-    if *closed {
-        return;
-    }
-    let mut tasks = state.advice.lock().unwrap();
-    match key {
-        b"fix::title" => {
-            let Ok(title) = std::str::from_utf8(payload) else {
-                return;
-            };
-            let task = task(&state, &mut tasks, (id, operation));
-            task.title = title
-                .chars()
-                .filter(|character| !character.is_control())
-                .collect();
-
-            let title = task_title(
-                id,
-                &task.name,
-                &task.title,
-                task.operation,
-                &state.labels.lock().unwrap(),
-            );
-            if let Some(progress) = &task.progress.0 {
-                progress
-                    .bar
-                    .set_prefix(format!("{}local: {title}", "  ".repeat(task.depth)));
-            }
-        }
-        b"fix::progress" if payload.len() == 16 => {
-            let completed = u64::from_le_bytes(payload[..8].try_into().unwrap());
-            let total = u64::from_le_bytes(payload[8..].try_into().unwrap());
-            if completed > total {
-                return;
-            }
-            let task = counted_task(&state, &mut tasks, (id, operation));
-            if let Some(state) = &task.progress.0 {
-                state.last_report.store(0, Ordering::Relaxed);
-            }
-            task.progress.position(completed, total);
-        }
-        _ => (),
-    }
-}
-
-pub fn tree_progress(id: [u8; 32], children: &[[u8; 32]], completed: u64, total: u64) {
-    let Some(state) = advised() else { return };
-    let closed = state.closed.lock().unwrap();
-    if *closed {
-        return;
-    }
-    for child in children {
-        state
-            .parents
-            .lock()
-            .unwrap()
-            .entry((*child, Some(EvaluationOperation::Evaluate)))
-            .or_insert((id, Some(EvaluationOperation::Evaluate)));
-    }
-    let named = state.labels.lock().unwrap().contains_key(&data_name(id));
-    let root = state
-        .input
-        .lock()
-        .unwrap()
-        .is_some_and(|input| data_name(input) == data_name(id));
-    if !named && !root {
-        return;
-    }
-    let mut tasks = state.advice.lock().unwrap();
-    {
-        let task = counted_task(
-            &state,
-            &mut tasks,
-            (id, Some(EvaluationOperation::Evaluate)),
-        );
-        task.progress.message("evaluating Tree children");
-        task.progress.position(completed, total);
-    }
-}
-
-pub fn task_finished(id: [u8; 32], operation: Option<EvaluationOperation>) {
-    if let Some(state) = advised() {
-        let mut tasks = state.advice.lock().unwrap();
-        tasks.remove(&(id, operation));
-    }
-}
-
-impl Drop for Progress {
-    fn drop(&mut self) {
-        self.close("stopped");
-    }
 }

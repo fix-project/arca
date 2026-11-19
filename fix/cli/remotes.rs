@@ -28,17 +28,15 @@ fn receive(stream: &mut RemoteConnection) -> Result<Message> {
                     "Receiving remote data",
                     total,
                 ));
-                waiting.message("receiving response");
             }
             if let Some(progress) = &transfer {
                 progress.inc(received - previous);
             }
             previous = received;
-            if received == total {
-                if let Some(progress) = transfer.take() {
-                    progress.finish();
-                }
-                waiting.message("decoding remote response");
+            if received == total
+                && let Some(progress) = transfer.take()
+            {
+                progress.finish();
             }
         })
         .map_err(|error| format!("remote protocol: {error}"))?
@@ -303,7 +301,6 @@ pub fn pull(
             )
             .into());
         }
-        progress.message("Saving labels");
         for ((_, target, name), mut value) in selected.into_iter().zip(results) {
             if mode == Mode::Exact {
                 value = shell.lookup(&hex::encode(name))?;
