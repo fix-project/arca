@@ -55,7 +55,7 @@ Payloads are eight-byte little-endian unsigned integers. Advice can target an av
 
 `compile` advises the next compilation thunk about the independent C compilation jobs before they are generated. It uses the input Wasm size as a rough output-size estimate; these estimates do not affect evaluation results or progress totals.
 
-An empty metadata Blob means no deterministic memory limit is specified. An eight-byte little-endian unsigned integer specifies the limit in bytes. Placement uses this as an additional hint against advertised worker memory. Enforcement is not implemented. Other metadata encodings do not supply a placement limit.
+Every application declares its memory limit as an eight-byte little-endian unsigned integer at combination index zero. The runtime rejects missing or malformed limits. Unprivileged execution charges conservative live memory independently of page sharing and copy-on-write. Exhaustion returns `[Blob("Fix.memory"), Blob(limit)]`; admission failure returns a retryable error without an Apply coupon. Privileged schedulers are exempt from execution limits. `kernel::worker::available_memory()` reports current unreserved memory. OnePass and Hint compare application limits against worker availability. See [memory accounting](../../../arca/kernel/MEMORY.md) for the accounting contract.
 
 With equal input locality, a parallelism estimate favors a machine that can use more of the expected jobs. Hint keeps that capacity advantage when considering whether to pull work back locally. Without advice, OnePass uses actual input locality, cached results, and worker parallelism. Hint uses observed dependency fan-out. OnePass and Hint fall back to local execution when a remote fails. Unknown memory capacity does not exclude a worker.
 
@@ -75,6 +75,6 @@ fix -C /path/to/worker serve --listen 127.0.0.1:9000 -j 4 --memory 16384
 fix remote add worker tcp://worker.example:9000
 ```
 
-The worker advertises inventory, cached Eval/Think results, parallelism, and its configured VM memory. Transfers use persistent connections, send only requested backing data, and supply certificates signed by keys the receiver trusts. The example buffers each transfer and limits frames and received backing bytes to 512 MiB. Other schedulers can choose different transports and acquisition policies.
+The worker advertises inventory, cached Eval/Think results, parallelism, and its current unreserved memory, capped by its configured VM memory. Transfers use persistent connections, send only requested backing data, and supply certificates signed by keys the receiver trusts. The example buffers each transfer and limits frames and received backing bytes to 512 MiB. Other schedulers can choose different transports and acquisition policies.
 
 Scheduler programs reserve an 8 MiB Wasm stack for recursive async evaluation.

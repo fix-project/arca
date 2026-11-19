@@ -7,6 +7,7 @@ static mut SLOTS: fixhandle::descriptors::Descriptors = fixhandle::descriptors::
 
 pub fn initialize(value: Reference) -> u32 {
     assert_eq!(value as usize, BASE);
+    crate::memory::descriptors(4096 / fixhandle::HANDLE_SIZE);
     unsafe {
         assert_eq!((&mut *(&raw mut SLOTS)).allocate(CAPACITY), Some(0));
     }
@@ -28,6 +29,7 @@ pub fn allocate() -> u32 {
             .expect("descriptor table exhausted");
         let cell = BASE + index as usize * fixhandle::HANDLE_SIZE;
         if index == length && cell.is_multiple_of(4096) {
+            crate::memory::descriptors(4096 / fixhandle::HANDLE_SIZE);
             crate::rt::map_region(cell as *mut u8, 4096, arcane::__MODE_read_write)
                 .expect("descriptor allocation failed");
         }

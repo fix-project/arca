@@ -5,7 +5,7 @@ use user::Runtime;
 use crate::handles::{self, Query, Reference};
 use crate::rt;
 
-static mut OBJECTS: BTreeMap<usize, Value<Runtime>> = BTreeMap::new();
+static mut OBJECTS: BTreeMap<usize, (Value<Runtime>, usize)> = BTreeMap::new();
 static mut REGIONS: usize = 0;
 
 pub fn region() -> usize {
@@ -30,7 +30,7 @@ pub unsafe fn create(
     unsafe {
         assert!(
             (&mut *(&raw mut OBJECTS))
-                .insert(address, backing)
+                .insert(address, (backing, bytes))
                 .is_none()
         );
         handles::create_local(handles::address(result), address, bytes, metadata);
@@ -56,7 +56,13 @@ pub fn lift_all() {
     let records = Tuple(
         objects
             .into_iter()
-            .map(|(address, backing)| Tuple(alloc::vec![Word(address as u64), Value(backing)]))
+            .map(|(address, (backing, bytes))| {
+                Tuple(alloc::vec![
+                    Word(address as u64),
+                    Value(backing),
+                    Word(bytes as u64)
+                ])
+            })
             .collect(),
     );
     let slots = crate::descriptors::take_local();

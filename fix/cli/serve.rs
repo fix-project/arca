@@ -54,7 +54,7 @@ pub(crate) fn run(
     let input = client.tree(&[ip, port, memory, mode])?;
     let scheduler = client.lookup(&client.options().scheduler.clone())?;
     let mode = client.blob(b"serve")?;
-    let limits = client.blob(b"")?;
+    let limits = client.blob(&(1u64 << 30).to_le_bytes())?;
     let combination = client.tree(&[limits, scheduler, mode, collector, input])?;
     if stdio {
         if let Some(name) = std::env::var_os("FIX_SERVE_ACK") {

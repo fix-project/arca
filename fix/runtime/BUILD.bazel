@@ -127,6 +127,7 @@ kernel_test(
         "TREE_READ": "//tests/fix:tree_read_native",
         "ADD_BLOB": "//programs/fix:addblob_elf",
         "BINDINGS": "//fix/sdk:c_bindings_native",
+        "MEMORY_LIMITS": "//tests/fix:memory_limits_native",
         "CAPTURE": "//tests/fix:capture_determinism_native",
         "PARSER": "//programs/fix/parser:parser_elf",
         "FIX_RECOMPUTE_SCHEDULER": "//programs/fix/schedulers:recompute_elf",

@@ -35,6 +35,7 @@
 #define __NR_mprotect 24
 #define __NR_compat_mmap 30
 #define __NR_build 31
+#define __NR_memory_adjust 32
 
 // control flow
 #define __NR_call_with_current_continuation 25

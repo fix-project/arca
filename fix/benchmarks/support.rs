@@ -42,7 +42,7 @@ impl FixState {
             .add_tree(&[FixBlob::literal(b"bench").unwrap().into()])
             .into();
         let combination = memory.add_tree(&[
-            number(0),
+            number(512u64 << 20),
             program.into(),
             number(first),
             number(second),
@@ -75,9 +75,13 @@ impl FixState {
 
     pub fn function_effect(&self, handler: Handle, pending: Handle) -> (Handle, Handle) {
         let (request, continuation) = self.pair(pending);
-        let combination = self.memory.add_tree(&[number(0), handler, request]);
+        let combination = self
+            .memory
+            .add_tree(&[number(512u64 << 20), handler, request]);
         let (reply, handler) = self.pair(self.run(combination));
-        let combination = self.memory.add_tree(&[number(0), continuation, reply]);
+        let combination = self
+            .memory
+            .add_tree(&[number(512u64 << 20), continuation, reply]);
         (self.run(combination), handler)
     }
 
@@ -96,7 +100,9 @@ impl FixState {
     }
 
     pub fn resume(&self, continuation: Handle) -> Handle {
-        let combination = self.memory.add_tree(&[number(0), continuation, number(0)]);
+        let combination = self
+            .memory
+            .add_tree(&[number(512u64 << 20), continuation, number(0)]);
         self.continuation(self.run(combination))
     }
 

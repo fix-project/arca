@@ -38,7 +38,7 @@ fn backend_executes_with_the_configured_authorities() {
     }
     let argument = backend.blob(&[42; 64]);
     let combination = backend.tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         identity.into(),
         argument,
     ]);

@@ -84,7 +84,10 @@ fn run() -> Result<()> {
     {
         let module = shell.file(&program)?;
         let program = shell.compilation(&module, None)?;
-        let mut fields = vec![Blob::new(b"").into_value(), program];
+        let mut fields = vec![
+            Blob::new(&(512u64 << 20).to_le_bytes()).into_value(),
+            program,
+        ];
         fields.extend(Expressions::new(&mut shell, Vec::new()).arguments(&arguments)?);
         for module in env!("FIX_ARGUMENT_MODULES").lines() {
             let module = shell.file(&locate(module)?)?;

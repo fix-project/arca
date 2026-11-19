@@ -267,10 +267,21 @@ fn invocation_local_hints_resolve_backing_without_saving_metadata() {
     let input = text(run(&directory, &["create-strict-encode", &thunk], true));
     let uri = format!("file://{}", source.display());
     let mode = text(run(&directory, &["create-blob", "--string", "eval"], true));
-    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
+    let metadata = text(run(
+        &directory,
+        &["create-blob", "--u64", "536870912"],
+        true,
+    ));
     let request = text(run(
         &directory,
-        &["create-tree", &metadata, "scheduler", &mode, "collector", &input],
+        &[
+            "create-tree",
+            &metadata,
+            "scheduler",
+            &mode,
+            "collector",
+            &input,
+        ],
         true,
     ));
     let result = text(run(
@@ -660,7 +671,11 @@ fn schedulers_share_git_directory_import_and_normalization() {
     let uri = format!("git://{address}/fixture#v1:");
     hydrate(&directory, &object, &[&uri]);
     add(&directory, "importer", env!("FIX_IMPORTER"));
-    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
+    let metadata = text(run(
+        &directory,
+        &["create-blob", "--u64", "536870912"],
+        true,
+    ));
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,
@@ -742,7 +757,11 @@ fn directory_contents_agree_across_host_paths_and_file_uris() {
     );
     hydrate(&directory, expected, &[&uri]);
     add(&directory, "importer", env!("FIX_IMPORTER"));
-    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
+    let metadata = text(run(
+        &directory,
+        &["create-blob", "--u64", "536870912"],
+        true,
+    ));
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,

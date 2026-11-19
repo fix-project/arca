@@ -76,6 +76,7 @@ int64_t arca_table_map(arcad table, void *address, struct arca_entry *entry);
 int64_t arca_mmap(void *address, struct arca_entry *entry);
 int64_t arca_mprotect(void *address, int mode);
 int64_t arca_compat_mmap(void *address, size_t size, unsigned mode);
+int64_t arca_memory_adjust(int64_t bytes);
 
 int64_t arca_call_with_current_continuation(arcad value);
 arcad arca_get_continuation(void);

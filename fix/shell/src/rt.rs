@@ -47,11 +47,20 @@ pub unsafe fn map_region(data: *mut u8, size: usize, mode: u32) -> Option<usize>
     if size == 0 {
         return Some(0);
     }
+    let address = data as usize;
+    let accounted =
+        address < LOCAL_BASE || (HANDLE_BASE..HANDLE_BASE + PAYLOAD_SIZE).contains(&address);
+    if accounted && mode == __MODE_read_write {
+        crate::memory::mapping(address, size, true);
+    }
     let mapped = unsafe { arca_compat_mmap(data.cast(), size, mode) };
     if mapped < 0 {
         return None;
     }
     assert_eq!(mapped as usize, size);
+    if accounted && mode == __MODE_none {
+        crate::memory::unmap(address, size);
+    }
     Some(size)
 }
 

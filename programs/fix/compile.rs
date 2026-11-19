@@ -60,7 +60,7 @@ fn command(
 ) -> Result<Expression, Error> {
     let stream = |name| value(tree![Blob::create(name), tree![], Blob::create(b"")]);
     let application = application(vec![
-        text(""),
+        value(4u64 << 30),
         executable,
         children(arguments),
         children(vec![

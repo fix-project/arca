@@ -249,7 +249,7 @@ After cloning on the destination:
 ```sh
 fix clone user@server:/path/to/source project
 cd project
-fix '*#("" *@label("origin:addblob") 20u64 22u64)'
+fix '*#(536870912u64 *@label("origin:addblob") 20u64 22u64)'
 ```
 
 The function position forces the compilation Thunk before applying its result.

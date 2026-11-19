@@ -23,7 +23,7 @@
     '&4u8
 
     -- Application Thunks
-    #("" 1u8 2u8)
+    #(268435456u64 1u8 2u8)
 
     -- Selection Thunks
     ["hello" 2u64] -- Zero-indexed
@@ -39,6 +39,6 @@
     @file("./target/x86_64-unknown-none/addblob")
 
     -- Primitives
-    *#("" $identity 2u8)
+    *#(268435456u64 $identity 2u8)
 
 -}

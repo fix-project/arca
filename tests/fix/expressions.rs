@@ -112,7 +112,7 @@ fn scripts_import_relative_files_resolve_labels_and_save_results() {
 -- @"missing" $missing
 {- @("ignored" "bad name") -}
 input = @file("input.bin")
-*[*#("" @label("procedure-name")-- ignored @"missing"
+*[*#(268435456u64 @label("procedure-name")-- ignored @"missing"
 (input "@\"literal\" $literal" 42u64)) 2u64]
 "#,
     )
@@ -125,7 +125,7 @@ input = @file("input.bin")
             "-j",
             "2",
             "--memory",
-            "1024",
+            "4096",
             "-l",
             "result",
             "eval",
@@ -167,7 +167,7 @@ fn script_imports_are_scoped_lazy_and_relative_to_their_file() {
         r#"
 local = "inside"
 payload = @file("payload.bin")
-*[*#("" $procedure (local payload $message)) 2u64]
+*[*#(268435456u64 $procedure (local payload $message)) 2u64]
 "#,
     )
     .unwrap();
@@ -300,17 +300,23 @@ fn expressions_are_used_for_cli_values_and_script_arguments() {
         &["-b", "message=\"CLI\"", "@script(\"recipes/leaf.fix\")"],
     );
     assert_eq!(run(&directory, &["read-blob", &inherited], b"", 0), b"CLI");
-    let unforced = expression(&directory, &["#(\"\" @label(\"identity\") 9u64)"]);
+    let unforced = expression(&directory, &["#(268435456u64 @label(\"identity\") 9u64)"]);
     assert_eq!(value(&directory, &["get-type", &unforced]), "thunk");
-    let forced = expression(&directory, &["*#(\"\" @label(\"identity\") 9u64)"]);
+    let forced = expression(&directory, &["*#(268435456u64 @label(\"identity\") 9u64)"]);
     assert_eq!(value(&directory, &["get-type", &forced]), "object");
-    let graph = expression(&directory, &["(1u64 *#(\"\" @label(\"identity\") 2u64))"]);
+    let graph = expression(
+        &directory,
+        &["(1u64 *#(268435456u64 @label(\"identity\") 2u64))"],
+    );
     let children = value(&directory, &["read-tree", &graph]);
     let children: Vec<_> = children.lines().collect();
     assert_eq!(value(&directory, &["get-type", children[1]]), "encode");
     assert_eq!(
-        expression(&directory, &["think", "#(\"\" @label(\"identity\") 9u64)"]),
-        expression(&directory, &["(\"\" @label(\"identity\") 9u64)"])
+        expression(
+            &directory,
+            &["think", "#(268435456u64 @label(\"identity\") 9u64)"]
+        ),
+        expression(&directory, &["(268435456u64 @label(\"identity\") 9u64)"])
     );
     let forty_two = value(&directory, &["create-blob", "--u64", "42"]);
     let forty_three = value(&directory, &["create-blob", "--u64", "43"]);
@@ -358,7 +364,7 @@ fn compilation_uses_the_compile_runnable() {
     );
     let sum = expression(
         &directory,
-        &[&format!("*#(\"\" {} 2u64 3u64)", handle(&add))],
+        &[&format!("*#(268435456u64 {} 2u64 3u64)", handle(&add))],
     );
     assert_eq!(value(&directory, &["read-blob", "--u64", &sum]), "5");
     let error = expression(&directory, &["compile", "\"not WebAssembly\""]);

@@ -28,7 +28,7 @@ pub fn request(rule: Exchange, lhs: &Value, rhs: &Value, coupons: &[Tree]) -> Re
         })
         .collect::<Result<Vec<_>, Error>>()?;
     capture(tree![
-        0u64,
+        512u64 << 20,
         &callable()?,
         rule as u64,
         lhs,

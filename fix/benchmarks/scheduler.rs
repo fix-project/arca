@@ -38,14 +38,14 @@ impl benchmark_guest::Benchmark for Benchmark {
             let mut expected = Vec::new();
             for value in 1..=self.count {
                 let output = number(value);
-                let combination = memory.add_tree(&[number(0), identity.into(), output]);
+                let combination = memory.add_tree(&[number(512u64 << 20), identity.into(), output]);
                 values.push(combination.into_ref().application().strict().into());
                 expected.push(combination.into());
             }
             let input = memory.add_tree(&values);
             let expected = memory.add_tree(&expected);
             let combination = memory.add_tree(&[
-                number(0),
+                number(512u64 << 20),
                 scheduler.into(),
                 Blob::literal(b"eval").unwrap().into(),
                 collector.into(),

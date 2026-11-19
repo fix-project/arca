@@ -167,7 +167,7 @@ fn run_with_jobs(
         .args([
             "--summarize",
             "--memory",
-            "512",
+            "4096",
             "-j",
             &jobs.to_string(),
             "schedule",
@@ -205,7 +205,7 @@ fn start_worker(worker_dir: &Path, worker_agent: &Agent, jobs: u64) -> (Worker, 
             "--listen",
             "127.0.0.1:0",
             "--memory",
-            "512",
+            "2048",
             "-j",
             &jobs.to_string(),
         ])
@@ -317,7 +317,10 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
         }])
         .unwrap();
 
-    let empty: Handle = source.create_blob(b"").unwrap().into();
+    let empty: Handle = source
+        .create_blob(&(512u64 << 20).to_le_bytes())
+        .unwrap()
+        .into();
     let add = source.read_label("add").unwrap();
     let first: Handle = source.create_blob(&20u64.to_le_bytes()).unwrap().into();
     let second: Handle = source.create_blob(&22u64.to_le_bytes()).unwrap().into();
@@ -415,7 +418,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
     let ssh_result = Command::new(fixture(env!("FIX")))
         .args([
             "--memory",
-            "512",
+            "2048",
             "-j",
             "2",
             "schedule",
@@ -482,7 +485,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
             "-j",
             "1",
             "--memory",
-            "512",
+            "2048",
             "--remote",
             &format!("worker=tcp://{address}"),
             "export",
@@ -557,7 +560,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
     let ssh_dir = directory.join("ssh-bin");
     std::fs::create_dir(&ssh_dir).unwrap();
     let ssh = ssh_dir.join("ssh");
-    std::fs::write(&ssh, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FIX_SSH_ARGS\"\nexport FIX_CONFIG_DIR=\"$FIX_SSH_CONFIG\" SSH_AUTH_SOCK=\"$FIX_SSH_AUTH\"\nexec \"$FIX_SSH_TEST_FIX\" -C \"$FIX_SSH_TEST_REPOSITORY\" --memory 512 -j 1 serve --stdio\n").unwrap();
+    std::fs::write(&ssh, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FIX_SSH_ARGS\"\nexport FIX_CONFIG_DIR=\"$FIX_SSH_CONFIG\" SSH_AUTH_SOCK=\"$FIX_SSH_AUTH\"\nexec \"$FIX_SSH_TEST_FIX\" -C \"$FIX_SSH_TEST_REPOSITORY\" --memory 2048 -j 1 serve --stdio\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let next = source
@@ -581,7 +584,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
     let output = Command::new(fixture(env!("FIX")))
         .args([
             "--memory",
-            "512",
+            "2048",
             "-j",
             "2",
             "--remote-scheduler",
@@ -636,7 +639,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
     let evaluation = Command::new(fixture(env!("FIX")))
         .args([
             "--memory",
-            "512",
+            "2048",
             "-j",
             "2",
             "--remote",
@@ -647,7 +650,7 @@ fn remote_evaluation_requires_trust_and_returns_a_coupon_for_the_original_input(
             &collector_override,
             "eval",
             "--encode",
-            "#(\"\" @label(\"add\") 25u64 17u64)",
+            "#(268435456u64 @label(\"add\") 25u64 17u64)",
         ])
         .current_dir(&source_dir)
         .env(
@@ -888,7 +891,7 @@ fn init_preserves_compiled_programs_from_an_archive() {
         parser
     );
     let untrusted = Command::new(fixture(env!("FIX")))
-        .args(["--memory", "512", "-j", "1", "eval", "1u64"])
+        .args(["--memory", "2048", "-j", "1", "eval", "1u64"])
         .current_dir(&target)
         .env("FIX_CONFIG_DIR", target.join("user"))
         .env("SSH_AUTH_SOCK", &agent.socket)
@@ -903,7 +906,7 @@ fn init_preserves_compiled_programs_from_an_archive() {
         std::fs::read_to_string(target.join(".fix/labels/collector")).unwrap(),
     )
     .unwrap();
-    run(&["--memory", "512", "-j", "1", "eval", "1u64"]);
+    run(&["--memory", "2048", "-j", "1", "eval", "1u64"]);
 }
 
 #[test]
@@ -957,7 +960,7 @@ fn remote_labels_and_transfer_modes() {
     let ssh = ssh_dir.join("ssh");
     std::fs::write(
         &ssh,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FIX_SSH_ARGS\"\nexec \"$FIX_SSH_TEST_FIX\" -C \"$FIX_SSH_TEST_REPOSITORY\" --unsigned --memory 512 -j 1 serve --stdio\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FIX_SSH_ARGS\"\nexec \"$FIX_SSH_TEST_FIX\" -C \"$FIX_SSH_TEST_REPOSITORY\" --unsigned --memory 2048 -j 1 serve --stdio\n",
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -1016,7 +1019,7 @@ fn remote_labels_and_transfer_modes() {
         );
     }
     let fields = [
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         Repository::open(repository.path())
             .unwrap()
             .unsigned()
@@ -1526,7 +1529,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 },
             ])
             .unwrap();
-        let empty: Handle = Blob::literal(b"").unwrap().into();
+        let empty: Handle = Blob::literal(&(256u64 << 20).to_le_bytes()).unwrap().into();
         let mode: Handle = Blob::literal(b"eval").unwrap().into();
         let collector = source.read_label("collector").unwrap();
         let function = source.read_label("add").unwrap();
@@ -1536,7 +1539,7 @@ fn placement_policies_use_inventory_memory_and_advice_with_conservative_fallback
                 .unwrap()
                 .into();
             let second: Handle = Blob::literal(&22u64.to_le_bytes()).unwrap().into();
-            let large = source.create_blob(&(1u64 << 30).to_le_bytes()).unwrap();
+            let large = source.create_blob(&(2u64 << 30).to_le_bytes()).unwrap();
             let limit: Handle = if case == 1 { large.into() } else { empty };
             let remote_data = if case == 5 {
                 Some(source.create_blob(&vec![index as u8; 4096]).unwrap())

@@ -7,6 +7,9 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files(glob(["*.fix"]))
 
+fix_cc_wasm(name = "memory_limits_wasm", srcs = ["memory_limits.c"], hdrs = ["fixture.h"], memories = 2)
+fix_procedure(name = "memory_limits_native", wasm = ":memory_limits_wasm")
+
 wat_module(name = "privileged_wasm", src = "privileged.wat")
 fix_procedure(name = "privileged_native", wasm = ":privileged_wasm")
 

@@ -12,15 +12,15 @@ pub fn apply<'a>(
     let fib = combination.get(1);
     let n = Handle::<Object<Blob>>::try_from(combination.get(2))?.read_u64()?;
     let add = combination.get(3);
-    let first = tree![Blob::create(b""), fib, n.wrapping_sub(1), add]
+    let first = tree![combination.get(0), fib, n.wrapping_sub(1), add]
         .reference()
         .application()
         .strict();
-    let second = tree![Blob::create(b""), fib, n.wrapping_sub(2), add]
+    let second = tree![combination.get(0), fib, n.wrapping_sub(2), add]
         .reference()
         .application()
         .strict();
-    let sum = tree![Blob::create(b""), add, first, second]
+    let sum = tree![combination.get(0), add, first, second]
         .reference()
         .application()
         .erase();

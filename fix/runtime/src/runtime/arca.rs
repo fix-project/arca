@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::handle::*;
-use crate::runtime::{InvalidApplication, Runtime};
+use crate::runtime::{ExecutionError, Runtime};
 use crate::storage::memory::MemoryStorage;
 use crate::storage::repository::RepositoryStorage;
 use crate::storage::{ImmutableBytes, Storage};
@@ -18,6 +18,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use kernel::kthread::KMutex;
 use kernel::prelude::{Blob as ArcaBlob, Function, Tuple, Value, Vec};
 
+const INVOCATION_COST: usize = fixhandle::accounting::INVOCATION;
+
 pub enum EffectAction {
     Resume(Handle),
     Stop(Handle),
@@ -26,15 +28,48 @@ pub enum EffectAction {
 
 /// What a combination applies.
 enum Callable {
-    Continuation(Function, usize, Tree),
+    Continuation(Function, usize, Tree, kernel::memory::Budget),
     Runnable(Blob, usize),
 }
 
 pub struct Advice {
     pub target: Handle,
-    pub key: Vec<u8>,
-    pub payload: Vec<u8>,
+    pub key: AdviceBytes,
+    pub payload: AdviceBytes,
 }
+
+#[derive(Clone, Debug)]
+pub struct AdviceBytes {
+    bytes: Arc<[u8]>,
+    _memory: Arc<kernel::memory::FreeMemory>,
+}
+
+impl AdviceBytes {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl core::ops::Deref for AdviceBytes {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+
+impl AsRef<[u8]> for AdviceBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<T: AsRef<[u8]>> PartialEq<T> for AdviceBytes {
+    fn eq(&self, other: &T) -> bool {
+        self.bytes.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for AdviceBytes {}
 
 #[expect(
     clippy::large_enum_variant,
@@ -63,6 +98,8 @@ struct Invocation {
     privileged: bool,
     pending: Option<(ArcaBlob, usize, Handle)>,
     profiles: Vec<([u8; 32], usize)>,
+    memory: kernel::memory::Budget,
+    admission: Arc<kernel::memory::Admission>,
 }
 
 impl Execution {
@@ -156,11 +193,12 @@ impl<S: Storage + AsRef<MemoryStorage>> Runtime for FixOnArca<S> {
         &self.storage
     }
 
-    fn execute(&self, combination: Tree) -> Result<Tree, InvalidApplication> {
+    fn execute(&self, combination: Tree) -> Result<Tree, ExecutionError> {
         assert!(
             combination.as_handle().is_value(),
             "application requires an evaluated combination"
         );
+        crate::runtime::memory_limit(&self.storage, combination)?;
         if self.memoization.is_some() {
             let apply = self.storage.add_blob(&2u64.to_le_bytes());
             for coupon in self
@@ -291,6 +329,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         self
     }
 
+    pub(crate) fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
+        self.storage.memory().keep_memory(memory);
+    }
+
     pub fn trusts_tagger(&self, callable: Tree) -> Result<bool, trust::TrustError> {
         self.storage.trust.is_tagger(&self.storage, callable)
     }
@@ -302,12 +344,12 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         &self,
         combination: Tree,
         privileged: bool,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         self.observe(combination, privileged, !privileged)
     }
 
     /// Run an ordinary application with advice delivery and no Apply coupon.
-    pub fn run_observed(&self, combination: Tree) -> Result<Execution, InvalidApplication> {
+    pub fn run_observed(&self, combination: Tree) -> Result<Execution, ExecutionError> {
         self.observe(combination, false, false)
     }
 
@@ -316,7 +358,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         combination: Tree,
         privileged: bool,
         certify: bool,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         if !privileged {
             assert!(
                 combination.as_handle().is_value(),
@@ -334,7 +376,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
     }
 
     /// Resumes an invocation belonging to this runtime with its fixed acknowledgement.
-    pub fn resume_observed(&self, suspended: Suspended) -> Result<Execution, InvalidApplication> {
+    pub fn resume_observed(&self, suspended: Suspended) -> Result<Execution, ExecutionError> {
         let execution = self.storage.resume(
             suspended.invocation,
             &mut |_| EffectAction::Unhandled,
@@ -348,7 +390,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         &self,
         execution: Execution,
         application: Option<Tree>,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         Ok(match execution {
             Execution::Complete(value) => {
                 let value = if let Some(combination) = application {
@@ -370,7 +412,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
     }
 
     /// Runs outside deterministic Fix semantics and must not receive an application coupon.
-    pub fn execute_privileged(&self, combination: Tree) -> Result<Handle, InvalidApplication> {
+    pub fn execute_privileged(&self, combination: Tree) -> Result<Handle, ExecutionError> {
         self.storage.execute(combination, true)
     }
     /// Kernel-handled execution must not receive an application coupon.
@@ -379,7 +421,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         combination: Tree,
         privileged: bool,
         handler: &mut dyn FnMut(Handle) -> EffectAction,
-    ) -> Result<Handle, InvalidApplication> {
+    ) -> Result<Handle, ExecutionError> {
         self.storage
             .execute_with_effects(combination, privileged, handler)
     }
@@ -389,7 +431,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         combination: Tree,
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut dyn FnMut(&[u8], &[Handle]) -> CoordinationAction,
-    ) -> Result<Handle, InvalidApplication> {
+    ) -> Result<Handle, ExecutionError> {
         self.storage
             .execute_with_coordination(combination, handler, coordinator)
     }
@@ -407,13 +449,33 @@ impl FixOnArca<Arc<RepositoryStorage>> {
 }
 
 impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
+    fn memory_failure(&self, limit: usize) -> Execution {
+        Execution::Complete(
+            self.add_tree(&[
+                self.add_blob(b"Fix.memory").into(),
+                self.add_blob(&(limit as u64).to_le_bytes()).into(),
+            ])
+            .into(),
+        )
+    }
+
+    fn allocation_failure(
+        &self,
+        memory: &kernel::memory::Budget,
+    ) -> Result<Execution, ExecutionError> {
+        match memory.capacity_failure() {
+            Some(error) => Err(ExecutionError::Admission(error)),
+            None => Ok(self.memory_failure(memory.limit())),
+        }
+    }
+
     fn trap(&self, code: u32) -> Execution {
         let marker = self.add_blob(b"Wasm.trap");
         let code = self.add_blob(&code.to_le_bytes());
         Execution::Complete(self.add_tree(&[marker.into(), code.into()]).into())
     }
 
-    fn execute(&self, combination: Tree, privileged: bool) -> Result<Handle, InvalidApplication> {
+    fn execute(&self, combination: Tree, privileged: bool) -> Result<Handle, ExecutionError> {
         self.execute_with_effects(combination, privileged, &mut |_| EffectAction::Unhandled)
     }
 
@@ -422,7 +484,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         combination: Tree,
         privileged: bool,
         handler: &mut dyn FnMut(Handle) -> EffectAction,
-    ) -> Result<Handle, InvalidApplication> {
+    ) -> Result<Handle, ExecutionError> {
         self.invoke(combination, privileged, handler, &mut None, false)
             .map(Execution::completed)
     }
@@ -432,7 +494,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         combination: Tree,
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut dyn FnMut(&[u8], &[Handle]) -> CoordinationAction,
-    ) -> Result<Handle, InvalidApplication> {
+    ) -> Result<Handle, ExecutionError> {
         self.invoke(combination, true, handler, &mut Some(coordinator), false)
             .map(Execution::completed)
     }
@@ -444,17 +506,32 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut Option<&mut Coordinator<'_>>,
         observing: bool,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         let contents = self.get_tree(combination).unwrap();
-        let (function, combination, profiles) = match self.callable(&contents)? {
-            Callable::Continuation(mut function, address, author) => {
+        let limit = crate::runtime::memory_limit(self, combination)?;
+        let admission = Arc::new(if privileged {
+            kernel::memory::Admission::unreserved()
+        } else {
+            kernel::memory::Admission::new(limit).map_err(ExecutionError::Admission)?
+        });
+        let (function, combination, profiles, mut memory) = match self.callable(&contents)? {
+            Callable::Continuation(mut function, address, author, mut memory) => {
+                memory.enforce(!privileged);
+                if memory.set_limit(limit).is_err() {
+                    return Ok(self.memory_failure(limit));
+                }
                 let reply = handles::insert(&mut function, address, contents[2]);
                 let profiles = if !privileged && self.profile.load(Ordering::Relaxed) {
                     self.application_profile(author).into_iter().collect()
                 } else {
                     Vec::new()
                 };
-                (function.apply(pack_reference(reply)), author, profiles)
+                (
+                    function.apply(pack_reference(reply)),
+                    author,
+                    profiles,
+                    memory,
+                )
             }
             Callable::Runnable(executable, arguments) => {
                 let mut function = self.image(executable)?;
@@ -464,9 +541,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 } else {
                     Vec::new()
                 };
-                (function.apply(pack_reference(root)), combination, profiles)
+                let function = function.apply(pack_reference(root));
+                let mut memory = kernel::memory::Budget::new(limit);
+                memory.enforce(!privileged);
+                (function, combination, profiles, memory)
             }
         };
+        if memory.attach(admission.clone()).is_err() || memory.charge(INVOCATION_COST).is_err() {
+            return self.allocation_failure(&memory);
+        }
         self.resume(
             Invocation {
                 runtime_id: self.image_cache_id,
@@ -475,6 +558,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 privileged,
                 pending: None,
                 profiles,
+                memory,
+                admission,
             },
             handler,
             coordinator,
@@ -488,9 +573,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut Option<&mut Coordinator<'_>>,
         observing: bool,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         if invocation.runtime_id != self.image_cache_id {
-            return Err(InvalidApplication);
+            return Err(ExecutionError::InvalidApplication);
         }
         let profiles = invocation.profiles.clone();
         let started = (!profiles.is_empty()).then(kernel::tsc::read);
@@ -526,23 +611,25 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
 
     /// What `contents`, a combination, applies: a continuation taking one reply, or a
     /// trusted Runnable found by following the first element of each Tree.
-    fn callable(&self, contents: &[Handle]) -> Result<Callable, InvalidApplication> {
-        let mut procedure = *contents.get(1).ok_or(InvalidApplication)?;
+    fn callable(&self, contents: &[Handle]) -> Result<Callable, ExecutionError> {
+        let mut procedure = *contents.get(1).ok_or(ExecutionError::InvalidApplication)?;
         let mut arguments = contents.len().saturating_sub(2);
         loop {
-            let tree = Tree::try_from(procedure).map_err(|_| InvalidApplication)?;
-            if let Some((function, address, author)) = self.continuation(tree) {
+            let tree = Tree::try_from(procedure).map_err(|_| ExecutionError::InvalidApplication)?;
+            if let Some((function, address, author, memory)) = self.continuation(tree) {
                 if contents.len() != 3 {
-                    return Err(InvalidApplication);
+                    return Err(ExecutionError::InvalidApplication);
                 }
-                return Ok(Callable::Continuation(function, address, author));
+                return Ok(Callable::Continuation(function, address, author, memory));
             }
-            let fields = self.get_tree(tree).map_err(|_| InvalidApplication)?;
-            procedure = *fields.get(1).ok_or(InvalidApplication)?;
+            let fields = self
+                .get_tree(tree)
+                .map_err(|_| ExecutionError::InvalidApplication)?;
+            procedure = *fields.get(1).ok_or(ExecutionError::InvalidApplication)?;
             if Blob::try_from(procedure).is_ok() {
                 return match self.trust.runnable(self, tree) {
                     Ok(executable) => Ok(Callable::Runnable(executable, arguments)),
-                    Err(_) => Err(InvalidApplication),
+                    Err(_) => Err(ExecutionError::InvalidApplication),
                 };
             }
             arguments += fields.len().saturating_sub(2);
@@ -555,7 +642,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut Option<&mut Coordinator<'_>>,
         observing: bool,
-    ) -> Result<Execution, InvalidApplication> {
+    ) -> Result<Execution, ExecutionError> {
         let Invocation {
             runtime_id,
             function: mut f,
@@ -563,22 +650,36 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             privileged,
             mut pending,
             profiles,
+            mut memory,
+            admission,
         } = invocation;
         let profile = self.profile.load(Ordering::Relaxed);
         loop {
             let started = profile.then(kernel::tsc::read);
-            let value = f.force();
+            let value = match f.into_inner().force_with_memory(&mut memory) {
+                Ok(value) => value,
+                Err(_) => return self.allocation_failure(&memory),
+            };
             self.record_force(started);
             let Value::Function(g) = value else {
-                return Err(InvalidApplication);
+                return Err(ExecutionError::InvalidApplication);
             };
-            let (effect, mut args) = g.into_inner().into_symbolic().ok_or(InvalidApplication)?;
-            let effect: ArcaBlob = effect.try_into().map_err(|_| InvalidApplication)?;
+            let (effect, mut args) = g
+                .into_inner()
+                .into_symbolic()
+                .ok_or(ExecutionError::InvalidApplication)?;
+            let effect: ArcaBlob = effect
+                .try_into()
+                .map_err(|_| ExecutionError::InvalidApplication)?;
+            if memory.charge(8192).is_err() {
+                return self.allocation_failure(&memory);
+            }
+            let mut temporary = 8192usize;
             if profile {
                 self.record_kernel_call(&effect);
             }
             let Some(Value::Function(mut k)) = args.pop_back() else {
-                return Err(InvalidApplication);
+                return Err(ExecutionError::InvalidApplication);
             };
 
             let result_address = if matches!(
@@ -642,12 +743,31 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let target = handles::resolve(&mut k, unpack_reference(&value));
                     let function = k.apply(kernel::prelude::Word::new(0));
+                    let copied = fixhandle::accounting::allocation(key.len())
+                        .saturating_add(fixhandle::accounting::allocation(payload.len()));
+                    if memory.charge(copied).is_err() {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary += copied;
                     if observing {
+                        memory.release(temporary);
+                        let observer_memory = Arc::new(
+                            kernel::memory::FreeMemory::new(
+                                copied.saturating_mul(2).saturating_add(16384),
+                            )
+                            .map_err(ExecutionError::Admission)?,
+                        );
                         return Ok(Execution::Advice {
                             event: Advice {
                                 target,
-                                key: key.to_vec(),
-                                payload: payload.to_vec(),
+                                key: AdviceBytes {
+                                    bytes: Arc::from(&*key),
+                                    _memory: observer_memory.clone(),
+                                },
+                                payload: AdviceBytes {
+                                    bytes: Arc::from(&*payload),
+                                    _memory: observer_memory,
+                                },
                             },
                             suspended: Suspended {
                                 invocation: Invocation {
@@ -657,6 +777,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                                     privileged,
                                     pending,
                                     profiles,
+                                    memory,
+                                    admission,
                                 },
                                 application: None,
                             },
@@ -666,9 +788,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 }
                 b"trap" => {
                     let Some(Value::Word(code)) = args.pop_back() else {
-                        return Err(InvalidApplication);
+                        return Err(ExecutionError::InvalidApplication);
                     };
-                    let code = u32::try_from(code.read()).map_err(|_| InvalidApplication)?;
+                    let code = u32::try_from(code.read())
+                        .map_err(|_| ExecutionError::InvalidApplication)?;
                     return Ok(self.trap(code));
                 }
                 b"return" => {
@@ -694,6 +817,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                             EffectAction::Resume(value) => {
                                 let reply = handles::insert(&mut k, reply.read() as usize, value);
                                 f = k.apply(pack_reference(reply));
+
+                                memory.release(temporary);
                                 continue;
                             }
                             EffectAction::Stop(value) => return Ok(Execution::Complete(value)),
@@ -711,10 +836,36 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let Some(Value::Word(used)) = args.pop_back() else {
                         panic!("missing handle count")
                     };
-                    let continuation =
-                        self.capture(k, used.read() as usize, reply, attachments, combination);
+
+                    memory.release(temporary);
+                    let Some(Value::Word(allowance)) = args.pop_back() else {
+                        panic!("missing capture allowance")
+                    };
+                    let metadata = fixhandle::accounting::BUDGET;
+                    if memory.charge(metadata).is_err() {
+                        return self.allocation_failure(&memory);
+                    }
+                    let retained = allowance.read() as usize;
+                    if memory.charge(retained - metadata).is_err() {
+                        return self.allocation_failure(&memory);
+                    }
+                    let mut captured_memory = memory.clone();
+                    captured_memory.release(retained + INVOCATION_COST);
+                    let continuation = self.capture(
+                        k,
+                        used.read() as usize,
+                        reply,
+                        attachments,
+                        combination,
+                        captured_memory,
+                    );
+                    if let Some(memory) = memory.retain(retained) {
+                        self.memory().keep_memory(memory);
+                    }
                     if &*effect == b"eval" {
-                        let metadata = Blob::literal(b"").unwrap().into();
+                        let metadata = Blob::literal(&(memory.limit() as u64).to_le_bytes())
+                            .unwrap()
+                            .into();
                         return Ok(Execution::Complete(
                             self.add_tree(&[metadata, continuation.into(), value])
                                 .into_ref()
@@ -727,7 +878,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                             self.add_tree(&[value, continuation.into()]).into(),
                         ))
                     } else {
-                        let metadata = Blob::literal(b"").unwrap().into();
+                        let metadata = Blob::literal(&(memory.limit() as u64).to_le_bytes())
+                            .unwrap()
+                            .into();
                         let combination = self.add_tree(&[metadata, value, continuation.into()]);
                         let mut execution =
                             self.invoke(combination, privileged, handler, coordinator, observing)?;
@@ -740,7 +893,21 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 b"lift" => {
                     let slots: ArcaBlob = args.pop_back().unwrap().try_into().unwrap();
                     let objects: Tuple = args.pop_back().unwrap().try_into().unwrap();
-                    self.lift(&mut k, objects, &slots);
+                    let total = objects
+                        .inner()
+                        .iter()
+                        .map(|record| {
+                            let Value::Tuple(record) = record else {
+                                panic!("invalid local object")
+                            };
+                            let Value::Word(bytes) = &record.inner()[2] else {
+                                panic!("missing object length")
+                            };
+                            fixhandle::accounting::object(bytes.read() as usize)
+                        })
+                        .fold(0usize, usize::saturating_add);
+                    let retained = self.lift(&mut k, objects, &slots, &memory);
+                    memory.release(total.saturating_sub(retained));
                     k.apply(kernel::prelude::Word::new(0))
                 }
                 b"is_privileged" => {
@@ -834,6 +1001,14 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let name = Blob::try_from(handles::resolve(&mut k, unpack_reference(&value)))
                         .expect("expected Blob Object");
+                    if memory
+                        .charge(fixhandle::accounting::allocation(length.read() as usize))
+                        .is_err()
+                    {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary = temporary
+                        .saturating_add(fixhandle::accounting::allocation(length.read() as usize));
                     let backing = self.get_blob_backing(name).unwrap();
                     let mut offset = offset.read() as usize;
                     let mut destination = destination.read() as usize;
@@ -871,6 +1046,14 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let name = Blob::try_from(handles::resolve(&mut k, unpack_reference(&b)))
                         .expect("expected blob object");
+                    if memory
+                        .charge(fixhandle::accounting::mapping(name.len()))
+                        .is_err()
+                    {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary =
+                        temporary.saturating_add(fixhandle::accounting::mapping(name.len()));
                     k.apply(self.get_blob_backing(name).unwrap().attachment())
                 }
                 b"get_tree_element" => {
@@ -883,6 +1066,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let tree = Tree::try_from(handles::resolve(&mut k, unpack_reference(&value)))
                         .expect("expected Tree Object");
+                    if memory.charge(4096).is_err() {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary += 4096;
                     let index = index.read() as usize;
                     assert!(index < tree.len(), "Tree index out of bounds");
                     let child = handles::read_backing(&self.get_tree_backing(tree).unwrap(), index);
@@ -899,6 +1086,17 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let name =
                         Tree::try_from(handles::resolve(&mut k, unpack_reference(&reference)))
                             .expect("expected tree object");
+                    if memory
+                        .charge(fixhandle::accounting::mapping(
+                            (name.len()).saturating_mul(32),
+                        ))
+                        .is_err()
+                    {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary = temporary.saturating_add(fixhandle::accounting::mapping(
+                        (name.len()).saturating_mul(32),
+                    ));
                     let backing = self.get_tree_backing(name).unwrap();
                     let result = k.apply(backing.attachment());
                     self.record_call_time(b"get_tree", started);
@@ -908,6 +1106,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     todo!("handle effect {:?}", &*effect);
                 }
             };
+
+            memory.release(temporary);
         }
     }
 }

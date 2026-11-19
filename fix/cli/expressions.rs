@@ -362,7 +362,7 @@ impl<'a> Expressions<'a> {
         }
         let environment = Tree::new(&pairs);
         let text = Blob::new(expanded.as_bytes());
-        let limits = Blob::new(b"");
+        let limits = Blob::new(&(512u64 << 20).to_le_bytes());
         let parser = self.parser()?;
         let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
         let result = self.client.call(&combination.into_value())?;

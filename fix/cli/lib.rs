@@ -527,7 +527,7 @@ impl Client {
         module: &Value,
         units: Option<u64>,
     ) -> Result<Value, Error> {
-        let limits = self.blob(b"")?;
+        let limits = self.blob(&(512u64 << 20).to_le_bytes())?;
         let compile = self.lookup(&self.options.compiler.clone())?;
         let mut fields = vec![limits, compile, module.clone()];
         if let Some(units) = units {
@@ -546,7 +546,7 @@ impl Client {
     ) -> Result<Value, Error> {
         let mode = self.blob(mode.as_bytes())?;
         let scheduler = self.lookup(&self.options.scheduler.clone())?;
-        let limits = self.blob(b"")?;
+        let limits = self.blob(&(1u64 << 30).to_le_bytes())?;
         self.tree(&[limits, scheduler, mode, collector.clone(), input.clone()])
     }
 

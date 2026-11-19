@@ -88,7 +88,7 @@ and print the certified result.
 They check the returned coupon’s claim and reject assumptions other than the
 configured collector.
 The request mode chooses an Eval or Think coupon. Combination metadata is an
-empty Blob for an unspecified memory limit, or a little-endian u64 byte limit;
+little-endian u64 byte limit; an omitted or malformed limit rejects the application;
 the prototype uses it for placement and does not enforce it. `--memoize=auto` (the default) keeps
 intermediate coupons in memory and persists only the final evaluation coupon. `always` persists intermediate coupons too;
 `never` disables automatic persistence and disk cache lookup. In `never` mode the scheduler returns the result directly; generated coupons

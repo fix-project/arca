@@ -199,6 +199,7 @@ pub fn read_reply(reply: Value<Runtime>) -> Reference {
 }
 
 pub fn transfer(destination: Reference, name: &'static str, value: Reference) {
+    let _working = crate::memory::Working::new(fixhandle::accounting::WORKING);
     crate::locals::lift(&[value]);
     let bytes = handles::bytes(value);
     let result = operation(name)
@@ -209,6 +210,7 @@ pub fn transfer(destination: Reference, name: &'static str, value: Reference) {
         crate::locals::lift_all();
         crate::shell::clear_privilege_cache();
         operation("capture")
+            .word(crate::memory::snapshot() as u64)
             .word((crate::descriptors::range().1 * fixhandle::HANDLE_SIZE) as u64)
             .argument(attachments())
             .call_with_current_continuation()

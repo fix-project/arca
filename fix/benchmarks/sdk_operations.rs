@@ -34,7 +34,7 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
                 .eval()?
                 .read_u64()?,
             5 => {
-                let result = tree![0u64, combination.get(4), count]
+                let result = tree![combination.get(0), combination.get(4), count]
                     .application()
                     .strict()
                     .eval()?;

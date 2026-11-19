@@ -271,6 +271,9 @@ fn memory_range(offset: u32, length: usize, writable: bool) -> usize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2c_fix_create_tree(_: *mut w2c_fix, pointer: u32, length: u32) -> u32 {
+    crate::memory::charge(fixhandle::accounting::object(
+        length as usize * fixhandle::HANDLE_SIZE,
+    ));
     let source = memory_range(pointer, length as usize * 4, false);
     let bytes = length as usize * fixhandle::HANDLE_SIZE;
     assert!(bytes <= rt::PAYLOAD_SIZE);

@@ -8,7 +8,7 @@ fn advice_events_preserve_order_targets_and_application_identity() {
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE"));
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
         program.into(),
         storage.add_blob(b"argument").into(),
     ]);
@@ -88,7 +88,10 @@ fn suspended_advice_is_owned_by_its_runtime() {
     let runtime = test_runtime();
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE"));
-    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+    let combination = storage.add_tree(&[
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+        program.into(),
+    ]);
     let Execution::Advice { suspended, .. } = runtime.execute_observed(combination, false).unwrap()
     else {
         panic!("expected advice")
@@ -102,7 +105,7 @@ fn advice_preserves_canonical_checkpoint_identity() {
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE_CAPTURE"));
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
         program.into(),
         storage.add_blob(b"captured argument").into(),
     ]);
@@ -136,7 +139,10 @@ fn uncertified_applications_keep_ordinary_privileges() {
     let runtime = test_runtime();
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_PRIVILEGED"));
-    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+    let combination = storage.add_tree(&[
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+        program.into(),
+    ]);
     let Execution::Complete(result) = runtime.run_observed(combination).unwrap() else {
         panic!("expected the application to finish")
     };

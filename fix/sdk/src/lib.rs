@@ -47,6 +47,7 @@ pub enum Error {
     WrongType = 3,
     Busy = 6,
     NotComparable = 4,
+    MemoryUnavailable = 7,
 }
 
 impl From<core::num::TryFromIntError> for Error {

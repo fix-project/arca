@@ -111,7 +111,9 @@ fn create(arguments: &[String]) -> Result<()> {
     )?;
     let resources = repository.create_tree(&[wasm2c, clang, toolchain.into()])?;
     let resources = certificate(&repository, author, resources.into(), "Bootstrap")?;
-    let limits = repository.create_blob(b"")?.into();
+    let limits = repository
+        .create_blob(&(512u64 << 20).to_le_bytes())?
+        .into();
     let compile = repository.create_tree(&[limits, fixpoint, resources])?;
     repository.write_label("trusted-compiler", author)?;
     repository.write_label("compile", compile.into())?;

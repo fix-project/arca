@@ -49,7 +49,7 @@ impl Evaluation {
     fn run(&self, mode: &str, input: Handle) -> (Handle, usize) {
         let mode = self.storage().add_blob(mode.as_bytes());
         let combination = self.storage().add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             self.scheduler.into(),
             mode.into(),
             self.collector.into(),
@@ -70,6 +70,19 @@ impl Evaluation {
         )
         .unwrap();
         let coupon = Tree::try_from(report.result.unwrap()).unwrap();
+        assert!(
+            coupon.is_tag(),
+            "scheduler returned {:?}",
+            self.storage()
+                .get_tree(coupon)
+                .unwrap()
+                .iter()
+                .map(|value| Blob::try_from(*value)
+                    .ok()
+                    .and_then(|blob| self.storage().get_blob(blob).ok())
+                    .map(|bytes| bytes.to_vec()))
+                .collect::<kernel::prelude::Vec<_>>()
+        );
         let claim = self.storage().certificate_claim(coupon).unwrap();
         (
             self.storage().get_tree(claim).unwrap()[2],

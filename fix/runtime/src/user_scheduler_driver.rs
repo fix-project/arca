@@ -4,7 +4,7 @@ use crate::runtime::arca::{EffectAction, Execution, FixOnArca, SavedClaims, Susp
 use crate::user_maps::Maps;
 use crate::user_queues::{Error, WorkQueues};
 use crate::{
-    Blob, EncodeView, Handle, HandleView, InvalidApplication, Object, ObjectView, Ref, Runtime,
+    Blob, EncodeView, ExecutionError, Handle, HandleView, Object, ObjectView, Ref, Runtime,
     Storage, ThunkView, Tree,
 };
 use alloc::collections::{BTreeMap, VecDeque};
@@ -531,7 +531,7 @@ struct Shared {
     scheduler: Handle,
     collector: Handle,
     saved_claims: SavedClaims,
-    suspended: KMutex<BTreeMap<usize, (bool, Suspended)>>,
+    suspended: KMutex<BTreeMap<usize, (bool, Suspended, kernel::memory::FreeMemory)>>,
     next_suspended: AtomicUsize,
     applications: Applications,
     saver: Saver,
@@ -647,6 +647,7 @@ impl Shared {
                 peak_memory: common::BuddyAllocator.peak_size() as u64,
                 memory_used: common::BuddyAllocator.used_size() as u64,
                 memory_total: common::BuddyAllocator.total_size() as u64,
+                memory_available: kernel::memory::available() as u64,
             }),
             tasks: self
                 .advised
@@ -678,8 +679,8 @@ impl Shared {
     }
 
     /// Ends the run because a combination it needed is not an application.
-    fn fail(&self, storage: &dyn Storage, combination: Handle) {
-        self.finish(Ok(Err(InvalidApplication::request(storage, combination))));
+    fn fail(&self, storage: &dyn Storage, combination: Handle, error: ExecutionError) {
+        self.finish(Ok(Err(error.request(storage, combination))));
     }
 }
 
@@ -1095,7 +1096,7 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync +
     );
     match result {
         Ok(result) => shared.finish(Ok(Ok(result))),
-        Err(InvalidApplication) => shared.fail(storage, combination.into()),
+        Err(error) => shared.fail(storage, combination.into(), error),
     }
     Ok(())
 }
@@ -1318,7 +1319,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         }
         (b"callable_resume", [token]) => {
             let token = integer(storage, *token)?;
-            let (application, suspended) = shared
+            let (application, suspended, _memory) = shared
                 .suspended
                 .lock()
                 .remove(&token)
@@ -1381,7 +1382,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     worker: usize,
     application: bool,
     task: Handle,
-    execution: Result<Execution, InvalidApplication>,
+    execution: Result<Execution, ExecutionError>,
 ) -> Result<(u64, Handle), Error> {
     let storage = runtime.storage();
     match execution {
@@ -1400,6 +1401,13 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok((0, value))
         }
         Ok(Execution::Advice { event, suspended }) => {
+            let cost = fixhandle::accounting::allocation(event.key.len())
+                .saturating_add(fixhandle::accounting::allocation(event.payload.len()))
+                .saturating_add(crate::storage::OBJECT_METADATA.saturating_mul(4));
+            let mut memory = match kernel::memory::FreeMemory::new(cost) {
+                Ok(memory) => memory,
+                Err(error) => return Ok(admission_reply(storage, error)),
+            };
             if matches!(event.key.as_slice(), b"fix::title" | b"fix::progress")
                 && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
             {
@@ -1446,21 +1454,38 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 .next_suspended
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .map_err(|_| Error::Invalid)?;
-            shared
-                .suspended
-                .lock()
-                .insert(token, (application, suspended));
+            shared.suspended.lock().insert(
+                token,
+                (
+                    application,
+                    suspended,
+                    memory.split(crate::storage::OBJECT_METADATA),
+                ),
+            );
             let token = storage.add_blob(&(token as u64).to_le_bytes());
             let key = storage.add_blob(&event.key);
             let payload = storage.add_blob(&event.payload);
             let event = storage.add_tree(&[token.into(), event.target, key.into(), payload.into()]);
+            runtime.keep_memory(memory);
             Ok((2, event.into()))
         }
-        Err(InvalidApplication) => {
-            shared.fail(storage, task);
+        Err(ExecutionError::Admission(error)) => Ok(admission_reply(storage, error)),
+        Err(error) => {
+            shared.fail(storage, task, error);
             Err(Error::Invalid)
         }
     }
+}
+
+fn admission_reply(storage: &dyn Storage, error: kernel::memory::AdmissionError) -> (u64, Handle) {
+    let required = storage.add_blob(&(error.required as u64).to_le_bytes());
+    let available = storage.add_blob(&(error.available as u64).to_le_bytes());
+    (
+        6,
+        storage
+            .add_tree(&[required.into(), available.into()])
+            .into(),
+    )
 }
 
 fn unsigned(storage: &dyn Storage, value: Handle) -> Result<u64, Error> {
@@ -1954,7 +1979,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         .len()
                         .try_into()
                         .map_err(|_| Error::Invalid)?,
-                    unsigned(storage, *memory)?,
+                    unsigned(storage, *memory)?.min(kernel::memory::available() as u64),
                 )
                 .map_err(TaskError::Message)?;
             let bytes = postcard::to_allocvec(&information).map_err(|_| Error::Invalid)?;
@@ -2163,6 +2188,12 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
         (b"worker_listen", []) => Ok(storage
             .add_blob(&shared.event.listen().to_le_bytes())
             .into()),
+        (b"memory_wait", [required]) => {
+            let required = integer(storage, *required)?;
+            Ok(number(usize::from(
+                kernel::memory::wait_until_available(required).is_ok(),
+            )))
+        }
         (b"worker_wait", [epoch]) => {
             shared.event.wait(unsigned(storage, *epoch)?)?;
             Ok(number(0))
@@ -2177,6 +2208,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 1 => shared.executed.len(),
                 2 => usize::from(shared.stopped()),
                 3 => usize::from(runtime.memoize != fix::Memoization::Never),
+                4 => kernel::memory::available(),
                 _ => return Err(Error::Invalid.into()),
             };
             Ok(number(value))
