@@ -15,7 +15,12 @@ fn guest_tests_are_named_filtered_and_isolated() {
     let listed = run(&["--list"]);
     assert!(listed.status.success());
     let names = String::from_utf8(listed.stdout).unwrap();
-    for name in ["a_panics", "b_succeeds", "c_exits_before_completion"] {
+    for name in [
+        "a_panics",
+        "b_succeeds",
+        "c_exits_before_completion",
+        "d_panics_with_console_locked",
+    ] {
         assert!(names.contains(&format!("harness_probe::{name}: test")));
     }
 
@@ -36,6 +41,14 @@ fn guest_tests_are_named_filtered_and_isolated() {
     );
     assert!(output.contains("guest panic probe"), "{output}");
     assert!(
+        output.contains("KERNEL PANIC: console unavailable"),
+        "{output}"
+    );
+    assert!(
+        output.contains("harness_probe::d_panics_with_console_locked ... FAILED"),
+        "{output}"
+    );
+    assert!(
         output.contains("guest exited without completing the test"),
         "{output}"
     );
@@ -44,5 +57,5 @@ fn guest_tests_are_named_filtered_and_isolated() {
     assert!(selected.status.success());
     let output = String::from_utf8(selected.stdout).unwrap();
     assert!(output.contains("1 passed; 0 failed"), "{output}");
-    assert!(output.contains("2 filtered out"), "{output}");
+    assert!(output.contains("3 filtered out"), "{output}");
 }
