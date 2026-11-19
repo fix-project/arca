@@ -130,6 +130,15 @@ impl Options {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct CompilationOptions {
+    pub units: Option<u64>,
+    pub memory: Option<u64>,
+    /// Per-invocation memory limits in bytes; omitted limits use compiler defaults.
+    pub wasm2c_memory: Option<u64>,
+    pub clang_memory: Option<u64>,
+}
+
 pub struct Client {
     storage: Arc<RepositoryStorage>,
     options: Options,
@@ -531,8 +540,12 @@ impl Client {
     }
 
     /// Evaluates the `compile` Runnable applied to a Wasm module value.
-    pub fn compilation(&mut self, module: &Value, units: Option<u64>) -> Result<Value, Error> {
-        let request = self.compilation_request(module, units)?;
+    pub fn compilation(
+        &mut self,
+        module: &Value,
+        options: CompilationOptions,
+    ) -> Result<Value, Error> {
+        let request = self.compilation_request(module, options)?;
         self.eval(&request)
     }
 
@@ -543,17 +556,35 @@ impl Client {
     }
 
     /// The strict application of `compile` to a Wasm module, with `compile`'s default
-    /// unit count unless `units` is given.
+    /// unit count and tool budgets unless overridden.
     pub fn compilation_request(
         &mut self,
         module: &Value,
-        units: Option<u64>,
+        options: CompilationOptions,
     ) -> Result<Value, Error> {
-        let limits = self.blob(&(512u64 << 20).to_le_bytes())?;
+        let object = module.handle.object_descriptor();
+        let units = options.units.unwrap_or_else(|| match object.view() {
+            fixhandle::ObjectView::Blob(_) => object.byte_len().div_ceil(128 << 10).max(1),
+            _ => 1,
+        });
+        let memory = match options.memory {
+            Some(memory) => memory,
+            None => units
+                .checked_add(1)
+                .and_then(|jobs| jobs.checked_mul(4 << 20))
+                .and_then(|jobs| jobs.checked_add(512 << 20))
+                .ok_or_else(|| message("compiler memory budget overflow"))?,
+        };
+        let limits = self.blob(&memory.to_le_bytes())?;
         let compile = self.lookup(&self.options.compiler.clone())?;
         let mut fields = vec![limits, compile, module.clone()];
-        if let Some(units) = units {
+        if let Some(units) = options.units {
             fields.push(self.blob(&units.to_le_bytes())?);
+        }
+        if options.wasm2c_memory.is_some() || options.clang_memory.is_some() {
+            let wasm2c = self.blob(&options.wasm2c_memory.unwrap_or(0).to_le_bytes())?;
+            let clang = self.blob(&options.clang_memory.unwrap_or(0).to_le_bytes())?;
+            fields.push(self.tree(&[wasm2c, clang])?);
         }
         let combination = self.tree(&fields)?;
         let application = self.application(&combination)?;

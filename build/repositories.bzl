@@ -22,4 +22,4 @@ def _local_tools_impl(ctx):
         tools.append("wasm-merge")
     ctx.file("BUILD.bazel", "exports_files(%s, visibility = [\"//visibility:public\"])\n" % repr(tools))
 
-local_tools = repository_rule(implementation = _local_tools_impl, local = True, configure = True)
+local_tools = repository_rule(implementation = _local_tools_impl, local = True, configure = True, environ = ["PATH"])

@@ -32,15 +32,24 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
-          key: bootstrap-ubuntu-26.04-${{ hashFiles('MODULE.bazel', '.bazel*', 'bootstrap/**', 'build/**', 'fix/shell/**', 'flatware/**', 'tools/module-combiner/**', '.github/workflows/bootstrap.yml') }}
+          key: bootstrap-ubuntu-26.04-${{ hashFiles('MODULE.bazel', '.bazel*', 'bootstrap/**', 'build/**', 'fix/shell/**', 'flatware/**', 'tools/module-combiner/**', '.github/workflows/bootstrap.yml', '.github/actions/llvm-sdk/**') }}
           restore-keys: bootstrap-ubuntu-26.04-
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+          sudo apt-get install -y build-essential cmake clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Build bootstrap seed
         timeout-minutes: 330
-        run: bazel build //bootstrap:seed
+        run: bazel build --config=ci //bootstrap:seed
+      - name: Stage bootstrap seed
+        run: install -Dm644 "$(bazel cquery --config=ci //bootstrap:seed --output=files)" "$RUNNER_TEMP/bootstrap-artifact/bootstrap.tar"
+      - name: Upload bootstrap seed
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap.tar
+          path: ${{ runner.temp }}/bootstrap-artifact/bootstrap.tar
+          if-no-files-found: error
       - name: Save completed bootstrap build outputs
         if: success() && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

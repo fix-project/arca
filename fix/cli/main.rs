@@ -203,6 +203,15 @@ enum Command {
         expression: String,
         /// Number of C translation units [default: one per 128 KiB of Wasm]
         units: Option<u64>,
+        /// Memory budget for the compile wrapper, in MiB [default: scales with unit count]
+        #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..=(u64::MAX >> 20)))]
+        compile_memory: Option<u64>,
+        /// Memory budget per wasm2c invocation, in MiB [default: scales with module size]
+        #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..=(u64::MAX >> 20)))]
+        wasm2c_memory: Option<u64>,
+        /// Memory budget per Clang invocation, including linking, in MiB
+        #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..=(u64::MAX >> 20)))]
+        clang_memory: Option<u64>,
     },
     /// Record or list where Todo values can be fetched.
     #[command(subcommand)]
@@ -494,7 +503,13 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                     input.eval()?
                 }
                 Command::Think { .. } => client.think(&input)?,
-                Command::Compile { units, .. } => {
+                Command::Compile {
+                    units,
+                    compile_memory,
+                    wasm2c_memory,
+                    clang_memory,
+                    ..
+                } => {
                     let input = if input.value_type() == fix::ValueType::Thunk {
                         Thunk::try_from(input)
                             .map_err(fixcli::Error::from)?
@@ -503,7 +518,15 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                     } else {
                         input
                     };
-                    client.compilation(&input, units)?
+                    client.compilation(
+                        &input,
+                        fixcli::CompilationOptions {
+                            units,
+                            memory: compile_memory.map(|mib| mib << 20),
+                            wasm2c_memory: wasm2c_memory.map(|mib| mib << 20),
+                            clang_memory: clang_memory.map(|mib| mib << 20),
+                        },
+                    )?
                 }
                 _ => unreachable!(),
             };

@@ -312,7 +312,7 @@ impl<'a> Expressions<'a> {
             Kind::File(path) => self.client.file(path),
             Kind::Compile(path) => {
                 let module = self.client.file(path)?;
-                self.client.compilation(&module, None)
+                self.client.compilation(&module, Default::default())
             }
             Kind::Todo {
                 reference,

@@ -4,8 +4,8 @@ load(":configuration.bzl", "stage")
 load(":tools.bzl", "COMMANDS")
 load("@bazel_skylib//lib:shell.bzl", "shell")
 
-# C translation units per program; the in-Fix rebuild must use the same count.
 UNITS = 512
+COMPILER_UNITS = 1
 
 def _resources(_os, _inputs):
     return {"cpu": 1, "memory": 4096}

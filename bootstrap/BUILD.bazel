@@ -5,7 +5,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":cmake.bzl", "MAPS", "source_build")
 load(":defs.bzl", "promote_seed", "seed_repository")
 load(":files.bzl", "archive_directory", "wasm_tools", "toolchain_files", "mapped_directory")
-load(":native.bzl", "UNITS", native_generation = "generation", native_program = "program")
+load(":native.bzl", "COMPILER_UNITS", native_generation = "generation", native_program = "program")
 load(":configuration.bzl", "stage")
 load(":tools.bzl", "COMMANDS")
 load("//build:fix.bzl", "fix_run")
@@ -100,7 +100,7 @@ source_build(
 
 wasm_tools(name = "stage0", tags = ["manual"])
 native_generation("stage1")
-native_program(name = "compile", src = "//programs/fix:compile_module", directory = "compile")
+native_program(name = "compile", src = "//programs/fix:compile_module", directory = "compile", partitions = COMPILER_UNITS)
 native_program(name = "scheduler", src = "//programs/fix:scheduler_module", directory = "scheduler")
 native_program(name = "collector", src = "//fix/proof/collector:module", directory = "collector")
 
@@ -153,13 +153,13 @@ alias(name = "bootstrap", actual = ":seed", tags = ["manual"])
 
 stage(name = "compile_module", srcs = ["//programs/fix:compile_module"], tags = ["manual"])
 
-COMPILER_REBUILD = '(("compile" ("" *#(536870912u64 $compile @file("compile.wasm") %du64) *[$compile 2u64])))' % UNITS
+COMPILER_REBUILD = '(("compile" (1073741824u64 *#(1073741824u64 $compile @file("compile.wasm") %du64 (1073741824u64 4294967296u64)) *[$compile 2u64])))' % COMPILER_UNITS
 
 # Rebuilds the compiler inside Fix; the archive carries its compile coupon.
 fix_run(
     name = "compilations",
     jobs = 1,
-    memory = 65536,
+    memory = 8192,
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
@@ -175,7 +175,7 @@ promote_seed(name = "promoted_seed", seed = ":seed", compilation = ":compilation
 fix_run(
     name = "stabilized_compilations",
     jobs = 1,
-    memory = 65536,
+    memory = 8192,
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
@@ -189,7 +189,7 @@ promote_seed(name = "stabilized_seed", seed = ":promoted_seed", compilation = ":
 fix_run(
     name = "checked_compilations",
     jobs = 1,
-    memory = 65536,
+    memory = 8192,
     expression = COMPILER_REBUILD,
     bindings = {"compile": '@label("compile")'},
     data = {":compile_module": "compile.wasm"},
