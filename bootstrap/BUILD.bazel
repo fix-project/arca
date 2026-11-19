@@ -153,7 +153,7 @@ alias(name = "bootstrap", actual = ":seed", tags = ["manual"])
 
 stage(name = "compile_module", srcs = ["//programs/fix:compile_module"], tags = ["manual"])
 
-COMPILER_REBUILD = '(("compile" ("" *#("" $compile @file("compile.wasm") %du64) *[$compile 2u64])))' % UNITS
+COMPILER_REBUILD = '(("compile" ("" *#(536870912u64 $compile @file("compile.wasm") %du64) *[$compile 2u64])))' % UNITS
 
 # Rebuilds the compiler inside Fix; the archive carries its compile coupon.
 fix_run(

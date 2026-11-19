@@ -201,3 +201,7 @@ int64_t arca_debug_log_int(const uint8_t *message, size_t len, uint64_t value) {
 int64_t arca_debug_show(const uint8_t *message, size_t len, arcad value) {
   return syscall3(__NR_debug_show, message, len, value);
 }
+
+int64_t arca_memory_adjust(int64_t bytes) {
+  return syscall1(__NR_memory_adjust, bytes);
+}

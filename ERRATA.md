@@ -11,3 +11,10 @@
 - `docs/fix.md`: the prototype collector accepts at most 1,048,576
   witnesses per request. This bounds descriptor allocation without closing slots
   during an invocation.
+- `docs/fix.md`: application metadata at combination index zero must contain an
+  eight-byte little-endian memory budget. Unprivileged execution enforces the
+  Fix Shell accounting contracts in `arca/kernel/MEMORY.md`, which distinguish
+  structural quantities and justified bounds from unproved estimates. Coverage
+  of all allocation paths is still incomplete. Admission errors
+  are retryable and do not produce Apply coupons. Existing repositories must be
+  cleared; the kernel certificate identity is unchanged.

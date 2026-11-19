@@ -34,6 +34,7 @@ pub mod io;
 pub mod iprofile;
 pub mod kthread;
 pub mod kvmclock;
+pub mod memory;
 pub mod page;
 pub mod paging;
 pub mod prelude;

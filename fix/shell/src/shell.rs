@@ -138,6 +138,9 @@ unsafe fn attach_data(
 
 pub(crate) unsafe fn map_data(data: Value<Runtime>, addr: *mut u8, len: usize, size: usize) {
     assert!(len <= size && size.is_multiple_of(4096));
+    if (addr as usize) < crate::rt::LOCAL_BASE {
+        crate::memory::mapping(addr as usize, size, false);
+    }
     unsafe fn map(value: Value<Runtime>, address: *mut u8) {
         let (datatype, data) = match value {
             Value::Page(page) => {
@@ -221,6 +224,7 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
         }
         return;
     }
+    crate::memory::charge(fixhandle::accounting::object(len));
     let address = crate::locals::region();
     let backing = unsafe { snapshot_tree(data, len) };
     unsafe {
@@ -231,7 +235,7 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
             len,
             len.next_multiple_of(4096),
         );
-        crate::locals::create(result, backing, address, len, 0x800f);
+        crate::locals::create(result, backing, address, len, 0x800f, 0);
     }
 }
 
@@ -259,7 +263,14 @@ pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
             slice.len(),
             slice.len().next_multiple_of(4096),
         );
-        crate::locals::create(result, backing, address, slice.len(), metadata);
+        crate::locals::create(
+            result,
+            backing,
+            address,
+            slice.len(),
+            metadata,
+            fixhandle::accounting::mapping(slice.len()),
+        );
     }
 }
 

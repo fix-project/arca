@@ -6,10 +6,7 @@ pub use shell::{Error as ShellError, Shell};
 use crate::{
     handle::*,
     repository::{Repository, RepositoryError},
-    runtime::{
-        InvalidApplication,
-        arca::{EffectAction, FixOnArca, trust::Trust},
-    },
+    runtime::arca::{EffectAction, FixOnArca, trust::Trust},
     storage::{Storage, memory, repository::RepositoryStorage},
     user_scheduler_driver::Outcome,
 };
@@ -136,9 +133,7 @@ impl Backend {
     pub fn call(&self, combination: Tree) -> Outcome {
         self.runtime
             .execute_with_effects(combination, false, &mut |_| EffectAction::Unhandled)
-            .map_err(|InvalidApplication| {
-                InvalidApplication::request(&*self.storage, combination.into())
-            })
+            .map_err(|error| error.request(&*self.storage, combination.into()))
     }
 
     pub fn schedule(&self, combination: Tree, todos: Vec<(Ref, Blob)>) -> Result<Outcome> {
@@ -194,6 +189,10 @@ impl Backend {
                                 "Wasm trap code {}",
                                 u32::from_le_bytes(detail.as_ref().try_into().unwrap())
                             )),
+                            b"Fix.memory" if detail.len() == 8 => Some(format!(
+                                "memory limit exceeded ({} bytes)",
+                                u64::from_le_bytes(detail.as_ref().try_into().unwrap())
+                            )),
                             _ => None,
                         }
                     })();
@@ -221,7 +220,7 @@ impl Backend {
         let storage = &*self.storage;
         let mode = storage.add_blob(b"eval");
         let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(1u64 << 30).to_le_bytes()).unwrap().into(),
             scheduler.into(),
             mode.into(),
             collector.into(),

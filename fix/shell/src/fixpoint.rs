@@ -34,6 +34,11 @@ pub unsafe extern "C" fn w2c_fix_advise(
     payload: u32,
     payload_length: u32,
 ) {
+    let _working = crate::memory::Working::new(
+        fixhandle::accounting::WORKING
+            .saturating_add(fixhandle::accounting::allocation(key_length as usize))
+            .saturating_add(fixhandle::accounting::allocation(payload_length as usize)),
+    );
     let key = memory_bytes(key, key_length);
     let payload = memory_bytes(payload, payload_length);
     assert!(core::str::from_utf8(&key).is_ok());
@@ -92,6 +97,9 @@ pub unsafe extern "C" fn w2c_fix_read_blob(
         }
         return length as u32;
     }
+    let _working = crate::memory::Working::new(
+        fixhandle::accounting::WORKING.saturating_add(fixhandle::accounting::allocation(length)),
+    );
     crate::locals::lift(&[handle]);
     let count: Word<Runtime> = crate::continuation::operation("read_blob")
         .blob(&crate::handles::bytes(handle))
@@ -175,6 +183,9 @@ pub unsafe extern "C" fn w2c_fix_detach_blob(_fixpoint: *mut w2c_fix, memory_idx
         assert!(!memory.is_null(), "memory does not exist");
         if copy == 0 || crate::rt::MEMORY_ATTACHED[memory_idx as usize] {
             shell::detach_data((*memory).data, (*memory).size as usize, copy != 0);
+        }
+        if copy != 0 && crate::rt::MEMORY_ATTACHED[memory_idx as usize] {
+            crate::memory::become_scratch((*memory).data as usize, (*memory).size as usize);
         }
         crate::rt::MEMORY_ATTACHED[memory_idx as usize] = false;
         crate::rt::release_memory(memory_idx as usize);

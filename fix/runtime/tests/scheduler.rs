@@ -12,7 +12,7 @@ fn scheduler_tcp_listener_round_trip() {
     let program = test_program(storage, kernel::testing::fixture("FIX_TCP_LISTENER"));
     let collector = test_program(storage, kernel::testing::fixture("FIX_COLLECTOR"));
     let combination = storage.add_tree(&[
-        Tree::empty().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         program.into(),
         Tree::empty().into(),
         collector.into(),
@@ -34,12 +34,12 @@ fn scheduler_evaluates_wide_application_graphs() {
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
         let values: Vec<Handle> = (0u64..256)
             .map(|index| {
-                let value = storage.add_blob(&index.to_le_bytes());
+                let value = storage.add_blob(&((512u64 << 20) + index).to_le_bytes());
                 let leaf = storage.add_tree(&[value.into()]);
                 let data = storage.add_tree(&[leaf.into()]);
                 storage
                     .add_tree(&[
-                        Blob::literal(b"").unwrap().into(),
+                        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
                         program.into(),
                         data.into(),
                     ])
@@ -126,12 +126,15 @@ fn scheduler_evaluates_shared_dependencies() {
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
-        let shared = storage.add_tree(&[Blob::literal(b"shared").unwrap().into(), program.into()]);
+        let shared = storage.add_tree(&[
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let encoded = shared.into_ref().application().strict();
         let mut inputs = Vec::new();
         let mut expected = Vec::new();
         for index in 0u64..64 {
-            let metadata = storage.add_blob(&index.to_le_bytes());
+            let metadata = storage.add_blob(&((512u64 << 20) + index).to_le_bytes());
             let input = storage.add_tree(&[
                 metadata.into(),
                 program.into(),
@@ -176,7 +179,9 @@ fn scheduler_preserves_tree_order_and_duplicate_premises() {
             .map(|index| {
                 storage
                     .add_tree(&[
-                        storage.add_blob(&index.to_le_bytes()).into(),
+                        storage
+                            .add_blob(&((512u64 << 20) + index).to_le_bytes())
+                            .into(),
                         program.into(),
                     ])
                     .into()
@@ -221,7 +226,9 @@ fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
         let mut inputs = [leaf, leaf];
         let mut values = [leaf, leaf];
         for index in 0u64..32 {
-            let metadata: Handle = storage.add_blob(&index.to_le_bytes()).into();
+            let metadata: Handle = storage
+                .add_blob(&((512u64 << 20) + index).to_le_bytes())
+                .into();
             let combination = storage.add_tree(&[metadata, program.into(), inputs[1], inputs[0]]);
             let input = combination.into_ref().application().strict().into();
             let value = storage
@@ -252,7 +259,7 @@ fn collector_rejects_witness_lists_above_its_limit() {
     let fields = storage.add_tree(&kernel::prelude::vec![value; count]);
     let witnesses = storage.add_tree(&kernel::prelude::vec![witness.into(); count]);
     let request = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         collector.into(),
         equivalent.into(),
         fields.into(),
@@ -298,7 +305,7 @@ fn rust_sdk_returns_complete_panic_messages() {
                 continue;
             }
             let request = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
                 program.into(),
                 storage.add_blob(&mode.to_le_bytes()).into(),
             ]);
@@ -325,7 +332,7 @@ fn rust_sdk_returns_complete_panic_messages() {
             );
         }
         let request = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
             program.into(),
             storage.add_blob(&5u64.to_le_bytes()).into(),
         ]);
@@ -346,7 +353,10 @@ fn scheduler_controls_memoization_without_losing_shared_results() {
         let evaluator = Evaluation::with_scheduler(test_runtime(), 4, fixture);
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let input = storage.add_tree(
             &kernel::prelude::vec![combination.into_ref().application().strict().into(); 64],
         );

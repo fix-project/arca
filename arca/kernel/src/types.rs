@@ -12,7 +12,7 @@ mod word;
 pub mod internal {
     pub use super::arca::LoadedArca;
     pub use super::blob::Blob;
-    pub use super::function::Function;
+    pub use super::function::{Definition, Function};
     pub use super::null::Null;
     pub use super::page::Page;
     pub use super::table::Table;

@@ -41,7 +41,7 @@ impl benchmark_guest::Benchmark for Benchmark {
                     fixruntime::stdlib::PRIMITIVES[0].1,
                 );
                 let combination = state.memory.add_tree(&[
-                    number(0),
+                    number(512u64 << 20),
                     state.program.into(),
                     number(limit),
                     number(mode),

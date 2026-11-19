@@ -37,20 +37,161 @@ fn test_program(storage: &dyn Storage, bytes: &[u8]) -> Tree {
         ])
         .tag_descriptor()
 }
+
+#[kernel::test]
+fn memory_limits_cover_startup_scratch_objects_and_descriptors() {
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let run = |limit: u64, mode: u64, count: u64| {
+        let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+        let combination =
+            storage.add_tree(&[number(limit), procedure.into(), number(mode), number(count)]);
+        let fixruntime::arca::Execution::Complete(result) =
+            runtime.run_observed(combination).unwrap()
+        else {
+            panic!("unexpected advice")
+        };
+        result
+    };
+    let failed = |value: Handle| {
+        let fields = storage.get_tree(Tree::try_from(value).unwrap()).unwrap();
+        assert_eq!(
+            storage
+                .get_blob(Blob::try_from(fields[0]).unwrap())
+                .unwrap()
+                .as_ref(),
+            b"Fix.memory"
+        );
+    };
+    let succeeded = |value: Handle| {
+        assert_eq!(
+            storage
+                .get_blob(Blob::try_from(value).unwrap())
+                .unwrap()
+                .as_ref(),
+            &42u64.to_le_bytes()
+        );
+    };
+    failed(run(1, 0, 0));
+    let limit = 64 << 20;
+    succeeded(run(limit, 0, 320));
+    failed(run(limit, 0, 640));
+    succeeded(run(limit, 3, 320));
+    succeeded(run(limit, 1, 1));
+    failed(run(limit, 1, 64));
+    succeeded(run(48 << 20, 2, 16));
+    failed(run(48 << 20, 2, 1 << 17));
+}
+
+#[kernel::test]
+fn memory_admission_is_retryable_without_an_apply_coupon() {
+    use fixruntime::ExecutionError;
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "IDENTITY");
+    let limit = 256u64 << 20;
+    let combination = storage.add_tree(&[
+        storage.add_blob(&limit.to_le_bytes()).into(),
+        procedure.into(),
+    ]);
+    let available = kernel::memory::available();
+    let reservation = kernel::memory::Admission::new(available - (limit as usize / 2)).unwrap();
+    assert!(matches!(
+        runtime.execute(combination),
+        Err(ExecutionError::Admission(_))
+    ));
+    assert!(
+        runtime
+            .cached_claims_in(
+                &[
+                    storage.add_blob(&2u64.to_le_bytes()).into(),
+                    combination.into()
+                ],
+                &fixruntime::arca::SavedClaims::default()
+            )
+            .unwrap()
+            .is_empty()
+    );
+    drop(reservation);
+    assert!(runtime.execute(combination).is_ok());
+    let missing = storage.add_tree(&[Blob::literal(b"").unwrap().into(), procedure.into()]);
+    assert!(matches!(
+        runtime.execute(missing),
+        Err(ExecutionError::InvalidMemoryLimit)
+    ));
+}
+
+#[kernel::test]
+fn suspended_application_keeps_its_reservation() {
+    use fixruntime::{ExecutionError, arca::Execution};
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let reserved =
+        kernel::memory::Admission::new(kernel::memory::available() - (320 << 20)).unwrap();
+    let application =
+        storage.add_tree(&[number(256 << 20), procedure.into(), number(4), number(16)]);
+    let Execution::Advice { event, suspended } = runtime.run_observed(application).unwrap() else {
+        panic!("expected a live scratch allocation");
+    };
+    assert_eq!(event.key, b"memory::held");
+    let privileged = storage.add_tree(&[number(1), procedure.into(), number(0), number(16)]);
+    let result = runtime.execute_privileged(privileged).unwrap();
+    assert!(storage.equals(result, number(42)).unwrap());
+    let competing = storage.add_tree(&[number(256 << 20), procedure.into(), number(0), number(16)]);
+    assert!(matches!(
+        runtime.execute(competing),
+        Err(ExecutionError::Admission(_))
+    ));
+    let Execution::Complete(result) = runtime.resume_observed(suspended).unwrap() else {
+        panic!("expected completion");
+    };
+    assert_eq!(
+        storage
+            .get_blob(Blob::try_from(result).unwrap())
+            .unwrap()
+            .as_ref(),
+        &42u64.to_le_bytes()
+    );
+    assert!(runtime.execute(competing).is_ok());
+    drop(reserved);
+}
+
+#[kernel::test]
+fn privileged_execution_can_exceed_its_admission_budget() {
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let combination = storage.add_tree(&[number(1), procedure.into(), number(0), number(16)]);
+    let result = runtime.execute_privileged(combination).unwrap();
+    assert_eq!(
+        storage
+            .get_blob(Blob::try_from(result).unwrap())
+            .unwrap()
+            .as_ref(),
+        &42u64.to_le_bytes()
+    );
+}
 #[kernel::test]
 fn scalar_descriptor_identity_and_c_bindings() {
     let runtime = runtime();
     let storage = runtime.storage();
     let identity = program(storage, "IDENTITY");
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         identity.into(),
         storage.add_blob(&42u64.to_le_bytes()).into(),
     ]);
     let result = runtime.execute_privileged(combination).unwrap();
     assert!(storage.equals(result, combination.into()).unwrap());
     let bindings = program(storage, "BINDINGS");
-    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), bindings.into()]);
+    let combination = storage.add_tree(&[
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+        bindings.into(),
+    ]);
     let result = runtime.execute_privileged(combination).unwrap();
     let bytes = storage.get_blob(Blob::try_from(result).unwrap()).unwrap();
     assert_eq!(bytes.as_ref(), 42u64.to_le_bytes());
@@ -63,7 +204,7 @@ fn descriptor_slots_survive_capture_and_serialized_replay() {
     let input = storage.add_blob(&[42; 64]);
     let request = storage.add_tree(&[Blob::literal(b"capture").unwrap().into()]);
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         procedure.into(),
         input.into(),
         request.into(),
@@ -75,7 +216,7 @@ fn descriptor_slots_survive_capture_and_serialized_replay() {
         assert!(storage.equals(pair[0], request.into()).unwrap());
         let continuation: Handle = storage.canonicalize(pair[1]).unwrap().into();
         let resumed = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
             continuation,
             Blob::literal(b"reply").unwrap().into(),
         ]);
@@ -91,7 +232,7 @@ fn eager_parser_returns_values_and_applications() {
     let parser = program(storage, "PARSER");
     let environment = stdlib::build_environment(storage);
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         parser.into(),
         storage.add_blob(b"42u64").into(),
         environment,
@@ -107,9 +248,9 @@ fn eager_parser_returns_values_and_applications() {
         42u64.to_le_bytes()
     );
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         parser.into(),
-        storage.add_blob(b"*#(\"\" $identity 42u64)").into(),
+        storage.add_blob(b"*#(268435456u64 $identity 42u64)").into(),
         environment,
     ]);
     let result = runtime.execute_privileged(combination).unwrap();
@@ -153,7 +294,10 @@ fn memories_and_tables_share_the_lower_64_regions() {
     let storage = runtime.storage();
     for fixture in ["MANY_MEMORIES", "MANY_TABLES"] {
         let procedure = program(storage, fixture);
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), procedure.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+            procedure.into(),
+        ]);
         let result = runtime.execute_privileged(combination).unwrap();
         let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
         assert_eq!(fields.len(), 2);
@@ -202,7 +346,10 @@ fn privileged_tree_bytes_remain_attached_after_closing_the_descriptor() {
     let runtime = runtime();
     let storage = runtime.storage();
     let procedure = program(storage, "TREE_BYTES");
-    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), procedure.into()]);
+    let combination = storage.add_tree(&[
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+        procedure.into(),
+    ]);
     let result = runtime.execute_privileged(combination).unwrap();
     let bytes = storage.get_blob(Blob::try_from(result).unwrap()).unwrap();
     assert_eq!(&*bytes, &85u64.to_le_bytes());
@@ -214,7 +361,7 @@ fn invalid_tree_reads_return_deterministic_traps() {
     let storage = runtime.storage();
     let read = program(storage, "TREE_READ");
     let add = program(storage, "ADD_BLOB");
-    let metadata: Handle = Blob::literal(b"").unwrap().into();
+    let metadata: Handle = Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into();
     let number: Handle = storage.add_blob(&42u64.to_le_bytes()).into();
     let empty = storage.add_tree(&[]);
     for (request, code) in [

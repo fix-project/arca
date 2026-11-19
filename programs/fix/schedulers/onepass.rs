@@ -356,6 +356,7 @@ impl<'a> OnePass<'a> {
         let cluster = self.cluster().await?;
         let mut workers = vec![Information {
             parallelism: fixscheduler::kernel::worker::count()?.try_into()?,
+            memory_bytes: Some(fixscheduler::kernel::worker::available_memory()?),
             ..Information::default()
         }];
         workers.extend(cluster.information());

@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(portable_simd)]
 
+pub mod accounting;
 pub mod descriptors;
 pub mod minrepo;
 

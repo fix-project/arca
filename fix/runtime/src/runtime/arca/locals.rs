@@ -7,6 +7,8 @@ struct Promotion<'a, S> {
     function: &'a mut Function,
     objects: HashMap<usize, Value>,
     promoted: HashMap<usize, Handle>,
+    retained: usize,
+    memory: &'a kernel::memory::Budget,
 }
 
 impl<S: Storage> Promotion<'_, S> {
@@ -24,9 +26,18 @@ impl<S: Storage> Promotion<'_, S> {
                 .objects
                 .remove(&address)
                 .expect("missing local backing");
-            let data = ImmutableBytes::from_value(backing, handle.byte_len() as usize);
+            let cost = fixhandle::accounting::object(handle.byte_len() as usize);
+            let mut data = ImmutableBytes::from_value(backing, handle.byte_len() as usize);
+            if handle.is_tree_data() {
+                data = self.backing(data);
+            }
+            if !data.is_empty() && (handle.is_tree_data() || data.len() > 30) {
+                self.retained = self.retained.saturating_add(cost);
+                if let Some(memory) = self.memory.retain(cost) {
+                    data = data.retain(memory);
+                }
+            }
             let object: Handle = if handle.is_tree_data() {
-                let data = self.backing(data);
                 unsafe { self.store.add_tree_backing(data) }.into()
             } else {
                 self.store.add_blob_backing(data).into()
@@ -69,7 +80,13 @@ impl<S: Storage> Promotion<'_, S> {
 }
 
 impl<S: Storage> Store<S> {
-    pub(super) fn lift(&self, function: &mut Function, objects: Tuple, slots: &[u8]) {
+    pub(super) fn lift(
+        &self,
+        function: &mut Function,
+        objects: Tuple,
+        slots: &[u8],
+        memory: &kernel::memory::Budget,
+    ) -> usize {
         let (slots, remainder) = slots.as_chunks::<4>();
         assert!(remainder.is_empty());
         let mut promotion = Promotion {
@@ -77,6 +94,8 @@ impl<S: Storage> Store<S> {
             function,
             objects: HashMap::new(),
             promoted: HashMap::new(),
+            retained: 0,
+            memory,
         };
         for record in objects {
             let mut record: Tuple = record.try_into().expect("invalid local object");
@@ -96,5 +115,6 @@ impl<S: Storage> Store<S> {
                 handles::insert(promotion.function, address, promoted);
             }
         }
+        promotion.retained
     }
 }

@@ -71,7 +71,7 @@ fn client(directory: &Path) -> Client {
                 .exists()
                 .then(|| directory.join(".fix/trust")),
             unsigned: true,
-            memory_mib: 128,
+            memory_mib: 2048,
             ..Options::default()
         },
     )
@@ -106,7 +106,7 @@ fn parser_failures_are_distinct_from_literal_error_values() {
     let directory = repository("parser-responses");
     let invoke = |source: &str, config: &Path| {
         Command::new(input(env!("BACKEND")))
-            .args(["-j", "1", "--memory", "512", "eval", source])
+            .args(["-j", "1", "--memory", "2048", "eval", source])
             .current_dir(&directory)
             .env("FIX_TRUST", directory.join(".fix/trust"))
             .env("FIX_UNSIGNED", "true")
@@ -254,7 +254,7 @@ fn an_empty_repository_uses_user_default_programs() {
     )
     .unwrap();
     let output = Command::new(input(env!("BACKEND")))
-        .args(["-j", "1", "--memory", "512", "eval", "1u64"])
+        .args(["-j", "1", "--memory", "2048", "eval", "1u64"])
         .current_dir(&project)
         .env("FIX_CONFIG_DIR", user.join("config"))
         .env("XDG_DATA_HOME", &data)
@@ -417,7 +417,7 @@ fn persistent_session_values_evaluation_and_storage() {
     let left = session.blob(&20u64.to_le_bytes()).unwrap();
     let right = session.blob(&22u64.to_le_bytes()).unwrap();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add, left, right]).unwrap();
     let application = session.application(&combination).unwrap();
     assert_eq!(session.value_type(&application).unwrap(), ValueType::Thunk);
@@ -467,12 +467,12 @@ fn a_trapped_invocation_does_not_terminate_the_host() {
     let directory = repository("failed-invocation");
     let mut session = client(&directory);
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
     let result = session.call(&combination).unwrap();
     assert_trap(&mut session, &result, 1);
     for number in [20u64, 21] {
-        let metadata = session.blob(b"").unwrap();
+        let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
         let add = session.lookup("add").unwrap();
         let argument = session.blob(&number.to_le_bytes()).unwrap();
         let combination = session
@@ -510,7 +510,7 @@ fn coupon_persistence_modes() {
             Options {
                 trust: Some(directory.join(".fix/trust")),
                 unsigned: true,
-                memory_mib: 128,
+                memory_mib: 2048,
                 memoize: mode,
                 ..Options::default()
             },
@@ -519,7 +519,7 @@ fn coupon_persistence_modes() {
         let left = session.blob(&20u64.to_le_bytes()).unwrap();
         let right = session.blob(&22u64.to_le_bytes()).unwrap();
         let add = session.lookup("add").unwrap();
-        let metadata = session.blob(b"").unwrap();
+        let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
         let combination = session.tree(&[metadata, add, left, right]).unwrap();
         let application = session.application(&combination).unwrap();
         let request = session.strict(&application).unwrap();
@@ -546,7 +546,7 @@ fn persistent_session_returns_guest_traps() {
     let mut session = client(&directory);
     session.reuse_vm();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
     let result = session.call(&combination).unwrap();
     assert_trap(&mut session, &result, 1);
@@ -564,7 +564,7 @@ fn perf_capture_preserves_results_and_exports_callchains() {
     let left = session.blob(&20u64.to_le_bytes()).unwrap();
     let right = session.blob(&22u64.to_le_bytes()).unwrap();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add, left, right]).unwrap();
     let combination = session.save(&combination).unwrap();
     let expected = session.blob(&42u64.to_le_bytes()).unwrap();
@@ -574,7 +574,7 @@ fn perf_capture_preserves_results_and_exports_callchains() {
     let output = Command::new(input(env!("BACKEND")))
         .arg("--perf")
         .arg(&profile)
-        .args(["--memory", "128", "-j", "2", "call", &combination])
+        .args(["--memory", "2048", "-j", "2", "call", &combination])
         .current_dir(&directory)
         .env("FIX_UNSIGNED", "true")
         .env("FIX_TRUST", directory.join(".fix/trust"))
@@ -762,10 +762,10 @@ fn zero_workers_reject_local_applications_without_waiting_for_a_worker() {
             "--unsigned",
             "-j0",
             "--memory",
-            "128",
+            "2048",
             "eval",
             "--encode",
-            "#(\"\" @label(\"add\") 1u64 2u64)",
+            "#(268435456u64 @label(\"add\") 1u64 2u64)",
         ])
         .env("FIX_TRUST", directory.join(".fix/trust"))
         .current_dir(&directory)

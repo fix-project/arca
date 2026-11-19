@@ -73,6 +73,7 @@ pub struct RuntimeStats {
     pub peak_memory: u64,
     pub memory_used: u64,
     pub memory_total: u64,
+    pub memory_available: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

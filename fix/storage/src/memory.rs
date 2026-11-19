@@ -34,6 +34,8 @@ struct Inner {
     tree_hasher: hashbrown::DefaultHashBuilder,
     tree_index: ShardedMap<u64, Vec<Tree>>,
     names: KMutex<crate::friendly::Names>,
+    #[cfg(not(target_os = "linux"))]
+    memory: Arc<crate::data::RetainedMemory>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,12 +156,29 @@ impl Default for MemoryStorage {
                 tree_hasher: hashbrown::DefaultHashBuilder::default(),
                 tree_index: ShardedMap::default(),
                 names: KMutex::new(crate::friendly::Names::default()),
+                #[cfg(not(target_os = "linux"))]
+                memory: Arc::default(),
             }),
         }
     }
 }
 
 impl MemoryStorage {
+    #[cfg(not(target_os = "linux"))]
+    pub fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
+        self.inner.memory.keep(memory);
+    }
+
+    fn retain_backing(&self, data: ImmutableBytes) -> ImmutableBytes {
+        #[cfg(not(target_os = "linux"))]
+        {
+            data.with_memory(self.inner.memory.clone())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            data
+        }
+    }
     /// Index canonical names for unambiguous display without admitting their backing.
     pub fn register_names(&self, names: impl IntoIterator<Item = [u8; 32]>) {
         self.inner.names.lock().extend(names);
@@ -663,7 +682,7 @@ impl Storage for MemoryStorage {
         if name.as_handle().value_bit() != Some(true) {
             return Err(StorageError::InvalidValueBit);
         }
-        Ok(data)
+        Ok(self.retain_backing(data))
     }
 
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
@@ -686,6 +705,7 @@ impl Storage for MemoryStorage {
             return Err(StorageError::InvalidValueBit);
         }
         data.get(self, comparable, value)
+            .map(|data| self.retain_backing(data))
     }
 
     fn canonicalize_blob(&self, blob: Blob) -> Result<CanonicalHandle, StorageError> {

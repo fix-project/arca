@@ -81,7 +81,9 @@ impl benchmark_guest::Benchmark for Benchmark {
                     let state = FixState::new(fixture("FUNCTION_EFFECT"), size as u64, limit);
                     let program = state.memory.get_tree(state.program).unwrap();
                     let program = fix_program(&state.memory, program[0], fixture("EFFECT_HANDLER"));
-                    let combination = state.memory.add_tree(&[number(0), program.into()]);
+                    let combination = state
+                        .memory
+                        .add_tree(&[number(512u64 << 20), program.into()]);
                     let (ready, handler) = state.pair(state.run(combination));
                     state.check_sum(ready, 0);
                     let pending = state.run(state.combination);

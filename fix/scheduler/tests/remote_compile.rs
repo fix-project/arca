@@ -35,7 +35,7 @@ impl Machine {
     ) -> Output {
         let mut command = Command::new(fixture(env!("FIX")));
         command
-            .args(["-j", &jobs.to_string(), "--memory", "2048"])
+            .args(["-j", &jobs.to_string(), "--memory", "8192"])
             .args(arguments)
             .current_dir(cwd)
             .env("FIX_CONFIG_DIR", self.directory.join("config"))
@@ -123,7 +123,7 @@ fn cloned_compilation_thunks_can_be_applied() {
         &[
             "-l",
             "addblob",
-            "#(\"\" *'@label(\"bootstrap:compile\") @label(\"addblob.wasm\"))",
+            "#(1073741824u64 *'@label(\"bootstrap:compile\") @label(\"addblob.wasm\"))",
         ],
         None,
     );
@@ -132,7 +132,7 @@ fn cloned_compilation_thunks_can_be_applied() {
     std::fs::create_dir(&bin).unwrap();
     let quote = |path: &Path| format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"));
     let script = format!(
-        "#!/bin/sh\nexport FIX_CONFIG_DIR={} XDG_DATA_HOME={} SSH_AUTH_SOCK={}\nexec {} -C {} -j 4 --memory 2048 serve --stdio\n",
+        "#!/bin/sh\nexport FIX_CONFIG_DIR={} XDG_DATA_HOME={} SSH_AUTH_SOCK={}\nexec {} -C {} -j 4 --memory 8192 serve --stdio\n",
         quote(&source.directory.join("config")),
         quote(&source.directory.join("data")),
         quote(&source.agent.socket),
@@ -152,7 +152,7 @@ fn cloned_compilation_thunks_can_be_applied() {
     let cloned = destination.directory.join("repo");
     let evaluated = destination.run_with_jobs(
         &cloned,
-        &["*#(\"\" *#(\"\" *'@label(\"origin:bootstrap:compile\") *'@label(\"origin:addblob.wasm\")) 20u64 22u64)"],
+        &["*#(1073741824u64 *#(1073741824u64 *'@label(\"origin:bootstrap:compile\") *'@label(\"origin:addblob.wasm\")) 20u64 22u64)"],
         Some(&bin),
         1,
     );
@@ -174,7 +174,7 @@ fn cloned_compilation_thunks_can_be_applied() {
         &cloned,
         &[
             "--summarize",
-            "*#(\"\" *@label(\"origin:addblob\") 1u64 2u64)",
+            "*#(1073741824u64 *@label(\"origin:addblob\") 1u64 2u64)",
         ],
         Some(&bin),
         0,

@@ -14,6 +14,7 @@ pub mod memory;
 mod platform;
 pub mod repository;
 pub use data::ImmutableBytes;
+pub const OBJECT_METADATA: usize = 16384;
 #[cfg(not(target_os = "linux"))]
 pub use data::backing_value;
 

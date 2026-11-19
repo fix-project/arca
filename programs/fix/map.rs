@@ -17,13 +17,10 @@ pub fn apply<'a>(
         let main_blob = combination.get(2);
         let arg_1 = combination.get(3);
         let array = Handle::<Object<Tree>>::try_from(combination.get(4))?;
-        Ok(tree![
-            fixwasm::Blob::create(b""),
-            main_blob,
-            arg_1,
-            array.get(index)
-        ]
-        .reference()
-        .application())
+        Ok(
+            tree![combination.get(0), main_blob, arg_1, array.get(index)]
+                .reference()
+                .application(),
+        )
     })))
 }

@@ -40,16 +40,8 @@ pub async fn apply(
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::operation(2, combination);
-    let result = async {
-        observed(
-            crate::io::Io
-                .application(tree![Blob::create(b"callable_apply"), combination])
-                .await?,
-            on_advice,
-        )
-        .await
-    }
-    .await;
+    let result =
+        async { observed(admitted(b"callable_apply", combination).await?, on_advice).await }.await;
     evaluation.finish(result)
 }
 
@@ -59,17 +51,27 @@ pub async fn run(
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::operation(2, combination);
-    let result = async {
-        observed(
-            crate::io::Io
-                .application(tree![Blob::create(b"callable_run"), combination])
-                .await?,
-            on_advice,
-        )
-        .await
-    }
-    .await;
+    let result =
+        async { observed(admitted(b"callable_run", combination).await?, on_advice).await }.await;
     evaluation.finish(result)
+}
+
+async fn admitted(operation: &[u8], combination: &Value) -> Result<(u64, Value), Error> {
+    loop {
+        let reply = crate::io::Io
+            .application(tree![Blob::create(operation), combination])
+            .await?;
+        if reply.0 != 6 {
+            return Ok(reply);
+        }
+        let required = child(&reply.1, 0)?;
+        let (status, ready) = crate::io::Io
+            .request(tree![Blob::create(b"memory_wait"), required])
+            .await?;
+        if status != 0 || ready.read_u64()? == 0 {
+            return Err(Error::MemoryUnavailable);
+        }
+    }
 }
 
 /// Invoke a privileged callable with the same advisory notification handler.
@@ -92,6 +94,7 @@ async fn observed(
 ) -> Result<Value, Error> {
     loop {
         match reply {
+            (6, _) => return Err(Error::MemoryUnavailable),
             (0, value) => return Ok(value),
             (2, event) => {
                 if as_tree(&event)?.len()? != 4 {
@@ -164,6 +167,10 @@ pub mod worker {
 
     pub fn count() -> Result<u64, Error> {
         config(1)
+    }
+
+    pub fn available_memory() -> Result<u64, Error> {
+        config(4)
     }
 
     pub fn returns_coupon() -> Result<bool, Error> {

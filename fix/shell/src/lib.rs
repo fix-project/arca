@@ -28,6 +28,7 @@ mod descriptors;
 mod fixpoint;
 mod handles;
 mod locals;
+mod memory;
 mod rt;
 pub mod shell;
 
@@ -94,12 +95,18 @@ pub fn main() -> ! {
         },
         0
     );
+    memory::initialize();
     let handle = continuation::read_reply(os::argument());
     let result = unsafe {
         let argument = descriptors::initialize(handle);
         wasm_rt_init();
         let layout =
             Layout::from_size_align(wasm_rt_module_size(), wasm_rt_module_alignment()).unwrap();
+        let module_bytes = fixhandle::accounting::allocation(layout.size());
+        memory::add_frame(
+            fixhandle::accounting::mapping(module_bytes),
+            fixhandle::accounting::encoded_metadata(module_bytes),
+        );
         let module = alloc_zeroed(layout).cast::<c_void>();
         if module.is_null() {
             handle_alloc_error(layout);

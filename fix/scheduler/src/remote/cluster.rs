@@ -83,7 +83,8 @@ async fn status(peer: &mut Peer) -> Result<(), String> {
         .await
         .map_err(|error| alloc::format!("status request failed: {error}"))?;
     match protocol::asynchronous::receive(&mut peer.connection, protocol::MAX_MESSAGE_SIZE).await {
-        Ok(Some(Message::EvaluationProgress(snapshot))) => {
+        Ok(Some(Message::EvaluationProgress(snapshot, available))) => {
+            peer.information.memory_bytes = Some(available);
             super::report_progress(&peer.name, &snapshot, false)
                 .map_err(|error| alloc::format!("invalid status: {error:?}"))?;
             Ok(())
@@ -572,7 +573,7 @@ impl PendingTransfer {
                 },
                 None,
                 |message| {
-                    if let Message::EvaluationProgress(snapshot) = message {
+                    if let Message::EvaluationProgress(snapshot, _) = message {
                         let _ = super::report_progress(&remote, snapshot, true);
                     }
                 },

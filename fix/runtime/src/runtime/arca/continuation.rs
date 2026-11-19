@@ -4,6 +4,7 @@ use kernel::kthread::KMutex;
 use kernel::prelude::{Arc, Box};
 
 type Resident = Arc<KMutex<Option<Function>>>;
+type Captured = (Resident, usize, Tree, kernel::memory::Budget);
 
 #[derive(Debug)]
 pub(super) struct Store<S> {
@@ -13,7 +14,7 @@ pub(super) struct Store<S> {
     pub(super) image_cache_id: usize,
     pub(super) images: KMutex<hashbrown::HashMap<[u8; 32], Resident>>,
     pub(super) applications: KMutex<hashbrown::HashMap<ProfileKey, ProfileTiming>>,
-    continuations: KMutex<hashbrown::HashMap<[u8; 32], (Resident, usize, Tree)>>,
+    continuations: KMutex<hashbrown::HashMap<[u8; 32], Captured>>,
     captures: AtomicUsize,
     elf_loads: AtomicUsize,
     elf_load_ns: core::sync::atomic::AtomicU64,
@@ -183,6 +184,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         reply: usize,
         attachments: Tuple,
         combination: Tree,
+        memory: kernel::memory::Budget,
     ) -> Tree {
         self.captures.fetch_add(1, Ordering::Relaxed);
         handles::insert(&mut function, reply, Blob::literal(b"").unwrap().into());
@@ -234,11 +236,12 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             && attachments.as_handle().is_value()
             && combination.as_handle().is_value();
         let resident = Arc::new(KMutex::new(Some(function)));
+        let budget = self.add_blob(&postcard::to_allocvec(&memory).unwrap());
         let saved = resident.clone();
         let state = unsafe {
             self.inner
                 .as_ref()
-                .defer_tree(5, comparable, value, move |storage| {
+                .defer_tree(6, comparable, value, move |storage| {
                     let mut checkpoint = saved.lock().take().expect("missing native checkpoint");
                     for address in addresses {
                         for offset in (0..1usize << 32).step_by(1 << 30) {
@@ -254,12 +257,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         }
                     }
                     let snapshot = checkpoint::encode(storage, checkpoint.into());
-                    let fields: [Handle; 5] = [
+                    let fields: [Handle; 6] = [
                         snapshot,
                         arena.into(),
                         attachments.into(),
                         storage.add_blob(&(reply as u64).to_le_bytes()).into(),
                         combination.into(),
+                        budget.into(),
                     ];
                     let bytes = core::slice::from_raw_parts(
                         fields.as_ptr().cast(),
@@ -277,22 +281,26 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 Blob::literal(b"Continuation").unwrap().into(),
             ])
             .tag_descriptor();
-        self.continuations
-            .lock()
-            .insert(*tree.as_handle().as_bytes(), (resident, reply, combination));
+        self.continuations.lock().insert(
+            *tree.as_handle().as_bytes(),
+            (resident, reply, combination, memory),
+        );
         tree
     }
 
-    pub(super) fn continuation(&self, tree: Tree) -> Option<(Function, usize, Tree)> {
+    pub(super) fn continuation(
+        &self,
+        tree: Tree,
+    ) -> Option<(Function, usize, Tree, kernel::memory::Budget)> {
         let resident = self
             .continuations
             .lock()
             .remove(tree.as_handle().as_bytes());
-        if let Some((resident, reply, combination)) = resident {
+        if let Some((resident, reply, combination, memory)) = resident {
             let mut saved = resident.lock();
             if let Some(function) = saved.take() {
                 *saved = Some(function.clone());
-                return Some((function, reply, combination));
+                return Some((function, reply, combination, memory));
             }
         }
         if !tree.is_tag() || tree.len() != 3 {
@@ -306,7 +314,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         }
         let payload = Ref::try_from(fields[1]).ok()?.object_descriptor();
         let payload = self.get_tree(Tree::try_from(payload.handle()).ok()?).ok()?;
-        assert_eq!(payload.len(), 5);
+        assert_eq!(payload.len(), 6);
         let mut function: Function = self
             .decode(payload[0])
             .try_into()
@@ -349,6 +357,12 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             function,
             self.integer(payload[3]) as usize,
             Tree::try_from(payload[4]).unwrap(),
+            postcard::from_bytes(
+                self.get_blob(Blob::try_from(payload[5]).unwrap())
+                    .unwrap()
+                    .as_ref(),
+            )
+            .unwrap(),
         ))
     }
 

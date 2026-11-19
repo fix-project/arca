@@ -59,7 +59,7 @@ impl benchmark_guest::Benchmark for Benchmark {
                     let mut value = number(0);
                     for _ in 0..16 {
                         let combination = state.memory.add_tree(&[
-                            number(0),
+                            number(512u64 << 20),
                             state.program.into(),
                             value,
                             number(1),

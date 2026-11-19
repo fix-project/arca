@@ -169,7 +169,7 @@ fn evaluate_raw(
         directory,
         &[
             "create-tree",
-            &value(directory, &["create-blob", "--string", ""]),
+            &value(directory, &["create-blob", "--u64", "2147483648"]),
             scheduler,
             &mode,
             "coupon-collector",
@@ -259,7 +259,7 @@ fn archive(directory: &Path, values: &[&str], path: &Path) {
 }
 
 fn compilation(directory: &Path, source: &str) -> String {
-    let metadata = value(directory, &["create-blob", "--string", ""]);
+    let metadata = value(directory, &["create-blob", "--u64", "536870912"]);
     let units = value(directory, &["create-blob", "--u64", "1"]);
     let combination = value(
         directory,
@@ -348,7 +348,10 @@ fn compiler_certificates() {
     );
     let closure = value(&directory, &["read-tree", "compile"]);
     let closure: Vec<_> = closure.lines().collect();
-    assert_eq!(run(&directory, &["read-blob", closure[0]], b"", 0), b"");
+    assert_eq!(
+        run(&directory, &["read-blob", closure[0]], b"", 0),
+        (512u64 << 20).to_le_bytes()
+    );
     let fixpoint = value(&directory, &["read-tree", closure[1]]);
     let fixpoint: Vec<_> = fixpoint.lines().collect();
     assert_eq!(fixpoint[..2], [authority.as_str(), compiler.as_str()]);
@@ -375,7 +378,7 @@ fn compiler_certificates() {
     assert_eq!(run(&directory, &["read-blob", name], b"", 0), b"/toolchain");
 
     let source = value(&directory, &["create-blob", "--string", "source"]);
-    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let metadata = value(&directory, &["create-blob", "--u64", "536870912"]);
     let units = value(&directory, &["create-blob", "--u64", "1"]);
     let combination = value(
         &directory,
@@ -443,7 +446,7 @@ fn runnable_trust_configuration() {
     let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("trust");
     std::fs::create_dir(&directory).unwrap();
     seed(&directory, &[("identity", env!("FIX_IDENTITY"))]);
-    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let metadata = value(&directory, &["create-blob", "--u64", "536870912"]);
     let reply = value(&directory, &["create-blob", "--string", "reply"]);
     let combination = value(&directory, &["create-tree", &metadata, "identity", &reply]);
     let application = value(&directory, &["create-application-thunk", &combination]);
@@ -460,7 +463,7 @@ fn runnable_trust_configuration() {
             &directory,
             &[
                 "create-tree",
-                &value(&directory, &["create-blob", "--string", ""]),
+                &value(&directory, &["create-blob", "--u64", "536870912"]),
                 "evaluator",
                 &mode,
                 "coupon-collector",
@@ -546,7 +549,15 @@ fn scheduler_reuses_current_collector_coupons() {
         ],
     );
     let zero = value(&source, &["create-blob", "--u64", "0"]);
-    let combination = value(&source, &["create-tree", &zero, "identity", &zero]);
+    let combination = value(
+        &source,
+        &[
+            "create-tree",
+            &value(&source, &["create-blob", "--u64", "536870912"]),
+            "identity",
+            &zero,
+        ],
+    );
     let thunk = value(&source, &["create-application-thunk", &combination]);
     let strict = value(&source, &["create-strict-encode", &thunk]);
     let shallow = value(&source, &["create-shallow-encode", &thunk]);
@@ -579,7 +590,13 @@ fn scheduler_reuses_current_collector_coupons() {
         let checked = value(&source, &["create-blob", "--u64", "2"]);
         let request = value(
             &source,
-            &["create-tree", &zero, "tagger", &fields, &checked],
+            &[
+                "create-tree",
+                &value(&source, &["create-blob", "--u64", "536870912"]),
+                "tagger",
+                &fields,
+                &checked,
+            ],
         );
         let foreign = value(&source, &["call", &request]);
         let archive_path = directory.join(format!("{statement}.tar"));
@@ -634,7 +651,15 @@ fn scheduler_modes_dispatch_requests() {
     run(&directory, &["init"], b"", 0);
     seed(&directory, &[("identity", env!("FIX_IDENTITY"))]);
     let payload = value(&directory, &["create-blob", "--string", "payload"]);
-    let combination = value(&directory, &["create-tree", &payload, "identity", &payload]);
+    let combination = value(
+        &directory,
+        &[
+            "create-tree",
+            &value(&directory, &["create-blob", "--u64", "536870912"]),
+            "identity",
+            &payload,
+        ],
+    );
     let thunk = value(&directory, &["create-application-thunk", &combination]);
     for (mode, code, input, expected) in [
         ("eval", "1", &payload, &payload),
@@ -645,7 +670,7 @@ fn scheduler_modes_dispatch_requests() {
             &directory,
             &[
                 "create-tree",
-                &value(&directory, &["create-blob", "--string", ""]),
+                &value(&directory, &["create-blob", "--u64", "536870912"]),
                 "evaluator",
                 &mode,
                 "coupon-collector",
@@ -1071,7 +1096,13 @@ fn tag_authors_are_checked_as_objects_or_references() {
         let fields = value(&directory, &["create-tree", author, &zero]);
         let request = value(
             &directory,
-            &["create-tree", &zero, &callable, &fields, &mode],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--u64", "536870912"]),
+                &callable,
+                &fields,
+                &mode,
+            ],
         );
         let tag = value(&directory, &["-j", "1", "call", &request]);
         run(&directory, &["is-tag", &tag], b"", 0);
@@ -1088,7 +1119,13 @@ fn tag_authors_are_checked_as_objects_or_references() {
         let fields = value(&directory, &["create-tree", author, &zero]);
         let request = value(
             &directory,
-            &["create-tree", &zero, &callable, &fields, &mode],
+            &[
+                "create-tree",
+                &value(&directory, &["create-blob", "--u64", "536870912"]),
+                &callable,
+                &fields,
+                &mode,
+            ],
         );
         let result = value(&directory, &["-j", "1", "call", &request]);
         assert_trap(&directory, &result, 5);
@@ -1096,7 +1133,13 @@ fn tag_authors_are_checked_as_objects_or_references() {
     let fields = value(&directory, &["create-tree", &opaque, &zero]);
     let request = value(
         &directory,
-        &["create-tree", &zero, &callable, &fields, &mode],
+        &[
+            "create-tree",
+            &value(&directory, &["create-blob", "--u64", "536870912"]),
+            &callable,
+            &fields,
+            &mode,
+        ],
     );
     let result = value(&directory, &["-j", "1", "call", &request]);
     assert_panic(&directory, &result, "Fix procedure failed: NotComparable");
@@ -1109,7 +1152,7 @@ fn persistent_continuation() {
     run(&directory, &["init"], b"", 0);
     seed(&directory, &[("continuation", env!("FIX_CONTINUATION"))]);
     let program = value(&directory, &["resolve", "continuation"]);
-    let resources = value(&directory, &["create-blob", "--string", ""]);
+    let resources = value(&directory, &["create-blob", "--u64", "2147483648"]);
     let mode = value(&directory, &["create-blob", "--u64", "0"]);
     let combination = value(&directory, &["create-tree", &resources, &program, &mode]);
     let application = value(&directory, &["create-application-thunk", &combination]);
@@ -1160,7 +1203,7 @@ fn serial_and_parallel_schedulers_evaluate_applications_and_selections() {
             ("advisor", env!("SDK_ADVISOR")),
         ],
     );
-    let metadata = value(&directory, &["create-blob", "--string", ""]);
+    let metadata = value(&directory, &["create-blob", "--u64", "536870912"]);
     let first = value(&directory, &["create-blob", "--string", "first"]);
     let second = value(&directory, &["create-blob", "--string", "second"]);
     let combination = value(&directory, &["create-tree", &metadata, "advisor", &first]);
@@ -1200,7 +1243,7 @@ fn canonicalization_advice_stays_with_the_requested_input() {
         let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap())
             .join(format!("advice_input_{workers}"));
         compiler_fixture(&directory);
-        let empty = value(&directory, &["create-blob", "--string", ""]);
+        let empty = value(&directory, &["create-blob", "--u64", "536870912"]);
         let source = value(&directory, &["create-blob", "--string", "source"]);
         let compilation = compilation(&directory, &source);
         let ordinary = value(
@@ -1246,7 +1289,7 @@ fn canonicalization_advice_does_not_acquire_unavailable_references() {
         .unwrap()
         .join(std::fs::read_link(&record).unwrap());
     std::fs::remove_file(&backing).unwrap();
-    let empty = value(&directory, &["create-blob", "--string", ""]);
+    let empty = value(&directory, &["create-blob", "--u64", "536870912"]);
     let combination = value(&directory, &["create-tree", &empty, "advisor", &reference]);
     let application = value(&directory, &["create-application-thunk", &combination]);
     let input = value(&directory, &["create-strict-encode", &application]);
@@ -1279,7 +1322,7 @@ fn repl_evaluates_expressions_imports_and_recovers_from_errors() {
         value(&directory, &["42u64"]),
         value(
             &directory,
-            &[r#"*#("" @label("procedure-name") @file("input.bin"))"#],
+            &[r#"*#(268435456u64 @label("procedure-name") @file("input.bin"))"#],
         ),
         value(&directory, &["(1u8 2u8)"]),
         value(&directory, &["7u64"]),
@@ -1287,7 +1330,7 @@ fn repl_evaluates_expressions_imports_and_recovers_from_errors() {
     let output = run(
         &directory,
         &["-j", "1", "-b", "supplied=7u64", "repl"],
-        b"42u64\n@file(\"missing.bin\")\n:{\n*#(\"\" @label(\"procedure-name\")\n@file(\"input.bin\"))\n:}\n(1u8 2u8)\n$supplied\n",
+        b"42u64\n@file(\"missing.bin\")\n:{\n*#(268435456u64 @label(\"procedure-name\")\n@file(\"input.bin\"))\n:}\n(1u8 2u8)\n$supplied\n",
         0,
     );
     assert_eq!(text(output), expected.join("\n"));
@@ -1305,7 +1348,7 @@ fn eval_encode_executes_recursive_applications_and_identification_thunks() {
             ("add", env!("FIX_ADD")),
         ],
     );
-    let expression = "#(\"\" @label(\"fib\") 8u64 @label(\"add\"))";
+    let expression = "#(268435456u64 @label(\"fib\") 8u64 @label(\"add\"))";
     let thunk = value(&directory, &["eval", expression]);
     assert_eq!(value(&directory, &["get-type", &thunk]), "thunk");
     let result = value(&directory, &["eval", "--encode", expression]);

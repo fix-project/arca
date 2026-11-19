@@ -13,7 +13,7 @@ pub fn apply<'a>(
     let split = length / 2;
     let reduce = |start, end| {
         tree![
-            fixwasm::Blob::create(b""),
+            combination.get(0),
             combination.get(1),
             combination.get(2),
             combination.get(3),
@@ -26,17 +26,13 @@ pub fn apply<'a>(
     Ok(if length == 0 {
         tree![].erase()
     } else if length == 1 {
-        tree![
-            fixwasm::Blob::create(b""),
-            combination.get(2),
-            target.get(0)
-        ]
-        .reference()
-        .application()
-        .erase()
+        tree![combination.get(0), combination.get(2), target.get(0)]
+            .reference()
+            .application()
+            .erase()
     } else {
         tree![
-            fixwasm::Blob::create(b""),
+            combination.get(0),
             combination.get(3),
             reduce(0u64, split),
             reduce(split, length)

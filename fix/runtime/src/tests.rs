@@ -59,7 +59,9 @@ fn eval_program(source: &str, evaluator: &Evaluation) -> Handle {
     let source = evaluator.storage().add_blob(processed.as_bytes());
     let environment = stdlib::build_environment(evaluator.storage());
     let combination = evaluator.storage().add_tree(&[
-        fixhandle::Blob::literal(b"").unwrap().into(),
+        fixhandle::Blob::literal(&(2u64 << 30).to_le_bytes())
+            .unwrap()
+            .into(),
         parser,
         source.into(),
         environment,
@@ -98,7 +100,10 @@ mod tests {
             storage,
             kernel::testing::fixture("FIX_EXCEPTION_PARAMETERS"),
         );
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let result = apply(&runtime, combination);
         let bytes = storage.get_blob(Blob::try_from(result).unwrap()).unwrap();
         assert_eq!(bytes.as_ref(), &49u64.to_le_bytes());
@@ -122,7 +127,7 @@ mod tests {
                 let runtime = &runtimes[index];
                 let storage = runtime.storage();
                 let argument = Blob::literal(&input.to_le_bytes()).unwrap();
-                let empty = Blob::literal(b"").unwrap();
+                let empty = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap();
                 let combination = storage.add_tree(&[
                     empty.into(),
                     program.into(),
@@ -163,7 +168,7 @@ mod tests {
             let canonical: Handle = storage.canonicalize(program.into()).unwrap().into();
             let program = Tree::try_from(canonical).unwrap();
             let combination = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 Blob::literal(&input.to_le_bytes()).unwrap().into(),
             ]);
@@ -261,7 +266,7 @@ mod tests {
         ) -> Handle {
             let storage = runtime.storage();
             let request = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 collector.into(),
                 number(exchange as u64),
                 input,
@@ -309,7 +314,7 @@ mod tests {
             collect(runtime, collector, rule, input, result, witnesses)
         };
         let value = |input| value(runtime, collector, input);
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let blob = storage.add_blob(&[42; 64]);
         let reference: Handle = blob.into_ref().into();
         let thunk = blob.into_ref().identification();
@@ -429,7 +434,7 @@ mod tests {
         for _ in 0..32 {
             let witnesses = storage.add_tree(&[witness.into(), witness.into()]);
             let combination = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 number(fixruntime::coupon::Exchange::Transitivity as u64),
                 value,
@@ -482,7 +487,7 @@ mod tests {
             coupon(program.into(), middle, right),
         ]);
         let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             number(fixruntime::coupon::Exchange::Transitivity as u64),
             left,
@@ -542,7 +547,7 @@ mod tests {
         ] {
             let proofs = storage.add_tree(&[coupon(program.into(), premise_lhs, premise_rhs)]);
             let request = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 number(fixruntime::coupon::Exchange::Congruence as u64),
                 lhs,
@@ -607,7 +612,11 @@ mod tests {
         let mode: Handle = Blob::literal(b"eval").unwrap().into();
         let zero: Handle = Blob::literal(&0u64.to_le_bytes()).unwrap().into();
         let data = memory.add_blob(&[42; 64]);
-        let call = memory.add_tree(&[zero, identity.into(), data.into()]);
+        let call = memory.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            identity.into(),
+            data.into(),
+        ]);
         let pending = call.into_ref().application().strict();
         let authors = memory.add_tree(&[]);
         let input = memory
@@ -616,7 +625,7 @@ mod tests {
         let mut previous: Option<Handle> = None;
         for workers in [1, 2] {
             let combination = memory.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 scheduler.into(),
                 mode,
                 collector.into(),
@@ -669,7 +678,7 @@ mod tests {
         let mut expected = Vec::new();
         for index in 0..8u64 {
             let call = memory.add_tree(&[
-                zero,
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 identity.into(),
                 memory.add_blob(&index.to_le_bytes()).into(),
             ]);
@@ -690,7 +699,7 @@ mod tests {
         }
         let requests = memory.add_tree(&requests);
         let combination = memory.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             scheduler.into(),
             mode,
             collector.into(),
@@ -734,7 +743,7 @@ mod tests {
         let runtime = runtime.with_trust(trust);
         let storage = runtime.storage();
         let number = |n: u64| Handle::from(Blob::literal(&n.to_le_bytes()).unwrap());
-        let metadata = Blob::literal(b"").unwrap().into();
+        let metadata = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let request = |rule, lhs, rhs, witnesses: &[Handle]| {
             let witnesses = storage.add_tree(witnesses);
             runtime
@@ -825,7 +834,7 @@ mod tests {
             pending.into_ref().application().into(),
         ]);
         let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             arguments.tag_descriptor().into(),
         ]);
@@ -892,7 +901,10 @@ mod tests {
         let storage = runtime.storage();
         let elf = kernel::testing::fixture("FIX_PRIVILEGED");
         let program = test_program(storage, elf);
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         assert!(!combination.as_handle().is_canonical());
         let pair = storage
             .get_tree(Tree::try_from(runtime.execute_privileged(combination).unwrap()).unwrap())
@@ -911,8 +923,11 @@ mod tests {
             thunk.into(),
             thunk.strict().into(),
         ] {
-            let application =
-                storage.add_tree(&[Blob::literal(b"").unwrap().into(), pair[1], value]);
+            let application = storage.add_tree(&[
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+                pair[1],
+                value,
+            ]);
             let result = runtime.execute_privileged(application).unwrap();
             assert_eq!(
                 storage
@@ -1023,7 +1038,7 @@ mod tests {
             storage,
             kernel::testing::fixture("FIX_INDISTINGUISHABILITY"),
         );
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let value: Handle = storage.add_blob(&[42; 64]).into();
         let short = storage.add_tree(&[metadata, program.into(), value]);
         let long = storage.add_tree(&[metadata, program.into(), value, metadata]);
@@ -1063,7 +1078,7 @@ mod tests {
                 input.into()
             };
             let combination = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 input.into(),
                 Blob::literal(&(encoded as u64).to_le_bytes())
@@ -1107,12 +1122,20 @@ mod tests {
             Blob::literal(&20u64.to_le_bytes()).unwrap().into(),
             Blob::literal(&22u64.to_le_bytes()).unwrap().into(),
         ]);
-        let combination = storage.add_tree(&[empty, program.into(), input.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+            input.into(),
+        ]);
         let request = Tree::try_from(apply(&runtime, combination)).unwrap();
         let continuation = storage.get_tree(request).unwrap()[1];
         let canonical = storage.canonicalize(continuation).unwrap().into();
         for continuation in [continuation, continuation, canonical] {
-            let combination = storage.add_tree(&[empty, continuation, empty]);
+            let combination = storage.add_tree(&[
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+                continuation,
+                empty,
+            ]);
             let result = Blob::try_from(apply(&runtime, combination)).unwrap();
             assert_eq!(
                 storage.get_blob(result).unwrap().as_ref(),
@@ -1132,12 +1155,20 @@ mod tests {
         let empty: Handle = Blob::literal(b"").unwrap().into();
         let mut expected = None;
         for input in [machine, canonical] {
-            let combination = storage.add_tree(&[empty, program.into(), input]);
+            let combination = storage.add_tree(&[
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+                program.into(),
+                input,
+            ]);
             let request = Tree::try_from(apply(&runtime, combination)).unwrap();
             let continuation = storage.get_tree(request).unwrap()[1];
             let canonical = storage.canonicalize(continuation).unwrap().into();
             for continuation in [continuation, continuation, canonical] {
-                let combination = storage.add_tree(&[empty, continuation, empty]);
+                let combination = storage.add_tree(&[
+                    Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+                    continuation,
+                    empty,
+                ]);
                 let result = Blob::try_from(apply(&runtime, combination)).unwrap();
                 let bytes = storage.get_blob(result).unwrap();
                 assert_eq!(bytes.len(), 131072);
@@ -1169,7 +1200,7 @@ mod tests {
             let fields = storage.add_tree(&[authors.into(), storage.add_blob(&[42; 64]).into()]);
             let combination = |pause: u64| {
                 storage.add_tree(&[
-                    empty,
+                    Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                     program.into(),
                     fields.into(),
                     storage.add_blob(&pause.to_le_bytes()).into(),
@@ -1196,7 +1227,11 @@ mod tests {
                 } else {
                     continuation
                 };
-                let call = storage.add_tree(&[empty, continuation, empty]);
+                let call = storage.add_tree(&[
+                    Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+                    continuation,
+                    empty,
+                ]);
                 let result = runtime.execute_privileged(call).unwrap();
                 assert_eq!(storage.equals(result, expected.into()), Ok(true));
                 let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
@@ -1219,7 +1254,7 @@ mod tests {
         let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
         let argument = storage.add_blob(&[42; 64]);
         let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             argument.into(),
             program.into(),
@@ -1254,47 +1289,58 @@ mod tests {
 
     #[kernel::test]
     fn sdk_eval_preserves_owned_captures() {
-        let evaluator = Evaluation::new(test_runtime());
-        let storage = evaluator.storage();
-        let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
-        let identity = test_program(storage, stdlib::PRIMITIVES[0].1);
-        let argument: Handle = storage.add_blob(&[42; 64]).into();
         for mode in 0u64..4 {
+            let evaluator = Evaluation::new(test_runtime());
+            let storage = evaluator.storage();
+            let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
+            let identity = test_program(storage, stdlib::PRIMITIVES[0].1);
+            let argument: Handle = storage.add_blob(&[42; 64]).into();
             let combination = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 argument,
                 identity.into(),
                 Blob::literal(&mode.to_le_bytes()).unwrap().into(),
-                Blob::literal(&4u64.to_le_bytes()).unwrap().into(),
+                Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
             ]);
             let result = evaluator.eval(combination.into_ref().application().strict().into());
-            assert_eq!(storage.equals(result, argument), Ok(true));
+            assert_eq!(
+                storage.equals(result, argument),
+                Ok(true),
+                "mode {mode}: {:?}",
+                Tree::try_from(result)
+                    .ok()
+                    .and_then(|tree| storage.get_tree(tree).ok())
+            );
         }
     }
 
     #[kernel::test]
     fn determinism_across_sdk_eval_and_capture_reuse() {
-        let evaluator = Evaluation::new(test_runtime());
-        let storage = evaluator.storage();
-        let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
-        let identity = test_program(storage, stdlib::PRIMITIVES[0].1);
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
-        let argument: Handle = storage.add_blob(&[42; 64]).into();
-        let combination = storage.add_tree(&[
-            metadata,
-            program.into(),
-            argument,
-            identity.into(),
-            Blob::literal(&3u64.to_le_bytes()).unwrap().into(),
-            Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
-        ]);
-        let canonical = Tree::try_from(Handle::from(
-            storage.canonicalize(combination.into()).unwrap(),
-        ))
-        .unwrap();
         let mut runs = Vec::new();
-        for combination in [combination, canonical] {
+        for canonical in [false, true] {
+            let evaluator = Evaluation::new(test_runtime());
+            let storage = evaluator.storage();
+            let program = test_program(storage, kernel::testing::fixture("FIX_SDK_EVAL"));
+            let identity = test_program(storage, stdlib::PRIMITIVES[0].1);
+            let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
+            let argument: Handle = storage.add_blob(&[42; 64]).into();
+            let combination = storage.add_tree(&[
+                metadata,
+                program.into(),
+                argument,
+                identity.into(),
+                Blob::literal(&3u64.to_le_bytes()).unwrap().into(),
+                Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            ]);
+            let combination = if canonical {
+                Tree::try_from(Handle::from(
+                    storage.canonicalize(combination.into()).unwrap(),
+                ))
+                .unwrap()
+            } else {
+                combination
+            };
             let mut result = apply(evaluator.runtime(), combination);
             let mut checkpoints = Vec::new();
             let mut replay = None;
@@ -1331,7 +1377,10 @@ mod tests {
             storage,
             kernel::testing::fixture("FIX_RECURSIVE_LOCAL_ALIASES"),
         );
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let result = apply(evaluator.runtime(), combination);
         let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
         assert_eq!(fields.len(), 5);
@@ -1366,7 +1415,10 @@ mod tests {
         let evaluator = Evaluation::new(test_runtime());
         let storage = evaluator.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_LARGE_LOCAL_GRAPH"));
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let result = apply(evaluator.runtime(), combination);
         let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
         assert_eq!(fields.len(), 5000);
@@ -1402,7 +1454,10 @@ mod tests {
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_SELECTIVE_LIFTING"));
-        let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let mut count = 0;
         let mut leaf = None;
         let result = runtime
@@ -1440,7 +1495,7 @@ mod tests {
             [pair[1], canonical]
                 .map(|continuation| {
                     let combination = storage.add_tree(&[
-                        Blob::literal(b"").unwrap().into(),
+                        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                         continuation,
                         Blob::literal(b"").unwrap().into(),
                     ]);
@@ -1494,7 +1549,7 @@ mod tests {
         let request = storage.add_tree(&[Blob::literal(b"ping").unwrap().into()]);
         let combination = |mode: u64| {
             storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 request.into(),
                 Blob::literal(&mode.to_le_bytes()).unwrap().into(),
@@ -1561,7 +1616,7 @@ mod tests {
                     pair[1]
                 };
                 let resumed = storage.add_tree(&[
-                    Blob::literal(b"").unwrap().into(),
+                    Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                     continuation,
                     Blob::literal(&8u64.to_le_bytes()).unwrap().into(),
                 ]);
@@ -1610,14 +1665,14 @@ mod tests {
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION"));
         let combination = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
         ]);
         let request = Tree::try_from(runtime.execute_privileged(combination).unwrap()).unwrap();
         let fields = storage.get_tree(request).unwrap();
         let resumed = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             fields[1],
             Blob::literal(&41u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1629,7 +1684,7 @@ mod tests {
         drop(runtime);
         let runtime = FixOnArca::new(memory.clone());
         let resumed = memory.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             fields[1],
             Blob::literal(&7u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1646,7 +1701,7 @@ mod tests {
         let storage = evaluator.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION"));
         let capture = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1662,7 +1717,7 @@ mod tests {
         let continuation = fields[1];
         for reply in [41u64, 7] {
             let application = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 continuation,
                 Blob::literal(&reply.to_le_bytes()).unwrap().into(),
             ]);
@@ -1677,7 +1732,7 @@ mod tests {
         }
         for mode in 3u64..=5 {
             let tag_capture = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 program.into(),
                 Blob::literal(&mode.to_le_bytes()).unwrap().into(),
             ]);
@@ -1691,7 +1746,7 @@ mod tests {
                     pair[1]
                 };
                 let resumed = storage.add_tree(&[
-                    Blob::literal(b"").unwrap().into(),
+                    Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                     continuation,
                     Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
                 ]);
@@ -1747,7 +1802,7 @@ mod tests {
         );
 
         let application = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             portable,
             Blob::literal(&41u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1761,7 +1816,7 @@ mod tests {
         );
 
         let twice = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             Blob::literal(&2u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1774,7 +1829,7 @@ mod tests {
         let mut checkpoints = Vec::new();
         for continuation in [continuation, canonical] {
             let application = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
+                Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
                 continuation,
                 Blob::literal(&7u64.to_le_bytes()).unwrap().into(),
             ]);
@@ -1785,7 +1840,7 @@ mod tests {
         assert_eq!(checkpoints[0], checkpoints[1]);
 
         let call = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             program.into(),
             Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
         ]);
@@ -1815,7 +1870,7 @@ mod tests {
             storage.add_tree(&[blob.into()]);
         }
         let program = test_program(storage, kernel::testing::fixture(fixture));
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let value: Handle = storage.add_blob(&[42; 64]).into();
         let canonical_value: Handle = storage.canonicalize(value).unwrap().into();
         let request = storage.add_tree(&[Blob::literal(b"capture").unwrap().into()]);
@@ -1850,8 +1905,8 @@ mod tests {
         };
         let expected = if mode == 2 {
             let mut children = vec![value; 260];
-            children[128] = metadata;
-            children[129] = metadata;
+            children[128] = Blob::literal(b"").unwrap().into();
+            children[129] = Blob::literal(b"").unwrap().into();
             storage.add_tree(&children).into()
         } else {
             value
@@ -1951,7 +2006,7 @@ mod tests {
         );
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION_STATE"));
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let value: Handle = storage.add_blob(&[42; 64]).into();
         let canonical: Handle = storage.canonicalize(value).unwrap().into();
         let duplicate: Handle = storage.add_blob(&[42; 64]).into();
@@ -2009,7 +2064,7 @@ mod tests {
             let evaluator = Evaluation::new(test_runtime());
             let storage = evaluator.storage();
             let program = test_program(storage, kernel::testing::fixture(fixture));
-            let metadata: Handle = Blob::literal(b"").unwrap().into();
+            let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
             let argument = Blob::literal(&41u64.to_le_bytes()).unwrap();
             let mode = Blob::literal(&mode.to_le_bytes()).unwrap();
             let fields = if fixture == "FIX_EVAL" {
@@ -2045,7 +2100,7 @@ mod tests {
         let runtime = Arc::new(test_runtime());
         let storage = runtime.storage();
         let program = test_program(storage, kernel::testing::fixture("FIX_CONTINUATION"));
-        let metadata: Handle = Blob::literal(b"").unwrap().into();
+        let metadata: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
         let combination = storage.add_tree(&[
             metadata,
             program.into(),
@@ -2452,7 +2507,7 @@ mod tests {
         // primitive test
         {
             assert_eq!(
-                eval_value("*#(\"\" $identity 2u8)", &evaluator),
+                eval_value("*#(268435456u64 $identity 2u8)", &evaluator),
                 3u64.to_le_bytes()
             );
         }

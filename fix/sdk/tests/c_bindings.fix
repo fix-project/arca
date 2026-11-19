@@ -1,2 +1,2 @@
 program = $c_bindings_native
-*#("" program)
+*#(268435456u64 program)

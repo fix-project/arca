@@ -67,7 +67,7 @@ identification and selection Thunks; a non-Thunk input reports a type error.
 With Runnable programs labelled `fib` and `add`, recursive Fibonacci evaluation is:
 
 ```sh
-bazel run //fix -- eval --encode '#("" @label("fib") 8u64 @label("add"))'
+bazel run //fix -- eval --encode '#(536870912u64 @label("fib") 8u64 @label("add"))'
 ```
 
 Handle operands, including `@handle`, accept an unambiguous hexadecimal prefix

@@ -64,9 +64,9 @@ The seed has no coupons. It labels `trusted-compiler`, `compile` (the closure
 Additional tools can be compiled or imported later.
 The enabled code-generation targets remain X86 and WebAssembly.
 
-Applying `compile` to a Wasm module, as in `#("" compile module)`, yields a
+Applying `compile` to a Wasm module, as in `#(536870912u64 compile module)`, yields a
 Runnable for that module, compiled as one translated C unit per 128 KiB of Wasm.
-An explicit unit count, as in `#("" compile module 512u64)`, overrides that;
+An explicit unit count, as in `#(536870912u64 compile module 512u64)`, overrides that;
 the stability check passes the count the native seed build used.
 `seed add DIRECTORY NAME=ELF...` issues further Runnables authored by an
 existing seed's `trusted-compiler`; tests use it to add their programs.

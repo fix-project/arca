@@ -60,7 +60,7 @@ fn capacity(memory: u64) -> Result<protocol::Information, Error> {
         parallelism: crate::kernel::worker::count()?
             .try_into()
             .map_err(|_| Error::OutOfBounds)?,
-        memory_bytes: Some(memory),
+        memory_bytes: Some(memory.min(crate::kernel::worker::available_memory()?)),
         ..protocol::Information::default()
     })
 }
@@ -105,7 +105,10 @@ async fn connection(
                 let snapshot = super::bytes(&crate::abi::effect(b"progress_status", &[])?)?;
                 protocol::asynchronous::send(
                     &mut stream,
-                    protocol::Message::EvaluationProgress(snapshot),
+                    protocol::Message::EvaluationProgress(
+                        snapshot,
+                        crate::kernel::worker::available_memory()?,
+                    ),
                 )
                 .await?;
                 continue;
@@ -282,7 +285,10 @@ async fn connection(
         let reporting = crate::progress::operation(task.operation, input);
         protocol::asynchronous::send(
             &mut stream,
-            protocol::Message::EvaluationProgress(observer.snapshot()?),
+            protocol::Message::EvaluationProgress(
+                observer.snapshot()?,
+                crate::kernel::worker::available_memory()?,
+            ),
         )
         .await?;
         let evaluation = async {
@@ -309,14 +315,20 @@ async fn connection(
             .await;
             protocol::asynchronous::send(
                 &mut stream,
-                protocol::Message::EvaluationProgress(observer.snapshot()?),
+                protocol::Message::EvaluationProgress(
+                    observer.snapshot()?,
+                    crate::kernel::worker::available_memory()?,
+                ),
             )
             .await?;
             if let Some(result) = result {
                 let result = reporting.finish(result);
                 protocol::asynchronous::send(
                     &mut stream,
-                    protocol::Message::EvaluationProgress(observer.snapshot()?),
+                    protocol::Message::EvaluationProgress(
+                        observer.snapshot()?,
+                        crate::kernel::worker::available_memory()?,
+                    ),
                 )
                 .await?;
                 break result?;

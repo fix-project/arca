@@ -10,7 +10,7 @@ use embedded_io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 pub fn encode_labels(labels: &[(String, Name)]) -> Result<Vec<u8>, postcard::Error> {
@@ -172,6 +172,7 @@ pub enum Message {
             deserialize_with = "optional_bytes::deserialize_bytes"
         )]
         Vec<u8>,
+        u64,
     ),
     RequestLabels,
     ObjectReceived(Name),
@@ -621,7 +622,7 @@ pub mod asynchronous {
             };
             progress(&message);
             match message {
-                Message::EvaluationProgress(_) => (),
+                Message::EvaluationProgress(_, _) => (),
                 Message::Failure(message) => return Err(Error::Remote(message)),
                 Message::RequestInfo { .. } => {
                     send(stream, Message::Info(information.clone())).await?

@@ -44,7 +44,14 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<Handle<Object<Tree>>, Err
         return fields.capture()?.try_into();
     }
     if mode == 5 {
-        let request = fixwasm::tree![0u64, fields, 5u64, 0u64, 0u64, fixwasm::tree![]];
+        let request = fixwasm::tree![
+            combination.get(0),
+            fields,
+            5u64,
+            0u64,
+            0u64,
+            fixwasm::tree![]
+        ];
         let reply = fixwasm::tree![fixwasm::Blob::create(b"callable_invoke"), request].effect()?;
         let reply = Handle::<Object<Tree>>::try_from(reply)?;
         assert_eq!(reply.get(0).read_u64()?, 0);

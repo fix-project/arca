@@ -21,6 +21,20 @@ pub enum Table {
 pub type Entry = arca::Entry<Runtime>;
 
 impl Table {
+    pub fn inspect(
+        &self,
+        base: usize,
+        include: &mut impl FnMut(usize, usize) -> bool,
+        page: &mut impl FnMut(usize, usize),
+        node: &mut impl FnMut(usize),
+    ) {
+        match self {
+            Self::Table2MB(table) => table.visit(base, include, page, node),
+            Self::Table1GB(table) => table.visit(base, include, page, node),
+            Self::Table512GB(table) => table.visit(base, include, page, node),
+        }
+    }
+
     pub fn shared(self) -> Self {
         match self {
             Self::Table2MB(table) => Self::Table2MB(table.shared().into()),
@@ -98,6 +112,70 @@ impl Table {
         }
     }
 }
+
+fn children<P: HardwarePage, T: HardwarePageTable>(
+    table: &AugmentedPageTable<[crate::paging::Entry<P, T>; 512]>,
+    base: usize,
+    include: &mut dyn FnMut(usize, usize) -> bool,
+    page: &mut dyn FnMut(usize, usize),
+    node: &mut dyn FnMut(usize),
+) where
+    [crate::paging::Entry<P, T>; 512]: HardwarePageTable<Entry = crate::paging::Entry<P, T>>,
+    crate::paging::Entry<P, T>: HardwarePageTableEntry<Page = P, Table = T>,
+    AugmentedPageTable<T>: Mappings,
+{
+    let mut entries = 0;
+    for index in table.offset()..table.offset() + table.len() {
+        let entry = table.entry(index).unwrap();
+        let address = base + index * P::SIZE;
+        if !entry.present() || !include(address, P::SIZE) {
+            continue;
+        }
+        entries += 1;
+        match entry.table() {
+            Some(child) => child.visit(address, include, page, node),
+            None => page(address, P::SIZE),
+        }
+    }
+    node(entries);
+}
+trait Mappings {
+    fn visit(
+        &self,
+        base: usize,
+        include: &mut dyn FnMut(usize, usize) -> bool,
+        page: &mut dyn FnMut(usize, usize),
+        node: &mut dyn FnMut(usize),
+    );
+}
+impl Mappings for AugmentedPageTable<Impossible> {
+    fn visit(
+        &self,
+        _: usize,
+        _: &mut dyn FnMut(usize, usize) -> bool,
+        _: &mut dyn FnMut(usize, usize),
+        _: &mut dyn FnMut(usize),
+    ) {
+    }
+}
+macro_rules! mappings {
+    ($table:ty) => {
+        impl Mappings for AugmentedPageTable<$table> {
+            fn visit(
+                &self,
+                base: usize,
+                include: &mut dyn FnMut(usize, usize) -> bool,
+                page: &mut dyn FnMut(usize, usize),
+                node: &mut dyn FnMut(usize),
+            ) {
+                children(self, base, include, page, node)
+            }
+        }
+    };
+}
+mappings!(PageTable2MB);
+mappings!(PageTable1GB);
+mappings!(PageTable512GB);
 
 trait PageAt {
     fn page(&self, offset: usize) -> Option<(Page, usize)>;
