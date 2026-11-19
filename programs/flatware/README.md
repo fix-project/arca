@@ -14,8 +14,8 @@ snapshots.
 
 ## TeX
 
-`//third_party/tex:tex` builds TeX for WASIp1 from TeX Live source. `hello.fix` typesets
-`hello.tex` with INITEX and evaluates to the DVI file. `//programs/flatware:tex_test` checks its bytes.
+`//third_party/tex:tex` builds TeX for WASIp1 from TeX Live source. `tex/hello.fix` typesets
+`tex/hello.tex` with INITEX and evaluates to the DVI file. `//programs/flatware:tex_test` checks its bytes.
 
 This build has no `texmf.cnf`, so
 `TEXINPUTS` and `TFMFONTS` name the directories searched for input files and
