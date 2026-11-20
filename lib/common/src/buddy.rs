@@ -1032,9 +1032,29 @@ impl Deref for BuddyAllocator {
     }
 }
 
+#[cfg(feature = "cache")]
+const MIN_REFILL_PAGES: usize = 64;
+
+#[cfg(feature = "cache")]
+struct PageCache {
+    pages: crate::arrayvec::ArrayVec<*mut (), { cache::CAPACITY }>,
+    refill_pages: usize,
+}
+
+#[cfg(feature = "cache")]
+impl PageCache {
+    const fn new() -> Self {
+        Self {
+            pages: crate::arrayvec::ArrayVec::new(),
+            refill_pages: MIN_REFILL_PAGES,
+        }
+    }
+}
+
 #[cfg(all(not(feature = "std"), feature = "core_local_cache"))]
 pub mod cache {
-    use crate::{arrayvec::ArrayVec, util::initcell::LazyLock, util::spinlock::SpinLock};
+    use super::PageCache;
+    use crate::{util::initcell::LazyLock, util::spinlock::SpinLock};
     use macros::core_local;
 
     pub static CAPACITY: usize = 16384;
@@ -1043,8 +1063,8 @@ pub mod cache {
     pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
 
     #[core_local]
-    pub static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
-        LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+    pub(super) static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<PageCache>> =
+        LazyLock::new(|| SpinLock::new(PageCache::new()));
 
     // #[core_local]
     // pub static ALLOCATION_CACHE_2MB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
@@ -1055,7 +1075,8 @@ pub mod cache {
 pub mod cache {
     use std::sync::LazyLock;
 
-    use crate::{arrayvec::ArrayVec, util::spinlock::SpinLock};
+    use super::PageCache;
+    use crate::util::spinlock::SpinLock;
 
     pub static CAPACITY: usize = 1024;
     pub static INCREMENT: usize = 64;
@@ -1063,8 +1084,8 @@ pub mod cache {
     pub static WATERMARK_HIGH: usize = 3 * CAPACITY / 4;
 
     #[thread_local]
-    pub static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
-        LazyLock::new(|| SpinLock::new(ArrayVec::new()));
+    pub(super) static ALLOCATION_CACHE_4KB: LazyLock<SpinLock<PageCache>> =
+        LazyLock::new(|| SpinLock::new(PageCache::new()));
 
     // #[thread_local]
     // pub static ALLOCATION_CACHE_2MB: LazyLock<SpinLock<ArrayVec<*mut (), CAPACITY>>> =
@@ -1073,30 +1094,63 @@ pub mod cache {
 
 #[cfg(feature = "cache")]
 impl BuddyAllocatorImpl {
-    fn allocate_from_cache_4kb(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
-        let mut cache = cache::ALLOCATION_CACHE_4KB.lock();
-        if cache.is_empty() {
-            let mut space = [core::ptr::null_mut(); cache::INCREMENT];
-            let count = self.allocate_many_raw(size, &mut space);
-            for entry in space.iter().take(count) {
-                cache.push(*entry).unwrap();
+    /// The caller must hold the buddy allocator lock. This releases it.
+    unsafe fn refill_cache_4kb_and_unlock(&self, cache: &mut PageCache, size: usize) -> bool {
+        let target = cache.pages.len() + cache.refill_pages;
+        let count = cache
+            .refill_pages
+            .min(cache.pages.capacity() - cache.pages.len());
+        let block = if count.is_power_of_two() {
+            unsafe { self.allocate_raw_unchecked(count * Self::MIN_ALLOCATION) }
+        } else {
+            core::ptr::null_mut()
+        };
+        if block.is_null() {
+            for _ in 0..count {
+                let page = unsafe { self.allocate_raw_unchecked(size) };
+                if page.is_null() {
+                    break;
+                }
+                cache.pages.push(page).unwrap();
+            }
+            unsafe { self.inner.unlock() };
+        } else {
+            unsafe { self.inner.unlock() };
+            // A reserved block has no free descendants. Its pages can be freed
+            // individually and coalesce through the normal buddy free path.
+            for index in 0..count {
+                let page = block.wrapping_byte_add(index * Self::MIN_ALLOCATION);
+                unsafe { (*self.refcnt(page)).store(0, Ordering::SeqCst) };
+                cache.pages.push(page).unwrap();
             }
         }
-        let raw = cache.pop().ok_or(AllocError)?;
+        cache.pages.len() == target
+    }
+
+    fn allocate_from_cache_4kb(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
+        let mut cache = cache::ALLOCATION_CACHE_4KB.lock();
+        if cache.pages.is_empty() && unsafe { self.inner.lock() } {
+            let filled = unsafe { self.refill_cache_4kb_and_unlock(&mut cache, size) };
+            if filled {
+                cache.refill_pages = (cache.refill_pages * 2).min(cache::INCREMENT);
+            }
+        }
+        let raw = cache.pages.pop().ok_or(AllocError)?;
         let converted = core::ptr::slice_from_raw_parts_mut(raw as *mut u8, size);
         NonNull::new(converted).ok_or(AllocError)
     }
 
     fn free_to_cache_4kb(&self, ptr: *mut (), size: usize) {
         let mut cache = cache::ALLOCATION_CACHE_4KB.lock();
-        if cache.len() == cache.capacity() {
+        cache.refill_pages = (cache.refill_pages / 2).max(MIN_REFILL_PAGES);
+        if cache.pages.is_full() {
             let mut space = [core::ptr::null_mut(); cache::INCREMENT];
             for spot in space.iter_mut() {
-                *spot = cache.pop().unwrap();
+                *spot = cache.pages.pop().unwrap();
             }
             self.free_many_raw(size, &space);
         }
-        cache.push(ptr).unwrap();
+        cache.pages.push(ptr).unwrap();
     }
 
     pub fn try_replenish_4kb(&self) -> bool {
@@ -1104,28 +1158,24 @@ impl BuddyAllocatorImpl {
             return false;
         };
         let size = 4096;
-        if cache.len() >= cache::WATERMARK_HIGH {
+        if cache.pages.len() >= cache::WATERMARK_HIGH {
             let mut space: [*mut (); cache::INCREMENT] = [core::ptr::null_mut(); cache::INCREMENT];
             for spot in space.iter_mut() {
-                *spot = cache.pop().unwrap();
+                *spot = cache.pages.pop().unwrap();
             }
             if self.try_free_many_raw(size, &space).is_none() {
                 for entry in space.into_iter().rev() {
-                    cache.push(entry).unwrap();
+                    cache.pages.push(entry).unwrap();
                 }
                 return false;
             }
-            return true;
-        }
-        if cache.len() < cache::WATERMARK_HIGH {
-            let mut space = [core::ptr::null_mut(); cache::INCREMENT];
-            let Some(count) = self.try_allocate_many_raw(size, &mut space) else {
-                return false;
-            };
-            for entry in space.iter().take(count) {
-                cache.push(*entry).unwrap();
+        } else {
+            unsafe {
+                if !self.inner.try_lock() {
+                    return false;
+                }
+                self.refill_cache_4kb_and_unlock(&mut cache, size);
             }
-            return true;
         }
         true
     }

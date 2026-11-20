@@ -112,6 +112,28 @@ fn test_allocate_many_and_free_many() {
 }
 
 #[test]
+fn reserved_block_can_be_released_as_individual_pages() {
+    let allocator = BuddyAllocatorImpl::new(1 << 24);
+    let page = BuddyAllocatorImpl::MIN_ALLOCATION;
+    let block_size = 8 * page;
+    let before = allocator.used_size();
+    let block = allocator.allocate_raw(block_size);
+    assert!(!block.is_null());
+    let offset = allocator.to_offset(block);
+
+    for index in [3, 7, 1, 5, 0, 4, 2] {
+        allocator.free_raw(block.wrapping_byte_add(index * page), page);
+    }
+    assert_eq!(allocator.used_size(), before + page);
+    assert!(allocator.reserve_raw(offset, block_size).is_null());
+
+    allocator.free_raw(block.wrapping_byte_add(6 * page), page);
+    assert_eq!(allocator.reserve_raw(offset, block_size), block);
+    allocator.free_raw(block, block_size);
+    assert_eq!(allocator.used_size(), before);
+}
+
+#[test]
 // Verifying that to_offset and from_offset roundtrip correctly
 fn test_offset_roundtrip() {
     let allocator = BuddyAllocatorImpl::new(1 << 24);
