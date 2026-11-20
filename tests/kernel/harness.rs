@@ -23,3 +23,9 @@ fn b_succeeds() {}
 fn c_exits_before_completion() {
     kernel::shutdown();
 }
+
+#[kernel::test]
+fn d_panics_with_console_locked() {
+    let _console = kernel::debugcon::CONSOLE.lock();
+    panic!("panic with the console locked");
+}

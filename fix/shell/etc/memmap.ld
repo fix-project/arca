@@ -1,5 +1,5 @@
 ENTRY(_start)
-PROVIDE(__stack_size = 8M);
+PROVIDE(__stack_size = 32M);
 
 MEMORY {
   memory (rwx) : ORIGIN = 0x7f00000000, LENGTH = 0x100000000
@@ -43,6 +43,8 @@ SECTIONS {
     __eh_frame_hdr_end = .;
   } > memory :text
   .gcc_except_table : { *(.gcc_except_table*) } > memory :text
+  __image_text_end = .;
+  __image_data_start = .;
   .init_array : {
     __init_array_start = .;
     KEEP(*(.init_array*))
@@ -79,6 +81,7 @@ SECTIONS {
     . = ALIGN(16);
     _ebss = .;
   } > memory :data
+  __image_data_end = .;
   .stack ALIGN(2M) (NOLOAD) :
   {
     __stack_bottom = .;

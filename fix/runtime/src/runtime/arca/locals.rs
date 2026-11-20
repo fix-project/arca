@@ -1,12 +1,14 @@
 use super::*;
 use hashbrown::HashMap;
-use kernel::prelude::{Entry, Word};
+use kernel::prelude::Word;
 
 struct Promotion<'a, S> {
     store: &'a Store<S>,
     function: &'a mut Function,
     objects: HashMap<usize, Value>,
     promoted: HashMap<usize, Handle>,
+    retained: usize,
+    memory: &'a kernel::memory::Budget,
 }
 
 impl<S: Storage> Promotion<'_, S> {
@@ -24,9 +26,18 @@ impl<S: Storage> Promotion<'_, S> {
                 .objects
                 .remove(&address)
                 .expect("missing local backing");
-            let data = ImmutableBytes::from_value(backing, handle.byte_len() as usize);
+            let cost = fixhandle::accounting::object(handle.byte_len() as usize);
+            let mut data = ImmutableBytes::from_value(backing, handle.byte_len() as usize);
+            if handle.is_tree_data() {
+                data = self.backing(data);
+            }
+            if !data.is_empty() && (handle.is_tree_data() || data.len() > 30) {
+                self.retained = self.retained.saturating_add(cost);
+                if let Some(memory) = self.memory.retain(cost) {
+                    data = data.retain(memory);
+                }
+            }
             let object: Handle = if handle.is_tree_data() {
-                let data = self.backing(data);
                 unsafe { self.store.add_tree_backing(data) }.into()
             } else {
                 self.store.add_blob_backing(data).into()
@@ -73,16 +84,18 @@ impl<S: Storage> Store<S> {
         &self,
         function: &mut Function,
         objects: Tuple,
-        address: usize,
-        length: usize,
-    ) {
-        assert_eq!(address, handles::HANDLE_BASE);
-        assert!(length <= (1usize << 32) / HANDLE_SIZE);
+        slots: &[u8],
+        memory: &kernel::memory::Budget,
+    ) -> usize {
+        let (slots, remainder) = slots.as_chunks::<4>();
+        assert!(remainder.is_empty());
         let mut promotion = Promotion {
             store: self,
             function,
             objects: HashMap::new(),
             promoted: HashMap::new(),
+            retained: 0,
+            memory,
         };
         for record in objects {
             let mut record: Tuple = record.try_into().expect("invalid local object");
@@ -94,53 +107,14 @@ impl<S: Storage> Store<S> {
                     .is_none()
             );
         }
-        let length = length * HANDLE_SIZE;
-        for offset in (0..length).step_by(4096) {
-            let mut bytes = [0; 4096];
-            let mut changed = [false; 4096 / HANDLE_SIZE];
-            let used = (length - offset).min(bytes.len());
-            {
-                assert_eq!(
-                    handles::read(promotion.function, address + offset, &mut bytes[..used]),
-                    used
-                );
-            }
-            for (index, cell) in bytes[..used]
-                .as_chunks_mut::<HANDLE_SIZE>()
-                .0
-                .iter_mut()
-                .enumerate()
-            {
-                let handle = unsafe { Handle::parse(*cell) }.expect("invalid local backing");
-                let promoted = promotion.promote(handle);
-                changed[index] = !handle.same_encoding(&promoted);
-                *cell = *promoted.as_bytes();
-            }
-            if changed.iter().any(|changed| *changed) {
-                let mappings = promotion
-                    .function
-                    .inner_mut()
-                    .arca_mut()
-                    .unwrap()
-                    .mappings_mut();
-                let result = mappings.update(address + offset, 4096, |entry| {
-                    let (Entry::ROPage(mut page) | Entry::RWPage(mut page)) = entry else {
-                        panic!("invalid handle mapping");
-                    };
-                    for (index, cell) in bytes[..used]
-                        .as_chunks::<HANDLE_SIZE>()
-                        .0
-                        .iter()
-                        .enumerate()
-                    {
-                        if changed[index] {
-                            assert_eq!(page.write(index * HANDLE_SIZE, cell), HANDLE_SIZE);
-                        }
-                    }
-                    (Entry::RWPage(page), ())
-                });
-                assert!(result.is_ok());
+        for slot in slots {
+            let address = handles::HANDLE_BASE + u32::from_le_bytes(*slot) as usize * HANDLE_SIZE;
+            let handle = handles::resolve(promotion.function, address);
+            let promoted = promotion.promote(handle);
+            if !handle.same_encoding(&promoted) {
+                handles::insert(promotion.function, address, promoted);
             }
         }
+        promotion.retained
     }
 }

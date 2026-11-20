@@ -273,10 +273,10 @@ fn run_cpu(
                         input.read_exact(data).unwrap();
                     }
                 }
-                addr => println!(
+                addr => common::progress::println(format!(
                     "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
                     addr, data[0],
-                ),
+                )),
             },
             VcpuExit::IoOut(addr, data) => match addr {
                 0 => {
@@ -386,15 +386,13 @@ fn run_cpu(
                     vcpu_fd.set_regs(&regs).unwrap();
                 }
                 0xe9 => {
-                    let data = data[0];
-                    let c = data as char;
-                    eprint!("{c}");
+                    session.write_diagnostic(data);
                 }
                 _ => {
-                    println!(
+                    common::progress::println(format!(
                         "Received an I/O out exit. Address: {:#x}. Data: {:#x}",
                         addr, data[0],
-                    );
+                    ));
                 }
             },
             r => {
@@ -576,6 +574,40 @@ impl Runtime {
         .0
     }
 
+    pub fn run_stream_captured(
+        &mut self,
+        argv: Vec<String>,
+        directory: &Path,
+        stream: std::os::unix::net::UnixStream,
+    ) -> (u8, Vec<u8>) {
+        self.run_session(
+            argv,
+            directory.to_owned(),
+            Session::with_stdio(true, Some(stream)),
+        )
+    }
+
+    pub(crate) fn run_service(
+        &mut self,
+        settings: common::protocol::session::Settings,
+        broker: Arc<crate::service::Broker>,
+    ) -> u8 {
+        let mut arguments = vec![
+            "fix".into(),
+            "--daemon".into(),
+            settings.scheduler,
+            settings.collector,
+            settings.memoize,
+        ];
+        arguments.extend(settings.arguments);
+        self.run_session(
+            arguments,
+            PathBuf::from(settings.repository),
+            Session::with_broker(broker),
+        )
+        .0
+    }
+
     fn run_session(
         &mut self,
         argv: Vec<String>,
@@ -589,6 +621,9 @@ impl Runtime {
         unsafe {
             common::buddy::with_allocator(&allocator, || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(broker) = &session.broker {
+                        broker.start(&session);
+                    }
                     self.run_inner(argv, directory, session.clone());
                 }));
                 if result.is_err() {

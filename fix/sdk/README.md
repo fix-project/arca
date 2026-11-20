@@ -118,3 +118,16 @@ The Wasm library also provides procedure entry macros, argument decoding,
 Flatware file/stat codecs, advice, scheduler maps, and streams. The `alloc`
 feature enables iterator-based helpers and importers. `std` and `git` enable
 the corresponding host I/O and Git support.
+
+## Task advice
+
+`advise(task, advice::TITLE, b"task name")` supplies a display name.
+`progress(task, completed, total)` reports actual completed units and total
+units. Its `fix::progress` payload is two little-endian `u64`s, completed first.
+Completed units must not exceed total units. Applications should report units
+of work they can measure, rather than estimated time remaining.
+
+The scheduler separately tracks completed children when evaluating a Tree.
+These counts are not application advice. The CLI nests known child tasks under
+their Tree and uses a canonical Fix name when title advice is absent. Shared
+children appear once under their first observed parent.

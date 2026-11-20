@@ -34,6 +34,7 @@ pub mod io;
 pub mod iprofile;
 pub mod kthread;
 pub mod kvmclock;
+pub mod memory;
 pub mod page;
 pub mod paging;
 pub mod prelude;
@@ -108,7 +109,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
     use spinlock::SpinLockGuard;
 
-    let mut console = crate::debugcon::CONSOLE.lock();
+    let Some(mut console) = crate::debugcon::CONSOLE.try_lock() else {
+        for byte in b"KERNEL PANIC: console unavailable\n" {
+            unsafe { io::outb(0xe9, *byte) };
+        }
+        exit(1);
+    };
     let _ = writeln!(&mut *console, "KERNEL PANIC: {info}");
 
     let _ = writeln!(&mut *console, "----- BACKTRACE -----");

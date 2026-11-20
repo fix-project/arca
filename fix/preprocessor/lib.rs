@@ -8,6 +8,7 @@ pub enum Import {
     Handle(String),
     Label(String),
     File(String),
+    Compile(String),
     Todo {
         reference: Option<String>,
         uris: Vec<String>,
@@ -99,6 +100,7 @@ impl<'a> Preprocessor<'a> {
                         "handle" => Import::Handle(first),
                         "label" => Import::Label(first),
                         "file" => Import::File(first),
+                        "compile" => Import::Compile(first),
                         "todo" => {
                             let mut strings = alloc::vec![first];
                             loop {

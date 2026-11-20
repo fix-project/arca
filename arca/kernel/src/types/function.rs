@@ -32,7 +32,39 @@ pub enum Definition {
     Arcane(Arca),
 }
 
+#[derive(Debug)]
+enum ForceError {
+    Exhausted,
+    AwaitMemory(Function, usize),
+}
+
 impl Function {
+    pub fn definition(&self) -> &Definition {
+        &self.data.defn
+    }
+
+    pub fn arguments(&self) -> impl Iterator<Item = &Value> {
+        self.data.args.iter()
+    }
+
+    pub fn force_with_memory(
+        self,
+        memory: &mut crate::memory::Budget,
+    ) -> Result<Value, crate::memory::Exhausted> {
+        let mut function = self;
+        loop {
+            let result = function.force_on_with_memory(&mut CPU.borrow_mut(), Some(memory));
+            match result {
+                Ok(value) => return Ok(value),
+                Err(ForceError::Exhausted) => return Err(crate::memory::Exhausted),
+                Err(ForceError::AwaitMemory(resume, bytes)) => {
+                    memory.charge(bytes)?;
+                    function = resume;
+                }
+            }
+        }
+    }
+
     pub fn new(value: Value) -> Option<Self> {
         let Value::Tuple(mut x) = value else {
             return None;
@@ -183,8 +215,16 @@ impl Function {
         self.force_on(&mut cpu)
     }
 
-    pub fn force_on(mut self, cpu: &mut Cpu) -> Value {
-        match self.data.defn {
+    pub fn force_on(self, cpu: &mut Cpu) -> Value {
+        self.force_on_with_memory(cpu, None).unwrap()
+    }
+
+    fn force_on_with_memory(
+        mut self,
+        cpu: &mut Cpu,
+        mut memory: Option<&mut crate::memory::Budget>,
+    ) -> Result<Value, ForceError> {
+        Ok(match self.data.defn {
             Definition::Symbolic(_) => Value::Function(arca::Function::from_inner(self)),
             Definition::Arcane(arca) => {
                 let mut arca = arca.load(cpu);
@@ -204,28 +244,61 @@ impl Function {
                                 "exited with exception: {x:x?} @ rip={:#x}",
                                 arca.registers()[Register::RIP]
                             );
-                            return Value::Function(arca::Function::from_inner(
+                            drop(arca.unload());
+                            return Ok(Value::Function(arca::Function::from_inner(
                                 Function::symbolic_with_args(
                                     "",
                                     vec![Value::Blob(Blob::from("exception")), Value::from(x)]
                                         .into(),
                                 ),
-                            ));
+                            )));
                         }
                     }
-                    match handle_syscall(&mut arca, &mut self.data.args) {
+                    if arca.registers()[Register::RAX] as u32 == arcane::__NR_memory_adjust {
+                        let adjustment = arca.registers()[Register::RDI] as i64;
+                        let Some(memory) = &mut memory else {
+                            arca.registers_mut()[Register::RAX] = 0;
+                            continue;
+                        };
+                        if adjustment >= 0 {
+                            let bytes = adjustment as usize;
+                            if memory.try_charge(bytes).is_err() {
+                                if memory.waits_for_unreserved() {
+                                    arca.registers_mut()[Register::RAX] = 0;
+                                    let resume =
+                                        Function::arcane_with_args(arca.unload(), self.data.args);
+                                    return Err(ForceError::AwaitMemory(resume, bytes));
+                                }
+                                drop(arca.unload());
+                                return Err(ForceError::Exhausted);
+                            }
+                        } else if adjustment.unsigned_abs() <= memory.used() as u64 {
+                            memory.release(adjustment.unsigned_abs() as usize);
+                        } else {
+                            arca.registers_mut()[Register::RAX] =
+                                -(arcane::__ERR_bad_argument as i64) as u64;
+                            continue;
+                        }
+                        arca.registers_mut()[Register::RAX] = 0;
+                        continue;
+                    }
+                    let action = handle_syscall(&mut arca, &mut self.data.args);
+                    match action {
                         ControlFlow::Continue(()) => {}
-                        ControlFlow::Break(Action::Return(value)) => return value,
+                        ControlFlow::Break(Action::Return(value)) => {
+                            drop(arca.unload());
+                            return Ok(value);
+                        }
                         ControlFlow::Break(Action::Suspend) => {
-                            return Value::Function(arca::Function::from_inner(
+                            return Ok(Value::Function(arca::Function::from_inner(
                                 Function::arcane_with_args(arca.unload(), self.data.args),
-                            ));
+                            )));
                         }
                         ControlFlow::Break(Action::Call(function)) => {
                             let continuation = arca::Function::from_inner(
                                 Function::arcane_with_args(arca.unload(), VecDeque::new()),
                             );
-                            return function.apply(continuation).into();
+                            return Ok(function.apply(continuation).into());
                         }
                         ControlFlow::Break(Action::Capture) => {
                             let (mut original, cpu) = arca.unload_with_cpu();
@@ -242,7 +315,7 @@ impl Function {
                     }
                 }
             }
-        }
+        })
     }
 
     pub fn is_arcane(&self) -> bool {

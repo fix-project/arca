@@ -295,6 +295,7 @@ pub fn error(error: Error) -> Result<Handle<Any>, Error> {
         Error::WrongType => "WrongType",
         Error::Busy => "Busy",
         Error::NotComparable => "NotComparable",
+        Error::MemoryUnavailable => "MemoryUnavailable",
     };
     crate::tree![Blob::create(b"Fix.error"), Blob::create(message.as_bytes())].effect()
 }

@@ -2,7 +2,6 @@ use fixcli::{Shell as Client, expressions::Expressions};
 use std::io::{self, BufRead, IsTerminal, Write};
 
 pub fn run(mut client: Client, bindings: Vec<(String, String)>) -> crate::Result<u8> {
-    client.reuse_vm();
     let stdin = io::stdin();
     let terminal = stdin.is_terminal();
     let mut input = stdin.lock();
@@ -36,7 +35,6 @@ pub fn run(mut client: Client, bindings: Vec<(String, String)>) -> crate::Result
         if source.trim().is_empty() {
             continue;
         }
-        client.begin_request();
         let result = (|| -> crate::Result<()> {
             let mut expressions = Expressions::new(&mut client, bindings.clone());
             let parsed = expressions.parse(&source, &base)?;
@@ -44,9 +42,8 @@ pub fn run(mut client: Client, bindings: Vec<(String, String)>) -> crate::Result
             println!("{}", client.save(&value)?);
             Ok(())
         })();
-        client.end_request()?;
         if let Err(error) = result {
-            eprintln!("fix: {error}");
+            common::progress::println(error.to_string());
         }
     }
     client.close()?;

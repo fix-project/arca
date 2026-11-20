@@ -1,4 +1,4 @@
-use crate::{Client, Error, Options, Value as RawValue};
+use crate::{Client, CompilationOptions, Error, Options, Value as RawValue};
 use fix::{DataType, EncodeType, FixShell, ValueType};
 use std::{cell::RefCell, path::Path};
 
@@ -16,7 +16,7 @@ pub type Thunk = fix::Thunk<Shell>;
 pub type Encode = fix::Encode<Shell>;
 
 impl Shell {
-    fn with<R>(function: impl FnOnce(&mut Client) -> R) -> R {
+    pub(crate) fn with<R>(function: impl FnOnce(&mut Client) -> R) -> R {
         CURRENT.with(|current| {
             function(
                 current
@@ -41,20 +41,54 @@ impl Shell {
             .expect("Fix shell is not initialized")
             .close()
     }
-    pub fn reuse_vm(&mut self) {
-        Self::with(Client::reuse_vm)
-    }
-    pub fn begin_request(&mut self) {
-        Self::with(Client::begin_request)
-    }
-    pub fn end_request(&mut self) -> Result<(), Error> {
-        Self::with(Client::end_request)
+    /// Serve remote evaluation requests using this repository and shell configuration.
+    pub fn serve(
+        &mut self,
+        listen: Option<&str>,
+        stdio: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Self::with(|client| crate::serve::run(client, listen, stdio))
     }
     pub fn set_profile(&mut self, enabled: bool) {
         Self::with(|client| client.set_profile(enabled))
     }
     pub fn options(&self) -> Options {
         Self::with(|client| client.options().clone())
+    }
+    pub fn remote_config(&self) -> Result<fixremote::Config, Error> {
+        Self::with(|client| client.remote_config())
+    }
+    pub fn export(
+        &mut self,
+        values: &[Value],
+        without_backing: &[Value],
+    ) -> Result<Vec<u8>, Error> {
+        let values = values
+            .iter()
+            .map(|value| value.inner().clone())
+            .collect::<Vec<_>>();
+        let omitted = without_backing
+            .iter()
+            .map(|value| value.inner().clone())
+            .collect::<Vec<_>>();
+        Self::with(|client| client.export(&values, &omitted))
+    }
+    pub fn import(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
+        Self::with(|client| client.import(bytes))
+            .map(|values| values.into_iter().map(Value::from_inner).collect())
+    }
+    pub fn certify(
+        &self,
+        name: [u8; 32],
+        keys: &[String],
+    ) -> Result<
+        (
+            fixremote::protocol::CertificateRef,
+            fixremote::protocol::Record,
+        ),
+        Error,
+    > {
+        Self::with(|client| client.certify(name, keys))
     }
     pub fn repository(&self) -> String {
         Self::with(|client| client.repository().to_owned())
@@ -80,19 +114,23 @@ impl Shell {
     pub fn file(&mut self, path: &Path) -> Result<Value, Error> {
         Self::with(|client| client.file(path)).map(Value::from_inner)
     }
-    pub fn compilation(&mut self, module: &Value, units: Option<u64>) -> Result<Value, Error> {
-        Self::with(|client| client.compilation(module.inner(), units)).map(Value::from_inner)
+    pub fn compilation(
+        &mut self,
+        module: &Value,
+        options: CompilationOptions,
+    ) -> Result<Value, Error> {
+        Self::with(|client| client.compilation(module.inner(), options)).map(Value::from_inner)
     }
-    pub fn precompile(&mut self, requests: &[Value]) -> Result<(), Error> {
+    pub fn precompile(&mut self, requests: &[Value]) -> Result<Value, Error> {
         let requests: Vec<_> = requests.iter().map(|value| value.inner().clone()).collect();
-        Self::with(|client| client.precompile(&requests))
+        Self::with(|client| client.precompile(&requests)).map(Value::from_inner)
     }
     pub fn compilation_request(
         &mut self,
         module: &Value,
-        units: Option<u64>,
+        options: CompilationOptions,
     ) -> Result<Value, Error> {
-        Self::with(|client| client.compilation_request(module.inner(), units))
+        Self::with(|client| client.compilation_request(module.inner(), options))
             .map(Value::from_inner)
     }
     pub fn think(&mut self, value: &Value) -> Result<Value, Error> {

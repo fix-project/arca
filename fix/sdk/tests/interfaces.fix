@@ -1,2 +1,2 @@
 program = $interfaces_native
-*#("" program)
+*#(2147483648u64 program)

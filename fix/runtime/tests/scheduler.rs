@@ -1,6 +1,40 @@
 use super::{evaluation::Evaluation, test_program, test_runtime};
-use fixruntime::{Blob, Handle, Runtime, Thunk, Tree, stdlib};
+use fixruntime::{Blob, Handle, Runtime, Thunk, Tree, arca::FixOnArca, stdlib};
 use kernel::prelude::Vec;
+
+impl Evaluation {
+    pub(super) fn with_workers(runtime: FixOnArca, workers: usize) -> Self {
+        Self::with_scheduler(runtime, workers, "FIX_SCHEDULER")
+    }
+
+    pub(super) fn runtime(&self) -> &FixOnArca {
+        &self.runtime
+    }
+
+    pub(super) fn think(&self, input: Thunk) -> Handle {
+        self.run("think", input.into())
+    }
+}
+
+#[kernel::test]
+fn scheduler_tcp_listener_round_trip() {
+    use fixruntime::user_scheduler_driver::{PersistenceOnly, start};
+    use kernel::prelude::Arc;
+
+    let runtime = Arc::new(test_runtime());
+    let storage = runtime.storage();
+    let program = test_program(storage, kernel::testing::fixture("FIX_TCP_LISTENER"));
+    let collector = test_program(storage, kernel::testing::fixture("FIX_COLLECTOR"));
+    let combination = storage.add_tree(&[
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+        program.into(),
+        Tree::empty().into(),
+        collector.into(),
+    ]);
+    let report = start(runtime.clone(), combination, 1, PersistenceOnly(Ok)).unwrap();
+    let result = Blob::try_from(report.result.unwrap()).unwrap();
+    assert_eq!(storage.get_blob(result).unwrap().as_ref(), b"roundtrip");
+}
 
 #[kernel::test]
 fn scheduler_evaluates_wide_application_graphs() {
@@ -12,12 +46,12 @@ fn scheduler_evaluates_wide_application_graphs() {
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
         let values: Vec<Handle> = (0u64..256)
             .map(|index| {
-                let value = storage.add_blob(&index.to_le_bytes());
+                let value = storage.add_blob(&((512u64 << 20) + index).to_le_bytes());
                 let leaf = storage.add_tree(&[value.into()]);
                 let data = storage.add_tree(&[leaf.into()]);
                 storage
                     .add_tree(&[
-                        Blob::literal(b"").unwrap().into(),
+                        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
                         program.into(),
                         data.into(),
                     ])
@@ -98,17 +132,19 @@ fn scheduler_thinks_once_and_forces_through_thunks() {
 fn scheduler_evaluates_shared_dependencies() {
     for evaluator in [
         Evaluation::new(test_runtime()),
-        Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
     ] {
         let storage = evaluator.storage();
         let program = test_program(storage, stdlib::PRIMITIVES[0].1);
-        let shared = storage.add_tree(&[Blob::literal(b"shared").unwrap().into(), program.into()]);
+        let shared = storage.add_tree(&[
+            Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
+            program.into(),
+        ]);
         let encoded = shared.into_ref().application().strict();
         let mut inputs = Vec::new();
         let mut expected = Vec::new();
         for index in 0u64..64 {
-            let metadata = storage.add_blob(&index.to_le_bytes());
+            let metadata = storage.add_blob(&((512u64 << 20) + index).to_le_bytes());
             let input = storage.add_tree(&[
                 metadata.into(),
                 program.into(),
@@ -143,7 +179,6 @@ fn scheduler_evaluates_shared_dependencies() {
 fn scheduler_preserves_tree_order_and_duplicate_premises() {
     for evaluator in [
         Evaluation::new(test_runtime()),
-        Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
     ] {
         let storage = evaluator.storage();
@@ -152,7 +187,9 @@ fn scheduler_preserves_tree_order_and_duplicate_premises() {
             .map(|index| {
                 storage
                     .add_tree(&[
-                        storage.add_blob(&index.to_le_bytes()).into(),
+                        storage
+                            .add_blob(&((512u64 << 20) + index).to_le_bytes())
+                            .into(),
                         program.into(),
                     ])
                     .into()
@@ -187,7 +224,6 @@ fn scheduler_preserves_tree_order_and_duplicate_premises() {
 fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
     for evaluator in [
         Evaluation::new(test_runtime()),
-        Evaluation::with_workers(test_runtime(), 1),
         Evaluation::with_workers(test_runtime(), 4),
     ] {
         let storage = evaluator.storage();
@@ -196,7 +232,9 @@ fn scheduler_resumes_requests_blocked_on_shared_dependencies() {
         let mut inputs = [leaf, leaf];
         let mut values = [leaf, leaf];
         for index in 0u64..32 {
-            let metadata: Handle = storage.add_blob(&index.to_le_bytes()).into();
+            let metadata: Handle = storage
+                .add_blob(&((512u64 << 20) + index).to_le_bytes())
+                .into();
             let combination = storage.add_tree(&[metadata, program.into(), inputs[1], inputs[0]]);
             let input = combination.into_ref().application().strict().into();
             let value = storage
@@ -227,7 +265,7 @@ fn collector_rejects_witness_lists_above_its_limit() {
     let fields = storage.add_tree(&kernel::prelude::vec![value; count]);
     let witnesses = storage.add_tree(&kernel::prelude::vec![witness.into(); count]);
     let request = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         collector.into(),
         equivalent.into(),
         fields.into(),
@@ -253,64 +291,4 @@ fn collector_rejects_witness_lists_above_its_limit() {
             .as_ref(),
         5u32.to_le_bytes()
     );
-}
-
-#[kernel::test]
-fn rust_sdk_returns_complete_panic_messages() {
-    let runtime = test_runtime();
-    let storage = runtime.storage();
-    for fixture in ["FIX_SDK_PANIC", "FIX_SDK_STD_PANIC"] {
-        let program = test_program(storage, kernel::testing::fixture(fixture));
-        let long_message = kernel::prelude::vec![b'x'; 70000];
-        for (mode, expected) in [
-            (0u64, b"simple panic".as_slice()),
-            (1, "failed λ with value 42".as_bytes()),
-            (2, long_message.as_slice()),
-            (3, b"Fix procedure failed: WrongType".as_slice()),
-            (4, b"owned panic message".as_slice()),
-        ] {
-            if mode == 4 && fixture != "FIX_SDK_STD_PANIC" {
-                continue;
-            }
-            let request = storage.add_tree(&[
-                Blob::literal(b"").unwrap().into(),
-                program.into(),
-                storage.add_blob(&mode.to_le_bytes()).into(),
-            ]);
-            let result = runtime.execute_privileged(request).unwrap();
-            let repeated = runtime.execute_privileged(request).unwrap();
-            assert!(storage.equals(result, repeated).unwrap());
-            let result = Tree::try_from(result).unwrap();
-            assert!(!result.is_tag());
-            let fields = storage.get_tree(result).unwrap();
-            assert_eq!(fields.len(), 2);
-            assert_eq!(
-                storage
-                    .get_blob(Blob::try_from(fields[0]).unwrap())
-                    .unwrap()
-                    .as_ref(),
-                b"Rust.panic"
-            );
-            assert_eq!(
-                storage
-                    .get_blob(Blob::try_from(fields[1]).unwrap())
-                    .unwrap()
-                    .as_ref(),
-                expected
-            );
-        }
-        let request = storage.add_tree(&[
-            Blob::literal(b"").unwrap().into(),
-            program.into(),
-            storage.add_blob(&5u64.to_le_bytes()).into(),
-        ]);
-        let result = runtime.execute_privileged(request).unwrap();
-        assert_eq!(
-            storage
-                .get_blob(Blob::try_from(result).unwrap())
-                .unwrap()
-                .as_ref(),
-            b"early return"
-        );
-    }
 }

@@ -14,6 +14,7 @@ filegroup(
         "//programs/arca:webserver",
         "//programs/arca:webserver2",
         "//programs/fix/parser:parser",
+        "//programs/fix/schedulers",
         "//programs/flatware:programs",
         "//tools/vmm",
     ] + ["//programs/fix/" + language + ":programs" for language in ["wat", "c", "rust"]] + ["//programs/arca:" + name for name in ARCA_PROGRAMS] + [
@@ -44,6 +45,7 @@ test_suite(
         "//fix/shell/tests:memory",
         "//fix/storage:tests",
         "//fix/repository:tests",
+        "//fix/remote:tests",
         "//tests/flatware:filesystem_test",
         "//lib/common:tests",
         "//tools/vmm:tests",
@@ -58,6 +60,7 @@ test_suite(
         "//arca/kernel:tests",
         "//fix/runtime:tests",
         "//fix/runtime:descriptor_tests",
+        "//fix/scheduler:distributed_test",
         "//fix/cli:client_tests",
         "//programs/kernel:hello_test",
         "//programs/fix:tests",

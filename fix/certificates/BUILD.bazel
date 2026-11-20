@@ -1,0 +1,14 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "certificates",
+    crate_name = "fixcertificates",
+    edition = "2024",
+    srcs = glob(["src/**/*.rs"]),
+    deps = ["//fix/handle", "@crates//:hex", "@crates//:postcard", "@crates//:serde", "@crates//:ssh-key"] + select({
+        "//build/platforms:linux": ["@crates//:toml"],
+        "//conditions:default": [],
+    }),
+)

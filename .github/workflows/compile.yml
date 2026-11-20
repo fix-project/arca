@@ -10,11 +10,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  llvm:
-    uses: ./.github/workflows/llvm.yml
+  bootstrap:
+    uses: ./.github/workflows/bootstrap.yml
 
   build:
-    needs: llvm
+    needs: bootstrap
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
@@ -27,16 +27,17 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
           repository-cache: true
-      - name: Restore LLVM build outputs
+      - name: Restore bootstrap build outputs
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
-          key: ${{ needs.llvm.outputs.cache-key }}
+          key: ${{ needs.bootstrap.outputs.cache-key }}
           fail-on-cache-miss: true
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+          sudo apt-get install -y build-essential cmake clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Enable KVM access
         run: |
           sudo modprobe kvm
@@ -44,10 +45,20 @@ jobs:
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       - name: Build
-        run: bazel build //:artifacts
+        run: bazel build --config=ci //:artifacts
+      - name: Build release Fix
+        run: bazel build --config=ci --config=release //fix/cli:fix
+      - name: Stage release Fix
+        run: install -Dm755 "$(bazel cquery --config=ci --config=release //fix/cli:fix --output=files)" "$RUNNER_TEMP/fix-artifact/fix"
+      - name: Upload release Fix
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix
+          path: ${{ runner.temp }}/fix-artifact/fix
+          if-no-files-found: error
 
   test:
-    needs: llvm
+    needs: bootstrap
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
@@ -60,16 +71,17 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ github.job }}-ubuntu-26.04
           repository-cache: true
-      - name: Restore LLVM build outputs
+      - name: Restore bootstrap build outputs
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
-          key: ${{ needs.llvm.outputs.cache-key }}
+          key: ${{ needs.bootstrap.outputs.cache-key }}
           fail-on-cache-miss: true
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+          sudo apt-get install -y build-essential cmake clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Enable KVM access
         run: |
           sudo modprobe kvm
@@ -77,7 +89,7 @@ jobs:
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       - name: Test
-        run: bazel test --keep_going --local_test_jobs=2 //:tests
+        run: bazel test --config=ci --keep_going --local_test_jobs=2 //:tests
       - name: Test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,9 +114,10 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+          sudo apt-get install -y build-essential cmake clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Check formatting
-        run: bazel test //tests:format
+        run: bazel test --config=ci //tests:format
 
   lint:
     runs-on: ubuntu-26.04
@@ -122,6 +135,7 @@ jobs:
       - name: Native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio
+          sudo apt-get install -y build-essential cmake clang-format clang-tidy libclang-dev gcc-multilib binaryen cpio libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Check lint
-        run: bazel test //tests:lint
+        run: bazel test --config=ci //tests:lint

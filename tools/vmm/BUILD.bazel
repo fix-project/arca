@@ -12,6 +12,7 @@ rust_library(
     deps = [
         "//arca/api",
         "//lib/common",
+        "//lib/ssh",
         "@crates//:anyhow",
         "@crates//:clap",
         "@crates//:elf",

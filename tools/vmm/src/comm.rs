@@ -1,5 +1,5 @@
 use crate::doorbell::{HostToVMDoorBell, VMToHostDoorBell, new_vm_to_host_door_bell};
-use crate::pipe::{FilePipe, GuestPipe, ListenerPipe, StreamPipe};
+use crate::pipe::{FilePipe, GuestPipe, ListenerPipe};
 use crate::session::Session;
 use common::BuddyAllocator;
 use common::protocol::control::PipeData;
@@ -9,6 +9,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -93,6 +94,38 @@ pub fn control_thread(
                 if control.session.stopped() {
                     return;
                 }
+                if matches!(
+                    request.message,
+                    Request::StreamReceive { .. }
+                        | Request::StreamSend { .. }
+                        | Request::SessionNext
+                ) {
+                    let (control, writer) = (control.clone(), writer.clone());
+                    control.session.clone().spawn(move || {
+                        let response = Tagged {
+                            id: request.id,
+                            message: control.respond(request.message),
+                        };
+                        let _ = writer.lock().unwrap().send(&response);
+                    });
+                    continue;
+                }
+                if let Request::Sleep(milliseconds) = request.message {
+                    let (control, writer) = (control.clone(), writer.clone());
+                    control.session.clone().spawn(move || {
+                        control
+                            .session
+                            .wait_for_stop(std::time::Duration::from_millis(
+                                milliseconds.min(1000),
+                            ));
+                        let response = Tagged {
+                            id: request.id,
+                            message: Response::Ack,
+                        };
+                        let _ = writer.lock().unwrap().send(&response);
+                    });
+                    continue;
+                }
                 let message = control.respond(request.message);
                 let response = Tagged {
                     id: request.id,
@@ -121,7 +154,76 @@ impl Control {
     ) -> common::protocol::control::Response {
         use common::protocol::control::*;
         match request {
+            Request::StreamReceive { id, length } => match self
+                .session
+                .streams
+                .get(id)
+                .and_then(|stream| stream.receive(length))
+            {
+                Ok(bytes) => Response::StreamBytes(bytes),
+                Err(error) => Response::Err(error.kind().into()),
+            },
+            Request::StreamSend { id, bytes } => match self
+                .session
+                .streams
+                .get(id)
+                .and_then(|stream| stream.send(&bytes))
+            {
+                Ok(length) => Response::Length(length),
+                Err(error) => Response::Err(error.kind().into()),
+            },
+            Request::StreamClose(id) => {
+                self.session.streams.close(id);
+                Response::Ack
+            }
+            Request::SessionNext => Response::SessionCommand(
+                self.session
+                    .broker
+                    .as_ref()
+                    .and_then(|broker| broker.next()),
+            ),
+            Request::SessionReply {
+                connection,
+                request,
+                status,
+                output,
+            } => {
+                if let Some(broker) = &self.session.broker {
+                    broker.reply(connection, request, status, output);
+                }
+                Response::Ack
+            }
+            Request::NodeIdentity => Response::NodeIdentity(self.session.node_identity),
             Request::GetArgs => Response::Args(self.argv.clone()),
+            Request::CpuTime => Response::CpuTime(cpu_time()),
+            Request::EvaluationStep(step) => {
+                if let Some(broker) = &self.session.broker {
+                    broker.step(step);
+                } else {
+                    common::progress::evaluation_step(step);
+                }
+                Response::Ack
+            }
+            Request::ObserveEvaluation => Response::Bool(
+                self.session.broker.is_some() || common::progress::observing_evaluation(),
+            ),
+            Request::EvaluationProgress(snapshot) => {
+                if let Some(broker) = &self.session.broker {
+                    broker.progress(snapshot);
+                } else {
+                    common::progress::evaluation_progress(snapshot);
+                }
+                Response::Ack
+            }
+            Request::Sleep(_) => unreachable!("sleep is dispatched separately"),
+            Request::SshSign {
+                identity,
+                namespace,
+                message,
+            } => match sshagent::sign(&identity, &namespace, unsafe { message.as_slice() }) {
+                Ok(signature) => Response::Signature(signature),
+                Err(error) => Response::SignatureError(error.to_string()),
+            },
             Request::Exit(code) => {
                 self.session.stop(code as u8);
                 Response::Ack
@@ -156,6 +258,16 @@ impl Control {
                 let output = CapturedOutput(self.session.clone());
                 self.session
                     .spawn(move || unsafe { file_thread(output, FilePipe::new(q)) });
+                Response::Pipe(decompose_pipe(p))
+            }
+            Request::Stdio(StandardStream::Stderr) => {
+                let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
+                self.session.spawn(move || unsafe {
+                    file_thread(
+                        Diagnostics(common::progress::Stderr::default()),
+                        FilePipe::new(q),
+                    )
+                });
                 Response::Pipe(decompose_pipe(p))
             }
             Request::Stdio(stream) => {
@@ -245,44 +357,107 @@ impl Control {
                 }
             }
             Request::Listen { ip, port } => {
-                let listener = TcpListener::bind(SocketAddr::from((ip, port))).unwrap();
+                let listener = match TcpListener::bind(SocketAddr::from((ip, port))) {
+                    Ok(listener) => listener,
+                    Err(error) => return Response::Err(error.kind().into()),
+                };
                 let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
-                let vm_cl = self.vm.clone();
-                let next_pipe_cl = self.next_pipe_idx.clone();
                 let doorbell = self.doorbell.clone();
                 self.session.spawn(move || {
-                    listener_thread(
-                        vm_cl,
-                        next_pipe_cl,
-                        doorbell,
-                        listener,
-                        ListenerPipe::new(q),
-                    );
+                    listener_thread(doorbell, listener, ListenerPipe::new(q));
                 });
                 Response::Pipe(decompose_pipe(p))
             }
-            Request::OpenUri(uri) => match open_uri(&uri) {
-                Ok(body) => {
-                    let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
-                    self.session
-                        .spawn(move || stream_thread(ReadOnly(body), StreamPipe::new(q)));
-                    Response::Pipe(decompose_pipe(p))
+            Request::StdioStream => match self.session.stdio() {
+                Some(Ok(fd)) => {
+                    let stream = std::os::unix::net::UnixStream::from(fd);
+                    self.stream_response(stream.try_clone().and_then(|reader| {
+                        crate::stream::Stream::new(reader, stream, self.session.clone(), None)
+                    }))
                 }
+                Some(Err(error)) => Response::Err(error.kind().into()),
+                None => Response::Err(IoErrorKind::Unsupported),
+            },
+            Request::SshConnect {
+                host,
+                repository,
+                scheduler,
+                collector,
+            } => {
+                if host.is_empty() || host.starts_with('-') || repository.is_empty() {
+                    return Response::Err(IoErrorKind::InvalidInput);
+                }
+                let path = quote_remote_path(&repository);
+                let mut command = Command::new("ssh");
+                command
+                    .arg("-T")
+                    .arg("--")
+                    .arg(&host)
+                    .args(["fix", "-C", &path])
+                    .args([
+                        "--session-id",
+                        &self
+                            .session
+                            .session_id
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>(),
+                    ]);
+                if let Some(scheduler) = scheduler {
+                    command
+                        .arg("--scheduler")
+                        .arg(quote_remote_path(&scheduler));
+                }
+                if let Some(collector) = collector {
+                    command
+                        .arg("--collector")
+                        .arg(quote_remote_path(&collector));
+                }
+                match command
+                    .args(["serve", "--stdio"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(mut child) => {
+                        let stderr = Cancellable {
+                            inner: child.stderr.take().unwrap(),
+                            session: self.session.clone(),
+                        };
+                        common::progress::forward_stderr(stderr);
+                        let input = child.stdin.take().unwrap();
+                        let output = child.stdout.take().unwrap();
+                        self.stream_response(crate::stream::Stream::new(
+                            output,
+                            input,
+                            self.session.clone(),
+                            Some(child),
+                        ))
+                    }
+                    Err(error) => Response::Err(error.kind().into()),
+                }
+            }
+            Request::OpenUri(uri) => match open_uri(&uri) {
+                Ok(body) => self.stream_response(crate::stream::Stream::read_only(body)),
                 Err(error) => Response::Err(error.kind().into()),
             },
             Request::Connect { host, port } => match TcpStream::connect((host.as_str(), port)) {
                 Ok(stream) => {
-                    let (p, q) = new_pipe(&self.vm, 1024, &self.next_pipe_idx, &self.doorbell);
-                    let stream = Cancellable {
-                        inner: stream,
-                        session: self.session.clone(),
-                    };
-                    self.session
-                        .spawn(move || stream_thread(stream, StreamPipe::new(q)));
-                    Response::Pipe(decompose_pipe(p))
+                    self.stream_response(crate::stream::Stream::tcp(stream, self.session.clone()))
                 }
                 Err(error) => Response::Err(error.kind().into()),
             },
+        }
+    }
+    fn stream_response(
+        &self,
+        stream: std::io::Result<crate::stream::Stream>,
+    ) -> common::protocol::control::Response {
+        use common::protocol::control::Response;
+        match stream {
+            Ok(stream) => Response::Stream(self.session.streams.insert(stream)),
+            Err(error) => Response::Err(error.kind().into()),
         }
     }
 }
@@ -453,13 +628,7 @@ mod tests {
     }
 }
 
-pub fn listener_thread(
-    vm: Arc<VmFd>,
-    next_pipe_idx: Arc<AtomicUsize>,
-    doorbell: HostToVMDoorBell,
-    listener: TcpListener,
-    mut pipe: ListenerPipe,
-) {
+pub fn listener_thread(doorbell: HostToVMDoorBell, listener: TcpListener, mut pipe: ListenerPipe) {
     use common::protocol::listener::*;
     loop {
         let Ok(request) = pipe.recv() else {
@@ -471,21 +640,38 @@ pub fn listener_thread(
                 if session.wait(listener.as_raw_fd(), libc::POLLIN).is_err() {
                     return;
                 }
-                let (stream, _) = listener.accept().unwrap();
-                let (p, q) = new_pipe(&vm, 1024, &next_pipe_idx, &doorbell);
-                let stream = Cancellable {
-                    inner: stream,
-                    session: session.clone(),
+                let (stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        if pipe.send(&Response::Err(error.kind().into())).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                 };
-                session.spawn(move || {
-                    stream_thread(stream, StreamPipe::new(q));
-                });
-                Response::Pipe(decompose_pipe(p))
+                match crate::stream::Stream::tcp(stream, session.clone()) {
+                    Ok(stream) => {
+                        let stream = if let Some(broker) = &session.broker {
+                            broker.observe_stream(stream, session)
+                        } else {
+                            stream
+                        };
+                        Response::Stream(session.streams.insert(stream))
+                    }
+                    Err(error) => Response::Err(error.kind().into()),
+                }
             }
             Request::Close => {
                 let _ = pipe.send(&Response::Ack);
                 return;
             }
+            Request::LocalAddress => match listener.local_addr() {
+                Ok(SocketAddr::V4(address)) => {
+                    Response::Address(address.ip().octets(), address.port())
+                }
+                Ok(SocketAddr::V6(_)) => Response::Err(std::io::ErrorKind::Unsupported.into()),
+                Err(error) => Response::Err(error.kind().into()),
+            },
         };
         if pipe.send(&response).is_err() {
             return;
@@ -575,79 +761,27 @@ fn read_directory_uri(
         .collect()
 }
 
-struct ReadOnly<R>(R);
-impl<R: Read> Read for ReadOnly<R> {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(bytes)
-    }
-}
-impl<R> Write for ReadOnly<R> {
-    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+fn quote_remote_path(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
 }
 
-fn stream_response(
-    stream: &mut (impl Read + Write),
-    request: common::protocol::stream::Request,
-) -> common::protocol::stream::Response {
-    use common::protocol::stream::*;
-    match request {
-        Request::Receive(len) => {
-            let mut buf = vec![0; len];
-            match stream.read(&mut buf) {
-                Ok(len) => {
-                    buf.truncate(len);
-                    Response::Bytes(buf)
-                }
-                Err(error) => Response::Err(error.kind().into()),
-            }
-        }
-        Request::Send(bytes) => match stream.write(&bytes) {
-            Ok(len) => Response::Length(len),
-            Err(error) => Response::Err(error.kind().into()),
-        },
-        Request::Close => Response::Ack,
-    }
-}
-
-pub fn stream_thread(mut stream: impl Read + Write, mut pipe: StreamPipe) {
-    use common::protocol::stream::*;
-    loop {
-        let Ok(request) = pipe.recv() else {
-            return;
-        };
-        let close = matches!(request, Request::Close);
-        if pipe.send(&stream_response(&mut stream, request)).is_err() {
-            return;
-        }
-        if close {
-            return;
-        }
-    }
+#[cfg(test)]
+#[test]
+fn ssh_repository_path_is_one_shell_argument() {
+    let path = "/srv/Fix repo'; echo unexpected";
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf %s {}", quote_remote_path(path)))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, path.as_bytes());
 }
 
 #[cfg(test)]
 mod stream_tests {
-    use super::stream_response;
-    use common::protocol::stream::{Request, Response};
-    use std::io::{Cursor, Read, Write};
-
-    #[test]
-    fn short_receive_and_eof() {
-        let mut stream = Cursor::new(b"hello".to_vec());
-        let Response::Bytes(bytes) = stream_response(&mut stream, Request::Receive(65536)) else {
-            panic!("receive failed");
-        };
-        assert_eq!(bytes, b"hello");
-        let Response::Bytes(bytes) = stream_response(&mut stream, Request::Receive(65536)) else {
-            panic!("EOF failed");
-        };
-        assert!(bytes.is_empty());
-    }
+    use crate::stream::Stream;
+    use std::io::{Read, Write};
 
     #[test]
     fn uri_stream_decodes_http_and_reports_eof() {
@@ -663,18 +797,20 @@ mod stream_tests {
             }
             stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").unwrap();
         });
-        let mut stream =
-            super::ReadOnly(super::open_uri(&format!("http://{address}/source")).unwrap());
+        let stream =
+            Stream::read_only(super::open_uri(&format!("http://{address}/source")).unwrap())
+                .unwrap();
         let mut body = Vec::new();
-        stream.read_to_end(&mut body).unwrap();
+        loop {
+            let bytes = stream.receive(65536).unwrap();
+            if bytes.is_empty() {
+                break;
+            }
+            body.extend(bytes);
+        }
         assert_eq!(body, b"hello world");
-        assert!(
-            matches!(stream_response(&mut stream, Request::Receive(16)), Response::Bytes(bytes) if bytes.is_empty())
-        );
-        assert!(matches!(
-            stream_response(&mut stream, Request::Send(vec![1])),
-            Response::Err(_)
-        ));
+        assert!(stream.receive(16).unwrap().is_empty());
+        assert!(stream.send(&[1]).is_err());
         server.join().unwrap();
         assert_eq!(
             super::open_uri("ftp://example.invalid/source")
@@ -707,17 +843,18 @@ mod stream_tests {
             format!("file://localhost{encoded}"),
             format!("file:{encoded}"),
         ] {
-            let mut stream = super::ReadOnly(super::open_uri(&uri).unwrap());
+            let stream = Stream::read_only(super::open_uri(&uri).unwrap()).unwrap();
             let mut bytes = Vec::new();
-            stream.read_to_end(&mut bytes).unwrap();
+            loop {
+                let part = stream.receive(65536).unwrap();
+                if part.is_empty() {
+                    break;
+                }
+                bytes.extend(part);
+            }
             assert_eq!(bytes, contents);
-            assert!(
-                matches!(stream_response(&mut stream, Request::Receive(16)), Response::Bytes(bytes) if bytes.is_empty())
-            );
-            assert!(matches!(
-                stream_response(&mut stream, Request::Send(vec![1])),
-                Response::Err(_)
-            ));
+            assert!(stream.receive(16).unwrap().is_empty());
+            assert!(stream.send(&[1]).is_err());
         }
         for uri in [
             "file:relative",
@@ -739,33 +876,6 @@ mod stream_tests {
             std::io::ErrorKind::Unsupported
         );
         std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    struct Failed;
-    impl Read for Failed {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::ConnectionReset.into())
-        }
-    }
-    impl Write for Failed {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn network_errors_are_responses() {
-        assert!(matches!(
-            stream_response(&mut Failed, Request::Receive(16)),
-            Response::Err(_)
-        ));
-        assert!(matches!(
-            stream_response(&mut Failed, Request::Send(vec![1, 2, 3])),
-            Response::Err(_)
-        ));
     }
 }
 
@@ -817,5 +927,72 @@ impl Read for CapturedOutput {
 impl Seek for CapturedOutput {
     fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
         Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+struct Diagnostics(common::progress::Stderr);
+impl Write for Diagnostics {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+impl Read for Diagnostics {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+impl Seek for Diagnostics {
+    fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+fn cpu_time() -> Option<u64> {
+    let mut time = core::mem::MaybeUninit::<libc::timespec>::uninit();
+    unsafe {
+        (libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, time.as_mut_ptr()) == 0).then(|| {
+            let time = time.assume_init();
+            time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+        })
+    }
+}
+
+#[cfg(test)]
+mod cpu_clock_tests {
+    #[test]
+    fn cpu_clock_counts_execution_and_excludes_sleep() {
+        if std::env::var_os("FIX_CPU_CLOCK_PROBE").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "comm::cpu_clock_tests::cpu_clock_counts_execution_and_excludes_sleep",
+                    "--nocapture",
+                ])
+                .env("FIX_CPU_CLOCK_PROBE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let before = super::cpu_time().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let after = super::cpu_time().unwrap();
+        assert!(
+            after - before < 50_000_000,
+            "sleep counted as CPU time: {} ns",
+            after - before
+        );
+        while super::cpu_time().unwrap() - after < 40_000_000 {
+            std::hint::spin_loop();
+        }
+        assert!(super::cpu_time().unwrap() - after >= 40_000_000);
     }
 }

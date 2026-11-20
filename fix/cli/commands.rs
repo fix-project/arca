@@ -28,14 +28,21 @@ impl core::fmt::Display for CliError {
                 f.write_str("invalid Fix repository")
             }
             Self::Repository(RepositoryError::InvalidLabel) => f.write_str("invalid label name"),
+            Self::Repository(RepositoryError::LabelConflict) => f.write_str("label changed"),
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
             }
+            Self::Repository(RepositoryError::MissingObject { name, repository }) => {
+                write!(f, "value {name} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingBacking { name, repository }) => {
+                write!(
+                    f,
+                    "backing data for {name} not found in repository {repository:?}"
+                )
+            }
             Self::Repository(RepositoryError::NonCanonical) => {
                 f.write_str("expected a canonical handle")
-            }
-            Self::Repository(RepositoryError::Io(ErrorKind::NotFound)) => {
-                f.write_str("value or label is not present in this repository")
             }
             Self::Handle(Error::WrongType)
             | Self::Repository(RepositoryError::Handle(Error::WrongType)) => {
@@ -50,6 +57,8 @@ impl core::fmt::Display for CliError {
             Self::Repository(RepositoryError::Storage(error)) => {
                 write!(f, "store error: {error:?}")
             }
+            Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
+            Self::Repository(error @ RepositoryError::AmbiguousName { .. }) => write!(f, "{error}"),
         }
     }
 }
@@ -173,6 +182,9 @@ pub enum LabelCommand {
     Get { name: String },
     /// Point a label at a value.
     Set { name: String, value: String },
+    /// Delete a label, keeping its value in storage.
+    #[command(alias = "remove")]
+    Delete { name: String },
 }
 
 /// Commands whose value operands are handles or label names.
@@ -181,12 +193,25 @@ pub enum Plumbing {
     /// Print the repository path.
     Repository,
     /// Import an archive into the repository.
-    Import { archive: PathBuf },
+    Import {
+        archive: PathBuf,
+        #[arg(long)]
+        sign: bool,
+    },
+    /// Add the selected signing identities to a stored Tag.
+    Sign {
+        #[arg(long, conflicts_with = "value")]
+        all: bool,
+        #[arg(required_unless_present = "all")]
+        value: Option<String>,
+    },
     /// Import a directory as a Flatware tree.
     FlatwareImport { path: PathBuf, name: Option<String> },
     /// List, read, or write labels.
     #[command(subcommand)]
     Label(LabelCommand),
+    /// Analyze a name or label without evaluation or retrieval.
+    Info(Operand),
     /// Print a value's handle.
     Resolve(Operand),
     /// Write a Blob's contents to stdout.
@@ -280,8 +305,24 @@ impl Plumbing {
 }
 
 pub fn init() -> Result<(), CliError> {
-    Repository::init(".fix")?;
-    Ok(())
+    init_repository(".fix").map(|_| ())
+}
+
+pub(crate) fn init_repository(path: &str) -> Result<Repository, CliError> {
+    let bootstrap = crate::bootstrap_store::repository()
+        .map_err(|error| CliError::Backend(error.to_string()))?;
+    let repository = Repository::init(path)?;
+    let mut remotes = repository.remotes()?;
+    if !remotes.iter().any(|remote| remote.name == "bootstrap") {
+        remotes.push(fixrepository::Remote {
+            name: "bootstrap".into(),
+            address: format!("file://{}", bootstrap.display()),
+            scheduler: None,
+            collector: None,
+        });
+        repository.set_remotes(remotes)?;
+    }
+    Ok(repository)
 }
 
 fn print(output: &mut Output, handle: impl core::fmt::Display) -> Result<(), CliError> {
@@ -305,8 +346,9 @@ pub fn visit(
     without_backing: &[String],
     paths: bool,
     archive: Option<&Path>,
+    options: &crate::Options,
 ) -> Result<(), CliError> {
-    let repository = Repository::discover(".")?;
+    let repository = options.configure(Repository::discover(".")?);
     let mut output = Output;
     let without_backing = without_backing
         .iter()
@@ -317,19 +359,31 @@ pub fn visit(
     let mut listed = Vec::new();
     for argument in values(roots)? {
         handles.push(resolve(&repository, &argument)?);
-        if paths && !(argument.len() == 64 && argument.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        {
+        if paths && repository.label_name(&argument).is_ok() {
             listed.push(format!(".fix/labels/{argument}"));
         }
     }
-    repository.visit(&handles, &without_backing, |object, include_backing| {
-        if paths {
-            listed.extend(repository.object_paths(object, include_backing)?);
-        } else {
-            output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
-        }
-        Ok(())
-    })?;
+    let mut pending = handles;
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(root) = pending.pop() {
+        repository.visit(root, &without_backing, true, |object| {
+            if !seen.insert(*object.as_handle().as_bytes()) {
+                return Ok(());
+            }
+            let include_backing = !without_backing
+                .iter()
+                .any(|excluded| excluded.as_handle().same_encoding(object.as_handle()));
+            if paths {
+                listed.extend(repository.object_paths(object, include_backing)?);
+            } else {
+                output.try_write_all(format!("{}\n", object.as_handle()).as_bytes())?;
+            }
+            if let Some(metadata) = repository.get_todo(object.into_ref())? {
+                pending.push(metadata);
+            }
+            Ok::<_, CliError>(())
+        })?;
+    }
     match archive {
         Some(archive) => crate::archive::export(&repository, listed, archive)?,
         None if paths => {
@@ -358,7 +412,10 @@ fn execute(options: crate::Options, profile: bool, arguments: Vec<String>) -> Re
     client.set_profile(profile);
     let value = match client.execute(&arguments) {
         Ok(value) => value,
-        Err(crate::Error::Execution(status)) => return Ok(status),
+        Err(error @ crate::Error::Execution { status, .. }) => {
+            common::progress::println(error.to_string());
+            return Ok(status);
+        }
         Err(error) => return Err(backend(error)),
     };
     print(&mut Output, client.save(&value).map_err(backend)?)?;
@@ -374,11 +431,24 @@ pub fn run(
     if label.is_some() && !command.creates() {
         return Err(CliError::Usage("-l labels an expression result"));
     }
-    let repository = Repository::discover(".")?;
+    let repository = options.configure(Repository::discover(".")?);
     let mut output = Output;
     match command {
         Plumbing::Repository => print(&mut output, repository.path())?,
-        Plumbing::Import { archive } => crate::archive::import(&repository, &archive)?,
+        Plumbing::Info(operand) => {
+            let report = crate::info::describe(
+                &repository,
+                &single(&operand.value)?,
+                common::progress::abbreviating(),
+            )?;
+            output.try_write_all(report.as_bytes())?;
+        }
+        Plumbing::Import { archive, sign } => crate::archive::import(&repository, &archive, sign)?,
+        Plumbing::Sign { all, value } => match (all, value) {
+            (true, None) => repository.sign_all_tags()?,
+            (false, Some(value)) => repository.sign_tag(&value)?,
+            _ => return Err(CliError::Usage("expected a Tag or --all")),
+        },
         Plumbing::FlatwareImport { path, name } => {
             let name = match name {
                 Some(name) => name.into_bytes(),
@@ -407,6 +477,9 @@ pub fn run(
         Plumbing::Label(LabelCommand::Set { name, value }) => {
             let value = resolve(&repository, &single(&value)?)?;
             repository.write_label(&name, value)?;
+        }
+        Plumbing::Label(LabelCommand::Delete { name }) => {
+            repository.remove_label(&name)?;
         }
         Plumbing::ReadBlob { format, value } => {
             let blob = Blob::try_from(resolve(&repository, &single(&value)?)?)?;
@@ -536,7 +609,7 @@ pub fn run(
             without_backing,
             values,
         } => {
-            visit(&values, &without_backing, paths, None)?;
+            visit(&values, &without_backing, paths, None, &options)?;
         }
         Plumbing::Call { combination } => {
             return execute(options, profile, vec!["call".into(), combination]);

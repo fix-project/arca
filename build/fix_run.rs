@@ -54,6 +54,7 @@ fn run() -> Result<()> {
     checked(
         Command::new(&fix)
             .current_dir(&repository.0)
+            .arg("--unsigned")
             .arg("import")
             .arg(archive),
     )?;
@@ -74,19 +75,24 @@ fn run() -> Result<()> {
     let mut shell = Shell::open(
         &repository.0,
         Options {
+            executable: fix,
             trust: Some(repository.0.join(".fix/trust")),
+            unsigned: true,
             jobs: jobs.get(),
             ..Options::default()
         },
     )?;
     {
         let module = shell.file(&program)?;
-        let program = shell.compilation(&module, None)?;
-        let mut fields = vec![Blob::new(b"").into_value(), program];
+        let program = shell.compilation(&module, Default::default())?;
+        let mut fields = vec![
+            Blob::new(&(512u64 << 20).to_le_bytes()).into_value(),
+            program,
+        ];
         fields.extend(Expressions::new(&mut shell, Vec::new()).arguments(&arguments)?);
         for module in env!("FIX_ARGUMENT_MODULES").lines() {
             let module = shell.file(&locate(module)?)?;
-            fields.push(shell.compilation(&module, None)?);
+            fields.push(shell.compilation(&module, Default::default())?);
         }
         let result = Tree::new(&fields).application().strict().eval()?;
         println!("{}", shell.save(&result)?);
@@ -100,8 +106,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("fix-run: {error}");
-            if let Some(fixcli::Error::Execution(code)) = error.downcast_ref::<fixcli::Error>() {
-                ExitCode::from(*code)
+            if let Some(fixcli::Error::Execution { status, .. }) =
+                error.downcast_ref::<fixcli::Error>()
+            {
+                ExitCode::from(*status)
             } else {
                 ExitCode::from(2)
             }

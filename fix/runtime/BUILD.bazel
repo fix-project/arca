@@ -6,12 +6,15 @@ package(default_visibility = ["//visibility:private"])
 exports_files(["etc/memmap.ld"], visibility = ["//flatware:__subpackages__"])
 
 DEPS = [
+    ":trust",
     "//arca/api",
     "//arca/kernel",
     "//arca/abi",
     "//lib/common",
     "//fix/handle",
     "//fix/repository",
+    "//fix/remote",
+    "//fix/certificates",
     "//fix/storage",
     "//fix/api",
     "@crates//:postcard",
@@ -27,6 +30,16 @@ DEPS = [
 ]
 
 rust_library(
+    name = "trust",
+    visibility = ["//fix:__subpackages__"],
+    srcs = ["src/trust.rs"],
+    crate_root = "src/trust.rs",
+    crate_name = "fixtrust",
+    edition = "2024",
+    deps = ["//fix/handle", "//fix/storage", "@crates//:hex", "@crates//:hashbrown"],
+)
+
+rust_library(
     name = "runtime",
     visibility = ["//flatware:__subpackages__", "//fix/benchmarks:__pkg__", "//fix/testing:__pkg__"],
     srcs = glob(
@@ -34,6 +47,7 @@ rust_library(
         exclude = [
             "src/main.rs",
             "src/tests.rs",
+            "src/trust.rs",
         ],
     ),
     compile_data = ["//programs/fix:identity_elf"],
@@ -69,20 +83,18 @@ kernel_test(
     visibility = ["//:__pkg__", "//tests:__pkg__"],
     image_visibility = ["//tests:__pkg__"],
     image_name = "test_image",
-    srcs = ["src/tests.rs", "tests/api.rs", "tests/advice.rs", "tests/evaluation.rs", "tests/maps.rs", "tests/scheduler.rs"],
+    srcs = ["src/tests.rs", "tests/api.rs", "tests/advice.rs", "tests/evaluation.rs", "tests/scheduler.rs"],
     crate_name = "fixruntime",
     crate_root = "src/tests.rs",
     linker_script = "etc/memmap.ld",
     proc_macro_deps = ["//tools/macros"],
-    deps = [":runtime", "//fix/preprocessor", "//fix/testing:reference"] + DEPS,
+    deps = [":runtime", "//fix/testing:reference"] + DEPS,
     fixtures = {
-        "FIX_WORKER_EVENTS": "//tests/fix:worker_events_native",
-        "FIX_CONCURRENT_MAP": "//tests/fix:concurrent_map_native",
-        "FIX_SERIAL_SCHEDULER": "//fix/scheduler:serial",
+        "FIX_TCP_LISTENER": "//tests/fix:tcp_listener_native",
+        "FIX_SERIAL_SCHEDULER": "//programs/fix/schedulers:serial_elf",
         "FIX_SCHEDULER": "//programs/fix:scheduler_elf",
         "FIX_COLLECTOR": "//fix/proof/collector:collector_elf",
         "FIX_PRIVILEGED": "//tests/fix:privileged_native",
-        "FIX_PARSER": "//programs/fix/parser:parser_elf",
         "FIX_EVAL": "//tests/fix:eval_native",
         "FIX_READ_BLOB": "//tests/fix:read_blob_native",
         "FIX_ADVICE": "//tests/fix:advice_native",
@@ -96,8 +108,6 @@ kernel_test(
         "FIX_CONTINUATION_STATE": "//tests/fix:continuation_state_native",
         "FIX_SDK_ATTACHMENTS": "//fix/sdk:attachments_native",
         "FIX_SDK_EVAL": "//fix/sdk:eval_native",
-        "FIX_SDK_PANIC": "//fix/sdk:panic_native",
-        "FIX_SDK_STD_PANIC": "//fix/sdk:panic_std_native",
         "FIX_TAGGER": "//fix/sdk:tagger_native",
         "FIX_RECURSIVE_LOCAL_ALIASES": "//tests/fix:recursive_local_aliases_native",
         "FIX_LARGE_LOCAL_GRAPH": "//tests/fix:large_local_graph_native",
@@ -122,9 +132,10 @@ kernel_test(
         "TREE_READ": "//tests/fix:tree_read_native",
         "ADD_BLOB": "//programs/fix:addblob_elf",
         "BINDINGS": "//fix/sdk:c_bindings_native",
+        "MEMORY_LIMITS": "//tests/fix:memory_limits_native",
         "CAPTURE": "//tests/fix:capture_determinism_native",
         "PARSER": "//programs/fix/parser:parser_elf",
-        "FIX_SERIAL_SCHEDULER": "//fix/scheduler:serial",
+        "FIX_SERIAL_SCHEDULER": "//programs/fix/schedulers:serial_elf",
         "FIX_SCHEDULER": "//programs/fix:scheduler_elf",
         "FIX_COLLECTOR": "//fix/proof/collector:collector_elf",
     },

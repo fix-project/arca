@@ -4,9 +4,11 @@ use crate::{
     handle::*,
     repository::{Repository, RepositoryError},
 };
+use alloc::sync::Arc;
 use alloc::{format, string::String, vec::Vec};
 use common::protocol::control::{ErrorKind, StandardStream};
-use kernel::host::fs::File;
+use fixstorage::Storage;
+use kernel::{host::fs::File, kthread::KMutex};
 
 #[derive(Debug)]
 pub enum CliError {
@@ -30,15 +32,24 @@ impl core::fmt::Display for CliError {
                 f.write_str("invalid Fix repository")
             }
             Self::Repository(RepositoryError::InvalidLabel) => f.write_str("invalid label name"),
+            Self::Repository(RepositoryError::LabelConflict) => f.write_str("label changed"),
             Self::Repository(RepositoryError::MissingLabel { name, repository }) => {
                 write!(f, "label {name:?} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingObject { name, repository }) => {
+                write!(f, "value {name} not found in repository {repository:?}")
+            }
+            Self::Repository(RepositoryError::MissingBacking { name, repository }) => {
+                write!(
+                    f,
+                    "backing data for {name} not found in repository {repository:?}"
+                )
             }
             Self::Repository(RepositoryError::NonCanonical) => {
                 f.write_str("expected a canonical handle")
             }
-            Self::Repository(RepositoryError::Io(ErrorKind::NotFound)) => {
-                f.write_str("value or label is not present in this repository")
-            }
+            Self::Repository(RepositoryError::Certificate(error)) => write!(f, "{error}"),
+            Self::Repository(error @ RepositoryError::AmbiguousName { .. }) => write!(f, "{error}"),
             Self::Handle(Error::WrongType)
             | Self::Repository(RepositoryError::Handle(Error::WrongType)) => {
                 f.write_str("value has the wrong Fix type")
@@ -97,14 +108,26 @@ fn report(
 }
 
 pub fn run(arguments: &[String]) -> Result<u8, CliError> {
-    let (status, output) = execute(arguments, &mut None)?;
-    File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    let (no_result, arguments) = if let [flag, rest @ ..] = arguments
+        && flag == "--no-result"
+    {
+        (true, rest)
+    } else {
+        (false, arguments)
+    };
+    let (status, output) = execute(arguments, &KMutex::new(None), None, None)
+        .unwrap_or_else(|error| (2, format!("{error}\n")));
+    if !no_result || status == 2 {
+        File::stdio(StandardStream::Stdout)?.try_write_all(output.as_bytes())?;
+    }
     Ok(status)
 }
 
 fn execute(
     mut arguments: &[String],
-    retained: &mut Option<alloc::sync::Arc<crate::storage::repository::RepositoryStorage>>,
+    retained: &KMutex<Option<Arc<crate::storage::repository::RepositoryStorage>>>,
+    session: Option<Arc<crate::session::Scheduler>>,
+    stdio: Option<u64>,
 ) -> Result<(u8, String), CliError> {
     let mut trust = if let [flag, contents, rest @ ..] = arguments
         && flag == "--trust"
@@ -113,6 +136,25 @@ fn execute(
         crate::arca::trust::Trust::parse(contents).map_err(CliError::Trust)?
     } else {
         crate::arca::trust::Trust::default()
+    };
+    let remotes = if let [flag, contents, rest @ ..] = arguments
+        && flag == "--remotes"
+    {
+        arguments = rest;
+        fixremote::Config::parse(contents.as_bytes())
+            .map_err(|_| CliError::Usage("invalid remote configuration"))?
+    } else {
+        fixremote::Config::default()
+    };
+    let workers = if let [flag, count, rest @ ..] = arguments
+        && flag == "--workers"
+    {
+        arguments = rest;
+        count
+            .parse::<usize>()
+            .map_err(|_| CliError::Usage("invalid application worker count"))?
+    } else {
+        kernel::ncores()
     };
     let profile = if arguments.first().is_some_and(|arg| arg == "--profile") {
         arguments = &arguments[1..];
@@ -124,7 +166,7 @@ fn execute(
         return Err(CliError::Usage("expected a command"));
     };
     let mut arguments = arguments[1..].to_vec();
-    let repository = Repository::discover(".")?;
+    let repository = Repository::discover(".")?.with_policy(remotes.policy.clone());
     let mut memoize = fix::Memoization::Auto;
     if let Some(index) = arguments.iter().position(|arg| arg == "--memoize") {
         memoize = arguments
@@ -134,20 +176,47 @@ fn execute(
             .map_err(CliError::Usage)?;
         arguments.drain(index..index + 2);
     }
-    let storage = retained
-        .get_or_insert_with(|| {
-            alloc::sync::Arc::new(crate::storage::repository::RepositoryStorage::new(
-                repository,
-            ))
-        })
-        .clone();
+    if let Some(session) = &session {
+        memoize = session.memoize;
+    }
+    let storage = {
+        let mut retained = retained.lock();
+        if retained.is_none() {
+            let mut storage = crate::storage::repository::RepositoryStorage::new(repository);
+            for remote in &remotes.remotes {
+                if let Some(path) = remote.address.strip_prefix("file://") {
+                    match Repository::open(path) {
+                        Ok(source) if source.path() != storage.repository().path() => {
+                            storage.add_source(source.with_policy(remotes.policy.clone()));
+                        }
+                        Ok(_) | Err(RepositoryError::NotInitialized) => (),
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+            *retained = Some(alloc::sync::Arc::new(storage));
+        }
+        retained.as_ref().unwrap().clone()
+    };
     let repository = storage.repository();
+    for name in &remotes.policy.trusted_taggers {
+        trust.trust_tagger_name(name).map_err(CliError::Trust)?;
+    }
     if command == "call" {
+        if workers == 0 {
+            return Err(CliError::Backend(
+                "local application execution is disabled (-j0); use a distributed scheduler".into(),
+            ));
+        }
         let [combination] = arguments.as_slice() else {
             return Err(CliError::Usage("expected a callable combination"));
         };
         let combination = Tree::try_from(crate::api::resolve(repository, combination)?)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes)
+            .with_session(session, stdio);
         return report(&backend, backend.call(combination));
     }
     if command == "schedule" {
@@ -185,7 +254,27 @@ fn execute(
                 .add_tagger(&*storage, tagger)
                 .map_err(CliError::Trust)?;
         }
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        let fields = storage.get_tree(combination).map_err(|error| {
+            CliError::Backend(alloc::format!(
+                "could not read scheduler combination: {error:?}"
+            ))
+        })?;
+        if let Some(collector) = fields.get(3)
+            && let Ok(collector) = Tree::try_from(*collector)
+            && !collector.is_empty()
+            && !trust
+                .is_tagger(&*storage, collector)
+                .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes)
+            .with_session(session, stdio);
         let result = backend
             .schedule(combination, todos)
             .map_err(CliError::Backend)?;
@@ -198,10 +287,19 @@ fn execute(
         let scheduler = Tree::try_from(crate::api::resolve(repository, scheduler)?)?;
         let collector = Tree::try_from(crate::api::resolve(repository, collector)?)?;
         let value = crate::api::resolve(repository, value)?;
-        trust
-            .add_tagger(&*storage, collector)
-            .map_err(CliError::Trust)?;
-        let backend = crate::api::Backend::new(storage, trust, memoize).with_profile(profile);
+        if !trust
+            .is_tagger(&*storage, collector)
+            .map_err(CliError::Trust)?
+        {
+            return Err(CliError::Trust(
+                crate::runtime::arca::trust::TrustError::UntrustedTagger,
+            ));
+        }
+        let backend = crate::api::Backend::new(storage, trust, memoize)
+            .with_workers(workers)
+            .with_profile(profile)
+            .with_remotes(remotes)
+            .with_session(session, stdio);
         let result = backend
             .eval(value, scheduler, collector)
             .map_err(CliError::Backend)?;
@@ -210,66 +308,33 @@ fn execute(
     Err(CliError::Usage("expected call, schedule, or evaluate"))
 }
 
-pub fn serve() -> Result<(), CliError> {
-    use common::{BuddyAllocator, buffer::Buffer};
-    let mut input = File::stdio(StandardStream::Stdin)?;
-    let mut output = File::stdio(StandardStream::Stdout)?;
-    fn read(input: &mut File, size: usize) -> Result<Option<Vec<u8>>, CliError> {
-        let mut bytes = alloc::vec::Vec::with_capacity_in(size, BuddyAllocator);
-        bytes.resize(size, 0);
-        let mut buffer = Buffer::from(bytes);
-        let mut offset = 0;
-        while offset < size {
-            let n = input.try_read(&mut buffer.slice_mut(offset..))?;
-            if n == 0 {
-                return if offset == 0 {
-                    Ok(None)
-                } else {
-                    Err(CliError::Usage("truncated session request"))
-                };
-            }
-            offset += n;
-        }
-        Ok(Some(buffer.to_vec()))
-    }
-    let mut storage = None;
-    while let Some(length) = read(&mut input, 4)? {
-        let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
-        let frame =
-            read(&mut input, length)?.ok_or(CliError::Usage("truncated session request"))?;
-        let (reuse, mut remaining) = frame
-            .split_first()
-            .ok_or(CliError::Usage("missing session storage flag"))?;
-        match reuse {
-            0 => storage = None,
-            1 => {}
-            _ => return Err(CliError::Usage("invalid session storage flag")),
-        }
-        let mut arguments = Vec::new();
-        while !remaining.is_empty() {
-            let (length, rest) = remaining
-                .split_first_chunk::<4>()
-                .ok_or(CliError::Usage("truncated session argument"))?;
-            let length = u32::from_le_bytes(*length) as usize;
-            let (bytes, rest) = rest
-                .split_at_checked(length)
-                .ok_or(CliError::Usage("truncated session argument"))?;
-            arguments.push(
-                String::from_utf8(bytes.to_vec())
-                    .map_err(|_| CliError::Usage("invalid session argument"))?,
-            );
-            remaining = rest;
-        }
-        let (status, response) = if arguments.is_empty() {
-            (0, String::new())
-        } else {
-            execute(&arguments, &mut storage).unwrap_or_else(|error| (2, format!("{error}")))
+pub fn daemon(arguments: &[String]) -> Result<(), CliError> {
+    let [scheduler, collector, memoize, prefix @ ..] = arguments else {
+        return Err(CliError::Usage("expected session scheduler and collector"));
+    };
+    let scheduler = crate::session::Scheduler::new(
+        scheduler.clone(),
+        collector.clone(),
+        memoize.parse().map_err(CliError::Usage)?,
+    );
+    let storage = Arc::new(KMutex::new(None));
+    loop {
+        let Some(command) = kernel::host::session::next()? else {
+            return Ok(());
         };
-        let mut frame = Vec::with_capacity(5 + response.len());
-        frame.push(status);
-        frame.extend_from_slice(&(response.len() as u32).to_le_bytes());
-        frame.extend_from_slice(response.as_bytes());
-        output.try_write_all(&frame)?;
+        let mut arguments = prefix.to_vec();
+        arguments.extend(command.arguments);
+        let scheduler = scheduler.clone();
+        let storage = storage.clone();
+        kernel::kthread::spawn(move || {
+            let (status, output) = execute(&arguments, &storage, Some(scheduler), command.stdio)
+                .unwrap_or_else(|error| (2, format!("{error}\n")));
+            kernel::host::session::reply(
+                command.connection,
+                command.request,
+                status,
+                output.into_bytes(),
+            );
+        });
     }
-    Ok(())
 }

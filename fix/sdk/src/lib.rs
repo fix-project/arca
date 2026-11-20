@@ -47,6 +47,7 @@ pub enum Error {
     WrongType = 3,
     Busy = 6,
     NotComparable = 4,
+    MemoryUnavailable = 7,
 }
 
 impl From<core::num::TryFromIntError> for Error {
@@ -106,6 +107,17 @@ pub fn advise(value: &impl Value, key: &str, payload: &[u8]) -> Result<(), Error
         )
     };
     Ok(())
+}
+
+/// Report completed and total units of work for this task.
+pub fn progress(value: &impl Value, completed: u64, total: u64) -> Result<(), Error> {
+    if completed > total {
+        return Err(Error::OutOfBounds);
+    }
+    let mut payload = [0; 16];
+    payload[..8].copy_from_slice(&completed.to_le_bytes());
+    payload[8..].copy_from_slice(&total.to_le_bytes());
+    advise(value, advice::PROGRESS, &payload)
 }
 
 pub mod advice {

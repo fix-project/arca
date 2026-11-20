@@ -58,7 +58,7 @@ pub fn apply<'a>(
             .shallow();
         let child_keys = tree![child, 0u64].reference().selection().strict();
         Right(Right(
-            tree![Blob::create(b""), function, child_keys, child, key_h]
+            tree![combination.get(0), function, child_keys, child, key_h]
                 .reference()
                 .application()
                 .erase(),

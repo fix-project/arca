@@ -52,6 +52,28 @@ fn saved_values_are_readable_after_reopening() {
 }
 
 #[test]
+fn a_repository_can_read_from_an_implicit_storage_source() {
+    let path = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("storage-source-{}", std::process::id()));
+    std::fs::create_dir_all(path.join("user")).unwrap();
+    std::fs::create_dir(path.join("project")).unwrap();
+    let source = fixrepository::Repository::init(path.join("user/.fix").to_str().unwrap()).unwrap();
+    let blob = source.create_blob(&[7; 128]).unwrap();
+    let project =
+        fixrepository::Repository::init(path.join("project/.fix").to_str().unwrap()).unwrap();
+    let storage = repository::RepositoryStorage::new(project).with_source(source);
+    assert!(storage.identify(blob.as_handle().as_bytes()).is_ok());
+    assert!(storage.has_blob(blob));
+    assert_eq!(storage.get_blob(blob).unwrap().as_ref(), &[7; 128]);
+    assert!(!storage.repository().has_backing(blob.object()).unwrap());
+    storage.save(blob.into()).unwrap();
+    assert!(storage.repository().has_backing(blob.object()).unwrap());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn canonicalization_preserves_deep_graphs() {
     let storage = MemoryStorage::default();
     let mut machine: Handle = Blob::literal(b"leaf").unwrap().into();
@@ -135,4 +157,94 @@ fn loading_retries_newly_published_descendants() {
     storage.load(parent.into());
     assert_eq!(storage.get_blob(child).unwrap().as_ref(), &contents);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn friendly_names_use_labels_and_fix_notation_without_materializing_data() {
+    let storage = MemoryStorage::default();
+    let module = Blob::canonical(&[41; 64]).unwrap();
+    let reference = module.into_ref();
+    let labels = [(
+        *reference.as_handle().as_bytes(),
+        alloc::string::String::from("module"),
+    )];
+    let input: Handle = reference.identification().strict().into();
+    assert_eq!(storage.friendly_name(input, &labels), "*'module");
+    assert_eq!(storage.friendly_name(module.into(), &labels), "*'module");
+    let selection = storage
+        .add_tree(&[
+            reference.into(),
+            Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
+        ])
+        .into_ref()
+        .selection();
+    assert_eq!(
+        storage.friendly_name(selection.into(), &labels),
+        "[module 0u64]"
+    );
+    assert_eq!(
+        storage.friendly_name(selection.strict().into(), &labels),
+        "*[module 0u64]"
+    );
+    let object_labels = [(
+        *module.as_handle().as_bytes(),
+        alloc::string::String::from("bytes"),
+    )];
+    assert_eq!(
+        storage.friendly_name(reference.into(), &object_labels),
+        "&bytes"
+    );
+    assert_eq!(storage.friendly_name(input, &object_labels), "*'bytes");
+    let coupon = storage.certificate(1, input, reference.into());
+    let coupon: Handle = storage.canonicalize(coupon.into()).unwrap().into();
+    assert_eq!(
+        storage.friendly_name(coupon, &labels),
+        "Eval(*'module, module)"
+    );
+    assert_eq!(
+        storage.friendly_name(coupon.object_descriptor().into_ref().into(), &labels),
+        "&Eval(*'module, module)"
+    );
+}
+
+#[test]
+fn friendly_coupons_describe_either_named_side() {
+    let storage = MemoryStorage::default();
+    let named = Blob::canonical(&[53; 64]).unwrap().into_ref();
+    let other = Blob::canonical(&[54; 64]).unwrap().into_ref();
+    let labels = [(
+        *named.as_handle().as_bytes(),
+        alloc::string::String::from("module"),
+    )];
+    let input_named = storage.certificate(1, named.into(), other.into());
+    let result_named = storage.certificate(1, other.into(), named.into());
+    let input_named: Handle = storage.canonicalize(input_named.into()).unwrap().into();
+    let result_named: Handle = storage.canonicalize(result_named.into()).unwrap().into();
+    let other = storage.friendly_name(other.into(), &labels);
+    assert_eq!(
+        storage.friendly_name(input_named, &labels),
+        format!("Eval(module, {other})")
+    );
+    assert_eq!(
+        storage.friendly_name(result_named, &labels),
+        format!("Eval({other}, module)")
+    );
+}
+
+#[test]
+fn friendly_canonical_prefixes_distinguish_known_names_and_preserve_type() {
+    let storage = MemoryStorage::default();
+    let module = Blob::canonical(&[42; 64]).unwrap();
+    let mut neighbor = *module.as_handle().as_bytes();
+    neighbor[4] ^= 0x10;
+    storage.register_names([neighbor]);
+    let full = format!("{}", module.as_handle());
+    assert_eq!(
+        storage.friendly_name(module.into(), &[]),
+        format!("{}.80", &full[..9])
+    );
+    assert_eq!(
+        storage.friendly_name(module.into_ref().into(), &[]),
+        format!("{}.90", &full[..9])
+    );
 }

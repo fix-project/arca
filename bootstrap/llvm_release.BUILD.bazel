@@ -1,0 +1,15 @@
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "bin/clang",
+    "bin/clang++",
+    "bin/clang-23",
+    "bin/wasm-ld",
+    "bin/ld.lld",
+    "bin/lld",
+    "bin/llvm-ar",
+    "bin/llvm-ranlib",
+])
+
+filegroup(name = "resources", srcs = glob(["lib/clang/23/**"]))
+filegroup(name = "sysroot", srcs = glob(["share/wasi-sysroot/include/**", "share/wasi-sysroot/lib/**"]))

@@ -4,15 +4,17 @@ extern crate alloc;
 #[cfg(target_os = "linux")]
 extern crate std;
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, string::String};
 use fixhandle::*;
 pub use fixrepository::StorageError;
 
 mod data;
+mod friendly;
 pub mod memory;
 mod platform;
 pub mod repository;
 pub use data::ImmutableBytes;
+pub const OBJECT_METADATA: usize = 16384;
 #[cfg(not(target_os = "linux"))]
 pub use data::backing_value;
 
@@ -80,6 +82,11 @@ impl core::borrow::Borrow<[u8; HANDLE_SIZE]> for CanonicalHandle {
 
 /// An object store, capable of saving and retrieving Fix objects.
 pub trait Storage {
+    /// Describe a value using labels and available metadata, without loading its backing.
+    fn friendly_name(&self, value: Handle, _labels: &[([u8; 32], String)]) -> String {
+        alloc::format!("{value}")
+    }
+
     /// Resolves bytes using the store's naming authority.
     fn identify(&self, _bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         Err(StorageError::UnsupportedName)
@@ -204,6 +211,10 @@ pub trait Storage {
 }
 
 impl<S: Storage + ?Sized> Storage for alloc::sync::Arc<S> {
+    fn friendly_name(&self, value: Handle, labels: &[([u8; 32], String)]) -> String {
+        (**self).friendly_name(value, labels)
+    }
+
     fn identify(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         (**self).identify(bytes)
     }

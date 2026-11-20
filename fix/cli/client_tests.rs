@@ -3,7 +3,10 @@ use fixcli::{Client, Options};
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    sync::Once,
 };
+
+static CONFIGURE_TRUST: Once = Once::new();
 
 fn input(name: &str) -> PathBuf {
     PathBuf::from(std::env::var("TEST_SRCDIR").unwrap())
@@ -29,6 +32,11 @@ fn repository(name: &str) -> PathBuf {
         .arg(format!("scheduler={}", input(env!("SCHEDULER")).display()))
         .arg(format!("collector={}", input(env!("COLLECTOR")).display()))
         .arg(format!("add={}", input(env!("ADD")).display()))
+        .arg(format!("fix-parser={}", input(env!("PARSER")).display()))
+        .arg(format!(
+            "scheduler-failure={}",
+            input(env!("SCHEDULER_FAILURE")).display()
+        ))
         .current_dir(&directory)
         .output()
         .unwrap();
@@ -37,18 +45,376 @@ fn repository(name: &str) -> PathBuf {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    CONFIGURE_TRUST.call_once(|| {
+        let config = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("api-config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("trusted_taggers"),
+            format!(
+                "{}\n",
+                std::fs::read_to_string(directory.join(".fix/labels/collector"))
+                    .unwrap()
+                    .trim()
+            ),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("FIX_CONFIG_DIR", config) };
+    });
     directory
 }
 fn client(directory: &Path) -> Client {
     Client::open(
         directory,
         Options {
-            trust: Some(directory.join(".fix/trust")),
-            memory_mib: 128,
+            executable: input(env!("BACKEND")),
+            trust: directory
+                .join(".fix/trust")
+                .exists()
+                .then(|| directory.join(".fix/trust")),
+            unsigned: true,
+            memory_mib: 2048,
             ..Options::default()
         },
     )
     .unwrap()
+}
+
+#[test]
+fn repository_sessions_join_once_and_keep_their_settings() {
+    let directory = repository("shared-session");
+    let mut options = client(&directory).options().clone();
+    options.session_id = Some([17; 16]);
+    let mut first = Client::open(&directory, options.clone()).unwrap();
+    let node = first.node_identity().unwrap();
+    let mut proposed = options.clone();
+    proposed.jobs = 3;
+    proposed.memory_mib = 4096;
+    proposed.scheduler = "unused-proposed-scheduler".into();
+    proposed.collector = "unused-proposed-collector".into();
+    let mut repeated = Client::open(&directory, proposed.clone()).unwrap();
+    assert_eq!(repeated.node_identity().unwrap(), node);
+    assert_eq!(repeated.options().jobs, options.jobs);
+    assert_eq!(repeated.options().memory_mib, options.memory_mib);
+    assert_eq!(repeated.options().scheduler, options.scheduler);
+    assert_eq!(repeated.options().collector, options.collector);
+    proposed.session_id = Some([29; 16]);
+    let mut conflicting = Client::open(&directory, proposed.clone()).unwrap();
+    assert!(
+        conflicting
+            .node_identity()
+            .unwrap_err()
+            .to_string()
+            .contains("different session")
+    );
+    proposed.join_session = true;
+    let mut joined = Client::open(&directory, proposed).unwrap();
+    assert_eq!(joined.node_identity().unwrap(), node);
+    drop(first);
+    let expected = joined.blob(b"shared result").unwrap();
+    let actual = joined.eval(&expected).unwrap();
+    assert_eq!(
+        joined.save(&actual).unwrap(),
+        joined.save(&expected).unwrap()
+    );
+    drop(repeated);
+    let actual = joined.eval(&expected).unwrap();
+    assert_eq!(
+        joined.save(&actual).unwrap(),
+        joined.save(&expected).unwrap()
+    );
+    drop(joined);
+    options.session_id = Some([31; 16]);
+    let mut replacement = Client::open(&directory, options).unwrap();
+    assert_ne!(replacement.node_identity().unwrap(), node);
+}
+
+#[test]
+fn scheduler_failures_report_the_scheduler_and_guest_error() {
+    let directory = repository("scheduler-errors");
+    for (input, expected) in [
+        (0u64, "Rust panic: named input cannot be loaded"),
+        (1u64, "unexpected scheduler result"),
+    ] {
+        let scheduler = "scheduler-failure";
+        let mut options = client(&directory).options().clone();
+        options.scheduler = scheduler.into();
+        let mut client = Client::open(&directory, options).unwrap();
+        let program = client.lookup(scheduler).unwrap();
+        let program = client.save(&program).unwrap();
+        let input = client.blob(&input.to_le_bytes()).unwrap();
+        let error = match client.eval(&input) {
+            Ok(_) => panic!("expected the malformed scheduler invocation to fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(&program), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn parser_failures_are_distinct_from_literal_error_values() {
+    let directory = repository("parser-responses");
+    let invoke = |source: &str, config: &Path| {
+        Command::new(input(env!("BACKEND")))
+            .args(["-j", "1", "--memory", "2048", "eval", source])
+            .current_dir(&directory)
+            .env("FIX_TRUST", directory.join(".fix/trust"))
+            .env("FIX_UNSIGNED", "true")
+            .env("FIX_CONFIG_DIR", config)
+            .output()
+            .unwrap()
+    };
+    let config = PathBuf::from(std::env::var_os("FIX_CONFIG_DIR").unwrap());
+    let failed = invoke("(", &config);
+    assert!(!failed.status.success());
+    let diagnostic = String::from_utf8(failed.stderr).unwrap();
+    assert!(
+        diagnostic.contains("parser fix-parser failed for"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("unexpected"), "{diagnostic}");
+    let output = invoke(r#"("Rust.panic" "valid data")"#, &config);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let name = String::from_utf8(output.stdout).unwrap();
+    let mut client = client(&directory);
+    let value = client.lookup(name.trim()).unwrap();
+    let message = client.get(&value, 1).unwrap();
+    let mut bytes = [0; 10];
+    client.read(&message, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"valid data");
+
+    let name = name.trim();
+    let output = invoke(
+        &format!("@handle(\"{}.{}\")", &name[..12], &name[62..]),
+        &config,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), name);
+
+    let untrusted = directory.join("untrusted-config");
+    std::fs::create_dir(&untrusted).unwrap();
+    let output = invoke(r#""input""#, &untrusted);
+    assert_eq!(output.status.code(), Some(2));
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.contains("not a trusted tagger"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("evaluate ") && diagnostic.contains("failed:"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn an_empty_repository_uses_user_default_programs() {
+    let root = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("user-defaults");
+    let user = repository("user-defaults");
+    let data = root.join("data");
+    std::fs::create_dir_all(data.join("fix/bootstrap")).unwrap();
+    std::fs::rename(user.join(".fix"), data.join("fix/bootstrap/.fix")).unwrap();
+    let bootstrap_repository =
+        fixrepository::Repository::open(data.join("fix/bootstrap/.fix").to_str().unwrap())
+            .unwrap()
+            .unsigned();
+    let scheduler = bootstrap_repository.read_label("scheduler").unwrap();
+    bootstrap_repository
+        .write_label("serial", scheduler)
+        .unwrap();
+    let user_repository = fixrepository::Repository::init(user.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    let mut home_client = client(&user);
+    let home_blob = home_client.blob(b"home").unwrap();
+    home_client.label("payload", &home_blob).unwrap();
+    std::fs::remove_file(data.join("fix/bootstrap/.fix/labels/scheduler")).unwrap();
+    let project = root.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let initialized = Command::new(input(env!("BACKEND")))
+        .arg("init")
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let repository =
+        fixrepository::Repository::open(project.join(".fix").to_str().unwrap()).unwrap();
+    let remotes = repository.remotes().unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "bootstrap");
+    assert_eq!(
+        remotes[0].address,
+        format!("file://{}", data.join("fix/bootstrap/.fix").display())
+    );
+    for (setting, name) in [
+        (
+            "scheduler",
+            bootstrap_repository
+                .read_label("serial")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "collector",
+            bootstrap_repository
+                .read_label("collector")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "parser",
+            bootstrap_repository
+                .read_label("fix-parser")
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "compiler",
+            bootstrap_repository
+                .read_label("compile")
+                .unwrap()
+                .to_string(),
+        ),
+    ] {
+        let configured = Command::new(input(env!("BACKEND")))
+            .args(["config", "--global", setting, &name])
+            .current_dir(&project)
+            .env("FIX_CONFIG_DIR", user.join("config"))
+            .env("XDG_DATA_HOME", &data)
+            .output()
+            .unwrap();
+        assert!(configured.status.success());
+    }
+    std::fs::write(
+        user.join("config/trusted_taggers"),
+        format!(
+            "{}\n",
+            bootstrap_repository.read_label("collector").unwrap()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(input(env!("BACKEND")))
+        .args(["-j", "1", "--memory", "2048", "eval", "1u64"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let repository = fixrepository::Repository::open(project.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    assert!(repository.labels().unwrap().is_empty());
+    assert!(
+        std::fs::read_dir(project.join(".fix/objects"))
+            .unwrap()
+            .next()
+            .is_some()
+    );
+    let mut project_client = client(&project);
+    let project_blob = project_client.blob(b"project").unwrap();
+    project_client.label("payload", &project_blob).unwrap();
+    let project_value = repository.read_label("payload").unwrap();
+    let file_url = format!("file://{}", user.join(".fix").display());
+    let added = Command::new(input(env!("BACKEND")))
+        .args(["remote", "add", "home", &file_url])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .output()
+        .unwrap();
+    assert!(added.status.success());
+    let synced = Command::new(input(env!("BACKEND")))
+        .args(["pull", "--exact", "home", "payload"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .output()
+        .unwrap();
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    let replacement = home_client.blob(b"new home").unwrap();
+    home_client.label("payload", &replacement).unwrap();
+    let pulled = Command::new(input(env!("BACKEND")))
+        .args(["pull", "--exact", "home", "payload", "from-home"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .output()
+        .unwrap();
+    assert!(
+        pulled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    assert_eq!(
+        repository.read_label("payload").unwrap().as_bytes(),
+        project_value.as_bytes()
+    );
+    assert_eq!(
+        repository.read_label("from-home").unwrap().as_bytes(),
+        user_repository.read_label("payload").unwrap().as_bytes()
+    );
+    let labels = Command::new(input(env!("BACKEND")))
+        .args(["remote", "labels", "home"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .output()
+        .unwrap();
+    assert!(labels.status.success());
+    assert!(
+        String::from_utf8(labels.stdout)
+            .unwrap()
+            .contains("home:payload\t")
+    );
+    let pushed = Command::new(input(env!("BACKEND")))
+        .args(["push", "--exact", "home", "payload", "project-copy"])
+        .current_dir(&project)
+        .env("FIX_CONFIG_DIR", user.join("config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+        .output()
+        .unwrap();
+    assert!(
+        pushed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pushed.stderr)
+    );
+    assert_eq!(
+        user_repository
+            .read_label("project-copy")
+            .unwrap()
+            .as_bytes(),
+        project_value.as_bytes()
+    );
 }
 
 #[test]
@@ -83,6 +449,10 @@ fn local_values_can_be_read_without_an_evaluator_and_saved() {
 
     let mut client = Client::open(&directory, Options::default()).unwrap();
     let restored = client.lookup(&name).unwrap();
+    let abbreviated = client
+        .lookup(&format!("{}.{suffix}", &name[..12], suffix = &name[62..]))
+        .unwrap();
+    assert!(client.equals(&restored, &abbreviated).unwrap());
     let child = client.get(&restored, 0).unwrap();
     let mut result = vec![0; contents.len()];
     client.read(&child, 0, &mut result).unwrap();
@@ -93,11 +463,10 @@ fn local_values_can_be_read_without_an_evaluator_and_saved() {
 fn persistent_session_values_evaluation_and_storage() {
     let directory = repository("roundtrip");
     let mut session = client(&directory);
-    session.reuse_vm();
     let left = session.blob(&20u64.to_le_bytes()).unwrap();
     let right = session.blob(&22u64.to_le_bytes()).unwrap();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add, left, right]).unwrap();
     let application = session.application(&combination).unwrap();
     assert_eq!(session.value_type(&application).unwrap(), ValueType::Thunk);
@@ -147,12 +516,12 @@ fn a_trapped_invocation_does_not_terminate_the_host() {
     let directory = repository("failed-invocation");
     let mut session = client(&directory);
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
     let result = session.call(&combination).unwrap();
     assert_trap(&mut session, &result, 1);
     for number in [20u64, 21] {
-        let metadata = session.blob(b"").unwrap();
+        let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
         let add = session.lookup("add").unwrap();
         let argument = session.blob(&number.to_le_bytes()).unwrap();
         let combination = session
@@ -171,6 +540,7 @@ fn coupon_persistence_modes() {
     fn claims(directory: &Path) -> std::collections::BTreeSet<String> {
         fixrepository::Repository::open(directory.join(".fix").to_str().unwrap())
             .unwrap()
+            .unsigned()
             .claims(&[])
             .unwrap()
             .iter()
@@ -187,8 +557,10 @@ fn coupon_persistence_modes() {
         let mut session = Client::open(
             &directory,
             Options {
+                executable: input(env!("BACKEND")),
                 trust: Some(directory.join(".fix/trust")),
-                memory_mib: 128,
+                unsigned: true,
+                memory_mib: 2048,
                 memoize: mode,
                 ..Options::default()
             },
@@ -197,7 +569,7 @@ fn coupon_persistence_modes() {
         let left = session.blob(&20u64.to_le_bytes()).unwrap();
         let right = session.blob(&22u64.to_le_bytes()).unwrap();
         let add = session.lookup("add").unwrap();
-        let metadata = session.blob(b"").unwrap();
+        let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
         let combination = session.tree(&[metadata, add, left, right]).unwrap();
         let application = session.application(&combination).unwrap();
         let request = session.strict(&application).unwrap();
@@ -222,9 +594,8 @@ fn coupon_persistence_modes() {
 fn persistent_session_returns_guest_traps() {
     let directory = repository("failed-session");
     let mut session = client(&directory);
-    session.reuse_vm();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add]).unwrap();
     let result = session.call(&combination).unwrap();
     assert_trap(&mut session, &result, 1);
@@ -242,7 +613,7 @@ fn perf_capture_preserves_results_and_exports_callchains() {
     let left = session.blob(&20u64.to_le_bytes()).unwrap();
     let right = session.blob(&22u64.to_le_bytes()).unwrap();
     let add = session.lookup("add").unwrap();
-    let metadata = session.blob(b"").unwrap();
+    let metadata = session.blob(&(512u64 << 20).to_le_bytes()).unwrap();
     let combination = session.tree(&[metadata, add, left, right]).unwrap();
     let combination = session.save(&combination).unwrap();
     let expected = session.blob(&42u64.to_le_bytes()).unwrap();
@@ -252,8 +623,9 @@ fn perf_capture_preserves_results_and_exports_callchains() {
     let output = Command::new(input(env!("BACKEND")))
         .arg("--perf")
         .arg(&profile)
-        .args(["--memory", "128", "-j", "2", "call", &combination])
+        .args(["--memory", "2048", "-j", "2", "call", &combination])
         .current_dir(&directory)
+        .env("FIX_UNSIGNED", "true")
         .env("FIX_TRUST", directory.join(".fix/trust"))
         .output()
         .unwrap();
@@ -284,4 +656,232 @@ fn perf_capture_preserves_results_and_exports_callchains() {
         cursor += size;
     }
     assert_eq!(cursor, end);
+}
+
+#[test]
+fn info_describes_unloaded_names_metadata_and_coupon_claims() {
+    use fixrepository::{
+        Repository,
+        handle::{Blob, Tree},
+    };
+    let directory = PathBuf::from(std::env::var("TEST_TMPDIR").unwrap()).join("info");
+    std::fs::create_dir(&directory).unwrap();
+    let repository = Repository::init(directory.join(".fix").to_str().unwrap())
+        .unwrap()
+        .unsigned();
+    let blob = Blob::canonical(&[37; 1024]).unwrap();
+    let reference = blob.into_ref();
+    repository.write_label("payload", reference.into()).unwrap();
+    let uri = repository
+        .create_blob(b"https://example.invalid/payload")
+        .unwrap();
+    let sources = repository.create_tree(&[uri.into()]).unwrap();
+    repository
+        .set_todo(reference.into(), sources.into())
+        .unwrap();
+    let result = Blob::literal(&42u64.to_le_bytes()).unwrap();
+    let claim = repository
+        .create_tree(&[
+            Blob::literal(&1u64.to_le_bytes()).unwrap().into(),
+            reference.into(),
+            result.into(),
+        ])
+        .unwrap();
+    let fields = [Tree::empty().into(), claim.into_ref().into()];
+    let coupon = Tree::canonical(&fields).unwrap().tag_descriptor();
+    repository
+        .publish(
+            coupon.into(),
+            &fields
+                .iter()
+                .flat_map(|field| *field.as_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    for kind in [b"Runnable".as_slice(), b"Example annotation".as_slice()] {
+        let fields = [
+            Tree::empty().into(),
+            reference.into(),
+            Blob::literal(kind).unwrap().into(),
+        ];
+        let tag = Tree::canonical(&fields).unwrap().tag_descriptor();
+        repository
+            .publish(
+                tag.into(),
+                &fields
+                    .iter()
+                    .flat_map(|field| *field.as_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+    }
+    let identity = fixrepository::handle::Ref::from(reference).identification();
+    for (label, value) in [
+        ("identity", identity.into()),
+        ("encoded", identity.strict().into()),
+    ] {
+        repository.write_label(label, value).unwrap();
+        let inspected = Command::new(input(env!("BACKEND")))
+            .args(["--unsigned", "info", label])
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            inspected.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inspected.stderr)
+        );
+        assert!(
+            String::from_utf8(inspected.stdout)
+                .unwrap()
+                .contains("Identification")
+        );
+    }
+    let output = Command::new(input(env!("BACKEND")))
+        .args([
+            "--unsigned",
+            "info",
+            &format!(
+                "{}.{:02x}",
+                &reference.as_handle().to_string()[..12],
+                reference.as_handle().as_bytes()[31]
+            ),
+        ])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    for text in [
+        "Representation: Ref",
+        "Data: Blob, 1024 bytes",
+        "Local backing: absent",
+        "Labels: payload",
+        "https://example.invalid/payload",
+        "Coupons: 1",
+        "Evaluate:",
+        "Recognized certificates: 1",
+        "Runnable:",
+        "Other tags: 1",
+        "Example annotation",
+        &format!("Name: {}\n", reference.as_handle()),
+        "Evaluate: payload -> 42u64",
+    ] {
+        assert!(report.contains(text), "missing {text:?}: {report}");
+    }
+    for arguments in [
+        vec!["--unsigned", "--no-abbrev", "info", "payload"],
+        vec!["--unsigned", "info", "payload", "--no-abbrev"],
+    ] {
+        let output = Command::new(input(env!("BACKEND")))
+            .args(arguments)
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = String::from_utf8(output.stdout).unwrap();
+        for text in [
+            format!("Name: {}\n", reference.as_handle()),
+            coupon.as_handle().to_string(),
+            result.as_handle().to_string(),
+            format!(
+                "Evaluate: {} -> {}",
+                reference.as_handle(),
+                result.as_handle()
+            ),
+        ] {
+            assert!(report.contains(&text), "missing {text:?}: {report}");
+        }
+    }
+}
+
+#[test]
+fn zero_workers_reject_local_applications_without_waiting_for_a_worker() {
+    let directory = repository("zero-workers");
+    let output = Command::new(input(env!("BACKEND")))
+        .args([
+            "--unsigned",
+            "-j0",
+            "--memory",
+            "2048",
+            "eval",
+            "--encode",
+            "#(268435456u64 @label(\"add\") 1u64 2u64)",
+        ])
+        .env("FIX_TRUST", directory.join(".fix/trust"))
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("local application execution is disabled"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn account_resource_defaults_and_command_overrides() {
+    let directory = repository("resource-defaults");
+    let config = directory.join("account-config");
+    std::fs::create_dir(&config).unwrap();
+    std::fs::copy(
+        directory.join(".fix/labels/collector"),
+        config.join("trusted_taggers"),
+    )
+    .unwrap();
+    let run = |arguments: &[&str]| {
+        Command::new(input(env!("BACKEND")))
+            .args(["--unsigned", "--memoize", "never"])
+            .args(arguments)
+            .env("FIX_CONFIG_DIR", &config)
+            .env("FIX_TRUST", directory.join(".fix/trust"))
+            .env_remove("FIX_JOBS")
+            .current_dir(&directory)
+            .output()
+            .unwrap()
+    };
+    let succeeds = |arguments: &[&str]| {
+        let output = run(arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    succeeds(&["config", "--global", "jobs", "0"]);
+    succeeds(&["config", "--global", "memory", "2048"]);
+    let expression = "#(1073741824u64 @label(\"add\") 1u64 2u64)";
+    let output = run(&["eval", "--encode", expression]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("local application execution is disabled")
+    );
+    succeeds(&["-j", "1", "eval", "--encode", expression]);
+    succeeds(&["config", "jobs", "1"]);
+    succeeds(&["eval", "--encode", expression]);
+    succeeds(&["config", "--global", "memory", "512"]);
+    let output = run(&["eval", "--encode", expression]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("memory admission rejected"));
+    succeeds(&["--memory", "2048", "eval", "--encode", expression]);
+    succeeds(&["config", "memory", "2048"]);
+    succeeds(&["eval", "--encode", expression]);
+    for (key, value) in [
+        ("jobs", "-1"),
+        ("jobs", "bad"),
+        ("memory", "0"),
+        ("memory", "17"),
+    ] {
+        assert!(!run(&["config", "--global", key, value]).status.success());
+    }
 }

@@ -1,5 +1,23 @@
+use alloc::sync::Arc;
 use bytes::Buf;
 use kernel::prelude::{Box, Entry, Null, Page, Table, Tuple, Value, Vec, vec};
+
+#[derive(Default)]
+pub struct RetainedMemory(kernel::kthread::KMutex<Vec<kernel::memory::FreeMemory>>);
+
+impl core::fmt::Debug for RetainedMemory {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RetainedMemory")
+            .field("allocations", &self.0.lock().len())
+            .finish()
+    }
+}
+
+impl RetainedMemory {
+    pub fn keep(&self, memory: kernel::memory::FreeMemory) {
+        self.0.lock().push(memory);
+    }
+}
 
 const CHUNK_SIZE: usize = 1 << 30;
 
@@ -13,6 +31,7 @@ fn is_zero(bytes: &[u8]) -> bool {
 pub struct ImmutableBytes {
     len: usize,
     backing: Backing,
+    memory: Option<Arc<RetainedMemory>>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +76,17 @@ impl Buf for Cursor {
 }
 
 impl ImmutableBytes {
+    pub fn retain(mut self, memory: kernel::memory::FreeMemory) -> Self {
+        self.memory.get_or_insert_with(Arc::default).keep(memory);
+        self
+    }
+
+    pub(crate) fn with_memory(mut self, memory: Arc<RetainedMemory>) -> Self {
+        if self.memory.is_none() {
+            self.memory = Some(memory);
+        }
+        self
+    }
     pub fn into_buf(self) -> impl Buf + Clone {
         let page = (!self.is_empty()).then(|| self.page(0));
         Cursor {
@@ -111,6 +141,7 @@ impl ImmutableBytes {
         Self {
             len,
             backing: Backing::Tables(tables),
+            memory: None,
         }
     }
 
@@ -144,6 +175,7 @@ impl ImmutableBytes {
             return Self {
                 len: 0,
                 backing: Backing::Empty,
+                memory: None,
             };
         }
         if bytes.len() <= 4096 {
@@ -152,6 +184,7 @@ impl ImmutableBytes {
             return Self {
                 len: bytes.len(),
                 backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
+                memory: None,
             };
         }
         let mut tables = Vec::new();
@@ -172,6 +205,7 @@ impl ImmutableBytes {
         Self {
             len: bytes.len(),
             backing: Backing::Tables(tables),
+            memory: None,
         }
     }
 
@@ -214,6 +248,7 @@ impl ImmutableBytes {
                 return Self {
                     len,
                     backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
+                    memory: None,
                 };
             }
             Backing::Page(page) => match Self::from_page(page).mapped_value() {
@@ -251,6 +286,7 @@ impl ImmutableBytes {
         Self {
             len,
             backing: Backing::Tables(tables.into_iter().map(Self::share_mapping).collect()),
+            memory: None,
         }
     }
 
@@ -270,6 +306,7 @@ impl ImmutableBytes {
         Self {
             len,
             backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
+            memory: None,
         }
     }
 

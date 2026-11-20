@@ -6,10 +6,7 @@ pub use shell::{Error as ShellError, Shell};
 use crate::{
     handle::*,
     repository::{Repository, RepositoryError},
-    runtime::{
-        InvalidApplication,
-        arca::{EffectAction, FixOnArca, trust::Trust},
-    },
+    runtime::arca::{EffectAction, FixOnArca, trust::Trust},
     storage::{Storage, memory, repository::RepositoryStorage},
     user_scheduler_driver::Outcome,
 };
@@ -23,6 +20,10 @@ pub struct Backend {
     storage: Arc<RepositoryStorage>,
     runtime: Arc<FixOnArca<Arc<RepositoryStorage>>>,
     profile: bool,
+    workers: usize,
+    remotes: Arc<fixremote::Config>,
+    session: Option<Arc<crate::session::Scheduler>>,
+    stdio: Option<u64>,
 }
 
 impl Backend {
@@ -31,7 +32,26 @@ impl Backend {
             runtime: Arc::new(FixOnArca::memoized(storage.clone(), memoize).with_trust(trust)),
             storage,
             profile: false,
+            workers: kernel::ncores(),
+            remotes: Arc::new(fixremote::Config::default()),
+            session: None,
+            stdio: None,
         }
+    }
+
+    pub fn with_session(
+        mut self,
+        session: Option<Arc<crate::session::Scheduler>>,
+        stdio: Option<u64>,
+    ) -> Self {
+        self.session = session;
+        self.stdio = stdio;
+        self
+    }
+
+    pub fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = workers;
+        self
     }
 
     pub fn with_profile(mut self, enabled: bool) -> Self {
@@ -39,6 +59,11 @@ impl Backend {
         if enabled {
             self.runtime.enable_profile();
         }
+        self
+    }
+
+    pub fn with_remotes(mut self, config: fixremote::Config) -> Self {
+        self.remotes = Arc::new(config);
         self
     }
 
@@ -122,29 +147,113 @@ impl Backend {
     pub fn call(&self, combination: Tree) -> Outcome {
         self.runtime
             .execute_with_effects(combination, false, &mut |_| EffectAction::Unhandled)
-            .map_err(|InvalidApplication| InvalidApplication::request(&*self.storage))
+            .map_err(|error| error.request(&*self.storage, combination.into()))
     }
 
     pub fn schedule(&self, combination: Tree, todos: Vec<(Ref, Blob)>) -> Result<Outcome> {
+        if let Some(session) = &self.session {
+            return session.execute(
+                self.runtime.clone(),
+                combination,
+                self.workers,
+                crate::user_scheduler_driver::RepositoryServices {
+                    storage: self.storage.clone(),
+                    todos,
+                    remotes: self.remotes.clone(),
+                },
+                self.profile,
+                self.stdio,
+            );
+        }
         let report = crate::user_scheduler_driver::start_profiled(
             self.runtime.clone(),
             combination,
-            kernel::ncores(),
+            self.workers,
             crate::user_scheduler_driver::RepositoryServices {
                 storage: self.storage.clone(),
                 todos,
+                remotes: self.remotes.clone(),
             },
             self.profile,
-        )
-        .map_err(String::from)?;
+        )?;
         Ok(report.result)
+    }
+
+    fn scheduler_result_error(&self, scheduler: Tree, result: Handle, reason: &str) -> String {
+        let storage = &*self.storage;
+        let name = |value| match storage.canonicalize(value) {
+            Ok(value) => format!("{}", Handle::from(value)),
+            Err(error) => format!("<canonical name unavailable: {error:?}>"),
+        };
+        let description = match result.view() {
+            HandleView::Object(object) => match object.view() {
+                ObjectView::Blob(blob) => match storage.get_blob(*blob) {
+                    Ok(bytes) => {
+                        let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
+                        if bytes.len() > 256 {
+                            format!("Blob {preview:?}… ({} bytes)", bytes.len())
+                        } else {
+                            format!("Blob {preview:?}")
+                        }
+                    }
+                    Err(error) => format!("unreadable Blob: {error:?}"),
+                },
+                ObjectView::Tree(tree) => {
+                    let detail = (|| {
+                        let fields = storage.get_tree(*tree).ok()?;
+                        if fields.len() != 2 {
+                            return None;
+                        }
+                        let marker = storage.get_blob(Blob::try_from(fields[0]).ok()?).ok()?;
+                        let detail = storage.get_blob(Blob::try_from(fields[1]).ok()?).ok()?;
+                        match marker.as_ref() {
+                            b"Rust.panic" => {
+                                Some(format!("Rust panic: {}", String::from_utf8_lossy(&detail)))
+                            }
+                            b"Fix.error" => {
+                                Some(format!("Fix error: {}", String::from_utf8_lossy(&detail)))
+                            }
+                            b"Wasm.trap" if detail.len() == 4 => Some(format!(
+                                "Wasm trap code {}",
+                                u32::from_le_bytes(detail.as_ref().try_into().unwrap())
+                            )),
+                            b"Fix.memory" if detail.len() == 8 => Some(format!(
+                                "memory limit exceeded ({} bytes)",
+                                u64::from_le_bytes(detail.as_ref().try_into().unwrap())
+                            )),
+                            _ => None,
+                        }
+                    })();
+                    detail.unwrap_or_else(|| {
+                        format!(
+                            "{}Tree with {} fields",
+                            if tree.is_tag() { "Tag " } else { "untagged " },
+                            tree.len()
+                        )
+                    })
+                }
+            },
+            HandleView::Ref(_) => "Ref".into(),
+            HandleView::Thunk(_) => "Thunk".into(),
+            HandleView::Encode(_) => "Encode".into(),
+        };
+        format!(
+            "scheduler {} {reason}; returned {description} (Fix name {})",
+            name(scheduler.into()),
+            name(result)
+        )
     }
 
     pub fn eval(&self, value: Handle, scheduler: Tree, collector: Tree) -> Result<Outcome> {
         let storage = &*self.storage;
         let mode = storage.add_blob(b"eval");
-        let combination =
-            storage.add_tree(&[mode.into(), scheduler.into(), collector.into(), value]);
+        let combination = storage.add_tree(&[
+            Blob::literal(&(1u64 << 30).to_le_bytes()).unwrap().into(),
+            scheduler.into(),
+            mode.into(),
+            collector.into(),
+            value,
+        ]);
         let result = match self.schedule(combination, Vec::new())? {
             Ok(result) => result,
             failure => return Ok(failure),
@@ -152,13 +261,18 @@ impl Backend {
         if self.runtime.memoize == Memoization::Never {
             return Ok(Ok(result));
         }
-        let coupon = Tree::try_from(result).map_err(debug)?;
+        let invalid = |reason: &str| self.scheduler_result_error(scheduler, result, reason);
+        let coupon =
+            Tree::try_from(result).map_err(|_| invalid("did not return an evaluation coupon"))?;
         if !coupon.is_tag() {
-            return Err("scheduler did not return a coupon".into());
+            return Err(invalid("did not return an evaluation coupon"));
         }
         let fields = storage.get_tree(coupon).map_err(debug)?;
         if fields.len() != 2 {
-            return Err("invalid evaluation coupon".into());
+            return Err(invalid(&format!(
+                "returned an evaluation Tag with {} fields; expected 2",
+                fields.len()
+            )));
         }
         let author: Handle = storage.canonicalize(fields[0]).map_err(debug)?.into();
         let collector: Handle = storage
@@ -170,7 +284,9 @@ impl Backend {
             .map_err(debug)?
             .into();
         if author.as_bytes() != collector.as_bytes() && author.as_bytes() != kernel.as_bytes() {
-            return Err("evaluation coupon has untrusted assumptions".into());
+            return Err(invalid(&format!(
+                "returned a coupon authored by {author}; expected collector {collector} or kernel {kernel}"
+            )));
         }
         let reference = TreeRef::try_from(fields[1]).map_err(debug)?;
         let claim = storage
@@ -183,12 +299,16 @@ impl Backend {
                 .as_ref()
                 != 1u64.to_le_bytes()
         {
-            return Err("invalid evaluation claim".into());
+            return Err(invalid(
+                "returned a coupon whose claim is not [Eval, input, result]",
+            ));
         }
         let actual: Handle = storage.canonicalize(claim[1]).map_err(debug)?.into();
         let expected: Handle = storage.canonicalize(value).map_err(debug)?.into();
         if actual.as_bytes() != expected.as_bytes() {
-            return Err("evaluation coupon names another input".into());
+            return Err(invalid(&format!(
+                "returned a coupon for input {actual}; expected {expected}"
+            )));
         }
         Ok(Ok(claim[2]))
     }

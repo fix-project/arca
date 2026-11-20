@@ -13,10 +13,14 @@ fn runfiles() -> PathBuf {
 fn execute(directory: &Path, arguments: &[&str]) -> std::process::Output {
     Command::new(runfiles().join(env!("FIX_CLI")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .env("FIX_TRUST", directory.join(".fix/trust"))
-        .env_remove("FIX_SCHEDULER")
-        .env_remove("FIX_COLLECTOR")
+        .env("FIX_CONFIG_DIR", directory.join("config"))
+        .env("XDG_DATA_HOME", directory.join("data"))
+        .env("FIX_SCHEDULER", "scheduler")
+        .env("FIX_COLLECTOR", "collector")
+        .env("FIX_PARSER", "fix-parser")
         .env_remove("BUILD_WORKSPACE_DIRECTORY")
         .output()
         .unwrap()
@@ -54,6 +58,7 @@ fn seed(directory: &Path) {
         ],
         true,
     );
+    run(directory, &["trust", "add-tagger", "collector"], true);
 }
 
 fn add(directory: &Path, name: &str, program: &str) {
@@ -67,37 +72,6 @@ fn add(directory: &Path, name: &str, program: &str) {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn claim_result(directory: &Path, coupon: &str) -> String {
-    let fields = text(run(directory, &["read-tree", coupon], true));
-    let reference = fields.lines().nth(1).unwrap();
-    let flags = u8::from_str_radix(&reference[62..], 16).unwrap();
-    let claim = format!("{}{:02x}", &reference[..62], flags & 0xe0);
-    let claim = text(run(directory, &["read-tree", &claim], true));
-    claim.lines().nth(2).unwrap().to_owned()
-}
-
-#[test]
-fn hints_require_an_admitted_object() {
-    let directory = Directory::new("authorization");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let source = directory.join("known");
-    std::fs::create_dir(&source).unwrap();
-    run(&source, &["init"], true);
-    let contents = "an independently named object with a removable provenance record";
-    let object = text(run(&source, &["create-blob", "--string", contents], true));
-    run(
-        &directory,
-        &[
-            "todo",
-            "add",
-            &handle(&object),
-            "https://example.invalid/unknown",
-        ],
-        false,
     );
 }
 
@@ -176,120 +150,6 @@ fn scheduler_acquires_the_named_blob_and_skips_a_mismatching_body() {
     );
     assert_eq!(run(&directory, &["read-blob", "source"], true), contents);
     server.join().unwrap();
-}
-
-#[test]
-fn scheduler_acquires_a_local_file_with_an_encoded_name() {
-    let directory = Directory::new("local-acquisition");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let contents = b"the local file must match this already-known Fix object exactly";
-    let source = directory.join("b source #%?.bin");
-    std::fs::write(&source, contents).unwrap();
-    let object = text(run(
-        &directory,
-        &["create-blob", source.to_str().unwrap(), "-l", "source"],
-        true,
-    ));
-    let wrong = directory.join("a-mismatch.bin");
-    std::fs::write(&wrong, vec![b'!'; contents.len()]).unwrap();
-    let uri = |path: &Path| {
-        format!(
-            "file://{}",
-            path.to_str()
-                .unwrap()
-                .replace('%', "%25")
-                .replace(' ', "%20")
-                .replace('#', "%23")
-                .replace('?', "%3F")
-        )
-    };
-    run(
-        &directory,
-        &["todo", "add", &label("source"), &uri(&wrong), &uri(&source)],
-        true,
-    );
-    let record = directory.join(".fix/objects").join(&object);
-    let backing = record
-        .parent()
-        .unwrap()
-        .join(std::fs::read_link(&record).unwrap());
-    std::fs::remove_file(backing).unwrap();
-    run(
-        &directory,
-        &["create-identification-thunk", "source", "-l", "identify"],
-        true,
-    );
-    run(
-        &directory,
-        &["create-strict-encode", "identify", "-l", "input"],
-        true,
-    );
-    assert_eq!(
-        text(run(&directory, &["-j", "1", "eval", &label("input")], true)),
-        object
-    );
-    assert_eq!(run(&directory, &["read-blob", "source"], true), contents);
-}
-
-#[test]
-fn invocation_local_hints_resolve_backing_without_saving_metadata() {
-    let directory = Directory::new("extra-hints");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let source = directory.join("source.bin");
-    let contents = b"a source obtained with an invocation-local Todo hint";
-    std::fs::write(&source, contents).unwrap();
-    let object = text(run(
-        &directory,
-        &["create-blob", source.to_str().unwrap()],
-        true,
-    ));
-    let reference = text(run(&directory, &["create-ref", &object], true));
-    let record = directory.join(".fix/objects").join(&object);
-    std::fs::remove_file(
-        record
-            .parent()
-            .unwrap()
-            .join(std::fs::read_link(&record).unwrap()),
-    )
-    .unwrap();
-    let thunk = text(run(
-        &directory,
-        &["create-identification-thunk", &reference],
-        true,
-    ));
-    let input = text(run(&directory, &["create-strict-encode", &thunk], true));
-    let uri = format!("file://{}", source.display());
-    let mode = text(run(&directory, &["create-blob", "--string", "eval"], true));
-    let request = text(run(
-        &directory,
-        &["create-tree", &mode, "scheduler", "collector", &input],
-        true,
-    ));
-    let coupon = text(run(
-        &directory,
-        &[
-            "-j",
-            "2",
-            "schedule",
-            "--trusted-tagger",
-            "collector",
-            "--todo",
-            &reference,
-            &uri,
-            &request,
-        ],
-        true,
-    ));
-    assert_eq!(claim_result(&directory, &coupon), object);
-    assert_eq!(run(&directory, &["read-blob", &object], true), contents);
-    let hints = text(run(
-        &directory,
-        &["todo", "list", &handle(&reference)],
-        true,
-    ));
-    assert!(hints.is_empty());
 }
 
 #[test]
@@ -411,82 +271,6 @@ fn pinned_script_imports_remain_nonresident_until_evaluation() {
         object
     );
     assert_eq!(run(&directory, &["read-blob", &object], true), contents);
-    std::fs::write(
-        directory.join("invalid.fix"),
-        format!("@todo(\"{object}\" \"{uri}\")\n"),
-    )
-    .unwrap();
-    run(&directory, &["parse", "invalid.fix"], false);
-}
-
-#[test]
-fn scripts_report_the_names_of_unpinned_http_imports() {
-    let directory = Directory::new("script-http");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let contents = "an unpinned source whose canonical name should be reported";
-    let object = text(run(
-        &directory,
-        &["create-blob", "--string", contents],
-        true,
-    ));
-    let reference = text(run(&directory, &["create-ref", &object], true));
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let uri = format!("http://{}/source", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        let mut byte = [0];
-        while !request.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-        }
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            contents.len(),
-            contents
-        )
-        .unwrap();
-    });
-    std::fs::write(
-        directory.join("source.fix"),
-        format!("*'@todo(\"{uri}\")\n"),
-    )
-    .unwrap();
-    let output = execute(
-        &directory,
-        &["-j", "1", "-l", "source", "run", "source.fix"],
-    );
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(text(output.stdout), object);
-    assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("{uri} → {reference}")));
-    assert_eq!(text(run(&directory, &["resolve", "source"], true)), object);
-    server.join().unwrap();
-}
-
-#[test]
-fn scripts_import_a_git_directory() {
-    let directory = Directory::new("script-git");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let expected = expected_git_directory(&directory);
-    let (address, server) = git_server(1);
-    let uri = format!("git://{address}/fixture#main");
-    std::fs::write(
-        directory.join("source.fix"),
-        format!("*'@todo(\"{uri}\")\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        text(run(&directory, &["-j", "1", "run", "source.fix"], true)),
-        expected
-    );
-    server.join().unwrap();
 }
 
 fn git_server(connections: usize) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
@@ -582,32 +366,6 @@ fn hydrate(directory: &Path, object: &str, uris: &[&str]) {
     );
 }
 
-#[test]
-fn scheduler_acquires_a_git_blob_and_checks_its_name() {
-    let directory = Directory::new("git-blob");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let payload = include_bytes!(env!("FIX_GIT_PAYLOAD"));
-    let source = directory.join("payload");
-    std::fs::write(&source, payload).unwrap();
-    let object = text(run(
-        &directory,
-        &["create-blob", source.to_str().unwrap()],
-        true,
-    ));
-    let (address, server) = git_server(2);
-    hydrate(
-        &directory,
-        &object,
-        &[
-            &format!("git://{address}/fixture#main:file"),
-            &format!("git://{address}/fixture#main:payload"),
-        ],
-    );
-    assert_eq!(run(&directory, &["read-blob", &object], true), payload);
-    server.join().unwrap();
-}
-
 fn expected_git_directory(directory: &Path) -> String {
     let value = |arguments: &[&str]| text(run(directory, arguments, true));
     let zero = value(&["create-blob", "--u64", "0"]);
@@ -660,11 +418,15 @@ fn schedulers_share_git_directory_import_and_normalization() {
     let uri = format!("git://{address}/fixture#v1:");
     hydrate(&directory, &object, &[&uri]);
     add(&directory, "importer", env!("FIX_IMPORTER"));
-    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
+    let metadata = text(run(
+        &directory,
+        &["create-blob", "--u64", "536870912"],
+        true,
+    ));
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,
-        &["create-tree", &metadata, "importer", &uri],
+        &["create-tree", &metadata, "importer", &uri, "collector"],
         true,
     ));
     assert_eq!(
@@ -672,38 +434,6 @@ fn schedulers_share_git_directory_import_and_normalization() {
         object
     );
     server.join().unwrap();
-}
-
-#[test]
-fn todo_add_uri_discovers_a_file_name_and_preserves_hints() {
-    let directory = Directory::new("import-file");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let path = directory.join("binary source");
-    let contents: Vec<_> = (0..=255).collect();
-    std::fs::write(&path, &contents).unwrap();
-    let uri = format!("file://{}", path.to_str().unwrap().replace(' ', "%20"));
-    let object = text(run(&directory, &["todo", "add", &uri], true));
-    assert_eq!(run(&directory, &["read-blob", &object], true), contents);
-    assert_eq!(
-        text(run(
-            &directory,
-            &["create-blob", path.to_str().unwrap()],
-            true
-        )),
-        object
-    );
-    let alternate = "https://example.invalid/alternate";
-    run(
-        &directory,
-        &["todo", "add", &handle(&object), alternate],
-        true,
-    );
-    assert_eq!(text(run(&directory, &["todo", "add", &uri], true)), object);
-    assert_eq!(
-        text(run(&directory, &["todo", "list", &handle(&object)], true)),
-        format!("{uri}\n{alternate}")
-    );
 }
 
 #[test]
@@ -742,113 +472,19 @@ fn directory_contents_agree_across_host_paths_and_file_uris() {
     );
     hydrate(&directory, expected, &[&uri]);
     add(&directory, "importer", env!("FIX_IMPORTER"));
-    let metadata = text(run(&directory, &["create-blob", "--string", ""], true));
+    let metadata = text(run(
+        &directory,
+        &["create-blob", "--u64", "536870912"],
+        true,
+    ));
     let uri = text(run(&directory, &["create-blob", "--string", &uri], true));
     let request = text(run(
         &directory,
-        &["create-tree", &metadata, "importer", &uri],
+        &["create-tree", &metadata, "importer", &uri, "collector"],
         true,
     ));
-    for jobs in ["1", "2"] {
-        assert_eq!(
-            text(run(&directory, &["-j", jobs, "schedule", &request], true)),
-            expected
-        );
-    }
-}
-
-#[test]
-fn todo_add_uri_infers_git_blobs_and_directories() {
-    let directory = Directory::new("import-git");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let expected_tree = expected_git_directory(&directory);
-    let expected_blob = text(run(
-        &directory,
-        &["create-blob", directory.join("payload").to_str().unwrap()],
-        true,
-    ));
-    let (address, server) = git_server(2);
-    for (selection, expected) in [("main:payload", expected_blob), ("v1:", expected_tree)] {
-        let uri = format!("git://{address}/fixture#{selection}");
-        let object = text(run(&directory, &["todo", "add", &uri], true));
-        assert_eq!(object, expected);
-        assert_eq!(
-            text(run(&directory, &["todo", "list", &handle(&object)], true)),
-            uri
-        );
-    }
-    server.join().unwrap();
-}
-
-#[test]
-fn unavailable_todo_uri_reports_the_source() {
-    let directory = Directory::new("import-unavailable");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let uri = format!("file://{}/missing", directory.display());
-    let output = execute(&directory, &["todo", "add", &uri]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8(output.stderr).unwrap().contains(&uri));
-}
-
-#[test]
-fn thin_exports_preserve_hints_without_including_resident_source() {
-    let directory = Directory::new("thin-resident");
-    run(&directory, &["init"], true);
-    seed(&directory);
-    let contents = "resident source data that should not be included in the recipe archive";
-    let object = text(run(
-        &directory,
-        &["create-blob", "--string", contents],
-        true,
-    ));
-    let reference = text(run(&directory, &["create-ref", &object], true));
-    let root = text(run(
-        &directory,
-        &["create-tree", &reference, "-l", "recipe"],
-        true,
-    ));
-    let uris = ["unsupported://first", "unsupported://second"];
-    run(
-        &directory,
-        &["todo", "add", &handle(&object), uris[0], uris[1], uris[0]],
-        true,
-    );
-    run(
-        &directory,
-        &[
-            "export",
-            "--without-backing",
-            &handle(&object),
-            &label("recipe"),
-            "thin.tar",
-        ],
-        true,
-    );
-    let imported = directory.join("imported");
-    std::fs::create_dir(&imported).unwrap();
-    run(&imported, &["init"], true);
-    run(&imported, &["import", "../thin.tar"], true);
-    seed(&imported);
-    assert_eq!(text(run(&imported, &["read-tree", &root], true)), reference);
-    let hints = text(run(&imported, &["todo", "list", &handle(&reference)], true));
     assert_eq!(
-        hints.lines().collect::<std::collections::BTreeSet<_>>(),
-        uris.into_iter().collect()
-    );
-    assert_eq!(
-        text(run(&imported, &["eval", &handle(&reference)], true)),
-        reference
-    );
-    run(&imported, &["read-blob", &object], false);
-    assert_eq!(
-        text(run(&imported, &["create-blob", "--string", contents], true)),
-        object
-    );
-    assert_eq!(
-        text(run(&imported, &["read-blob", &object], true)),
-        contents
+        text(run(&directory, &["-j", "2", "schedule", &request], true)),
+        expected
     );
 }

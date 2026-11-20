@@ -5,7 +5,13 @@ use user::Runtime;
 use crate::handles::{self, Query, Reference};
 use crate::rt;
 
-static mut OBJECTS: BTreeMap<usize, Value<Runtime>> = BTreeMap::new();
+struct LocalObject {
+    backing: Value<Runtime>,
+    bytes: usize,
+    promotion: usize,
+}
+
+static mut OBJECTS: BTreeMap<usize, LocalObject> = BTreeMap::new();
 static mut REGIONS: usize = 0;
 
 pub fn region() -> usize {
@@ -26,14 +32,23 @@ pub unsafe fn create(
     address: usize,
     bytes: usize,
     metadata: u16,
+    promotion: usize,
 ) {
     unsafe {
         assert!(
             (&mut *(&raw mut OBJECTS))
-                .insert(address, backing)
+                .insert(
+                    address,
+                    LocalObject {
+                        backing,
+                        bytes,
+                        promotion,
+                    },
+                )
                 .is_none()
         );
         handles::create_local(handles::address(result), address, bytes, metadata);
+        crate::descriptors::local(handles::address(result));
     }
 }
 
@@ -52,17 +67,25 @@ pub fn lift_all() {
         return;
     }
     use crate::continuation::Argument::{Tuple, Value, Word};
+    let mut promotion_bytes = 0;
     let records = Tuple(
         objects
             .into_iter()
-            .map(|(address, backing)| Tuple(alloc::vec![Word(address as u64), Value(backing)]))
+            .map(|(address, object)| {
+                promotion_bytes += object.promotion;
+                Tuple(alloc::vec![
+                    Word(address as u64),
+                    Value(object.backing),
+                    Word(object.bytes as u64)
+                ])
+            })
             .collect(),
     );
-    let (address, length) = crate::descriptors::range();
+    let slots = crate::descriptors::take_local();
+    crate::memory::charge(promotion_bytes);
     crate::continuation::operation("lift")
         .argument(records)
-        .word(address as u64)
-        .word(length as u64)
+        .blob(&slots)
         .call_with_current_continuation();
     unsafe {
         for index in 0..REGIONS {
@@ -75,4 +98,5 @@ pub fn lift_all() {
         }
         REGIONS = 0;
     }
+    crate::memory::release(promotion_bytes);
 }

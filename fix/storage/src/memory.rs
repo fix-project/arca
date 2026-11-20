@@ -33,6 +33,9 @@ struct Inner {
     claims: ShardedMap<[[u8; HANDLE_SIZE]; 2], Vec<IndexedClaim>>,
     tree_hasher: hashbrown::DefaultHashBuilder,
     tree_index: ShardedMap<u64, Vec<Tree>>,
+    names: KMutex<crate::friendly::Names>,
+    #[cfg(not(target_os = "linux"))]
+    memory: Arc<crate::data::RetainedMemory>,
 }
 
 #[derive(Clone, Debug)]
@@ -152,23 +155,55 @@ impl Default for MemoryStorage {
                 claims: ShardedMap::default(),
                 tree_hasher: hashbrown::DefaultHashBuilder::default(),
                 tree_index: ShardedMap::default(),
+                names: KMutex::new(crate::friendly::Names::default()),
+                #[cfg(not(target_os = "linux"))]
+                memory: Arc::default(),
             }),
         }
     }
 }
 
 impl MemoryStorage {
+    #[cfg(not(target_os = "linux"))]
+    pub fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
+        self.inner.memory.keep(memory);
+    }
+
+    fn retain_backing(&self, data: ImmutableBytes) -> ImmutableBytes {
+        #[cfg(not(target_os = "linux"))]
+        {
+            data.with_memory(self.inner.memory.clone())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            data
+        }
+    }
+    /// Index canonical names for unambiguous display without admitting their backing.
+    pub fn register_names(&self, names: impl IntoIterator<Item = [u8; 32]>) {
+        self.inner.names.lock().extend(names);
+    }
+
     fn cache_alias(&self, handle: Handle, canonical: CanonicalHandle) {
         let key = *handle.as_bytes();
         self.inner
             .locals
             .with(&key, |locals| locals.insert(key, canonical));
+        self.register_names([*Handle::from(canonical).as_bytes()]);
     }
 
     fn alias(&self, handle: &Handle) -> Option<CanonicalHandle> {
         self.inner.locals.with(handle.as_bytes(), |locals| {
             locals.get(handle.as_bytes()).copied()
         })
+    }
+
+    pub fn known_canonical(&self, handle: Handle) -> Option<Handle> {
+        if handle.is_canonical() {
+            return Some(handle);
+        }
+        self.alias(handle.object_descriptor().as_handle())?;
+        self.canonicalize_handle(handle).ok()
     }
 
     pub fn contains(&self, handle: Handle) -> bool {
@@ -249,6 +284,7 @@ impl MemoryStorage {
         self.inner.canonicals.with(&canonical, |canonicals| {
             canonicals.entry(canonical).or_insert(index);
         });
+        self.register_names([*object.as_handle().as_bytes()]);
     }
 
     fn next(&self, counter: &AtomicU64) -> usize {
@@ -510,6 +546,13 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
+    fn friendly_name(&self, value: Handle, labels: &[([u8; 32], String)]) -> String {
+        self.inner
+            .names
+            .lock()
+            .friendly_name(value, labels, |tree| self.present_children(tree))
+    }
+
     fn identify(&self, bytes: &[u8; HANDLE_SIZE]) -> Result<Handle, StorageError> {
         let view = Handle::parse_ref(bytes).map_err(|_| StorageError::NotFound)?;
         if !matches!(view.view(), HandleBytesView::Object(_)) {
@@ -647,7 +690,7 @@ impl Storage for MemoryStorage {
         if name.as_handle().value_bit() != Some(true) {
             return Err(StorageError::InvalidValueBit);
         }
-        Ok(data)
+        Ok(self.retain_backing(data))
     }
 
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
@@ -670,6 +713,7 @@ impl Storage for MemoryStorage {
             return Err(StorageError::InvalidValueBit);
         }
         data.get(self, comparable, value)
+            .map(|data| self.retain_backing(data))
     }
 
     fn canonicalize_blob(&self, blob: Blob) -> Result<CanonicalHandle, StorageError> {

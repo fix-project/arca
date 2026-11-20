@@ -18,6 +18,7 @@ pub struct WorkQueues<T> {
     closed: Vec<bool>,
     max_capacity: usize,
     max_queues: usize,
+    names: Vec<(Vec<u8>, u32)>,
 }
 
 impl<T> WorkQueues<T> {
@@ -30,6 +31,7 @@ impl<T> WorkQueues<T> {
             closed: alloc::vec![false; workers],
             max_capacity,
             max_queues,
+            names: Vec::new(),
         }
     }
 
@@ -56,6 +58,19 @@ impl<T> WorkQueues<T> {
         self.queues.push(VecDeque::new());
         self.capacities.push(capacity);
 
+        Ok(id)
+    }
+
+    pub fn named(&mut self, worker: usize, name: &[u8], capacity: usize) -> Result<u32, Error> {
+        self.member(worker)?;
+        if let Some((_, id)) = self.names.iter().find(|(key, _)| key == name) {
+            if self.capacities[*id as usize] != capacity {
+                return Err(Error::Invalid);
+            }
+            return Ok(*id);
+        }
+        let id = self.create_queue(worker, capacity)?;
+        self.names.push((name.to_vec(), id));
         Ok(id)
     }
 

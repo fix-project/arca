@@ -7,6 +7,158 @@ use serde::{Deserialize, Serialize};
 
 pub use embedded_io::ErrorKind;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EvaluationOperation {
+    Evaluate,
+    Think,
+    Force,
+    Apply,
+    Select,
+    Load,
+}
+
+impl core::fmt::Display for EvaluationOperation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Evaluate => "Evaluate",
+            Self::Think => "Think",
+            Self::Force => "Force",
+            Self::Apply => "Apply",
+            Self::Select => "Select",
+            Self::Load => "Load",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationSnapshot {
+    pub machines: Vec<MachineProgress>,
+    pub steps: Vec<EvaluationStep>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MachineProgress {
+    pub node: Option<[u8; 16]>,
+    pub location: Vec<String>,
+    pub availability: Option<RemoteAvailability>,
+    pub used: bool,
+    pub runtime: Option<RuntimeStats>,
+}
+
+impl MachineProgress {
+    pub fn merge(&mut self, other: &Self) {
+        if self
+            .node
+            .zip(other.node)
+            .is_some_and(|(old, new)| old != new)
+        {
+            *self = other.clone();
+            return;
+        }
+        let location =
+            if (&other.location.len(), &other.location) < (&self.location.len(), &self.location) {
+                other.location.clone()
+            } else {
+                self.location.clone()
+            };
+        let used = self.used || other.used;
+        let node = other.node.or(self.node);
+        let availability = other.availability.clone().or(self.availability.clone());
+        if other.runtime.as_ref().is_some_and(|incoming| {
+            self.runtime
+                .as_ref()
+                .is_none_or(|previous| incoming.elapsed_ns >= previous.elapsed_ns)
+        }) {
+            *self = other.clone();
+        }
+        self.location = location;
+        self.used = used;
+        self.node = node;
+        self.availability = availability;
+    }
+}
+
+pub fn location_path<'a>(segments: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    segments
+        .into_iter()
+        .flat_map(|segment| segment.split('!'))
+        .filter(|segment| !segment.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RemoteAvailability {
+    Configured,
+    Connecting,
+    Available {
+        workers: u64,
+        memory_bytes: Option<u64>,
+    },
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RuntimeStats {
+    pub elapsed_ns: u64,
+    pub workers: u64,
+    pub peak_busy_workers: u64,
+    pub peak_queued: u64,
+    pub completed: u64,
+    pub privileged_completed: u64,
+    pub cpu_ns: Option<u64>,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub peak_memory: u64,
+    pub memory_total: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvaluationStep {
+    pub node: Option<[u8; 16]>,
+    pub sequence: u64,
+    pub location: Vec<String>,
+    pub task: EvaluationTask,
+    pub phase: EvaluationPhase,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum EvaluationPhase {
+    Started,
+    Finished {
+        elapsed_ns: u64,
+        outcome: EvaluationOutcome,
+        bytes: Option<u64>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum EvaluationOutcome {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl core::fmt::Display for EvaluationOutcome {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Completed => "END",
+            Self::Failed => "FAILED",
+            Self::Stopped => "STOPPED",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationTask {
+    pub id: [u8; 32],
+    pub title: String,
+    pub operation: Option<EvaluationOperation>,
+    pub transfer: Option<(Vec<String>, Vec<String>)>,
+    pub transfer_peer: Option<[u8; 16]>,
+    pub name: String,
+}
+
 /// A control message and the id that pairs a response with its request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Tagged<T> {
@@ -16,7 +168,20 @@ pub struct Tagged<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request<B = Region> {
+    NodeIdentity,
+    SessionNext,
+    SessionReply {
+        connection: super::session::Id,
+        request: u64,
+        status: u8,
+        output: Vec<u8>,
+    },
     GetArgs,
+    ObserveEvaluation,
+    CpuTime,
+    EvaluationStep(EvaluationStep),
+    EvaluationProgress(EvaluationSnapshot),
+    Sleep(u64),
     Exit(i32),
     Open(String, FileMode),
     Mkdir(String),
@@ -37,20 +202,46 @@ pub enum Request<B = Region> {
         port: u16,
     },
     OpenUri(String),
+    StdioStream,
+    StreamReceive {
+        id: u64,
+        length: usize,
+    },
+    StreamSend {
+        id: u64,
+        bytes: Vec<u8>,
+    },
+    StreamClose(u64),
+    SshConnect {
+        host: String,
+        repository: String,
+        scheduler: Option<String>,
+        collector: Option<String>,
+    },
     ReadDirectory(String),
     Exists(String),
     /// Returns the file's contents as [`Response::Bytes`].
     ReadFile(String),
     WriteFile(String, B, FileMode),
     ReadDirectoryUri(String),
+    SshSign {
+        identity: String,
+        namespace: String,
+        message: B,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
+    NodeIdentity([u8; 16]),
+    SessionCommand(Option<super::session::Command>),
+    Stream(u64),
+    StreamBytes(Vec<u8>),
     Args(Vec<String>),
     Pipe(PipeData),
     Ack,
     Bool(bool),
+    CpuTime(Option<u64>),
     Path(String),
     Err(IoErrorKind),
     Names(Vec<String>),
@@ -58,6 +249,8 @@ pub enum Response {
     /// A Buddy allocation whose ownership passes to the receiver.
     Bytes(Region),
     DirectoryEntries(Vec<DirectoryEntry>),
+    Signature(String),
+    SignatureError(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

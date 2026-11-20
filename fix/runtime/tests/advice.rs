@@ -4,25 +4,38 @@ use kernel::prelude::Vec;
 
 #[kernel::test]
 fn advice_events_preserve_order_targets_and_application_identity() {
+    use kernel::memory::{Admission, available};
+
     let runtime = test_runtime();
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE"));
+    let budget = 2usize << 30;
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(budget as u64).to_le_bytes())
+            .unwrap()
+            .into(),
         program.into(),
         storage.add_blob(b"argument").into(),
     ]);
     let unobserved = runtime.execute(combination).unwrap();
+    let initial = [0u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
+    let completed = [2u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
     let expected: &[(&[u8], &[u8])] = &[
         (b"fix::title", b"probe"),
-        (b"fix::progress", b"first"),
-        (b"fix::progress", b"last"),
+        (b"fix::progress", &initial),
+        (b"fix::progress", &completed),
         (b"sample::binary", &[0, 255]),
         (b"sample::local", b"probe"),
         (b"sample::local", b"probe"),
     ];
-    for privileged in [false, true] {
-        let mut execution = runtime.execute_observed(combination, privileged).unwrap();
+    for privileged in [Some(false), Some(true), None] {
+        let _other_reservation =
+            (privileged != Some(true)).then(|| Admission::new(available() - budget).unwrap());
+        let mut execution = match privileged {
+            Some(privileged) => runtime.execute_observed(combination, privileged),
+            None => runtime.run_observed(combination),
+        }
+        .unwrap();
         let mut events = Vec::new();
         let mut local_targets = Vec::new();
         let contents = b"freshly constructed advice target contents";
@@ -65,7 +78,7 @@ fn advice_events_preserve_order_targets_and_application_identity() {
             .map(|(key, payload)| (key.as_slice(), payload.as_slice()))
             .collect();
         assert_eq!(actual.as_slice(), expected);
-        let expected: Handle = if privileged {
+        let expected: Handle = if privileged != Some(false) {
             combination.into()
         } else {
             unobserved.into()
@@ -82,7 +95,10 @@ fn suspended_advice_is_owned_by_its_runtime() {
     let runtime = test_runtime();
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE"));
-    let combination = storage.add_tree(&[Blob::literal(b"").unwrap().into(), program.into()]);
+    let combination = storage.add_tree(&[
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+        program.into(),
+    ]);
     let Execution::Advice { suspended, .. } = runtime.execute_observed(combination, false).unwrap()
     else {
         panic!("expected advice")
@@ -96,7 +112,7 @@ fn advice_preserves_canonical_checkpoint_identity() {
     let storage = runtime.storage();
     let program = test_program(storage, kernel::testing::fixture("FIX_ADVICE_CAPTURE"));
     let combination = storage.add_tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
         program.into(),
         storage.add_blob(b"captured argument").into(),
     ]);
@@ -123,4 +139,29 @@ fn advice_preserves_canonical_checkpoint_identity() {
             storage.canonicalize(unobserved).unwrap()
         );
     }
+}
+
+#[kernel::test]
+fn uncertified_applications_keep_ordinary_privileges() {
+    let runtime = test_runtime();
+    let storage = runtime.storage();
+    let program = test_program(storage, kernel::testing::fixture("FIX_PRIVILEGED"));
+    let combination = storage.add_tree(&[
+        Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
+        program.into(),
+    ]);
+    let Execution::Complete(result) = runtime.run_observed(combination).unwrap() else {
+        panic!("expected the application to finish")
+    };
+    let fields = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert!(
+        storage
+            .equals(fields[0], Blob::literal(b"Wasm.trap").unwrap().into())
+            .unwrap()
+    );
+    let certificate = runtime.execute(combination).unwrap();
+    let claim = storage
+        .get_tree(storage.certificate_claim(certificate).unwrap())
+        .unwrap();
+    assert!(storage.equals(result, claim[2]).unwrap());
 }

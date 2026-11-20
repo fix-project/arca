@@ -14,5 +14,7 @@ build --verbose_failures
 build --local_resources=fix=1
 build --compilation_mode=dbg
 build:release --compilation_mode=opt
+build:ci --linkopt=-fuse-ld=lld
+build:ci --host_linkopt=-fuse-ld=lld
 test --test_output=errors
 run --run_under="bash -c 'cd \"$BUILD_WORKING_DIRECTORY\"; exec \"$@\"' --"

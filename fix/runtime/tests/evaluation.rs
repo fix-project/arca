@@ -1,11 +1,11 @@
 use super::test_program;
 use fixruntime::{
-    Blob, Handle, Runtime, Storage, Thunk, Tree, arca::FixOnArca, stdlib, user_scheduler_driver,
+    Blob, Handle, Runtime, Storage, Tree, arca::FixOnArca, stdlib, user_scheduler_driver,
 };
 use kernel::prelude::{Arc, format};
 
 pub(super) struct Evaluation {
-    runtime: Arc<FixOnArca>,
+    pub(super) runtime: Arc<FixOnArca>,
     scheduler: Tree,
     collector: Tree,
     workers: usize,
@@ -16,11 +16,7 @@ impl Evaluation {
         Self::with_scheduler(runtime, 1, "FIX_SERIAL_SCHEDULER")
     }
 
-    pub(super) fn with_workers(runtime: FixOnArca, workers: usize) -> Self {
-        Self::with_scheduler(runtime, workers, "FIX_SCHEDULER")
-    }
-
-    fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
+    pub(super) fn with_scheduler(runtime: FixOnArca, workers: usize, fixture: &str) -> Self {
         let scheduler = test_program(runtime.storage(), kernel::testing::fixture(fixture));
         let collector = test_program(runtime.storage(), kernel::testing::fixture("FIX_COLLECTOR"));
         let compiler = Blob::canonical(stdlib::PRIMITIVES[0].1)
@@ -38,19 +34,16 @@ impl Evaluation {
         }
     }
 
-    pub(super) fn runtime(&self) -> &FixOnArca {
-        &self.runtime
-    }
-
     pub(super) fn storage(&self) -> &dyn Storage {
         self.runtime.storage()
     }
 
-    fn run(&self, mode: &str, input: Handle) -> Handle {
+    pub(super) fn run(&self, mode: &str, input: Handle) -> Handle {
         let mode = self.storage().add_blob(mode.as_bytes());
         let combination = self.storage().add_tree(&[
-            mode.into(),
+            Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into(),
             self.scheduler.into(),
+            mode.into(),
             self.collector.into(),
             input,
         ]);
@@ -69,15 +62,24 @@ impl Evaluation {
         )
         .unwrap();
         let coupon = Tree::try_from(report.result.unwrap()).unwrap();
+        assert!(
+            coupon.is_tag(),
+            "scheduler returned {:?}",
+            self.storage()
+                .get_tree(coupon)
+                .unwrap()
+                .iter()
+                .map(|value| Blob::try_from(*value)
+                    .ok()
+                    .and_then(|blob| self.storage().get_blob(blob).ok())
+                    .map(|bytes| bytes.to_vec()))
+                .collect::<kernel::prelude::Vec<_>>()
+        );
         let claim = self.storage().certificate_claim(coupon).unwrap();
         self.storage().get_tree(claim).unwrap()[2]
     }
 
     pub(super) fn eval(&self, input: Handle) -> Handle {
         self.run("eval", input)
-    }
-
-    pub(super) fn think(&self, input: Thunk) -> Handle {
-        self.run("think", input.into())
     }
 }

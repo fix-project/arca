@@ -8,7 +8,9 @@ use kernel::prelude::{Arc, Vec, format};
 
 #[kernel::test]
 fn backend_executes_with_the_configured_authorities() {
-    let storage = Arc::new(RepositoryStorage::new(Repository::init(".fix").unwrap()));
+    let storage = Arc::new(RepositoryStorage::new(
+        Repository::init(".fix").unwrap().unsigned(),
+    ));
     let identity = test_program(&*storage, fixruntime::stdlib::PRIMITIVES[0].1);
     let scheduler = test_program(&*storage, kernel::testing::fixture("FIX_SCHEDULER"));
     let collector = test_program(&*storage, kernel::testing::fixture("FIX_COLLECTOR"));
@@ -36,7 +38,7 @@ fn backend_executes_with_the_configured_authorities() {
     }
     let argument = backend.blob(&[42; 64]);
     let combination = backend.tree(&[
-        Blob::literal(b"").unwrap().into(),
+        Blob::literal(&(512u64 << 20).to_le_bytes()).unwrap().into(),
         identity.into(),
         argument,
     ]);

@@ -94,8 +94,76 @@ pub fn memclr(region: *mut [u8]) {
 }
 
 pub mod os {
+    pub fn node_identity() -> [u8; 16] {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::NodeIdentity)
+        {
+            common::protocol::control::Response::NodeIdentity(value) => value,
+            _ => panic!("invalid runtime identity response"),
+        }
+    }
+    pub fn cpu_time() -> Option<u64> {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::CpuTime)
+        {
+            common::protocol::control::Response::CpuTime(value) => value,
+            _ => None,
+        }
+    }
+
+    pub fn evaluation_step(step: common::protocol::control::EvaluationStep) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::EvaluationStep(step));
+    }
+
+    pub fn observe_evaluation() -> bool {
+        matches!(
+            crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&common::protocol::control::Request::ObserveEvaluation),
+            common::protocol::control::Response::Bool(true)
+        )
+    }
+
+    pub fn evaluation_progress(snapshot: common::protocol::control::EvaluationSnapshot) {
+        let _ = crate::pipe::HOST.get().unwrap().request(
+            &common::protocol::control::Request::EvaluationProgress(snapshot),
+        );
+    }
+
+    pub fn sleep(milliseconds: u64) {
+        let _ = crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&common::protocol::control::Request::Sleep(milliseconds));
+    }
+
     use crate::prelude::*;
     use common::protocol::*;
+
+    pub fn ssh_sign(identity: &str, namespace: &str, message: &[u8]) -> Result<String, String> {
+        let buffer = crate::allocator::buffer(Vec::from(message));
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request_serialized(&control::Request::SshSign {
+                identity: identity.into(),
+                namespace: namespace.into(),
+                message: buffer.slice(..),
+            }) {
+            control::Response::Signature(signature) => Ok(signature),
+            control::Response::SignatureError(error) => Err(error),
+            control::Response::Err(error) => Err(alloc::format!("{error:?}")),
+            _ => Err("invalid SSH signing response".into()),
+        }
+    }
 
     pub fn argv() -> Vec<String> {
         let host = crate::pipe::HOST.get().unwrap();
@@ -145,35 +213,45 @@ pub mod net {
     }
 
     pub struct Stream {
-        pipe: StreamPipe,
+        id: u64,
     }
 
     pub type TcpStream = Stream;
 
     impl TcpListener {
         pub fn bind(ip: &[u8; 4], port: u16) -> TcpListener {
+            Self::try_bind(ip, port).expect("host TCP listen failed")
+        }
+
+        pub fn try_bind(ip: &[u8; 4], port: u16) -> Result<TcpListener, ErrorKind> {
             let host = crate::pipe::HOST.get().unwrap();
             let ip = *ip;
-            let control::Response::Pipe(id) = host.request(&control::Request::Listen { ip, port })
-            else {
-                todo!();
-            };
-            unsafe {
-                TcpListener {
-                    pipe: KMutex::new(ListenerPipe::new(get_pipe(id))),
-                }
+            match host.request(&control::Request::Listen { ip, port }) {
+                control::Response::Pipe(id) => Ok(TcpListener {
+                    pipe: KMutex::new(unsafe { ListenerPipe::new(get_pipe(id)) }),
+                }),
+                control::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
+            }
+        }
+
+        pub fn local_addr(&self) -> Result<([u8; 4], u16), ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::LocalAddress) {
+                listener::Response::Address(ip, port) => Ok((ip, port)),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
 
         pub fn accept(&self) -> TcpStream {
-            let mut pipe = self.pipe.lock();
-            let listener::Response::Pipe(id) = pipe.request(&listener::Request::Accept) else {
-                todo!();
-            };
-            unsafe {
-                TcpStream {
-                    pipe: StreamPipe::new(get_pipe(id)),
-                }
+            self.try_accept().expect("host TCP accept failed")
+        }
+
+        pub fn try_accept(&self) -> Result<TcpStream, ErrorKind> {
+            match self.pipe.lock().request(&listener::Request::Accept) {
+                listener::Response::Stream(id) => Ok(TcpStream { id }),
+                listener::Response::Err(error) => Err(error.into()),
+                _ => Err(ErrorKind::Other),
             }
         }
     }
@@ -188,6 +266,9 @@ pub mod net {
     }
 
     impl Stream {
+        pub fn from_id(id: u64) -> Self {
+            Self { id }
+        }
         pub fn connect(hostname: &str, port: u16) -> TcpStream {
             Self::try_connect(hostname, port).expect("host TCP connect failed")
         }
@@ -200,6 +281,31 @@ pub mod net {
             }))
         }
 
+        pub fn ssh_connect(
+            host: &str,
+            repository: &str,
+            scheduler: Option<&str>,
+            collector: Option<&str>,
+        ) -> Result<Stream, ErrorKind> {
+            Self::from_response(crate::pipe::HOST.get().unwrap().request(
+                &control::Request::SshConnect {
+                    host: host.into(),
+                    repository: repository.into(),
+                    scheduler: scheduler.map(str::to_owned),
+                    collector: collector.map(str::to_owned),
+                },
+            ))
+        }
+
+        pub fn stdio_stream() -> Result<Stream, ErrorKind> {
+            Self::from_response(
+                crate::pipe::HOST
+                    .get()
+                    .unwrap()
+                    .request(&control::Request::StdioStream),
+            )
+        }
+
         pub fn open_uri(uri: &str) -> Result<Stream, ErrorKind> {
             let host = crate::pipe::HOST.get().unwrap();
             Self::from_response(host.request(&control::Request::OpenUri(uri.into())))
@@ -207,57 +313,68 @@ pub mod net {
 
         fn from_response(response: control::Response) -> Result<TcpStream, ErrorKind> {
             match response {
-                control::Response::Pipe(id) => unsafe {
-                    Ok(TcpStream {
-                        pipe: StreamPipe::new(get_pipe(id)),
-                    })
-                },
+                control::Response::Stream(id) => Ok(TcpStream { id }),
                 control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
-        pub fn send(&mut self, bytes: &[u8]) -> usize {
+        pub fn send(&self, bytes: &[u8]) -> usize {
             self.try_send(bytes).expect("host TCP send failed")
         }
 
-        pub fn try_send(&mut self, bytes: &[u8]) -> Result<usize, ErrorKind> {
-            match self.pipe.request(&stream::Request::Send(bytes.into())) {
-                stream::Response::Length(len) if len <= bytes.len() => Ok(len),
-                stream::Response::Err(error) => Err(error.into()),
+        pub fn try_send(&self, bytes: &[u8]) -> Result<usize, ErrorKind> {
+            match crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamSend {
+                    id: self.id,
+                    bytes: bytes.into(),
+                }) {
+                control::Response::Length(len) if len <= bytes.len() => Ok(len),
+                control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
-        pub fn recv(&mut self, bytes: &mut [u8]) -> usize {
+        pub fn recv(&self, bytes: &mut [u8]) -> usize {
             self.try_recv(bytes).expect("host TCP receive failed")
         }
 
-        pub fn try_recv(&mut self, bytes: &mut [u8]) -> Result<usize, ErrorKind> {
-            match self.pipe.request(&stream::Request::Receive(bytes.len())) {
-                stream::Response::Bytes(buf) if buf.len() <= bytes.len() => {
+        pub fn try_recv(&self, bytes: &mut [u8]) -> Result<usize, ErrorKind> {
+            match crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamReceive {
+                    id: self.id,
+                    length: bytes.len(),
+                }) {
+                control::Response::StreamBytes(buf) if buf.len() <= bytes.len() => {
                     bytes[..buf.len()].copy_from_slice(&buf);
                     Ok(buf.len())
                 }
-                stream::Response::Err(error) => Err(error.into()),
+                control::Response::Err(error) => Err(error.into()),
                 _ => Err(ErrorKind::Other),
             }
         }
 
+        pub fn shutdown(&self) {
+            let _ = crate::pipe::HOST
+                .get()
+                .unwrap()
+                .request(&control::Request::StreamClose(self.id));
+        }
+
         pub fn close(self) {
-            let _ = self;
+            self.shutdown();
         }
     }
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let stream::Response::Ack = self.pipe.request(&stream::Request::Close) else {
-                panic!("bad response");
-            };
+            self.shutdown();
         }
     }
-
-    impl !Sync for TcpStream {}
 
     impl core::fmt::Write for TcpStream {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -339,6 +456,21 @@ pub mod fs {
         let (bytes, _) = Box::into_raw_with_allocator(unsafe { region.into_owned() });
         // The global allocator accepts page-aligned Buddy allocations.
         Ok(unsafe { Box::from_raw(bytes) }.into_vec())
+    }
+
+    pub fn read_range(path: &str, offset: u64, length: usize) -> Result<Vec<u8>, ErrorKind> {
+        let mut file = File::open(path, true, false, false, false, false)?;
+        file.seek(Whence::Start(offset));
+        let mut buffer = crate::allocator::buffer(vec![0; length]);
+        let mut read = 0;
+        while read < length {
+            let count = file.try_read(&mut buffer.slice_mut(read..))?;
+            if count == 0 {
+                return Err(ErrorKind::InvalidData);
+            }
+            read += count;
+        }
+        Ok(buffer.to_vec())
     }
 
     pub fn write(path: &str, bytes: &[u8]) -> Result<(), ErrorKind> {
@@ -575,4 +707,38 @@ pub mod fs {
     }
 
     impl !Sync for File {}
+}
+
+pub mod session {
+    use common::protocol::{
+        control::{ErrorKind, Request, Response},
+        session::Command,
+    };
+    pub fn next() -> Result<Option<Command>, ErrorKind> {
+        match crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&Request::SessionNext)
+        {
+            Response::SessionCommand(command) => Ok(command),
+            Response::Err(error) => Err(error.into()),
+            _ => Err(ErrorKind::Other),
+        }
+    }
+    pub fn reply(
+        connection: common::protocol::session::Id,
+        request: u64,
+        status: u8,
+        output: alloc::vec::Vec<u8>,
+    ) {
+        crate::pipe::HOST
+            .get()
+            .unwrap()
+            .request(&Request::SessionReply {
+                connection,
+                request,
+                status,
+                output,
+            });
+    }
 }

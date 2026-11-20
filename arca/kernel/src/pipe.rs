@@ -213,5 +213,3 @@ impl<S: serde::Serialize, R: for<'a> serde::Deserialize<'a>> TypedPipe<S, R> {
 pub type FilePipe = TypedPipe<common::protocol::file::Request, common::protocol::file::Response>;
 pub type ListenerPipe =
     TypedPipe<common::protocol::listener::Request, common::protocol::listener::Response>;
-pub type StreamPipe =
-    TypedPipe<common::protocol::stream::Request, common::protocol::stream::Response>;

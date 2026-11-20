@@ -1,0 +1,50 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "remote",
+    crate_name = "fixremote",
+    edition = "2024",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        ":transport",
+        ":protocol",
+        "//fix/handle",
+        "//fix/certificates",
+        "//fix/repository",
+        "@crates//:embedded-io",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ] + select({
+        "//build/platforms:linux": ["//lib/ssh", "//lib/common"],
+        "//conditions:default": [],
+    }),
+)
+
+rust_library(
+    name = "transport",
+    crate_name = "fixtransport",
+    edition = "2024",
+    srcs = ["transport.rs"],
+    deps = ["@crates//:embedded-io"],
+)
+
+rust_library(
+    name = "testing",
+    testonly = True,
+    srcs = ["testing.rs"],
+    crate_name = "fixremote_testing",
+    edition = "2024",
+    deps = ["@crates//:ssh-key"],
+)
+
+rust_test(name = "tests", crate = ":remote", edition = "2024", deps = [":testing", "@crates//:ssh-key", "@crates//:postcard"], timeout = "short")
+
+rust_library(
+    name = "protocol",
+    crate_name = "fixprotocol",
+    edition = "2024",
+    srcs = ["protocol.rs", "topology.rs"],
+    deps = [":transport", "@crates//:embedded-io", "@crates//:postcard", "@crates//:serde"],
+)

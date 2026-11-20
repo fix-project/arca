@@ -1,8 +1,6 @@
 #include "mt19937.h"
 void *memcpy(void *, const void *, size_t);
-#define main mt19937_reference_example
 #include "mt19937-64.c"
-#undef main
 _Static_assert(sizeof(mt) == sizeof(((mt19937_stream *)0)->words),
                "64-bit state words");
 void mt19937_seed(mt19937_stream *state, uint64_t seed) {

@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -51,4 +51,23 @@ rust_test(
         "nix",
     ],
     deps = ["@crates//:rand"],
+)
+
+rust_binary(
+    name = "progress_probe",
+    testonly = True,
+    srcs = ["tests/progress_probe.rs"],
+    edition = "2024",
+    deps = [":common"],
+)
+
+rust_test(
+    name = "progress_terminal_test",
+    srcs = ["tests/progress_terminal.rs"],
+    edition = "2024",
+    data = [":progress_probe"],
+    rustc_env = {"PROBE": "$(rootpath :progress_probe)"},
+    size = "small",
+    timeout = "short",
+    tags = ["local"],
 )

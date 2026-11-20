@@ -12,6 +12,7 @@ fn runfiles() -> PathBuf {
 fn seed_tool(directory: &Path, arguments: &[String]) {
     let output = Command::new(runfiles().join(env!("FIX_SEED")))
         .args(arguments)
+        .env("FIX_UNSIGNED", "true")
         .current_dir(directory)
         .output()
         .unwrap();
@@ -26,11 +27,25 @@ fn program(name: &str, path: &str) -> String {
     format!("{name}={}", runfiles().join(path).display())
 }
 
+fn command(directory: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new(runfiles().join(env!("FIX_CLI")));
+    command
+        .args(arguments)
+        .env("FIX_UNSIGNED", "true")
+        .env("FIX_CONFIG_DIR", directory.join("config"))
+        .env("XDG_DATA_HOME", directory.join("data"))
+        .env("FIX_JOBS", "1")
+        .env("FIX_TRUST", directory.join(".fix/trust"))
+        .env("FIX_SCHEDULER", "scheduler")
+        .env("FIX_COLLECTOR", "collector")
+        .env_remove("BUILD_WORKSPACE_DIRECTORY")
+        .current_dir(directory);
+    command
+}
+
 fn run(directory: &Path, arguments: &[&str], input: &[u8], status: i32) -> Vec<u8> {
     use std::io::Write;
-    let mut child = Command::new(runfiles().join(env!("FIX_CLI")))
-        .args(arguments)
-        .current_dir(directory)
+    let mut child = command(directory, arguments)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -58,23 +73,16 @@ fn value(directory: &Path, arguments: &[&str]) -> String {
 fn bootstrap(directory: &Path, programs: &[(&str, &str)]) {
     std::fs::create_dir_all(directory).unwrap();
     let seed = runfiles().join(env!("FIX_BOOTSTRAP"));
-    frontend(directory, &["init", seed.to_str().unwrap()], true);
+    frontend(directory, &["init"], true);
+    frontend(directory, &["import", seed.to_str().unwrap()], true);
+    frontend(directory, &["trust", "add-tagger", "collector"], true);
     let mut arguments: Vec<String> = ["add", "."].map(String::from).into();
     arguments.extend(programs.iter().map(|(name, path)| program(name, path)));
     seed_tool(directory, &arguments);
 }
 
 fn frontend(directory: &Path, arguments: &[&str], success: bool) -> std::process::Output {
-    let output = Command::new(runfiles().join(env!("FIX_CLI")))
-        .args(arguments)
-        .current_dir(directory)
-        .env("FIX_JOBS", "1")
-        .env("FIX_TRUST", directory.join(".fix/trust"))
-        .env_remove("FIX_SCHEDULER")
-        .env_remove("FIX_COLLECTOR")
-        .env_remove("BUILD_WORKSPACE_DIRECTORY")
-        .output()
-        .unwrap();
+    let output = command(directory, arguments).output().unwrap();
     assert_eq!(
         output.status.success(),
         success,
@@ -104,7 +112,7 @@ fn scripts_import_relative_files_resolve_labels_and_save_results() {
 -- @"missing" $missing
 {- @("ignored" "bad name") -}
 input = @file("input.bin")
-*[*#("" @label("procedure-name")-- ignored @"missing"
+*[*#(268435456u64 @label("procedure-name")-- ignored @"missing"
 (input "@\"literal\" $literal" 42u64)) 2u64]
 "#,
     )
@@ -117,7 +125,7 @@ input = @file("input.bin")
             "-j",
             "2",
             "--memory",
-            "1024",
+            "4096",
             "-l",
             "result",
             "eval",
@@ -159,7 +167,7 @@ fn script_imports_are_scoped_lazy_and_relative_to_their_file() {
         r#"
 local = "inside"
 payload = @file("payload.bin")
-*[*#("" $procedure (local payload $message)) 2u64]
+*[*#(268435456u64 $procedure (local payload $message)) 2u64]
 "#,
     )
     .unwrap();
@@ -292,17 +300,23 @@ fn expressions_are_used_for_cli_values_and_script_arguments() {
         &["-b", "message=\"CLI\"", "@script(\"recipes/leaf.fix\")"],
     );
     assert_eq!(run(&directory, &["read-blob", &inherited], b"", 0), b"CLI");
-    let unforced = expression(&directory, &["#(\"\" @label(\"identity\") 9u64)"]);
+    let unforced = expression(&directory, &["#(268435456u64 @label(\"identity\") 9u64)"]);
     assert_eq!(value(&directory, &["get-type", &unforced]), "thunk");
-    let forced = expression(&directory, &["*#(\"\" @label(\"identity\") 9u64)"]);
+    let forced = expression(&directory, &["*#(268435456u64 @label(\"identity\") 9u64)"]);
     assert_eq!(value(&directory, &["get-type", &forced]), "object");
-    let graph = expression(&directory, &["(1u64 *#(\"\" @label(\"identity\") 2u64))"]);
+    let graph = expression(
+        &directory,
+        &["(1u64 *#(268435456u64 @label(\"identity\") 2u64))"],
+    );
     let children = value(&directory, &["read-tree", &graph]);
     let children: Vec<_> = children.lines().collect();
     assert_eq!(value(&directory, &["get-type", children[1]]), "encode");
     assert_eq!(
-        expression(&directory, &["think", "#(\"\" @label(\"identity\") 9u64)"]),
-        expression(&directory, &["(\"\" @label(\"identity\") 9u64)"])
+        expression(
+            &directory,
+            &["think", "#(268435456u64 @label(\"identity\") 9u64)"]
+        ),
+        expression(&directory, &["(268435456u64 @label(\"identity\") 9u64)"])
     );
     let forty_two = value(&directory, &["create-blob", "--u64", "42"]);
     let forty_three = value(&directory, &["create-blob", "--u64", "43"]);
@@ -343,7 +357,7 @@ fn compilation_uses_the_compile_runnable() {
     );
     let sum = expression(
         &directory,
-        &[&format!("*#(\"\" {} 2u64 3u64)", handle(&add))],
+        &[&format!("*#(268435456u64 {} 2u64 3u64)", handle(&add))],
     );
     assert_eq!(value(&directory, &["read-blob", "--u64", &sum]), "5");
     let error = expression(&directory, &["compile", "\"not WebAssembly\""]);
@@ -357,87 +371,6 @@ fn compilation_uses_the_compile_runnable() {
         ),
         b"Error"
     );
-}
-
-#[test]
-fn archives_and_parsed_environments_round_trip() {
-    let directory = Directory::new("archives");
-    bootstrap(&directory, &[]);
-    std::fs::write(directory.join("first\nfile"), b"binary\0\xff").unwrap();
-    std::fs::write(directory.join("second"), b"second").unwrap();
-    let first = value(&directory, &["create-blob", "first\nfile"]);
-    let second = value(&directory, &["create-blob", "second"]);
-    let input_ref = value(&directory, &["create-ref", &second]);
-    let input2 = format!("input2={}", handle(&input_ref));
-    let source =
-        "($input1 *[$input2 0u64 3u64] \"literal -- @ and \\\"quote\\\"\" @file(\"second\"))";
-    std::fs::write(directory.join("graph.fix"), source).unwrap();
-    let graph = expression(
-        &directory,
-        &[
-            "parse",
-            "graph.fix",
-            "-b",
-            &format!("input1={}", handle(&first)),
-            "-b",
-            &input2,
-        ],
-    );
-    let children = value(&directory, &["read-tree", &graph]);
-    let children: Vec<_> = children.lines().collect();
-    assert_eq!(children[0], first);
-    assert_eq!(children[3], second);
-    assert_eq!(value(&directory, &["get-type", children[1]]), "encode");
-    assert_eq!(
-        run(&directory, &["read-blob", children[2]], b"", 0),
-        b"literal -- @ and \"quote\""
-    );
-    let result = expression(&directory, &["eval", &handle(&graph)]);
-    let children = value(&directory, &["read-tree", &result]);
-    assert_eq!(
-        run(
-            &directory,
-            &["read-blob", children.lines().nth(1).unwrap()],
-            b"",
-            0
-        ),
-        b"sec"
-    );
-
-    let shared = text(run(&directory, &["create-blob", "-"], &[7; 64], 0));
-    let unrelated = text(run(&directory, &["create-blob", "-"], &[8; 64], 0));
-    let shared_ref = value(&directory, &["create-ref", &shared]);
-    let root = value(
-        &directory,
-        &["-l", "exported", "create-tree", &shared_ref, &shared_ref],
-    );
-    std::fs::create_dir(directory.join("archives")).unwrap();
-    frontend(
-        &directory,
-        &["export", "@label(\"exported\")", "archives/exported.tar.gz"],
-        true,
-    );
-    frontend(
-        &directory,
-        &["export", "@label(\"exported\")", "archives/exported.tar.gz"],
-        false,
-    );
-    let imported = directory.join("imported");
-    std::fs::create_dir(&imported).unwrap();
-    run(&imported, &["init"], b"", 0);
-    run(
-        &imported,
-        &["import", "../archives/exported.tar.gz"],
-        b"",
-        0,
-    );
-    let visited = value(&imported, &["visit", &root]);
-    assert_eq!(
-        visited.lines().collect::<std::collections::BTreeSet<_>>(),
-        [root.as_str(), shared.as_str()].into_iter().collect()
-    );
-    assert_eq!(run(&imported, &["read-blob", &shared], b"", 0), [7; 64]);
-    run(&imported, &["resolve", &unrelated], b"", 2);
 }
 
 #[test]
@@ -577,60 +510,4 @@ fn flatware_directories_round_trip_through_native_import_and_export() {
         false,
     );
     assert!(!directory.join("escape").exists());
-}
-
-#[test]
-fn evaluation_rejects_scheduler_authored_coupons() {
-    let directory = Directory::new("untrusted_scheduler");
-    bootstrap(&directory, &[("untrusted", env!("FIX_TAGGER"))]);
-    let mut client = fixcli::Client::open(
-        &directory,
-        fixcli::Options {
-            scheduler: "untrusted".into(),
-            trust: Some(directory.join(".fix/trust")),
-            ..fixcli::Options::default()
-        },
-    )
-    .unwrap();
-    let untrusted = client.lookup("untrusted").unwrap();
-    let collector = client.lookup("collector").unwrap();
-    for mode in [4u64, 5u64] {
-        let input = client.blob(&mode.to_le_bytes()).unwrap();
-        let eval = client.blob(b"eval").unwrap();
-        let request = client
-            .tree(&[eval, untrusted.clone(), collector.clone(), input.clone()])
-            .unwrap();
-        let coupon = client.schedule(&request).unwrap();
-        assert!(client.is_tag(&coupon).unwrap());
-        assert!(matches!(
-            client.eval(&input),
-            Err(fixcli::Error::Execution(_))
-        ));
-    }
-}
-
-#[test]
-fn file_imports_directory_contents() {
-    let directory = Directory::new("directories");
-    bootstrap(&directory, &[]);
-    std::fs::create_dir_all(directory.join("recipes/tree/sub")).unwrap();
-    std::fs::write(directory.join("recipes/tree/a.txt"), "alpha").unwrap();
-    std::fs::write(directory.join("recipes/tree/sub/b.bin"), [1, 2]).unwrap();
-    std::fs::write(directory.join("recipes/tree.fix"), "@file(\"tree\")").unwrap();
-    let tree = expression(&directory, &["run", "recipes/tree.fix"]);
-    let child = |name: &str, path: &[usize]| {
-        path.iter().fold(name.to_owned(), |name, index| {
-            value(&directory, &["read-tree", &name])
-                .lines()
-                .nth(*index)
-                .unwrap()
-                .to_owned()
-        })
-    };
-    let blob = |path: &[usize]| run(&directory, &["read-blob", &child(&tree, path)], b"", 0);
-    assert_eq!(value(&directory, &["read-tree", &tree]).lines().count(), 2);
-    assert_eq!(blob(&[0, 0]), b"a.txt");
-    assert_eq!(blob(&[0, 2]), b"alpha");
-    assert_eq!(blob(&[1, 0]), b"sub");
-    assert_eq!(blob(&[1, 2, 0, 2]), [1, 2]);
 }

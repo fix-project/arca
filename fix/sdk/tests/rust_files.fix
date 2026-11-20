@@ -1,4 +1,4 @@
 program = $rust_files_native
-result = *#("" program 42u64)
+result = *#(268435456u64 program 42u64)
 combination = *[result 0u64]
 *[combination 2u64]

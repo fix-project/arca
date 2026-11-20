@@ -7,6 +7,9 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files(glob(["*.fix"]))
 
+fix_cc_wasm(name = "memory_limits_wasm", srcs = ["memory_limits.c"], hdrs = ["fixture.h"], memories = 2)
+fix_procedure(name = "memory_limits_native", wasm = ":memory_limits_wasm")
+
 wat_module(name = "privileged_wasm", src = "privileged.wat")
 fix_procedure(name = "privileged_native", wasm = ":privileged_wasm")
 
@@ -94,25 +97,15 @@ fix_procedure(
     memories = 3,
 )
 
+
 rust_shared_library(
-    name = "worker_events_wasm",
-    srcs = ["worker_events.rs"],
-    crate_name = "worker_events",
-    crate_root = "worker_events.rs",
+    name = "tcp_listener_wasm",
+    srcs = ["tcp_listener.rs"],
     platform = WASM,
     deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
 )
 
-fix_procedure(name = "worker_events_native", wasm = ":worker_events_wasm", memories = 3)
-
-rust_shared_library(
-    name = "concurrent_map_wasm",
-    srcs = ["concurrent_map.rs"],
-    platform = WASM,
-    deps = ["//fix/sdk:sdk_alloc", "@crates//:dlmalloc"],
-)
-
-fix_procedure(name = "concurrent_map_native", wasm = ":concurrent_map_wasm", memories = 3)
+fix_procedure(name = "tcp_listener_native", wasm = ":tcp_listener_wasm", memories = 3)
 
 rust_shared_library(
     name = "importer_wasm",
@@ -222,24 +215,15 @@ rust_test(
     name = "cli_test",
     srcs = ["cli.rs"],
     edition = "2024",
-    deps = ["//fix/handle", "//fix/repository"],
-    data = ["//programs/fix:fib_elf", "//programs/fix:addblob_elf", "//programs/fix/parser:parser_elf", "//fix/scheduler:unavailable_advisor", "//fix/scheduler:serial", "//fix/scheduler:advisor", "//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", "//fix/sdk:tagger_native", ":continuation_native", ":user_scheduler_elf", "//programs/fix:identity_elf"],
+    data = ["//fix/cli:fix", "//bootstrap:seed_tool", ":compiler_tool_native", "//programs/fix:compile_elf", "//programs/fix:scheduler_elf", "//fix/proof/collector:collector_elf", ":continuation_native", "//programs/fix:identity_elf"],
     rustc_env = {
-        "FIX_FIB": "$(rootpath //programs/fix:fib_elf)",
-        "FIX_ADD": "$(rootpath //programs/fix:addblob_elf)",
-        "FIX_PARSER": "$(rootpath //programs/fix/parser:parser_elf)",
         "FIX_CLI": "$(rootpath //fix/cli:fix)",
         "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",
         "FIX_COMPILER_TOOL": "$(rootpath :compiler_tool_native)",
         "FIX_COMPILE": "$(rootpath //programs/fix:compile_elf)",
         "FIX_SCHEDULER": "$(rootpath //programs/fix:scheduler_elf)",
         "FIX_COLLECTOR": "$(rootpath //fix/proof/collector:collector_elf)",
-        "FIX_TAGGER": "$(rootpath //fix/sdk:tagger_native)",
         "FIX_CONTINUATION": "$(rootpath :continuation_native)",
-        "USER_SCHEDULER": "$(rootpath :user_scheduler_elf)",
-        "SERIAL_SCHEDULER": "$(rootpath //fix/scheduler:serial)",
-        "SDK_ADVISOR": "$(rootpath //fix/scheduler:advisor)",
-        "SDK_UNAVAILABLE_ADVISOR": "$(rootpath //fix/scheduler:unavailable_advisor)",
         "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
     },
     size = "large",
@@ -247,21 +231,13 @@ rust_test(
     tags = ["kvm", "local"],
 )
 
-fix_cc_wasm(
-    name = "user_scheduler_wasm",
-    srcs = ["user_scheduler.c"],
-    memories = 3,
-    copts = ["-Wall", "-Wextra", "-Werror"],
-)
 
-fix_procedure(name = "user_scheduler_elf", wasm = ":user_scheduler_wasm")
-
-BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//fix/cli:precompiled"]
+BOOTSTRAP_DATA = ["//fix/cli:fix", "//bootstrap:seed_tool", "//bootstrap:seed"]
 
 BOOTSTRAP_ENV = {
     "FIX_CLI": "$(rootpath //fix/cli:fix)",
     "FIX_SEED": "$(rootpath //bootstrap:seed_tool)",
-    "FIX_BOOTSTRAP": "$(rootpath //fix/cli:precompiled)",
+    "FIX_BOOTSTRAP": "$(rootpath //bootstrap:seed)",
 }
 
 rust_test(

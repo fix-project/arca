@@ -7,13 +7,23 @@ use std::{
     process::Command,
 };
 
-fn call(fix: &Path, args: &[&str]) -> String {
-    let output = Command::new(fix)
+fn command(fix: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(fix)
         .args(args)
+        .env("FIX_UNSIGNED", "true")
         .env("FIX_JOBS", env::var("FIX_TEST_JOBS").unwrap())
         .env("FIX_TRUST", ".fix/trust")
+        .env("FIX_CONFIG_DIR", env::current_dir().unwrap().join("config"))
+        .env("XDG_DATA_HOME", env::current_dir().unwrap().join("data"))
+        .env("FIX_SCHEDULER", "scheduler")
+        .env("FIX_COLLECTOR", "collector")
+        .env("FIX_PARSER", "fix-parser")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn call(fix: &Path, args: &[&str]) -> String {
+    let output = command(fix, args);
     assert!(
         output.status.success(),
         "fix {args:?} failed: {}",
@@ -34,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["import", locate(name)?.to_str().ok_or("non-UTF-8 path")?],
         );
     }
+    call(&fix, &["trust", "add-tagger", "collector"]);
     let mut seed = Command::new(locate(&env::var("FIX_TEST_SEED")?)?);
     seed.args(["add", "."]);
     let mut labels = Vec::new();
@@ -60,8 +71,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let handle = call(&fix, &arguments);
-    let value = Command::new(&fix).args(["read-blob", &handle]).output()?;
-    assert!(value.status.success(), "fix read-blob failed");
+    let value = command(&fix, &["read-blob", &handle]);
+    assert!(
+        value.status.success(),
+        "fix read-blob {handle} failed: {}",
+        String::from_utf8_lossy(&value.stderr)
+    );
     assert_eq!(hex::encode(value.stdout), env::var("FIX_TEST_EXPECTED")?);
     Ok(())
 }

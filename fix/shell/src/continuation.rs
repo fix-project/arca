@@ -199,6 +199,7 @@ pub fn read_reply(reply: Value<Runtime>) -> Reference {
 }
 
 pub fn transfer(destination: Reference, name: &'static str, value: Reference) {
+    let _working = crate::memory::Working::new(fixhandle::accounting::WORKING);
     crate::locals::lift(&[value]);
     let bytes = handles::bytes(value);
     let result = operation(name)
@@ -209,6 +210,7 @@ pub fn transfer(destination: Reference, name: &'static str, value: Reference) {
         crate::locals::lift_all();
         crate::shell::clear_privilege_cache();
         operation("capture")
+            .word(crate::memory::snapshot() as u64)
             .word((crate::descriptors::range().1 * fixhandle::HANDLE_SIZE) as u64)
             .argument(attachments())
             .call_with_current_continuation()
@@ -232,6 +234,21 @@ pub fn coordinate(destination: Reference, name: &[u8], arguments: Reference) -> 
     let reply = operation("coordinate")
         .blob(name)
         .blob(&handles::bytes(arguments))
+        .word(handles::address(destination) as u64)
+        .call_with_current_continuation();
+    let reply: Word<Runtime> = reply.try_into().expect("coordination returned no status");
+    reply.read()
+}
+
+pub fn coordinate_handles(destination: Reference, name: &[u8], arguments: &[Reference]) -> u64 {
+    crate::locals::lift(arguments);
+    let bytes = arguments
+        .iter()
+        .flat_map(|arg| handles::bytes(*arg))
+        .collect::<alloc::vec::Vec<_>>();
+    let reply = operation("coordinate_handles")
+        .blob(name)
+        .blob(&bytes)
         .word(handles::address(destination) as u64)
         .call_with_current_continuation();
     let reply: Word<Runtime> = reply.try_into().expect("coordination returned no status");

@@ -2,10 +2,12 @@ use crate::handles::{self, Reference};
 
 pub const BASE: usize = crate::rt::HANDLE_BASE;
 const CAPACITY: u32 = (crate::rt::PAYLOAD_SIZE / fixhandle::HANDLE_SIZE) as u32;
+static mut LOCAL: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
 static mut SLOTS: fixhandle::descriptors::Descriptors = fixhandle::descriptors::Descriptors::new();
 
 pub fn initialize(value: Reference) -> u32 {
     assert_eq!(value as usize, BASE);
+    crate::memory::descriptors(4096 / fixhandle::HANDLE_SIZE);
     unsafe {
         assert_eq!((&mut *(&raw mut SLOTS)).allocate(CAPACITY), Some(0));
     }
@@ -27,6 +29,7 @@ pub fn allocate() -> u32 {
             .expect("descriptor table exhausted");
         let cell = BASE + index as usize * fixhandle::HANDLE_SIZE;
         if index == length && cell.is_multiple_of(4096) {
+            crate::memory::descriptors(4096 / fixhandle::HANDLE_SIZE);
             crate::rt::map_region(cell as *mut u8, 4096, arcane::__MODE_read_write)
                 .expect("descriptor allocation failed");
         }
@@ -50,4 +53,19 @@ pub fn close(index: u32) {
 
 pub fn range() -> (usize, usize) {
     (BASE, unsafe { (&*(&raw const SLOTS)).len() } as usize)
+}
+
+/// Record a descriptor written with a local name since the last promotion.
+pub fn local(address: usize) {
+    if (BASE..BASE + crate::rt::PAYLOAD_SIZE).contains(&address) {
+        assert!(address.is_multiple_of(fixhandle::HANDLE_SIZE));
+        unsafe {
+            (&mut *(&raw mut LOCAL)).insert(((address - BASE) / fixhandle::HANDLE_SIZE) as u32);
+        }
+    }
+}
+
+pub fn take_local() -> alloc::vec::Vec<u8> {
+    let slots = unsafe { core::mem::take(&mut *(&raw mut LOCAL)) };
+    slots.into_iter().flat_map(u32::to_le_bytes).collect()
 }

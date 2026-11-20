@@ -3,6 +3,13 @@ unsafe extern "C" {
     pub fn exit(value: u32) -> !;
     pub fn advise(value: u32, key: u32, key_length: u32, payload: u32, payload_length: u32);
     pub fn coordinate(name: u32, name_length: u32, arguments: u32, status: u32) -> u32;
+    pub fn coordinate_handles(
+        name: u32,
+        name_length: u32,
+        arguments: u32,
+        count: u32,
+        status: u32,
+    ) -> u32;
     pub fn get_type(arg0: u32) -> u32;
     pub fn close(arg0: u32);
     pub fn create_blob(arg0: u32, arg1: u32) -> u32;

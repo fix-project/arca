@@ -36,7 +36,7 @@ fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value<Type = Object<
         let result = match mode {
             0 => argument.eval()?,
             1 => argument.reference().identification().strict().eval()?,
-            2 => tree![0u64, combination.get(3), argument]
+            2 => tree![combination.get(0), combination.get(3), argument]
                 .application()
                 .strict()
                 .eval()?,

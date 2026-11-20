@@ -11,6 +11,7 @@ on:
       - .bazel*
       - .gitmodules
       - .github/workflows/prove.yml
+      - .github/actions/llvm-sdk/**
       - '!**/*.md'
   pull_request:
     paths:
@@ -22,6 +23,7 @@ on:
       - .bazel*
       - .gitmodules
       - .github/workflows/prove.yml
+      - .github/actions/llvm-sdk/**
       - '!**/*.md'
   workflow_dispatch:
 
@@ -54,18 +56,21 @@ jobs:
                 - build/rocq-toolchain.opam.locked
                 - build/rocq_toolchain.bzl
                 - build/rocq_toolchain.py
+                - MODULE.bazel
+                - .github/actions/llvm-sdk/action.yml
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/prove-actions
           # Include proof sources so source-only edits can save a new cache entry.
-          key: prove-ubuntu-26.04-${{ hashFiles('fix/proof/**', 'build/**', 'third_party/BUILD.bazel', 'MODULE.bazel', '.bazel*', '.gitmodules', '.github/workflows/prove.yml') }}
+          key: prove-ubuntu-26.04-${{ hashFiles('fix/proof/**', 'build/**', 'third_party/BUILD.bazel', 'MODULE.bazel', '.bazel*', '.gitmodules', '.github/workflows/prove.yml', '.github/actions/llvm-sdk/**') }}
           restore-keys: prove-ubuntu-26.04-
       - name: Install proof build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake cpio opam clang libgmp-dev pkg-config m4
+          sudo apt-get install -y build-essential cmake cpio opam libgmp-dev pkg-config m4 libzstd1 zlib1g
+      - uses: ./.github/actions/llvm-sdk
       - name: Check proofs
-        run: bazel test --local_test_jobs=2 //fix/proof:check
+        run: bazel test --config=ci --local_test_jobs=2 //fix/proof:check
       - name: Proof logs
         if: failure()
         uses: actions/upload-artifact@v4
