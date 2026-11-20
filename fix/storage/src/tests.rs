@@ -248,3 +248,93 @@ fn friendly_canonical_prefixes_distinguish_known_names_and_preserve_type() {
         format!("{}.90", &full[..9])
     );
 }
+
+fn repository_at(name: &str) -> (std::path::PathBuf, fixrepository::Repository) {
+    let path = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("{name}-{}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let repository = fixrepository::Repository::init(path.join(".fix").to_str().unwrap()).unwrap();
+    (path, repository)
+}
+
+#[test]
+fn eviction_releases_ram_and_load_restores_tree_descendants() {
+    let (path, repository) = repository_at("storage-eviction");
+    let contents = [42; 1024];
+    let blob = repository.create_blob(&contents).unwrap();
+    let tree = repository.create_tree(&[blob.into()]).unwrap();
+    let storage = repository::RepositoryStorage::new(repository);
+    let memory: &MemoryStorage = storage.as_ref();
+    storage.load(tree.into());
+    let read = memory.get_blob_backing(blob).unwrap();
+    assert!(memory.evict(blob));
+    assert!(!memory.evict(blob));
+    assert_eq!(memory.blob_bytes(), 0);
+    assert_eq!(read.to_bytes().as_ref(), &contents);
+    assert_eq!(
+        storage.repository().read_blob(blob).unwrap().as_ref(),
+        &contents
+    );
+    storage.load(tree.into());
+    assert_eq!(memory.get_blob(blob).unwrap().as_ref(), &contents);
+    assert!(memory.evict(blob));
+    assert_eq!(storage.get_blob(blob).unwrap().as_ref(), &contents);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn a_live_duplicate_can_republish_an_evicted_canonical_blob() {
+    let memory = MemoryStorage::default();
+    let contents = [7; 64];
+    let first = memory.add_blob(&contents);
+    let second = memory.add_blob(&contents);
+    let canonical = Blob::try_from(Handle::from(memory.canonicalize_blob(first).unwrap())).unwrap();
+    memory.canonicalize_blob(second).unwrap();
+    assert!(memory.evict(first));
+    assert!(memory.get_blob(canonical).is_err());
+    assert!(memory.get_blob(first).is_err());
+    memory.canonicalize_blob(second).unwrap();
+    assert_eq!(memory.get_blob(canonical).unwrap().as_ref(), &contents);
+    assert!(!memory.evict(first));
+    assert_eq!(memory.get_blob(second).unwrap().as_ref(), &contents);
+    assert!(memory.evict(canonical));
+    assert_eq!(memory.blob_bytes(), 0);
+    assert!(!memory.evict(Blob::literal(b"inline").unwrap()));
+}
+
+#[test]
+fn concurrent_reads_and_reloads_return_the_named_bytes() {
+    use std::sync::Barrier;
+
+    let memory = MemoryStorage::default();
+    let bytes = [93; 64];
+    let machine = memory.add_blob(&bytes);
+    let canonical =
+        Blob::try_from(Handle::from(memory.canonicalize_blob(machine).unwrap())).unwrap();
+    let retained = memory.get_blob_backing(machine).unwrap();
+    let start = Barrier::new(5);
+    std::thread::scope(|threads| {
+        for name in [canonical, machine, canonical, machine] {
+            let memory = &memory;
+            let start = &start;
+            threads.spawn(move || {
+                start.wait();
+                for _ in 0..2000 {
+                    match memory.get_blob(name) {
+                        Ok(data) => assert_eq!(data.as_ref(), &bytes),
+                        Err(error) => assert_eq!(error, StorageError::NotFound),
+                    }
+                }
+            });
+        }
+        start.wait();
+        for _ in 0..1000 {
+            assert!(memory.evict(canonical));
+            unsafe { memory.insert_canonical(canonical.object(), ImmutableBytes::new(&bytes)) };
+        }
+    });
+    assert_eq!(retained.to_bytes().as_ref(), &bytes);
+    assert_eq!(memory.blob_bytes(), bytes.len());
+}

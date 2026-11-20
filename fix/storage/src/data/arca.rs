@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use bytes::Buf;
 use kernel::prelude::{Box, Entry, Null, Page, Table, Tuple, Value, Vec, vec};
 
@@ -28,7 +28,13 @@ fn is_zero(bytes: &[u8]) -> bool {
 }
 
 #[derive(Clone, Debug)]
-pub struct ImmutableBytes {
+pub struct ImmutableBytes(Arc<Contents>);
+
+#[derive(Debug)]
+pub(crate) struct WeakBytes(Weak<Contents>);
+
+#[derive(Clone, Debug)]
+struct Contents {
     len: usize,
     backing: Backing,
     memory: Option<Arc<RetainedMemory>>,
@@ -50,7 +56,7 @@ struct Cursor {
 
 impl Buf for Cursor {
     fn remaining(&self) -> usize {
-        self.data.len - self.position
+        self.data.len() - self.position
     }
 
     fn chunk(&self) -> &[u8] {
@@ -67,7 +73,7 @@ impl Buf for Cursor {
         self.position += count;
         if in_page {
             self.page.as_mut().unwrap().1 += count;
-        } else if self.position < self.data.len {
+        } else if self.position < self.data.len() {
             self.page = Some(self.data.page(self.position));
         } else {
             self.page = None;
@@ -75,15 +81,36 @@ impl Buf for Cursor {
     }
 }
 
+impl WeakBytes {
+    pub(crate) fn upgrade(&self) -> Option<ImmutableBytes> {
+        self.0.upgrade().map(ImmutableBytes)
+    }
+}
+
 impl ImmutableBytes {
+    fn from_backing(len: usize, backing: Backing) -> Self {
+        Self(Arc::new(Contents {
+            len,
+            backing,
+            memory: None,
+        }))
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakBytes {
+        WeakBytes(Arc::downgrade(&self.0))
+    }
+
     pub fn retain(mut self, memory: kernel::memory::FreeMemory) -> Self {
-        self.memory.get_or_insert_with(Arc::default).keep(memory);
+        Arc::make_mut(&mut self.0)
+            .memory
+            .get_or_insert_with(Arc::default)
+            .keep(memory);
         self
     }
 
     pub(crate) fn with_memory(mut self, memory: Arc<RetainedMemory>) -> Self {
-        if self.memory.is_none() {
-            self.memory = Some(memory);
+        if self.0.memory.is_none() {
+            Arc::make_mut(&mut self.0).memory = Some(memory);
         }
         self
     }
@@ -138,11 +165,7 @@ impl ImmutableBytes {
                 Self::freeze(table, used)
             })
             .collect();
-        Self {
-            len,
-            backing: Backing::Tables(tables),
-            memory: None,
-        }
+        Self::from_backing(len, Backing::Tables(tables))
     }
 
     fn freeze(mut table: Table, len: usize) -> Table {
@@ -172,20 +195,15 @@ impl ImmutableBytes {
 
     pub fn new(bytes: &[u8]) -> Self {
         if bytes.is_empty() {
-            return Self {
-                len: 0,
-                backing: Backing::Empty,
-                memory: None,
-            };
+            return Self::from_backing(0, Backing::Empty);
         }
         if bytes.len() <= 4096 {
             let mut page = Page::new(4096);
             assert_eq!(page.write(0, bytes), bytes.len());
-            return Self {
-                len: bytes.len(),
-                backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
-                memory: None,
-            };
+            return Self::from_backing(
+                bytes.len(),
+                Backing::Page(Page::from_inner(page.into_inner().shared())),
+            );
         }
         let mut tables = Vec::new();
         for chunk in bytes.chunks(CHUNK_SIZE) {
@@ -202,11 +220,7 @@ impl ImmutableBytes {
             }
             tables.push(Self::share_mapping(mapping));
         }
-        Self {
-            len: bytes.len(),
-            backing: Backing::Tables(tables),
-            memory: None,
-        }
+        Self::from_backing(bytes.len(), Backing::Tables(tables))
     }
 
     fn share_mapping(mut table: Table) -> Table {
@@ -224,32 +238,31 @@ impl ImmutableBytes {
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        self.0.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.0.len == 0
     }
 
     pub fn with_bytes(self, offset: usize, bytes: &[u8]) -> Self {
         let end = offset
             .checked_add(bytes.len())
             .expect("byte range overflow");
-        assert!(offset <= self.len && end <= 4 * CHUNK_SIZE);
+        assert!(offset <= self.len() && end <= 4 * CHUNK_SIZE);
         if bytes.is_empty() {
             return self;
         }
-        let len = self.len.max(end);
-        let mut tables = match self.backing {
+        let len = self.len().max(end);
+        let mut tables = match Arc::unwrap_or_clone(self.0).backing {
             Backing::Empty => return Self::new(bytes),
             Backing::Tables(tables) => tables,
             Backing::Page(mut page) if end <= page.len() => {
                 assert_eq!(page.write(offset, bytes), bytes.len());
-                return Self {
+                return Self::from_backing(
                     len,
-                    backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
-                    memory: None,
-                };
+                    Backing::Page(Page::from_inner(page.into_inner().shared())),
+                );
             }
             Backing::Page(page) => match Self::from_page(page).mapped_value() {
                 Value::Table(table) => vec![table],
@@ -283,11 +296,10 @@ impl ImmutableBytes {
             position += size;
             remaining = &remaining[size..];
         }
-        Self {
+        Self::from_backing(
             len,
-            backing: Backing::Tables(tables.into_iter().map(Self::share_mapping).collect()),
-            memory: None,
-        }
+            Backing::Tables(tables.into_iter().map(Self::share_mapping).collect()),
+        )
     }
 
     pub fn from_page(page: Page) -> Self {
@@ -303,11 +315,10 @@ impl ImmutableBytes {
         if len < page.len() && !page.with_ref(|bytes| is_zero(&bytes[len..])) {
             page.with_mut(|bytes| bytes[len..].fill(0));
         }
-        Self {
+        Self::from_backing(
             len,
-            backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
-            memory: None,
-        }
+            Backing::Page(Page::from_inner(page.into_inner().shared())),
+        )
     }
 
     pub fn from_value(value: Value, len: usize) -> Self {
@@ -327,7 +338,7 @@ impl ImmutableBytes {
     }
 
     pub fn value(&self) -> Value {
-        match &self.backing {
+        match &self.0.backing {
             Backing::Empty => Null::new().into(),
             Backing::Page(page) => page.clone().into(),
             Backing::Tables(tables) => backing_value(tables),
@@ -335,7 +346,7 @@ impl ImmutableBytes {
     }
 
     pub fn attachment(&self) -> Value {
-        match &self.backing {
+        match &self.0.backing {
             Backing::Page(page) if page.len() != 4096 => self.mapped_value(),
             _ => self.value(),
         }
@@ -346,9 +357,9 @@ impl ImmutableBytes {
             return Null::new().into();
         }
         let mut tables = Vec::new();
-        for base in (0..self.len.max(1)).step_by(CHUNK_SIZE) {
-            let len = (self.len - base).min(CHUNK_SIZE);
-            let mut table = Table::new(if self.len > CHUNK_SIZE {
+        for base in (0..self.0.len.max(1)).step_by(CHUNK_SIZE) {
+            let len = (self.0.len - base).min(CHUNK_SIZE);
+            let mut table = Table::new(if self.0.len > CHUNK_SIZE {
                 CHUNK_SIZE
             } else {
                 len
@@ -373,8 +384,8 @@ impl ImmutableBytes {
     }
 
     pub fn page(&self, offset: usize) -> (Page, usize) {
-        assert!(offset < self.len);
-        let table = match &self.backing {
+        assert!(offset < self.0.len);
+        let table = match &self.0.backing {
             Backing::Empty => unreachable!(),
             Backing::Page(page) => return (page.clone(), offset),
             Backing::Tables(tables) => &tables[offset / CHUNK_SIZE],
@@ -387,7 +398,7 @@ impl ImmutableBytes {
     }
 
     pub fn to_bytes(&self) -> Box<[u8]> {
-        let mut bytes = vec![0; self.len];
+        let mut bytes = vec![0; self.0.len];
         let mut position = 0;
         self.for_each_chunk(|chunk| {
             bytes[position..position + chunk.len()].copy_from_slice(chunk);
@@ -397,17 +408,17 @@ impl ImmutableBytes {
     }
 
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
-        match &self.backing {
+        match &self.0.backing {
             Backing::Empty => return f(&[]),
             Backing::Page(page) => {
-                page.with_ref(|bytes| f(&bytes[..self.len]));
+                page.with_ref(|bytes| f(&bytes[..self.0.len]));
                 return;
             }
             Backing::Tables(_) => {}
         }
-        for position in (0..self.len).step_by(4096) {
+        for position in (0..self.0.len).step_by(4096) {
             let (page, offset) = self.page(position);
-            let size = (self.len - position).min(4096);
+            let size = (self.0.len - position).min(4096);
             page.with_ref(|bytes| f(&bytes[offset..offset + size]));
         }
     }

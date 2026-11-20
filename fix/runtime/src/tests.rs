@@ -1111,6 +1111,30 @@ mod tests {
     }
 
     #[kernel::test]
+    fn evicted_input_fails_the_application_without_an_apply_coupon() {
+        let memory = Arc::new(fixstorage::memory::MemoryStorage::default());
+        let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
+            .unwrap()
+            .object()
+            .into_ref();
+        let runtime = FixOnArca::new(memory.clone()).with_trust(
+            fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
+        );
+        let input = memory.add_blob(&[7; 8193]);
+        let program = test_program(&*memory, kernel::testing::fixture("FIX_READ_BLOB"));
+        let limit: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
+        let combination = memory.add_tree(&[limit, program.into(), input.into()]);
+        let request = Tree::try_from(apply(&runtime, combination)).unwrap();
+        let continuation = memory.get_tree(request).unwrap()[1];
+        let resume = memory.add_tree(&[limit, continuation, Blob::literal(b"").unwrap().into()]);
+        assert!(memory.evict(input));
+        assert!(matches!(
+            runtime.execute(resume),
+            Err(ExecutionError::Storage(StorageError::NotFound))
+        ));
+    }
+
+    #[kernel::test]
     fn blob_reads_preserve_slices_and_snapshots() {
         let runtime = test_runtime();
         let storage = runtime.storage();
