@@ -14,6 +14,38 @@ use crate::platform::Mutex as KMutex;
 pub use table::ShardedMap;
 use table::Table;
 
+// a blob that the store holds until it is evicted
+struct BlobSlot {
+    bytes: crate::data::WeakBytes, // readers upgrade a weak reference to avoid copying bytes that eviction has released
+    held: KMutex<Option<ImmutableBytes>>,
+}
+
+impl BlobSlot {
+    fn new(bytes: ImmutableBytes) -> Self {
+        Self {
+            bytes: bytes.downgrade(),
+            held: KMutex::new(Some(bytes)),
+        }
+    }
+
+    fn present(&self) -> bool {
+        self.held.lock().is_some()
+    }
+
+    fn read(&self) -> Option<ImmutableBytes> {
+        self.bytes.upgrade()
+    }
+
+    fn evict(&self) -> bool {
+        let bytes = self.held.lock().take();
+        bytes.is_some()
+    }
+
+    fn held_len(&self) -> usize {
+        self.held.lock().as_ref().map_or(0, ImmutableBytes::len)
+    }
+}
+
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
@@ -26,7 +58,8 @@ struct Inner {
     id: u64,
     next_blob: AtomicU64,
     next_tree: AtomicU64,
-    blobs: Table<ImmutableBytes>,
+    blobs: Table<BlobSlot>,
+    eviction_generation: AtomicU64,
     trees: Table<(TreeBacking, bool, bool)>,
     canonicals: ShardedMap<CanonicalHandle, usize>,
     locals: ShardedMap<[u8; HANDLE_SIZE], CanonicalHandle>,
@@ -149,6 +182,7 @@ impl Default for MemoryStorage {
                 next_blob: AtomicU64::new(0),
                 next_tree: AtomicU64::new(0),
                 blobs: Table::default(),
+                eviction_generation: AtomicU64::new(0),
                 trees: Table::default(),
                 canonicals: ShardedMap::default(),
                 locals: ShardedMap::default(),
@@ -208,7 +242,7 @@ impl MemoryStorage {
         if handle.is_tree_data() {
             self.inner.trees.get(index, |_| ()).is_some()
         } else {
-            self.inner.blobs.get(index, |_| ()).is_some()
+            self.blob_present(index)
         }
     }
 
@@ -257,26 +291,77 @@ impl MemoryStorage {
         if object.is_empty() && object.as_handle().same_encoding(&Tree::empty().into()) {
             return;
         }
-        let index = match object.view() {
-            ObjectView::Blob(_) => {
+        let canonical = unsafe { CanonicalHandle::new(object.into()) };
+        match object.view() {
+            ObjectView::Blob(_) => self.name_blob(canonical, || {
                 let index = self.next(&self.inner.next_blob);
-                self.inner.blobs.insert(index, bytes);
+                let bytes = self.retain_backing(bytes);
+                self.inner.blobs.insert(index, BlobSlot::new(bytes));
                 index
-            }
+            }),
             ObjectView::Tree(_) => {
                 let index = self.next(&self.inner.next_tree);
                 let (comparable, value) = tree_properties(&bytes);
                 self.inner
                     .trees
                     .insert(index, (TreeBacking::Ready(bytes), comparable, value));
-                index
+                self.inner.canonicals.with(&canonical, |canonicals| {
+                    canonicals.entry(canonical).or_insert(index);
+                });
             }
-        };
-        let canonical = unsafe { CanonicalHandle::new(object.into()) };
-        self.inner.canonicals.with(&canonical, |canonicals| {
-            canonicals.entry(canonical).or_insert(index);
-        });
+        }
         self.register_names([*object.as_handle().as_bytes()]);
+    }
+
+    // names a blob unless the name already has one
+    fn name_blob(&self, canonical: CanonicalHandle, index: impl FnOnce() -> usize) {
+        self.inner.canonicals.with(&canonical, |names| {
+            if !names
+                .get(&canonical)
+                .is_some_and(|&current| self.blob_present(current))
+            {
+                names.insert(canonical, index());
+            }
+        });
+    }
+
+    // releases the store's ownership of a resident blob
+    pub fn evict(&self, blob: Blob) -> bool {
+        let Ok(index) = self.index(blob.as_handle()) else {
+            return false;
+        };
+        if !self
+            .inner
+            .blobs
+            .get(index, BlobSlot::evict)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        self.inner
+            .eviction_generation
+            .fetch_add(1, Ordering::Release);
+        true
+    }
+
+    fn blob_present(&self, index: usize) -> bool {
+        self.inner
+            .blobs
+            .get(index, BlobSlot::present)
+            .unwrap_or(false)
+    }
+
+    fn blob_backing(&self, index: usize) -> Result<ImmutableBytes, StorageError> {
+        self.inner
+            .blobs
+            .get(index, BlobSlot::read)
+            .flatten()
+            .ok_or(StorageError::NotFound)
+    }
+
+    // Advances after each eviction closes its slot.
+    pub(crate) fn eviction_generation(&self) -> u64 {
+        self.inner.eviction_generation.load(Ordering::Acquire)
     }
 
     fn next(&self, counter: &AtomicU64) -> usize {
@@ -318,7 +403,9 @@ impl MemoryStorage {
     pub fn blob_bytes(&self) -> usize {
         let mut total = 0;
         let end = self.inner.next_blob.load(Ordering::Acquire) as usize;
-        self.inner.blobs.for_each(end, |bytes| total += bytes.len());
+        self.inner
+            .blobs
+            .for_each(end, |slot| total += slot.held_len());
         total
     }
 
@@ -600,7 +687,8 @@ impl Storage for MemoryStorage {
             )
         }
         .expect("blob exceeds handle length");
-        self.inner.blobs.insert(index, data);
+        let data = self.retain_backing(data);
+        self.inner.blobs.insert(index, BlobSlot::new(data));
         handle
     }
 
@@ -668,11 +756,7 @@ impl Storage for MemoryStorage {
             return Ok(ImmutableBytes::new(bytes));
         }
         let index = self.index(name.as_handle())?;
-        let data = self
-            .inner
-            .blobs
-            .get(index, ImmutableBytes::clone)
-            .ok_or(StorageError::NotFound)?;
+        let data = self.blob_backing(index)?;
         if data.len() as u64 != name.byte_len() {
             return Err(StorageError::LengthMismatch);
         }
@@ -682,7 +766,7 @@ impl Storage for MemoryStorage {
         if name.as_handle().value_bit() != Some(true) {
             return Err(StorageError::InvalidValueBit);
         }
-        Ok(self.retain_backing(data))
+        Ok(data)
     }
 
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
@@ -718,27 +802,23 @@ impl Storage for MemoryStorage {
         if let Ok(canonical) = CanonicalHandle::try_from(blob) {
             return Ok(canonical);
         }
-        if let Some(canonical) = self.alias(blob.as_handle()) {
-            return Ok(canonical);
-        }
         let index = self.index(blob.as_handle())?;
-        let bytes = self
-            .inner
-            .blobs
-            .get(index, ImmutableBytes::clone)
-            .ok_or(StorageError::NotFound)?;
-        if blob.byte_len() != bytes.len() as u64 {
-            return Err(StorageError::LengthMismatch);
+        let cached = self.alias(blob.as_handle());
+        let canonical_handle = match cached {
+            Some(name) => name,
+            None => {
+                let bytes = self.blob_backing(index)?;
+                if blob.byte_len() != bytes.len() as u64 {
+                    return Err(StorageError::LengthMismatch);
+                }
+                let canonical = Blob::canonical(&bytes.to_bytes()).expect("stored blob length");
+                CanonicalHandle::try_from(canonical).expect("canonical blob")
+            }
+        };
+        self.name_blob(canonical_handle, || index);
+        if cached.is_none() {
+            self.cache_alias(blob.into(), canonical_handle);
         }
-        let bytes = bytes.to_bytes();
-
-        let canonicalized_blob = Blob::canonical(&bytes).expect("stored blob length");
-        let canonical_handle =
-            CanonicalHandle::try_from(canonicalized_blob).expect("canonical blob");
-        self.inner.canonicals.with(&canonical_handle, |canonicals| {
-            canonicals.entry(canonical_handle).or_insert(index);
-        });
-        self.cache_alias(blob.into(), canonical_handle);
         Ok(canonical_handle)
     }
 

@@ -316,7 +316,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         let payload = self.get_tree(Tree::try_from(payload.handle()).ok()?).ok()?;
         assert_eq!(payload.len(), 6);
         let mut function: Function = self
-            .decode(payload[0])
+            .decode(payload[0])?
             .try_into()
             .expect("invalid attested checkpoint");
         let arena = self
@@ -329,7 +329,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             let address = self.integer(record[0]) as usize;
             let length = self.integer(record[2]) as usize;
             let backing = match Object::try_from(record[1]).unwrap().view() {
-                ObjectView::Blob(blob) => self.get_blob_backing(*blob).unwrap(),
+                ObjectView::Blob(blob) => self.get_blob_backing(*blob).ok()?,
                 ObjectView::Tree(tree) => self.get_tree_backing(*tree).unwrap(),
             };
             let writable = self.integer(record[3]) != 0;
@@ -359,7 +359,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             Tree::try_from(payload[4]).unwrap(),
             postcard::from_bytes(
                 self.get_blob(Blob::try_from(payload[5]).unwrap())
-                    .unwrap()
+                    .ok()?
                     .as_ref(),
             )
             .unwrap(),

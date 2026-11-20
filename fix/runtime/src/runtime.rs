@@ -35,6 +35,22 @@ pub enum ExecutionError {
     InvalidApplication,
     InvalidMemoryLimit,
     Admission(kernel::memory::AdmissionError),
+    Storage(StorageError),
+}
+
+impl From<StorageError> for ExecutionError {
+    fn from(error: StorageError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+impl From<arca::trust::TrustError> for ExecutionError {
+    fn from(error: arca::trust::TrustError) -> Self {
+        match error {
+            arca::trust::TrustError::Storage(error) => Self::Storage(error),
+            _ => Self::InvalidApplication,
+        }
+    }
 }
 
 impl ExecutionError {
@@ -55,6 +71,7 @@ impl ExecutionError {
                 "combination {} requires an eight-byte memory limit",
                 name(combination)
             ),
+            Self::Storage(error) => alloc::format!("could not read application data: {error:?}"),
             Self::Admission(error) => alloc::format!(
                 "memory admission rejected: requested {} bytes, {} bytes available; retry when capacity is available",
                 error.required,

@@ -1419,6 +1419,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_cache"
                 | b"storage_claims"
                 | b"storage_identify"
+                | b"storage_evict"
                 | b"storage_thunk"
                 | b"storage_reference"
                 | b"storage_reference_named"
@@ -2650,6 +2651,18 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 shared.saver.push(*value);
             }
             Ok(*value)
+        }
+        (b"storage_evict", [value]) => {
+            let object = match value.view() {
+                HandleView::Object(object) => *object,
+                HandleView::Ref(reference) => reference.object_descriptor(),
+                _ => return Err(Error::Invalid.into()),
+            };
+            let ObjectView::Blob(blob) = object.view() else {
+                return Err(Error::Invalid.into());
+            };
+            let removed = runtime.evict(*blob);
+            Ok(number(usize::from(removed)))
         }
         (b"storage_put", [value]) => {
             runtime.index_claim(*value).map_err(|_| Error::Invalid)?;

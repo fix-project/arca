@@ -329,6 +329,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         self
     }
 
+    pub(crate) fn evict(&self, blob: Blob) -> bool {
+        self.storage.memory().evict(blob)
+    }
+
     pub(crate) fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
         self.storage.memory().keep_memory(memory);
     }
@@ -627,10 +631,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 .map_err(|_| ExecutionError::InvalidApplication)?;
             procedure = *fields.get(1).ok_or(ExecutionError::InvalidApplication)?;
             if Blob::try_from(procedure).is_ok() {
-                return match self.trust.runnable(self, tree) {
-                    Ok(executable) => Ok(Callable::Runnable(executable, arguments)),
-                    Err(_) => Err(ExecutionError::InvalidApplication),
-                };
+                return Ok(Callable::Runnable(
+                    self.trust.runnable(self, tree)?,
+                    arguments,
+                ));
             }
             arguments += fields.len().saturating_sub(2);
         }
@@ -917,11 +921,11 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     result
                 }
                 b"is_trusted_tagger" => {
-                    let allowed = privileged && self.trust.is_tagger(self, combination).unwrap();
+                    let allowed = privileged && self.trust.is_tagger(self, combination)?;
                     k.apply(kernel::prelude::Word::new(allowed as u64))
                 }
                 b"create_tag_unchecked" => {
-                    if !privileged || !self.trust.is_tagger(self, combination).unwrap() {
+                    if !privileged || !self.trust.is_tagger(self, combination)? {
                         return Ok(self.trap(WASM_TRAP_UNREACHABLE));
                     }
                     let Some(Value::Blob(reference)) = args.pop_back() else {
@@ -958,12 +962,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let Some(Value::Blob(lhs)) = args.pop_back() else {
                         panic!()
                     };
-                    let equal = self
-                        .equals(
-                            handles::resolve(&mut k, unpack_reference(&lhs)),
-                            handles::resolve(&mut k, unpack_reference(&rhs)),
-                        )
-                        .expect("equals: invalid or non-comparable operand");
+                    let equal = self.equals(
+                        handles::resolve(&mut k, unpack_reference(&lhs)),
+                        handles::resolve(&mut k, unpack_reference(&rhs)),
+                    )?;
                     k.apply(kernel::prelude::Word::new(equal as u64))
                 }
                 b"create_tag" => {
@@ -976,7 +978,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     assert!(!tree.is_empty(), "missing tag author");
                     let data = self.get_tree_backing(tree).unwrap();
                     let author = handles::read_backing(&data, 0);
-                    if !trust::is_author(self, combination, author).unwrap() {
+                    if !trust::is_author(self, combination, author)? {
                         return Ok(self.trap(WASM_TRAP_UNREACHABLE));
                     }
                     let value = unsafe { self.add_tree_backing(data) };
@@ -1009,7 +1011,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     }
                     temporary = temporary
                         .saturating_add(fixhandle::accounting::allocation(length.read() as usize));
-                    let backing = self.get_blob_backing(name).unwrap();
+                    let backing = self.get_blob_backing(name)?;
                     let mut offset = offset.read() as usize;
                     let mut destination = destination.read() as usize;
                     let length = length.read() as usize;
@@ -1054,7 +1056,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     }
                     temporary =
                         temporary.saturating_add(fixhandle::accounting::mapping(name.len()));
-                    k.apply(self.get_blob_backing(name).unwrap().attachment())
+                    k.apply(self.get_blob_backing(name)?.attachment())
                 }
                 b"get_tree_element" => {
                     let started = profile.then(kernel::tsc::read);

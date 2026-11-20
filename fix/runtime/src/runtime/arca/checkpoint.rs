@@ -55,23 +55,21 @@ pub(super) fn encode(storage: &dyn Storage, value: Value) -> Handle {
 }
 
 impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
-    pub(super) fn decode(&self, value: Handle) -> Value {
+    pub(super) fn decode(&self, value: Handle) -> Option<Value> {
         let fields = self.get_tree(Tree::try_from(value).unwrap()).unwrap();
         assert_eq!(fields.len(), 2);
         let kind = self.get_blob(Blob::try_from(fields[0]).unwrap()).unwrap();
         let payload = fields[1];
-        match kind.as_ref() {
+        Some(match kind.as_ref() {
             b"Null" => Value::default(),
             b"Word" => Word::new(self.integer(payload)).into(),
-            b"Blob" => {
-                ArcaBlob::new(self.get_blob(Blob::try_from(payload).unwrap()).unwrap()).into()
-            }
+            b"Blob" => ArcaBlob::new(self.get_blob(Blob::try_from(payload).unwrap()).ok()?).into(),
             b"Page" => {
                 let backing = self
                     .get_blob_backing(Blob::try_from(payload).unwrap())
-                    .unwrap();
+                    .ok()?;
                 if let Value::Page(page) = backing.value() {
-                    return page.into();
+                    return Some(page.into());
                 }
                 let mut page = Page::new(backing.len());
                 let mut offset = 0;
@@ -85,7 +83,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 let fields = self.get_tree(Tree::try_from(payload).unwrap()).unwrap();
                 let mut result = Tuple::new(fields.len());
                 for (index, field) in fields.into_iter().enumerate() {
-                    result.set(index, self.decode(field));
+                    result.set(index, self.decode(field)?);
                 }
                 result.into()
             }
@@ -95,7 +93,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 for entry in self.get_tree(Tree::try_from(fields[1]).unwrap()).unwrap() {
                     let fields = self.get_tree(Tree::try_from(entry).unwrap()).unwrap();
                     let mode = self.get_blob(Blob::try_from(fields[1]).unwrap()).unwrap();
-                    let entry = match (mode.as_ref(), self.decode(fields[2])) {
+                    let entry = match (mode.as_ref(), self.decode(fields[2])?) {
                         ([0], Value::Page(page)) => Entry::ROPage(page),
                         ([1], Value::Page(page)) => Entry::RWPage(page),
                         ([0], Value::Table(table)) => Entry::ROTable(table),
@@ -106,10 +104,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 }
                 table.into()
             }
-            b"Function" => Function::new(self.decode(payload))
+            b"Function" => Function::new(self.decode(payload)?)
                 .expect("invalid checkpoint function")
                 .into(),
             _ => panic!("invalid checkpoint value"),
-        }
+        })
     }
 }
