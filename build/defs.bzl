@@ -6,7 +6,8 @@ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("//build:cc.bzl", "cc_object")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
-FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-fno-stack-protector", "-nostdlib", "-nostartfiles", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3", "-static"]
+FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-fno-stack-protector", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3"]
+FIX_LINKOPTS = ["-nostdlib", "-nostartfiles", "-static"]
 
 ARCA = "//build/platforms:arca"
 ARCA_USER = "//build/platforms:arca_user"
@@ -293,9 +294,9 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         name = artifact,
         tags = tags,
         srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
-        tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
+        tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_linkopts"],
         outs = [name + ".elf"],
-        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
+        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_linkopts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
         visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:
