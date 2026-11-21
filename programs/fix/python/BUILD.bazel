@@ -1,0 +1,91 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//build:defs.bzl", "WASM", "fix_procedure", "fix_script_test")
+
+rust_shared_library(
+    name = "python_wasm",
+    srcs = ["bridge.rs", "main.rs", "scheduler.rs"],
+    crate_root = "main.rs",
+    compile_data = ["do.py", "fix.py", "flatware.py", "scheduler.py"],
+    edition = "2024",
+    platform = WASM,
+    rustc_flags = ["-Cstrip=symbols"],
+    deps = [
+        "//fix/api:api_alloc",
+        "//fix/scheduler:sdk",
+        "//fix/sdk:sdk_import",
+        "@python_crates//:rustpython-vm",
+    ],
+)
+
+fix_procedure(
+    name = "python",
+    wasm = ":python_wasm",
+    memories = 2,
+    partitions = 16,
+    runnable = True,
+    visibility = ["//visibility:public"],
+)
+
+fix_script_test(
+    name = "python_test",
+    script = "python.fix",
+    data = [
+        ":python_elf",
+        "tests/annotations.py",
+        "tests/apply.py",
+        "tests/main.py",
+        "tests/python.fix",
+        "//programs/flatware:cat_elf",
+        "//tests/fix:check_result_native",
+    ],
+    expected = "2a00000000000000",
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)
+
+fix_script_test(
+    name = "workflow_test",
+    script = "workflow.fix",
+    data = [
+        ":python_elf",
+        "tests/workflow.fix",
+        "tests/workflow.py",
+        "//programs/fix/rust:add_elf",
+        "//programs/flatware:cat_elf",
+        "//tests/fix:check_result_native",
+        "//tests/flatware:runner_probe_native",
+    ],
+    expected = "2a00000000000000",
+    jobs = 4,
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)
+
+sh_test(
+    name = "scheduler_test",
+    srcs = ["tests/scheduler_test.sh"],
+    args = [
+        "$(rootpath //fix/cli:fix)",
+        "$(rootpath //bootstrap:seed)",
+        "$(rootpath //bootstrap:seed_tool)",
+        "$(rootpath :python_elf)",
+        "$(rootpath //programs/fix/rust:blob_elf)",
+        "$(rootpath //programs/fix/schedulers:advisor_elf)",
+        "$(rootpath tests/scheduler.py)",
+    ],
+    data = [
+        ":python_elf",
+        "tests/scheduler.py",
+        "//bootstrap:seed",
+        "//bootstrap:seed_tool",
+        "//fix/cli:fix",
+        "//programs/fix/rust:blob_elf",
+        "//programs/fix/schedulers:advisor_elf",
+    ],
+    size = "large",
+    timeout = "short",
+    tags = ["kvm", "local"],
+)

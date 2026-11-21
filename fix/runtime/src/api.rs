@@ -12,7 +12,7 @@ use crate::{
 };
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use bytes::Buf;
-use fix::Memoization;
+use fix::{FailureKind, Memoization};
 
 pub type Result<T> = core::result::Result<T, String>;
 
@@ -205,24 +205,9 @@ impl Backend {
                             return None;
                         }
                         let marker = storage.get_blob(Blob::try_from(fields[0]).ok()?).ok()?;
+                        let kind = FailureKind::from_marker(&marker)?;
                         let detail = storage.get_blob(Blob::try_from(fields[1]).ok()?).ok()?;
-                        match marker.as_ref() {
-                            b"Rust.panic" => {
-                                Some(format!("Rust panic: {}", String::from_utf8_lossy(&detail)))
-                            }
-                            b"Fix.error" => {
-                                Some(format!("Fix error: {}", String::from_utf8_lossy(&detail)))
-                            }
-                            b"Wasm.trap" if detail.len() == 4 => Some(format!(
-                                "Wasm trap code {}",
-                                u32::from_le_bytes(detail.as_ref().try_into().unwrap())
-                            )),
-                            b"Fix.memory" if detail.len() == 8 => Some(format!(
-                                "memory limit exceeded ({} bytes)",
-                                u64::from_le_bytes(detail.as_ref().try_into().unwrap())
-                            )),
-                            _ => None,
-                        }
+                        kind.decode(&detail).map(|failure| format!("{failure}"))
                     })();
                     detail.unwrap_or_else(|| {
                         format!(
