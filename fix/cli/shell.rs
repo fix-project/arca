@@ -102,6 +102,9 @@ impl Shell {
     pub fn save(&mut self, value: &Value) -> Result<String, Error> {
         Self::with(|client| client.save(value.inner()))
     }
+    pub fn preview(&self, value: &Value) -> Option<String> {
+        Self::with(|client| client.storage.preview(client.handle(value.inner()).ok()?))
+    }
     pub fn label(&mut self, name: &str, value: &Value) -> Result<(), Error> {
         Self::with(|client| client.label(name, value.inner()))
     }

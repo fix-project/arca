@@ -98,6 +98,38 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
+# Keep RustPython's std features out of the freestanding Fix dependencies.
+crate.annotation_select(
+    crate = "getrandom",
+    repositories = ["python_crates"],
+    triples = ["wasm32-unknown-unknown"],
+    version = "0.3.4",
+    rustc_flags = ['--cfg=getrandom_backend="unsupported"'],
+)
+crate.annotation(
+    crate = "ahash",
+    repositories = ["python_crates"],
+    version = "0.8.12",
+    patches = ["//build:ahash-freestanding-wasm.patch"],
+    patch_args = ["-p1"],
+)
+crate.annotation(
+    crate = "rustpython-vm",
+    repositories = ["python_crates"],
+    version = "0.5.0",
+    compile_data_glob = ["Lib/**/*.py"],
+)
+crate.from_cargo(
+    name = "python_crates",
+    cargo_lockfile = "//third_party/rust/python:Cargo.lock",
+    manifests = ["//third_party/rust/python:Cargo.toml"],
+    supported_platform_triples = [
+        "x86_64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+    ],
+)
+use_repo(crate, "python_crates")
+
 # Wasm guests use Rust allocation and do not provide libc malloc/free.
 crate.annotation(
     crate = "zlib-rs",

@@ -12,6 +12,7 @@ exports_files([
     "cc_checks.bzl",
     "repositories.bzl",
     "rules_rust.patch",
+    "ahash-freestanding-wasm.patch",
     "blake3-custom-target.patch",
     "defs.bzl",
     "hedron-bazel9.patch",
