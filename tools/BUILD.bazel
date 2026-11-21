@@ -1,6 +1,6 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//build:defs.bzl", "FIX_COPTS", "wat_module")
+load("//build:defs.bzl", "FIX_LINKOPTS", "wat_module")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -49,9 +49,9 @@ rust_test(
 
 sh_binary(name = "compile", srcs = ["compile.sh"])
 genrule(
-    name = "fix_copts",
-    outs = ["fix_copts.txt"],
-    cmd = "printf '%s\\n' " + " ".join(FIX_COPTS) + " > $@",
+    name = "fix_linkopts",
+    outs = ["fix_linkopts.txt"],
+    cmd = "printf '%s\\n' " + " ".join(FIX_LINKOPTS) + " > $@",
 )
 
 alias(name = "wasm_merge", actual = "//tools/module-combiner:wasm_merge", tags = ["manual"])

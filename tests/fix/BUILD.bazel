@@ -264,9 +264,10 @@ rust_test(
     crate_root = "expressions.rs",
     edition = "2024",
     deps = ["//fix/api:api_alloc", "//fix/cli:client"],
-    data = BOOTSTRAP_DATA + ["//programs/fix:identity_elf", "//programs/fix:addblob_module", "//fix/sdk:tagger_native"],
+    data = BOOTSTRAP_DATA + [":linear_effects_native", "//programs/fix:identity_elf", "//programs/fix:addblob_module", "//fix/sdk:tagger_native"],
     rustc_env = BOOTSTRAP_ENV | {
         "FIX_IDENTITY": "$(rootpath //programs/fix:identity_elf)",
+        "FIX_LINEAR_EFFECTS": "$(rootpath :linear_effects_native)",
         "FIX_TAGGER": "$(rootpath //fix/sdk:tagger_native)",
         "FIX_ADD_MODULE": "$(rootpath //programs/fix:addblob_module)",
     },

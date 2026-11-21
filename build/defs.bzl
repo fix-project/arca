@@ -6,7 +6,8 @@ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("//build:cc.bzl", "cc_object")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
-FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-fno-stack-protector", "-nostdlib", "-nostartfiles", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3", "-static"]
+FIX_COPTS = ["-O2", "-fno-optimize-sibling-calls", "-frounding-math", "-ffreestanding", "-fno-stack-protector", "-mcmodel=small", "-fPIC", "-fvisibility=hidden", "-mno-red-zone", "-march=x86-64-v3"]
+FIX_LINKOPTS = ["-nostdlib", "-nostartfiles", "-static"]
 
 ARCA = "//build/platforms:arca"
 ARCA_USER = "//build/platforms:arca_user"
@@ -242,8 +243,10 @@ fix_script_test = rule(
     },
 )
 
-def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"], tags = [], argument_modules = []):
+def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, visibility = None, artifact_visibility = ["//visibility:private"], tags = [], argument_modules = [], partitions = 1):
     """Wasm -> optional resource postprocessing -> C -> native Fix ELF."""
+    if partitions < 1:
+        fail("Partition count must be positive")
     if memories != None or tables != None:
         counts = (" --memories %d" % memories if memories != None else "") + (" --tables %d" % tables if tables != None else "")
         native.genrule(
@@ -256,28 +259,33 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
             cmd = "$(execpath //tools:postprocess) $(location " + wasm + ") $@" + counts,
         )
         wasm = ":" + name + "_postprocess"
+    directory = name + "_translate/"
+    sources = [directory + ("module.c" if partitions == 1 else "module_%d.c" % i) for i in range(partitions)]
+    headers = [directory + "module.h"]
+    if partitions > 1:
+        headers.append(directory + "module-impl.h")
     native.genrule(
         name = name + "_translate",
         tags = tags,
         visibility = ["//visibility:private"],
         srcs = [wasm],
         tools = ["//third_party:wasm2c", "//tools:compile"],
-        outs = [name + "_translate/module.c", name + "_translate/module.h"],
-        cmd = "$(execpath //tools:compile) translate $(execpath //third_party:wasm2c) $(location " + wasm + ") $(location " + name + "_translate/module.c)",
+        outs = sources + headers,
+        cmd = "$(execpath //tools:compile) translate $(execpath //third_party:wasm2c) $(location " + wasm + ") $(RULEDIR)/" + directory + "module.c --num-outputs=" + str(partitions),
     )
     artifact = name + "_elf" if runnable else name
     flags = FIX_COPTS + ["-Ifix/shell/inc"]
     objects = []
-    for index, src in enumerate([name + "_translate/module.c", "//fix/shell:wasm_rt"]):
+    for index, src in enumerate(sources + ["//fix/shell:wasm_rt"]):
         obj = name + "_native_object_%d" % index
         cc_object(
             name = obj,
             tags = tags,
             src = src,
-            hdrs = [name + "_translate/module.h", "//fix/shell:headers"],
+            hdrs = headers + ["//fix/shell:headers"],
             deps = ["@wabt_src//:simde"],
-            include_roots = [name + "_translate/module.h"],
-            copts = flags + (["-O3"] if index == 1 else []),
+            include_roots = headers[:1],
+            copts = flags + (["-O3"] if index == partitions else []),
             compiler = "@local_tools//:clang",
             visibility = ["//visibility:private"],
         )
@@ -286,9 +294,9 @@ def fix_procedure(name, wasm, memories = None, tables = None, runnable = False, 
         name = artifact,
         tags = tags,
         srcs = objects + ["//fix/shell:memmap", "//fix/shell:shell"],
-        tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_copts"],
+        tools = ["@local_tools//:gcc", "//tools:compile", "//tools:fix_linkopts"],
         outs = [name + ".elf"],
-        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_copts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
+        cmd = "$(execpath //tools:compile) link $(execpath @local_tools//:gcc) $(location //tools:fix_linkopts) $(location //fix/shell:memmap) $(location //fix/shell:shell) $@ " + " ".join(["$(location " + obj + ")" for obj in objects]),
         visibility = artifact_visibility if runnable else visibility,
     )
     if runnable:

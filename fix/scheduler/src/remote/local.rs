@@ -3,7 +3,6 @@ use crate::{
     executor::{self, Graph, Scheduler, graph::Failure},
     io::Io,
     shell::{Value, capture, child},
-    storage,
 };
 use fixwasm::{Blob, Error, Value as AsValue, tree};
 
@@ -47,15 +46,11 @@ async fn execute(
             node.dispatch(policy).await?
         }
     };
-    let result = if !raw && !todo && !serve && !crate::kernel::worker::returns_coupon()? {
-        crate::collector::result(&result)?
+    if !raw && !todo && !serve {
+        Ok(policy.session_result(result)?)
     } else {
-        result
-    };
-    if !raw && !todo && !serve && crate::kernel::worker::returns_coupon()? {
-        storage::cache(&result, true)?;
+        Ok(result)
     }
-    Ok(result)
 }
 
 pub(crate) async fn serve(
@@ -69,7 +64,9 @@ pub(crate) async fn serve(
     let (status, result) = match result {
         Ok(result) => (0u64, result),
         Err(error) => {
-            let message = if let Some(detail) = error.detail {
+            let policy_detail = policy.take_error_detail();
+            let detail = error.detail.as_deref().or(policy_detail.as_deref());
+            let message = if let Some(detail) = detail {
                 capture(Blob::create(detail.as_bytes()))?
             } else if error.code == Error::MemoryUnavailable {
                 capture(Blob::create(b"memory admission rejected"))?

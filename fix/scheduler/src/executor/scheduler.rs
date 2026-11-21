@@ -1,6 +1,6 @@
 use crate::shell::{self, fields};
 use crate::{kernel::Advice, shell::Value};
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use fixwasm::{Error, ThunkType, Value as AsValue, ValueType, backend::Tree};
 
 /// Fix evaluation with overridable steps. Defaults recurse through the trait methods.
@@ -37,6 +37,21 @@ pub trait Scheduler {
     /// Observe advice synchronously without replying to its emitting invocation.
     fn on_advice(&self, _advice: &Advice) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Publish the result of a local session evaluation request.
+    fn session_result(&self, result: Value) -> Result<Value, Error> {
+        if crate::kernel::worker::returns_coupon()? {
+            crate::storage::cache(&result, true)?;
+            Ok(result)
+        } else {
+            crate::collector::result(&result)
+        }
+    }
+
+    /// Supply the diagnostic for a failed local session request.
+    fn take_error_detail(&self) -> Option<String> {
+        None
     }
 
     fn discovering(&self) -> bool {

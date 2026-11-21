@@ -1,0 +1,23 @@
+python = $python
+cat = $cat_elf
+checker = $check_result_native
+memory = 2147483648u64
+apply = *#(memory python @file("apply.py") ("left" "right"))
+partial = *#(memory python @file("main.py") cat)
+main = *#(memory partial "flatware from Python" 3u64)
+stdout = *[main 0u64]
+lifted = *[main 1u64]
+greeting = *#(memory lifted '&"world")
+negative = *[main 2u64]
+yes = *#(memory negative 0xff)
+no = *#(memory negative 0u8)
+annotated_function = *#(memory python @file("annotations.py"))
+annotated = *#(memory annotated_function &"raw bytes stored in a separate Blob" '&"go" 0xfe "ref" #("lazy") 0xff "False" 3u16 4u32)
+convert_containers = *[main 3u64]
+containers = *#(memory convert_containers (("numbers" &(3u16 '&0xff))) (7u8 "hello"))
+converted = *[main 4u64]
+inferred = *[main 5u64]
+container_result = ((3u64 0xffffffffffffffff 7u64) (("text" "hello")))
+inferred_result = (("inferred" ("nested" (1u64 0x00))))
+expected = (("right" "r" "i" "g" "igh" "ht" ("left") ("right")) "flatware from Python" "fresh:world" "gogogogogo" 0x01 0x00 container_result container_result inferred_result)
+*#(memory checker (apply stdout greeting annotated yes no containers converted inferred) expected)

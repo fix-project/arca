@@ -151,6 +151,211 @@ input = @file("input.bin")
 }
 
 #[test]
+fn run_uses_a_shebang_expression_to_apply_a_callable_to_the_entire_file() {
+    let directory = Directory::new("shebang");
+    bootstrap(&directory, &[("identity", env!("FIX_IDENTITY"))]);
+    std::fs::create_dir(directory.join("scripts")).unwrap();
+    std::fs::write(
+        directory.join("scripts/interpreter.fix"),
+        "*[$interpreter 0u64]",
+    )
+    .unwrap();
+    let source = b"#! *#($limit @script(\"interpreter.fix\") $0)\r\n\xff\0script body\n";
+    let path = "scripts/program";
+    std::fs::write(directory.join(path), source).unwrap();
+    let binding = "interpreter=(@label(\"identity\"))";
+    let from_file = expression(&directory, &["-b", binding, "run", path]);
+    std::fs::copy(
+        directory.join("scripts/interpreter.fix"),
+        directory.join("interpreter.fix"),
+    )
+    .unwrap();
+    let from_stdin = text(run(&directory, &["-b", binding, "run", "-"], source, 0));
+    assert_eq!(from_file, from_stdin);
+    let fields = value(&directory, &["read-tree", &from_file]);
+    let [memory, _, input] = fields.lines().collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(
+        value(&directory, &["read-blob", "--u64", memory]),
+        "536870912"
+    );
+    assert_eq!(run(&directory, &["read-blob", input], b"", 0), source);
+
+    let result = expression(&directory, &["-b", binding, "run", "--limit=2G", path]);
+    let fields = value(&directory, &["read-tree", &result]);
+    let memory = fields.lines().next().unwrap();
+    assert_eq!(
+        value(&directory, &["read-blob", "--u64", memory]),
+        "2147483648"
+    );
+
+    let output = frontend(&directory, &["-b", binding, "run", "--limit=1", path], true);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("memory limit exceeded (1 bytes)"));
+    let result = text(output.stdout);
+    let fields = value(&directory, &["read-tree", &result]);
+    let [marker, limit] = fields.lines().collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(value(&directory, &["read-blob", marker]), "Fix.memory");
+    assert_eq!(value(&directory, &["read-blob", "--u64", limit]), "1");
+
+    let bare = b"#! @label(\"identity\")\n";
+    let result = text(run(&directory, &["run", "-"], bare, 0));
+    assert_eq!(
+        result,
+        expression(&directory, &["eval", r#"@label("identity")"#])
+    );
+}
+
+#[test]
+fn run_passes_positional_fix_expressions_to_scripts_and_shebang_callables() {
+    let directory = Directory::new("run-arguments");
+    bootstrap(&directory, &[("identity", env!("FIX_IDENTITY"))]);
+    std::fs::create_dir(directory.join("scripts")).unwrap();
+    std::fs::write(directory.join("input.bin"), b"caller directory").unwrap();
+    let source = b"($0 $1)";
+    std::fs::write(directory.join("scripts/program.fix"), source).unwrap();
+    let arguments = ["$number", r#"@file("input.bin")"#];
+    let binding = "number=42u64";
+    let script = expression(
+        &directory,
+        &[
+            &["-b", binding, "run", "scripts/program.fix"],
+            arguments.as_slice(),
+        ]
+        .concat(),
+    );
+    let stdin = text(run(
+        &directory,
+        &[&["-b", binding, "run", "-"], arguments.as_slice()].concat(),
+        source,
+        0,
+    ));
+    assert_eq!(stdin, script);
+    let fields = value(&directory, &["read-tree", &script]);
+    let [number, input] = fields.lines().collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(value(&directory, &["read-blob", "--u64", number]), "42");
+    assert_eq!(value(&directory, &["read-blob", input]), "caller directory");
+
+    let source = b"#! *#($limit @label(\"identity\") $0 $2 \"fixed\" $1)\n\xff";
+    std::fs::write(directory.join("scripts/program"), source).unwrap();
+    let result = expression(
+        &directory,
+        &[
+            &["-b", binding, "run", "scripts/program"],
+            arguments.as_slice(),
+        ]
+        .concat(),
+    );
+    let fields = value(&directory, &["read-tree", &result]);
+    let [_, _, body, arg1, fixed, arg0] = fields.lines().collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(run(&directory, &["read-blob", body], b"", 0), source);
+    assert_eq!(value(&directory, &["read-blob", fixed]), "fixed");
+    assert_eq!((arg0, arg1), (number, input));
+}
+
+#[test]
+fn run_reports_conventional_fix_error_trees() {
+    let directory = Directory::new("run-errors");
+    bootstrap(&directory, &[("identity", env!("FIX_IDENTITY"))]);
+    for (source, message) in [
+        (
+            r#"("Fix.error" "invalid input")"#,
+            "Fix error: invalid input",
+        ),
+        (r#"("Rust.panic" "oops")"#, "Rust panic: oops"),
+        (r#"("Wasm.trap" 2u32)"#, "Wasm trap code 2"),
+    ] {
+        std::fs::write(directory.join("error.fix"), source).unwrap();
+        let output = frontend(&directory, &["run", "error.fix"], true);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{stderr}");
+        let parsed = expression(&directory, &["parse", "error.fix"]);
+        assert_eq!(text(output.stdout), parsed);
+    }
+    std::fs::write(directory.join("data.fix"), r#"("Wasm.trap" "other data")"#).unwrap();
+    let result = expression(&directory, &["run", "data.fix"]);
+    assert_eq!(
+        value(&directory, &["read-tree", &result]).lines().count(),
+        2
+    );
+}
+
+#[test]
+fn run_reports_the_request_in_an_unhandled_fix_error_effect() {
+    let directory = Directory::new("run-effect-error");
+    bootstrap(&directory, &[("effects", env!("FIX_LINEAR_EFFECTS"))]);
+    std::fs::write(
+        directory.join("effect.fix"),
+        r#"*#(2147483648u64 @label("effects") ("Fix.error" "effect failed") 0u64)"#,
+    )
+    .unwrap();
+    let output = frontend(
+        &directory,
+        &["--memoize", "never", "run", "effect.fix"],
+        true,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Fix error: effect failed"), "{stderr}");
+    let handle = text(output.stdout);
+    let fields = value(&directory, &["read-tree", &handle]);
+    let [request, continuation] = fields.lines().collect::<Vec<_>>().try_into().unwrap();
+    let request = value(&directory, &["read-tree", request]);
+    let [marker, message] = request.lines().collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(value(&directory, &["read-blob", marker]), "Fix.error");
+    assert_eq!(value(&directory, &["read-blob", message]), "effect failed");
+    let continuation = value(&directory, &["read-tree", continuation]);
+    let marker = continuation.lines().nth(2).unwrap();
+    assert_eq!(value(&directory, &["read-blob", marker]), "Continuation");
+}
+
+#[test]
+fn run_previews_short_results_using_fix_notation() {
+    let directory = Directory::new("run-preview");
+    bootstrap(&directory, &[("identity", env!("FIX_IDENTITY"))]);
+    expression(&directory, &["-l", "greeting", "eval", r#""wxyz""#]);
+    for (source, preview) in [
+        (r#""hello""#, r#""hello""#),
+        (r#""A""#, r#""A" / 65 (0x41)"#),
+        ("0xff", "-1 (0xff)"),
+        ("0x00ff", "-256 (0xff00)"),
+        (r#""abcd""#, r#""abcd" / 1684234849 (0x64636261)"#),
+        ("42u32", r#""*\0\0\0" / 42 (0x0000002a)"#),
+        ("0xffffffff", "-1 (0xffffffff)"),
+        ("0xfeffffffffffffff", "-2 (0xfffffffffffffffe)"),
+        (r#"@label("identity")"#, "identity"),
+        (
+            r#""wxyz""#,
+            r#"greeting = "wxyz" / 2054781047 (0x7a797877)"#,
+        ),
+        (
+            r#"("hello" 0xffffffff ("café" @label("identity")))"#,
+            r#"("hello" -1 (0xffffffff) ("café" identity))"#,
+        ),
+        (r#"&("hello" "world")"#, r#"&("hello" "world")"#),
+        (r#"'&("hello" "world")"#, r#"'("hello" "world")"#),
+        (r#"#("hello" @label("identity"))"#, r#"#("hello" identity)"#),
+        (
+            r#"#(*'&("hello") +'&("world"))"#,
+            r#"#(*'("hello") +'("world"))"#,
+        ),
+        (
+            r#"[("hello" "world") 0u64]"#,
+            r#"[("hello" "world") "\0\0\0\0\0\0\0\0" / 0 (0x0000000000000000)]"#,
+        ),
+    ] {
+        std::fs::write(directory.join("preview.fix"), source).unwrap();
+        let output = frontend(&directory, &["run", "preview.fix"], true);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line == format!("fix: result {preview}")),
+            "{source}: {stderr}"
+        );
+        let result = text(output.stdout);
+        assert_eq!(result.len(), 64);
+    }
+}
+
+#[test]
 fn script_imports_are_scoped_lazy_and_relative_to_their_file() {
     let directory = Directory::new("script-imports");
     bootstrap(&directory, &[("identity", env!("FIX_IDENTITY"))]);

@@ -15,7 +15,10 @@ use std::{
 
 type Bindings = Vec<(String, String)>;
 
+const APPLICATION_MEMORY: u64 = 512 << 20;
+
 enum Kind {
+    Value(Value),
     Handle(String),
     Label(String),
     File(PathBuf),
@@ -127,11 +130,30 @@ impl Imports {
         source: &str,
         base: &Path,
         positionals: &[String],
-        bindings: &Bindings,
+        bindings: &[(String, String)],
         bindings_base: &Path,
+    ) -> Result<String, String> {
+        self.source_with(positionals, bindings, bindings_base, None, |imports| {
+            imports.expand(source, base)
+        })
+    }
+
+    fn source_with(
+        &mut self,
+        positionals: &[String],
+        bindings: &[(String, String)],
+        bindings_base: &Path,
+        input: Option<Value>,
+        body: impl FnOnce(&mut Self) -> Result<String, String>,
     ) -> Result<String, String> {
         let mut output = String::from("{\n");
         let mut arguments = Vec::new();
+        if let Some(input) = input {
+            let index = self.allocate();
+            self.records.push((index, Kind::Value(input)));
+            arguments.push(index);
+        }
+        let arity = arguments.len();
         for expression in positionals {
             let index = self.allocate();
             let expression = self.expand(expression, bindings_base)?;
@@ -147,17 +169,14 @@ impl Imports {
             {
                 return Err(format!("invalid binding name: {name}"));
             }
-            let index = self.key(&preprocessor::Import::Binding(name.clone()), base);
+            let index = self.key(&preprocessor::Import::Binding(name.clone()), bindings_base);
             let expression = self.expand(expression, bindings_base)?;
             output.push_str(&format!("$import{index} = {expression}\n"));
         }
         self.overrides
             .push(bindings.iter().map(|(name, _)| name.clone()).collect());
-        self.scopes.push(Scope {
-            arguments,
-            arity: 0,
-        });
-        let body = self.expand(source, base);
+        self.scopes.push(Scope { arguments, arity });
+        let body = body(self);
         let scope = self.scopes.pop().unwrap();
         self.overrides.pop();
         if body.is_ok() && scope.arguments.len() != scope.arity {
@@ -176,7 +195,7 @@ impl Imports {
         &mut self,
         path: &Path,
         positionals: &[String],
-        bindings: &Bindings,
+        bindings: &[(String, String)],
         bindings_base: Option<&Path>,
     ) -> Result<String, String> {
         let path =
@@ -186,17 +205,51 @@ impl Imports {
         }
         let source =
             fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        self.stack.push(path.clone());
-        let base = path.parent().unwrap().to_owned();
-        let result = self.source(
-            &source,
-            &base,
-            positionals,
-            bindings,
-            bindings_base.unwrap_or(&base),
-        );
+        self.script_source(&path, &source, positionals, bindings, bindings_base)
+    }
+
+    fn script_source(
+        &mut self,
+        path: &Path,
+        source: &str,
+        positionals: &[String],
+        bindings: &[(String, String)],
+        bindings_base: Option<&Path>,
+    ) -> Result<String, String> {
+        self.in_script(path, |imports, base| {
+            imports.source(
+                source,
+                base,
+                positionals,
+                bindings,
+                bindings_base.unwrap_or(base),
+            )
+        })
+    }
+
+    fn in_script<T>(
+        &mut self,
+        path: &Path,
+        body: impl FnOnce(&mut Self, &Path) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.stack.push(path.to_owned());
+        let result = body(self, path.parent().unwrap());
         self.stack.pop();
         result
+    }
+
+    fn root_source(
+        &mut self,
+        source: &str,
+        base: &Path,
+        path: Option<&Path>,
+        arguments: &[String],
+    ) -> Result<String, String> {
+        match path {
+            Some(path) => self.script_source(path, source, arguments, &[], Some(base)),
+            None if arguments.is_empty() => self.expand(source, base),
+            None => self.source(source, base, arguments, &[], base),
+        }
     }
 }
 
@@ -307,6 +360,7 @@ impl<'a> Expressions<'a> {
 
     fn import(&mut self, kind: &Kind) -> Result<Value, Error> {
         match kind {
+            Kind::Value(value) => Ok(value.clone()),
             Kind::Handle(name) => self.client.lookup(name),
             Kind::Label(name) => self.client.label_value(name),
             Kind::File(path) => self.client.file(path),
@@ -341,6 +395,15 @@ impl<'a> Expressions<'a> {
 
     /// Parses `source` relative to `base` without evaluating it.
     pub fn parse(&mut self, source: &str, base: &Path) -> Result<Value, Error> {
+        self.parse_with(source, base, |imports| imports.expand(source, base))
+    }
+
+    fn parse_with(
+        &mut self,
+        source: &str,
+        base: &Path,
+        expand: impl FnOnce(&mut Imports) -> Result<String, String>,
+    ) -> Result<Value, Error> {
         let mut imports = Imports {
             keys: Default::default(),
             records: Vec::new(),
@@ -350,9 +413,8 @@ impl<'a> Expressions<'a> {
             scopes: Vec::new(),
             next: 0,
         };
-        let bindings = self.bindings.clone();
         let expanded = imports
-            .source(source, base, &[], &bindings, base)
+            .source_with(&[], &self.bindings, base, None, expand)
             .map_err(error)?;
         let mut pairs = Vec::new();
         for (index, kind) in &imports.records {
@@ -362,7 +424,7 @@ impl<'a> Expressions<'a> {
         }
         let environment = Tree::new(&pairs);
         let text = Blob::new(expanded.as_bytes());
-        let limits = Blob::new(&(512u64 << 20).to_le_bytes());
+        let limits = Blob::new(&APPLICATION_MEMORY.to_le_bytes());
         let parser = self.parser()?;
         let combination = Tree::new(&[limits.into(), parser, text.into(), environment.into()]);
         let result = self.client.call(&combination.into_value())?;
@@ -414,6 +476,69 @@ impl<'a> Expressions<'a> {
             .ok_or_else(|| error("script path is not UTF-8"))?;
         let source = format!("@script({})", quote(location));
         self.parse(&source, &std::env::current_dir().map_err(error)?)
+    }
+
+    pub fn run_script(
+        &mut self,
+        path: Option<&Path>,
+        limit: Option<u64>,
+        arguments: &[String],
+    ) -> Result<Value, Error> {
+        let cwd = std::env::current_dir().map_err(error)?;
+        let path = path
+            .map(|path| {
+                fs::canonicalize(path).map_err(|e| error(format!("{}: {e}", path.display())))
+            })
+            .transpose()?;
+        let bytes = match &path {
+            Some(path) => fs::read(path).map_err(|e| error(format!("{}: {e}", path.display())))?,
+            None => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut bytes)
+                    .map_err(error)?;
+                bytes
+            }
+        };
+        let decode = |bytes| {
+            std::str::from_utf8(bytes).map_err(|e| match &path {
+                Some(path) => error(format!("{}: {e}", path.display())),
+                None => error(e),
+            })
+        };
+        let Some(header) = bytes.strip_prefix(b"#!") else {
+            let source = decode(&bytes)?;
+            return self
+                .parse_with(source, &cwd, |imports| {
+                    imports.root_source(source, &cwd, path.as_deref(), arguments)
+                })?
+                .eval();
+        };
+        let line = header
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        let source = decode(line)?.trim();
+        if source.is_empty() {
+            return Err(error("empty shebang expression"));
+        }
+        let limit = limit.unwrap_or(APPLICATION_MEMORY);
+        let bindings = [("limit".to_owned(), format!("{limit}u64"))];
+        let input = Blob::new(&bytes).into_value();
+        self.parse_with(source, &cwd, |imports| {
+            imports.source_with(
+                arguments,
+                &bindings,
+                &cwd,
+                Some(input),
+                |imports| match &path {
+                    Some(path) => {
+                        imports.in_script(path, |imports, base| imports.expand(source, base))
+                    }
+                    None => imports.expand(source, &cwd),
+                },
+            )
+        })?
+        .eval()
     }
 
     /// Evaluates an outer encode, leaving other values as constructed.

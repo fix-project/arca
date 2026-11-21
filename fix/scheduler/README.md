@@ -58,6 +58,12 @@ A scheduler receives `[memory_limit, scheduler, mode, collector, input]`. Modes 
 
 The event loop returns the scheduler's chosen Fix value without interpreting it as a coupon. The existing coupon-producing programs explicitly choose final coupon retention and result extraction. Remote certified-evaluation requests still require a valid matching coupon.
 
+For local session evaluation, `Scheduler::session_result` publishes the
+policy's result. Its default caches the final coupon when memoization is
+enabled and extracts its result otherwise. Policies that produce plain
+values can override the method when memoization is disabled.
+`take_error_detail` supplies an optional diagnostic for a failed session request.
+
 ## Serving requests
 
 `fix serve` starts one VM running the configured scheduler in `serve` mode.

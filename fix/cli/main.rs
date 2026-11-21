@@ -1,11 +1,12 @@
 mod repl;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use fix::Thunk;
+use fix::{FailureKind, Thunk};
 use fixcli::{
     Memoization, Options, Shell as Client, commands,
     configuration::{self, ConfigCommand, RemoteCommand, TrustCommand},
     expressions::{Expressions, Value},
+    shell::{Blob, Tree},
 };
 use std::{
     env,
@@ -221,8 +222,16 @@ enum Command {
     Todo(Todo),
     /// Parse a script (`-` for stdin) without evaluating it.
     Parse { file: String },
-    /// Parse and evaluate a script (`-` for stdin).
-    Run { file: String },
+    /// Evaluate a Fix script or its shebang expression (`-` for stdin).
+    Run {
+        /// Value of $limit in the shebang. K, M, and G use powers of 1024 [default: 512M].
+        #[arg(long, value_name = "SIZE", value_parser = application_limit)]
+        limit: Option<u64>,
+        file: String,
+        /// Positional arguments as Fix expressions.
+        #[arg(value_name = "ARG")]
+        arguments: Vec<String>,
+    },
     /// Write the objects reachable from expressions to an archive.
     Export {
         /// Export EXPRESSION's handle without its data.
@@ -376,6 +385,70 @@ fn handles(expressions: &mut Expressions, sources: &[String]) -> Result<Vec<Stri
 
 fn one(expressions: &mut Expressions, source: &str) -> Result<Value> {
     Ok(expressions.arguments(&[source.to_owned()])?.remove(0))
+}
+
+fn application_limit(text: &str) -> std::result::Result<u64, &'static str> {
+    let shift = match text.as_bytes().last() {
+        Some(b'K' | b'k') => 10,
+        Some(b'M' | b'm') => 20,
+        Some(b'G' | b'g') => 30,
+        _ => 0,
+    };
+    let digits = if shift == 0 {
+        text
+    } else {
+        &text[..text.len() - 1]
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|value| value.checked_mul(1 << shift))
+        .filter(|value| *value > 0)
+        .ok_or("expected a positive byte count, optionally followed by K, M, or G")
+}
+
+fn result_pair(value: &Value) -> Option<(Value, Value)> {
+    let tree = Tree::try_from(value).ok()?;
+    if tree.len() != 2 || tree.is_tag() {
+        return None;
+    }
+    Some((tree.get(0).ok()??, tree.get(1).ok()??))
+}
+
+fn check_continuation(value: &Value) -> Option<()> {
+    let tree = Tree::try_from(value).ok()?;
+    if !tree.is_tag() || tree.len() != 3 {
+        return None;
+    }
+    let author = Tree::try_from(tree.get(0).ok()??).ok()?;
+    if author.is_tag() || !author.is_empty() {
+        return None;
+    }
+    let marker = tree.get(2).ok()??;
+    marker
+        .equals(&Blob::new(b"Continuation").into_value())
+        .ok()?
+        .then_some(())
+}
+
+fn result_diagnostic(value: &Value) -> Option<String> {
+    let (first, second) = result_pair(value)?;
+    let (marker, detail, effect) = if let Some((marker, detail)) = result_pair(&first) {
+        check_continuation(&second)?;
+        (marker, detail, true)
+    } else {
+        (first, second, false)
+    };
+    let marker = Blob::try_from(marker).ok()?;
+    let mut bytes = [0; 16];
+    let marker_bytes = bytes.get_mut(..marker.len())?;
+    marker.read_exact(0, marker_bytes).ok()?;
+    let kind = FailureKind::from_marker(marker_bytes)?;
+    if effect && !matches!(kind, FailureKind::Error) {
+        return None;
+    }
+    let detail = Blob::try_from(detail).ok()?.to_vec().ok()?;
+    kind.decode(&detail).map(|failure| failure.to_string())
 }
 
 fn run() -> Result<u8> {
@@ -567,19 +640,31 @@ fn run_command(global: Global, command: Option<Command>, expression: Option<Stri
                 }
             }
         }
-        Command::Parse { ref file } | Command::Run { ref file } => {
+        Command::Parse { file } => {
             let mut client = global.open(options)?;
             let mut expressions = Expressions::new(&mut client, bindings);
-            let parsed = if file == "-" {
+            let value = if file == "-" {
                 let source = std::io::read_to_string(std::io::stdin())?;
                 expressions.parse(&source, &env::current_dir()?)?
             } else {
-                expressions.parse_script(Path::new(file))?
+                expressions.parse_script(Path::new(&file))?
             };
-            let value = match command {
-                Command::Run { .. } => parsed.eval()?,
-                _ => parsed,
-            };
+            global.finish(&mut client, &value)
+        }
+        Command::Run {
+            file,
+            limit,
+            arguments,
+        } => {
+            let mut client = global.open(options)?;
+            let mut expressions = Expressions::new(&mut client, bindings);
+            let path = (file != "-").then(|| Path::new(&file));
+            let value = expressions.run_script(path, limit, &arguments)?;
+            if let Some(message) = result_diagnostic(&value) {
+                common::progress::println(message);
+            } else if let Some(preview) = client.preview(&value) {
+                common::progress::println(format!("result {preview}"));
+            }
             global.finish(&mut client, &value)
         }
         Command::Export {
