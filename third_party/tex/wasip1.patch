@@ -1,0 +1,37 @@
+diff --git a/texk/kpathsea/tex-make.c b/texk/kpathsea/tex-make.c
+--- a/texk/kpathsea/tex-make.c
++++ b/texk/kpathsea/tex-make.c
+@@ -28,7 +28,7 @@
+ #include <kpathsea/tex-make.h>
+ #include <kpathsea/variable.h>
+ 
+-#if !defined (AMIGA) && !(defined (MSDOS) && !defined(__DJGPP__)) && !defined (WIN32)
++#if !defined (AMIGA) && !(defined (MSDOS) && !defined(__DJGPP__)) && !defined (WIN32) && !defined (__wasi__)
+ #include <sys/wait.h>
+ #endif
+ 
+@@ -292,6 +292,9 @@
+        close(hstderr);
+        fclose(Hnul);
+     }
++#elif defined (__wasi__)
++    /* WASI Preview 1 does not support launching subprocesses. */
++    fn = NULL;
+ #else /* !WIN32 */
+     /* Standard input for the child.  Set to /dev/null */
+     int childin;
+diff --git a/texk/web2c/lib/texmfmp.c b/texk/web2c/lib/texmfmp.c
+--- a/texk/web2c/lib/texmfmp.c
++++ b/texk/web2c/lib/texmfmp.c
+@@ -36,6 +36,11 @@
+ 
+ #include <signal.h> /* Catch interrupts.  */
+ 
++#ifdef __wasi__
++/* WASI Preview 1 does not support launching subprocesses. */
++#define system(cmd) (-1)
++#endif
++
+ #include <texmfmp-help.h>
+ 
+ /* {tex,mf}d.h defines TeX, MF, INI, and other such symbols.
