@@ -145,11 +145,19 @@ in a fresh Python invocation. Independent operands in `fix.parallel` are
 available to the Fix scheduler together, and their results keep input order.
 
 Workflows use top-level `async def` functions with required positional
-parameters and a final Fix value return. Use `if`, `for`, and `while` within
-a stage, including early returns and loop `break` and `continue`. Put each
-`await` at the top level of the function body, in its own statement or on the
-right-hand side of an assignment. Local values carried across an await must
-be Fix values.
+parameters. Use `if`, `match`, `for`, and `while` around awaits, including
+early returns, loop `else`, `break`, and `continue`. Use `await` as a whole
+statement, assignment value, return value, condition, match subject, or
+`for` iterable. Give an awaited subexpression its own assignment.
+
+Only locals needed by the continuation cross an await. Fix values and
+Python `None`, booleans, integers, floats, complex numbers, strings, bytes,
+byte arrays, ranges, lists, tuples, dictionaries, sets, and frozen sets
+can cross with their types intact. Containers can hold these values
+recursively. Cyclic containers are unsupported.
+A `for` loop can cross an await when its iterable is a Fix Tree, list,
+tuple, range, string, bytes, or byte array. Other iterators can run within
+a stage.
 
 ```python
 @flatware.do

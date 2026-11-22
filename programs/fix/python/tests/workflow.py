@@ -31,10 +31,49 @@ def resolve(path, base, changes):
     return changes[0]
 
 
+@fix.do
+async def control_flow(add, total):
+    iterator = iter((1, 2))
+    assert next(iterator) == 1
+    marker = {"number": 1 << 80, "values": (None, 1.5, b"bytes")}
+    alias = marker
+    native = (bytearray(b"data"), {1, 2}, frozenset({3}), 2 + 3j, True)
+    for step in range(4):
+        if step == 0:
+            continue
+        match step:
+            case 1:
+                total = await fix.call(add, total, 2)
+            case 2:
+                total = await fix.call(add, total, 3)
+            case _:
+                break
+    else:
+        raise AssertionError("expected break")
+    while int(total) < 10:
+        total = await fix.call(add, total, 1)
+    assert native == (bytearray(b"data"), {1, 2}, frozenset({3}), 2 + 3j, True)
+    match marker:
+        case {"number": number, "values": (None, 1.5, b"bytes")} if number == 1 << 80:
+            assert marker is alias
+        case _:
+            raise AssertionError("captured state changed")
+    return await fix.call(add, total, 1)
+
+
+@fix.do
+async def nonserializable(add, value):
+    iterator = iter((value,))
+    await fix.call(add, value, value)
+    return next(iterator)
+
+
 @flatware.do(resolve=resolve)
 async def build(unix, copy, cat):
-    prepared = await unix.run(copy, ["probe", "copy", "/work/input", "/work/prepared"])
-    assert prepared.exit_status == 0
+    for source, target in (("input", "intermediate"), ("intermediate", "prepared")):
+        prepared = await unix.run(copy, ["probe", "copy", f"/work/{source}", f"/work/{target}"])
+        assert prepared.exit_status == 0
+    unix.remove("/work/intermediate")
     first, second, third = await unix.parallel(
         unix.run(copy, ["probe", "copy", "/work/prepared", "/work/a"]),
         unix.run(copy, ["probe", "copy", "/work/other", "/work/a"]),
@@ -105,4 +144,6 @@ if __name__ == "__main__":
         build(environment, copy, cat).strict(),
         conflict(environment, copy).strict(),
         edit_environment(flatware.Environment(), copy).strict(),
+        control_flow(add, left).strict(),
+        nonserializable(add, left).strict(),
     ])
