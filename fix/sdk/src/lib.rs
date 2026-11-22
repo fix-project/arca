@@ -124,6 +124,7 @@ pub mod advice {
     pub const TITLE: &str = "fix::title";
     pub const PROGRESS: &str = "fix::progress";
     pub const CANONICALIZE: &str = "fix::canonicalize";
+    pub const LOG: &str = "fix::log";
 }
 
 /// Completes the invocation with `value` without running destructors.

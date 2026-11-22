@@ -73,6 +73,9 @@ to evaluate. Calling `eval()` captures the interpreter's continuation.
 Use `fix.advise("fix::title", "uppercase")` to title the current application in
 the progress log. Advice keys are strings. Payloads can be bytes, Blobs,
 strings, integers, or booleans and use the same encoding as `Blob(data)`.
+`print()` sends text to the CLI's stderr as `fix::log` advice. The default
+Python stdout sends complete lines and flushes pending text at script exit.
+Use `fix.advise("fix::log", "message")` to emit a log directly.
 `fix.effect(tree)` submits an effect and can capture a continuation when the
 runtime defers it.
 

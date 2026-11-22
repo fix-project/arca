@@ -441,7 +441,35 @@ def _convert_return(value, annotation):
     return value
 
 
+class _LogOutput:
+    def __init__(self):
+        self.pending = ""
+
+    def write(self, text):
+        self.pending += text
+        lines, separator, self.pending = self.pending.rpartition("\n")
+        if separator:
+            advise("fix::log", lines + separator)
+        return len(text)
+
+    def flush(self):
+        if self.pending:
+            advise("fix::log", self.pending)
+            self.pending = ""
+
+
 def _run_script(code, namespace, raw_combination, raw_args, name):
+    import sys
+
+    output = _LogOutput()
+    sys.stdout = output
+    try:
+        return _run_entry(code, namespace, raw_combination, raw_args, name)
+    finally:
+        output.flush()
+
+
+def _run_entry(code, namespace, raw_combination, raw_args, name):
     global argv, _script_globals
     _script_globals = namespace
     argv = tuple(map(_wrap, raw_args))

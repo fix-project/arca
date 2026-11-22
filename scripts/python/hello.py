@@ -2,4 +2,11 @@
 
 import fix
 
-fix.exit("hello, world")
+name = "world"
+if len(fix.argv) >= 2:
+    name = fix.argv[1]
+
+s = f"hello, {name}"
+
+print(s)
+fix.exit(s)

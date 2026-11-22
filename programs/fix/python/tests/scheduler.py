@@ -25,6 +25,7 @@ class Policy(Scheduler):
                 assert bytes(combination[2]) == b"python"
                 expected[b"fix::title"] = "café".encode("utf-8")
                 expected[b"fix::canonicalize"] = b"\x01"
+                expected[b"fix::log"] = "debug / 42 café\n".encode("utf-8")
             assert self.advice == expected
             return fix.Blob(b"scheduled by Python")
         return result
@@ -34,4 +35,5 @@ class Policy(Scheduler):
         self.advice[bytes(key)] = bytes(payload)
 
 
+print("Python scheduler started")
 fix.exit(run(Policy()))

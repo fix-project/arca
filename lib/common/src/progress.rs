@@ -653,6 +653,10 @@ fn update_machine(machines: &mut BTreeMap<String, MachineDisplay>, mut stats: Ma
 }
 
 pub fn evaluation_step(step: EvaluationStep) {
+    if let EvaluationPhase::Log(message) = &step.phase {
+        let _ = write_stderr(message.as_bytes());
+        return;
+    }
     if let Some(state) = advised() {
         let state = state.lock().unwrap();
         if !state.closed {
@@ -685,6 +689,7 @@ fn log_step(state: &Evaluation, step: EvaluationStep) {
                 "{outcome} {location_name}: {title} ({elapsed:.2}s{detail})"
             ));
         }
+        EvaluationPhase::Log(_) => unreachable!(),
     }
 }
 
