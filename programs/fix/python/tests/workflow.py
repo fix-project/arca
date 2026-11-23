@@ -133,6 +133,24 @@ async def edit_environment(unix, probe):
     return result.stdout
 
 
+@flatware.do
+async def deferred_contents(unix, cat):
+    contents = fix.Tree([b"mounted ", b"written ", b"stdin"]).reference()
+    directory = fix.Tree([fix.Tree([flatware.file("input", contents.select(0))])])
+    unix.mount("/deferred", directory.reference().select(0))
+    unix.mount("/work", ())
+    unix.write_file("/work/output", b"old")
+    unix.write_file("/work/output", contents.select(1))
+    result = await unix.run(cat, ["cat", "/deferred/input", "/work/output", "-"],
+                            stdin=contents.select(2), metadata=fix.Blob(1 << 30))
+    assert isinstance(result.descriptors, fix.Tree), str(result.descriptors)
+    assert result.exit_status == 0, str(result.stderr)
+    output = unix.read_file("/work/output")
+    assert isinstance(output, fix.Reference)
+    assert output.data_type == "blob"
+    return result.stdout, output.select(1, 4).strict()
+
+
 if __name__ == "__main__":
     add, copy, cat, left, right = fix.argv
     environment = flatware.Environment(env={"LANG": "C"})
@@ -146,4 +164,5 @@ if __name__ == "__main__":
         edit_environment(flatware.Environment(), copy).strict(),
         control_flow(add, left).strict(),
         nonserializable(add, left).strict(),
+        deferred_contents(flatware.Environment(), cat).strict(),
     ])

@@ -5,6 +5,9 @@ from fix import Blob, Tree
 from _fix import stat as _stat
 
 
+_DEFERRED_CONTENTS = (fix.Thunk, fix.Encode)
+
+
 def _blob(value):
     if isinstance(value, Blob):
         return value
@@ -22,7 +25,7 @@ def descriptor(name, stat, contents):
 
 
 def _file_contents(contents):
-    if isinstance(contents, fix.Encode):
+    if isinstance(contents, _DEFERRED_CONTENTS):
         return contents
     if isinstance(contents, fix.Reference):
         if contents.data_type != "blob":
@@ -32,7 +35,7 @@ def _file_contents(contents):
 
 
 def _size(value):
-    return 0 if isinstance(value, fix.Encode) else len(value)
+    return 0 if isinstance(value, _DEFERRED_CONTENTS) else len(value)
 
 
 def file(name, contents=b""):
@@ -43,8 +46,8 @@ def file(name, contents=b""):
 def dirent(name, contents, *, filetype=None):
     """Wrap directory or file contents with a name and native metadata."""
     if filetype is None:
-        if isinstance(contents, fix.Encode):
-            raise TypeError("specify filetype for encoded contents")
+        if isinstance(contents, _DEFERRED_CONTENTS):
+            raise TypeError("specify filetype for deferred contents")
         is_tree = isinstance(contents, Tree) or (
             isinstance(contents, fix.Reference) and contents.data_type == "tree"
         )
@@ -53,7 +56,7 @@ def dirent(name, contents, *, filetype=None):
         if isinstance(contents, fix.Reference):
             if contents.data_type != "tree":
                 raise TypeError("directory entries must refer to a Tree")
-        elif not isinstance(contents, (Tree, fix.Encode)):
+        elif not isinstance(contents, (Tree, *_DEFERRED_CONTENTS)):
             contents = Tree(contents)
     elif filetype == 4:
         contents = _file_contents(contents)
@@ -63,7 +66,7 @@ def dirent(name, contents, *, filetype=None):
 
 
 def _stream(name, contents=b""):
-    return descriptor(name, Tree(), _blob(contents))
+    return descriptor(name, Tree(), _file_contents(contents))
 
 
 def _environment(env):
@@ -322,7 +325,10 @@ class Environment:
         """Return the Fix value containing the regular file's contents."""
         _, _, entry = self._lookup(path)
         _regular_file(entry, path)
-        return entry[2]
+        contents = entry[2]
+        if isinstance(contents, fix.Thunk):
+            contents = contents.shallow().eval()
+        return contents
 
     def _edit_path(self, path, transform):
         index, parents, entry = self._lookup(path)

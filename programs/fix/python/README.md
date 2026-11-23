@@ -115,8 +115,9 @@ Pass `stdin` and `preopens` as keyword arguments. A directory's contents are a
 Fix Tree of child entries, the same format as a directory imported with
 `@file`. `flatware.dirent(name, contents)` adds a name and metadata.
 `flatware.file(name, contents)` creates a regular file entry. When the
-contents are an Encode, pass `filetype=3` for a directory or `filetype=4`
-for a regular file to `dirent`.
+contents are a Thunk or Encode, pass `filetype=3` for a directory or
+`filetype=4` for a regular file to `dirent`. File contents and `stdin` can
+use Thunks that yield Blobs. Flatware evaluates deferred contents as needed.
 
 ```python
 command = flatware.run(program, argv, stdin=b"hello")
@@ -208,7 +209,9 @@ Paths are absolute within the Flatware environment. Lookup normalizes
 materialized native directories by name.
 `read_file` returns the Fix value for the file contents. `listdir` returns
 byte names, including child mounts, and defaults to the root directory.
-`mount` accepts directory contents as a Tree, a Tree reference, or an Encode.
+`mount` accepts directory contents as a Tree, a Tree reference, a Thunk, or
+an Encode. `write_file` can store a Thunk. `read_file` evaluates it shallowly,
+so callers can select a byte range from the resulting Blob Ref.
 `remove` accepts files and empty native directories. File writes and changes
 to directory membership use the environment's timestamp.
 

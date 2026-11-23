@@ -14,6 +14,9 @@ after filesystem mutations. Names, metadata, directory entries, and file content
 load on demand. Output reuses unchanged descriptors and subtrees, rebuilding
 only changed fields and their ancestors. WASI inode numbers are unique within
 an invocation; they are assigned as nodes are discovered and are not serialized.
+File, directory, and stream contents can be Thunks. Flatware evaluates a Thunk
+when an operation needs its result. The application's memory budget also
+covers the captured continuation.
 Descriptor metadata contains device, filetype, link count, size, atime, mtime,
 and ctime, in that order. Filetype is one byte; other fields are eight-byte
 little-endian integers. Filesystem operations
