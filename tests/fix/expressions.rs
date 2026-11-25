@@ -249,6 +249,16 @@ fn run_passes_positional_fix_expressions_to_scripts_and_shebang_callables() {
     assert_eq!(run(&directory, &["read-blob", body], b"", 0), source);
     assert_eq!(value(&directory, &["read-blob", fixed]), "fixed");
     assert_eq!((arg0, arg1), (number, input));
+    let imported = expression(
+        &directory,
+        &[
+            "-b",
+            binding,
+            "eval",
+            r#"@script("scripts/program" $number @file("input.bin"))"#,
+        ],
+    );
+    assert_eq!(imported, result);
 }
 
 #[test]

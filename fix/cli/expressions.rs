@@ -125,15 +125,43 @@ impl Imports {
         })
     }
 
-    fn source(
+    fn invocation(
         &mut self,
-        source: &str,
+        bytes: &[u8],
         base: &Path,
         positionals: &[String],
         bindings: &[(String, String)],
         bindings_base: &Path,
+        limit: u64,
     ) -> Result<String, String> {
-        self.source_with(positionals, bindings, bindings_base, None, |imports| {
+        let (source, input) = match bytes.strip_prefix(b"#!") {
+            Some(header) => (
+                header
+                    .split(|byte| *byte == b'\n')
+                    .next()
+                    .unwrap_or_default(),
+                Some(Blob::new(bytes).into_value()),
+            ),
+            None => (bytes, None),
+        };
+        let source = std::str::from_utf8(source).map_err(|error| error.to_string())?;
+        let limits;
+        let bindings = if input.is_some() && !bindings.iter().any(|(name, _)| name == "limit") {
+            limits = [bindings, &[("limit".to_owned(), format!("{limit}u64"))]].concat();
+            &limits
+        } else {
+            bindings
+        };
+        let source = if input.is_some() {
+            let source = source.trim();
+            if source.is_empty() {
+                return Err("empty shebang expression".into());
+            }
+            source
+        } else {
+            source
+        };
+        self.source_with(positionals, bindings, bindings_base, input, |imports| {
             imports.expand(source, base)
         })
     }
@@ -203,26 +231,15 @@ impl Imports {
         if self.stack.contains(&path) {
             return Err(format!("recursive script import: {}", path.display()));
         }
-        let source =
-            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        self.script_source(&path, &source, positionals, bindings, bindings_base)
-    }
-
-    fn script_source(
-        &mut self,
-        path: &Path,
-        source: &str,
-        positionals: &[String],
-        bindings: &[(String, String)],
-        bindings_base: Option<&Path>,
-    ) -> Result<String, String> {
-        self.in_script(path, |imports, base| {
-            imports.source(
-                source,
+        let bytes = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        self.in_script(&path, |imports, base| {
+            imports.invocation(
+                &bytes,
                 base,
                 positionals,
                 bindings,
                 bindings_base.unwrap_or(base),
+                APPLICATION_MEMORY,
             )
         })
     }
@@ -236,20 +253,6 @@ impl Imports {
         let result = body(self, path.parent().unwrap());
         self.stack.pop();
         result
-    }
-
-    fn root_source(
-        &mut self,
-        source: &str,
-        base: &Path,
-        path: Option<&Path>,
-        arguments: &[String],
-    ) -> Result<String, String> {
-        match path {
-            Some(path) => self.script_source(path, source, arguments, &[], Some(base)),
-            None if arguments.is_empty() => self.expand(source, base),
-            None => self.source(source, base, arguments, &[], base),
-        }
     }
 }
 
@@ -499,44 +502,16 @@ impl<'a> Expressions<'a> {
                 bytes
             }
         };
-        let decode = |bytes| {
-            std::str::from_utf8(bytes).map_err(|e| match &path {
-                Some(path) => error(format!("{}: {e}", path.display())),
-                None => error(e),
-            })
-        };
-        let Some(header) = bytes.strip_prefix(b"#!") else {
-            let source = decode(&bytes)?;
-            return self
-                .parse_with(source, &cwd, |imports| {
-                    imports.root_source(source, &cwd, path.as_deref(), arguments)
-                })?
-                .eval();
-        };
-        let line = header
-            .split(|byte| *byte == b'\n')
-            .next()
-            .unwrap_or_default();
-        let source = decode(line)?.trim();
-        if source.is_empty() {
-            return Err(error("empty shebang expression"));
-        }
         let limit = limit.unwrap_or(APPLICATION_MEMORY);
-        let bindings = [("limit".to_owned(), format!("{limit}u64"))];
-        let input = Blob::new(&bytes).into_value();
-        self.parse_with(source, &cwd, |imports| {
-            imports.source_with(
-                arguments,
-                &bindings,
-                &cwd,
-                Some(input),
-                |imports| match &path {
-                    Some(path) => {
-                        imports.in_script(path, |imports, base| imports.expand(source, base))
-                    }
-                    None => imports.expand(source, &cwd),
-                },
-            )
+        let location = path.as_deref().unwrap_or(Path::new("-")).display();
+        self.parse_with(&location.to_string(), &cwd, |imports| {
+            let invoke = |imports: &mut Imports, base: &Path| {
+                imports.invocation(&bytes, base, arguments, &[], &cwd, limit)
+            };
+            match &path {
+                Some(path) => imports.in_script(path, invoke),
+                None => invoke(imports, &cwd),
+            }
         })?
         .eval()
     }
