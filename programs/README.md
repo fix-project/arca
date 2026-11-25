@@ -4,7 +4,7 @@
 Programs used only for tests belong in `//tests`. Integration tests for a
 useful program can stay beside it in `//programs`.
 
-Flatware utilities are in `//programs/flatware`. Fix programs in WAT, C, and Rust are in `//programs/fix/{wat,c,rust}`. Each language provides the same
+Flatware utilities and TeX are in `//programs/flatware`. Fix programs in WAT, C, and Rust are in `//programs/fix/{wat,c,rust}`. Each language provides the same
 blob, addition, and directory-path programs, with path integration tests
 alongside them. Other Fix programs, including `addblob`, `parser`, `fib`, `map`,
 and `mapreduce`, live directly under `//programs/fix`.

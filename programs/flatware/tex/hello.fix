@@ -1,0 +1,18 @@
+file = (0u64 4u8 1u64 0u64 0u64 0u64 0u64)
+directory = (0u64 3u8 1u64 0u64 0u64 0u64 0u64)
+-- kpathsea exits unless the program named by the first argument exists.
+root = ("/" directory (
+    ("tex" file "")
+    ("hello.tex" file @file("hello.tex"))
+    ("cmr10.tfm" file @file("cmr10.tfm"))
+))
+arguments = ("tex" "-ini" "hello.tex")
+environment = ("TEXINPUTS=." "TFMFONTS=.")
+descriptors = (("stdin" () "") ("stdout" () "") ("stderr" () "") root)
+result = *#("" $tex_elf arguments environment descriptors 0u64 0u64)
+final = *[result 0u64]
+output = *[final 3u64]
+-- TeX creates hello.log and then hello.dvi after the three input files.
+entries = *[output 2u64]
+dvi = *[entries 4u64]
+*[dvi 2u64]
