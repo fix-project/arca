@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::StorageError;
 use hashbrown::HashMap;
 use kernel::prelude::Word;
 
@@ -86,7 +87,8 @@ impl<S: Storage> Store<S> {
         objects: Tuple,
         slots: &[u8],
         memory: &kernel::memory::Budget,
-    ) -> usize {
+        pins: &mut BlobPins,
+    ) -> Result<usize, StorageError> {
         let (slots, remainder) = slots.as_chunks::<4>();
         assert!(remainder.is_empty());
         let mut promotion = Promotion {
@@ -112,9 +114,10 @@ impl<S: Storage> Store<S> {
             let handle = handles::resolve(promotion.function, address);
             let promoted = promotion.promote(handle);
             if !handle.same_encoding(&promoted) {
+                pins.retain(self, promoted)?;
                 handles::insert(promotion.function, address, promoted);
             }
         }
-        promotion.retained
+        Ok(promotion.retained)
     }
 }

@@ -2,7 +2,7 @@ extern crate alloc;
 
 use crate::handle::*;
 use crate::runtime::{ExecutionError, Runtime};
-use crate::storage::memory::MemoryStorage;
+use crate::storage::memory::{BlobPins, MemoryStorage};
 use crate::storage::repository::RepositoryStorage;
 use crate::storage::{ImmutableBytes, Storage};
 use alloc::sync::Arc;
@@ -95,6 +95,7 @@ struct Invocation {
     profiles: Vec<([u8; 32], usize)>,
     memory: kernel::memory::Budget,
     admission: Arc<kernel::memory::Admission>,
+    pins: BlobPins,
 }
 
 impl Execution {
@@ -193,8 +194,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Runtime for FixOnArca<S> {
             combination.as_handle().is_value(),
             "application requires an evaluated combination"
         );
-        crate::runtime::memory_limit(&self.storage, combination)?;
         if self.memoization.is_some() {
+            let contents = self.storage.get_tree(combination)?;
+            crate::runtime::memory_limit(&self.storage, &contents)?;
             let apply = self.storage.add_blob(&2u64.to_le_bytes());
             for coupon in self
                 .cached_claims(&[apply.into(), combination.into()])
@@ -336,6 +338,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
     pub fn with_trust(mut self, trust: trust::Trust) -> Self {
         self.storage.trust = trust;
         self
+    }
+
+    pub(crate) fn evict(&self, blob: Blob) -> bool {
+        self.storage.memory().evict(blob)
     }
 
     pub(crate) fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
@@ -516,14 +522,18 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         coordinator: &mut Option<&mut Coordinator<'_>>,
         observing: bool,
     ) -> Result<Execution, ExecutionError> {
-        let contents = self.get_tree(combination).unwrap();
-        let limit = crate::runtime::memory_limit(self, combination)?;
+        let contents = self.get_tree(combination)?;
+        let limit = crate::runtime::memory_limit(self, &contents)?;
         let admission = Arc::new(if privileged {
             kernel::memory::Admission::unreserved()
         } else {
             kernel::memory::Admission::new(limit).map_err(ExecutionError::Admission)?
         });
-        let (function, combination, profiles, mut memory) = match self.callable(&contents)? {
+        let mut pins = self.memory().blob_pins();
+        pins.retain_all(self, contents.iter().copied())?;
+        let (function, combination, profiles, mut memory) = match self
+            .callable(&contents, &mut pins)?
+        {
             Callable::Continuation(mut function, address, author, mut memory) => {
                 memory.enforce(!privileged);
                 if memory.set_limit(limit).is_err() {
@@ -543,7 +553,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 )
             }
             Callable::Runnable(executable, arguments) => {
-                let mut function = self.image(executable)?;
+                let mut function = self.image(executable, &pins)?;
                 let root = handles::insert(&mut function, handles::HANDLE_BASE, combination.into());
                 let profiles = if !privileged && self.profile.load(Ordering::Relaxed) {
                     alloc::vec![(*executable.as_handle().as_bytes(), arguments)]
@@ -569,6 +579,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 profiles,
                 memory,
                 admission,
+                pins,
             },
             handler,
             coordinator,
@@ -620,12 +631,16 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
 
     /// What `contents`, a combination, applies: a continuation taking one reply, or a
     /// trusted Runnable found by following the first element of each Tree.
-    fn callable(&self, contents: &[Handle]) -> Result<Callable, ExecutionError> {
+    fn callable(
+        &self,
+        contents: &[Handle],
+        pins: &mut BlobPins,
+    ) -> Result<Callable, ExecutionError> {
         let mut procedure = *contents.get(1).ok_or(ExecutionError::InvalidApplication)?;
         let mut arguments = contents.len().saturating_sub(2);
         loop {
             let tree = Tree::try_from(procedure).map_err(|_| ExecutionError::InvalidApplication)?;
-            if let Some((function, address, author, memory)) = self.continuation(tree) {
+            if let Some((function, address, author, memory)) = self.continuation(tree, pins)? {
                 if contents.len() != 3 {
                     return Err(ExecutionError::InvalidApplication);
                 }
@@ -636,10 +651,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 .map_err(|_| ExecutionError::InvalidApplication)?;
             procedure = *fields.get(1).ok_or(ExecutionError::InvalidApplication)?;
             if Blob::try_from(procedure).is_ok() {
-                return match self.trust.runnable(self, tree) {
-                    Ok(executable) => Ok(Callable::Runnable(executable, arguments)),
-                    Err(_) => Err(ExecutionError::InvalidApplication),
-                };
+                return Ok(Callable::Runnable(
+                    self.trust.runnable(self, tree)?,
+                    arguments,
+                ));
             }
             arguments += fields.len().saturating_sub(2);
         }
@@ -661,6 +676,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             profiles,
             mut memory,
             admission,
+            mut pins,
         } = invocation;
         let profile = self.profile.load(Ordering::Relaxed);
         loop {
@@ -733,10 +749,22 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                                 .expect("coordination arguments must be a Tree Object");
                         self.get_tree(tree).unwrap().to_vec()
                     };
+                    if let (Some(Value::Word(used)), [target]) =
+                        (args.pop_back(), arguments.as_slice())
+                        && let Some(blob) = eviction_target(*target)
+                    {
+                        pins.release_unreachable(self, blob, |matches| {
+                            if matches(combination.into())? {
+                                return Ok(true);
+                            }
+                            handles::any_live_object(&mut k, used.read() as usize, matches)
+                        })?;
+                    }
                     let (status, result) = match callback(&name, &arguments) {
                         CoordinationAction::Resume(status, value) => (status, value),
                         CoordinationAction::Stop(value) => return Ok(Execution::Complete(value)),
                     };
+                    pins.retain(self, result)?;
                     handles::insert(&mut k, reply.read() as usize, result);
                     k.apply(kernel::prelude::Word::new(status))
                 }
@@ -801,6 +829,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                                     profiles,
                                     memory,
                                     admission,
+                                    pins,
                                 },
                                 application: None,
                             },
@@ -837,6 +866,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     if &*effect == b"effect" {
                         match handler(value) {
                             EffectAction::Resume(value) => {
+                                pins.retain(self, value)?;
                                 let reply = handles::insert(&mut k, reply.read() as usize, value);
                                 f = k.apply(pack_reference(reply));
 
@@ -928,7 +958,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                             fixhandle::accounting::object(bytes.read() as usize)
                         })
                         .fold(0usize, usize::saturating_add);
-                    let retained = self.lift(&mut k, objects, &slots, &memory);
+                    let retained = self.lift(&mut k, objects, &slots, &memory, &mut pins)?;
                     memory.release(total.saturating_sub(retained));
                     k.apply(kernel::prelude::Word::new(0))
                 }
@@ -939,11 +969,11 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     result
                 }
                 b"is_trusted_tagger" => {
-                    let allowed = privileged && self.trust.is_tagger(self, combination).unwrap();
+                    let allowed = privileged && self.trust.is_tagger(self, combination)?;
                     k.apply(kernel::prelude::Word::new(allowed as u64))
                 }
                 b"create_tag_unchecked" => {
-                    if !privileged || !self.trust.is_tagger(self, combination).unwrap() {
+                    if !privileged || !self.trust.is_tagger(self, combination)? {
                         return Ok(self.trap(WASM_TRAP_UNREACHABLE));
                     }
                     let Some(Value::Blob(reference)) = args.pop_back() else {
@@ -968,6 +998,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let value = handles::resolve(&mut k, unpack_reference(&value));
                     let bytes = self.add_blob(value.as_bytes());
+                    pins.retain(self, bytes.into())?;
                     let result = handles::insert(&mut k, result_address, bytes.into());
                     let result = k.apply(pack_reference(result));
                     self.record_call_time(b"unsound_handle_bytes", started);
@@ -980,12 +1011,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let Some(Value::Blob(lhs)) = args.pop_back() else {
                         panic!()
                     };
-                    let equal = self
-                        .equals(
-                            handles::resolve(&mut k, unpack_reference(&lhs)),
-                            handles::resolve(&mut k, unpack_reference(&rhs)),
-                        )
-                        .expect("equals: invalid or non-comparable operand");
+                    let equal = self.equals(
+                        handles::resolve(&mut k, unpack_reference(&lhs)),
+                        handles::resolve(&mut k, unpack_reference(&rhs)),
+                    )?;
                     k.apply(kernel::prelude::Word::new(equal as u64))
                 }
                 b"create_tag" => {
@@ -998,7 +1027,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     assert!(!tree.is_empty(), "missing tag author");
                     let data = self.get_tree_backing(tree).unwrap();
                     let author = handles::read_backing(&data, 0);
-                    if !trust::is_author(self, combination, author).unwrap() {
+                    if !trust::is_author(self, combination, author)? {
                         return Ok(self.trap(WASM_TRAP_UNREACHABLE));
                     }
                     let value = unsafe { self.add_tree_backing(data) };
@@ -1031,7 +1060,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     }
                     temporary = temporary
                         .saturating_add(fixhandle::accounting::allocation(length.read() as usize));
-                    let backing = self.get_blob_backing(name).unwrap();
+                    let backing = pins.get(name)?;
                     let mut offset = offset.read() as usize;
                     let mut destination = destination.read() as usize;
                     let length = length.read() as usize;
@@ -1076,7 +1105,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     }
                     temporary =
                         temporary.saturating_add(fixhandle::accounting::mapping(name.len()));
-                    k.apply(self.get_blob_backing(name).unwrap().attachment())
+                    k.apply(pins.get(name)?.attachment())
                 }
                 b"get_tree_element" => {
                     let started = profile.then(kernel::tsc::read);
@@ -1132,6 +1161,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             memory.release(temporary);
         }
     }
+}
+
+pub(crate) fn eviction_target(value: Handle) -> Option<Blob> {
+    let object = match value.view() {
+        HandleView::Object(object) => *object,
+        HandleView::Ref(reference) => reference.object_descriptor(),
+        _ => return None,
+    };
+    Blob::try_from(Handle::from(object)).ok()
 }
 
 fn pack_reference(address: usize) -> ArcaBlob {

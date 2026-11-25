@@ -246,7 +246,12 @@ pub fn coordinate_handles(destination: Reference, name: &[u8], arguments: &[Refe
         .iter()
         .flat_map(|arg| handles::bytes(*arg))
         .collect::<alloc::vec::Vec<_>>();
-    let reply = operation("coordinate_handles")
+    let mut request = operation("coordinate_handles");
+    if name == b"storage_evict" {
+        let used = crate::descriptors::range().1 * fixhandle::HANDLE_SIZE;
+        request = request.word(used as u64);
+    }
+    let reply = request
         .blob(name)
         .blob(&bytes)
         .word(handles::address(destination) as u64)

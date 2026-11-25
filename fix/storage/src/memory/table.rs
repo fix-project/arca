@@ -86,7 +86,7 @@ impl<T> Table<T> {
         slot.ready.store(true, Ordering::Release);
     }
 
-    pub(super) fn get<R>(&self, index: usize, read: impl FnOnce(&T) -> R) -> Option<R> {
+    pub(super) fn get<'a, R>(&'a self, index: usize, read: impl FnOnce(&'a T) -> R) -> Option<R> {
         let slot = self.slot(index)?;
         slot.ready
             .load(Ordering::Acquire)

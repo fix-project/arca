@@ -14,7 +14,11 @@ struct Image {
 static IMAGES: RefCell<VecDeque<Image>> = RefCell::new(VecDeque::new());
 
 impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
-    pub(super) fn image(&self, executable: Blob) -> Result<Function, ExecutionError> {
+    pub(super) fn image(
+        &self,
+        executable: Blob,
+        pins: &BlobPins,
+    ) -> Result<Function, ExecutionError> {
         let runtime = (!executable.as_handle().is_canonical()).then_some(self.image_cache_id);
         let cached = {
             let mut images = IMAGES.borrow_mut();
@@ -42,16 +46,18 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             let function = if let Some(function) = &*cached {
                 function.clone()
             } else {
-                let elf = self
-                    .get_blob_backing(executable)
+                let elf = pins
+                    .get(executable)
                     .map_err(|_| ExecutionError::InvalidApplication)?;
                 let started = self.profile.load(Ordering::Relaxed).then(kernel::tsc::read);
-                let function =
-                    common::elfloader::load_elf_from_pages(elf.clone().into_buf(), |offset| {
+                let function = common::elfloader::load_elf_from_pages(
+                    elf.as_ref().clone().into_buf(),
+                    |offset| {
                         let (page, within) = elf.page(offset);
                         (within == 0 && page.len() == 4096).then_some(page)
-                    })
-                    .map_err(|_| ExecutionError::InvalidApplication)?;
+                    },
+                )
+                .map_err(|_| ExecutionError::InvalidApplication)?;
                 self.record_elf_load(started);
                 *cached = Some(function.clone());
                 function

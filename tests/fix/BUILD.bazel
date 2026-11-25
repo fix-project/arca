@@ -34,6 +34,9 @@ fix_procedure(name = "advice_capture_native", wasm = ":advice_capture_wasm")
 wat_module(name = "read_blob_wasm", src = "read_blob.wat")
 fix_procedure(name = "read_blob_native", wasm = ":read_blob_wasm")
 
+wat_module(name = "eviction_wasm", src = "eviction.wat")
+fix_procedure(name = "eviction_native", wasm = ":eviction_wasm")
+
 fix_cc_wasm(name = "recursive_local_aliases_wasm", srcs = ["recursive_local_aliases.c"], hdrs = ["fixture.h"], memories = 2)
 fix_procedure(name = "recursive_local_aliases_native", wasm = ":recursive_local_aliases_wasm")
 
