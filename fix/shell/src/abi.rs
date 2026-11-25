@@ -317,9 +317,23 @@ pub unsafe extern "C" fn w2c_fix_access_tree(
         assert!(offset as usize <= size);
         let count = (length as usize).min(size - offset as usize);
         let target = memory_range(pointer, count * 4, true);
-        for index in 0..count {
-            let result = w2c_fix_get_tree_element(fix, handle, offset + index as u32);
-            core::ptr::write_unaligned((target + index * 4) as *mut u32, result);
+        if count <= 1 || crate::locals::local_address(handles::address(value)).is_some() {
+            for index in 0..count {
+                let result = w2c_fix_get_tree_element(fix, handle, offset + index as u32);
+                core::ptr::write_unaligned((target + index * 4) as *mut u32, result);
+            }
+        } else {
+            let mut destinations = alloc::vec::Vec::with_capacity(count * 8);
+            for index in 0..count {
+                let result = descriptors::allocate();
+                core::ptr::write_unaligned((target + index * 4) as *mut u32, result);
+                destinations.extend_from_slice(&handles::bytes(descriptors::address(result)));
+            }
+            crate::continuation::operation("get_tree_elements")
+                .blob(&handles::bytes(value))
+                .word(offset as u64)
+                .blob(&destinations)
+                .call_with_current_continuation();
         }
         count as u32
     }

@@ -34,10 +34,10 @@ pub fn request(rule: Exchange, lhs: &Value, rhs: &Value, coupons: &[Tree]) -> Re
     let collector = callable()?;
     let collector_handle = collector.capture()?;
     for (index, coupon) in coupons.iter().enumerate() {
-        let reference = child(coupon, 1)?;
+        let [author, reference] = as_tree(coupon)?.get_range(0)?;
+        let reference = capture(reference)?;
         let claim = storage::identify(&reference)?.ok_or(Error::OutOfBounds)?;
         if !canonicalize {
-            let author = child(coupon, 0)?.capture()?;
             let claim = as_tree(&claim)?;
             if claim.len()? != 3 {
                 return Err(Error::WrongType);
@@ -51,8 +51,9 @@ pub fn request(rule: Exchange, lhs: &Value, rhs: &Value, coupons: &[Tree]) -> Re
             if let Some((lhs, rhs)) = &operands
                 && !canonicalize
             {
-                canonicalize = !lhs.get(index).same_handle_bytes(&claim.get(1))
-                    || !rhs.get(index).same_handle_bytes(&claim.get(2));
+                let [input, output] = claim.get_range(1)?;
+                canonicalize = !lhs.get(index).same_handle_bytes(&input)
+                    || !rhs.get(index).same_handle_bytes(&output);
             }
         }
         witnesses.push(capture(tree![coupon, claim])?);
@@ -91,35 +92,32 @@ fn same_exchange_operands(
             lhs.same_handle_bytes(&rhs.identification())
         }
         (Exchange::Think, 2) => {
-            let evaluated = claim(0)?;
-            let applied = claim(1)?;
-            let input = evaluated.get(1);
+            let [input, evaluated] = claim(0)?.get_range(1)?;
             let thunk = match lhs.unsound_thunk_type()? {
                 ThunkType::Application => input.application(),
                 ThunkType::Selection => input.selection(),
                 ThunkType::Identification => return Ok(true),
             };
+            let [application, applied] = claim(1)?.get_range(1)?;
             lhs.same_handle_bytes(&thunk)
-                && evaluated.get(2).same_handle_bytes(&applied.get(1))
-                && rhs.same_handle_bytes(&applied.get(2))
+                && evaluated.same_handle_bytes(&application)
+                && rhs.same_handle_bytes(&applied)
         }
         (Exchange::ThinkToForce | Exchange::ThunkEq | Exchange::EvalResultEq, 1) => {
-            let premise = claim(0)?;
-            lhs.same_handle_bytes(&premise.get(1)) && rhs.same_handle_bytes(&premise.get(2))
+            let [input, result] = claim(0)?.get_range(1)?;
+            lhs.same_handle_bytes(&input) && rhs.same_handle_bytes(&result)
         }
         (Exchange::ThunkStrictEq | Exchange::ThunkShallowEq, 1) => {
-            let premise = claim(0)?;
+            let [input, result] = claim(0)?.get_range(1)?;
             let encoded = if rule == Exchange::ThunkStrictEq {
                 rhs.strict()
             } else {
                 rhs.shallow()
             };
-            lhs.same_handle_bytes(&premise.get(1)) && encoded.same_handle_bytes(&premise.get(2))
+            lhs.same_handle_bytes(&input) && encoded.same_handle_bytes(&result)
         }
         (Exchange::ForceToEncode, 1) => {
-            let premise = claim(0)?;
-            let thunk = premise.get(1);
-            let result = premise.get(2);
+            let [thunk, result] = claim(0)?.get_range(1)?;
             if lhs.is_strict()? {
                 lhs.same_handle_bytes(&thunk.strict())
                     && if result.value_type()? == ValueType::Ref {
@@ -137,20 +135,20 @@ fn same_exchange_operands(
             }
         }
         (Exchange::Symmetry, 1) => {
-            let premise = claim(0)?;
-            lhs.same_handle_bytes(&premise.get(2)) && rhs.same_handle_bytes(&premise.get(1))
+            let [input, result] = claim(0)?.get_range(1)?;
+            lhs.same_handle_bytes(&result) && rhs.same_handle_bytes(&input)
         }
         (Exchange::EvalEq | Exchange::ForceEq, 2) => {
-            let first = claim(0)?;
-            let second = claim(1)?;
-            let (lhs_claim, rhs_claim) = if rule == Exchange::EvalEq {
-                (&second, &first)
+            let [first_input, first_result] = claim(0)?.get_range(1)?;
+            let [second_input, second_result] = claim(1)?.get_range(1)?;
+            let (lhs_result, rhs_result) = if rule == Exchange::EvalEq {
+                (&second_result, &first_result)
             } else {
-                (&first, &second)
+                (&first_result, &second_result)
             };
-            first.get(1).same_handle_bytes(&second.get(1))
-                && lhs.same_handle_bytes(&lhs_claim.get(2))
-                && rhs.same_handle_bytes(&rhs_claim.get(2))
+            first_input.same_handle_bytes(&second_input)
+                && lhs.same_handle_bytes(lhs_result)
+                && rhs.same_handle_bytes(rhs_result)
         }
         _ => true,
     })

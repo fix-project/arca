@@ -97,9 +97,7 @@ pub async fn invoke(
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
     observed(
-        crate::io::Io
-            .application(tree![Blob::create(b"callable_invoke"), combination])
-            .await?,
+        crate::abi::coordinate(b"callable_invoke", core::slice::from_ref(combination))?,
         on_advice,
     )
 }

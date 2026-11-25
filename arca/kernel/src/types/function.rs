@@ -302,6 +302,7 @@ impl Function {
                         }
                         ControlFlow::Break(Action::Capture) => {
                             let (mut original, cpu) = arca.unload_with_cpu();
+                            original.share_page_tables();
                             let mut snapshot = original.clone();
                             snapshot.registers_mut()[Register::RAX] =
                                 -(arcane::__ERR_interrupted as i64) as u64;

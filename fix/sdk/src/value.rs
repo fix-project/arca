@@ -221,6 +221,14 @@ pub trait Value {
         assert_eq!(count, 1, "tree index out of bounds");
         unsafe { Handle::from_raw(descriptor) }
     }
+    fn get_range<const N: usize>(&self, offset: usize) -> Result<[Handle<Any>; N], Error>
+    where
+        Self: Sized,
+    {
+        let mut descriptors = [0u32; N];
+        read_tree_range(self, offset, &mut descriptors)?;
+        Ok(descriptors.map(|descriptor| unsafe { Handle::from_raw(descriptor) }))
+    }
     fn reference(&self) -> Handle<Ref> {
         unsafe { Handle::from_raw(ffi::create_ref(self.handle().as_raw())) }
     }
@@ -317,6 +325,23 @@ pub trait Value {
         Ok(bytes)
     }
 }
+fn read_tree_range(tree: &impl Value, offset: usize, descriptors: &mut [u32]) -> Result<(), Error> {
+    let length = usize::try_from(tree.len()?)?;
+    if offset > length || descriptors.len() > length - offset {
+        return Err(Error::OutOfBounds);
+    }
+    let count = unsafe {
+        ffi::access_tree(
+            tree.handle().as_raw(),
+            offset.try_into()?,
+            descriptors.as_mut_ptr() as u32,
+            descriptors.len().try_into()?,
+        )
+    };
+    assert_eq!(count as usize, descriptors.len());
+    Ok(())
+}
+
 impl<T: FixType> Value for Handle<T> {
     type Type = T;
     fn handle(&self) -> RawHandle<'_, T> {
@@ -349,6 +374,17 @@ impl<T: FixType, V: Value> PartialEq<V> for Handle<T> {
 }
 
 impl Handle<Object<Tree>> {
+    #[cfg(feature = "alloc")]
+    pub fn get_all(&self) -> Result<alloc::vec::Vec<Handle<Any>>, Error> {
+        let length = usize::try_from(self.len()?)?;
+        let mut descriptors = alloc::vec![0u32; length];
+        read_tree_range(self, 0, &mut descriptors)?;
+        Ok(descriptors
+            .into_iter()
+            .map(|descriptor| unsafe { Handle::from_raw(descriptor) })
+            .collect())
+    }
+
     pub fn iter(&self) -> Result<impl Iterator<Item = Handle<Any>> + '_, Error> {
         Ok((0..self.len()? as usize).map(|i| self.get(i)))
     }
@@ -528,9 +564,12 @@ macro_rules! tuples {
         impl<$($value:FixType),+> TryFrom<Handle<Object<Tree>>> for ($(Handle<$value>,)+) {
             type Error=Error;
             fn try_from(value:Handle<Object<Tree>>)->Result<Self,Error> {
-                let length=[$(stringify!($value)),+].len();
-                if value.len()?!=length as u64 {return Err(Error::WrongType);}
-                Ok(($(value.get($index).checked()?,)+))
+                const LENGTH: usize = [$(stringify!($value)),+].len();
+                if value.len()? != LENGTH as u64 {
+                    return Err(Error::WrongType);
+                }
+                let mut fields = value.get_range::<LENGTH>(0)?.map(Some);
+                Ok(($(fields[$index].take().unwrap().checked()?,)+))
             }
         }
     };

@@ -359,19 +359,20 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
         combination: Tree,
         privileged: bool,
     ) -> Result<Execution, ExecutionError> {
-        self.observe(combination, privileged, !privileged)
+        self.observe(combination, privileged, !privileged, None)
     }
 
     /// Run an ordinary application with advice delivery and no Apply coupon.
     pub fn run_observed(&self, combination: Tree) -> Result<Execution, ExecutionError> {
-        self.observe(combination, false, false)
+        self.observe(combination, false, false, None)
     }
 
-    fn observe(
+    pub(crate) fn observe(
         &self,
         combination: Tree,
         privileged: bool,
         certify: bool,
+        on_resume: Option<&mut dyn FnMut(Tree)>,
     ) -> Result<Execution, ExecutionError> {
         if !privileged {
             assert!(
@@ -385,6 +386,7 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
             &mut |_| EffectAction::Unhandled,
             &mut None,
             true,
+            on_resume,
         )?;
         self.complete_observed(execution, certify.then_some(combination))
     }
@@ -499,7 +501,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         privileged: bool,
         handler: &mut dyn FnMut(Handle) -> EffectAction,
     ) -> Result<Handle, ExecutionError> {
-        self.invoke(combination, privileged, handler, &mut None, false)
+        self.invoke(combination, privileged, handler, &mut None, false, None)
             .map(Execution::completed)
     }
 
@@ -509,8 +511,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut dyn FnMut(&[u8], &[Handle]) -> CoordinationAction,
     ) -> Result<Handle, ExecutionError> {
-        self.invoke(combination, true, handler, &mut Some(coordinator), false)
-            .map(Execution::completed)
+        self.invoke(
+            combination,
+            true,
+            handler,
+            &mut Some(coordinator),
+            false,
+            None,
+        )
+        .map(Execution::completed)
     }
 
     fn invoke(
@@ -520,7 +529,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         handler: &mut dyn FnMut(Handle) -> EffectAction,
         coordinator: &mut Option<&mut Coordinator<'_>>,
         observing: bool,
+        on_resume: Option<&mut dyn FnMut(Tree)>,
     ) -> Result<Execution, ExecutionError> {
+        let input_combination = combination;
         let contents = self.get_tree(combination).unwrap();
         let limit = crate::runtime::memory_limit(self, combination)?;
         let admission = Arc::new(if privileged {
@@ -563,6 +574,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         };
         if memory.attach(admission.clone()).is_err() || memory.charge(INVOCATION_COST).is_err() {
             return self.allocation_failure(&memory);
+        }
+        if !combination
+            .as_handle()
+            .same_encoding(input_combination.as_handle())
+            && let Some(on_resume) = on_resume
+        {
+            on_resume(combination);
         }
         self.resume(
             Invocation {
@@ -951,8 +969,14 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         let combination = self.add_tree(&[metadata, value, continuation.into()]);
                         drop(memory);
                         drop(admission);
-                        let mut execution =
-                            self.invoke(combination, privileged, handler, coordinator, observing)?;
+                        let mut execution = self.invoke(
+                            combination,
+                            privileged,
+                            handler,
+                            coordinator,
+                            observing,
+                            None,
+                        )?;
                         if let Execution::Advice { suspended, .. } = &mut execution {
                             suspended.invocation.profiles.extend(profiles);
                         }
@@ -1138,6 +1162,36 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let result = k.apply(pack_reference(result));
                     self.record_call_time(b"get_tree_element", started);
                     result
+                }
+                b"get_tree_elements" => {
+                    let started = profile.then(kernel::tsc::read);
+                    let Some(Value::Blob(destinations)) = args.pop_back() else {
+                        panic!("missing Tree destinations");
+                    };
+                    let Some(Value::Word(offset)) = args.pop_back() else {
+                        panic!("missing Tree offset");
+                    };
+                    let Some(Value::Blob(source)) = args.pop_back() else {
+                        panic!("missing Tree handle");
+                    };
+                    let cost = 4096 + fixhandle::accounting::allocation(destinations.len());
+                    if memory.charge(cost).is_err() {
+                        return self.allocation_failure(&memory);
+                    }
+                    temporary += cost;
+                    let tree = Tree::try_from(handles::resolve(&mut k, unpack_reference(&source)))
+                        .expect("expected Tree Object");
+                    let offset = offset.read() as usize;
+                    let (cells, remainder) = destinations.as_chunks::<8>();
+                    assert!(remainder.is_empty());
+                    assert!(offset <= tree.len() && cells.len() <= tree.len() - offset);
+                    let backing = self.get_tree_backing(tree).unwrap();
+                    for (index, cell) in cells.iter().enumerate() {
+                        let child = handles::read_backing(&backing, offset + index);
+                        handles::insert(&mut k, handles::reference(cell), child);
+                    }
+                    self.record_call_time(b"get_tree_element", started);
+                    k.apply(kernel::prelude::Word::new(0))
                 }
                 b"get_tree" => {
                     let started = profile.then(kernel::tsc::read);

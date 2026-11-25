@@ -110,7 +110,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
     pub(super) fn record_kernel_call(&self, name: &[u8]) {
         self.kernel_calls.fetch_add(1, Ordering::Relaxed);
         match name {
-            b"get_tree_element" => {
+            b"get_tree_element" | b"get_tree_elements" => {
                 self.tree_gets.fetch_add(1, Ordering::Relaxed);
             }
             b"unsound_handle_bytes" => {
@@ -197,6 +197,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         } = memory;
         self.captures.fetch_add(1, Ordering::Relaxed);
         handles::insert(&mut function, reply, Blob::literal(b"").unwrap().into());
+        function.inner_mut().arca_mut().unwrap().share_page_tables();
         let mut addresses = Vec::new();
         let mut records = Vec::new();
         for record in attachments {
@@ -383,8 +384,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
     }
 
     pub(super) fn integer(&self, value: Handle) -> u64 {
-        let bytes = self.get_blob(Blob::try_from(value).unwrap()).unwrap();
-        u64::from_le_bytes(bytes.as_ref().try_into().unwrap())
+        let blob = Blob::try_from(value).unwrap();
+        u64::from_le_bytes(blob.literal_bytes().unwrap().try_into().unwrap())
     }
 }
 

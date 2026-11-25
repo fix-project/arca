@@ -705,6 +705,22 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         self.bounds().is_empty()
     }
 
+    pub(crate) fn share_subtables(&mut self) {
+        if T::SIZE <= 1 << 21 {
+            return;
+        }
+        for index in self.bounds() {
+            let entry = self.entry_mut(index);
+            if entry.0.nested() && entry.0.writeable() {
+                let AugmentedUnmappedPage::UniqueTable(mut table) = entry.unmap() else {
+                    unreachable!();
+                };
+                table.share_subtables();
+                entry.replace(AugmentedUnmappedPage::CopyOnWriteTable(table.into()));
+            }
+        }
+    }
+
     fn make_read_only(&mut self) {
         for index in self.bounds() {
             let entry = self.entry_mut(index);
@@ -834,18 +850,23 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
         ancestor_changed: bool,
         invalidate: &mut impl FnMut(bool),
     ) -> bool {
+        let mut finish = |leaf_changed| {
+            if ancestor_changed || leaf_changed {
+                invalidate(ancestor_changed);
+            }
+        };
         if address >= T::SIZE {
+            finish(false);
             return false;
         }
         let span = T::SIZE / 512;
-        let Some(entry) = self.entry(address / span) else {
+        let Some(entry) = self.entry(address / span).filter(|entry| entry.present()) else {
+            finish(false);
             return false;
         };
-        if !entry.present() {
-            return false;
-        }
         if entry.0.leaf() {
             if entry.0.bits() & COPY_ON_WRITE == 0 {
+                finish(false);
                 return ancestor_changed && entry.0.writeable();
             }
             let entry = self.entry_mut(address / span);
@@ -858,7 +879,7 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
                 descriptor.set_address(vm::ka2pa(UniquePage::into_raw_with_allocator(page).0));
                 descriptor.set_writeable(true);
                 entry.0.set_bits(descriptor.into_bits() & !COPY_ON_WRITE);
-                invalidate(false);
+                finish(true);
                 drop(retained);
             }
             true
@@ -867,6 +888,7 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
             let changed = !entry.0.writeable();
             let retained = if changed {
                 if entry.0.bits() & TABLE_COPY_ON_WRITE == 0 {
+                    finish(false);
                     return false;
                 }
                 let AugmentedUnmappedPage::CopyOnWriteTable(table) = entry.unmap() else {
@@ -886,9 +908,6 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
                     .cast::<AugmentedPageTable<<T::Entry as HardwarePageTableEntry>::Table>>())
                     .resolve_cow_path(address % span, ancestor_changed || changed, invalidate)
             };
-            if changed {
-                invalidate(true);
-            }
             drop(retained);
             resolved
         }
@@ -898,14 +917,19 @@ impl<T: HardwarePageTable> AugmentedPageTable<T> {
 impl<T: HardwarePageTable> Clone for AugmentedPageTable<T> {
     fn clone(&self) -> Self {
         unsafe {
-            let array: [ManuallyDrop<T::Entry>; 512] = MaybeUninit::zeroed().assume_init();
-            let mut pt = AugmentedPageTable(array);
+            let mut entries = MaybeUninit::<[ManuallyDrop<T::Entry>; 512]>::uninit();
+            let destination = entries.as_mut_ptr().cast::<ManuallyDrop<T::Entry>>();
             let bounds = self.bounds();
+            destination.write_bytes(0, bounds.start);
+            destination.add(bounds.end).write_bytes(0, 512 - bounds.end);
             for index in bounds.clone() {
                 let entry =
                     &*core::ptr::from_ref(&self.0[index]).cast::<AugmentedEntry<T::Entry>>();
-                pt.0[index] = ManuallyDrop::new(entry.clone().0);
+                destination
+                    .add(index)
+                    .write(ManuallyDrop::new(entry.clone().0));
             }
+            let mut pt = AugmentedPageTable(entries.assume_init());
             pt.set_bounds(bounds);
             pt
         }

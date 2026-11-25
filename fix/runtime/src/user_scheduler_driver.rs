@@ -641,6 +641,7 @@ struct Shared {
     node_identity: [u8; 16],
     observed_steps: KMutex<BTreeSet<([u8; 16], u64)>>,
     advised: KMutex<BTreeMap<TaskKey, ActiveTask>>,
+    application_titles: KMutex<BTreeMap<[u8; 32], alloc::string::String>>,
     transfers: KMutex<BTreeMap<u64, ActiveTask>>,
     next_transfer: AtomicU64,
     observers: KMutex<ProgressObservers>,
@@ -722,6 +723,35 @@ impl Shared {
                 }
                 task
             });
+    }
+
+    fn application_title(&self, input: Handle, title: &str) {
+        let operation = Some(EvaluationOperation::Apply);
+        let id = *input.as_bytes();
+        let mut tasks = self.advised.lock();
+        let task = tasks.entry((id, operation)).or_insert_with(|| {
+            ActiveTask::new(EvaluationTask {
+                id,
+                operation,
+                ..EvaluationTask::default()
+            })
+        });
+        if task.progress.title != title {
+            self.end_task(task.clone(), EvaluationOutcome::Completed, None);
+            task.progress.title = title.into();
+            task.announce(self);
+        }
+    }
+
+    fn resume_title(&self, input: Handle, origin: Tree) {
+        let title = self
+            .application_titles
+            .lock()
+            .get(origin.as_handle().as_bytes())
+            .cloned();
+        if let Some(title) = title {
+            self.application_title(input, &alloc::format!("{title} (resumed)"));
+        }
     }
 
     fn load_task(
@@ -925,6 +955,7 @@ fn start_with_session<
         node_identity: kernel::host::os::node_identity(),
         observed_steps: KMutex::new(BTreeSet::new()),
         advised: KMutex::new(BTreeMap::new()),
+        application_titles: KMutex::new(BTreeMap::new()),
         transfers: KMutex::new(BTreeMap::new()),
         next_transfer: AtomicU64::new(0),
         observers: KMutex::new(ProgressObservers::default()),
@@ -1436,6 +1467,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"map_remove"
                 | b"storage_cache"
                 | b"storage_claims"
+                | b"storage_eval"
                 | b"storage_identify"
                 | b"storage_thunk"
                 | b"storage_reference"
@@ -1462,12 +1494,22 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     }
     let task: Result<(u64, Handle), TaskError> = (|| match (name, args) {
         (b"callable_run", [value]) => {
-            let execution = runtime.run_observed(value_combination(*value)?);
+            let execution = runtime.observe(
+                value_combination(*value)?,
+                false,
+                false,
+                Some(&mut |origin| shared.resume_title(*value, origin)),
+            );
             observed_reply(runtime, shared, worker, true, *value, execution, request)
                 .map_err(Into::into)
         }
         (b"callable_apply", [value]) => {
-            let execution = runtime.execute_observed(value_combination(*value)?, false);
+            let execution = runtime.observe(
+                value_combination(*value)?,
+                false,
+                true,
+                Some(&mut |origin| shared.resume_title(*value, origin)),
+            );
             observed_reply(runtime, shared, worker, true, *value, execution, request)
                 .map_err(Into::into)
         }
@@ -1590,22 +1632,11 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                             .zip(runtime.known_canonical(event.target))
                             .is_some_and(|(input, target)| input.same_encoding(&target)))
                 {
-                    let operation = Some(EvaluationOperation::Apply);
-                    let mut tasks = shared.advised.lock();
-                    let task = tasks
-                        .entry((*task.as_bytes(), operation))
-                        .or_insert_with(|| {
-                            ActiveTask::new(EvaluationTask {
-                                id: *task.as_bytes(),
-                                operation,
-                                ..EvaluationTask::default()
-                            })
-                        });
-                    if task.progress.title != title {
-                        shared.end_task(task.clone(), EvaluationOutcome::Completed, None);
-                        task.progress.title = title.into();
-                        task.announce(shared);
-                    }
+                    shared.application_title(task, title);
+                    shared
+                        .application_titles
+                        .lock()
+                        .insert(*task.as_bytes(), title.into());
                 }
                 advice.push(event);
                 execution = runtime.resume_observed(suspended);

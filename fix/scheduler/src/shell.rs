@@ -13,10 +13,11 @@ pub fn child(value: &Value, index: usize) -> Result<Value, Error> {
     capture(as_tree(value)?.get(index))
 }
 pub fn fields(value: &Value) -> Result<Vec<Value>, Error> {
-    let tree = as_tree(value)?;
-    (0..usize::try_from(tree.len()?)?)
-        .map(|index| capture(tree.get(index)))
-        .collect()
+    Ok(as_tree(value)?
+        .get_all()?
+        .into_iter()
+        .map(Value::from_inner)
+        .collect())
 }
 pub fn reference(value: &Value) -> Result<Value, Error> {
     if value.value_type() == ValueType::Ref {

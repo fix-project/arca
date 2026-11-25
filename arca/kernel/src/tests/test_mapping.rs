@@ -55,6 +55,33 @@ fn snapshots_isolate_writes() {
 }
 
 #[test]
+fn snapshots_with_shared_subtables_can_resume_independently() {
+    let first = 1 << 30;
+    let second = first + (1 << 21);
+    let mut original = write_program(first, Entry::RWPage(Page::new(4096)));
+    assert!(
+        original
+            .mappings_mut()
+            .map(second, Entry::RWPage(Page::new(4096)))
+            .is_ok()
+    );
+    original.share_page_tables();
+    for address in [first, second, first] {
+        let mut snapshot = original.clone();
+        snapshot.registers_mut()[Register::RDI] = address as u64;
+        let (result, snapshot) = run(snapshot);
+        assert_eq!(result, ExitReason::InvalidInstruction);
+        for location in [first, second] {
+            let mut byte = [0];
+            assert_eq!(snapshot.mappings().inner().read(location, &mut byte), 1);
+            assert_eq!(byte, [if address == location { 0x5a } else { 0 }]);
+            assert_eq!(original.mappings().inner().read(location, &mut byte), 1);
+            assert_eq!(byte, [0]);
+        }
+    }
+}
+
+#[test]
 fn zeroed_tables_isolate_writes_across_shared_levels() {
     let address = 1 << 36;
     for size in [1 << 21, 1 << 30] {

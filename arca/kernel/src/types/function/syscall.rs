@@ -323,23 +323,24 @@ pub fn sys_build(args: [u64; 6], arca: &mut LoadedArca) -> ControlFlow<Action, R
 }
 
 fn build(args: [u64; 6], arca: &mut LoadedArca) -> Result<Built> {
+    const STEP_SIZE: usize = core::mem::size_of::<arcane::arca_build_step>();
     let ptr = args[0] as usize;
     let count = args[1] as usize;
     if count == 0 || count > 4096 {
         return Err(SyscallError::BadArgument);
     }
-    let bytes = count
-        .checked_mul(core::mem::size_of::<arcane::arca_build_step>())
-        .ok_or(SyscallError::BadArgument)?;
-    let mut instructions = vec![0u8; bytes];
-    copy_user_to_kernel_buf(&mut instructions, ptr)?;
+    let bytes = count * STEP_SIZE;
+    let mut inline = [MaybeUninit::uninit(); 8 * STEP_SIZE];
+    let mut overflow;
+    let buffer = if bytes <= inline.len() {
+        &mut inline[..bytes]
+    } else {
+        overflow = Box::new_uninit_slice(bytes);
+        &mut overflow
+    };
+    let instructions = copy_user_to_kernel(buffer, ptr)?;
     let mut stack: Vec<Value> = Vec::new();
-    for (index, chunk) in instructions
-        .as_chunks::<{ core::mem::size_of::<arcane::arca_build_step>() }>()
-        .0
-        .iter()
-        .enumerate()
-    {
+    for (index, chunk) in instructions.as_chunks::<STEP_SIZE>().0.iter().enumerate() {
         let op = u64::from_ne_bytes(chunk[0..8].try_into().unwrap());
         let value = u64::from_ne_bytes(chunk[8..16].try_into().unwrap());
         let size = u64::from_ne_bytes(chunk[16..24].try_into().unwrap());

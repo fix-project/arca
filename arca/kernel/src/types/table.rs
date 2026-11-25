@@ -21,6 +21,15 @@ pub enum Table {
 pub type Entry = arca::Entry<Runtime>;
 
 impl Table {
+    pub(crate) fn share_subtables(&mut self) {
+        match self {
+            Self::Table2MB(_) => {}
+            Self::Table1GB(CowPage::Unique(table)) => table.share_subtables(),
+            Self::Table512GB(CowPage::Unique(table)) => table.share_subtables(),
+            Self::Table1GB(CowPage::Shared(_)) | Self::Table512GB(CowPage::Shared(_)) => {}
+        }
+    }
+
     pub fn inspect(
         &self,
         base: usize,

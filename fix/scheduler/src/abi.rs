@@ -3,7 +3,8 @@ use fixwasm::{Blob, Error, Handle, Object, Tree, Value as AsValue};
 
 pub(crate) fn request(value: impl AsValue) -> Result<(u64, Value), Error> {
     let reply = Handle::<Object<Tree>>::try_from(value.effect()?)?;
-    Ok((reply.get(0).read_u64()?, capture(reply.get(1))?))
+    let [status, value] = reply.get_range(0)?;
+    Ok((status.read_u64()?, capture(value)?))
 }
 pub(crate) fn coordinate(name: &[u8], arguments: &[Value]) -> Result<(u64, Value), Error> {
     let arguments = arguments

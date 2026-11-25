@@ -104,5 +104,5 @@ pub fn select(input: &Value) -> Result<Value, Error> {
 
 /// Request an identity Eval coupon for a value.
 pub fn eval(input: &Value) -> Result<Value, Error> {
-    effect(b"storage_eval", core::slice::from_ref(input))
+    coordinated(b"storage_eval", core::slice::from_ref(input))
 }

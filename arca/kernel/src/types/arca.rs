@@ -71,6 +71,10 @@ impl Arca {
         &mut self.page_table
     }
 
+    pub fn share_page_tables(&mut self) {
+        self.page_table.inner_mut().share_subtables();
+    }
+
     pub fn descriptors(&self) -> &Descriptors {
         &self.descriptors
     }

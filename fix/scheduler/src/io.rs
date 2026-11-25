@@ -122,8 +122,9 @@ impl Io {
             return Err(Error::WrongType);
         }
         let events = as_tree(&events)?;
-        let epoch = events.get(0).read_u64()?;
-        self.complete(&capture(events.get(1))?)?;
+        let [epoch, completed] = events.get_range(0)?;
+        let epoch = epoch.read_u64()?;
+        self.complete(&capture(completed)?)?;
         self.poll_background();
         Ok(Notification(crate::kernel::worker::Notification(epoch)))
     }
@@ -131,8 +132,9 @@ impl Io {
     fn complete(&self, completed: &Value) -> Result<(), Error> {
         for completion in fields(completed)? {
             let completion = as_tree(&completion)?;
-            let token = completion.get(0).read_u64()?;
-            let result = capture(completion.get(1))?;
+            let [token, result] = completion.get_range(0)?;
+            let token = token.read_u64()?;
+            let result = capture(result)?;
             let waker = {
                 let mut registrations = REGISTRATIONS.0.borrow_mut();
                 let registration = registrations.get_mut(&token).ok_or(Error::WrongType)?;
