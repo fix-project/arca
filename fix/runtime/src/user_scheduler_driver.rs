@@ -1446,6 +1446,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_cache"
                 | b"storage_claims"
                 | b"storage_identify"
+                | b"storage_evict"
                 | b"storage_thunk"
                 | b"storage_reference"
                 | b"storage_reference_named"
@@ -2579,6 +2580,11 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 shared.saver.push(*value);
             }
             Ok(*value)
+        }
+        (b"storage_evict", [value]) => {
+            let blob = crate::arca::eviction_target(*value).ok_or(Error::Invalid)?;
+            let removed = runtime.evict(blob);
+            Ok(number(usize::from(removed)))
         }
         (b"storage_put", [value]) => {
             runtime.index_claim(*value).map_err(|_| Error::Invalid)?;

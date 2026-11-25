@@ -1,5 +1,6 @@
 use super::*;
-use crate::storage::ImmutableBytes;
+use crate::storage::{ImmutableBytes, StorageError};
+use hashbrown::HashSet;
 use kernel::prelude::{Entry, Page};
 
 pub(super) const HANDLE_BASE: usize = 0x7e00000000;
@@ -26,6 +27,44 @@ pub(super) fn reference(bytes: &[u8; 8]) -> usize {
 pub(super) fn read(function: &mut Function, address: usize, bytes: &mut [u8]) -> usize {
     let mappings = function.inner_mut().arca_mut().unwrap().mappings();
     mappings.inner().read(address, bytes)
+}
+
+pub(super) fn any_live_object(
+    function: &mut Function,
+    used: usize,
+    mut matches: impl FnMut(Handle) -> Result<bool, StorageError>,
+) -> Result<bool, StorageError> {
+    assert!(used <= HANDLE_END - HANDLE_BASE && used.is_multiple_of(HANDLE_SIZE));
+    let mut pending = alloc::vec![(HANDLE_BASE, used)];
+    let mut local_trees = HashSet::new();
+    let mut page = [0; 4096];
+    while let Some((address, len)) = pending.pop() {
+        for offset in (0..len).step_by(page.len()) {
+            let count = (len - offset).min(page.len());
+            assert_eq!(read(function, address + offset, &mut page[..count]), count);
+            for bytes in page[..count].as_chunks::<HANDLE_SIZE>().0 {
+                let handle = unsafe { Handle::parse(*bytes) }.expect("invalid handle cell");
+                let HandleView::Object(_) = handle.view() else {
+                    continue;
+                };
+                match handle.name() {
+                    Name::Literal(_) => {}
+                    Name::Local { address }
+                        if handle.is_tree_data() && local_trees.insert(address) =>
+                    {
+                        pending.push((address as usize, handle.byte_len() as usize));
+                    }
+                    Name::Local { .. } => {}
+                    _ => {
+                        if matches(handle)? {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn resolve(function: &mut Function, address: usize) -> Handle {

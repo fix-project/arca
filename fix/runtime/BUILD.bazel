@@ -97,6 +97,7 @@ kernel_test(
         "FIX_PRIVILEGED": "//tests/fix:privileged_native",
         "FIX_EVAL": "//tests/fix:eval_native",
         "FIX_READ_BLOB": "//tests/fix:read_blob_native",
+        "FIX_EVICTION": "//tests/fix:eviction_native",
         "FIX_ADVICE": "//tests/fix:advice_native",
         "FIX_ADVICE_CAPTURE": "//tests/fix:advice_capture_native",
         "FIX_EXCEPTION_PARAMETERS": "//tests/fix:exception_parameters_native",

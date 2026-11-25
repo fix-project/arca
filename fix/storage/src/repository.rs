@@ -13,7 +13,8 @@ pub struct RepositoryStorage {
     memory: memory::MemoryStorage,
     /// One gate per Object being read, so concurrent loads read it once.
     loading: ShardedMap<[u8; HANDLE_SIZE], Arc<Mutex<()>>>,
-    resident: ShardedMap<[u8; HANDLE_SIZE], ()>,
+    /// Objects whose descendants were present at the recorded eviction generation.
+    resident: ShardedMap<[u8; HANDLE_SIZE], u64>,
     load_observer: Mutex<Option<Arc<LoadObserver>>>,
     names_loaded: Mutex<bool>,
     todos: Mutex<BTreeMap<[u8; HANDLE_SIZE], Option<Handle>>>,
@@ -274,11 +275,12 @@ impl Storage for RepositoryStorage {
     }
 
     fn load(&self, handle: Handle) {
-        if !matches!(handle.view(), HandleView::Object(_))
-            || self.resident.with(handle.as_bytes(), |resident| {
-                resident.contains_key(handle.as_bytes())
-            })
-        {
+        let generation = self.memory.eviction_generation();
+        let resident = |key: &[u8; HANDLE_SIZE]| {
+            self.resident
+                .with(key, |resident| resident.get(key) == Some(&generation))
+        };
+        if !matches!(handle.view(), HandleView::Object(_)) || resident(handle.as_bytes()) {
             return;
         }
         let mut pending = vec![(handle, None)];
@@ -289,17 +291,14 @@ impl Storage for RepositoryStorage {
             if let Some(previous) = completed {
                 if previous == failures {
                     self.resident
-                        .with(&key, |resident| resident.insert(key, ()));
+                        .with(&key, |resident| resident.insert(key, generation));
                 }
                 continue;
             }
             let HandleView::Object(object) = handle.view() else {
                 continue;
             };
-            if self
-                .resident
-                .with(&key, |resident| resident.contains_key(&key))
-            {
+            if resident(&key) {
                 continue;
             }
             if !visited.insert(key) || !self.load_object(*object) {
@@ -309,7 +308,7 @@ impl Storage for RepositoryStorage {
             match object.view() {
                 ObjectView::Blob(_) => {
                     self.resident
-                        .with(&key, |resident| resident.insert(key, ()));
+                        .with(&key, |resident| resident.insert(key, generation));
                 }
                 ObjectView::Tree(tree) => {
                     if let Some(children) = self.memory.present_children(*tree) {

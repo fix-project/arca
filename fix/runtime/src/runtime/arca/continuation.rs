@@ -4,7 +4,8 @@ use kernel::kthread::KMutex;
 use kernel::prelude::{Arc, Box};
 
 type Resident = Arc<KMutex<Option<Function>>>;
-type Captured = (Resident, usize, Tree, kernel::memory::Budget);
+type Captured = (Resident, usize, Tree, [Handle; 2], kernel::memory::Budget);
+type Resumable = (Function, usize, Tree, kernel::memory::Budget);
 
 #[derive(Debug)]
 pub(super) struct Store<S> {
@@ -283,7 +284,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             .tag_descriptor();
         self.continuations.lock().insert(
             *tree.as_handle().as_bytes(),
-            (resident, reply, combination, memory),
+            (
+                resident,
+                reply,
+                combination,
+                [arena.into(), attachments.into()],
+                memory,
+            ),
         );
         tree
     }
@@ -291,29 +298,39 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
     pub(super) fn continuation(
         &self,
         tree: Tree,
-    ) -> Option<(Function, usize, Tree, kernel::memory::Budget)> {
+        pins: &mut BlobPins,
+    ) -> Result<Option<Resumable>, StorageError> {
         let resident = self
             .continuations
             .lock()
             .remove(tree.as_handle().as_bytes());
-        if let Some((resident, reply, combination, memory)) = resident {
+        if let Some((resident, reply, combination, roots, memory)) = resident {
             let mut saved = resident.lock();
             if let Some(function) = saved.take() {
                 *saved = Some(function.clone());
-                return Some((function, reply, combination, memory));
+                drop(saved);
+                for root in roots {
+                    pins.retain(self, root)?;
+                }
+                pins.retain(self, combination.into())?;
+                return Ok(Some((function, reply, combination, memory)));
             }
         }
         if !tree.is_tag() || tree.len() != 3 {
-            return None;
+            return Ok(None);
         }
-        let fields = self.inner.get_tree(tree).ok()?;
+        let fields = self.inner.get_tree(tree)?;
         if !trust::is_kernel_author(fields[0])
             || !fields[2].same_encoding(&Blob::literal(b"Continuation").unwrap().into())
         {
-            return None;
+            return Ok(None);
         }
-        let payload = Ref::try_from(fields[1]).ok()?.object_descriptor();
-        let payload = self.get_tree(Tree::try_from(payload.handle()).ok()?).ok()?;
+        let Ok(payload) = TreeRef::try_from(fields[1]) else {
+            return Ok(None);
+        };
+        let payload = payload.object_descriptor();
+        pins.retain(self, payload.into())?;
+        let payload = self.get_tree(payload)?;
         assert_eq!(payload.len(), 6);
         let mut function: Function = self
             .decode(payload[0])
@@ -329,7 +346,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             let address = self.integer(record[0]) as usize;
             let length = self.integer(record[2]) as usize;
             let backing = match Object::try_from(record[1]).unwrap().view() {
-                ObjectView::Blob(blob) => self.get_blob_backing(*blob).unwrap(),
+                ObjectView::Blob(blob) => self.get_blob_backing(*blob)?,
                 ObjectView::Tree(tree) => self.get_tree_backing(*tree).unwrap(),
             };
             let writable = self.integer(record[3]) != 0;
@@ -353,17 +370,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 );
             }
         }
-        Some((
+        Ok(Some((
             function,
             self.integer(payload[3]) as usize,
             Tree::try_from(payload[4]).unwrap(),
-            postcard::from_bytes(
-                self.get_blob(Blob::try_from(payload[5]).unwrap())
-                    .unwrap()
-                    .as_ref(),
-            )
-            .unwrap(),
-        ))
+            postcard::from_bytes(self.get_blob(Blob::try_from(payload[5]).unwrap())?.as_ref())
+                .unwrap(),
+        )))
     }
 
     pub(super) fn integer(&self, value: Handle) -> u64 {

@@ -1,18 +1,84 @@
 extern crate alloc;
 
 use super::*;
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::{borrow::Cow, boxed::Box};
 use bytes::Buf;
+use core::cell::UnsafeCell;
 use core::hash::{BuildHasher, Hasher};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use hashbrown::HashSet;
 
 mod table;
 use crate::platform::Mutex as KMutex;
 pub use table::ShardedMap;
 use table::Table;
+
+struct BlobSlot {
+    bytes: UnsafeCell<Option<ImmutableBytes>>,
+    users: AtomicUsize,
+}
+
+// The backing is immutable until eviction changes a zero user count to EVICTED.
+unsafe impl Sync for BlobSlot where ImmutableBytes: Sync {}
+
+impl BlobSlot {
+    const EVICTED: usize = usize::MAX;
+
+    fn new(bytes: ImmutableBytes) -> Self {
+        Self {
+            bytes: UnsafeCell::new(Some(bytes)),
+            users: AtomicUsize::new(0),
+        }
+    }
+
+    fn acquire(&self) -> Option<BlobRead<'_>> {
+        self.users
+            .try_update(Ordering::Acquire, Ordering::Relaxed, |users| {
+                (users < Self::EVICTED - 1).then(|| users + 1)
+            })
+            .ok()?;
+        Some(BlobRead(self))
+    }
+
+    fn release(&self) {
+        self.users.fetch_sub(1, Ordering::Release);
+    }
+
+    fn present(&self) -> bool {
+        self.users.load(Ordering::Acquire) != Self::EVICTED
+    }
+
+    /// # Safety
+    /// A user of this slot must remain registered for the lifetime of the borrow.
+    unsafe fn backing(&self) -> &ImmutableBytes {
+        unsafe { (*self.bytes.get()).as_ref().unwrap() }
+    }
+
+    fn evict(&self) -> Option<ImmutableBytes> {
+        self.users
+            .compare_exchange(0, Self::EVICTED, Ordering::AcqRel, Ordering::Relaxed)
+            .ok()?;
+        unsafe { (*self.bytes.get()).take() }
+    }
+}
+
+struct BlobRead<'a>(&'a BlobSlot);
+
+impl core::ops::Deref for BlobRead<'_> {
+    type Target = ImmutableBytes;
+
+    fn deref(&self) -> &ImmutableBytes {
+        unsafe { self.0.backing() }
+    }
+}
+
+impl Drop for BlobRead<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
 
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -21,12 +87,193 @@ pub struct MemoryStorage {
     inner: Arc<Inner>,
 }
 
+/// Keeps blob Objects reachable through ordinary Object edges resident.
+pub struct BlobPins {
+    memory: MemoryStorage,
+    blobs: HashSet<usize>,
+    trees: HashSet<[u8; HANDLE_SIZE]>,
+}
+
+impl BlobPins {
+    pub fn get(&self, blob: Blob) -> Result<Cow<'_, ImmutableBytes>, StorageError> {
+        if let Some(bytes) = blob.literal_bytes() {
+            return Ok(Cow::Owned(ImmutableBytes::new(bytes)));
+        }
+        let index = self.memory.index(blob.as_handle())?;
+        if !self.blobs.contains(&index) {
+            return Err(StorageError::NotFound);
+        }
+        let slot = self.memory.inner.blobs.get(index, |slot| slot).unwrap();
+        let bytes = unsafe { slot.backing() };
+        validate_blob(blob, bytes)?;
+        Ok(Cow::Borrowed(bytes))
+    }
+
+    pub fn retain(&mut self, storage: &dyn Storage, root: Handle) -> Result<(), StorageError> {
+        self.retain_all(storage, [root])
+    }
+
+    pub fn retain_all(
+        &mut self,
+        storage: &dyn Storage,
+        roots: impl IntoIterator<Item = Handle>,
+    ) -> Result<(), StorageError> {
+        let result = Self::visit_blobs(storage, &mut self.trees, roots, |blob| {
+            Self::pin(&self.memory, &mut self.blobs, blob).or_else(|error| {
+                if error != StorageError::NotFound {
+                    return Err(error);
+                }
+                storage.load(blob.into());
+                Self::pin(&self.memory, &mut self.blobs, blob)
+            })?;
+            Ok(false)
+        });
+        if result.is_err() {
+            self.trees.clear();
+        }
+        result.map(|_| ())
+    }
+
+    pub fn release_unreachable(
+        &mut self,
+        storage: &dyn Storage,
+        blob: Blob,
+        any_root: impl FnOnce(
+            &mut dyn FnMut(Handle) -> Result<bool, StorageError>,
+        ) -> Result<bool, StorageError>,
+    ) -> Result<(), StorageError> {
+        let Ok(index) = self.memory.index(blob.as_handle()) else {
+            return Ok(());
+        };
+        if !self.blobs.contains(&index) {
+            return Ok(());
+        }
+        let slot = self.memory.inner.blobs.get(index, |slot| slot).unwrap();
+        if slot.users.load(Ordering::Relaxed) != 1 {
+            return Ok(());
+        }
+        let mut trees = HashSet::new();
+        if !any_root(&mut |root| {
+            Self::visit_blobs(storage, &mut trees, [root], |child| {
+                Ok(self.memory.index(child.as_handle()) == Ok(index))
+            })
+        })? {
+            self.blobs.remove(&index);
+            slot.release();
+            trees.retain(|tree| self.trees.contains(tree));
+            self.trees = trees;
+        }
+        Ok(())
+    }
+
+    fn visit_blobs(
+        storage: &dyn Storage,
+        trees: &mut HashSet<[u8; HANDLE_SIZE]>,
+        roots: impl IntoIterator<Item = Handle>,
+        mut visit: impl FnMut(Blob) -> Result<bool, StorageError>,
+    ) -> Result<bool, StorageError> {
+        let mut pending = Vec::new();
+        let mut roots = roots.into_iter();
+        while let Some(handle) = pending.pop().or_else(|| roots.next()) {
+            let HandleView::Object(object) = handle.view() else {
+                continue;
+            };
+            match object.view() {
+                ObjectView::Blob(blob) if blob.literal_bytes().is_none() => {
+                    if visit(*blob)? {
+                        return Ok(true);
+                    }
+                }
+                ObjectView::Tree(tree)
+                    if !tree.is_empty() && trees.insert(*tree.as_handle().as_bytes()) =>
+                {
+                    let mut backing = storage.get_tree_backing(*tree)?.into_buf();
+                    while backing.has_remaining() {
+                        let chunk = backing.chunk();
+                        for bytes in chunk.as_chunks::<HANDLE_SIZE>().0 {
+                            let child = unsafe { Handle::parse(*bytes) }.expect("stored handle");
+                            if let HandleView::Object(object) = child.view() {
+                                match object.view() {
+                                    ObjectView::Blob(blob) if blob.literal_bytes().is_none() => {
+                                        if visit(*blob)? {
+                                            return Ok(true);
+                                        }
+                                    }
+                                    ObjectView::Tree(tree) if !tree.is_empty() => {
+                                        pending.push(child);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let len = chunk.len();
+                        backing.advance(len);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn pin(
+        memory: &MemoryStorage,
+        blobs: &mut HashSet<usize>,
+        blob: Blob,
+    ) -> Result<(), StorageError> {
+        let index = memory.index(blob.as_handle())?;
+        let slot = memory
+            .inner
+            .blobs
+            .get(index, |slot| slot)
+            .ok_or(StorageError::NotFound)?;
+        match blobs.entry(index) {
+            hashbrown::hash_set::Entry::Occupied(_) => {
+                validate_blob(blob, unsafe { slot.backing() })?;
+            }
+            hashbrown::hash_set::Entry::Vacant(entry) => {
+                let read = slot.acquire().ok_or(StorageError::NotFound)?;
+                validate_blob(blob, &read)?;
+                entry.insert();
+                core::mem::forget(read);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_blob(name: Blob, data: &ImmutableBytes) -> Result<(), StorageError> {
+    if data.len() as u64 != name.byte_len() {
+        return Err(StorageError::LengthMismatch);
+    }
+    if name.as_handle().comparability_bit() != Some(true) {
+        return Err(StorageError::InvalidComparisonBit);
+    }
+    if name.as_handle().value_bit() != Some(true) {
+        return Err(StorageError::InvalidValueBit);
+    }
+    Ok(())
+}
+
+impl Drop for BlobPins {
+    fn drop(&mut self) {
+        for &index in &self.blobs {
+            self.memory
+                .inner
+                .blobs
+                .get(index, BlobSlot::release)
+                .expect("pinned blob slot");
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     id: u64,
     next_blob: AtomicU64,
     next_tree: AtomicU64,
-    blobs: Table<ImmutableBytes>,
+    blobs: Table<BlobSlot>,
+    eviction_generation: AtomicU64,
     trees: Table<(TreeBacking, bool, bool)>,
     canonicals: ShardedMap<CanonicalHandle, usize>,
     locals: ShardedMap<[u8; HANDLE_SIZE], CanonicalHandle>,
@@ -149,6 +396,7 @@ impl Default for MemoryStorage {
                 next_blob: AtomicU64::new(0),
                 next_tree: AtomicU64::new(0),
                 blobs: Table::default(),
+                eviction_generation: AtomicU64::new(0),
                 trees: Table::default(),
                 canonicals: ShardedMap::default(),
                 locals: ShardedMap::default(),
@@ -164,6 +412,16 @@ impl Default for MemoryStorage {
 }
 
 impl MemoryStorage {
+    pub fn blob_pins(&self) -> BlobPins {
+        BlobPins {
+            memory: Self {
+                inner: self.inner.clone(),
+            },
+            blobs: HashSet::new(),
+            trees: HashSet::new(),
+        }
+    }
+
     #[cfg(not(target_os = "linux"))]
     pub fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
         self.inner.memory.keep(memory);
@@ -216,7 +474,7 @@ impl MemoryStorage {
         if handle.is_tree_data() {
             self.inner.trees.get(index, |_| ()).is_some()
         } else {
-            self.inner.blobs.get(index, |_| ()).is_some()
+            self.blob_present(index)
         }
     }
 
@@ -265,26 +523,73 @@ impl MemoryStorage {
         if object.is_empty() && object.as_handle().same_encoding(&Tree::empty().into()) {
             return;
         }
-        let index = match object.view() {
-            ObjectView::Blob(_) => {
+        let canonical = unsafe { CanonicalHandle::new(object.into()) };
+        match object.view() {
+            ObjectView::Blob(_) => self.name_blob(canonical, || {
                 let index = self.next(&self.inner.next_blob);
-                self.inner.blobs.insert(index, bytes);
-                index
-            }
+                let bytes = self.retain_backing(bytes);
+                self.inner.blobs.insert(index, BlobSlot::new(bytes));
+                Some(index)
+            }),
             ObjectView::Tree(_) => {
                 let index = self.next(&self.inner.next_tree);
                 let (comparable, value) = tree_properties(&bytes);
                 self.inner
                     .trees
                     .insert(index, (TreeBacking::Ready(bytes), comparable, value));
-                index
+                self.inner.canonicals.with(&canonical, |canonicals| {
+                    canonicals.entry(canonical).or_insert(index);
+                });
             }
-        };
-        let canonical = unsafe { CanonicalHandle::new(object.into()) };
-        self.inner.canonicals.with(&canonical, |canonicals| {
-            canonicals.entry(canonical).or_insert(index);
-        });
+        }
         self.register_names([*object.as_handle().as_bytes()]);
+    }
+
+    fn name_blob(&self, canonical: CanonicalHandle, index: impl FnOnce() -> Option<usize>) {
+        self.inner.canonicals.with(&canonical, |names| {
+            if !names
+                .get(&canonical)
+                .is_some_and(|&current| self.blob_present(current))
+                && let Some(index) = index()
+            {
+                names.insert(canonical, index);
+            }
+        });
+    }
+
+    /// Releases a resident blob if its slot has no pins or lookups in progress.
+    pub fn evict(&self, blob: Blob) -> bool {
+        let Ok(index) = self.index(blob.as_handle()) else {
+            return false;
+        };
+        let Some(bytes) = self.inner.blobs.get(index, BlobSlot::evict).flatten() else {
+            return false;
+        };
+        self.inner
+            .eviction_generation
+            .fetch_add(1, Ordering::Release);
+        drop(bytes);
+        true
+    }
+
+    fn blob_present(&self, index: usize) -> bool {
+        self.inner
+            .blobs
+            .get(index, BlobSlot::present)
+            .unwrap_or(false)
+    }
+
+    fn blob_backing(&self, index: usize) -> Result<ImmutableBytes, StorageError> {
+        self.inner
+            .blobs
+            .get(index, |slot| slot.acquire().map(|bytes| (*bytes).clone()))
+            .flatten()
+            .ok_or(StorageError::NotFound)
+    }
+
+    // Advances after each eviction closes its slot.
+    pub(crate) fn eviction_generation(&self) -> u64 {
+        self.inner.eviction_generation.load(Ordering::Acquire)
     }
 
     fn next(&self, counter: &AtomicU64) -> usize {
@@ -326,7 +631,9 @@ impl MemoryStorage {
     pub fn blob_bytes(&self) -> usize {
         let mut total = 0;
         let end = self.inner.next_blob.load(Ordering::Acquire) as usize;
-        self.inner.blobs.for_each(end, |bytes| total += bytes.len());
+        self.inner.blobs.for_each(end, |slot| {
+            total += slot.acquire().map_or(0, |bytes| bytes.len());
+        });
         total
     }
 
@@ -608,7 +915,8 @@ impl Storage for MemoryStorage {
             )
         }
         .expect("blob exceeds handle length");
-        self.inner.blobs.insert(index, data);
+        let data = self.retain_backing(data);
+        self.inner.blobs.insert(index, BlobSlot::new(data));
         handle
     }
 
@@ -676,21 +984,9 @@ impl Storage for MemoryStorage {
             return Ok(ImmutableBytes::new(bytes));
         }
         let index = self.index(name.as_handle())?;
-        let data = self
-            .inner
-            .blobs
-            .get(index, ImmutableBytes::clone)
-            .ok_or(StorageError::NotFound)?;
-        if data.len() as u64 != name.byte_len() {
-            return Err(StorageError::LengthMismatch);
-        }
-        if name.as_handle().comparability_bit() != Some(true) {
-            return Err(StorageError::InvalidComparisonBit);
-        }
-        if name.as_handle().value_bit() != Some(true) {
-            return Err(StorageError::InvalidValueBit);
-        }
-        Ok(self.retain_backing(data))
+        let data = self.blob_backing(index)?;
+        validate_blob(name, &data)?;
+        Ok(data)
     }
 
     fn get_tree_backing(&self, name: Tree) -> Result<ImmutableBytes, StorageError> {
@@ -726,27 +1022,25 @@ impl Storage for MemoryStorage {
         if let Ok(canonical) = CanonicalHandle::try_from(blob) {
             return Ok(canonical);
         }
-        if let Some(canonical) = self.alias(blob.as_handle()) {
-            return Ok(canonical);
-        }
         let index = self.index(blob.as_handle())?;
-        let bytes = self
-            .inner
-            .blobs
-            .get(index, ImmutableBytes::clone)
-            .ok_or(StorageError::NotFound)?;
-        if blob.byte_len() != bytes.len() as u64 {
-            return Err(StorageError::LengthMismatch);
-        }
-        let bytes = bytes.to_bytes();
-
-        let canonicalized_blob = Blob::canonical(&bytes).expect("stored blob length");
-        let canonical_handle =
-            CanonicalHandle::try_from(canonicalized_blob).expect("canonical blob");
-        self.inner.canonicals.with(&canonical_handle, |canonicals| {
-            canonicals.entry(canonical_handle).or_insert(index);
+        let cached = self.alias(blob.as_handle());
+        let canonical_handle = match cached {
+            Some(name) => name,
+            None => {
+                let bytes = self.blob_backing(index)?;
+                if blob.byte_len() != bytes.len() as u64 {
+                    return Err(StorageError::LengthMismatch);
+                }
+                let canonical = Blob::canonical(&bytes.to_bytes()).expect("stored blob length");
+                CanonicalHandle::try_from(canonical).expect("canonical blob")
+            }
+        };
+        self.name_blob(canonical_handle, || {
+            self.blob_present(index).then_some(index)
         });
-        self.cache_alias(blob.into(), canonical_handle);
+        if cached.is_none() {
+            self.cache_alias(blob.into(), canonical_handle);
+        }
         Ok(canonical_handle)
     }
 

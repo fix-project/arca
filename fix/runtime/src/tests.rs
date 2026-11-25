@@ -23,11 +23,18 @@ fn main() {
 }
 
 fn test_runtime() -> FixOnArca {
+    test_runtime_with_storage(fixstorage::memory::MemoryStorage::default())
+}
+
+fn test_runtime_with_storage<S>(storage: S) -> FixOnArca<S>
+where
+    S: fixstorage::Storage + AsRef<fixstorage::memory::MemoryStorage>,
+{
     let author = fixhandle::Blob::canonical(stdlib::PRIMITIVES[0].1)
         .unwrap()
         .object()
         .into_ref();
-    FixOnArca::default().with_trust(
+    FixOnArca::new(storage).with_trust(
         fixruntime::arca::trust::Trust::parse(&format!("{}\n", author.as_handle())).unwrap(),
     )
 }
@@ -1108,6 +1115,81 @@ mod tests {
                 &42u64.to_le_bytes()
             );
         }
+    }
+
+    #[kernel::test]
+    fn captured_invocations_check_input_residency_when_readmitted() {
+        let memory = Arc::new(fixstorage::memory::MemoryStorage::default());
+        let runtime = test_runtime_with_storage(memory.clone());
+        let input = memory.add_blob(&[7; 8193]);
+        let program = test_program(&*memory, kernel::testing::fixture("FIX_READ_BLOB"));
+        let limit: Handle = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
+        let combination = memory.add_tree(&[limit, program.into(), input.into()]);
+        let request = Tree::try_from(apply(&runtime, combination)).unwrap();
+        let continuation = memory.get_tree(request).unwrap()[1];
+        let resume = memory.add_tree(&[limit, continuation, Blob::literal(b"").unwrap().into()]);
+        assert!(memory.evict(input));
+        assert!(matches!(
+            runtime.execute(resume),
+            Err(ExecutionError::Storage(StorageError::NotFound))
+        ));
+    }
+
+    #[kernel::test]
+    fn advice_keeps_nested_blob_objects_resident_before_the_first_read() {
+        use fixruntime::arca::Execution;
+
+        let memory = Arc::new(fixstorage::memory::MemoryStorage::default());
+        let runtime = test_runtime_with_storage(memory.clone());
+        let program = test_program(&*memory, kernel::testing::fixture("FIX_ADVICE_CAPTURE"));
+        let input = memory.add_blob(&[7; 64]);
+        let opaque = memory.add_blob(&[8; 64]);
+        let arguments = memory.add_tree(&[input.into(), opaque.object().into_ref().into()]);
+        let limit = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
+        let combination = memory.add_tree(&[limit, program.into(), arguments.into()]);
+
+        let Execution::Advice { suspended, .. } = runtime.run_observed(combination).unwrap() else {
+            panic!("expected advice");
+        };
+        assert!(!memory.evict(input));
+        assert!(memory.evict(opaque));
+        assert!(matches!(
+            runtime.resume_observed(suspended).unwrap(),
+            Execution::Complete(_)
+        ));
+        assert!(memory.evict(input));
+    }
+
+    #[kernel::test]
+    fn scheduler_evicts_after_closing_the_last_tree_that_reaches_the_blob() {
+        use fixruntime::arca::{CoordinationAction, EffectAction};
+
+        let memory = Arc::new(fixstorage::memory::MemoryStorage::default());
+        let runtime = test_runtime_with_storage(memory.clone());
+        let program = test_program(&*memory, kernel::testing::fixture("FIX_EVICTION"));
+        let blob = memory.add_blob(&[9; 64]);
+        let reference: Handle = blob.object().into_ref().into();
+        let limit = Blob::literal(&(2u64 << 30).to_le_bytes()).unwrap().into();
+        let combination = memory.add_tree(&[limit, program.into()]);
+        let mut attempts = Vec::new();
+        let result = runtime
+            .execute_with_coordination(
+                combination,
+                &mut |_| EffectAction::Unhandled,
+                &mut |name, args| match (name, args) {
+                    (b"get_blob", []) => CoordinationAction::Resume(0, blob.into()),
+                    (b"storage_evict", [target]) => {
+                        assert!(target.same_encoding(&reference));
+                        attempts.push(memory.evict(blob));
+                        CoordinationAction::Resume(0, Blob::literal(b"").unwrap().into())
+                    }
+                    _ => panic!("unexpected coordination"),
+                },
+            )
+            .unwrap();
+        assert!(result.same_encoding(&reference));
+        assert_eq!(attempts, [false, true]);
+        assert!(!memory.has_blob(blob));
     }
 
     #[kernel::test]

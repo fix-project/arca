@@ -28,6 +28,16 @@ pub fn recommend(value: &Value) -> Result<Value, Error> {
 pub fn put(value: &Value) -> Result<Value, Error> {
     effect(b"storage_put", core::slice::from_ref(value))
 }
+/// Evicts the blob named by a Blob Object or Ref. Returns false if it is inline,
+/// absent from RAM, or in use.
+pub fn evict(value: &Value) -> Result<bool, Error> {
+    clear_identified();
+    let (status, removed) = coordinate(b"storage_evict", core::slice::from_ref(value))?;
+    match status {
+        0 => Ok(removed.read_u64()? != 0),
+        _ => Err(Error::WrongType),
+    }
+}
 pub fn get_todo(value: &Value) -> Result<Option<Value>, Error> {
     let (status, value) = request(tree![Blob::create(b"storage_get_todo"), value])?;
     match status {
