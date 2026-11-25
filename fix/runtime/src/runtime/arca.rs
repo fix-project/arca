@@ -6,6 +6,7 @@ use crate::storage::memory::MemoryStorage;
 use crate::storage::repository::RepositoryStorage;
 use crate::storage::{ImmutableBytes, Storage};
 use alloc::sync::Arc;
+use common::protocol::control::{EvaluationPhase, EvaluationStep};
 use fix::Memoization;
 mod checkpoint;
 mod continuation;
@@ -752,6 +753,17 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let target = handles::resolve(&mut k, unpack_reference(&value));
                     let function = k.apply(kernel::prelude::Word::new(0));
+                    if !observing && &*key == b"fix::log" && !payload.is_empty() {
+                        kernel::host::os::evaluation_step(EvaluationStep {
+                            node: None,
+                            sequence: 0,
+                            location: alloc::vec::Vec::new(),
+                            task: Default::default(),
+                            phase: EvaluationPhase::Log(
+                                alloc::string::String::from_utf8_lossy(&payload).into_owned(),
+                            ),
+                        });
+                    }
                     let copied = fixhandle::accounting::allocation(key.len())
                         .saturating_add(fixhandle::accounting::allocation(payload.len()));
                     if memory.charge(copied).is_err() {

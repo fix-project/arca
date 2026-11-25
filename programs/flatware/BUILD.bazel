@@ -26,7 +26,11 @@ filegroup(
         name = name,
         wasm = ":" + name + "_wasm",
         runnable = True,
-        artifact_visibility = ["//tests/flatware:__pkg__", "//tests/fix:__pkg__"],
+        artifact_visibility = [
+            "//programs/fix/python:__pkg__",
+            "//tests/flatware:__pkg__",
+            "//tests/fix:__pkg__",
+        ],
     )
     for name in PROGRAMS
 ]

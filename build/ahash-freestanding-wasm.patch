@@ -1,0 +1,15 @@
+--- a/src/random_state.rs
++++ b/src/random_state.rs
+@@ -65,7 +65,11 @@
+             ];
+             &RAND
+         }
+-    } else if #[cfg(all(feature = "runtime-rng", not(fuzzing)))] {
++    } else if #[cfg(all(
++        feature = "runtime-rng",
++        not(fuzzing),
++        not(all(target_arch = "wasm32", target_os = "unknown")),
++    ))] {
+         #[inline]
+         fn get_fixed_seeds() -> &'static [[u64; 4]; 2] {
+             use crate::convert::Convert;

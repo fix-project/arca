@@ -5,6 +5,52 @@ use fixhandle::*;
 #[derive(Debug, Default)]
 pub(crate) struct Names(BTreeSet<[u8; 31]>);
 
+#[derive(Clone, Copy)]
+enum Style {
+    Progress { coupons: bool },
+    Preview { depth: usize },
+}
+
+fn literal_preview(bytes: &[u8]) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok();
+    let number = match bytes.len() {
+        1 => {
+            let byte = bytes[0];
+            Some(format!("{} ({byte:#04x})", byte as i8))
+        }
+        2 => {
+            let bytes = bytes.try_into().unwrap();
+            Some(format!(
+                "{} ({:#06x})",
+                i16::from_le_bytes(bytes),
+                u16::from_le_bytes(bytes)
+            ))
+        }
+        4 => {
+            let bytes = bytes.try_into().unwrap();
+            Some(format!(
+                "{} ({:#010x})",
+                i32::from_le_bytes(bytes),
+                u32::from_le_bytes(bytes)
+            ))
+        }
+        8 => {
+            let bytes = bytes.try_into().unwrap();
+            Some(format!(
+                "{} ({:#018x})",
+                i64::from_le_bytes(bytes),
+                u64::from_le_bytes(bytes)
+            ))
+        }
+        _ => None,
+    };
+    match (text, number) {
+        (Some(text), Some(number)) => Some(format!("{text:?} / {number}")),
+        (Some(text), None) => Some(format!("{text:?}")),
+        (None, number) => number,
+    }
+}
+
 impl Names {
     pub fn extend(&mut self, names: impl IntoIterator<Item = [u8; 32]>) {
         for name in names {
@@ -52,8 +98,16 @@ impl Names {
         self.extend(
             core::iter::once(*value.as_bytes()).chain(labels.iter().map(|(name, _)| *name)),
         );
-        self.named(value, labels, &read, true)
+        self.named(value, labels, &read, Style::Progress { coupons: true })
             .unwrap_or_else(|| self.abbreviated(value))
+    }
+
+    pub fn preview(
+        value: Handle,
+        labels: &[([u8; 32], String)],
+        read: impl Fn(Tree) -> Option<alloc::boxed::Box<[Handle]>>,
+    ) -> Option<String> {
+        Self::default().named(value, labels, &read, Style::Preview { depth: 2 })
     }
 
     fn named(
@@ -61,9 +115,15 @@ impl Names {
         value: Handle,
         labels: &[([u8; 32], String)],
         read: &impl Fn(Tree) -> Option<alloc::boxed::Box<[Handle]>>,
-        coupons: bool,
+        style: Style,
     ) -> Option<String> {
         if let Some((_, label)) = labels.iter().find(|(name, _)| name == value.as_bytes()) {
+            if matches!(style, Style::Preview { .. })
+                && let Ok(blob) = Blob::try_from(value)
+                && let Some(preview) = blob.literal_bytes().and_then(literal_preview)
+            {
+                return Some(format!("{label} = {preview}"));
+            }
             return Some(label.clone());
         }
         match value.view() {
@@ -72,7 +132,7 @@ impl Names {
                     EncodeView::Strict(thunk) => ("*", thunk),
                     EncodeView::Shallow(thunk) => ("+", thunk),
                 };
-                self.named(thunk.into(), labels, read, coupons)
+                self.named(thunk.into(), labels, read, style)
                     .map(|name| format!("{prefix}{name}"))
             }
             HandleView::Thunk(thunk) => {
@@ -80,6 +140,15 @@ impl Names {
                     ThunkView::Identification(reference) => ("'", reference),
                     ThunkView::Application(reference) => ("#", reference.into()),
                     ThunkView::Selection(reference) => {
+                        let child_style = match style {
+                            Style::Progress { .. } => Style::Progress { coupons: false },
+                            Style::Preview { depth } => Style::Preview {
+                                depth: depth.checked_sub(1)?,
+                            },
+                        };
+                        if !matches!(reference.len(), 2 | 3) {
+                            return None;
+                        }
                         let fields = read(reference.object_descriptor())?;
                         if !matches!(fields.len(), 2 | 3) {
                             return None;
@@ -87,10 +156,12 @@ impl Names {
                         let arguments = fields
                             .iter()
                             .map(|value| {
-                                self.named(*value, labels, read, false)
-                                    .unwrap_or_else(|| self.abbreviated(*value))
+                                self.named(*value, labels, read, child_style).or_else(|| {
+                                    matches!(style, Style::Progress { .. })
+                                        .then(|| self.abbreviated(*value))
+                                })
                             })
-                            .collect::<alloc::vec::Vec<_>>();
+                            .collect::<Option<alloc::vec::Vec<_>>>()?;
                         return Some(format!("[{}]", arguments.join(" ")));
                     }
                 };
@@ -99,12 +170,12 @@ impl Names {
                     .find(|(name, _)| name == reference.as_handle().as_bytes())
                     .map(|(_, label)| label.clone())
                     .or_else(|| {
-                        self.named(reference.object_descriptor().into(), labels, read, coupons)
+                        self.named(reference.object_descriptor().into(), labels, read, style)
                     })?;
                 Some(format!("{prefix}{operand}"))
             }
             HandleView::Ref(reference) => self
-                .named(reference.object_descriptor().into(), labels, read, coupons)
+                .named(reference.object_descriptor().into(), labels, read, style)
                 .map(|name| format!("&{name}")),
             HandleView::Object(object) => {
                 if value.is_value()
@@ -119,12 +190,15 @@ impl Names {
                 if let ObjectView::Blob(blob) = object.view()
                     && let Some(bytes) = blob.literal_bytes()
                 {
+                    if matches!(style, Style::Preview { .. }) {
+                        return literal_preview(bytes);
+                    }
                     if let Ok(text) = core::str::from_utf8(bytes)
                         && text.chars().all(|character| !character.is_control())
                     {
                         return Some(format!("{text:?}"));
                     }
-                    if [1, 2, 4, 8, 16].contains(&bytes.len()) {
+                    if matches!(bytes.len(), 1 | 2 | 4 | 8 | 16) {
                         let mut number = [0; 16];
                         number[..bytes.len()].copy_from_slice(bytes);
                         return Some(format!(
@@ -134,12 +208,26 @@ impl Names {
                         ));
                     }
                 }
-                if !coupons {
-                    return None;
-                }
                 let ObjectView::Tree(tree) = object.view() else {
                     return None;
                 };
+                if let Style::Preview { depth } = style {
+                    let child_style = Style::Preview {
+                        depth: depth.checked_sub(1)?,
+                    };
+                    if tree.is_tag() || tree.len() > 4 {
+                        return None;
+                    }
+                    let fields = read(*tree)?;
+                    let children = fields
+                        .iter()
+                        .map(|value| self.named(*value, labels, read, child_style))
+                        .collect::<Option<alloc::vec::Vec<_>>>()?;
+                    return Some(format!("({})", children.join(" ")));
+                }
+                if !matches!(style, Style::Progress { coupons: true }) {
+                    return None;
+                }
                 if !tree.is_tag() || tree.len() != 2 {
                     return None;
                 }
@@ -160,8 +248,8 @@ impl Names {
                     6 => "Select",
                     _ => return None,
                 };
-                let input = self.named(claim[1], labels, read, false);
-                let result = self.named(claim[2], labels, read, false);
+                let input = self.named(claim[1], labels, read, Style::Progress { coupons: false });
+                let result = self.named(claim[2], labels, read, Style::Progress { coupons: false });
                 if input.is_none() && result.is_none() {
                     return None;
                 }

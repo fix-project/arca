@@ -1,0 +1,20 @@
+python = $python
+checker = $check_result_native
+result = *#(2147483648u64 python @file("workflow.py") $add $runner_probe_native $cat_elf 2u64 3u64)
+arithmetic = *[result 0u64]
+flatware = *[result 1u64]
+stdout = *[flatware 0u64]
+environment = *[flatware 1u64]
+env = *[environment 0u64]
+mounts = *[environment 1u64]
+work = *[mounts 0u64]
+files = *[work 2u64]
+first = *[files 0u64]
+second = *[files 1u64]
+prepared = *[files 4u64]
+conflict = *[result 2u64]
+edited = *[result 3u64]
+edited_environment = *[edited 1u64]
+nonserializable = *[result 5u64]
+deferred = *[*[result 6u64] 0u64]
+*#(268435456u64 checker (arithmetic stdout *[env 0u64] *[first 0u64] *[second 0u64] *[prepared 0u64] *[conflict 0u64] *[conflict 1u64] *[edited 0u64] *[edited_environment 0u64] *[result 4u64] *[nonserializable 0u64] deferred) ((7u64 8u64) "leftright" "LANG=C" "a" "b" "prepared" "Flatware.merge-conflict" ("/work" "conflict") "through Flatware" ("FINAL=done") 11u64 "Fix.error" ("mounted written stdin" "rit")))

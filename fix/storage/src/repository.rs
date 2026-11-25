@@ -41,6 +41,17 @@ impl AsRef<memory::MemoryStorage> for Arc<RepositoryStorage> {
 }
 
 impl RepositoryStorage {
+    pub fn preview(&self, value: Handle) -> Option<String> {
+        let labels = self
+            .repository
+            .labels()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|label| Some((self.repository.label_name(&label).ok()?, label)))
+            .collect::<Vec<_>>();
+        friendly::Names::preview(value, &labels, |tree| self.get_tree(tree).ok())
+    }
+
     pub fn new(repository: Repository) -> Self {
         Self {
             repository,

@@ -122,6 +122,9 @@ the corresponding host I/O and Git support.
 ## Task advice
 
 `advise(task, advice::TITLE, b"task name")` supplies a display name.
+`advise(task, advice::LOG, b"message")` writes a diagnostic to the CLI's
+stderr. The payload is UTF-8 text. Log messages are emitted when the
+application runs.
 `progress(task, completed, total)` reports actual completed units and total
 units. Its `fix::progress` payload is two little-endian `u64`s, completed first.
 Completed units must not exceed total units. Applications should report units

@@ -110,6 +110,31 @@ Argument expressions use the caller's scope. A child inherits named arguments,
 but never its caller's positional arguments or private local variables.
 Recursive imports and missing or excess positional arguments are errors.
 
+`fix run FILE` parses and evaluates a Fix script by default. If the first line
+starts with `#!`, Fix evaluates the expression on that line. In a shebang,
+`$0` is a Blob containing the entire file, including the shebang. Use `*#(...)`
+to apply an interpreter and choose its argument order explicitly.
+
+```fix
+#! *#($limit @label("python") $0 "fixed argument" $1)
+```
+
+Supply positional arguments as Fix expressions after the file name. A Fix
+script receives them starting at `$0`. A shebang receives them starting at
+`$1`. CLI bindings are available in both forms. Imports in a script or shebang
+use the file's directory, and imports in CLI arguments use the current directory.
+`fix run -` reads stdin and uses the current directory for relative imports.
+
+`$limit` is the application budget in bytes supplied by `fix run --limit`.
+It defaults to 512 MiB. The global `--memory` option sets the VM budget in MiB.
+If a script returns a conventional Fix error Tree or an unhandled
+`Fix.error` effect, `fix run` prints the diagnostic to stderr and prints the
+result handle to stdout as usual.
+For other results, stderr can show a preview of inline UTF-8 text, labels,
+and small Trees. A 1-, 2-, 4-, or 8-byte Blob is also shown as a little-endian signed
+decimal and unsigned hexadecimal integer, even when it decodes as text.
+Previews use Fix sigils for Refs, Thunks, and Encodes.
+
 Named CLI arguments use `-b name=EXPRESSION`, for example:
 
 ```sh

@@ -122,7 +122,7 @@ pub struct EvaluationStep {
     pub phase: EvaluationPhase,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EvaluationPhase {
     Started,
     Finished {
@@ -130,6 +130,7 @@ pub enum EvaluationPhase {
         outcome: EvaluationOutcome,
         bytes: Option<u64>,
     },
+    Log(String),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

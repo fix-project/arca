@@ -1581,6 +1581,14 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 {
                     return Ok((0, storage.add_blob(b"").into()));
                 }
+                if event.key == b"fix::log" && !event.payload.is_empty() {
+                    shared.task_event(
+                        EvaluationTask::default(),
+                        EvaluationPhase::Log(
+                            alloc::string::String::from_utf8_lossy(&event.payload).into_owned(),
+                        ),
+                    );
+                }
                 if application
                     && event.key == b"fix::title"
                     && let Ok(title) = core::str::from_utf8(&event.payload)

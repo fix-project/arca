@@ -1,8 +1,10 @@
 #![no_std]
 #[cfg(feature = "alloc")]
 extern crate alloc;
+mod failure;
 mod memoization;
 mod value;
+pub use failure::{ExecutionFailure, FailureKind};
 pub use fixtypes::{DataType, EncodeType, ThunkType, ValueType};
 pub use memoization::Memoization;
 pub use value::{Blob, Encode, Iter, Object, Reference, Thunk, Tree, TypeError, Value};

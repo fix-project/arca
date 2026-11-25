@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "fix-python-dependencies"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "empty.rs"
+
+[dependencies]
+rustpython-vm = { version = "=0.5.0", default-features = false, features = ["compiler"] }
