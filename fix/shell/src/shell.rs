@@ -12,7 +12,6 @@ use core::ffi::{CStr, c_char, c_uint, c_void};
 use fixhandle::HANDLE_SIZE;
 use fixtypes::{DataType, EncodeType, ThunkType, ValueType};
 
-use user::ArcaError;
 use user::Runtime;
 use user::error::log as arca_log;
 use user::error::log_int as arca_log_int;
@@ -45,39 +44,16 @@ pub unsafe extern "C" fn fixpoint_attach_blob(
     addr: *mut c_void,
     old_size: usize,
 ) -> usize {
-    crate::locals::lift(&[handle]);
     if !unsafe { fixpoint_is_blob_obj(handle) } {
         arca_log("attach_blob: handle does not refer to a BlobObject");
         panic!()
     }
 
-    if unsafe { handles::query(handle, handles::Query::Literal) } != 0 {
-        let len = unsafe { fixpoint_len(handle) };
-        unsafe {
-            crate::rt::replace_region(addr.cast(), old_size, 0);
-            if len != 0 {
-                crate::rt::map_region(
-                    addr.cast(),
-                    len.next_multiple_of(crate::rt::PAGE_SIZE as usize),
-                    __MODE_read_write,
-                )
-                .expect("inline Blob mapping failed");
-                crate::rt::copy_guest_bytes(handles::address(handle), addr as usize, len);
-                assert_eq!(arca_mprotect(addr, __MODE_read_only as i32), 0);
-            }
-        }
-        return len;
-    }
-
-    let result: Result<Value<Runtime>, ArcaError> = crate::continuation::operation("get_blob")
-        .blob(&handles::bytes(handle))
-        .call_with_current_continuation()
-        .try_into()
-        .map_err(|_| ArcaError::BadType);
-
-    let Ok(blob) = result else {
-        arca_log("attach_blob: failed to get BlobData");
-        panic!()
+    let blob = match crate::locals::local_address(handles::address(handle)) {
+        Some(address) => crate::locals::backing(address),
+        None => crate::continuation::operation("get_blob")
+            .blob(&handles::bytes(handle))
+            .call_with_current_continuation(),
     };
     let len = unsafe { fixpoint_len(handle) };
     assert!(len <= crate::rt::PAYLOAD_SIZE);
@@ -235,7 +211,7 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
             len,
             len.next_multiple_of(4096),
         );
-        crate::locals::create(result, backing, address, len, 0x800f, 0);
+        crate::locals::create(result, backing, address, len, 0x800f, 0, Default::default());
     }
 }
 
@@ -244,8 +220,12 @@ pub unsafe extern "C" fn fixpoint_create_blob_from_memory(
 pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
     assert!(slice.len().is_multiple_of(HANDLE_SIZE));
     let mut metadata = 0xa00fu16;
+    let mut children = alloc::collections::BTreeSet::new();
     for offset in (0..slice.len()).step_by(HANDLE_SIZE) {
         let cell = slice.as_ptr() as usize + offset;
+        if let Some(address) = crate::locals::local_address(cell) {
+            children.insert(address);
+        }
         if unsafe { handles::query_cell(cell, Query::Comparable) } == 0 {
             metadata &= !4;
         }
@@ -270,6 +250,7 @@ pub unsafe fn fixpoint_create_tree(result: Reference, slice: &[u8]) {
             slice.len(),
             metadata,
             fixhandle::accounting::mapping(slice.len()),
+            children,
         );
     }
 }

@@ -1,18 +1,12 @@
 use super::*;
-use crate::storage::ImmutableBytes;
 use kernel::prelude::{Entry, Page, Table, Word};
 
-pub(super) fn encode(storage: &dyn Storage, value: Value) -> Handle {
+pub(super) fn encode(storage: &MemoryStorage, value: Value) -> Handle {
     let (kind, payload): (&[u8], Handle) = match value {
         Value::Null(_) => (b"Null", storage.add_blob(b"").into()),
         Value::Word(word) => (b"Word", storage.add_blob(&word.read().to_le_bytes()).into()),
         Value::Blob(blob) => (b"Blob", storage.add_blob(&blob).into()),
-        Value::Page(page) => (
-            b"Page",
-            storage
-                .add_blob_backing(ImmutableBytes::from_page(page))
-                .into(),
-        ),
+        Value::Page(page) => (b"Page", storage.add_page(page).into()),
         Value::Tuple(tuple) => {
             let fields: Vec<_> = tuple
                 .into_iter()

@@ -6,6 +6,11 @@ use kernel::prelude::{Arc, Box};
 type Resident = Arc<KMutex<Option<Function>>>;
 type Captured = (Resident, usize, Tree, kernel::memory::Budget);
 
+pub(super) struct CaptureMemory {
+    pub(super) budget: kernel::memory::Budget,
+    pub(super) backing: Option<kernel::memory::FreeMemory>,
+}
+
 #[derive(Debug)]
 pub(super) struct Store<S> {
     inner: S,
@@ -184,8 +189,12 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         reply: usize,
         attachments: Tuple,
         combination: Tree,
-        memory: kernel::memory::Budget,
+        memory: CaptureMemory,
     ) -> Tree {
+        let CaptureMemory {
+            budget: memory,
+            backing,
+        } = memory;
         self.captures.fetch_add(1, Ordering::Relaxed);
         handles::insert(&mut function, reply, Blob::literal(b"").unwrap().into());
         let mut addresses = Vec::new();
@@ -269,7 +278,11 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         fields.as_ptr().cast(),
                         core::mem::size_of_val(&fields),
                     );
-                    ImmutableBytes::new(bytes)
+                    let bytes = ImmutableBytes::new(bytes);
+                    match backing {
+                        Some(backing) => bytes.retain(backing),
+                        None => bytes,
+                    }
                 })
         }
         .into_ref();
@@ -291,29 +304,32 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
     pub(super) fn continuation(
         &self,
         tree: Tree,
-    ) -> Option<(Function, usize, Tree, kernel::memory::Budget)> {
-        let resident = self
-            .continuations
-            .lock()
-            .remove(tree.as_handle().as_bytes());
+    ) -> Result<Option<(Function, usize, Tree, kernel::memory::Budget)>, ExecutionError> {
+        let name = tree.as_handle().as_bytes();
+        let resident = self.continuations.lock().get(name).cloned();
         if let Some((resident, reply, combination, memory)) = resident {
-            let mut saved = resident.lock();
-            if let Some(function) = saved.take() {
-                *saved = Some(function.clone());
-                return Some((function, reply, combination, memory));
+            if let Some(function) = resident.lock().as_ref().cloned() {
+                return Ok(Some((function, reply, combination, memory)));
             }
+            self.continuations.lock().remove(name);
         }
         if !tree.is_tag() || tree.len() != 3 {
-            return None;
+            return Ok(None);
         }
-        let fields = self.inner.get_tree(tree).ok()?;
+        let Ok(fields) = self.inner.get_tree(tree) else {
+            return Ok(None);
+        };
         if !trust::is_kernel_author(fields[0])
             || !fields[2].same_encoding(&Blob::literal(b"Continuation").unwrap().into())
         {
-            return None;
+            return Ok(None);
         }
-        let payload = Ref::try_from(fields[1]).ok()?.object_descriptor();
-        let payload = self.get_tree(Tree::try_from(payload.handle()).ok()?).ok()?;
+        let payload = TreeRef::try_from(fields[1]).map_err(|_| {
+            ExecutionError::InvalidExecution("continuation payload is not a Tree Ref")
+        })?;
+        let payload = self.get_tree(payload.object_descriptor()).map_err(|_| {
+            ExecutionError::InvalidExecution("continuation payload backing is unavailable")
+        })?;
         assert_eq!(payload.len(), 6);
         let mut function: Function = self
             .decode(payload[0])
@@ -353,7 +369,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 );
             }
         }
-        Some((
+        Ok(Some((
             function,
             self.integer(payload[3]) as usize,
             Tree::try_from(payload[4]).unwrap(),
@@ -363,7 +379,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     .as_ref(),
             )
             .unwrap(),
-        ))
+        )))
     }
 
     pub(super) fn integer(&self, value: Handle) -> u64 {

@@ -97,9 +97,8 @@ impl Backend {
             return Err("Tree index out of bounds".into());
         }
         let backing = self.storage.get_tree_backing(tree).map_err(debug)?;
-        let (page, offset) = backing.page(index * HANDLE_SIZE);
         let mut bytes = [0; HANDLE_SIZE];
-        assert_eq!(page.read(offset, &mut bytes), HANDLE_SIZE);
+        backing.read(index * HANDLE_SIZE, &mut bytes);
         unsafe { Handle::parse(bytes) }.map_err(debug)
     }
 

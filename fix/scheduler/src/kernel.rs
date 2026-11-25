@@ -70,7 +70,8 @@ async fn admitted(
             return Ok(reply);
         }
         let required = child(&reply.1, 0)?;
-        if let Some(coupon) = fallback(required.read_u64()?).await? {
+        let required_bytes = required.read_u64()?;
+        if let Some(coupon) = fallback(required_bytes).await? {
             return Ok((0, coupon));
         }
         let (status, ready) = crate::io::Io
@@ -79,10 +80,10 @@ async fn admitted(
         if status != 0 || ready.read_u64()? == 0 {
             if let (Ok(application), Ok(available)) = (
                 crate::executor::describe_application(combination),
-                worker::available_memory(),
+                child(&reply.1, 1).and_then(|value| value.read_u64()),
             ) {
                 let _ = crate::io::log(&alloc::format!(
-                    "memory admission rejected for {application}: {available} bytes available"
+                    "memory admission rejected for {application}: needed {required_bytes} bytes with {available} bytes available"
                 ));
             }
             return Err(Error::MemoryUnavailable);

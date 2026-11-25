@@ -3,11 +3,14 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(kernel::testing::harness)]
 #![reexport_test_harness_main = "test_main"]
+extern crate alloc;
+use alloc::sync::Arc;
 use fixruntime::{
-    Blob, Handle, Storage, Tree,
+    Blob, Handle, Storage, Tree, TreeRef,
     arca::{FixOnArca, trust::Trust},
     runtime::Runtime,
     stdlib,
+    storage::memory::MemoryStorage,
 };
 use kernel::prelude::*;
 #[kmain]
@@ -15,11 +18,14 @@ fn main() {
     test_main();
 }
 fn runtime() -> FixOnArca {
+    runtime_with_storage(MemoryStorage::default())
+}
+fn runtime_with_storage<S: Storage + AsRef<MemoryStorage>>(storage: S) -> FixOnArca<S> {
     let author = Blob::canonical(stdlib::PRIMITIVES[0].1)
         .unwrap()
         .object()
         .into_ref();
-    FixOnArca::default().with_trust(Trust::parse(&format!("{}\n", author.as_handle())).unwrap())
+    FixOnArca::new(storage).with_trust(Trust::parse(&format!("{}\n", author.as_handle())).unwrap())
 }
 fn program(storage: &dyn Storage, fixture: &str) -> Tree {
     test_program(storage, kernel::testing::fixture(fixture))
@@ -80,8 +86,190 @@ fn memory_limits_cover_startup_scratch_objects_and_descriptors() {
     succeeded(run(limit, 3, 320));
     succeeded(run(limit, 1, 1));
     failed(run(limit, 1, 64));
+    succeeded(run(limit, 9, 128));
+    failed(run(limit, 10, 128));
+    succeeded(run(limit, 11, 128));
+    succeeded(run(limit, 12, 128));
+    succeeded(run(limit, 13, 128));
     succeeded(run(48 << 20, 2, 16));
     failed(run(48 << 20, 2, 1 << 17));
+}
+
+#[kernel::test]
+fn resumed_applications_each_pay_for_their_captured_frame() {
+    let memory = Arc::new(MemoryStorage::default());
+    let runtime = runtime_with_storage(memory.clone());
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let run = |combination| {
+        let fixruntime::arca::Execution::Complete(result) =
+            runtime.run_observed(combination).unwrap()
+        else {
+            panic!("unexpected advice");
+        };
+        result
+    };
+    let limit = number(64 << 20);
+    let capture = storage.add_tree(&[limit, procedure.into(), number(5), number(320)]);
+    let reservation =
+        kernel::memory::Admission::new(kernel::memory::available() - (64 << 20)).unwrap();
+    let available = kernel::memory::available();
+    let result = run(capture);
+    assert!(kernel::memory::available() <= available - (20 << 20));
+    drop(reservation);
+    let pair = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert!(storage.equals(pair[0], number(42)).unwrap());
+    let continuation = pair[1];
+    let fields = storage
+        .get_tree(Tree::try_from(continuation).unwrap())
+        .unwrap();
+    let checkpoint = TreeRef::try_from(fields[1]).unwrap().object_descriptor();
+
+    for reply in [1, 2] {
+        let resume = storage.add_tree(&[limit, continuation, number(reply)]);
+        let result = run(resume);
+        assert!(storage.equals(result, number(42)).unwrap());
+        assert!(memory.present_children(checkpoint).is_none());
+    }
+
+    let resume = storage.add_tree(&[number(1 << 20), continuation, number(3)]);
+    let result = run(resume);
+    let error = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    assert!(
+        storage
+            .equals(error[0], storage.add_blob(b"Fix.memory").into())
+            .unwrap()
+    );
+
+    let wrong_arity = storage.add_tree(&[limit, continuation, number(1), number(2)]);
+    let Err(error) = runtime.run_observed(wrong_arity) else {
+        panic!("expected a rejected continuation application");
+    };
+    let report = error.request(storage, wrong_arity.into());
+    let fields = storage.get_tree(report).unwrap();
+    let message = storage.get_blob(Blob::try_from(fields[1]).unwrap()).unwrap();
+    assert!(
+        core::str::from_utf8(&message)
+            .unwrap()
+            .contains("tag kind \"Continuation\"")
+    );
+}
+
+#[kernel::test]
+fn sequential_implicit_resumes_reuse_the_application_budget() {
+    use fixruntime::arca::Execution;
+
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let limit = number(64 << 20);
+    let _reservation =
+        kernel::memory::Admission::new(kernel::memory::available() - (160 << 20)).unwrap();
+    for mode in [14, 15] {
+        let mut application = storage.add_tree(&[limit, procedure.into(), number(mode), number(8)]);
+        for _ in 0..8 {
+            let Execution::Complete(result) = runtime.run_observed(application).unwrap() else {
+                panic!("expected a captured continuation");
+            };
+            let fixruntime::ThunkView::Application(resume) =
+                fixruntime::Thunk::try_from(result).unwrap().view()
+            else {
+                panic!("expected a continuation application");
+            };
+            application = resume.object_descriptor();
+        }
+        let Execution::Complete(result) = runtime.run_observed(application).unwrap() else {
+            panic!("expected a completed continuation");
+        };
+        assert!(storage.equals(result, number(42)).unwrap());
+    }
+}
+
+#[kernel::test]
+fn stored_backing_stays_shared_across_capture() {
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let input = storage.add_blob(&vec![42; 80 << 20]);
+    let limit = number(64 << 20);
+    let run = |combination| {
+        let fixruntime::arca::Execution::Complete(result) =
+            runtime.run_observed(combination).unwrap()
+        else {
+            panic!("unexpected advice");
+        };
+        result
+    };
+    let capture = storage.add_tree(&[limit, procedure.into(), number(7), input.into()]);
+    let result = run(capture);
+    let pair = storage.get_tree(Tree::try_from(result).unwrap()).unwrap();
+    let resume = storage.add_tree(&[limit, pair[1], number(0)]);
+    assert!(storage.equals(run(resume), number(42)).unwrap());
+    let persisted = storage.canonicalize(pair[1]).unwrap().into();
+    let replay = storage.add_tree(&[limit, persisted, number(1)]);
+    assert!(storage.equals(run(replay), number(42)).unwrap());
+
+    let detach = storage.add_tree(&[limit, procedure.into(), number(8), input.into()]);
+    let error = storage
+        .get_tree(Tree::try_from(run(detach)).unwrap())
+        .unwrap();
+    assert!(
+        storage
+            .equals(error[0], storage.add_blob(b"Fix.memory").into())
+            .unwrap()
+    );
+}
+
+#[kernel::test]
+fn checkpoint_page_handles_share_immutable_backing() {
+    let storage = MemoryStorage::default();
+    let mut page = Page::new(4096);
+    assert_eq!(page.write(0, b"before"), 6);
+    let mut page = Page::from_inner(page.into_inner().shared());
+    let before = storage.add_page(page.clone());
+    let reused = storage.add_page(page.clone());
+    assert!(before.as_handle().same_encoding(reused.as_handle()));
+    let mut duplicate = Page::new(4096);
+    assert_eq!(duplicate.write(0, b"before"), 6);
+    let duplicate = storage.add_page(duplicate);
+    assert!(before.as_handle().same_encoding(duplicate.as_handle()));
+    assert_eq!(storage.blob_bytes(), 4096);
+
+    assert_eq!(page.write(0, b"after!"), 6);
+    let after = storage.add_page(page);
+    assert_eq!(&storage.get_blob(before).unwrap()[..6], b"before");
+    assert_eq!(&storage.get_blob(after).unwrap()[..6], b"after!");
+    assert_eq!(storage.blob_bytes(), 8192);
+}
+
+#[kernel::test]
+fn call_cc_hands_off_the_application_reservation() {
+    let runtime = runtime();
+    let storage = runtime.storage();
+    let procedure = program(storage, "MEMORY_LIMITS");
+    let number = |value: u64| storage.add_blob(&value.to_le_bytes()).into();
+    let application =
+        storage.add_tree(&[number(1024 << 20), procedure.into(), number(6), number(0)]);
+    let _reservation =
+        kernel::memory::Admission::new(kernel::memory::available() - (1900 << 20)).unwrap();
+    let fixruntime::arca::Execution::Complete(result) = runtime.run_observed(application).unwrap()
+    else {
+        panic!("unexpected advice");
+    };
+    let fixruntime::ThunkView::Application(resume) =
+        fixruntime::Thunk::try_from(result).unwrap().view()
+    else {
+        panic!("expected a continuation application");
+    };
+    let fixruntime::arca::Execution::Complete(result) =
+        runtime.run_observed(resume.object_descriptor()).unwrap()
+    else {
+        panic!("unexpected advice");
+    };
+    assert!(storage.equals(result, number(42)).unwrap());
 }
 
 #[kernel::test]

@@ -303,6 +303,33 @@ fn an_empty_repository_uses_user_default_programs() {
         ),
     )
     .unwrap();
+    let todo = |arguments: &[&str]| {
+        Command::new(input(env!("BACKEND")))
+            .args(["-j", "1", "--memory", "2048", "todo"])
+            .args(arguments)
+            .current_dir(&project)
+            .env("FIX_CONFIG_DIR", user.join("config"))
+            .env("XDG_DATA_HOME", &data)
+            .env("FIX_TRUST", data.join("fix/bootstrap/.fix/trust"))
+            .env("FIX_UNSIGNED", "true")
+            .output()
+            .unwrap()
+    };
+    let uri = "file:///todo-source";
+    let added = todo(&["add", "42u64", uri]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let listed = todo(&["list", "42u64"]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(String::from_utf8(listed.stdout).unwrap().trim(), uri);
+
     let output = Command::new(input(env!("BACKEND")))
         .args(["-j", "1", "--memory", "2048", "eval", "1u64"])
         .current_dir(&project)

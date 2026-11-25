@@ -1,4 +1,7 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use arca::Value;
 use user::Runtime;
 
@@ -9,6 +12,7 @@ struct LocalObject {
     backing: Value<Runtime>,
     bytes: usize,
     promotion: usize,
+    children: BTreeSet<usize>,
 }
 
 static mut OBJECTS: BTreeMap<usize, LocalObject> = BTreeMap::new();
@@ -33,8 +37,10 @@ pub unsafe fn create(
     bytes: usize,
     metadata: u16,
     promotion: usize,
+    children: BTreeSet<usize>,
 ) {
     unsafe {
+        handles::create_local(handles::address(result), address, bytes, metadata);
         assert!(
             (&mut *(&raw mut OBJECTS))
                 .insert(
@@ -43,12 +49,51 @@ pub unsafe fn create(
                         backing,
                         bytes,
                         promotion,
+                        children,
                     },
                 )
                 .is_none()
         );
-        handles::create_local(handles::address(result), address, bytes, metadata);
         crate::descriptors::local(handles::address(result));
+    }
+}
+
+pub fn local_address(cell: usize) -> Option<usize> {
+    unsafe {
+        (handles::query_cell(cell, Query::Local) != 0)
+            .then(|| handles::query_cell(cell, Query::LocalAddress))
+    }
+}
+
+pub fn backing(address: usize) -> Value<Runtime> {
+    unsafe { (&*(&raw const OBJECTS))[&address].backing.clone() }
+}
+
+pub fn release_unreachable() {
+    let mut pending: Vec<_> = crate::descriptors::local_roots().collect();
+    let mut live = BTreeSet::new();
+    while let Some(address) = pending.pop() {
+        if !live.insert(address) {
+            continue;
+        }
+        let object = unsafe { &(&*(&raw const OBJECTS))[&address] };
+        pending.extend(object.children.iter().copied());
+    }
+    let objects = unsafe { &mut *(&raw mut OBJECTS) };
+    let dead: Vec<_> = objects
+        .keys()
+        .copied()
+        .filter(|key| !live.contains(key))
+        .collect();
+    for address in dead {
+        let object = objects.remove(&address).unwrap();
+        unsafe {
+            rt::map_region(address as *mut u8, rt::SLOT_SIZE, arcane::__MODE_none)
+                .expect("local data unmap failed");
+        }
+        let charge = fixhandle::accounting::object(object.bytes);
+        drop(object);
+        crate::memory::release(charge);
     }
 }
 
@@ -64,6 +109,8 @@ pub fn lift(roots: &[Reference]) {
 pub fn lift_all() {
     let objects = unsafe { core::mem::take(&mut *(&raw mut OBJECTS)) };
     if objects.is_empty() {
+        unsafe { REGIONS = 0 };
+        crate::descriptors::take_local();
         return;
     }
     use crate::continuation::Argument::{Tuple, Value, Word};

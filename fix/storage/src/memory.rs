@@ -33,6 +33,8 @@ struct Inner {
     claims: ShardedMap<[[u8; HANDLE_SIZE]; 2], Vec<IndexedClaim>>,
     tree_hasher: hashbrown::DefaultHashBuilder,
     tree_index: ShardedMap<u64, Vec<Tree>>,
+    #[cfg(not(target_os = "linux"))]
+    pages: ShardedMap<(usize, usize), Blob>,
     names: KMutex<crate::friendly::Names>,
     #[cfg(not(target_os = "linux"))]
     memory: Arc<crate::data::RetainedMemory>,
@@ -155,6 +157,8 @@ impl Default for MemoryStorage {
                 claims: ShardedMap::default(),
                 tree_hasher: hashbrown::DefaultHashBuilder::default(),
                 tree_index: ShardedMap::default(),
+                #[cfg(not(target_os = "linux"))]
+                pages: ShardedMap::default(),
                 names: KMutex::new(crate::friendly::Names::default()),
                 #[cfg(not(target_os = "linux"))]
                 memory: Arc::default(),
@@ -164,6 +168,29 @@ impl Default for MemoryStorage {
 }
 
 impl MemoryStorage {
+    #[cfg(not(target_os = "linux"))]
+    pub fn add_page(&self, page: kernel::prelude::Page) -> Blob {
+        let data = ImmutableBytes::from_page(page);
+        let (page, _) = data.page(0);
+        // The blob store keeps each indexed backing live.
+        let key = (page.inner().as_ptr() as usize, data.len());
+        self.inner.pages.with(&key, |pages| {
+            if let Some(&blob) = pages.get(&key) {
+                return blob;
+            }
+            let blob = page.with_ref(|bytes| Blob::canonical(bytes).expect("page fits in Blob"));
+            let canonical = CanonicalHandle::try_from(blob).expect("canonical page Blob");
+            self.inner.canonicals.with(&canonical, |canonicals| {
+                canonicals.entry(canonical).or_insert_with(|| {
+                    let stored = self.add_blob_backing(data);
+                    pages.insert(key, blob);
+                    self.index(stored.as_handle()).expect("new Blob index")
+                });
+            });
+            blob
+        })
+    }
+
     #[cfg(not(target_os = "linux"))]
     pub fn keep_memory(&self, memory: kernel::memory::FreeMemory) {
         self.inner.memory.keep(memory);

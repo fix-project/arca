@@ -133,38 +133,22 @@ Internal Arca continuations transfer execution state while implementing a Fix
 API call. They do not create an additional program-visible copy of every mapped
 page and receive no separate full-process charge.
 
-For program-visible capture, the Shell supplies a serialization allowance built
-from its allocation contracts. Let:
+Program-visible capture charges the application 65536 bytes for the capture
+record, `A(128) + R` per attachment record, and `A(32n) + R` for a nonempty list
+of `n` attachments (**E**). The capture backing retains the credit for the
+saved frame and the new metadata. The invocation releases `I` when it ends.
+Read-only attachments refer to existing backing. Promoted local objects carry
+their own backing credit.
 
-- `T(n) = A(32n) + R` for nonempty Trees, and zero for an empty Tree;
-- `B(n) = T(2) + A(n) + R` when `n > 30`, and `T(2)` otherwise;
-- `N = 2*T(2) + T(512)`.
+The saved application budget records the live frame charges at capture, less
+`I`. Each resumption uses that budget and pays its own `I`. Captured data retains
+its credit for as long as the backing remains live.
 
-A known mapped range contributes `L * (B(P) + T(3))` for its logical leaves and
-`U * (N + T(3))` for the 2 MiB and 1 GiB prefixes covered by its declared range.
-The root contributes `N`. Prefix counts come from range endpoints. Scratch
-release removes leaf contributions; historical table-node allowances persist.
-Metadata allowances use at most two non-root nodes per possible logical page.
-These are structural upper counts; bytes per record and allocation coverage
-remain **E**. Regions can deliberately contribute overlapping upper bounds.
+Checkpoint encoding runs when the stored checkpoint is demanded. The capture
+charge does not depend on traversing the page tables or estimating serialized
+size.
 
-Read-only attachments and local objects are promoted or retained by handle;
-they do not require another encoded copy of their backing. Their mapping
-bookkeeping remains in the frame allowance. The handle arena and scratch
-regions retain their declared mapping/serialization allowances.
-
-Capture charges the native frame allowance, its encoded allowance, and 65536
-for budget serialization and container overhead (**E**). The serialized budget
-contains a Boolean and two pointer-width counts; on x86-64 their postcard values
-fit within 21 bytes (**B**). No mapping ledger is serialized in that budget.
-The saved budget excludes the new checkpoint charge and `I`; resumption charges
-its own `I`. Successive internal effects and resumes do not accumulate copies
-of predecessor checkpoint charges.
-
-Encoding a checkpoint reads the captured state to serialize it. That operation
-is separate from accounting: no page-table traversal estimates the charge.
-
-Sources: [Shell capture allowance](../../fix/shell/src/memory.rs),
+Sources: [capture accounting](../../fix/runtime/src/runtime/arca.rs),
 [capture and replay](../../fix/runtime/src/runtime/arca/continuation.rs),
 [checkpoint encoding](../../fix/runtime/src/runtime/arca/checkpoint.rs).
 

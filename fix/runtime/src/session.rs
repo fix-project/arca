@@ -84,7 +84,15 @@ impl Scheduler {
         let callable = *fields
             .get(1)
             .ok_or("privileged combination needs a callable")?;
-        let scheduler = match crate::api::resolve(storage.repository(), &self.scheduler).ok() {
+        let resolve = |name: &str| {
+            let bytes = storage
+                .resolve_name(name)
+                .map_err(|error| alloc::format!("{error}"))?;
+            storage.identify(&bytes).map_err(|error| {
+                alloc::format!("could not resolve session program {name}: {error:?}")
+            })
+        };
+        let scheduler = match resolve(&self.scheduler).ok() {
             Some(scheduler)
                 if storage
                     .equals(callable, scheduler)
@@ -103,8 +111,7 @@ impl Scheduler {
                 .map(|report| report.result);
             }
         };
-        let collector = crate::api::resolve(storage.repository(), &self.collector)
-            .map_err(|error| alloc::format!("{error}"))?;
+        let collector = resolve(&self.collector)?;
         if fields.len() != 5 {
             return Err("scheduler combination must have five fields".into());
         }

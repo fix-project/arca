@@ -20,11 +20,16 @@ pub fn initialize() {
             .saturating_add(accounting::table_encoding());
         MAPPED[crate::rt::HANDLE_BASE / crate::rt::SLOT_SIZE] = accounting::PAGE;
     }
+    let text_start = (&raw const _stext) as usize / accounting::PAGE * accounting::PAGE;
+    let text_bytes = ((&raw const __image_text_end) as usize)
+        .next_multiple_of(accounting::PAGE)
+        .saturating_sub(text_start);
+    record_frame(text_bytes, accounting::encoded_leaves(text_bytes));
+    add_frame(
+        accounting::mapping_bookkeeping(text_start, text_bytes),
+        accounting::encoded_nodes(text_start, text_bytes),
+    );
     for (start, end) in [
-        (
-            (&raw const _stext) as usize,
-            (&raw const __image_text_end) as usize,
-        ),
         (
             (&raw const __image_data_start) as usize,
             (&raw const __image_data_end) as usize,
@@ -61,6 +66,10 @@ pub fn release(bytes: usize) {
 
 pub fn add_frame(bytes: usize, encoded: usize) {
     charge(bytes);
+    record_frame(bytes, encoded);
+}
+
+fn record_frame(bytes: usize, encoded: usize) {
     unsafe {
         FRAME = FRAME
             .checked_add(bytes)
@@ -104,11 +113,11 @@ pub fn snapshot() -> usize {
     }
 }
 
-pub fn become_scratch(_address: usize, bytes: usize) {
-    unsafe {
-        FRAME = FRAME.saturating_add(bytes.next_multiple_of(accounting::PAGE));
-        ENCODED = ENCODED.saturating_add(accounting::encoded_leaves(bytes));
-    }
+pub fn become_scratch(bytes: usize) {
+    add_frame(
+        bytes.next_multiple_of(accounting::PAGE),
+        accounting::encoded_leaves(bytes),
+    );
 }
 
 pub fn mapping(address: usize, bytes: usize, writable: bool) {
@@ -131,8 +140,6 @@ pub fn mapping(address: usize, bytes: usize, writable: bool) {
     let backing = bytes.next_multiple_of(accounting::PAGE);
     if writable {
         add_frame(backing, accounting::encoded_leaves(bytes));
-    } else {
-        charge(backing);
     }
 }
 
@@ -140,9 +147,7 @@ pub fn unmap(address: usize, bytes: usize) {
     let index = address / crate::rt::SLOT_SIZE;
     let attached = index < crate::rt::NUM_MEMORIES && unsafe { crate::rt::MEMORY_ATTACHED[index] };
     let backing = bytes.next_multiple_of(accounting::PAGE);
-    if attached {
-        release(backing);
-    } else {
+    if !attached {
         remove_frame(backing, accounting::encoded_leaves(bytes));
     }
 }

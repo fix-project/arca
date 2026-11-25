@@ -217,11 +217,12 @@ pub fn validate(coupon: Value, operation: u64, input: &Value) -> Result<Option<V
         return Ok(None);
     };
     let claim = fields(&claim)?;
-    let canonical = storage::canonical_value(input)?;
-    if claim.len() != 3
-        || !AsValue::equals(&claim[0], operation)?
-        || storage::canonical_value(&claim[1])?.raw_handle_bytes()?
-            != canonical.raw_handle_bytes()?
+    if claim.len() != 3 || !AsValue::equals(&claim[0], operation)? {
+        return Ok(None);
+    }
+    if !claim[1].capture()?.same_handle_bytes(&input.capture()?)
+        && storage::canonical_value(&claim[1])?.raw_handle_bytes()?
+            != storage::canonical_value(input)?.raw_handle_bytes()?
     {
         return Ok(None);
     }
@@ -249,6 +250,41 @@ async fn collect(
     retain(&coupon)?;
     Ok(coupon.into_value())
 }
+
+async fn rebase_input(
+    policy: &(impl Scheduler + ?Sized),
+    rule: Exchange,
+    input: &Value,
+    coupon: Value,
+    retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
+) -> Result<Value, Error> {
+    let proved_input = child(&claim(&coupon)?.into_value(), 1)?;
+    if input.same_handle_bytes(&proved_input) || policy.discovering() {
+        return Ok(coupon);
+    }
+
+    let equality = storage::canonicalize(input)?;
+    if !proved_input.same_handle_bytes(&result(&equality)?) {
+        return Ok(coupon);
+    }
+    let equality = collect(
+        policy,
+        Exchange::Symmetry,
+        &proved_input,
+        input,
+        &[equality],
+        retain,
+    )
+    .await?;
+    let output = result(&coupon)?;
+    let premises = match rule {
+        Exchange::EvalEq => [coupon, equality],
+        Exchange::ForceEq => [equality, coupon],
+        _ => unreachable!(),
+    };
+    collect(policy, rule, input, &output, &premises, retain).await
+}
+
 /// Produce an Eval coupon eagerly, asking the scheduler for dependency coupons.
 pub async fn eval(
     policy: &(impl Scheduler + ?Sized),
@@ -260,6 +296,7 @@ pub async fn eval(
         if input.value_type() == ValueType::Encode {
             let thunk = storage::thunk(input)?;
             let forced = Box::pin(policy.force(&thunk)).await?;
+            let forced = rebase_input(policy, Exchange::ForceEq, &thunk, forced, retain).await?;
             let forced_result = result(&forced)?;
             let result = if input.is_strict()? {
                 policy.load(&forced_result).await?
@@ -267,6 +304,8 @@ pub async fn eval(
                 shell::reference(&forced_result)?
             };
             let evaluated = Box::pin(policy.eval(&result)).await?;
+            let evaluated =
+                rebase_input(policy, Exchange::EvalEq, &result, evaluated, retain).await?;
             let eq = collect(
                 policy,
                 Exchange::ForceToEncode,
@@ -326,6 +365,7 @@ pub async fn think(
         }
         let data = policy.load(input).await?;
         let evaluated = Box::pin(policy.eval(&data)).await?;
+        let evaluated = rebase_input(policy, Exchange::EvalEq, &data, evaluated, retain).await?;
         let result = result(&evaluated)?;
         let coupon = match kind {
             ThunkType::Application => Box::pin(policy.apply(&result)).await?,
@@ -376,6 +416,7 @@ pub async fn force(
             Exchange::ThunkShallowEq
         };
         let forced = Box::pin(policy.force(&next)).await?;
+        let forced = rebase_input(policy, Exchange::ForceEq, &next, forced, retain).await?;
         let eq = collect(policy, rule, input, &next, &[thought], retain).await?;
         let sym = collect(policy, Exchange::Symmetry, &next, input, &[eq], retain).await?;
         collect(
@@ -429,13 +470,24 @@ pub async fn eval_tree(
     coupons: &[Value],
     retain: &mut dyn FnMut(&Tree) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    let results = coupons.iter().map(result).collect::<Result<Vec<_>, _>>()?;
+    let mut premises = Vec::with_capacity(coupons.len());
+    let operands = as_tree(input).ok();
+    for (index, coupon) in coupons.iter().enumerate() {
+        let coupon = if let Some(operands) = &operands {
+            let operand = capture(operands.get(index))?;
+            rebase_input(policy, Exchange::EvalEq, &operand, coupon.clone(), retain).await?
+        } else {
+            coupon.clone()
+        };
+        premises.push(coupon);
+    }
+    let results = premises.iter().map(result).collect::<Result<Vec<_>, _>>()?;
     collect(
         policy,
         Exchange::Eval,
         input,
         &Tree::new(&results),
-        coupons,
+        &premises,
         retain,
     )
     .await

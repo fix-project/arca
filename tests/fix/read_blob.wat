@@ -1,5 +1,4 @@
 (module
-  (import "fix" "create_blob" (func $__empty (param i32 i32) (result i32)))
   (import "fix" "access_blob" (func $read (param i32 i32 i32 i32) (result i32)))
   (import "fix" "get_tree_element" (func $get (param i32 i32) (result i32)))
   (import "fix" "create_blob" (func $blob (param i32 i32) (result i32)))
@@ -56,7 +55,7 @@
       (br_if $initialize (i32.lt_u (local.get $index) (i32.const 8193))))
     (local.set $local (call $blob (i32.const 0) (i32.const 8193)))
     (memory.fill (i32.const 0) (i32.const 255) (i32.const 8193))
-    (drop (call $effect (call $__empty (i32.const 0) (i32.const 0))))
+    (drop (call $effect (call $blob (i32.const 0) (i32.const 0))))
     (call $assert (i32.eqz (i32.load (i32.const 100000))))
     (i32.store (i32.const 100000) (i32.const 1))
     (call $check (local.get $input))
@@ -64,7 +63,7 @@
     (call $assert
       (i32.eqz
         (call $read
-          (call $__empty (i32.const 0) (i32.const 0))
+          (call $blob (i32.const 0) (i32.const 0))
           (i32.const 0)
           (i32.const 131072)
           (i32.const -1))))

@@ -251,16 +251,7 @@ impl Services for RepositoryServices {
             return Err(fixremote::Error::Invalid);
         }
         let mut output = alloc::vec![0; length];
-        let mut copied = 0;
-        while copied < length {
-            let (page, position) = bytes.page(offset + copied);
-            let count = (length - copied).min(page.len() - position);
-            assert_eq!(
-                page.read(position, &mut output[copied..copied + count]),
-                count
-            );
-            copied += count;
-        }
+        bytes.read(offset, &mut output);
         Ok(output)
     }
     fn update_label(
@@ -1546,7 +1537,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     loop {
         match execution {
             Ok(Execution::Complete(value)) => {
-                if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
+                if application {
                     shared.finish_task(
                         (*task.as_bytes(), Some(EvaluationOperation::Apply)),
                         EvaluationOutcome::Completed,
@@ -1593,17 +1584,19 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                     && event.key == b"fix::title"
                     && let Ok(title) = core::str::from_utf8(&event.payload)
                     && !title.is_empty()
-                    && let Ok(input) = storage.canonicalize(task).map(Handle::from)
-                    && let Ok(target) = storage.canonicalize(event.target).map(Handle::from)
-                    && input.same_encoding(&target)
+                    && (task.same_encoding(&event.target)
+                        || runtime
+                            .known_canonical(task)
+                            .zip(runtime.known_canonical(event.target))
+                            .is_some_and(|(input, target)| input.same_encoding(&target)))
                 {
                     let operation = Some(EvaluationOperation::Apply);
                     let mut tasks = shared.advised.lock();
                     let task = tasks
-                        .entry((*input.as_bytes(), operation))
+                        .entry((*task.as_bytes(), operation))
                         .or_insert_with(|| {
                             ActiveTask::new(EvaluationTask {
-                                id: *input.as_bytes(),
+                                id: *task.as_bytes(),
                                 operation,
                                 ..EvaluationTask::default()
                             })
@@ -1619,7 +1612,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             }
             Err(ExecutionError::Admission(error)) => return Ok(admission_reply(storage, error)),
             Err(error) => {
-                if application && let Ok(task) = storage.canonicalize(task).map(Handle::from) {
+                if application {
                     shared.finish_task(
                         (*task.as_bytes(), Some(EvaluationOperation::Apply)),
                         EvaluationOutcome::Failed,
@@ -1755,7 +1748,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(storage.add_tree(&labels).into())
         }
         (b"evaluation_start", [input, operation]) => {
-            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
             let operation = match unsigned(storage, *operation)? {
                 1 => EvaluationOperation::Evaluate,
                 2 => EvaluationOperation::Apply,
@@ -1764,7 +1756,8 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 6 => EvaluationOperation::Select,
                 _ => return Err(Error::Invalid.into()),
             };
-            let mut name = *input.as_bytes();
+            let name_handle = runtime.known_canonical(*input).unwrap_or(*input);
+            let mut name = *name_handle.as_bytes();
             name[31] &= 0xe0;
             let named = shared.labels.iter().any(|(label, _)| {
                 let mut label = *label;
@@ -1774,7 +1767,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             shared.start_task(
                 EvaluationTask {
                     id: *input.as_bytes(),
-                    name: storage.friendly_name(input, &shared.labels),
+                    name: storage.friendly_name(name_handle, &shared.labels),
                     operation: Some(operation),
                     ..EvaluationTask::default()
                 },
@@ -1783,7 +1776,6 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(number(0))
         }
         (b"evaluation_finish", [input, operation, outcome]) => {
-            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
             let operation = match unsigned(storage, *operation)? {
                 1 => EvaluationOperation::Evaluate,
                 2 => EvaluationOperation::Apply,
@@ -1799,7 +1791,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(number(0))
         }
         (b"load_start", [input, source, destination, peer]) => {
-            let input = Handle::from(storage.canonicalize(*input).map_err(|_| Error::Invalid)?);
+            let input = runtime.known_canonical(*input).unwrap_or(*input);
             let endpoint = |value| -> Result<Vec<alloc::string::String>, Error> {
                 let name = text(storage, value)?;
                 Ok(if name.is_empty() {

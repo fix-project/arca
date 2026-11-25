@@ -45,10 +45,21 @@ pub fn insert(value: Reference) -> u32 {
 
 pub fn close(index: u32) {
     let cell = address(index);
+    let local = unsafe { handles::query(cell, handles::Query::Local) != 0 };
     unsafe {
         core::ptr::write_bytes(cell.cast::<u8>(), 0, fixhandle::HANDLE_SIZE);
         assert!((&mut *(&raw mut SLOTS)).close(index));
+        (&mut *(&raw mut LOCAL)).remove(&index);
     }
+    if local {
+        crate::locals::release_unreachable();
+    }
+}
+
+pub fn local_roots() -> impl Iterator<Item = usize> {
+    unsafe { (&*(&raw const LOCAL)).iter().copied() }
+        .filter(|index| unsafe { (&*(&raw const SLOTS)).contains(*index) })
+        .filter_map(|index| crate::locals::local_address(address(index) as usize))
 }
 
 pub fn range() -> (usize, usize) {

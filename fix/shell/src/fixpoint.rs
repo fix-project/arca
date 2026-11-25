@@ -1,6 +1,6 @@
 use core::ffi::c_void;
 
-use crate::handles::Reference;
+use crate::handles::{self, Reference};
 use crate::rt::{MAX_PAGES, NUM_MEMORIES, PAGE_SIZE, SLOT_SIZE, wasm_rt_memory_t};
 use crate::shell;
 
@@ -87,10 +87,15 @@ pub unsafe extern "C" fn w2c_fix_read_blob(
     if length == 0 {
         return 0;
     }
-    if unsafe { crate::handles::query(handle, crate::handles::Query::Literal) } != 0 {
+    let address = if unsafe { handles::query(handle, handles::Query::Literal) } != 0 {
+        Some(handles::address(handle))
+    } else {
+        crate::locals::local_address(handles::address(handle))
+    };
+    if let Some(address) = address {
         unsafe {
             crate::rt::copy_guest_bytes(
-                crate::handles::address(handle) + offset as usize,
+                address + offset as usize,
                 (*crate::rt::MEMORIES[0]).data as usize + destination as usize,
                 length,
             );
@@ -100,7 +105,6 @@ pub unsafe extern "C" fn w2c_fix_read_blob(
     let _working = crate::memory::Working::new(
         fixhandle::accounting::WORKING.saturating_add(fixhandle::accounting::allocation(length)),
     );
-    crate::locals::lift(&[handle]);
     let count: Word<Runtime> = crate::continuation::operation("read_blob")
         .blob(&crate::handles::bytes(handle))
         .word(offset as u64)
@@ -137,16 +141,22 @@ pub extern "C" fn w2c_fix_get_tree_element(
     handle: Reference,
     index: u32,
 ) {
-    use arca::{Blob, Word};
-    use user::Runtime;
-
     if !unsafe { shell::fixpoint_is_object(handle) && shell::fixpoint_is_tree(handle) } {
         crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_UNREACHABLE);
     }
     if index as usize >= unsafe { shell::fixpoint_len(handle) } {
         crate::continuation::trap(crate::rt::wasm_rt_trap_t_WASM_RT_TRAP_OOB);
     }
-    crate::locals::lift(&[handle]);
+    if let Some(address) = crate::locals::local_address(handles::address(handle)) {
+        unsafe {
+            handles::copy_handle(
+                address + index as usize * fixhandle::HANDLE_SIZE,
+                handles::address(result),
+                0,
+            );
+        }
+        return;
+    }
     crate::continuation::receive(
         result,
         crate::continuation::operation("get_tree_element")
@@ -181,11 +191,11 @@ pub unsafe extern "C" fn w2c_fix_detach_blob(_fixpoint: *mut w2c_fix, memory_idx
     unsafe {
         let memory = crate::rt::MEMORIES[memory_idx as usize];
         assert!(!memory.is_null(), "memory does not exist");
+        if copy != 0 && crate::rt::MEMORY_ATTACHED[memory_idx as usize] {
+            crate::memory::become_scratch((*memory).size as usize);
+        }
         if copy == 0 || crate::rt::MEMORY_ATTACHED[memory_idx as usize] {
             shell::detach_data((*memory).data, (*memory).size as usize, copy != 0);
-        }
-        if copy != 0 && crate::rt::MEMORY_ATTACHED[memory_idx as usize] {
-            crate::memory::become_scratch((*memory).data as usize, (*memory).size as usize);
         }
         crate::rt::MEMORY_ATTACHED[memory_idx as usize] = false;
         crate::rt::release_memory(memory_idx as usize);

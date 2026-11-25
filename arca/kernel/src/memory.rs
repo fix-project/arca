@@ -140,9 +140,13 @@ impl Admission {
         }
     }
 
-    pub fn retain(&self, bytes: usize) -> FreeMemory {
+    fn retain(&self, size: Retention) -> FreeMemory {
         let mut manager = MANAGER.lock();
         let mut usage = self.usage.lock();
+        let bytes = match size {
+            Retention::Bytes(bytes) => bytes,
+            Retention::UsedExcept(active) => usage.used - active,
+        };
         if self.reserved {
             manager.accounting().unreserve_used(&mut usage, bytes);
         } else {
@@ -153,6 +157,15 @@ impl Admission {
         }
         FreeMemory(bytes)
     }
+
+    pub fn retain_used_except(&self, active: usize) -> FreeMemory {
+        self.retain(Retention::UsedExcept(active))
+    }
+}
+
+enum Retention {
+    Bytes(usize),
+    UsedExcept(usize),
 }
 
 impl Drop for Admission {
@@ -268,7 +281,9 @@ impl Budget {
     }
 
     pub fn retain(&self, bytes: usize) -> Option<FreeMemory> {
-        self.account.as_ref().map(|account| account.retain(bytes))
+        self.account
+            .as_ref()
+            .map(|account| account.retain(Retention::Bytes(bytes)))
     }
     pub fn used(&self) -> usize {
         self.used
@@ -333,6 +348,21 @@ impl Budget {
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn retaining_a_frame_releases_invocation_credit_at_exit() {
+        let available = available();
+        let frame = 8192;
+        let invocation = 4096;
+        let admission = Admission::new(frame + invocation).unwrap();
+        admission.consume(frame + invocation).unwrap();
+
+        let captured = admission.retain_used_except(invocation);
+        drop(admission);
+        assert_eq!(super::available(), available - frame);
+        drop(captured);
+        assert_eq!(super::available(), available);
+    }
 
     #[test]
     fn admission_waits_for_a_release_that_makes_its_budget_available() {

@@ -13,7 +13,7 @@ mod continuation;
 mod handles;
 mod images;
 mod locals;
-use continuation::Store;
+use continuation::{CaptureMemory, Store};
 use core::sync::atomic::{AtomicUsize, Ordering};
 pub use fixtrust as trust;
 use kernel::kthread::KMutex;
@@ -256,6 +256,10 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
             .memory()
             .index_claim(&self.storage, value)
             .map_err(|_| "could not index claim")
+    }
+
+    pub(crate) fn known_canonical(&self, value: Handle) -> Option<Handle> {
+        self.storage.memory().known_canonical(value)
     }
 
     pub(crate) fn persists_coupon(&self, recommendation: u64) -> bool {
@@ -626,7 +630,7 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         let mut arguments = contents.len().saturating_sub(2);
         loop {
             let tree = Tree::try_from(procedure).map_err(|_| ExecutionError::InvalidApplication)?;
-            if let Some((function, address, author, memory)) = self.continuation(tree) {
+            if let Some((function, address, author, memory)) = self.continuation(tree)? {
                 if contents.len() != 3 {
                     return Err(ExecutionError::InvalidApplication);
                 }
@@ -635,6 +639,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             let fields = self
                 .get_tree(tree)
                 .map_err(|_| ExecutionError::InvalidApplication)?;
+            if tree.is_tag()
+                && let [_, _, kind] = fields.as_ref()
+                && kind.same_encoding(&Blob::literal(b"Error").unwrap().into())
+            {
+                let error = self
+                    .canonicalize(tree.into())
+                    .map_err(|_| ExecutionError::InvalidApplication)?;
+                return Err(ExecutionError::ApplicationError(error));
+            }
             procedure = *fields.get(1).ok_or(ExecutionError::InvalidApplication)?;
             if Blob::try_from(procedure).is_ok() {
                 return match self.trust.runnable(self, tree) {
@@ -672,15 +685,29 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             };
             self.record_force(started);
             let Value::Function(g) = value else {
-                return Err(ExecutionError::InvalidApplication);
+                return Err(ExecutionError::InvalidExecution(
+                    "native code returned a non-function",
+                ));
             };
-            let (effect, mut args) = g
-                .into_inner()
-                .into_symbolic()
-                .ok_or(ExecutionError::InvalidApplication)?;
-            let effect: ArcaBlob = effect
-                .try_into()
-                .map_err(|_| ExecutionError::InvalidApplication)?;
+            let (effect, mut args) =
+                g.into_inner()
+                    .into_symbolic()
+                    .ok_or(ExecutionError::InvalidExecution(
+                        "native code returned a non-symbolic function",
+                    ))?;
+            let effect: ArcaBlob = effect.try_into().map_err(|_| {
+                ExecutionError::InvalidExecution("native call has a non-Blob effect name")
+            })?;
+            if effect.is_empty()
+                && matches!(args.front(), Some(Value::Blob(marker)) if &**marker == b"exception")
+                && let Some(Value::Blob(reason)) = args.back()
+            {
+                let reason = self.add_blob(reason);
+                let reason = self
+                    .canonicalize_blob(reason)
+                    .expect("stored exception Blob");
+                return Err(ExecutionError::NativeException(reason));
+            }
             if memory.charge(8192).is_err() {
                 return self.allocation_failure(&memory);
             }
@@ -689,7 +716,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 self.record_kernel_call(&effect);
             }
             let Some(Value::Function(mut k)) = args.pop_back() else {
-                return Err(ExecutionError::InvalidApplication);
+                return Err(ExecutionError::InvalidExecution(
+                    "native call has no return continuation",
+                ));
             };
 
             let result_address = if matches!(
@@ -872,30 +901,34 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
 
                     memory.release(temporary);
-                    let Some(Value::Word(allowance)) = args.pop_back() else {
+                    let Some(Value::Word(_)) = args.pop_back() else {
                         panic!("missing capture allowance")
                     };
-                    let metadata = fixhandle::accounting::BUDGET;
+                    let mut captured_memory = memory.clone();
+                    captured_memory.release(INVOCATION_COST);
+                    let metadata = fixhandle::accounting::BUDGET
+                        .saturating_add(fixhandle::accounting::tree_encoding(attachments.len()))
+                        .saturating_add(
+                            attachments
+                                .len()
+                                .saturating_mul(fixhandle::accounting::tree_encoding(4)),
+                        );
                     if memory.charge(metadata).is_err() {
                         return self.allocation_failure(&memory);
                     }
-                    let retained = allowance.read() as usize;
-                    if memory.charge(retained - metadata).is_err() {
-                        return self.allocation_failure(&memory);
-                    }
-                    let mut captured_memory = memory.clone();
-                    captured_memory.release(retained + INVOCATION_COST);
+                    let backing = matches!(&*effect, b"effect" | b"return_cc")
+                        .then(|| admission.retain_used_except(INVOCATION_COST));
                     let continuation = self.capture(
                         k,
                         used.read() as usize,
                         reply,
                         attachments,
                         combination,
-                        captured_memory,
+                        CaptureMemory {
+                            budget: captured_memory,
+                            backing,
+                        },
                     );
-                    if let Some(memory) = memory.retain(retained) {
-                        self.memory().keep_memory(memory);
-                    }
                     if &*effect == b"eval" {
                         let metadata = Blob::literal(&(memory.limit() as u64).to_le_bytes())
                             .unwrap()
@@ -916,6 +949,8 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                             .unwrap()
                             .into();
                         let combination = self.add_tree(&[metadata, value, continuation.into()]);
+                        drop(memory);
+                        drop(admission);
                         let mut execution =
                             self.invoke(combination, privileged, handler, coordinator, observing)?;
                         if let Execution::Advice { suspended, .. } = &mut execution {
@@ -1080,14 +1115,6 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     };
                     let name = Blob::try_from(handles::resolve(&mut k, unpack_reference(&b)))
                         .expect("expected blob object");
-                    if memory
-                        .charge(fixhandle::accounting::mapping(name.len()))
-                        .is_err()
-                    {
-                        return self.allocation_failure(&memory);
-                    }
-                    temporary =
-                        temporary.saturating_add(fixhandle::accounting::mapping(name.len()));
                     k.apply(self.get_blob_backing(name).unwrap().attachment())
                 }
                 b"get_tree_element" => {
@@ -1120,17 +1147,6 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     let name =
                         Tree::try_from(handles::resolve(&mut k, unpack_reference(&reference)))
                             .expect("expected tree object");
-                    if memory
-                        .charge(fixhandle::accounting::mapping(
-                            (name.len()).saturating_mul(32),
-                        ))
-                        .is_err()
-                    {
-                        return self.allocation_failure(&memory);
-                    }
-                    temporary = temporary.saturating_add(fixhandle::accounting::mapping(
-                        (name.len()).saturating_mul(32),
-                    ));
                     let backing = self.get_tree_backing(name).unwrap();
                     let result = k.apply(backing.attachment());
                     self.record_call_time(b"get_tree", started);

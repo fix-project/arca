@@ -10,9 +10,8 @@ pub(super) fn read_backing(backing: &ImmutableBytes, index: usize) -> Handle {
         .checked_mul(HANDLE_SIZE)
         .expect("handle index overflow");
     assert!(offset < backing.len() && backing.len() - offset >= HANDLE_SIZE);
-    let (page, position) = backing.page(offset);
     let mut bytes = [0; HANDLE_SIZE];
-    assert_eq!(page.read(position, &mut bytes), HANDLE_SIZE);
+    backing.read(offset, &mut bytes);
     unsafe { Handle::parse(bytes) }.expect("invalid stored handle")
 }
 

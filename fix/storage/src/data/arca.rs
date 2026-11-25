@@ -20,6 +20,7 @@ impl RetainedMemory {
 }
 
 const CHUNK_SIZE: usize = 1 << 30;
+const SMALL_LIMIT: usize = 512;
 
 fn is_zero(bytes: &[u8]) -> bool {
     let (words, remainder) = bytes.as_chunks::<8>();
@@ -37,8 +38,30 @@ pub struct ImmutableBytes {
 #[derive(Clone, Debug)]
 enum Backing {
     Empty,
+    Small(Arc<Small>),
     Page(Page),
     Tables(Vec<Table>),
+}
+
+#[derive(Debug)]
+struct Small {
+    bytes: Box<[u8]>,
+    page: kernel::kthread::KMutex<Option<Page>>,
+}
+
+impl Small {
+    fn page(&self) -> Page {
+        self.page
+            .lock()
+            .get_or_insert_with(|| page_for_bytes(&self.bytes))
+            .clone()
+    }
+}
+
+fn page_for_bytes(bytes: &[u8]) -> Page {
+    let mut page = Page::new(4096);
+    assert_eq!(page.write(0, bytes), bytes.len());
+    Page::from_inner(page.into_inner().shared())
 }
 
 #[derive(Clone)]
@@ -54,6 +77,9 @@ impl Buf for Cursor {
     }
 
     fn chunk(&self) -> &[u8] {
+        if let Backing::Small(small) = &self.data.backing {
+            return &small.bytes[self.position..];
+        }
         let Some((page, offset)) = &self.page else {
             return &[];
         };
@@ -63,6 +89,10 @@ impl Buf for Cursor {
 
     fn advance(&mut self, count: usize) {
         assert!(count <= self.remaining());
+        if matches!(self.data.backing, Backing::Small(_)) {
+            self.position += count;
+            return;
+        }
         let in_page = count < self.chunk().len();
         self.position += count;
         if in_page {
@@ -88,7 +118,8 @@ impl ImmutableBytes {
         self
     }
     pub fn into_buf(self) -> impl Buf + Clone {
-        let page = (!self.is_empty()).then(|| self.page(0));
+        let page =
+            (!matches!(self.backing, Backing::Empty | Backing::Small(_))).then(|| self.page(0));
         Cursor {
             data: self,
             position: 0,
@@ -178,12 +209,20 @@ impl ImmutableBytes {
                 memory: None,
             };
         }
-        if bytes.len() <= 4096 {
-            let mut page = Page::new(4096);
-            assert_eq!(page.write(0, bytes), bytes.len());
+        if bytes.len() <= SMALL_LIMIT {
             return Self {
                 len: bytes.len(),
-                backing: Backing::Page(Page::from_inner(page.into_inner().shared())),
+                backing: Backing::Small(Arc::new(Small {
+                    bytes: bytes.into(),
+                    page: kernel::kthread::KMutex::new(None),
+                })),
+                memory: None,
+            };
+        }
+        if bytes.len() <= 4096 {
+            return Self {
+                len: bytes.len(),
+                backing: Backing::Page(page_for_bytes(bytes)),
                 memory: None,
             };
         }
@@ -242,6 +281,12 @@ impl ImmutableBytes {
         let len = self.len.max(end);
         let mut tables = match self.backing {
             Backing::Empty => return Self::new(bytes),
+            Backing::Small(small) => {
+                let mut contents = vec![0; len];
+                contents[..self.len].copy_from_slice(&small.bytes);
+                contents[offset..end].copy_from_slice(bytes);
+                return Self::new(&contents);
+            }
             Backing::Tables(tables) => tables,
             Backing::Page(mut page) if end <= page.len() => {
                 assert_eq!(page.write(offset, bytes), bytes.len());
@@ -329,6 +374,7 @@ impl ImmutableBytes {
     pub fn value(&self) -> Value {
         match &self.backing {
             Backing::Empty => Null::new().into(),
+            Backing::Small(small) => small.page().into(),
             Backing::Page(page) => page.clone().into(),
             Backing::Tables(tables) => backing_value(tables),
         }
@@ -376,6 +422,7 @@ impl ImmutableBytes {
         assert!(offset < self.len);
         let table = match &self.backing {
             Backing::Empty => unreachable!(),
+            Backing::Small(small) => return (small.page(), offset),
             Backing::Page(page) => return (page.clone(), offset),
             Backing::Tables(tables) => &tables[offset / CHUNK_SIZE],
         };
@@ -384,6 +431,21 @@ impl ImmutableBytes {
             .page(offset % CHUNK_SIZE)
             .expect("byte mapping");
         (Page::from_inner(page), offset)
+    }
+
+    pub fn read(&self, mut offset: usize, mut output: &mut [u8]) {
+        assert!(offset <= self.len && output.len() <= self.len - offset);
+        if let Backing::Small(small) = &self.backing {
+            output.copy_from_slice(&small.bytes[offset..offset + output.len()]);
+            return;
+        }
+        while !output.is_empty() {
+            let (page, position) = self.page(offset);
+            let count = output.len().min(page.len() - position);
+            assert_eq!(page.read(position, &mut output[..count]), count);
+            offset += count;
+            output = &mut output[count..];
+        }
     }
 
     pub fn to_bytes(&self) -> Box<[u8]> {
@@ -399,6 +461,7 @@ impl ImmutableBytes {
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
         match &self.backing {
             Backing::Empty => return f(&[]),
+            Backing::Small(small) => return f(&small.bytes),
             Backing::Page(page) => {
                 page.with_ref(|bytes| f(&bytes[..self.len]));
                 return;

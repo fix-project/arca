@@ -72,7 +72,13 @@ fn lock(file: &File, flags: i32) -> io::Result<()> {
     }
 }
 fn directory() -> io::Result<PathBuf> {
-    let path = PathBuf::from(format!("/tmp/fix-sessions-{}", unsafe { libc::geteuid() }));
+    let path = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join("fix"))
+        .unwrap_or_else(|| {
+            PathBuf::from(format!("/tmp/fix-sessions-{}", unsafe { libc::geteuid() }))
+        });
     match std::fs::DirBuilder::new().mode(0o700).create(&path) {
         Ok(()) => (),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
