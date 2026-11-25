@@ -46,6 +46,9 @@ impl Node {
     pub fn is_apply(&self) -> bool {
         self.key.0 == 2
     }
+    pub fn is_force(&self) -> bool {
+        self.key.0 == 3
+    }
     pub fn is_think(&self) -> bool {
         self.key.0 == 4
     }

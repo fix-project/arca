@@ -19,11 +19,8 @@ use fixscheduler::{
         Scheduler,
         graph::{Claim, Node},
     },
-    kernel::Advice,
-    remote::{
-        Cluster, Failure,
-        protocol::Information,
-    },
+    kernel::{Advice, worker},
+    remote::{Cluster, Failure, Worker},
     shell::{AsValue, DataType, Value, ValueType, child},
     storage,
 };
@@ -103,6 +100,10 @@ impl Scheduler for OnePass<'_> {
         fixscheduler::kernel::apply_with_fallback(
             input,
             &mut |advice| self.on_advice(advice),
+            |required| {
+                Ok(required <= worker::memory_capacity()?
+                    && storage::resident_continuation_budget(input)?.is_some())
+            },
             async |required| {
                 let cluster = self.cluster().await?;
                 for worker in cluster.workers_with_memory(required) {
@@ -189,6 +190,7 @@ pub struct Job {
     pub memory_bytes: Option<u64>,
     pub parallel: u64,
     require_resident_operand: bool,
+    require_local: bool,
     in_flight: bool,
 }
 
@@ -203,8 +205,22 @@ fn unsigned(value: &Value) -> Result<Option<u64>, Error> {
     }
 }
 
-fn eligible(job: &Job, index: usize, worker: &Information) -> bool {
+fn resident_budget(request: &Node, local: &Worker) -> Result<Option<u64>, Error> {
+    if local.parallelism == 0 || !request.is_application()? {
+        return Ok(None);
+    }
+    Ok(
+        storage::resident_continuation_budget(request.input())?.filter(|&budget| {
+            local
+                .memory_capacity_bytes
+                .is_none_or(|capacity| budget <= capacity)
+        }),
+    )
+}
+
+fn eligible(job: &Job, index: usize, worker: &Worker) -> bool {
     worker.parallelism > 0
+        && (!job.require_local || index == 0)
         && (!job.require_resident_operand || job.present.contains_key(&index))
         && match (job.memory_bytes, worker.memory_capacity_bytes) {
             (Some(required), Some(available)) => required <= available,
@@ -212,7 +228,7 @@ fn eligible(job: &Job, index: usize, worker: &Information) -> bool {
         }
 }
 
-fn available(job: &Job, index: usize, worker: &Information) -> bool {
+fn available(job: &Job, index: usize, worker: &Worker) -> bool {
     eligible(job, index, worker)
         && match (job.memory_bytes, worker.memory_bytes) {
             (Some(required), Some(available)) => required <= available,
@@ -220,7 +236,7 @@ fn available(job: &Job, index: usize, worker: &Information) -> bool {
         }
 }
 
-pub fn candidate(job: &Job, index: usize, workers: &[Information]) -> bool {
+pub fn candidate(job: &Job, index: usize, workers: &[Worker]) -> bool {
     let worker = &workers[index];
     eligible(job, index, worker)
         && (available(job, index, worker)
@@ -238,7 +254,7 @@ pub fn candidate(job: &Job, index: usize, workers: &[Information]) -> bool {
 pub fn assign(
     root: &Node,
     jobs: &BTreeMap<Node, Job>,
-    workers: &[Information],
+    workers: &[Worker],
     assignments: &mut BTreeMap<Node, (usize, u64)>,
 ) -> Result<(), Node> {
     let mut pending = vec![(root.clone(), false)];
@@ -417,18 +433,17 @@ impl<'a> OnePass<'a> {
     }
 
     /// Connect to configured remotes and report local and remote worker information.
-    pub async fn information(&self) -> Result<Vec<Information>, Error> {
+    pub async fn information(&self) -> Result<Vec<Worker>, Error> {
         let cluster = self.cluster().await?;
         Self::worker_information(&cluster)
     }
 
-    fn worker_information(cluster: &Cluster) -> Result<Vec<Information>, Error> {
-        let mut workers = vec![Information {
-            parallelism: fixscheduler::kernel::worker::count()?.try_into()?,
-            memory_bytes: Some(fixscheduler::kernel::worker::available_memory()?),
-            memory_capacity_bytes: Some(fixscheduler::kernel::worker::memory_capacity()?),
-            ..Information::default()
-        }];
+    fn worker_information(cluster: &Cluster) -> Result<Vec<Worker>, Error> {
+        let mut workers = vec![Worker::local(
+            fixscheduler::kernel::worker::count()?.try_into()?,
+            fixscheduler::kernel::worker::available_memory()?,
+            fixscheduler::kernel::worker::memory_capacity()?,
+        )];
         workers.extend(cluster.information());
         Ok(workers)
     }
@@ -439,7 +454,7 @@ impl<'a> OnePass<'a> {
         &self,
         request: &Node,
         jobs: &BTreeMap<Node, Job>,
-        workers: &[Information],
+        workers: &[Worker],
         assignments: &BTreeMap<Node, (usize, u64)>,
     ) -> Result<(), Error> {
         let root = request;
@@ -485,14 +500,11 @@ impl<'a> OnePass<'a> {
             );
             let pending = Rc::new(RefCell::new(requests.into_iter()));
             let active = Rc::new(Cell::new(slots));
-            let inventory = fixscheduler::shell::capture(fixwasm::Blob::create(
-                workers[worker].data.as_flattened(),
-            ))?;
             let cluster = self.cluster().await?;
+            let destination = &workers[worker];
             for _ in 0..slots {
                 let pending = pending.clone();
                 let active = active.clone();
-                let inventory = inventory.clone();
                 let cluster = cluster.clone();
                 transfers.push(Box::pin(async move {
                     loop {
@@ -512,8 +524,22 @@ impl<'a> OnePass<'a> {
                             };
                             Some(owner)
                         };
+                        let mut names = Vec::new();
+                        if let Ok(inventory) = storage::inventory(request.input()) {
+                            names.extend(inventory.required.into_iter().filter_map(|(name, _)| {
+                                destination.has_backing(&name).then_some(name)
+                            }));
+                            names.sort_unstable();
+                        }
+                        let inventory = if names.is_empty() {
+                            None
+                        } else {
+                            Some(fixscheduler::shell::capture(fixwasm::Blob::create(
+                                names.as_flattened(),
+                            ))?)
+                        };
                         let result = cluster
-                            .execute(worker, request.code(), request.input(), Some(&inventory))
+                            .execute(worker, request.code(), request.input(), inventory.as_ref())
                             .await;
                         let coupon = match result {
                             Ok(Some(coupon)) => Some(coupon),
@@ -610,7 +636,7 @@ impl<'a> OnePass<'a> {
     pub fn discover<F: Future<Output = Result<Value, Error>>>(
         &self,
         request: &Node,
-        workers: &[Information],
+        workers: &[Worker],
         evaluate: impl Fn() -> F,
     ) -> Result<BTreeMap<Node, Job>, Error> {
         *self.sketch.borrow_mut() = Some(BTreeMap::new());
@@ -624,9 +650,52 @@ impl<'a> OnePass<'a> {
         if let Poll::Ready(result) = result {
             result?;
         }
+        let mut resident = Vec::new();
+        for (request, job) in &mut jobs {
+            if let Some(budget) = resident_budget(request, &workers[0])? {
+                job.require_local = true;
+                job.memory_bytes = Some(budget);
+                resident.push(request.clone());
+            }
+        }
+        if !resident.is_empty() {
+            let mut parents = BTreeMap::<_, Vec<_>>::new();
+            for (node, job) in &jobs {
+                for dependency in &job.dependencies {
+                    parents
+                        .entry(dependency.clone())
+                        .or_default()
+                        .push(node.clone());
+                }
+            }
+            while let Some(node) = resident.pop() {
+                for parent in parents.remove(&node).into_iter().flatten() {
+                    let job = jobs.get_mut(&parent).unwrap();
+                    if job.require_local {
+                        continue;
+                    }
+                    if parent.is_application()?
+                        && let Some(target) = storage::identify(parent.input())?
+                        && target.value_type() == ValueType::Object
+                        && target.data_type()? == DataType::Tree
+                        && target.len()? > 0
+                    {
+                        job.memory_bytes = unsigned(&child(&target, 0)?)?;
+                    }
+                    if eligible(job, 0, &workers[0]) {
+                        job.require_local = true;
+                        resident.push(parent);
+                    }
+                }
+            }
+        }
         let collector = storage::canonical_value(&collector::callable()?)?.raw_handle_bytes()?;
         for (request, job) in &mut jobs {
             if job.in_flight {
+                continue;
+            }
+            job.output_bytes = 1;
+            if job.require_local {
                 continue;
             }
             let coupon = match self.graph.completed(request)? {
@@ -635,16 +704,9 @@ impl<'a> OnePass<'a> {
                     .into_iter()
                     .next(),
             };
-            job.output_bytes = 1;
             let input = storage::canonical_value(request.input())?.raw_handle_bytes()?;
             for (index, worker) in workers.iter().enumerate().skip(1) {
-                if worker
-                    .results
-                    .binary_search_by_key(&(request.code(), input, collector), |task| {
-                        (task.operation, task.input, task.collector)
-                    })
-                    .is_ok()
-                {
+                if worker.has_result(request.code(), input, collector) {
                     job.cached.insert(index);
                 }
             }
@@ -671,7 +733,7 @@ impl<'a> OnePass<'a> {
                         (if index == 0 {
                             target.is_some()
                         } else {
-                            worker.data.binary_search(&root).is_ok()
+                            worker.has_backing(&root)
                         })
                         .then_some(index)
                     })
@@ -697,7 +759,7 @@ impl<'a> OnePass<'a> {
                                 if index == 0 {
                                     inventory.local.contains(name)
                                 } else {
-                                    worker.data.binary_search(name).is_ok()
+                                    worker.has_backing(name)
                                 }
                             })
                             .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
@@ -750,7 +812,7 @@ impl<'a> OnePass<'a> {
         assign: impl FnOnce(
             &Node,
             &BTreeMap<Node, Job>,
-            &[Information],
+            &[Worker],
             &mut BTreeMap<Node, (usize, u64)>,
         ) -> Result<(), Node>,
     ) -> Result<Value, Error> {
@@ -764,6 +826,9 @@ impl<'a> OnePass<'a> {
         }
         let workers = self.information().await?;
         if workers.iter().skip(1).all(|worker| worker.parallelism == 0) {
+            return execution.await;
+        }
+        if resident_budget(request, &workers[0])?.is_some() {
             return execution.await;
         }
         let jobs = self.discover(request, &workers, &evaluate)?;

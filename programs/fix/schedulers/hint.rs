@@ -11,7 +11,7 @@ use fixscheduler::executor::graph::Node;
 use fixscheduler::{
     executor::Scheduler,
     kernel::Advice,
-    remote::protocol::Information,
+    remote::Worker,
     shell::{AsValue, DataType, Value, ValueType},
 };
 use fixwasm::Error;
@@ -145,7 +145,7 @@ impl Scheduler for Hint<'_> {
 pub fn assign(
     root: &Node,
     jobs: &BTreeMap<Node, Job>,
-    workers: &[Information],
+    workers: &[Worker],
     assignments: &mut BTreeMap<Node, (usize, u64)>,
 ) -> Result<(), Node> {
     onepass::assign(root, jobs, workers, assignments)?;
@@ -158,7 +158,7 @@ pub fn assign(
 pub fn pull_back_outputs(
     root: &Node,
     jobs: &BTreeMap<Node, Job>,
-    workers: &[Information],
+    workers: &[Worker],
     assignments: &mut BTreeMap<Node, (usize, u64)>,
 ) {
     let mut pending = vec![(root.clone(), false)];
@@ -251,7 +251,7 @@ pub fn pull_back_outputs(
 pub fn spread_independent(
     root: &Node,
     jobs: &BTreeMap<Node, Job>,
-    workers: &[Information],
+    workers: &[Worker],
     assignments: &mut BTreeMap<Node, (usize, u64)>,
 ) {
     let remotes: Vec<_> = (1..workers.len())

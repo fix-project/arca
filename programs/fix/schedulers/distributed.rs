@@ -61,7 +61,7 @@ impl<'a> Distributed<'a> {
         let cluster = if let Some(cluster) = existing {
             cluster
         } else {
-            let connected = alloc::rc::Rc::new(Cluster::connect(self.io, false).await?);
+            let connected = alloc::rc::Rc::new(Cluster::connect(self.io).await?);
             self.cluster.borrow_mut().get_or_insert(connected).clone()
         };
         if fixscheduler::remote::configured()?

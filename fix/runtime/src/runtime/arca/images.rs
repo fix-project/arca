@@ -46,12 +46,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                     .get_blob_backing(executable)
                     .map_err(|_| ExecutionError::InvalidApplication)?;
                 let started = self.profile.load(Ordering::Relaxed).then(kernel::tsc::read);
-                let function =
+                let mut function =
                     common::elfloader::load_elf_from_pages(elf.clone().into_buf(), |offset| {
                         let (page, within) = elf.page(offset);
                         (within == 0 && page.len() == 4096).then_some(page)
                     })
                     .map_err(|_| ExecutionError::InvalidApplication)?;
+                function.inner_mut().arca_mut().unwrap().share_page_tables();
                 self.record_elf_load(started);
                 *cached = Some(function.clone());
                 function

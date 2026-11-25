@@ -21,19 +21,28 @@ pub async fn apply(
     combination: &Value,
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
 ) -> Result<Value, Error> {
-    apply_with_fallback(combination, on_advice, async |_| Ok(None)).await
+    apply_with_fallback(combination, on_advice, |_| Ok(false), async |_| Ok(None)).await
 }
 
 /// Try another executor after local admission refuses an application.
+/// If local execution is preferred, wait for admission before trying the fallback.
 pub async fn apply_with_fallback(
     combination: &Value,
     on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+    prefer_local: impl FnMut(u64) -> Result<bool, Error>,
     fallback: impl AsyncFnMut(u64) -> Result<Option<Value>, Error>,
 ) -> Result<Value, Error> {
     let evaluation = crate::progress::operation(2, combination);
     let result = async {
         observed(
-            admitted(b"callable_apply", combination, fallback).await?,
+            admitted(
+                b"callable_apply",
+                combination,
+                on_advice,
+                prefer_local,
+                fallback,
+            )
+            .await?,
             on_advice,
         )
     }
@@ -49,7 +58,14 @@ pub async fn run(
     let evaluation = crate::progress::operation(2, combination);
     let result = async {
         observed(
-            admitted(b"callable_run", combination, async |_| Ok(None)).await?,
+            admitted(
+                b"callable_run",
+                combination,
+                on_advice,
+                |_| Ok(false),
+                async |_| Ok(None),
+            )
+            .await?,
             on_advice,
         )
     }
@@ -60,24 +76,30 @@ pub async fn run(
 async fn admitted(
     operation: &[u8],
     combination: &Value,
+    on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+    mut prefer_local: impl FnMut(u64) -> Result<bool, Error>,
     mut fallback: impl AsyncFnMut(u64) -> Result<Option<Value>, Error>,
 ) -> Result<(u64, Value), Error> {
     loop {
         let reply = crate::io::Io
-            .application(tree![Blob::create(operation), combination])
+            .application(tree![Blob::create(operation), combination], on_advice)
             .await?;
         if reply.0 != 6 {
             return Ok(reply);
         }
         let required = child(&reply.1, 0)?;
         let required_bytes = required.read_u64()?;
-        if let Some(coupon) = fallback(required_bytes).await? {
+        let wait_first = prefer_local(required_bytes)?;
+        if !wait_first && let Some(coupon) = fallback(required_bytes).await? {
             return Ok((0, coupon));
         }
         let (status, ready) = crate::io::Io
             .request(tree![Blob::create(b"memory_wait"), required])
             .await?;
         if status != 0 || ready.read_u64()? == 0 {
+            if wait_first && let Some(coupon) = fallback(required_bytes).await? {
+                return Ok((0, coupon));
+            }
             if let (Ok(application), Ok(available)) = (
                 crate::executor::describe_application(combination),
                 child(&reply.1, 1).and_then(|value| value.read_u64()),

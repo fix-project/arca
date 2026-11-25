@@ -49,7 +49,7 @@ struct State {
     paths: Vec<Path>,
     inventories: BTreeMap<NodeId, Rc<Inventory>>,
     capacity: BTreeMap<NodeId, (u64, WorkerCapacity)>,
-    transfers: BTreeMap<NodeId, Transfers>,
+    transfers: BTreeMap<NodeId, Rc<RefCell<Transfers>>>,
     links: BTreeMap<LinkId, Rc<Link>>,
     incoming: Vec<Connection>,
     incoming_tasks: BTreeMap<(NodeId, TaskKey), usize>,
@@ -67,7 +67,67 @@ struct Transfers {
 
 pub(super) struct Route {
     pub path: Path,
-    pub information: Information,
+    pub information: Worker,
+}
+
+#[derive(Clone, Default)]
+pub struct Worker {
+    pub parallelism: u32,
+    pub memory_bytes: Option<u64>,
+    pub memory_capacity_bytes: Option<u64>,
+    inventory: Option<Rc<Inventory>>,
+    transfers: Option<Rc<RefCell<Transfers>>>,
+}
+
+impl Worker {
+    pub fn local(parallelism: u32, available: u64, total: u64) -> Self {
+        Self {
+            parallelism,
+            memory_bytes: Some(available),
+            memory_capacity_bytes: Some(total),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn status(&self) -> Information {
+        Information {
+            parallelism: self.parallelism,
+            memory_bytes: self.memory_bytes,
+            memory_capacity_bytes: self.memory_capacity_bytes,
+            ..Information::default()
+        }
+    }
+
+    pub fn has_backing(&self, name: &protocol::Name) -> bool {
+        self.inventory
+            .as_ref()
+            .is_some_and(|inventory| inventory.data.binary_search(name).is_ok())
+            || self
+                .transfers
+                .as_ref()
+                .is_some_and(|transfers| transfers.borrow().data.contains(name))
+    }
+
+    pub fn has_result(
+        &self,
+        operation: u64,
+        input: protocol::Name,
+        collector: protocol::Name,
+    ) -> bool {
+        let key = (operation, input, collector);
+        self.inventory.as_ref().is_some_and(|inventory| {
+            inventory
+                .results
+                .binary_search_by_key(&key, task_key)
+                .is_ok()
+        }) || self.transfers.as_ref().is_some_and(|transfers| {
+            let transfers = transfers.borrow();
+            let kernel = *fixhandle::Tree::empty().as_handle().as_bytes();
+            transfers.results.contains(&key)
+                || transfers.coupons.contains_key(&key)
+                || transfers.coupons.contains_key(&(operation, input, kernel))
+        })
+    }
 }
 
 struct Link {
@@ -227,6 +287,7 @@ impl Network {
         information.data.sort_unstable();
         information.results.sort_unstable_by_key(task_key);
         let information = entry.insert(Rc::new(information)).clone();
+        state.transfers.entry(node).or_default();
         for link in state.links.values().filter(|link| Some(link.id) != from) {
             link.enqueue(Packet::Inventory(node, (*information).clone()));
         }
@@ -362,7 +423,7 @@ impl Network {
         }
     }
 
-    pub(super) fn routes(&self, collector: Option<protocol::Name>) -> Vec<Route> {
+    pub(super) fn routes(&self) -> Vec<Route> {
         let state = self.state.borrow();
         state
             .paths
@@ -370,43 +431,17 @@ impl Network {
             .filter_map(|path| {
                 let inventory = state.inventories.get(&path.node)?;
                 let &(_, capacity) = state.capacity.get(&path.node)?;
-                let mut information = Information {
-                    parallelism: capacity.parallelism,
-                    memory_bytes: Some(capacity.available_bytes),
-                    memory_capacity_bytes: Some(capacity.total_bytes),
-                    data: inventory.data.clone(),
-                    results: inventory.results.clone(),
-                    ..Information::default()
-                };
-                if let Some(transfers) = state.transfers.get(&path.node) {
-                    information.data.extend(transfers.data.iter().copied());
-                    information.results.extend(transfers.results.iter().map(
-                        |&(operation, input, collector)| protocol::Task {
-                            operation,
-                            input,
-                            collector,
-                        },
-                    ));
-                    if let Some(collector) = collector {
-                        let kernel = *fixhandle::Tree::empty().as_handle().as_bytes();
-                        information
-                            .results
-                            .extend(transfers.coupons.keys().filter_map(
-                                |&(operation, input, author)| {
-                                    (author == collector || author == kernel).then_some(
-                                        protocol::Task {
-                                            operation,
-                                            input,
-                                            collector,
-                                        },
-                                    )
-                                },
-                            ));
-                    }
-                }
                 Some(Route {
                     path: path.clone(),
-                    information,
+                    information: Worker {
+                        inventory: Some(inventory.clone()),
+                        transfers: state.transfers.get(&path.node).cloned(),
+                        ..Worker::local(
+                            capacity.parallelism,
+                            capacity.available_bytes,
+                            capacity.total_bytes,
+                        )
+                    },
                 })
             })
             .collect()
@@ -479,14 +514,14 @@ impl Network {
         })
         .await?;
         if let Some(route) = self
-            .routes(None)
+            .routes()
             .into_iter()
             .find(|route| route.path.node == node)
         {
             super::report_node_status(
                 &link.name,
                 "available",
-                Some(&route.information),
+                Some(&route.information.status()),
                 "",
                 Some(node),
             );
@@ -577,13 +612,12 @@ impl Network {
         link.pumps.borrow_mut().push(Io.spawn(async move {
             let mut stream = raw.as_ref();
             loop {
-                let frame =
-                    protocol::asynchronous::receive_packet_with_payload_limit(
-                        &mut stream,
-                        protocol::MAX_MESSAGE_SIZE,
-                        || super::transfer_limit().unwrap_or(0),
-                    )
-                    .await;
+                let frame = protocol::asynchronous::receive_packet_with_payload_limit(
+                    &mut stream,
+                    protocol::MAX_MESSAGE_SIZE,
+                    || super::transfer_limit().unwrap_or(0),
+                )
+                .await;
                 let (Some(network), Some(link)) = (network.upgrade(), reading.upgrade()) else {
                     return;
                 };
@@ -844,7 +878,7 @@ impl Network {
     ) {
         // Successful transfers are evidence about the immediate recipient only.
         let mut state = self.state.borrow_mut();
-        let transfers = state.transfers.entry(node).or_default();
+        let mut transfers = state.transfers.entry(node).or_default().borrow_mut();
         transfers.data.extend(names.iter().copied());
         if let Some(task) = task {
             transfers.results.insert(task_key(task));
@@ -853,7 +887,8 @@ impl Network {
 
     pub(super) fn coupon(&self, node: NodeId, task: &protocol::Task) -> Option<protocol::Name> {
         let state = self.state.borrow();
-        let coupons = &state.transfers.get(&node)?.coupons;
+        let transfers = state.transfers.get(&node)?.borrow();
+        let coupons = &transfers.coupons;
         coupons
             .get(&task_key(task))
             .or_else(|| {
@@ -871,7 +906,7 @@ impl Network {
             .borrow()
             .transfers
             .get(&node)
-            .is_some_and(|transfer| !transfer.coupons.is_empty())
+            .is_some_and(|transfer| !transfer.borrow().coupons.is_empty())
     }
 
     fn record_proposal(&self, node: NodeId, message: &Message) {
@@ -897,7 +932,7 @@ impl Network {
         let mut names = names.peekable();
         if names.peek().is_some() || !coupons.is_empty() {
             let mut state = self.state.borrow_mut();
-            let transfers = state.transfers.entry(node).or_default();
+            let mut transfers = state.transfers.entry(node).or_default().borrow_mut();
             transfers.data.extend(names);
             for coupon in coupons {
                 if protocol::CouponOffer::supports(coupon.operation)

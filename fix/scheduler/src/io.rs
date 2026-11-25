@@ -1,6 +1,7 @@
 //! Asynchronous effects with completion-driven Rust wakers.
 use crate::{
     abi::{coordinate, request},
+    kernel::Advice,
     shell::{Value, as_tree, capture, fields},
 };
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
@@ -34,6 +35,7 @@ impl Notification {
 struct Registration {
     waker: Option<Waker>,
     result: Option<Value>,
+    advice: Vec<Advice>,
 }
 struct Registrations(RefCell<BTreeMap<u64, Registration>>);
 // A scheduler Wasm instance is accessed by one kernel thread.
@@ -130,15 +132,24 @@ impl Io {
     }
 
     fn complete(&self, completed: &Value) -> Result<(), Error> {
-        for completion in fields(completed)? {
-            let completion = as_tree(&completion)?;
-            let [token, result] = completion.get_range(0)?;
-            let token = token.read_u64()?;
-            let result = capture(result)?;
+        for event in fields(completed)? {
+            let event = as_tree(&event)?;
+            let token = event.get(0).read_u64()?;
             let waker = {
                 let mut registrations = REGISTRATIONS.0.borrow_mut();
                 let registration = registrations.get_mut(&token).ok_or(Error::WrongType)?;
-                registration.result = Some(result);
+                match event.len()? {
+                    2 => registration.result = Some(capture(event.get(1))?),
+                    4 => {
+                        let [target, key, payload] = event.get_range(1)?;
+                        registration.advice.push(Advice {
+                            target: capture(target)?,
+                            key: capture(key)?,
+                            payload: capture(payload)?,
+                        });
+                    }
+                    _ => return Err(Error::WrongType),
+                }
                 registration.waker.take()
             };
             if let Some(waker) = waker {
@@ -151,15 +162,25 @@ impl Io {
     /// Submit an effect to a kernel thread and await its result.
     /// The event loop must call `listen` or drain `wake_completed` to deliver results.
     pub async fn request(&self, effect: impl AsValue) -> Result<(u64, Value), Error> {
-        self.start(b"effect_start", effect).await
+        self.start(b"effect_start", effect, &mut |_| Ok(())).await
     }
 
-    pub(crate) async fn application(&self, effect: impl AsValue) -> Result<(u64, Value), Error> {
-        self.start(b"application_start", effect).await
+    pub(crate) async fn application(
+        &self,
+        effect: impl AsValue,
+        on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+    ) -> Result<(u64, Value), Error> {
+        self.start(b"application_start_live", effect, on_advice)
+            .await
     }
 
-    async fn start(&self, operation: &[u8], effect: impl AsValue) -> Result<(u64, Value), Error> {
-        let (status, token) = if operation == b"application_start" {
+    async fn start(
+        &self,
+        operation: &[u8],
+        effect: impl AsValue,
+        on_advice: &mut dyn FnMut(&Advice) -> Result<(), Error>,
+    ) -> Result<(u64, Value), Error> {
+        let (status, token) = if operation == b"application_start_live" {
             coordinate(operation, &[capture(effect)?])?
         } else {
             request(tree![Blob::create(operation), effect])?
@@ -170,26 +191,40 @@ impl Io {
         let mut pending = Pending {
             token: token.read_u64()?,
             consumed: false,
-            application: operation == b"application_start",
+            application: operation == b"application_start_live",
         };
         REGISTRATIONS.0.borrow_mut().insert(
             pending.token,
             Registration {
                 waker: None,
                 result: None,
+                advice: Vec::new(),
             },
         );
         poll_fn(|cx| {
-            let mut registrations = REGISTRATIONS.0.borrow_mut();
-            let registration = registrations.get_mut(&pending.token).unwrap();
-            if let Some(value) = registration.result.take() {
+            let advice = {
+                let mut registrations = REGISTRATIONS.0.borrow_mut();
+                let registration = registrations.get_mut(&pending.token).unwrap();
+                registration.waker = Some(cx.waker().clone());
+                core::mem::take(&mut registration.advice)
+            };
+            for event in advice {
+                on_advice(&event)?;
+            }
+            let result = REGISTRATIONS
+                .0
+                .borrow_mut()
+                .get_mut(&pending.token)
+                .unwrap()
+                .result
+                .take();
+            if let Some(value) = result {
                 pending.consumed = true;
                 Poll::Ready((|| {
                     let reply = as_tree(&value)?;
                     Ok((reply.get(0).read_u64()?, capture(reply.get(1))?))
                 })())
             } else {
-                registration.waker = Some(cx.waker().clone());
                 Poll::Pending
             }
         })

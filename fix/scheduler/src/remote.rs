@@ -9,6 +9,7 @@ use crate::{
 use alloc::{format, string::String, vec::Vec};
 pub use cluster::{Cluster, Failure, PendingTransfer};
 use fixwasm::{Blob, Error, Value as AsValue, tree};
+pub use network::Worker;
 
 pub use fixprotocol as protocol;
 pub use fixtransport as framing;

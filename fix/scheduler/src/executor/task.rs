@@ -1,23 +1,53 @@
-use alloc::{boxed::Box, sync::Arc, task::Wake};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    task::Wake,
+};
 use core::{
     future::Future,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
+use spin::Mutex;
+
+#[derive(Default)]
+struct ReadyQueue {
+    indices: Mutex<VecDeque<usize>>,
+}
+
+impl ReadyQueue {
+    fn ready(&self) -> usize {
+        self.indices.lock().len()
+    }
+
+    fn push(&self, index: usize) {
+        self.indices.lock().push_back(index);
+    }
+
+    fn pop(&self) -> Option<usize> {
+        self.indices.lock().pop_front()
+    }
+}
 
 struct Ready {
     runnable: AtomicBool,
     parent: Option<Waker>,
+    queue: Option<(Arc<ReadyQueue>, usize)>,
 }
 impl Wake for Ready {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        if !self.runnable.swap(true, Ordering::AcqRel)
-            && let Some(parent) = &self.parent
-        {
+        if self.runnable.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some((queue, index)) = &self.queue {
+            queue.push(*index);
+        }
+        if let Some(parent) = &self.parent {
             parent.wake_by_ref();
         }
     }
@@ -35,9 +65,23 @@ impl<F: Future> Task<F> {
     }
 
     pub(crate) fn with_parent(future: F, parent: Option<Waker>) -> Self {
+        Self::with_readiness(future, parent, None)
+    }
+
+    fn with_queue(future: F, parent: Option<Waker>, queue: &Arc<ReadyQueue>, index: usize) -> Self {
+        queue.push(index);
+        Self::with_readiness(future, parent, Some((queue.clone(), index)))
+    }
+
+    fn with_readiness(
+        future: F,
+        parent: Option<Waker>,
+        queue: Option<(Arc<ReadyQueue>, usize)>,
+    ) -> Self {
         let ready = Arc::new(Ready {
             runnable: AtomicBool::new(true),
             parent,
+            queue,
         });
         Self {
             future: Box::pin(future),
@@ -71,27 +115,41 @@ where
     F: Future<Output = Result<T, E>>,
 {
     let parent = core::future::poll_fn(|cx| Poll::Ready(cx.waker().clone())).await;
+    let queue = Arc::new(ReadyQueue::default());
     let mut pending: alloc::vec::Vec<_> = futures
         .into_iter()
-        .map(|future| Some(Task::with_parent(future, Some(parent.clone()))))
+        .enumerate()
+        .map(|(index, future)| {
+            Some(Task::with_queue(
+                future,
+                Some(parent.clone()),
+                &queue,
+                index,
+            ))
+        })
         .collect();
+    let mut remaining = pending.len();
     let mut results: alloc::vec::Vec<Option<T>> = (0..pending.len()).map(|_| None).collect();
-    core::future::poll_fn(|_| {
-        let mut waiting = false;
-        for (future, result) in pending.iter_mut().zip(&mut results) {
-            let Some(active) = future else {
+    core::future::poll_fn(|cx| {
+        for _ in 0..queue.ready() {
+            let index = queue.pop().unwrap();
+            let Some(active) = &mut pending[index] else {
                 continue;
             };
             match active.poll() {
                 Poll::Ready(Ok(value)) => {
-                    *result = Some(value);
-                    *future = None;
+                    results[index] = Some(value);
+                    pending[index] = None;
+                    remaining -= 1;
                 }
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Pending => waiting = true,
+                Poll::Pending => {}
             }
         }
-        if waiting {
+        if remaining != 0 {
+            if queue.ready() != 0 {
+                cx.waker().wake_by_ref();
+            }
             Poll::Pending
         } else {
             Poll::Ready(Ok(results
@@ -103,23 +161,34 @@ where
     .await
 }
 
+type BoxedTask<'a, T> = Task<Pin<Box<dyn Future<Output = T> + 'a>>>;
+
 /// A worker-local set of independent tasks. Dropping the set drops its futures.
 pub struct Tasks<'a, T> {
-    tasks: alloc::vec::Vec<Task<Pin<Box<dyn Future<Output = T> + 'a>>>>,
+    tasks: BTreeMap<usize, BoxedTask<'a, T>>,
+    queue: Arc<ReadyQueue>,
+    next_index: usize,
     parent: Option<Waker>,
 }
 impl<T> Default for Tasks<'_, T> {
     fn default() -> Self {
         Self {
-            tasks: alloc::vec::Vec::new(),
+            tasks: BTreeMap::new(),
+            queue: Arc::new(ReadyQueue::default()),
+            next_index: 0,
             parent: None,
         }
     }
 }
 impl<'a, T> Tasks<'a, T> {
     pub fn spawn(&mut self, future: impl Future<Output = T> + 'a) {
-        self.tasks
-            .push(Task::with_parent(Box::pin(future), self.parent.clone()));
+        let index = self.next_index;
+        self.next_index = index.checked_add(1).expect("task indices exhausted");
+        let future: Pin<Box<dyn Future<Output = T> + 'a>> = Box::pin(future);
+        self.tasks.insert(
+            index,
+            Task::with_queue(future, self.parent.clone(), &self.queue, index),
+        );
     }
     pub(crate) fn with_parent(parent: Waker) -> Self {
         Self {
@@ -131,19 +200,20 @@ impl<'a, T> Tasks<'a, T> {
     pub fn poll(&mut self) -> (bool, alloc::vec::Vec<T>) {
         let mut progress = false;
         let mut completed = alloc::vec::Vec::new();
-        let mut index = 0;
-        while index < self.tasks.len() {
-            progress |= self.tasks[index].is_ready();
-            if let Poll::Ready(value) = self.tasks[index].poll() {
+        for _ in 0..self.queue.ready() {
+            let index = self.queue.pop().unwrap();
+            let Some(task) = self.tasks.get_mut(&index) else {
+                continue;
+            };
+            progress = true;
+            if let Poll::Ready(value) = task.poll() {
                 completed.push(value);
-                drop(self.tasks.swap_remove(index));
-            } else {
-                index += 1;
+                self.tasks.remove(&index);
             }
         }
         (progress, completed)
     }
     pub fn is_ready(&self) -> bool {
-        self.tasks.iter().any(Task::is_ready)
+        self.queue.ready() != 0
     }
 }

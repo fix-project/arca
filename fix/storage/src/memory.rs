@@ -120,7 +120,8 @@ impl TreeBacking {
     }
 }
 
-fn tree_properties(data: &ImmutableBytes) -> (bool, bool) {
+/// Return the comparability and value flags for a backing of encoded handles.
+pub fn tree_properties(data: &ImmutableBytes) -> (bool, bool) {
     assert!(data.len().is_multiple_of(HANDLE_SIZE));
     let mut comparable = true;
     let mut value = true;

@@ -50,6 +50,18 @@ pub fn reference(value: &Value) -> Result<Value, Error> {
     coordinated(b"storage_reference", core::slice::from_ref(value))
 }
 
+/// Return the budget of an application calling a locally resident continuation.
+pub fn resident_continuation_budget(value: &Value) -> Result<Option<u64>, Error> {
+    match coordinate(
+        b"storage_resident_continuation",
+        core::slice::from_ref(value),
+    )? {
+        (0, budget) => budget.read_u64().map(Some),
+        (1, _) => Ok(None),
+        _ => Err(Error::WrongType),
+    }
+}
+
 /// Construct an opaque canonical Ref without accessing backing data.
 pub fn reference_named(name: [u8; 32]) -> Result<Value, Error> {
     coordinated(b"storage_reference_named", &[capture(Blob::create(name))?])

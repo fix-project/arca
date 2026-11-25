@@ -488,7 +488,11 @@ pub mod fs {
 
     pub fn write_with(path: &str, bytes: &[u8], mode: FileMode) -> Result<(), ErrorKind> {
         if let Some(buffer) = crate::allocator::borrow_buffer(bytes) {
-            return match request_serialized(&control::Request::WriteFile(path.into(), buffer, mode))? {
+            return match request_serialized(&control::Request::WriteFile(
+                path.into(),
+                buffer,
+                mode,
+            ))? {
                 control::Response::Ack => Ok(()),
                 _ => Err(ErrorKind::Other),
             };

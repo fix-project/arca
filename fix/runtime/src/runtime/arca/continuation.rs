@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::memory::tree_properties;
 use crate::storage::{CanonicalHandle, ImmutableBytes, StorageError};
 use kernel::kthread::KMutex;
 use kernel::prelude::{Arc, Box};
@@ -196,7 +197,13 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             backing,
         } = memory;
         self.captures.fetch_add(1, Ordering::Relaxed);
-        handles::insert(&mut function, reply, Blob::literal(b"").unwrap().into());
+        let empty = Blob::literal(b"").unwrap();
+        let mut cell = [0; HANDLE_SIZE];
+        if handles::read(&mut function, reply, &mut cell) != cell.len()
+            || &cell != empty.as_handle().as_bytes()
+        {
+            handles::insert(&mut function, reply, empty.into());
+        }
         function.inner_mut().arca_mut().unwrap().share_page_tables();
         let mut addresses = Vec::new();
         let mut records = Vec::new();
@@ -237,16 +244,15 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         }
         let attachments = self.add_tree(&records);
         let arena = handles::backing(&mut function, handles::HANDLE_BASE, used);
-        let arena = unsafe { self.add_tree_backing(arena) };
         addresses.push(handles::HANDLE_BASE);
-        let comparable = arena.as_handle().is_comparable()
+        let (comparable, value) = tree_properties(&arena);
+        let comparable = comparable
             && attachments.as_handle().is_comparable()
             && combination.as_handle().is_comparable();
-        let value = arena.as_handle().is_value()
-            && attachments.as_handle().is_value()
-            && combination.as_handle().is_value();
+        let value =
+            value && attachments.as_handle().is_value() && combination.as_handle().is_value();
         let resident = Arc::new(KMutex::new(Some(function)));
-        let budget = self.add_blob(&postcard::to_allocvec(&memory).unwrap());
+        let serialized_budget = memory.clone();
         let saved = resident.clone();
         let state = unsafe {
             self.inner
@@ -267,6 +273,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                         }
                     }
                     let snapshot = checkpoint::encode(storage, checkpoint.into());
+                    let arena = storage.add_tree_backing(arena);
+                    let budget =
+                        storage.add_blob(&postcard::to_allocvec(&serialized_budget).unwrap());
                     let fields: [Handle; 6] = [
                         snapshot,
                         arena.into(),
@@ -306,6 +315,9 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         &self,
         tree: Tree,
     ) -> Result<Option<(Function, usize, Tree, kernel::memory::Budget)>, ExecutionError> {
+        if !tree.is_tag() || tree.len() != 3 {
+            return Ok(None);
+        }
         let name = tree.as_handle().as_bytes();
         let resident = self.continuations.lock().get(name).cloned();
         if let Some((resident, reply, combination, memory)) = resident {
@@ -313,9 +325,6 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
                 return Ok(Some((function, reply, combination, memory)));
             }
             self.continuations.lock().remove(name);
-        }
-        if !tree.is_tag() || tree.len() != 3 {
-            return Ok(None);
         }
         let Ok(fields) = self.inner.get_tree(tree) else {
             return Ok(None);
@@ -381,6 +390,18 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
             )
             .unwrap(),
         )))
+    }
+
+    pub(super) fn has_resident_continuation(&self, continuation: Handle) -> bool {
+        if !Tree::try_from(continuation).is_ok_and(|tree| tree.is_tag() && tree.len() == 3) {
+            return false;
+        }
+        let resident = self
+            .continuations
+            .lock()
+            .get(continuation.as_bytes())
+            .map(|(function, ..)| function.clone());
+        resident.is_some_and(|function| function.lock().is_some())
     }
 
     pub(super) fn integer(&self, value: Handle) -> u64 {

@@ -194,7 +194,11 @@ impl<S: Storage + AsRef<MemoryStorage>> Runtime for FixOnArca<S> {
             combination.as_handle().is_value(),
             "application requires an evaluated combination"
         );
-        crate::runtime::memory_limit(&self.storage, combination)?;
+        let fields = self
+            .storage
+            .get_tree(combination)
+            .map_err(|_| ExecutionError::InvalidApplication)?;
+        crate::runtime::memory_limit(&self.storage, &fields)?;
         if self.memoization.is_some() {
             let apply = self.storage.add_blob(&2u64.to_le_bytes());
             for coupon in self
@@ -272,6 +276,19 @@ impl<S: Storage + AsRef<MemoryStorage>> FixOnArca<S> {
 
     pub(crate) fn cached_claims(&self, prefix: &[Handle]) -> Result<Vec<Tree>, &'static str> {
         self.claims(prefix, None)
+    }
+
+    /// Return the application budget if its continuation is resident in this runtime.
+    pub fn resident_continuation_budget(&self, combination: Tree) -> Option<u64> {
+        if combination.len() != 3 {
+            return None;
+        }
+        let memory = self.storage.memory();
+        let fields = memory.present_children(combination)?;
+        if !self.storage.has_resident_continuation(fields[1]) {
+            return None;
+        }
+        Some(crate::runtime::memory_limit(memory, &fields).ok()? as u64)
     }
 
     pub fn cached_claims_in(
@@ -532,8 +549,10 @@ impl<S: Storage + AsRef<MemoryStorage>> Store<S> {
         on_resume: Option<&mut dyn FnMut(Tree)>,
     ) -> Result<Execution, ExecutionError> {
         let input_combination = combination;
-        let contents = self.get_tree(combination).unwrap();
-        let limit = crate::runtime::memory_limit(self, combination)?;
+        let contents = self
+            .get_tree(combination)
+            .map_err(|_| ExecutionError::InvalidApplication)?;
+        let limit = crate::runtime::memory_limit(self, &contents)?;
         let admission = Arc::new(if privileged {
             kernel::memory::Admission::unreserved()
         } else {

@@ -108,7 +108,7 @@ impl Serial {
             return Ok(cluster);
         }
         let cluster = alloc::rc::Rc::new(
-            fixscheduler::remote::Cluster::connect(&fixscheduler::io::Io, true).await?,
+            fixscheduler::remote::Cluster::connect(&fixscheduler::io::Io).await?,
         );
         Ok(self.cluster.borrow_mut().get_or_insert(cluster).clone())
     }

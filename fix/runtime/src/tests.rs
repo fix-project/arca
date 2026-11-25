@@ -1635,6 +1635,7 @@ mod tests {
             program.into(),
             Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
         ]);
+        assert_eq!(runtime.resident_continuation_budget(combination), None);
         let request = Tree::try_from(runtime.execute_privileged(combination).unwrap()).unwrap();
         let fields = storage.get_tree(request).unwrap();
         let resumed = storage.add_tree(&[
@@ -1642,6 +1643,7 @@ mod tests {
             fields[1],
             Blob::literal(&41u64.to_le_bytes()).unwrap().into(),
         ]);
+        assert_eq!(runtime.resident_continuation_budget(resumed), Some(2 << 30));
         let result = Blob::try_from(runtime.execute_privileged(resumed).unwrap()).unwrap();
         assert_eq!(
             storage.get_blob(result).unwrap().as_ref(),
@@ -1654,6 +1656,7 @@ mod tests {
             fields[1],
             Blob::literal(&7u64.to_le_bytes()).unwrap().into(),
         ]);
+        assert_eq!(runtime.resident_continuation_budget(resumed), None);
         let result = Blob::try_from(runtime.execute_privileged(resumed).unwrap()).unwrap();
         assert_eq!(
             memory.get_blob(result).unwrap().as_ref(),

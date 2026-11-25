@@ -517,6 +517,12 @@ impl Saver {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ApplicationRequest {
+    id: usize,
+    live_advice: bool,
+}
+
 #[derive(Default)]
 struct Applications {
     peak_queued: AtomicUsize,
@@ -525,19 +531,19 @@ struct Applications {
 }
 #[derive(Default)]
 struct ApplicationsState {
-    queue: alloc::collections::VecDeque<(usize, &'static [u8], Handle)>,
+    queue: alloc::collections::VecDeque<(ApplicationRequest, &'static [u8], Handle)>,
     closed: bool,
 }
 impl Applications {
-    fn push(&self, id: usize, operation: &'static [u8], argument: Handle) {
+    fn push(&self, request: ApplicationRequest, operation: &'static [u8], argument: Handle) {
         let mut state = self.state.lock();
-        state.queue.push_back((id, operation, argument));
+        state.queue.push_back((request, operation, argument));
         self.peak_queued
             .fetch_max(state.queue.len(), Ordering::Relaxed);
         drop(state);
         self.changed.notify_one();
     }
-    fn pop(&self) -> Option<(usize, &'static [u8], Handle)> {
+    fn pop(&self) -> Option<(ApplicationRequest, &'static [u8], Handle)> {
         let mut state = self.state.lock();
         loop {
             if state.closed {
@@ -560,6 +566,11 @@ impl Applications {
 type SharedStream = Arc<kernel::host::net::Stream>;
 type SharedListener = Arc<kernel::host::net::TcpListener>;
 type EffectResult = Result<Handle, &'static str>;
+
+enum EffectEvent {
+    Complete(usize),
+    Advice(usize, [Handle; 3]),
+}
 type TaskKey = ([u8; 32], Option<EvaluationOperation>);
 
 #[derive(Clone)]
@@ -667,7 +678,7 @@ struct Shared {
     listeners: KMutex<Vec<Option<SharedListener>>>,
     pending_effects: KMutex<BTreeMap<usize, Option<EffectResult>>>,
     next_effect: AtomicUsize,
-    completed_effects: KMutex<Vec<usize>>,
+    effect_events: KMutex<Vec<EffectEvent>>,
     services: Box<dyn Services>,
     outcome: KMutex<Option<Result<Outcome, &'static str>>>,
     stopped: AtomicBool,
@@ -994,7 +1005,7 @@ fn start_with_session<
         saved_claims: SavedClaims::with_profile(profile),
         pending_effects: KMutex::new(BTreeMap::new()),
         next_effect: AtomicUsize::new(0),
-        completed_effects: KMutex::new(Vec::new()),
+        effect_events: KMutex::new(Vec::new()),
         applications: Applications::default(),
         saver: Arc::new(Saver::default()),
         saving: AtomicBool::new(true),
@@ -1101,7 +1112,8 @@ fn start_with_session<
         let runtime = runtime.clone();
         let shared = shared.clone();
         spawn(move || {
-            while let Some((id, operation, argument)) = shared.applications.pop() {
+            while let Some((request, operation, argument)) = shared.applications.pop() {
+                let id = request.id;
                 if !shared.pending_effects.lock().contains_key(&id) {
                     continue;
                 }
@@ -1114,7 +1126,7 @@ fn start_with_session<
                     operation,
                     &[argument],
                     false,
-                    Some(id),
+                    Some(request),
                 )
                 .map(|(status, value)| {
                     let storage = runtime.storage();
@@ -1127,7 +1139,7 @@ fn start_with_session<
                 let mut pending = shared.pending_effects.lock();
                 if let Some(slot) = pending.get_mut(&id) {
                     *slot = Some(result);
-                    shared.completed_effects.lock().push(id);
+                    shared.effect_events.lock().push(EffectEvent::Complete(id));
                 }
                 drop(pending);
                 let _ = shared.event.wake(true);
@@ -1302,7 +1314,11 @@ fn run<S: Storage + AsRef<crate::storage::memory::MemoryStorage> + Send + Sync +
             }
             let reply = if matches!(
                 name,
-                b"application_start" | b"effect_ready" | b"effect_discard" | b"worker_events"
+                b"application_start"
+                    | b"application_start_live"
+                    | b"effect_ready"
+                    | b"effect_discard"
+                    | b"worker_events"
             ) {
                 handle_async_task(runtime, shared, worker, name, args)
             } else {
@@ -1361,7 +1377,7 @@ fn handle_async_task<
 ) -> Result<(u64, Handle), &'static str> {
     let storage = runtime.storage();
     Ok(match (name, args) {
-        (b"application_start", [effect]) => {
+        (name @ (b"application_start" | b"application_start_live"), [effect]) => {
             if shared.executed.is_empty() {
                 return Err(
                     "local application execution is disabled (-j0); configure a reachable execution remote and a distributed scheduler",
@@ -1384,7 +1400,14 @@ fn handle_async_task<
             };
             let id = shared.next_effect.fetch_add(1, Ordering::Relaxed);
             shared.pending_effects.lock().insert(id, None);
-            shared.applications.push(id, operation, *argument);
+            shared.applications.push(
+                ApplicationRequest {
+                    id,
+                    live_advice: name == b"application_start_live",
+                },
+                operation,
+                *argument,
+            );
             (0, storage.add_blob(&(id as u64).to_le_bytes()).into())
         }
         (b"effect_start", [effect]) => {
@@ -1397,7 +1420,7 @@ fn handle_async_task<
                 let result = handle_effect(&runtime, &shared, worker, effect);
                 if let Some(slot) = shared.pending_effects.lock().get_mut(&id) {
                     *slot = Some(result);
-                    shared.completed_effects.lock().push(id);
+                    shared.effect_events.lock().push(EffectEvent::Complete(id));
                 }
                 let _ = shared.event.wake(true);
             });
@@ -1405,21 +1428,32 @@ fn handle_async_task<
         }
         (name @ (b"effect_ready" | b"worker_events"), []) => {
             let epoch = shared.event.listen();
-            let completed = core::mem::take(&mut *shared.completed_effects.lock());
+            let events = core::mem::take(&mut *shared.effect_events.lock());
             let mut results = Vec::new();
-            for id in completed {
-                let effect = shared.pending_effects.lock().remove(&id);
-                if let Some(effect) = effect {
-                    let result = effect.expect("notified effect must be complete")?;
-                    results.push(
-                        storage
-                            .add_tree(&[
-                                storage.add_blob(&(id as u64).to_le_bytes()).into(),
-                                result,
-                            ])
-                            .into(),
-                    );
-                }
+            for event in events {
+                let result = match event {
+                    EffectEvent::Complete(id) => {
+                        let Some(effect) = shared.pending_effects.lock().remove(&id) else {
+                            continue;
+                        };
+                        storage.add_tree(&[
+                            storage.add_blob(&(id as u64).to_le_bytes()).into(),
+                            effect.expect("notified effect must be complete")?,
+                        ])
+                    }
+                    EffectEvent::Advice(id, [target, key, payload]) => {
+                        if !shared.pending_effects.lock().contains_key(&id) {
+                            continue;
+                        }
+                        storage.add_tree(&[
+                            storage.add_blob(&(id as u64).to_le_bytes()).into(),
+                            target,
+                            key,
+                            payload,
+                        ])
+                    }
+                };
+                results.push(result.into());
             }
             let results = storage.add_tree(&results).into();
             if name == b"worker_events" {
@@ -1449,7 +1483,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     name: &[u8],
     args: &[Handle],
     coordination_only: bool,
-    request: Option<usize>,
+    request: Option<ApplicationRequest>,
 ) -> Result<(u64, Handle), &'static str> {
     let start = shared.profile.as_ref().map(|_| kernel::tsc::read());
     let storage = runtime.storage();
@@ -1481,6 +1515,7 @@ fn handle_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 | b"storage_thunk"
                 | b"storage_reference"
                 | b"storage_reference_named"
+                | b"storage_resident_continuation"
                 | b"storage_friendly_name"
                 | b"queue_create"
                 | b"queue_named"
@@ -1581,10 +1616,16 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
     application: bool,
     task: Handle,
     mut execution: Result<Execution, ExecutionError>,
-    request: Option<usize>,
+    request: Option<ApplicationRequest>,
 ) -> Result<(u64, Handle), Error> {
     let storage = runtime.storage();
-    let mut advice: Vec<Advice> = Vec::new();
+    let mut advice = Vec::new();
+    let encode = |event: Advice| {
+        let key = storage.add_blob(&event.key);
+        let payload = storage.add_blob(&event.payload);
+        runtime.keep_memory(event.delivery_memory);
+        [event.target, key.into(), payload.into()]
+    };
     loop {
         match execution {
             Ok(Execution::Complete(value)) => {
@@ -1604,14 +1645,7 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                 } else {
                     let events = advice
                         .into_iter()
-                        .map(|event| {
-                            let key = storage.add_blob(&event.key);
-                            let payload = storage.add_blob(&event.payload);
-                            let reply =
-                                storage.add_tree(&[event.target, key.into(), payload.into()]);
-                            runtime.keep_memory(event.delivery_memory);
-                            reply.into()
-                        })
+                        .map(|event| storage.add_tree(&encode(event)).into())
                         .collect::<Vec<_>>();
                     let events = storage.add_tree(&events);
                     Ok((2, storage.add_tree(&[value, events.into()]).into()))
@@ -1619,7 +1653,9 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             }
             Ok(Execution::Advice { event, suspended }) => {
                 if shared.stopped()
-                    || request.is_some_and(|id| !shared.pending_effects.lock().contains_key(&id))
+                    || request.is_some_and(|request| {
+                        !shared.pending_effects.lock().contains_key(&request.id)
+                    })
                 {
                     return Ok((0, storage.add_blob(b"").into()));
                 }
@@ -1647,7 +1683,15 @@ fn observed_reply<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
                         .lock()
                         .insert(*task.as_bytes(), title.into());
                 }
-                advice.push(event);
+                if let Some(request) = request.filter(|request| request.live_advice) {
+                    shared
+                        .effect_events
+                        .lock()
+                        .push(EffectEvent::Advice(request.id, encode(event)));
+                    let _ = shared.event.wake(true);
+                } else {
+                    advice.push(event);
+                }
                 execution = runtime.resume_observed(suspended);
             }
             Err(ExecutionError::Admission(error)) => return Ok(admission_reply(storage, error)),
@@ -2564,6 +2608,16 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             Ok(unsafe { descriptor.to_owned() })
         }
         (b"storage_reference", [value]) => Ok(object_descriptor(*value).into_ref().into()),
+        (b"storage_resident_continuation", [value]) => {
+            let object = object_descriptor(*value);
+            let ObjectView::Tree(tree) = object.view() else {
+                return Err(Error::Empty.into());
+            };
+            runtime
+                .resident_continuation_budget(*tree)
+                .map(|budget| storage.add_blob(&budget.to_le_bytes()).into())
+                .ok_or(Error::Empty.into())
+        }
         (b"storage_identify", [value]) => {
             let value = identified(storage, *value)?;
             let available = match value.view() {

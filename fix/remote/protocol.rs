@@ -915,6 +915,7 @@ pub mod asynchronous {
         .await
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub async fn receive_transfer_observed<S: ReadMessage + WriteMessage>(
         stream: &mut S,
         message_limit: usize,

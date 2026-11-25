@@ -1,5 +1,5 @@
 use super::{
-    Connection, configured,
+    Connection, Worker, configured,
     protocol::{self, Information, Message, Task},
 };
 use crate::{
@@ -40,7 +40,6 @@ pub struct Cluster {
     network: Rc<super::network::Network>,
     routes: RefCell<Vec<super::network::Route>>,
     failures: Vec<Option<String>>,
-    inventories: Vec<Information>,
     collector_name: protocol::Name,
 }
 
@@ -61,28 +60,12 @@ enum Expected {
 }
 
 impl Cluster {
-    pub async fn connect(io: &Io, inventory: bool) -> Result<Self, Error> {
+    pub async fn connect(io: &Io) -> Result<Self, Error> {
         let network = super::network::Network::get()?;
         let peer_failures = network.discover(io).await?;
         let mut failures = Vec::new();
-        let mut inventories = Vec::new();
         for remote in configured()? {
-            if remote.address.starts_with("file://") {
-                let information = if inventory {
-                    super::file_information(&remote.address)
-                } else {
-                    Ok(Information::default())
-                };
-                let (information, failure) = match information {
-                    Ok(information) => (information, None),
-                    Err(error) => {
-                        log(&alloc::format!("remote {}: {error}", remote.name))?;
-                        (Information::default(), Some(error))
-                    }
-                };
-                inventories.push(information);
-                failures.push(failure);
-            } else if let Some(failure) = peer_failures.get(&remote.name) {
+            if let Some(failure) = peer_failures.get(&remote.name) {
                 failures.push(Some(failure.clone()));
             }
         }
@@ -90,7 +73,6 @@ impl Cluster {
             network,
             routes: RefCell::new(Vec::new()),
             failures,
-            inventories,
             collector_name: storage::canonical_value(&crate::collector::callable()?)?
                 .raw_handle_bytes()?,
         })
@@ -100,38 +82,46 @@ impl Cluster {
         self.failures.iter().find_map(|failure| failure.as_deref())
     }
 
-    pub fn information(&self) -> Vec<Information> {
-        let discovered = self.network.routes(Some(self.collector_name));
+    pub fn information(&self) -> Vec<Worker> {
+        let discovered = self.network.routes();
         let mut routes = self.routes.borrow_mut();
-        for previous in routes.iter_mut() {
-            previous.information = Information::default();
-        }
-        for mut route in discovered {
-            route.information.data.sort_unstable();
-            route
-                .information
-                .results
-                .sort_unstable_by_key(|task| (task.operation, task.input, task.collector));
-            super::report_node_status(
-                &route.path.name,
-                "available",
-                Some(&route.information),
-                "",
-                Some(route.path.node),
-            );
-            if let Some(previous) = routes
-                .iter_mut()
-                .find(|previous| previous.path.node == route.path.node)
-            {
-                *previous = route;
+        let indices: BTreeMap<_, _> = routes
+            .iter()
+            .enumerate()
+            .map(|(index, route)| (route.path.node, index))
+            .collect();
+        let mut seen = alloc::vec![false; routes.len()];
+        for route in discovered {
+            let previous = indices.get(&route.path.node).copied();
+            if previous.is_none_or(|index| {
+                let current = &routes[index];
+                current.path.name != route.path.name
+                    || current.information.parallelism != route.information.parallelism
+                    || current.information.memory_bytes != route.information.memory_bytes
+            }) {
+                super::report_node_status(
+                    &route.path.name,
+                    "available",
+                    Some(&route.information.status()),
+                    "",
+                    Some(route.path.node),
+                );
+            }
+            if let Some(index) = previous {
+                seen[index] = true;
+                routes[index] = route;
             } else {
                 routes.push(route);
             }
         }
-        self.inventories
+        for (route, seen) in routes.iter_mut().zip(seen) {
+            if !seen {
+                route.information = Worker::default();
+            }
+        }
+        routes
             .iter()
-            .cloned()
-            .chain(routes.iter().map(|route| route.information.clone()))
+            .map(|route| route.information.clone())
             .collect()
     }
 
@@ -151,11 +141,11 @@ impl Cluster {
                     let index = routes.len();
                     routes.push(super::network::Route {
                         path,
-                        information: Information::default(),
+                        information: Worker::default(),
                     });
                     index
                 });
-                (slots, index + self.inventories.len() + 1)
+                (slots, index + 1)
             })
             .collect();
         workers.sort_by_key(|&(slots, index)| (core::cmp::Reverse(slots), index));
@@ -176,9 +166,9 @@ impl Cluster {
             .enumerate()
             .map(|(index, route)| {
                 (
-                    self.inventories.len() + index + 1,
+                    index + 1,
                     route.path.name.clone(),
-                    route.information.data.binary_search(&name).is_ok(),
+                    route.information.has_backing(&name),
                     self.network.is_direct(route.path.node),
                 )
             })
@@ -217,12 +207,12 @@ impl Cluster {
     }
 
     pub fn location(&self, location: usize) -> Option<String> {
-        let index = location.checked_sub(self.inventories.len() + 1)?;
+        let index = location.checked_sub(1)?;
         Some(self.routes.borrow().get(index)?.path.name.clone())
     }
 
     fn peer(&self, location: usize) -> Option<Peer> {
-        let index = location.checked_sub(self.inventories.len() + 1)?;
+        let index = location.checked_sub(1)?;
         let routes = self.routes.borrow();
         let route = routes.get(index)?;
         let (connection, node, name) = self.network.open(route.path.node).ok()?;
@@ -274,12 +264,12 @@ impl Cluster {
         let mut name = input.raw_handle_bytes()?;
         name[31] &= 0xe0;
         let resident = location
-            .checked_sub(self.inventories.len() + 1)
+            .checked_sub(1)
             .and_then(|index| {
                 self.routes
                     .borrow()
                     .get(index)
-                    .map(|route| route.information.data.binary_search(&name).is_ok())
+                    .map(|route| route.information.has_backing(&name))
             })
             .unwrap_or(false);
         let descriptor_only = (operation == 1 && input.is_value()?)
@@ -399,7 +389,7 @@ impl Cluster {
         let node = self
             .routes
             .borrow()
-            .get(location.checked_sub(self.inventories.len() + 1)?)?
+            .get(location.checked_sub(1)?)?
             .path
             .node;
         if !self.network.offers_coupons(node) {
@@ -645,7 +635,8 @@ impl PendingTransfer {
                         .iter()
                         .filter(|offer| offer.backing && requested.contains(&offer.name));
                     let size = backing.clone().try_fold(0u64, |total, offer| {
-                        total.checked_add(fixhandle::Handle::parse_ref(&offer.name).ok()?.byte_len())
+                        total
+                            .checked_add(fixhandle::Handle::parse_ref(&offer.name).ok()?.byte_len())
                     });
                     let data = backing.max_by_key(|offer| {
                         (
@@ -659,7 +650,11 @@ impl PendingTransfer {
                         && let Ok(value) = storage::reference_named(data.name)
                     {
                         download = Some(crate::progress::load(
-                            &value, &remote, "", Some(peer.node), size,
+                            &value,
+                            &remote,
+                            "",
+                            Some(peer.node),
+                            size,
                         ));
                     }
                     Some(missing)

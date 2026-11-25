@@ -7,16 +7,15 @@ pub mod arca;
 
 pub(crate) fn memory_limit(
     storage: &dyn Storage,
-    combination: Tree,
+    fields: &[Handle],
 ) -> Result<usize, ExecutionError> {
-    let fields = storage
-        .get_tree(combination)
-        .map_err(|_| ExecutionError::InvalidApplication)?;
     fields
         .first()
         .and_then(|value| Blob::try_from(*value).ok())
-        .and_then(|blob| storage.get_blob(blob).ok())
-        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_ref()).ok())
+        .and_then(|blob| match blob.literal_bytes() {
+            Some(bytes) => bytes.try_into().ok(),
+            None => storage.get_blob(blob).ok()?.as_ref().try_into().ok(),
+        })
         .and_then(|bytes| usize::try_from(u64::from_le_bytes(bytes)).ok())
         .ok_or(ExecutionError::InvalidMemoryLimit)
 }
