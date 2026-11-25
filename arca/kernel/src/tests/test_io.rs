@@ -96,6 +96,17 @@ fn whole_file_io() {
 }
 
 #[test]
+fn write_file_from_kernel_image() {
+    use crate::host::fs;
+
+    static BYTES: [u8; 128 * 1024 + 1] = [0x5a; 128 * 1024 + 1];
+    let path = "kernel-image-file-test";
+    fs::write(path, &BYTES).unwrap();
+    assert_eq!(fs::read(path).unwrap(), BYTES);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn owned_file_buffers_preserve_contents_across_heap_growth() {
     use crate::{host::fs, prelude::*};
 

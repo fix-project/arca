@@ -29,6 +29,7 @@ fn seed(directory: &Path, scheduler: &str) -> Repository {
             fixture(env!("COLLECTOR")).display()
         ))
         .arg(format!("add={}", fixture(env!("ADD")).display()))
+        .arg(format!("advisor={}", fixture(env!("ADVISOR")).display()))
         .arg(format!("fanout={}", fixture(env!("FANOUT")).display()))
         .arg(format!("work={}", fixture(env!("WORK")).display()))
         .current_dir(directory)
@@ -688,6 +689,195 @@ fn pending_transfer_does_not_block_other_requests_and_links_share_identity() {
     drop(links.remove(0));
     request(&mut links[0], 0, Message::RequestInfo { inventory: false });
     assert!(matches!(reply(&mut links[0], 0), Message::Info(info) if info.parallelism == 2));
+}
+
+#[test]
+fn selection_loads_backing_created_after_the_peer_inventory() {
+    use fixremote::protocol::{self, Message, Packet, topology::LinkId};
+    let directory = std::env::temp_dir().join(format!("fix-late-backing-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let _cleanup = Directory(directory.clone());
+    let coordinator_dir = directory.join("coordinator");
+    let empty_dir = directory.join("empty");
+    let worker_dir = directory.join("worker");
+    let coordinator = seed(&coordinator_dir, env!("HINT"));
+    seed(&empty_dir, env!("HINT"));
+    let worker = seed(&worker_dir, env!("HINT"));
+    let agent = Agent::new(&directory.join("agent"), 121);
+    let compiler = std::fs::read_to_string(coordinator_dir.join(".fix/trust")).unwrap();
+    for path in [&coordinator_dir, &empty_dir, &worker_dir] {
+        configuration(&path.join("user"), &agent, &compiler, &[]);
+        sign_seed(path, &agent, true);
+    }
+    let coordinator = coordinator.with_policy(Policy {
+        authorized_keys: agent.public_keys.clone(),
+        ..Policy::default()
+    });
+    let (_empty, empty_address) = start_worker(&empty_dir, &agent, 1, 2048);
+    let (_worker, address) = start_worker(&worker_dir, &agent, 1, 2048);
+    let mut stream = fixremote::linux::Connection(std::net::TcpStream::connect(&address).unwrap());
+    stream
+        .0
+        .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+        .unwrap();
+    let node = [121; 16];
+    protocol::send(
+        &mut stream,
+        Message::Hello {
+            link: LinkId {
+                initiator: node,
+                sequence: 0,
+            },
+            node,
+        },
+    )
+    .unwrap();
+    let Some(Message::HelloAccepted(peer)) =
+        protocol::receive(&mut stream, protocol::MAX_MESSAGE_SIZE).unwrap()
+    else {
+        panic!("missing peer identity");
+    };
+    loop {
+        let packet = protocol::receive_packet(&mut stream, protocol::MAX_MESSAGE_SIZE)
+            .unwrap()
+            .expect("peer did not publish its inventory");
+        if matches!(packet, Packet::Inventory(node, _) if node == peer) {
+            break;
+        }
+    }
+
+    let selected: Handle = Blob::literal(b"late result").unwrap().into();
+    let tree = worker.create_tree(&[selected]).unwrap();
+    let selection = coordinator
+        .create_tree(&[
+            tree.into_ref().into(),
+            Blob::literal(&0u64.to_le_bytes()).unwrap().into(),
+        ])
+        .unwrap();
+    let input = selection.into_ref().selection().strict().into();
+    let request = coordinator
+        .create_tree(&[
+            Blob::literal(&(256u64 << 20).to_le_bytes()).unwrap().into(),
+            coordinator.read_label("scheduler").unwrap(),
+            Blob::literal(b"eval").unwrap().into(),
+            coordinator.read_label("collector").unwrap(),
+            input,
+        ])
+        .unwrap();
+    coordinator
+        .set_remotes(vec![
+            Remote {
+                name: "empty".into(),
+                address: format!("tcp://{empty_address}"),
+                scheduler: None,
+                collector: None,
+            },
+            Remote {
+                name: "worker".into(),
+                address: format!("tcp://{address}"),
+                scheduler: None,
+                collector: None,
+            },
+        ])
+        .unwrap();
+    let output = run(&coordinator_dir, &agent, request.into(), None);
+    let diagnostics = String::from_utf8_lossy(&output.stderr).into_owned();
+    let coupon = returned(&coordinator, output);
+    assert!(coupon.is_tag(), "{diagnostics}");
+    let fields = coordinator.read_tree(coupon).unwrap();
+    let claim = fixhandle::TreeRef::try_from(fields[1])
+        .unwrap()
+        .object_descriptor();
+    let fields = coordinator.read_tree(claim).unwrap();
+    assert!(fields[1].same_encoding(&input));
+    assert!(fields[2].same_encoding(&selected));
+}
+
+#[test]
+fn hint_spreads_work_revealed_by_an_advised_application() {
+    let directory = std::env::temp_dir().join(format!("fix-hint-fanout-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let _cleanup = Directory(directory.clone());
+    let agent = Agent::new(&directory.join("agent"), 115);
+    let coordinator_dir = directory.join("coordinator");
+    let left_dir = directory.join("left");
+    let right_dir = directory.join("right");
+    let number = |value: u64| Handle::from(Blob::literal(&value.to_le_bytes()).unwrap());
+    let limit = number(256 << 20);
+    let prepare = |path: &Path, scheduler| {
+        seed(path, scheduler);
+        let trust = std::fs::read_to_string(path.join(".fix/trust")).unwrap();
+        configuration(&path.join("user"), &agent, &trust, &[]);
+        sign_seed(path, &agent, true);
+        let repository = Repository::open(path.join(".fix").to_str().unwrap())
+            .unwrap()
+            .with_policy(Policy {
+                authorized_keys: agent.public_keys.clone(),
+                ..Policy::default()
+            });
+        let work = repository.read_label("work").unwrap();
+        let mut children = Vec::new();
+        for index in 0..4 {
+            let child = repository
+                .create_tree(&[limit, work, number(index), number(42)])
+                .unwrap();
+            children.push(child.into_ref().application().strict().into());
+        }
+        let children = repository.create_tree(&children).unwrap();
+        let application = repository
+            .create_tree(&[
+                limit,
+                repository.read_label("fanout").unwrap(),
+                children.into(),
+            ])
+            .unwrap();
+        (repository, application)
+    };
+    let (coordinator, target) = prepare(&coordinator_dir, env!("HINT"));
+    prepare(&left_dir, env!("PARALLEL"));
+    prepare(&right_dir, env!("PARALLEL"));
+    let (_left, left) = start_worker(&left_dir, &agent, 2, 2048);
+    let (_right, right) = start_worker(&right_dir, &agent, 2, 2048);
+    coordinator
+        .set_remotes(
+            vec![("left", left), ("right", right)]
+                .into_iter()
+                .map(|(name, address)| Remote {
+                    name: name.into(),
+                    address: format!("tcp://{address}"),
+                    scheduler: None,
+                    collector: None,
+                })
+                .collect(),
+        )
+        .unwrap();
+    let expand = coordinator
+        .create_tree(&[
+            limit,
+            coordinator.read_label("advisor").unwrap(),
+            target.into_ref().into(),
+            number(32),
+            number(4),
+        ])
+        .unwrap();
+    let request = coordinator
+        .create_tree(&[
+            limit,
+            coordinator.read_label("scheduler").unwrap(),
+            Blob::literal(b"eval").unwrap().into(),
+            coordinator.read_label("collector").unwrap(),
+            expand.into_ref().application().strict().into(),
+        ])
+        .unwrap();
+    let output = run_with_jobs(&coordinator_dir, &agent, request.into(), None, 1);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    for peer in ["left", "right"] {
+        assert!(
+            diagnostics.contains(&format!("START {peer}: Apply fanout work")),
+            "expected {peer} to execute work: {diagnostics}"
+        );
+    }
+    assert!(returned(&coordinator, output).is_tag());
 }
 
 #[test]

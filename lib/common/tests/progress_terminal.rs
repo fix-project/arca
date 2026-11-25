@@ -11,7 +11,7 @@ fn progress_logs_named_events_and_measured_transfer_rates() {
         &lines[..4],
         [
             "START Evaluate named batch",
-            "START local: Load transferred input (from large)",
+            "START local: Load transferred input (from large) (1.0 MiB)",
             "unnamed diagnostic",
             "END local: Load transferred input (from large) (0.50s, 1.0 MiB, 2.0 MiB/s)",
         ],

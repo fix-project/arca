@@ -286,6 +286,57 @@ pub fn update_label(
     }
 }
 
+pub(super) fn transfer_limit() -> Result<usize, Error> {
+    let available = crate::kernel::worker::available_memory()?;
+    Ok(usize::try_from(available).unwrap_or(usize::MAX))
+}
+
+pub(super) fn import_transfer(mut transfer: protocol::Transfer) -> Result<Vec<Value>, String> {
+    let available = transfer_limit().map_err(|error| format!("{error:?}"))?;
+    let size = transfer.encoded_len().map_err(|error| format!("{error}"))?;
+    if size > available / 4 {
+        for record in &mut transfer.records {
+            if record.name[31] & 0xe0 != 0x80 || !record.certificates.is_empty() {
+                continue;
+            }
+            if let Some(data) = record.data.take() {
+                import_buffered_transfer(protocol::Transfer {
+                    roots: alloc::vec![record.name],
+                    records: alloc::vec![protocol::Record {
+                        name: record.name,
+                        data: Some(data),
+                        todo: None,
+                        certificates: Vec::new(),
+                    }],
+                    certificates: Vec::new(),
+                })?;
+            }
+        }
+    }
+    import_buffered_transfer(transfer)
+}
+
+fn import_buffered_transfer(transfer: protocol::Transfer) -> Result<Vec<Value>, String> {
+    let size = transfer.encoded_len().map_err(|error| format!("{error}"))?;
+    let available = transfer_limit().map_err(|error| format!("{error:?}"))?;
+    if size > available {
+        return Err(format!(
+            "insufficient free memory to encode the transfer ({size} required, {available} available)"
+        ));
+    }
+    let bytes = transfer.encode().map_err(|error| format!("{error}"))?;
+    drop(transfer);
+    let available = transfer_limit().map_err(|error| format!("{error:?}"))?;
+    // Import can hold a Blob backing, a host copy, and decoded records together.
+    let required = bytes.len().saturating_mul(3);
+    if required > available {
+        return Err(format!(
+            "insufficient free memory to import the transfer ({required} required, {available} available)"
+        ));
+    }
+    import(&bytes)
+}
+
 pub fn import(transfer_bytes: &[u8]) -> Result<Vec<Value>, String> {
     let (status, value) = request(tree![
         Blob::create(b"storage_import"),
@@ -466,8 +517,15 @@ impl protocol::asynchronous::ReadMessage for Connection {
         limit: usize,
     ) -> Result<Option<protocol::Message>, protocol::Error<IoError>> {
         match self {
-            Self::Raw(stream) => protocol::asynchronous::receive(&mut stream.as_ref(), limit).await,
-            Self::Request(request) => Ok(request.read().await),
+            Self::Raw(stream) => {
+                protocol::asynchronous::receive_with_payload_limit(
+                    &mut stream.as_ref(),
+                    limit,
+                    || transfer_limit().unwrap_or(0),
+                )
+                .await
+            }
+            Self::Request(request) => request.read().await,
         }
     }
 }

@@ -162,18 +162,58 @@ impl Cluster {
         workers.into_iter().map(|(_, index)| index).collect()
     }
 
-    pub fn sources(&self, value: &Value) -> Result<Vec<(usize, String)>, Error> {
-        let mut name = storage::canonical_value(value)?.raw_handle_bytes()?;
+    /// Find remote backing, using inventories to order requests.
+    pub async fn load_backing(&self, value: &Value) -> Result<Option<Value>, String> {
+        let mut name = storage::canonical_value(value)
+            .and_then(|value| value.raw_handle_bytes())
+            .map_err(|error| alloc::format!("{error:?}"))?;
         name[31] &= 0xe0;
         self.information();
-        Ok(self
+        let routes: Vec<_> = self
             .routes
             .borrow()
             .iter()
             .enumerate()
-            .filter(|(_, route)| route.information.data.binary_search(&name).is_ok())
-            .map(|(index, route)| (self.inventories.len() + index + 1, route.path.name.clone()))
-            .collect())
+            .map(|(index, route)| {
+                (
+                    self.inventories.len() + index + 1,
+                    route.path.name.clone(),
+                    route.information.data.binary_search(&name).is_ok(),
+                    self.network.is_direct(route.path.node),
+                )
+            })
+            .collect();
+        let lookup = match name[31] {
+            0x80 => Message::RequestBlob(name),
+            0xa0 | 0xe0 => Message::RequestTree(name),
+            _ => return Ok(None),
+        };
+        let mut errors = Vec::new();
+        for (location, peer, advertised, _) in routes
+            .iter()
+            .filter(|(_, _, advertised, _)| *advertised)
+            .chain(
+                routes
+                    .iter()
+                    .filter(|(_, _, advertised, direct)| !advertised && *direct),
+            )
+        {
+            let request = if *advertised {
+                Message::RequestTransfer(name)
+            } else {
+                lookup.clone()
+            };
+            match self.request_value(*location, name, request).await {
+                Ok(Some(value)) => return Ok(Some(value)),
+                Ok(None) => {}
+                Err(error) => errors.push(alloc::format!("{peer}: {error:?}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(None)
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     pub fn location(&self, location: usize) -> Option<String> {
@@ -193,22 +233,11 @@ impl Cluster {
         })
     }
 
-    /// Request data using the same proposal, acceptance, and import exchange as evaluations.
-    pub async fn request_transfer(
-        &self,
-        location: usize,
-        input: &Value,
-    ) -> Result<Option<Value>, Failure> {
-        let mut name = storage::canonical_value(input)?.raw_handle_bytes()?;
-        name[31] &= 0xe0;
-        self.request_value(location, name).await
-    }
-
-    /// Request a value by its complete canonical name.
-    pub async fn request_value(
+    async fn request_value(
         &self,
         location: usize,
         name: protocol::Name,
+        request: Message,
     ) -> Result<Option<Value>, Failure> {
         if !fixhandle::Handle::parse_ref(&name).is_ok_and(|handle| handle.is_canonical()) {
             return Err(Failure::Task);
@@ -222,12 +251,9 @@ impl Cluster {
             expected: Expected::Value(name),
             names: Vec::new(),
         };
-        protocol::asynchronous::send(
-            &mut pending.peer.as_mut().unwrap().connection,
-            Message::RequestTransfer(name),
-        )
-        .await
-        .map_err(Failure::Send)?;
+        protocol::asynchronous::send(&mut pending.peer.as_mut().unwrap().connection, request)
+            .await
+            .map_err(Failure::Send)?;
         pending.receive().await.map(Some)
     }
 
@@ -324,7 +350,7 @@ impl Cluster {
             proposal,
             |name| {
                 load.get_or_insert_with(|| {
-                    crate::progress::load(source, "", &peer.name, Some(peer.node))
+                    crate::progress::load(source, "", &peer.name, Some(peer.node), None)
                 });
                 super::read_object(name)
             },
@@ -564,7 +590,7 @@ async fn stage_programs(io: &Io, remote: &super::Remote) -> Result<Connection, S
                 proposal,
                 |name| {
                     load.get_or_insert_with(|| {
-                        crate::progress::load(source, "", &remote.name, None)
+                        crate::progress::load(source, "", &remote.name, None, None)
                     });
                     super::read_object(name)
                 },
@@ -606,6 +632,7 @@ impl PendingTransfer {
             let incoming = protocol::asynchronous::receive_transfer_observed(
                 &mut peer.connection,
                 protocol::MAX_MESSAGE_SIZE,
+                super::transfer_limit()?,
                 &Information {
                     parallelism: worker::count()?.try_into().map_err(|_| Failure::Task)?,
                     ..Information::default()
@@ -614,22 +641,26 @@ impl PendingTransfer {
                 |offers| {
                     let missing = super::missing(offers).ok().flatten()?;
                     let requested: alloc::collections::BTreeSet<_> = missing.iter().collect();
-                    let data = offers
+                    let backing = offers
                         .iter()
-                        .filter(|offer| offer.backing && requested.contains(&offer.name))
-                        .max_by_key(|offer| {
-                            (
-                                crate::progress::named(offer.name).unwrap_or(false),
-                                fixhandle::Handle::parse_ref(&offer.name)
-                                    .map(|value| value.byte_len())
-                                    .unwrap_or(0),
-                            )
-                        });
+                        .filter(|offer| offer.backing && requested.contains(&offer.name));
+                    let size = backing.clone().try_fold(0u64, |total, offer| {
+                        total.checked_add(fixhandle::Handle::parse_ref(&offer.name).ok()?.byte_len())
+                    });
+                    let data = backing.max_by_key(|offer| {
+                        (
+                            crate::progress::named(offer.name).unwrap_or(false),
+                            fixhandle::Handle::parse_ref(&offer.name)
+                                .map(|value| value.byte_len())
+                                .unwrap_or(0),
+                        )
+                    });
                     if let Some(data) = data
                         && let Ok(value) = storage::reference_named(data.name)
                     {
-                        download =
-                            Some(crate::progress::load(&value, &remote, "", Some(peer.node)));
+                        download = Some(crate::progress::load(
+                            &value, &remote, "", Some(peer.node), size,
+                        ));
                     }
                     Some(missing)
                 },
@@ -659,14 +690,18 @@ impl PendingTransfer {
             {
                 return Err(Failure::Task);
             }
-            let bytes = incoming.transfer.encode().map_err(|_| Failure::Task)?;
-            let roots = super::import(&bytes).map_err(Failure::Import)?;
+            let roots = super::import_transfer(incoming.transfer).map_err(Failure::Import)?;
             let [value] = roots.as_slice() else {
                 return Err(Failure::Coupon);
             };
             match &self.expected {
-                Expected::Value(name) if value.raw_handle_bytes()? != *name => {
-                    return Err(Failure::Task);
+                Expected::Value(name) => {
+                    if value.raw_handle_bytes()? != *name {
+                        return Err(Failure::Task);
+                    }
+                    if storage::identify(value)?.is_none() {
+                        return Err(Failure::Import("response did not provide backing".into()));
+                    }
                 }
                 Expected::Coupon {
                     task,
@@ -683,7 +718,6 @@ impl PendingTransfer {
                         return Err(Failure::Coupon);
                     }
                 }
-                _ => {}
             }
             self.network.completed(peer.node, &self.names, task);
 

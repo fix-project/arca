@@ -128,7 +128,13 @@ impl Drop for Load {
 }
 
 /// Report a transfer's value and endpoints without choosing a display format.
-pub(crate) fn load(input: &Value, source: &str, destination: &str, peer: Option<[u8; 16]>) -> Load {
+pub(crate) fn load(
+    input: &Value,
+    source: &str,
+    destination: &str,
+    peer: Option<[u8; 16]>,
+    size: Option<u64>,
+) -> Load {
     let started = (|| {
         effect(
             b"load_start",
@@ -139,6 +145,7 @@ pub(crate) fn load(input: &Value, source: &str, destination: &str, peer: Option<
                 capture(fixwasm::Blob::create(
                     peer.as_ref().map_or(&[][..], |id| &id[..]),
                 ))?,
+                capture(size.unwrap_or(u64::MAX))?,
             ],
         )
     })();

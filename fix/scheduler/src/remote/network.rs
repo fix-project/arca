@@ -93,12 +93,14 @@ struct LinkState {
 struct RequestInbox {
     messages: VecDeque<Message>,
     closed: bool,
+    failure: Option<Rc<str>>,
     reader: Option<Waker>,
 }
 
 impl RequestInbox {
-    fn close(&mut self) {
+    fn close(&mut self, failure: Option<Rc<str>>) {
         self.closed = true;
+        self.failure = failure;
         if let Some(reader) = self.reader.take() {
             reader.wake();
         }
@@ -292,7 +294,7 @@ impl Network {
             {
                 let links: Vec<_> = network.state.borrow().links.values().cloned().collect();
                 for link in links {
-                    network.disconnect(&link);
+                    network.disconnect(&link, None);
                 }
                 network.reporting.borrow_mut().take();
             }
@@ -576,8 +578,12 @@ impl Network {
             let mut stream = raw.as_ref();
             loop {
                 let frame =
-                    protocol::asynchronous::receive_packet(&mut stream, protocol::MAX_MESSAGE_SIZE)
-                        .await;
+                    protocol::asynchronous::receive_packet_with_payload_limit(
+                        &mut stream,
+                        protocol::MAX_MESSAGE_SIZE,
+                        || super::transfer_limit().unwrap_or(0),
+                    )
+                    .await;
                 let (Some(network), Some(link)) = (network.upgrade(), reading.upgrade()) else {
                     return;
                 };
@@ -594,10 +600,10 @@ impl Network {
                     Ok(None) => None,
                     Err(error) => Some(alloc::format!("{error}")),
                 };
-                if let Some(reason) = reason {
+                if let Some(reason) = &reason {
                     let _ = log(&alloc::format!("remote link {}: {reason}", link.name));
                 }
-                network.disconnect(&link);
+                network.disconnect(&link, reason.map(Rc::from));
                 return;
             }
         }));
@@ -625,12 +631,9 @@ impl Network {
                 let Some(frame) = frame else {
                     return;
                 };
-                if protocol::asynchronous::send_packet(&mut stream, frame)
-                    .await
-                    .is_err()
-                {
+                if let Err(error) = protocol::asynchronous::send_packet(&mut stream, frame).await {
                     if let (Some(network), Some(link)) = (network.upgrade(), writing.upgrade()) {
-                        network.disconnect(&link);
+                        network.disconnect(&link, Some(Rc::from(alloc::format!("{error}"))));
                     }
                     return;
                 }
@@ -639,7 +642,7 @@ impl Network {
         Ok(link)
     }
 
-    fn disconnect(&self, link: &Rc<Link>) {
+    fn disconnect(&self, link: &Rc<Link>, failure: Option<Rc<str>>) {
         {
             let mut state = link.state.borrow_mut();
             if state.closed {
@@ -653,7 +656,7 @@ impl Network {
                 w.wake();
             }
             for inbox in state.requests.values() {
-                inbox.borrow_mut().close();
+                inbox.borrow_mut().close(failure.clone());
             }
         }
         link.raw.close();
@@ -750,11 +753,19 @@ impl Network {
                 if let Some(inbox) = state.requests.get(&id) {
                     let mut inbox = inbox.borrow_mut();
                     inbox.messages.clear();
-                    inbox.close();
+                    inbox.close(None);
                 }
             }
         }
         Ok(())
+    }
+
+    pub(super) fn is_direct(&self, node: NodeId) -> bool {
+        self.state
+            .borrow()
+            .links
+            .values()
+            .any(|link| link.node == node && !link.state.borrow().closed)
     }
 
     pub(super) fn open(
@@ -950,13 +961,16 @@ impl Link {
 }
 
 impl Request {
-    pub(super) async fn read(&self) -> Option<Message> {
+    pub(super) async fn read(&self) -> Result<Option<Message>, protocol::Error<IoError>> {
         poll_fn(|cx| {
             let mut inbox = self.inbox.borrow_mut();
             if let Some(packet) = inbox.messages.pop_front() {
-                Poll::Ready(Some(packet))
+                Poll::Ready(Ok(Some(packet)))
             } else if inbox.closed {
-                Poll::Ready(None)
+                Poll::Ready(match &inbox.failure {
+                    Some(reason) => Err(protocol::Error::Connection(String::from(reason.as_ref()))),
+                    None => Ok(None),
+                })
             } else {
                 inbox.reader = Some(cx.waker().clone());
                 Poll::Pending

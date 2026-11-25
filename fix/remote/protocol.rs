@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod topology;
 
 pub type Name = [u8; 32];
-pub const VERSION: u32 = 20;
+pub const VERSION: u32 = 21;
 pub const MAX_MESSAGE_SIZE: usize = 512 << 20;
 
 pub fn encode_labels(labels: &[(String, Name)]) -> Result<Vec<u8>, postcard::Error> {
@@ -158,8 +158,14 @@ impl From<(Transfer, Vec<Name>)> for Proposal {
     }
 }
 impl Transfer {
+    pub fn encoded_len(&self) -> Result<usize, postcard::Error> {
+        postcard::experimental::serialized_size(self)
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
+        let mut bytes = alloc::vec![0; self.encoded_len()?];
+        postcard::to_slice(self, &mut bytes)?;
+        Ok(bytes)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         let (value, trailing) = postcard::take_from_bytes(bytes)?;
@@ -332,6 +338,11 @@ fn decode_wire<T: for<'a> Deserialize<'a>, E>(bytes: &[u8]) -> Result<T, Error<E
 pub enum Error<E> {
     Transport(fixtransport::Error<E>),
     Invalid,
+    InvalidTransfer(&'static str),
+    TransferTooLarge {
+        received: usize,
+        limit: usize,
+    },
     Decode {
         length: usize,
         error: postcard::Error,
@@ -341,6 +352,7 @@ pub enum Error<E> {
         received: u32,
     },
     IncompleteTransfer,
+    Connection(String),
     Rejected,
     Remote(String),
 }
@@ -349,6 +361,11 @@ impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
         match self {
             Self::Transport(error) => error.fmt(f),
             Self::Invalid => f.write_str("invalid remote message"),
+            Self::InvalidTransfer(reason) => write!(f, "invalid remote transfer ({reason})"),
+            Self::TransferTooLarge { received, limit } => write!(
+                f,
+                "remote transfer exceeded its {limit}-byte limit ({received} bytes received)"
+            ),
             Self::Decode { length, error } => write!(
                 f,
                 "could not decode protocol {VERSION} message ({length} bytes): {error}"
@@ -357,6 +374,7 @@ impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
                 write!(f, "protocol version {received}; expected {expected}")
             }
             Self::IncompleteTransfer => f.write_str("connection closed during transfer"),
+            Self::Connection(reason) => write!(f, "connection closed: {reason}"),
             Self::Rejected => f.write_str("remote rejected the request"),
             Self::Remote(message) => f.write_str(message),
         }
@@ -504,13 +522,101 @@ pub mod asynchronous {
         }
     }
 
-    async fn send_wire<S: AsyncWrite, T: Serialize>(
+    const HAS_PAYLOAD: u64 = 1 << 63;
+
+    trait WireMessage {
+        fn record(&mut self) -> Option<&mut Record>;
+    }
+
+    impl WireMessage for Message {
+        fn record(&mut self) -> Option<&mut Record> {
+            match self {
+                Self::BlobData(record) | Self::TreeData(record) | Self::ShallowTreeData(record) => {
+                    Some(record)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    impl WireMessage for Packet {
+        fn record(&mut self) -> Option<&mut Record> {
+            match self {
+                Self::Start(_, message) | Self::Job(_, message) => message.record(),
+                _ => None,
+            }
+        }
+    }
+
+    async fn send_wire<S: AsyncWrite, T: Serialize + WireMessage>(
         stream: &mut S,
-        message: T,
+        mut message: T,
     ) -> Result<(), Error<S::Error>> {
+        let payload = message.record().and_then(|record| record.data.take());
         let bytes = encode_wire(message).map_err(|_| Error::Invalid)?;
-        fixtransport::asynchronous::send(stream, &bytes).await?;
+        let Some(payload) = payload else {
+            return fixtransport::asynchronous::send(stream, &bytes)
+                .await
+                .map_err(Into::into);
+        };
+        let metadata = u32::try_from(bytes.len()).map_err(|_| Error::Invalid)?;
+        let length = 4 + u64::from(metadata) + payload.len() as u64;
+        let mut header = Vec::with_capacity(12 + bytes.len());
+        header.extend_from_slice(&(length | HAS_PAYLOAD).to_be_bytes());
+        header.extend_from_slice(&metadata.to_be_bytes());
+        header.extend_from_slice(&bytes);
+        fixtransport::asynchronous::write_all(stream, &header).await?;
+        for chunk in payload.chunks(65536) {
+            fixtransport::asynchronous::write_all(stream, chunk).await?;
+        }
+        stream.flush().await.map_err(fixtransport::Error::Io)?;
         Ok(())
+    }
+
+    async fn receive_wire<S: AsyncRead, T: for<'a> Deserialize<'a> + WireMessage>(
+        stream: &mut S,
+        limit: usize,
+        payload_limit: impl FnOnce(usize) -> usize,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<Option<T>, Error<S::Error>> {
+        let Some(header) = fixtransport::asynchronous::receive_length(stream).await? else {
+            return Ok(None);
+        };
+        let length = header & !HAS_PAYLOAD;
+        if header == length {
+            let bytes =
+                fixtransport::asynchronous::receive_body(stream, length, limit, progress).await?;
+            return decode_wire(&bytes).map(Some);
+        }
+        let mut prefix = [0; 4];
+        if length < prefix.len() as u64 {
+            return Err(Error::Invalid);
+        }
+        fixtransport::asynchronous::read_exact(stream, &mut prefix).await?;
+        let metadata = u64::from(u32::from_be_bytes(prefix));
+        let offset = prefix.len() as u64 + metadata;
+        if offset > length {
+            return Err(Error::Invalid);
+        }
+        let bytes =
+            fixtransport::asynchronous::receive_body(stream, metadata, limit, &mut |_, _| {})
+                .await?;
+        let offset = usize::try_from(offset).map_err(|_| Error::Invalid)?;
+        let mut message: T = decode_wire(&bytes)?;
+        let record = message
+            .record()
+            .filter(|record| record.data.is_none())
+            .ok_or(Error::Invalid)?;
+        record.data = Some(
+            fixtransport::asynchronous::receive_body(
+                stream,
+                length - offset as u64,
+                payload_limit(offset),
+                &mut |received, _| progress(offset as u64 + received, length),
+            )
+            .await?,
+        );
+        Ok(Some(message))
     }
 
     pub async fn send_packet<S: AsyncWrite>(
@@ -524,8 +630,29 @@ pub mod asynchronous {
         stream: &mut S,
         limit: usize,
     ) -> Result<Option<Packet>, Error<S::Error>> {
-        let bytes = fixtransport::asynchronous::receive(stream, limit).await?;
-        bytes.as_deref().map(decode_wire).transpose()
+        receive_wire(
+            stream,
+            limit,
+            |offset| limit.saturating_sub(offset),
+            &mut |_, _| {},
+        )
+        .await
+    }
+
+    pub async fn receive_packet_with_payload_limit<S: AsyncRead>(
+        stream: &mut S,
+        limit: usize,
+        payload_limit: impl FnOnce() -> usize,
+    ) -> Result<Option<Packet>, Error<S::Error>> {
+        receive_wire(stream, limit, |_| payload_limit(), &mut |_, _| {}).await
+    }
+
+    pub async fn receive_with_payload_limit<S: AsyncRead>(
+        stream: &mut S,
+        limit: usize,
+        payload_limit: impl FnOnce() -> usize,
+    ) -> Result<Option<Message>, Error<S::Error>> {
+        receive_wire(stream, limit, |_| payload_limit(), &mut |_, _| {}).await
     }
 
     pub async fn send<S: WriteMessage>(
@@ -547,8 +674,13 @@ pub mod asynchronous {
         limit: usize,
         progress: &mut impl FnMut(u64, u64),
     ) -> Result<Option<Message>, Error<S::Error>> {
-        let bytes = fixtransport::asynchronous::receive_observed(stream, limit, progress).await?;
-        bytes.as_deref().map(decode_wire).transpose()
+        receive_wire(
+            stream,
+            limit,
+            |offset| limit.saturating_sub(offset),
+            progress,
+        )
+        .await
     }
 
     fn roots(task: Option<&Task>, result: Option<Name>) -> Vec<Name> {
@@ -597,11 +729,15 @@ pub mod asynchronous {
         } = proposal.into();
         let backing: BTreeSet<_> = backing.into_iter().collect();
         if transfer.roots != roots(task, result) {
-            return Err(Error::Invalid);
+            return Err(Error::InvalidTransfer(
+                "proposal roots do not match the task or result",
+            ));
         }
         let offered: BTreeSet<_> = transfer.records.iter().map(|record| record.name).collect();
         if offered.len() != transfer.records.len() {
-            return Err(Error::Invalid);
+            return Err(Error::InvalidTransfer(
+                "proposal contains duplicate objects",
+            ));
         }
         send(
             stream,
@@ -637,7 +773,11 @@ pub mod asynchronous {
                 Some(Message::Failure(message)) => return Err(Error::Remote(message)),
                 Some(Message::Rejected) => return Err(Error::Rejected),
                 None => return Err(Error::IncompleteTransfer),
-                _ => return Err(Error::Invalid),
+                _ => {
+                    return Err(Error::InvalidTransfer(
+                        "expected acceptance of the proposal",
+                    ));
+                }
             };
         let selected: BTreeSet<_> = objects.iter().copied().collect();
         if accepted.as_ref() != task
@@ -645,7 +785,9 @@ pub mod asynchronous {
             || selected.len() != objects.len()
             || !selected.is_subset(&offered)
         {
-            return Err(Error::Invalid);
+            return Err(Error::InvalidTransfer(
+                "acceptance does not match the proposal",
+            ));
         }
         let certificates: BTreeMap<_, _> = transfer
             .certificates
@@ -677,14 +819,18 @@ pub mod asynchronous {
                                 .iter()
                                 .find(|record| record.name == certificate.blob)
                         })
-                        .ok_or(Error::Invalid)?
+                        .ok_or(Error::InvalidTransfer(
+                            "certificate backing was unavailable",
+                        ))?
                         .clone();
                     (certificate, blob)
                 } else {
                     certify(record.name, &trusted_keys).ok_or(Error::Rejected)?
                 };
                 if !trusted_keys.contains(&certificate.key) || blob.name != certificate.blob {
-                    return Err(Error::Invalid);
+                    return Err(Error::InvalidTransfer(
+                        "certificate does not match the selected key or backing",
+                    ));
                 }
                 if sent.insert(blob.name) {
                     bytes += blob.data.as_ref().map_or(0, |data| data.len() as u64);
@@ -707,7 +853,10 @@ pub mod asynchronous {
                     task: task.cloned(),
                     coupon,
                 },
-                None => Message::Run(task.ok_or(Error::Invalid)?.clone()),
+                None => Message::Run(
+                    task.ok_or(Error::InvalidTransfer("evaluation proposal has no task"))?
+                        .clone(),
+                ),
             },
         )
         .await?;
@@ -756,6 +905,7 @@ pub mod asynchronous {
         receive_transfer_observed(
             stream,
             limit,
+            limit,
             information,
             trusted_keys,
             missing,
@@ -767,7 +917,8 @@ pub mod asynchronous {
 
     pub async fn receive_transfer_observed<S: ReadMessage + WriteMessage>(
         stream: &mut S,
-        limit: usize,
+        message_limit: usize,
+        transfer_limit: usize,
         information: &Information,
         trusted_keys: &[String],
         mut missing: impl FnMut(&[Offer]) -> Option<Vec<Name>>,
@@ -781,7 +932,7 @@ pub mod asynchronous {
             let Some(message) = (if first.is_some() {
                 first.take()
             } else {
-                receive(stream, limit).await?
+                receive(stream, message_limit).await?
             }) else {
                 return if pending.is_none() {
                     Ok(None)
@@ -793,6 +944,7 @@ pub mod asynchronous {
             match message {
                 Message::EvaluationProgress(_, _) => (),
                 Message::Failure(message) => return Err(Error::Remote(message)),
+                Message::Rejected if pending.is_none() => return Err(Error::Rejected),
                 Message::RequestInfo { .. } => {
                     send(stream, Message::Info(information.clone())).await?
                 }
@@ -805,12 +957,16 @@ pub mod asynchronous {
                     objects.retain(|offer| !offer.is_ref());
                     let offered: BTreeSet<_> = objects.iter().map(|offer| offer.name).collect();
                     if offered.len() != objects.len() {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer(
+                            "proposal contains duplicate objects",
+                        ));
                     }
                     let requested = missing(&objects).ok_or(Error::Rejected)?;
                     let selected: BTreeSet<_> = requested.iter().copied().collect();
                     if selected.len() != requested.len() || !selected.is_subset(&offered) {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer(
+                            "requested objects do not match the proposal",
+                        ));
                     }
                     send(
                         stream,
@@ -842,20 +998,24 @@ pub mod asynchronous {
                 | Message::TreeData(record)
                 | Message::ShallowTreeData(record) => {
                     let Some(pending) = &mut pending else {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer(
+                            "object data arrived before a proposal",
+                        ));
                     };
                     if pending.records.contains_key(&record.name) {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer("duplicate object data"));
                     }
                     if pending.selected.remove(&record.name) {
                         if pending.offers.get(&record.name) != Some(&record.offer()) {
-                            return Err(Error::Invalid);
+                            return Err(Error::InvalidTransfer(
+                                "object data does not match its offer",
+                            ));
                         }
                     } else if record.name[31] & 0x20 != 0
                         || record.todo.is_some()
                         || !record.certificates.is_empty()
                     {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer("unsolicited object data"));
                     }
                     if record.name[31] & 0x40 != 0
                         && (record.certificates.len() != 1
@@ -865,9 +1025,15 @@ pub mod asynchronous {
                     }
                     total = total
                         .checked_add(record.data.as_ref().map_or(0, Vec::len))
-                        .ok_or(Error::Invalid)?;
-                    if total > limit {
-                        return Err(Error::Invalid);
+                        .ok_or(Error::TransferTooLarge {
+                            received: usize::MAX,
+                            limit: transfer_limit,
+                        })?;
+                    if total > transfer_limit {
+                        return Err(Error::TransferTooLarge {
+                            received: total,
+                            limit: transfer_limit,
+                        });
                     }
                     pending.records.insert(record.name, record);
                 }
@@ -878,13 +1044,19 @@ pub mod asynchronous {
                         _ => unreachable!(),
                     };
                     let Some(mut pending) = pending else {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer(
+                            "completion arrived before a proposal",
+                        ));
                     };
-                    if pending.task != task
-                        || pending.result != result
-                        || !pending.selected.is_empty()
-                    {
-                        return Err(Error::Invalid);
+                    if pending.task != task || pending.result != result {
+                        return Err(Error::InvalidTransfer(
+                            "completion does not match the accepted task or result",
+                        ));
+                    }
+                    if !pending.selected.is_empty() {
+                        return Err(Error::InvalidTransfer(
+                            "completion arrived before all requested objects",
+                        ));
                     }
                     let certificates: BTreeSet<_> = pending
                         .records
@@ -899,7 +1071,9 @@ pub mod asynchronous {
                     if pending.records.keys().any(|name| {
                         !pending.requested.contains(name) && !certificates.contains(name)
                     }) {
-                        return Err(Error::Invalid);
+                        return Err(Error::InvalidTransfer(
+                            "unrequested data was not used by a certificate",
+                        ));
                     }
                     for offer in pending.offers.into_values() {
                         pending.records.entry(offer.name).or_insert(Record {
@@ -919,7 +1093,11 @@ pub mod asynchronous {
                         result,
                     }));
                 }
-                _ => return Err(Error::Invalid),
+                _ => {
+                    return Err(Error::InvalidTransfer(
+                        "unexpected message while receiving a transfer",
+                    ));
+                }
             }
         }
     }

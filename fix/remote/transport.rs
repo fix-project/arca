@@ -89,23 +89,39 @@ pub mod asynchronous {
         limit: usize,
         progress: &mut impl FnMut(u64, u64),
     ) -> Result<Option<Vec<u8>>, Error<S::Error>> {
+        let Some(length) = receive_length(stream).await? else {
+            return Ok(None);
+        };
+        receive_body(stream, length, limit, progress)
+            .await
+            .map(Some)
+    }
+
+    pub async fn receive_length<S: AsyncRead>(
+        stream: &mut S,
+    ) -> Result<Option<u64>, Error<S::Error>> {
         let mut header = [0; 8];
         let length = stream.read(&mut header).await.map_err(Error::Io)?;
         if length == 0 {
             return Ok(None);
         }
         read_exact(stream, &mut header[length..]).await?;
-        let announced = u64::from_be_bytes(header);
-        let length = usize::try_from(announced).map_err(|_| Error::TooLarge {
-            length: announced,
-            limit,
-        })?;
-        if length > limit {
-            return Err(Error::TooLarge {
+        Ok(Some(u64::from_be_bytes(header)))
+    }
+
+    pub async fn receive_body<S: AsyncRead>(
+        stream: &mut S,
+        announced: u64,
+        limit: usize,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<Vec<u8>, Error<S::Error>> {
+        let length = usize::try_from(announced)
+            .ok()
+            .filter(|length| *length <= limit)
+            .ok_or(Error::TooLarge {
                 length: announced,
                 limit,
-            });
-        }
+            })?;
         let mut bytes = alloc::vec![0; length];
         let mut received = 0;
         progress(0, announced);
@@ -121,7 +137,7 @@ pub mod asynchronous {
             received += read;
             progress(received as u64, announced);
         }
-        Ok(Some(bytes))
+        Ok(bytes)
     }
 
     pub async fn send<S: AsyncWrite>(stream: &mut S, bytes: &[u8]) -> Result<(), Error<S::Error>> {
@@ -158,7 +174,7 @@ pub mod asynchronous {
         stream.flush().await.map_err(Error::Io)
     }
 
-    async fn read_exact<S: AsyncRead>(
+    pub async fn read_exact<S: AsyncRead>(
         stream: &mut S,
         mut bytes: &mut [u8],
     ) -> Result<(), Error<S::Error>> {
@@ -172,7 +188,7 @@ pub mod asynchronous {
         Ok(())
     }
 
-    async fn write_all<S: AsyncWrite>(
+    pub async fn write_all<S: AsyncWrite>(
         stream: &mut S,
         mut bytes: &[u8],
     ) -> Result<(), Error<S::Error>> {

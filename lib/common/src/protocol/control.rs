@@ -157,6 +157,7 @@ pub struct EvaluationTask {
     pub operation: Option<EvaluationOperation>,
     pub transfer: Option<(Vec<String>, Vec<String>)>,
     pub transfer_peer: Option<[u8; 16]>,
+    pub transfer_size: Option<u64>,
     pub name: String,
 }
 

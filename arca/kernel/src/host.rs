@@ -487,15 +487,20 @@ pub mod fs {
     }
 
     pub fn write_with(path: &str, bytes: &[u8], mode: FileMode) -> Result<(), ErrorKind> {
-        let buffer = crate::allocator::buffer(Vec::from(bytes));
-        match request_serialized(&control::Request::WriteFile(
-            path.into(),
-            buffer.slice(..),
-            mode,
-        ))? {
-            control::Response::Ack => Ok(()),
-            _ => Err(ErrorKind::Other),
+        if let Some(buffer) = crate::allocator::borrow_buffer(bytes) {
+            return match request_serialized(&control::Request::WriteFile(path.into(), buffer, mode))? {
+                control::Response::Ack => Ok(()),
+                _ => Err(ErrorKind::Other),
+            };
         }
+        let create_new = mode.create_new;
+        let mut file = File::open_with(path, mode)?;
+        let result = file.try_write_all(bytes);
+        file.close();
+        if create_new && result.is_err() {
+            let _ = remove_file(path);
+        }
+        result
     }
 
     pub fn read_dir(path: &str) -> Result<Vec<String>, ErrorKind> {
@@ -652,14 +657,30 @@ pub mod fs {
         }
 
         pub fn try_write_all(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
-            let buffer = crate::allocator::buffer(Vec::from(bytes));
-            let mut offset = 0;
-            while offset < buffer.len() {
-                let len = self.try_write(&buffer.slice(offset..))?;
-                if len == 0 {
-                    return Err(ErrorKind::Other);
+            let mut write = |buffer: Buffer<&[u8]>| {
+                let mut offset = 0;
+                while offset < buffer.len() {
+                    let len = self.try_write(&buffer.slice(offset..))?;
+                    if len == 0 {
+                        return Err(ErrorKind::Other);
+                    }
+                    offset += len;
                 }
-                offset += len;
+                Ok(())
+            };
+            if let Some(buffer) = crate::allocator::borrow_buffer(bytes) {
+                return write(buffer);
+            }
+            let chunk_size = bytes.len().min(65536);
+            let mut bytes_buffer = Vec::new();
+            bytes_buffer
+                .try_reserve_exact(chunk_size)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            bytes_buffer.resize(chunk_size, 0);
+            let mut buffer = crate::allocator::buffer(bytes_buffer);
+            for chunk in bytes.chunks(chunk_size) {
+                buffer[..chunk.len()].copy_from_slice(chunk);
+                write(buffer.slice(..chunk.len()))?;
             }
             Ok(())
         }

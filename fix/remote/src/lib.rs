@@ -387,7 +387,7 @@ fn export_metadata<S: ProposalStorage>(
     objects: &mut BTreeMap<[u8; 32], (Object, bool)>,
     refs: &mut BTreeSet<protocol::Name>,
 ) -> Result<(), Error> {
-    if S::RESIDENT && !matches!(value.view(), HandleView::Ref(_)) {
+    if S::RESIDENT && matches!(value.view(), HandleView::Object(_)) {
         return Ok(());
     }
     let object = value.object_descriptor();
@@ -395,17 +395,17 @@ fn export_metadata<S: ProposalStorage>(
     if !seen.insert(key) {
         return Ok(());
     }
-    if S::RESIDENT
-        && let HandleView::Ref(reference) = value.view()
-        && source.has_ref_backing(*reference)?
-    {
-        refs.insert(*value.as_bytes());
+    let reference = object.into_ref();
+    if S::RESIDENT && source.has_ref_backing(reference)? {
+        refs.insert(*reference.as_handle().as_bytes());
     }
-    if let Some(metadata) = source.get_todo(object.into_ref())? {
+    if let Some(metadata) = source.get_todo(reference)? {
         objects.entry(key).or_insert((object, false));
         pending.push(metadata);
     }
-    if !matches!(value.view(), HandleView::Object(_)) {
+    if matches!(value.view(), HandleView::Ref(_))
+        || !S::RESIDENT && !matches!(value.view(), HandleView::Object(_))
+    {
         objects.entry(key).or_insert((object, false));
     }
     Ok(())

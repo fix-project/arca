@@ -17,11 +17,12 @@ rust_test(
     srcs = ["tests/distributed.rs"],
     edition = "2024",
     deps = ["//fix/handle", "//fix/repository", "//fix/remote", "//fix/remote:testing", "//fix/certificates", "@crates//:hex"],
-    data = ["//programs/fix/schedulers:parallel_elf", "//programs/fix/schedulers:distributed_elf", "//programs/fix/schedulers:serial_elf", "//programs/fix/schedulers:onepass_elf", "//programs/fix/schedulers:hint_elf", "//bootstrap:seed_tool", "//fix/cli:fix", "//fix/proof/collector:collector_elf", "//programs/fix:compile_elf", "//programs/fix:addblob_elf", ":fanout_elf", ":work_elf"],
+    data = ["//programs/fix/schedulers:parallel_elf", "//programs/fix/schedulers:distributed_elf", "//programs/fix/schedulers:serial_elf", "//programs/fix/schedulers:onepass_elf", "//programs/fix/schedulers:hint_elf", "//programs/fix/schedulers:advisor_elf", "//bootstrap:seed_tool", "//fix/cli:fix", "//fix/proof/collector:collector_elf", "//programs/fix:compile_elf", "//programs/fix:addblob_elf", ":fanout_elf", ":work_elf"],
     rustc_env = {
         "DISTRIBUTED": "$(rootpath //programs/fix/schedulers:distributed_elf)",
         "ONEPASS": "$(rootpath //programs/fix/schedulers:onepass_elf)",
         "HINT": "$(rootpath //programs/fix/schedulers:hint_elf)",
+        "ADVISOR": "$(rootpath //programs/fix/schedulers:advisor_elf)",
         "SERIAL": "$(rootpath //programs/fix/schedulers:serial_elf)",
         "PARALLEL": "$(rootpath //programs/fix/schedulers:parallel_elf)",
         "SEED": "$(rootpath //bootstrap:seed_tool)",

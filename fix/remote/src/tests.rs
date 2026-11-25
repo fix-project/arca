@@ -685,7 +685,12 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
                     &trusted_keys(&config()).unwrap(),
                     |_| Some(vec![name])
                 ),
-                Err(protocol::Error::Invalid)
+                Err(protocol::Error::InvalidTransfer(reason))
+                if reason == if unsolicited {
+                    "object data arrived before a proposal"
+                } else {
+                    "completion does not match the accepted task or result"
+                }
             ));
         });
         let mut connection = Connection::connect(address).unwrap();
@@ -724,6 +729,90 @@ fn negotiated_transfers_reject_unsolicited_data_and_mismatched_tasks() {
             protocol::send(&mut connection, Message::Run(different)).unwrap();
         }
         server.join().unwrap();
+    }
+}
+
+#[test]
+fn negotiated_transfer_has_independent_message_and_payload_limits() {
+    use crate::{
+        linux::Connection,
+        protocol::{self, Information, Message},
+        transport,
+    };
+    let message_limit = 1024;
+    for transfer_limit in [1024, 2048] {
+        let records = [1u8, 2].map(|byte| {
+            let bytes = vec![byte; 768];
+            Record {
+                name: *Blob::canonical(&bytes).unwrap().as_handle().as_bytes(),
+                data: Some(bytes),
+                todo: None,
+                certificates: Vec::new(),
+            }
+        });
+        let result = records[0].name;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let mut connection = Connection(listener.accept().unwrap().0);
+            let response = transport::complete(protocol::asynchronous::receive_transfer_observed(
+                &mut transport::Blocking(&mut connection),
+                message_limit,
+                transfer_limit,
+                &Information::default(),
+                &[],
+                |offers| Some(offers.iter().map(|offer| offer.name).collect()),
+                None,
+                |_| {},
+            ));
+            if transfer_limit == 1024 {
+                assert!(matches!(
+                    response,
+                    Err(protocol::Error::TransferTooLarge {
+                        received: 1536,
+                        limit: 1024
+                    })
+                ));
+            } else {
+                let incoming = response.unwrap().unwrap();
+                assert_eq!(incoming.result, Some(result));
+                assert_eq!(incoming.transfer.records.len(), 2);
+                assert!(
+                    incoming.transfer.records.iter().all(|record| {
+                        record.data.as_ref().is_some_and(|data| data.len() == 768)
+                    })
+                );
+            }
+        });
+        let mut connection = Connection::connect(address).unwrap();
+        protocol::send(
+            &mut connection,
+            Message::ProposeTransfer {
+                task: None,
+                result: Some(result),
+                objects: records.iter().map(Record::offer).collect(),
+                coupons: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            protocol::receive(&mut connection, message_limit).unwrap(),
+            Some(Message::AcceptTransfer { .. })
+        ));
+        for record in records {
+            protocol::send(&mut connection, Message::BlobData(record)).unwrap();
+        }
+        if transfer_limit > message_limit {
+            protocol::send(
+                &mut connection,
+                Message::Result {
+                    task: None,
+                    coupon: result,
+                },
+            )
+            .unwrap();
+        }
+        receiver.join().unwrap();
     }
 }
 
@@ -777,6 +866,39 @@ fn scheduler_staging_negotiates_missing_program_data() {
     protocol::send_transfer(&mut connection, 1 << 20, &task, None, transfer, |_, _| None).unwrap();
     assert!(
         matches!(protocol::receive(&mut connection, 1 << 20).unwrap(), Some(Message::ObjectReceived(name)) if name == task.input)
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn job_packets_read_object_payloads_across_stream_chunks() {
+    use crate::{
+        linux::Connection,
+        protocol::{self, Message, Packet},
+    };
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let bytes: Vec<_> = (0..200_000).map(|i| (i % 251) as u8).collect();
+    let record = Record {
+        name: *Blob::canonical(&bytes).unwrap().as_handle().as_bytes(),
+        data: Some(bytes),
+        todo: None,
+        certificates: Vec::new(),
+    };
+    let expected = Packet::Job(17, Message::BlobData(record.clone()));
+    let server = std::thread::spawn(move || {
+        let mut connection = Connection(listener.accept().unwrap().0);
+        protocol::send_packet(&mut connection, Packet::Job(17, Message::BlobData(record))).unwrap();
+    });
+    let mut connection = Connection::connect(address).unwrap();
+    assert_eq!(
+        transport::complete(protocol::asynchronous::receive_packet_with_payload_limit(
+            &mut transport::Blocking(&mut connection),
+            1024,
+            || 1 << 20,
+        ))
+        .unwrap(),
+        Some(expected)
     );
     server.join().unwrap();
 }
@@ -1084,24 +1206,24 @@ fn concurrent_signing_retains_each_keys_certificate() {
     }
 }
 
-#[test]
-fn resident_transfer_includes_tag_payload_after_a_ref_author() {
-    struct Resident<'a>(&'a Repository);
+struct Resident<'a>(&'a Repository);
 
-    impl ProposalStorage for Resident<'_> {
-        fn has_ref_backing(&self, reference: Ref) -> Result<bool, RepositoryError> {
-            self.0.has_backing(reference.object_descriptor())
-        }
-
-        fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError> {
-            self.0.read_tree(tree)
-        }
-
-        fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError> {
-            self.0.get_todo(reference)
-        }
+impl ProposalStorage for Resident<'_> {
+    fn has_ref_backing(&self, reference: Ref) -> Result<bool, RepositoryError> {
+        self.0.has_backing(reference.object_descriptor())
     }
 
+    fn read_tree(&self, tree: Tree) -> Result<Box<[Handle]>, RepositoryError> {
+        self.0.read_tree(tree)
+    }
+
+    fn get_todo(&self, reference: Ref) -> Result<Option<Handle>, RepositoryError> {
+        self.0.get_todo(reference)
+    }
+}
+
+#[test]
+fn resident_transfer_includes_tag_payload_after_a_ref_author() {
     let source = Directory::new();
     let repository = source.repository();
     let author = repository.create_blob(&[31; 128]).unwrap();
@@ -1148,6 +1270,59 @@ fn resident_transfer_includes_tag_payload_after_a_ref_author() {
             proposal
                 .refs
                 .contains(reference.into_ref().as_handle().as_bytes())
+        );
+    }
+}
+
+#[test]
+fn resident_transfer_advertises_deferred_backing_without_sending_it() {
+    let source = Directory::new();
+    let source = source.repository();
+    let target = Directory::new();
+    let target = target.repository();
+    let application = source.create_tree(&[Tree::empty().into()]).unwrap();
+    let selection = source
+        .create_tree(&[Tree::empty().into(), application.into()])
+        .unwrap();
+    let root = source
+        .create_tree(&[
+            application.into_ref().application().into(),
+            selection.into_ref().selection().strict().into(),
+        ])
+        .unwrap();
+
+    let proposal =
+        propose_loaded(&source, &Resident(&source), root.into(), true, false, &[]).unwrap();
+    let initial = transfer(&source, &[root.into()], &[]).unwrap();
+    import(&target, &initial, &config()).unwrap();
+    assert!(
+        target
+            .read_tree(root)
+            .unwrap()
+            .iter()
+            .map(Handle::as_bytes)
+            .eq(source.read_tree(root).unwrap().iter().map(Handle::as_bytes))
+    );
+    for tree in [application, selection] {
+        assert!(
+            proposal
+                .refs
+                .contains(tree.into_ref().as_handle().as_bytes())
+        );
+        assert!(!proposal.backing.contains(tree.as_handle().as_bytes()));
+        let request =
+            propose_loaded(&source, &Resident(&source), tree.into(), true, false, &[]).unwrap();
+        assert!(request.backing.contains(tree.as_handle().as_bytes()));
+        assert!(!target.has_backing(tree.object()).unwrap());
+        let backing = transfer(&source, &[tree.into()], &[]).unwrap();
+        import(&target, &backing, &config()).unwrap();
+        assert!(
+            target
+                .read_tree(tree)
+                .unwrap()
+                .iter()
+                .map(Handle::as_bytes)
+                .eq(source.read_tree(tree).unwrap().iter().map(Handle::as_bytes))
         );
     }
 }

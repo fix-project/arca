@@ -677,7 +677,13 @@ fn log_step(state: &Evaluation, step: EvaluationStep) {
     let location_name = task_location(&step.task, location, &state.paths);
     let title = reported_title(&step.task, location, &state.paths);
     match step.phase {
-        EvaluationPhase::Started => line(format!("START {location_name}: {title}")),
+        EvaluationPhase::Started => {
+            let size = step.task.transfer_size.map_or_else(String::new, |bytes| {
+                let (scale, unit) = byte_unit(bytes);
+                format!(" ({} {unit})", number(bytes as f64 / scale))
+            });
+            line(format!("START {location_name}: {title}{size}"));
+        }
         EvaluationPhase::Finished {
             elapsed_ns,
             outcome,

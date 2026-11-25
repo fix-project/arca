@@ -39,6 +39,7 @@ fn main() {
         operation: Some(EvaluationOperation::Load),
         transfer: Some((vec!["other-route".into(), "large".into()], Vec::new())),
         transfer_peer: Some([1; 16]),
+        transfer_size: Some(1 << 20),
         ..EvaluationTask::default()
     };
     progress::evaluation_step(EvaluationStep {

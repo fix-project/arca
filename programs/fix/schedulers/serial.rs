@@ -68,18 +68,14 @@ impl Scheduler for Serial {
             }
         }
         let cluster = self.cluster().await?;
-        let mut failures = alloc::vec::Vec::new();
-        for (location, name) in cluster.sources(value)? {
-            match cluster.request_transfer(location, value).await {
-                Ok(Some(value)) => return Ok(value),
-                Ok(None) => (),
-                Err(error) => failures.push(alloc::format!("{name}: {error:?}")),
+        match cluster.load_backing(value).await {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Err(Error::OutOfBounds),
+            Err(error) => {
+                fixscheduler::io::log(&alloc::format!("could not load data: {error}"))?;
+                Err(Error::OutOfBounds)
             }
         }
-        if !failures.is_empty() {
-            panic!("could not load data: {}", failures.join("; "));
-        }
-        Err(Error::OutOfBounds)
     }
 
     /// Remember canonicalization advice for an available target.

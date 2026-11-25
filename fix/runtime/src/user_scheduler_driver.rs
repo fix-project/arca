@@ -760,6 +760,7 @@ impl Shared {
         source: Vec<alloc::string::String>,
         destination: Vec<alloc::string::String>,
         peer: Option<[u8; 16]>,
+        size: Option<u64>,
     ) -> EvaluationTask {
         EvaluationTask {
             id: *input.as_bytes(),
@@ -767,6 +768,7 @@ impl Shared {
             name,
             transfer: Some((source, destination)),
             transfer_peer: peer,
+            transfer_size: size,
             ..EvaluationTask::default()
         }
     }
@@ -1039,7 +1041,14 @@ fn start_with_session<
                         .map(|runtime| runtime.storage().friendly_name(input, &shared.labels))
                         .unwrap_or_default();
                     shared.start_task(
-                        Shared::load_task(input, name, Vec::new(), Vec::new(), None),
+                        Shared::load_task(
+                            input,
+                            name,
+                            Vec::new(),
+                            Vec::new(),
+                            None,
+                            Some(input.byte_len()),
+                        ),
                         true,
                     );
                 }
@@ -1821,7 +1830,7 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             );
             Ok(number(0))
         }
-        (b"load_start", [input, source, destination, peer]) => {
+        (b"load_start", [input, source, destination, peer, size]) => {
             let input = runtime.known_canonical(*input).unwrap_or(*input);
             let endpoint = |value| -> Result<Vec<alloc::string::String>, Error> {
                 let name = text(storage, value)?;
@@ -1840,12 +1849,14 @@ fn execute_task<S: Storage + AsRef<crate::storage::memory::MemoryStorage>>(
             } else {
                 Some(<[u8; 16]>::try_from(peer.as_ref()).map_err(|_| Error::Invalid)?)
             };
+            let size = unsigned(storage, *size)?;
             let mut task = ActiveTask::new(Shared::load_task(
                 input,
                 name,
                 endpoint(*source)?,
                 endpoint(*destination)?,
                 peer,
+                (size != u64::MAX).then_some(size),
             ));
             let id = shared.next_transfer.fetch_add(1, Ordering::Relaxed);
             task.announce(shared);

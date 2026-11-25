@@ -3,6 +3,7 @@ use fixwasm::{Blob, Error, Handle, Object, Tree, Value};
 
 #[fixwasm::apply]
 fn apply(combination: &Handle<Object<Tree>>) -> Result<impl Value, Error> {
+    fixwasm::advise(combination, fixwasm::advice::TITLE, b"fanout work")?;
     let left = Handle::<Object<Blob>>::try_from(combination.get(2))?.read_u64()?;
     let right = Handle::<Object<Blob>>::try_from(combination.get(3))?.read_u64()?;
     let mut result = left.wrapping_add(right);

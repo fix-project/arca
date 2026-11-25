@@ -22,7 +22,7 @@ use fixscheduler::{
     kernel::Advice,
     remote::{
         Cluster, Failure,
-        protocol::{self, Information},
+        protocol::Information,
     },
     shell::{AsValue, DataType, Value, ValueType, child},
     storage,
@@ -558,11 +558,8 @@ impl<'a> OnePass<'a> {
             let reason = match result {
                 Ok(Some(coupon)) => return Ok(Some(coupon)),
                 Ok(None) => alloc::string::String::from("worker disconnected"),
-                Err(
-                    Failure::Send(protocol::Error::Remote(message))
-                    | Failure::Receive(protocol::Error::Remote(message)),
-                ) => message,
-                Err(Failure::Send(error) | Failure::Receive(error)) => alloc::format!("{error}"),
+                Err(Failure::Send(error)) => alloc::format!("sending task: {error}"),
+                Err(Failure::Receive(error)) => alloc::format!("receiving result: {error}"),
                 Err(Failure::Export(message) | Failure::Import(message)) => message,
                 Err(Failure::AwaitingResult) => "worker is already awaiting this evaluation".into(),
                 Err(error) => alloc::format!("{error:?}"),
@@ -833,6 +830,13 @@ impl<'a> OnePass<'a> {
                 fixscheduler::kernel::cached(request.code(), request.input())?;
                 self.graph.complete(request, &coupon)?;
                 return Ok(coupon);
+            }
+            if request.is_force() && self.graph.current().is_some_and(|parent| parent.is_force()) {
+                if matches!(self.graph.claim(request)?, Claim::Owned) {
+                    self.placed_locally.borrow_mut().insert(request.clone());
+                    self.graph.offer(request.clone())?;
+                }
+                return self.graph.wait(request).await;
             }
             if self.graph.current().is_some_and(|parent| {
                 request.is_apply() || request.is_select() || (request.is_eval() && parent.is_eval())

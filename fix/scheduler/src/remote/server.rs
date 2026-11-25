@@ -1,4 +1,4 @@
-use super::{Connection, bytes, certify, import, missing, protocol, trusted_keys};
+use super::{Connection, bytes, certify, missing, protocol, trusted_keys};
 use crate::{
     collector,
     executor::{Graph, Scheduler, graph::Node, task::Task},
@@ -180,13 +180,31 @@ async fn handle(
                 }
                 continue;
             }
-            protocol::Message::RequestTransfer(name) => {
-                if name[31] & 0x1f == 0
-                    && let Ok(value) = crate::storage::reference_named(name)
-                {
-                    let loaded = policy.load(&value).await;
-                    if let Ok(value) = loaded {
-                        crate::storage::put(&value)?;
+            protocol::Message::RequestTransfer(name)
+            | protocol::Message::RequestTree(name)
+            | protocol::Message::RequestBlob(name) => {
+                match first {
+                    protocol::Message::RequestTransfer(_) => {
+                        if name[31] & 0x1f == 0
+                            && let Ok(value) = crate::storage::reference_named(name)
+                            && let Ok(value) = policy.load(&value).await
+                        {
+                            crate::storage::put(&value)?;
+                        }
+                    }
+                    _ => {
+                        let right_type = match first {
+                            protocol::Message::RequestTree(_) => matches!(name[31], 0xa0 | 0xe0),
+                            _ => name[31] == 0x80,
+                        };
+                        if !right_type
+                            || crate::storage::identify(&crate::storage::reference_named(name)?)?
+                                .is_none()
+                        {
+                            protocol::asynchronous::send(stream, protocol::Message::Rejected)
+                                .await?;
+                            continue;
+                        }
                     }
                 }
                 let proposal = match super::propose_object(name, true) {
@@ -214,18 +232,19 @@ async fn handle(
                 result: Some(name),
                 ..
             } if allow_updates => {
-                let incoming = protocol::asynchronous::receive_transfer_with_info_from(
+                let incoming = protocol::asynchronous::receive_transfer_observed(
                     stream,
                     protocol::MAX_MESSAGE_SIZE,
+                    super::transfer_limit()?,
                     &capacity(memory)?,
                     keys,
                     |offers| missing(offers).ok().flatten(),
                     Some(proposal),
+                    |_| {},
                 )
                 .await?
                 .ok_or(protocol::Error::Invalid)?;
-                let encoded = incoming.transfer.encode().map_err(|_| Error::WrongType)?;
-                let reply = match import(&encoded) {
+                let reply = match super::import_transfer(incoming.transfer) {
                     Ok(roots) if roots.len() == 1 && roots[0].raw_handle_bytes()? == name => {
                         protocol::Message::ObjectReceived(name)
                     }
@@ -257,13 +276,15 @@ async fn handle(
             _ => (),
         }
         let information = capacity(memory)?;
-        let Some(incoming) = protocol::asynchronous::receive_transfer_with_info_from(
+        let Some(incoming) = protocol::asynchronous::receive_transfer_observed(
             stream,
             protocol::MAX_MESSAGE_SIZE,
+            super::transfer_limit()?,
             &information,
             keys,
             |offers| missing(offers).ok().flatten(),
             Some(first),
+            |_| {},
         )
         .await?
         else {
@@ -281,8 +302,7 @@ async fn handle(
             .await?;
             continue;
         }
-        let encoded = incoming.transfer.encode().map_err(|_| Error::WrongType)?;
-        let roots = match import(&encoded) {
+        let roots = match super::import_transfer(incoming.transfer) {
             Ok(roots) => roots,
             Err(error) => {
                 protocol::asynchronous::send(stream, protocol::Message::Failure(error)).await?;

@@ -39,6 +39,17 @@ pub fn buffer(bytes: alloc::vec::Vec<u8>) -> common::buffer::Buffer<alloc::vec::
     unsafe { common::buffer::Buffer::from_buddy(bytes) }
 }
 
+pub fn borrow_buffer(bytes: &[u8]) -> Option<common::buffer::Buffer<&[u8]>> {
+    if !bytes.is_empty() {
+        let offset = (bytes.as_ptr() as usize).checked_sub(BuddyAllocator.base() as usize)?;
+        if offset.checked_add(bytes.len())? > BuddyAllocator.len() {
+            return None;
+        }
+    }
+    // Buddy's direct mapping and the host share these bytes at the same offset.
+    Some(unsafe { common::buffer::Buffer::from_buddy(bytes) })
+}
+
 const PAGE: usize = 4096;
 const MIN_CLASS: u32 = 5;
 const CLASSES: usize = 6;
